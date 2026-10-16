@@ -36,6 +36,6 @@ def run(inputs, outdir, seed=1, stage="A", counters=None, gdml=None, **kw):
         sub = tables.read(f, "subruns")
         steps, parts = tr.transport(gen, geom, rng, stage=stage, world=world)
         name = os.path.basename(f).replace("gen.", f"fast{stage}.")
-        tables.write(os.path.join(outdir, name), steps, parts, gen, sub)
+        tables.write(os.path.join(outdir, name), steps, parts, gen, sub, as_ttree=True)
         print(f"# {f}: {parts.shape[0]:,} primary muons, {steps[tables.KEY].drop_duplicates().shape[0]:,} with CRV "
               f"crossings, {len(steps):,} crossings", flush=True)

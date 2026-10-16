@@ -53,12 +53,17 @@ def primary_muon_crossings(steps, parts, sector_of_bar):
     return g
 
 
-def write(path, steps, particles, gen=None, subruns=None):
+def write(path, steps, particles, gen=None, subruns=None, as_ttree=False):
     """Write fast-sim tables in the CrvStepTableDumper layout (directory dump/), readable by every analysis here."""
     import os
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with uproot.recreate(path) as f:
         for name, df in (("steps", steps), ("particles", particles), ("gen", gen), ("subruns", subruns)):
             if df is not None and len(df):
-                f[f"{DIR}/{name}"] = {c: df[c].to_numpy() for c in df.columns}
+                cols = {c: df[c].to_numpy() for c in df.columns}
+                if as_ttree:   # uproot >= 5.7 writes RNTuple by default; art/ROOT readers here need a TTree
+                    f.mktree(f"{DIR}/{name}", {c: v.dtype for c, v in cols.items()})
+                    f[f"{DIR}/{name}"].extend(cols)
+                else:
+                    f[f"{DIR}/{name}"] = cols
     print(f"wrote {path}")
