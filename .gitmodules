@@ -1,0 +1,12 @@
+[submodule "core"]
+	path = core
+	url = https://github.com/RobMina/mu2e-fastsim-core.git
+	branch = main
+[submodule "crv"]
+	path = crv
+	url = https://github.com/RobMina/mu2e-crv-fastsim.git
+	branch = main
+[submodule "tracker"]
+	path = tracker
+	url = https://github.com/RobMina/mu2e-tracker-fastsim.git
+	branch = main
