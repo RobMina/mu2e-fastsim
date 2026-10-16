@@ -8,7 +8,7 @@ Fast CRV reco: reco-vr2, reco-vr2stock, reco-vr2jax, reco-bench, reco-vr1, reco-
 import argparse
 import sys
 
-from .analyses import census, g4cost, transport, v0check, v1compare
+from .analyses import census, g4cost, g4muon, transport, v0check, v1compare, v2compare
 from .reco import cli as reco_cli
 
 ANALYSES = {
@@ -17,10 +17,12 @@ ANALYSES = {
     "transport": (transport.run, "fast muon transport on CRY primaries (gen tables) -> CrvStep tables; --stage A = air only"),
     "v0check":   (v0check.run,   "V0: CRV bar geometry (CosmicRayShieldMaker re-implementation) vs the Geant4 GDML, per bar"),
     "v1compare": (v1compare.run, "V1: primary-muon bar crossings (count, path length, visible energy, time) fast sim vs G4"),
+    "v2compare": (v2compare.run, "V2: stock CRV response + reco on fast vs G4 CrvSteps (PE, per-bar rates, clusters, layer eff)"),
+    "g4muon":    (g4muon.run,    "G4 reference CrvStep tables cut to the primary muon's own steps (tier-1a-like V2 arm)"),
 }
 
 # Subcommands that scale via the --emit (worker) / --merge (combiner) batch JSON pattern.
-BATCHABLE = {"v1compare", "census"}
+BATCHABLE = {"v1compare", "v2compare", "census"}
 
 
 def build_parser():
@@ -50,6 +52,13 @@ def build_parser():
         if name == "v1compare":
             sp.add_argument("--compare", nargs="+", default=None, metavar="ROOT",
                             help="G4 reference CrvStep tables (crvsteps.*.root)")
+        if name == "v2compare":
+            sp.add_argument("--compare", nargs="+", default=None, metavar="ROOT",
+                            help="reference arm CrvRecoTableDumper files")
+            sp.add_argument("--steps", nargs="+", default=None, metavar="ROOT",
+                            help="CrvStep tables behind the candidate arm (enables the layer-efficiency diagnostic)")
+            sp.add_argument("--compare-steps", nargs="+", default=None, metavar="ROOT",
+                            help="CrvStep tables behind the reference arm")
     for name in reco_cli.RECO_CMDS:
         sp = sub.add_parser(f"reco-{name}", help=f"fast CRV reco: {name} (reco/cli.py)")
         reco_cli.add_reco_args(sp, name)

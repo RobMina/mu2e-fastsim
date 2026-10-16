@@ -84,3 +84,23 @@ Proposal for the threshold: count "finding identical" over waveforms with no fai
 of `minADCdifference`, and track the rest through the flag-agreement criterion (99.97 %). For the Offline PR of the
 faster CPU fit: resetting the fit state per waveform makes the stock result order-independent; worth raising with the
 CRV group whatever happens to the PR.
+
+### GPU throughput, Polaris (2026-10-16, PBS 7755570, reservation queue R7728155)
+
+`core/iri/jobs/crv_reco_bench_polaris.json`: one node, one `crvfastsim reco-bench` process per A100 (each sees one
+device), 200,000 synthetic KPP-like events per GPU (4 M waveforms of 12 samples, `reco/synth.py`), batch 65,536,
+float64, 3 timed passes after compilation. The JAX-vs-numpy test and the core tests passed on the GPU node first
+(18 passed).
+
+| quantity | value |
+|---|---|
+| events/s per A100 (4 GPUs, each its own process) | 18,768 / 18,893 / 18,826 / 18,812 (mean 18,825) |
+| per node | ~75,300 events/s |
+| per event | 53 us (compile 2.0 s per process) |
+| vs the same code on a laptop CPU (8 threads) | ~38x |
+| vs stock `CrvRecoPulsesFinder` on one core (KPP data 3.73 ms/event = 268 events/s) | ~70x per GPU |
+| goal R1 (>= 20,000 events/s per GPU, pulses + coincidences) | **94 % of the target, pulses only**: the coincidence finder is not ported yet |
+
+The kernel always runs `max_pulses` = 8 pulse rounds with the full fit, while 99.8 % of data waveforms have at most two
+pulses: the obvious next step is fewer rounds (e.g. 3) with the waveforms still active after the last round sent to the
+numpy path, then batch-size and LM-iteration tuning.
