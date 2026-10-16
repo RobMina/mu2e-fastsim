@@ -1,0 +1,4 @@
+{
+  "path": "${CRVFS_EAGLE}/hello",
+  "parent": true
+}

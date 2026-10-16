@@ -1,0 +1,10 @@
+# Profile the stock extracted CRY cosmic simulation (Geant4 stage).
+#include "Production/JobConfig/cosmic/ExtractedCRY.fcl"
+
+services.TimeTracker.printSummary : true
+services.TimeTracker.dbOutput : { filename : "timing_sim.db" overwrite : true }
+services.MemoryTracker : { dbOutput : { filename : "mem_sim.db" overwrite : true } }
+services.SeedService.baseSeed : 20261015
+source.firstRun : 1400  # production run; the Sim_best CRV IOV at the default 1205 predates v04 (2048 vs 2304 channels)
+source.firstSubRun : 1
+outputs.PrimaryOutput.fileName : "dts.mu2e.CosmicCRYExtractedProf.v0.001400_00000001.art"

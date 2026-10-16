@@ -1,0 +1,60 @@
+{
+ "n_events_printed": 1947,
+ "n_events_with_crvsteps": 1747,
+ "frac_events_muon_origin_only": 0.8700629650829994,
+ "visible_edep_fraction": {
+  "mu_primary": 0.6489681558737017,
+  "mu_descendant": 0.1969235629869685,
+  "nonmu_descendant": 0.11665879706139476,
+  "nonmu_primary": 0.037449484077935066
+ },
+ "step_count": {
+  "mu_primary": 10297,
+  "mu_descendant": 32518,
+  "nonmu_descendant": 18035,
+  "nonmu_primary": 511
+ },
+ "visible_edep_fraction_by_sector": {
+  "EX": {
+   "mu_primary": 0.6476374872359223,
+   "mu_descendant": 0.20379009906243795,
+   "nonmu_descendant": 0.10864508599996804,
+   "nonmu_primary": 0.03992732770167168
+  },
+  "T1": {
+   "mu_primary": 0.599108743944545,
+   "mu_descendant": 0.18727082943018436,
+   "nonmu_descendant": 0.2042528704868448,
+   "nonmu_primary": 0.009367556138425746
+  },
+  "T2": {
+   "mu_primary": 0.6454901879434126,
+   "mu_descendant": 0.21036800398290187,
+   "nonmu_descendant": 0.09913703688337705,
+   "nonmu_primary": 0.04500477119030848
+  },
+  "M": {
+   "mu_primary": 0.8126098339490011,
+   "mu_descendant": 0.08345586916759322,
+   "nonmu_descendant": 0.05085535989671127,
+   "nonmu_primary": 0.05307893698669444
+  }
+ },
+ "nonmu_edep_by_primary_pdg": {
+  "22": 0.06902106739622023,
+  "-11": 0.027448720263306258,
+  "11": 0.02516595608760126,
+  "2212": 0.021687127640367246,
+  "2112": 0.01009450470093138,
+  "-211": 0.0006909050508977954
+ },
+ "crvsteps_per_event": {
+  "mean": 35.12364052661706,
+  "median": 23.0,
+  "p99": 209.6199999999999
+ },
+ "bars_per_event": {
+  "mean": 9.074413279908415,
+  "median": 6.0
+ }
+}

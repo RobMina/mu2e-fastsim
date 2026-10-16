@@ -1,0 +1,15 @@
+# G4 reference sample for the fast-sim validation: stock extracted CRY cosmic simulation (run 1400), plus a second
+# output that keeps the CRY primaries and live time of every generated event, accepted or not.
+#include "Production/JobConfig/cosmic/ExtractedCRY.fcl"
+
+source.firstRun : 1400
+
+outputs.GenOutput : {
+  module_type : RootOutput
+  fileName : "gen.owner.desc.version.sequencer.art"
+  outputCommands : [ "drop *_*_*_*",
+                     "keep mu2e::GenParticles_*_*_*",
+                     "keep mu2e::CosmicLivetime_*_*_*",
+                     "keep mu2e::GenEventCount_*_*_*" ]
+}
+physics.EndPath : [ @sequence::Primary.EndSequence, PrimaryOutput, GenOutput ]

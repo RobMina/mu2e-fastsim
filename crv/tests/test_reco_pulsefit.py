@@ -1,0 +1,93 @@
+"""Unit tests of crvfastsim.reco: the batched Gumbel fit recovers injected pulses, the peak finder follows the stock
+rules, digi grouping concatenates continuing digis, and the waveform synthesis is linear in charge and zero-suppressed.
+"""
+import sys
+from pathlib import Path
+
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from crvfastsim.reco import pulsefit as PF                 # noqa: E402
+from crvfastsim.reco import waveform as WF                 # noqa: E402
+
+CFG = PF.RecoConfig()
+
+
+def _wave(A, mu, b, n=24, start_tdc=10, ped=100.0, noise=0.0, seed=0):
+    t = (start_tdc + np.arange(n)) * PF.PERIOD
+    y = PF.gumbel(t, A, mu, b)
+    rng = np.random.default_rng(seed)
+    return np.round(y + ped + rng.normal(0, noise, n)).astype(np.int64)
+
+
+def test_single_pulse_fit_recovers_parameters():
+    W = 200
+    rng = np.random.default_rng(1)
+    A = rng.uniform(300, 2000, W)
+    mu = (10 + 6) * PF.PERIOD + rng.uniform(-6, 6, W)
+    b = rng.uniform(14, 24, W)
+    adc = np.stack([_wave(A[i], mu[i], b[i]) for i in range(W)])
+    res = PF.reconstruct(adc, np.full(W, 24), np.full(W, 10), np.full(W, 100.0), np.ones(W), np.ones(W), CFG)
+    first = res["seq"] == 0
+    assert first.sum() == W
+    ok = ~res["failed"][first]
+    assert ok.mean() > 0.95
+    assert np.median(np.abs(res["fit_mu"][first][ok] - mu[ok])) < 0.3
+    assert np.median(np.abs(res["fit_b"][first][ok] / b[ok] - 1)) < 0.03
+    # PE = A*beta / calib (calib 1)
+    assert np.median(np.abs(res["pe"][first][ok] / (A[ok] * b[ok]) - 1)) < 0.03
+
+
+def test_below_threshold_gives_no_pulse():
+    adc = _wave(30.0, 16 * PF.PERIOD, 19.0)[None, :]
+    res = PF.reconstruct(adc, np.array([24]), np.array([10]), np.array([100.0]), np.ones(1), np.ones(1), CFG)
+    assert len(res["wf"]) == 0
+
+
+def test_pedestal_undershoot_uses_first_sample():
+    adc = _wave(800.0, 16 * PF.PERIOD, 19.0, ped=90.0)[None, :]
+    res = PF.reconstruct(adc, np.array([24]), np.array([10]), np.array([100.0]), np.ones(1), np.ones(1), CFG)
+    assert not res["pedfromdb"][0] and res["ped"][0] == adc[0, 0]
+
+
+def test_concat_waveforms_joins_continuing_digis():
+    key = np.array([1, 1, 1, 2])
+    bar = np.array([5, 5, 6, 5])
+    sipm = np.zeros(4, np.int64)
+    tdc = np.array([10, 22, 10, 10])
+    lens = np.array([12, 12, 12, 12])
+    flat = np.arange(48)
+    gid, mat, n, start, first = PF.concat_waveforms(key, bar, sipm, tdc, flat, lens)
+    assert list(gid) == [0, 0, 1, 2]
+    assert list(n) == [24, 12, 12] and list(start) == [10, 10, 10]
+    assert np.array_equal(mat[0, :24], np.arange(24))
+
+
+def test_waveform_linear_and_zero_suppressed():
+    cfg = WF.WaveformConfig()
+    t = 300.0 + np.linspace(0.0, 6.0, 30)                  # 30 single-PE avalanches (the stock skip rule counts charges)
+    q = np.full(30, cfg.single_pe_reference_charge)
+    chan = np.zeros(30, np.int64)
+    a = WF.synthesize(chan, t, q, np.array([3.0]), cfg)
+    b = WF.synthesize(chan, t, 2 * q, np.array([3.0]), cfg)
+    assert len(a["chan"]) >= 1
+    assert np.allclose(b["volt"][0], 2 * a["volt"][0])
+    assert np.allclose((a["start"] - 3.0) / PF.PERIOD, np.rint((a["start"] - 3.0) / PF.PERIOD))
+    tiny = WF.synthesize(chan[:1], t[:1], np.array([0.5 * cfg.single_pe_reference_charge]), np.array([3.0]), cfg)
+    assert len(tiny["chan"]) == 0
+
+
+def test_waveform_then_reco_roundtrip():
+    cfg = WF.WaveformConfig()
+    rng = np.random.default_rng(3)
+    nq = 40
+    t = np.sort(300.0 + rng.exponential(8.0, nq))
+    q = np.full(nq, cfg.single_pe_reference_charge)
+    dg = WF.synthesize(np.zeros(nq, np.int64), t, q, np.array([0.0]), cfg)
+    lens = np.full(len(dg["chan"]), cfg.samples_zs)
+    gid, mat, n, start, first = PF.concat_waveforms(np.zeros(len(lens), np.int64), dg["chan"],
+                                                    np.zeros(len(lens), np.int64), dg["starttdc"],
+                                                    dg["adc"].ravel(), lens)
+    res = PF.reconstruct(mat, n, start, np.full(len(n), 100.0), np.ones(len(n)), np.ones(len(n)), CFG)
+    assert len(res["wf"]) >= 1
+    assert 290.0 < res["time"][0] < 360.0

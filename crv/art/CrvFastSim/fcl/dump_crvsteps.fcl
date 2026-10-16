@@ -1,0 +1,14 @@
+# Dump CrvSteps, SimParticles, GenParticles and CosmicLivetime of a dts (or gen) file to flat TTrees.
+#include "Offline/fcl/minimalMessageService.fcl"
+process_name : crvdump
+source : { module_type : RootInput }
+services : {
+  message : @local::default_message
+  TFileService : { fileName : "crvsteps.root" }
+  GlobalConstantsService : { inputFile : "Offline/GlobalConstantsService/data/globalConstants_01.txt" }
+}
+physics : {
+  analyzers : { dump : { module_type : CrvStepTableDumper } }
+  e1 : [ dump ]
+  end_paths : [ e1 ]
+}

@@ -1,0 +1,27 @@
+# Stock CRV-only extracted digitisation + stock CRV reco on a dts file, then CrvRecoTableDumper; no art output.
+# Reference for crvfastsim.reco: SiPM charges, digi MC voltages, digis, pulses, clusters and conditions of one chain.
+# Same settings as the CRV-only extracted MC used for the CRV alignment: v04 geometry, Sim_best v1_5, the data
+# coincidence operating point (epilog_extracted_v04), ignoreSecondaryPulses true.
+# Usage: mu2e -c CrvFastSim/fcl/dump_crvreco_from_dts.fcl -s dts.mu2e.CosmicCRYExtracted.MDC2025as....art -T crvreco.root
+#include "Production/JobConfig/digitize/Extracted.fcl"
+#include "Offline/CRVReco/fcl/prolog_v12.fcl"
+
+physics.producers.CrvRecoPulses : @local::CrvRecoPulses
+physics.producers.CrvCoincidenceClusterFinder : @local::CrvCoincidenceClusterFinder
+physics.analyzers.crvdump : { module_type : CrvRecoTableDumper mc : true }
+
+# the digi path plus the CRV reco; nothing else, every event (no trigger selection)
+physics.DigitizePath : [ @sequence::physics.DigitizePath, CrvRecoPulses, CrvCoincidenceClusterFinder ]
+physics.trigger_paths : [ DigitizePath ]
+physics.DumpPath : [ crvdump ]
+physics.end_paths : [ DumpPath ]
+outputs : {}
+
+services.TFileService.fileName : "crvreco.root"
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_common_extracted_v04.txt"
+services.DbService.purpose : Sim_best
+services.DbService.version : v1_5
+services.DbService.verbose : 0
+
+#include "Offline/CRVReco/fcl/epilog_extracted_v04.fcl"
+physics.producers.CrvCoincidenceClusterFinder.ignoreSecondaryPulses : true

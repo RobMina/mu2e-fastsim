@@ -1,0 +1,11 @@
+# V0 reference geometry for mu2e-crv-fastsim: build the extracted-v04 cosmic world in Geant4 for 1 event, write the
+# whole world to GDML, and print every CRV bar placement in Mu2e coordinates (crs.verbosityLevel 5, constructCRV.cc).
+#include "Production/JobConfig/cosmic/ExtractedCRY.fcl"
+
+source.firstRun : 1400
+services.GeometryService.inputFile : "geom_dump_extracted_v04.txt"
+physics.producers.g4run.debug.writeGDML : true
+physics.producers.g4run.debug.GDMLFileName : "mu2e_extracted_v04.gdml"
+outputs : {}
+physics.EndPath : [ ]
+physics.end_paths : [ ]
