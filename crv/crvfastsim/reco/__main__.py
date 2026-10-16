@@ -264,9 +264,7 @@ def cmd_cost(args):
 
 
 def _report(args, name, out):
-    os.makedirs(args.outdir, exist_ok=True)
-    path = os.path.join(args.outdir, f"{name}_stats.json")
-    plots.write_json(path, out)
+    plots.write_json(args.outdir, f"{name}_stats.json", out)
     print(json.dumps(plots._clean(out), indent=1)[:4000])
 
 

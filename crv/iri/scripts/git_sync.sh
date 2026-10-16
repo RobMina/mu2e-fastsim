@@ -1,15 +1,19 @@
 #!/bin/bash
-# Clone or update the crvfastsim repo on Eagle from a Polaris compute node, over ssh through the ALCF HTTP proxy.
-# Uses the read-only deploy key ~/.ssh/crvfastsim_deploy; ~/.ssh/config is not touched (login nodes need no proxy).
+# Clone or update the public crvfastsim repo on Eagle from a Polaris compute node (HTTPS through the ALCF proxy).
+# usage (positional args via make_inline_job.py --args): git_sync.sh [fresh]   ("fresh" removes the clone first)
 CODE=${CRVFS_EAGLE:?}/code
-mkdir -p ~/.ssh && echo IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwoiIiJzc2ggUHJveHlDb21tYW5kIGZvciBQb2xhcmlzIGNvbXB1dGUgbm9kZXM6IHR1bm5lbCBob3N0OnBvcnQgdGhyb3VnaCB0aGUgQUxDRiBIVFRQIHByb3h5IChubyBuYy9zb2NhdCB0aGVyZSkuCgp1c2FnZSAoc3NoKTogLW8gUHJveHlDb21tYW5kPSJweXRob24zIH4vLnNzaC9naHByb3h5LnB5ICVoICVwIgoiIiIKaW1wb3J0IG9zCmltcG9ydCBzZWxlY3QKaW1wb3J0IHNvY2tldAppbXBvcnQgc3lzCgpQUk9YWSA9ICgicHJveHkuYWxjZi5hbmwuZ292IiwgMzEyOCkKCgpkZWYgbWFpbigpOgogICAgaG9zdCwgcG9ydCA9IHN5cy5hcmd2WzFdLCBzeXMuYXJndlsyXQogICAgcyA9IHNvY2tldC5jcmVhdGVfY29ubmVjdGlvbihQUk9YWSwgdGltZW91dD0yMCkKICAgIHMuc2VuZGFsbChmIkNPTk5FQ1Qge2hvc3R9Ontwb3J0fSBIVFRQLzEuMVxyXG5Ib3N0OiB7aG9zdH06e3BvcnR9XHJcblxyXG4iLmVuY29kZSgpKQogICAgaGVhZCA9IGIiIgogICAgd2hpbGUgYiJcclxuXHJcbiIgbm90IGluIGhlYWQ6CiAgICAgICAgY2h1bmsgPSBzLnJlY3YoNDA5NikKICAgICAgICBpZiBub3QgY2h1bms6CiAgICAgICAgICAgIHN5cy5leGl0KCJwcm94eSBjbG9zZWQgdGhlIGNvbm5lY3Rpb24iKQogICAgICAgIGhlYWQgKz0gY2h1bmsKICAgIHN0YXR1cyA9IGhlYWQuc3BsaXQoYiJcclxuIiwgMSlbMF0KICAgIGlmIGIiIDIwMCIgbm90IGluIHN0YXR1czoKICAgICAgICBzeXMuZXhpdChmInByb3h5IHJlZnVzZWQ6IHtzdGF0dXMuZGVjb2RlKGVycm9ycz0ncmVwbGFjZScpfSIpCiAgICByZXN0ID0gaGVhZC5zcGxpdChiIlxyXG5cclxuIiwgMSlbMV0KICAgIGlmIHJlc3Q6CiAgICAgICAgb3Mud3JpdGUoMSwgcmVzdCkKICAgIHMuc2V0dGltZW91dChOb25lKQogICAgZmluLCBmb3V0ID0gMCwgMQogICAgd2hpbGUgVHJ1ZToKICAgICAgICByLCBfLCBfID0gc2VsZWN0LnNlbGVjdChbcywgZmluXSwgW10sIFtdKQogICAgICAgIGlmIHMgaW4gcjoKICAgICAgICAgICAgZGF0YSA9IHMucmVjdig2NTUzNikKICAgICAgICAgICAgaWYgbm90IGRhdGE6CiAgICAgICAgICAgICAgICBicmVhawogICAgICAgICAgICBvcy53cml0ZShmb3V0LCBkYXRhKQogICAgICAgIGlmIGZpbiBpbiByOgogICAgICAgICAgICBkYXRhID0gb3MucmVhZChmaW4sIDY1NTM2KQogICAgICAgICAgICBpZiBub3QgZGF0YToKICAgICAgICAgICAgICAgIHMuc2h1dGRvd24oc29ja2V0LlNIVVRfV1IpCiAgICAgICAgICAgICAgICB3aGlsZSBUcnVlOgogICAgICAgICAgICAgICAgICAgIGRhdGEgPSBzLnJlY3YoNjU1MzYpCiAgICAgICAgICAgICAgICAgICAgaWYgbm90IGRhdGE6CiAgICAgICAgICAgICAgICAgICAgICAgIHJldHVybgogICAgICAgICAgICAgICAgICAgIG9zLndyaXRlKGZvdXQsIGRhdGEpCiAgICAgICAgICAgIHMuc2VuZGFsbChkYXRhKQoKCmlmIF9fbmFtZV9fID09ICJfX21haW5fXyI6CiAgICBtYWluKCkK | base64 -d > ~/.ssh/ghproxy.py
-export GIT_SSH_COMMAND="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -i $HOME/.ssh/crvfastsim_deploy -o ProxyCommand='/soft/applications/conda/2026-10-01/mconda3/bin/python3 $HOME/.ssh/ghproxy.py %h %p' -p 443"
-URL=git@ssh.github.com:RobMina/mu2e-crv-fastsim.git
-if [ -d $CODE/.git ]; then
-  git -C $CODE pull --ff-only 2>&1 | tail -3
-else
-  git clone $URL $CODE 2>&1 | tail -3
+URL=https://github.com/RobMina/mu2e-crv-fastsim.git
+export https_proxy=http://proxy.alcf.anl.gov:3128 http_proxy=http://proxy.alcf.anl.gov:3128
+if [ "${1:-}" = fresh ] && [ -d "$CODE" ]; then
+  rm -rf "$CODE" && echo "removed $CODE"
 fi
-git -C $CODE log -1 --format='HEAD %h %ad %s' --date=iso 2>&1
-ls $CODE 2>&1 | tr '\n' ' '; echo
+if [ -d "$CODE/.git" ]; then
+  git -C "$CODE" remote set-url origin "$URL"
+  git -C "$CODE" pull --ff-only 2>&1 | tail -3
+else
+  git clone "$URL" "$CODE" 2>&1 | tail -3
+fi
+git -C "$CODE" remote -v | head -1
+git -C "$CODE" log -1 --format='HEAD %h %ad %s' --date=iso 2>&1
+ls "$CODE" 2>&1 | tr '\n' ' '; echo
 echo "exit=0"

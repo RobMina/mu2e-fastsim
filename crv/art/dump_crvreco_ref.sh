@@ -3,7 +3,8 @@
 #   mc   : one dts.mu2e.CosmicCRYExtracted.MDC2025as file -> stock digi + CRV reco -> crvreco_mc.<seq>.root
 #   data : one raw.mu2e.trk.vst.124155 file -> unpack (dig kept in /tmp) -> CRV reco -> crvreco_data.<tag>.root
 # N events (default 20000 mc, 47000 data). Outputs in $CRVFS_DATA/reco_ref/. One job per interactive machine.
-# Needs site.env (CRVFS_CODE, CRVFS_DATA) and CRVFS_FCL_PATH = the fcl dirs holding unpack_data_vst_fullmap_head.fcl.
+# Needs site.env: CRVFS_CODE, CRVFS_DATA; for data also CRVFS_FCL_PATH (fcl dirs holding unpack_data_vst_fullmap_head.fcl)
+# and CRVFS_SEARCH_PATH (root its payloads resolve under).
 # No `set -u` before the setup (setupmu2e-art.sh).
 WHAT=${1:?usage: dump_crvreco_ref.sh <mc|data> [N]}
 AREA="${CRVFS_CODE:?source site.env}/art"
@@ -13,6 +14,7 @@ cd "$AREA" && muse setup >/dev/null 2>&1 || true
 set -u
 [ "$MUSE_WORK_DIR" = "$AREA" ] || { echo "wrong MUSE_WORK_DIR=$MUSE_WORK_DIR"; exit 2; }
 export FHICL_FILE_PATH="${CRVFS_FCL_PATH:-}:$FHICL_FILE_PATH"
+[ -n "${CRVFS_SEARCH_PATH:-}" ] && export MU2E_SEARCH_PATH="$CRVFS_SEARCH_PATH:$MU2E_SEARCH_PATH"
 mkdir -p "$OUT/logs" && cd "$OUT"
 case "$WHAT" in
   mc)

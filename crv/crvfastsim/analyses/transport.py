@@ -15,14 +15,21 @@ from .. import transport as tr
 from .. import world as world_mod
 
 DEFAULT_COUNTERS = "Offline/Mu2eG4/geom/crv_counters_extracted_v04.txt"
-DEFAULT_GDML = "/exp/mu2e/data/users/ram2aq/crv_fastsim/geometry/mu2e_extracted_v04.gdml"
+GDML_NAME = "geometry/mu2e_extracted_v04.gdml"  # under $CRVFS_DATA (geometry/README.md)
+
+
+def default_gdml():
+    data = os.environ.get("CRVFS_DATA")
+    if not data:
+        raise SystemExit("transport --stage C: pass --gdml or set CRVFS_DATA (source site.env)")
+    return os.path.join(data, GDML_NAME)
 
 
 def run(inputs, outdir, seed=1, stage="A", counters=None, gdml=None, **kw):
     geom = geometry.from_offline_config(geometry.find_counters(counters or DEFAULT_COUNTERS))
     world = None
     if stage == "C":
-        world = [p for p in world_mod.load(gdml or DEFAULT_GDML, y_min=tr.Y_MSC_PLANE) if p[0] != "G4_POLYSTYRENE"]
+        world = [p for p in world_mod.load(gdml or default_gdml(), y_min=tr.Y_MSC_PLANE) if p[0] != "G4_POLYSTYRENE"]
     for i, f in enumerate(tables.expand(inputs)):
         rng = np.random.default_rng([int(seed), i])
         gen = tables.read(f, "gen")

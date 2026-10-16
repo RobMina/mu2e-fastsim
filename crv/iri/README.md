@@ -28,7 +28,7 @@ scripts ([AI-ModCon/genesis-skills](https://github.com/AI-ModCon/genesis-skills)
 | `mkdir`, `ls`, `view` | work; return a `task_id` to poll | `tools/iri.sh ls\|cat` |
 | `/dev/fuse`, user namespaces | present on compute nodes (`max_user_namespaces` 2,062,512) | cvmfsexec route possible |
 | `/local/scratch` | 2.8 TB node-local NVMe | caches |
-| GitHub over ssh | compute nodes: no direct route, and no `nc`/`ncat`/`socat`; login nodes: direct only (a ProxyCommand breaks it) | `scripts/ghproxy.py`, a Python HTTP-CONNECT ProxyCommand, set per job through `GIT_SSH_COMMAND`; `~/.ssh/config` stays proxy-free |
+| GitHub | compute nodes: no direct route; HTTPS works through `proxy.alcf.anl.gov:3128` (the repo is public, so no key) | `scripts/git_sync.sh` sets `https_proxy` and clones over HTTPS |
 | `getJob` | gives state and exit code only, no stdout path | read the files you named |
 
 Literal paths only in the submitted JSON (the API does not expand `$HOME`/`$USER`): `tools/make_inline_job.py` expands
@@ -58,8 +58,5 @@ iri/tools/iri.sh cat $CRVFS_EAGLE/hello/hello.out
 | `jobs/setup_venv_polaris.json` + `scripts/setup_venv.sh` | build the project venv on Eagle | done 2026-10-16 (PBS 7752878) |
 | `jobs/hello_polaris.json` + `scripts/hello_gpu.sh` | node/GPU inventory, JAX matmul per A100 | **passed** 2026-10-16 (PBS 7752911): 4x A100-SXM4-40GB, driver 580.65.06, JAX sees 4 devices |
 | `jobs/probe_polaris.json` + `scripts/probe_env.sh` | compute-node environment probe | diagnostic |
-| `jobs/probe_git_polaris.json` + `scripts/probe_git.sh` | GitHub reachability from a compute node | diagnostic |
-| `jobs/git_sync_polaris.json` + `scripts/git_sync.sh` | clone or `--ff-only` pull the repo into `$CRVFS_EAGLE/code` (read-only deploy key `~/.ssh/crvfastsim_deploy`) | **works** 2026-10-16 (PBS 7753616): cloned `d4cae38` |
+| `jobs/git_sync_polaris.json` + `scripts/git_sync.sh` | clone or `--ff-only` pull the public repo into `$CRVFS_EAGLE/code` over HTTPS through the ALCF proxy; `--args fresh` removes the clone first | see the log below |
 
-`git_sync.sh` embeds `ghproxy.py` base64-encoded (regenerate it when `ghproxy.py` changes:
-`B=$(base64 < scripts/ghproxy.py | tr -d '\n')`, then rewrite the script as in its first creation).
