@@ -69,7 +69,16 @@ Matching is **by truth-particle identity, never by time or distance** (a Mu2e an
 |---|---|---|
 | V0 geometry | `v0check` | every bar centre and half length within 1 um; same ids at every index; no rotations |
 | V1 muon crossings | `v1compare` | per group (EX, T1, T2, M): crossings/event 1 %; path mean 0.5 %; visible-energy mean and MPV 1 % (MPV allows 2 sigma of its fit error); path and visible-energy binned ratios chi2/ndf ≤ 1.5 over 20 bins (user, 2026-10-16: the earlier per-bin ±2 %/±3 % after 2 sigma failed identical samples 22 % of the time; the band values are still reported); t0 bias ≤ 0.1 ns |
-| V2-V4 | not written yet | `docs/plan.md` section 5 |
+| V2 response (path A) | `v2compare` | per group: seq-0 pulse PE median 2 % (2 sigma allowed); PE spectrum 5-150 PE in 20 equal-content bins, ±5 % after 2 sigma; coincidence clusters per event 1 % (2 sigma allowed); per-bar rate = events with a ≥ 5 PE pulse in the bar, all 576 bars, chi2/ndf ≤ 1.5 and no bar beyond 5 sigma (user, 2026-10-16: counted once per event and bar, since counting each SiPM's pulse gave ~4 correlated entries per crossing). Per-layer efficiency of truth crossings is a diagnostic only (the agreed observable uses extrapolated tracks and the gap width D) |
+| V3, V4 | not written yet | `docs/plan.md` section 5 |
+
+**V2 arms.** `scripts/run_v2_arms.sh <shard> fast|g4mu` runs the stock extracted digitisation and CRV reco
+(`CrvFastSim/fcl/dump_crvreco_from_dts.fcl`) on the G4 dts file of the shard, once on G4's own CrvSteps (`ref`) and once
+on a CrvStep table injected by `CrvStepsFromTable` (`fast`: the transport output; `g4mu`: `g4muon` = G4's steps cut to
+the primary muon). `fast` vs `g4mu` is the like-for-like test of tier 1a through the response; `g4mu` vs `ref` measures
+what tier 1b (deltas above the cut, non-muon component) must add; `fast` vs `ref` is the full V2. The art job sees only
+the events G4 accepted, so fast crossings in G4-rejected events do not enter V2. Tables read by the art module must be
+TTrees (`tables.write(as_ttree=True)`); RNTuple tables fail at construction with "no dump/particles or dump/steps".
 
 **V1 event universe: the union of both arms.** Each arm holds every event in which the primary muon crossed a bar:
 the G4 `PrimaryFilter` CRV term accepts any CrvStep above 0.1 MeV (so a G4-rejected event has no crossing), and the
@@ -91,6 +100,8 @@ Outputs are a stats JSON (`plots.write_json`: NaN → null) plus figures.
 | `transport` | fast muon transport on the CRY primaries of `gen.*.root` tables, writing `fast<stage>.*.root` tables with the same keys. `--stage A`: straight lines in air, Geant4-matched restricted loss + Urban fluctuations + Birks in the bars (`eloss.py`). ~2 s per 50 k-event shard on a GPVM (numpy backend) | `fast<stage>.*.root` |
 | `v0check` | V0: bar geometry vs the GDML and the constructCRV printout. `--g4log`, `--table CSV` | `v0_check.json` |
 | `v1compare` | V1: primary-muon crossings fast vs G4 (`--compare` = G4 tables), fixed-edge histograms, events restricted to those in both arms. Batchable | `v1compare_stats.json`, `v1compare_{len,edep}.png` |
+| `g4muon` | G4 CrvStep tables cut to the primary muon's own steps, typed like the fast tables (the `g4mu` V2 arm) | `g4mu.*.root` |
+| `v2compare` | V2: two CrvRecoTableDumper arms (`--compare` = reference); `--steps`/`--compare-steps` add the layer-efficiency diagnostic. Batchable | `v2compare_stats.json`, `v2compare_pe.png` |
 
 **Batch + merge** (same contract as crvextrap §7): workers `--emit batch_NN.json` on a slice of files (one job per
 GPVM), then `--merge "batches/*.json"` locally. Merged counts are sums, so the merge equals a single pass.
@@ -114,10 +125,11 @@ crvfastsim/
   crossings.py  CRV bar boxes on mu2efastsim.crossings (JAX if installed, else numpy; identical in float64)
   transport.py  tier-1a muon transport to the CRV bars (stages A-C); shared MSC and slab loss from mu2efastsim.transport
   tables.py     CrvStep tree on mu2efastsim.tables; primary-muon crossings
-  analyses/     g4cost, census, transport, v0check, v1compare
+  analyses/     g4cost, census, transport, v0check, v1compare, g4muon, v2compare
   reco/         fast CRV reconstruction (section 10; subcommands reco-*)
 mu2efastsim (core/): eloss, materials, world, crossings, transport, tables, stats, plots, match
-scripts/        run_transport_v1.sh (transport the 20 g4ref_v1 shards + V1, one GPVM, ~40 s)
+scripts/        run_transport_v1.sh (transport the 20 g4ref_v1 shards + V1, one GPVM, ~40 s);
+                run_v2_arms.sh (V2 path A arms for one shard, ~1 min per art job)
 tests/          pytest unit tests (synthetic inputs; geometry tests need only the counters file)
 ```
 
@@ -128,6 +140,8 @@ tests/          pytest unit tests (synthetic inputs; geometry tests need only th
 | V0 | v04 GDML (2026-10-16) | **pass**: 576 bars, max centre residual 3.6e-12 mm |
 | census | `g4ref_v1` | run `crvfastsim census`; shares not quoted here |
 | V1 | self-test (G4 vs itself) | pass by construction; harness check only |
+| V2 | path A, all 20 `g4ref_v1` shards (50,008 events), `fast` (stage C) vs `g4mu` (2026-10-16) | **pass** in every group: PE median within 0.5 % (EX -0.09 %, T1 -0.06 %, T2 -0.12 %, M -0.48 %), PE spectrum within 2.5 %, clusters per event within 1.8 % (all within 1 sigma), per-bar chi2/ndf 0.33 (max pull 2.6). Layer-efficiency diagnostic within 0.7 points |
+| V2 | path A, `fast` vs `ref` (full G4) (2026-10-16) | **fails**, as expected without tier 1b: `g4mu` vs `ref` shows the same deficit, so it comes from the missing secondaries, not the transport or the table injection. Tier 1b is required for V2 |
 | V1 | transport stage C (B + GDML world: concrete, overburden, steel, Al; sliced range-out; height-band MSC) vs `g4ref_v1` (2026-10-16) | **pass** in every group. Crossings EX -0.26 %, T1 +0.87 %, T2 -0.26 %, M -0.85 %; every path and visible-energy mean within 0.43 %, MPV within 0.7 %; binned-ratio chi2/ndf 0.31-1.08. 10 s per 50 k-event shard (GPVM, numpy) |
 | P1 | transport CPU cost, one GPVM core (numpy backend, mu2egpvm05 shared with other users' jobs; CPU time, best of 2), shard 2 = 50,000 generated, 1,976 with CRV crossings (2026-10-16) | stage A 0.74, B 1.52, **C 2.34 ms per event with crossings** (29 / 60 / 92 us per generated event); world load 3.3 s once per job; RSS 1.8 GB. Against the stock G4 stage 433 ms per accepted event: C is ~185x. P1 target (<= 2 ms per accepted event) is missed by 17 % for C on CPU; the cost is per generated muon (MSC, world tracing, crossings), so the GPU port is the planned lever |
 | V1 | transport stage B (air + Highland MSC to a plane above the CRV) vs `g4ref_v1` (2026-10-16) | **pass** in every group (crossings within 0.92 %, means within 0.70 %) |

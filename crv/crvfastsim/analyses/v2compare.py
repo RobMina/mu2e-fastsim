@@ -6,7 +6,8 @@ reco on the same art events (scripts/run_v2_arms.sh): the candidate (fast sim, o
 
   * PE per pulse (sequence index 0): median                     |rel| <= 2 %   (2 sigma of its statistical error allowed)
   * PE spectrum over 5-150 PE, 20 bins of equal reference content  binned ratio +-5 % after 2 sigma; chi2/ndf reported
-  * pulses with PE >= RATE_PE per bar, all 576 bars              chi2/ndf <= 1.5 and no bar beyond 5 sigma
+  * events with a pulse of PE >= RATE_PE in the bar, all 576 bars  chi2/ndf <= 1.5 and no bar beyond 5 sigma
+    (counted once per event and bar: counting each SiPM's pulse made ~4 correlated entries per crossing; user 2026-10-16)
   * coincidence clusters per event                               |rel| <= 1 %   (2 sigma allowed)
   * per-layer pulse efficiency of primary-muon bar crossings     |diff| <= 0.3 points (2 sigma allowed). DIAGNOSTIC:
     the denominator is each arm's own truth crossings (--steps / --compare-steps); the agreed observable uses
@@ -66,7 +67,11 @@ def _fill_arm(A, reco_paths, step_paths, geom):
     bar = ak.to_numpy(p.bar).astype(np.int64)
     pe = ak.to_numpy(p.pe).astype(float)
     s0 = ak.to_numpy(p.seq) == 0
-    A["bar_rate"] = _add(A["bar_rate"], np.bincount(bar[s0 & (pe >= RATE_PE)], minlength=NBARS))
+    # bars hit per event (one count per event and bar, not per SiPM pulse), so the counts are Poisson
+    evk = reftables.event_key(p)
+    hb = s0 & (pe >= RATE_PE)
+    eb = np.unique(np.stack([evk[hb], bar[hb]], 1), axis=0)
+    A["bar_rate"] = _add(A["bar_rate"], np.bincount(eb[:, 1], minlength=NBARS))
     sec = geom.sector[bar]
     st = ak.to_numpy(c.sectortype) if c is not None else np.zeros(0, int)
     for g, secs in GROUPS.items():

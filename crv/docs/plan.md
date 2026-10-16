@@ -136,12 +136,16 @@ Comparisons go by truth-particle identity, never by time or distance pairing, an
 | V1 | visible energy per crossing: MPV, mean, and distribution in the 5-95 % range | MPV and mean within 1 %; binned ratio chi2/ndf <= 1.5 (was +-3 %; changed 2026-10-16) |
 | V1 | crossing time and position | time bias <= 0.1 ns; position bias <= 0.1 mm |
 | V2 response, same digi on both arms | `crvpulses` PE per pulse, per sector: median, and spectrum over 5-150 PE | median within 2 %; binned ratio within +-5 % |
-| V2 | per-bar pulse rate over all 576 bars | chi2/ndf <= 1.5 against G4, no bar beyond 5 sigma |
+| V2 | per-bar pulse rate over all 576 bars (events with a pulse in the bar, counted once per event and bar; changed 2026-10-16 from per-SiPM pulses, which are ~4 correlated entries per crossing) | chi2/ndf <= 1.5 against G4, no bar beyond 5 sigma |
 | V2 | coincidence clusters per generated event, per sector, at the data operating point (EX 3/8 PE/20 ns, T1/T2 4/8/10) | within 1 % |
 | V2 | EX per-layer pulse efficiency for tracks into EX; module-gap dead width D per gap (`exdenom`) | layer efficiency within 0.3 points; \|Delta D\| <= 0.1 mm (the method's own systematic) |
 | V3 non-muon (tier 1b) | non-muon share of visible energy per sector; non-muon coincidences per generated event | within 10 % relative; otherwise reported as a known deficit |
 | V4 GPU response against stock `CrvPhotons`/`CrvSiPMCharges` on identical CrvSteps | photoelectrons per SiPM per event; arrival-time distribution | mean within 0.5 %; time quantiles (10/50/90 %) within 0.2 ns |
 | Guard rail | fast-sim minus G4, for every V2 metric | <= 1/10 of the present MC-data difference in that metric |
+
+V2 is run with two candidate arms through the same stock digitisation (`crvfastsim/README.md`, "V2 arms"): the fast
+sim, and G4's own steps cut to the primary muon. The second isolates the tier-1a closure from the tier-1b deficit;
+V2 proper (against full G4) needs tier 1b.
 
 Pass means every row passes. A failure is investigated, not tuned away: no free scale factors to force agreement,
 because the response parameters are what the downstream BO fits.
