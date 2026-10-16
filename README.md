@@ -9,8 +9,9 @@ extracted (KPP, no-field) cosmic configuration. It pins compatible versions of t
 | `crv/` | [mu2e-crv-fastsim](https://github.com/RobMina/mu2e-crv-fastsim) | stage 1: CRV `CrvStep`s, GPU CRV response and fast CRV reconstruction |
 | `tracker/` | [mu2e-tracker-fastsim](https://github.com/RobMina/mu2e-tracker-fastsim) | stage 2: tracker `StrawGasStep`s and fast tracker reconstruction |
 
-Each stage is developed in its own repository; this one only records which commits work together. The CRV stage
-still carries its own copies of the core modules (from before `mu2e-fastsim-core` existed); they are merged later.
+Each stage is its own repository; this one records which commits work together and is the single working area: work in
+the submodule checkouts here, commit and push in each submodule, then commit the new pins here. The CRV and tracker
+packages import the shared code from `core/` (package `mu2efastsim`); there are no copies.
 
 This repository holds technical software only: no physics results, no Mu2e-internal conditions, tables or data.
 
@@ -25,8 +26,9 @@ git submodule update --remote --merge     # move every submodule to its branch h
 ## Python environment
 
 ```bash
-.venv/bin/python3 -m pip install -e core -e tracker     # crv/ runs from its own root: python3 -m crvfastsim
-.venv/bin/python3 -m pytest core/tests tracker/tests
+.venv/bin/python3 -m pip install -e core -e crv -e tracker
+.venv/bin/python3 -m pytest core/tests crv/tests tracker/tests
+# without installing (GPVM pyenv ana): source site.env, which sets PYTHONPATH=core:crv:tracker
 ```
 
 ## Site settings
