@@ -412,7 +412,56 @@ def _report(args, name, out):
     print(json.dumps(plots._clean(out), indent=1)[:4000])
 
 
-RECO_CMDS = ("vr2", "vr2stock", "vr2jax", "bench", "vr1", "direct", "cost", "inspect")
+RECO_CMDS = ("vr2", "vr2stock", "vr2jax", "bench", "vr1", "vr3", "direct", "cost", "inspect")
+
+
+def cmd_vr3(args):
+    """V-R3: stock pulses -> ported coincidence finder vs the stock clusters, per event and sector type."""
+    from ..geometry import find_counters, from_offline_config, parse_simpleconfig
+    from . import coinc as C
+    cf = find_counters("Offline/Mu2eG4/geom/crv_counters_extracted_v04.txt")
+    G = C.sector_geom(from_offline_config(cf), parse_simpleconfig(open(cf).read()))
+    status = reftables.calib(args.inputs)["status"]
+    p = reftables.read(args.inputs, "pulses")
+    pev = reftables.event_key(p)
+    c = reftables.read(args.inputs, "clusters")
+    cev = reftables.event_key(c)
+    evs = np.unique(pev)[:args.max_events] if args.max_events else np.unique(pev)
+    cols = {k: ak.to_numpy(p[k]) for k in ("idx", "bar", "sipm", "time", "pe", "seq")}
+    order = np.argsort(pev, kind="stable")
+    lo, hi = np.searchsorted(pev[order], evs), np.searchsorted(pev[order], evs, side="right")
+    corder = np.argsort(cev, kind="stable")
+    clo, chi = np.searchsorted(cev[corder], evs), np.searchsorted(cev[corder], evs, side="right")
+    cpul, cst = c.pulses, ak.to_numpy(c.sectortype)
+    cnum = {k: ak.to_numpy(c[k]) for k in ("pe", "start", "end", "slope", "avgtime")}
+    ident = nref = nfast = 0
+    dprop = {k: [] for k in cnum}
+    bad = []
+    t0 = time.perf_counter()
+    for k, e in enumerate(evs):
+        sel = order[lo[k]:hi[k]]
+        fast = C.find_event({kk: v[sel] for kk, v in cols.items()}, G, status)
+        rows = corder[clo[k]:chi[k]]
+        ref = {(int(cst[i]), tuple(sorted(ak.to_list(cpul[i])))): i for i in rows}
+        fs = {(r["sectortype"], tuple(sorted(r["pulses"]))): r for r in fast}
+        nref += len(ref)
+        nfast += len(fs)
+        if set(ref) == set(fs):
+            ident += 1
+            for key, i in ref.items():
+                r = fs[key]
+                for q, src in (("pe", "pe"), ("start", "start"), ("end", "end"), ("slope", "slope"),
+                               ("avgtime", "avgtime")):
+                    dprop[q].append(abs(r[src] - cnum[q][i]))
+        elif len(bad) < 10:
+            bad.append({"event_key": int(e), "ref": [list(x) for x in ref], "fast": [list(x) for x in fs]})
+    dt = time.perf_counter() - t0
+    out = {"events": int(len(evs)), "events_identical": int(ident), "clusters_ref": int(nref), "clusters_fast": int(nfast),
+           "identical_cluster_lists": bool(ident == len(evs)),
+           "max_abs_property_diff": {q: (float(np.max(v)) if v else None) for q, v in dprop.items()},
+           "examples": bad, "wall_s": dt, "us_per_event": 1e6 * dt / max(len(evs), 1)}
+    out["pass"] = out["identical_cluster_lists"]
+    _report(args, "vr3", out)
 
 
 def add_reco_args(sp, name):
@@ -440,7 +489,7 @@ def add_reco_args(sp, name):
 
 def run_reco(name, a):
     a.outdir = a.outdir or f"plots/reco_{name}"
-    {"vr2": cmd_vr2, "vr2stock": lambda x: cmd_vr2(x, oracle=True), "vr1": cmd_vr1, "direct": cmd_direct,
+    {"vr2": cmd_vr2, "vr2stock": lambda x: cmd_vr2(x, oracle=True), "vr1": cmd_vr1, "vr3": cmd_vr3, "direct": cmd_direct,
      "cost": cmd_cost, "inspect": cmd_inspect, "vr2jax": lambda x: cmd_vr2(x, use_jax=True),
      "bench": cmd_bench}[name](a)
 

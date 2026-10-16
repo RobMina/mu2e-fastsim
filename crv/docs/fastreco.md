@@ -101,6 +101,24 @@ float64, 3 timed passes after compilation. The JAX-vs-numpy test and the core te
 | vs stock `CrvRecoPulsesFinder` on one core (KPP data 3.73 ms/event = 268 events/s) | ~70x per GPU |
 | goal R1 (>= 20,000 events/s per GPU, pulses + coincidences) | **94 % of the target, pulses only**: the coincidence finder is not ported yet |
 
-The kernel always runs `max_pulses` = 8 pulse rounds with the full fit, while 99.8 % of data waveforms have at most two
-pulses: the obvious next step is fewer rounds (e.g. 3) with the waveforms still active after the last round sent to the
-numpy path, then batch-size and LM-iteration tuning.
+**3 kernel rounds** (`--rounds 3`; waveforms with a pulse in the third round are redone by the numpy path; PBS 7755621,
+same reservation and node layout): **49,566 / 49,362 / 49,290 / 49,296 events/s per A100 (mean 49,380; 20.2 us/event;
+~197,500 per node)**, 2.6x the 8-round kernel and ~185x stock `CrvRecoPulsesFinder` on one core. On the KPP data
+reference V-R2 still passes with 3 rounds (5,000 events: clean finding identical, flag agreement 99.976 %), with 155 of
+103,080 waveforms (0.15 %) sent to the numpy path; in the synthetic bench none reached the third round. **R1 for the
+pulse reco: 2.5x the 20,000 target**; the coincidence finder (the other half of R1) is next.
+
+### V-R3: coincidence finder (2026-10-16)
+
+`crvfastsim/reco/coinc.py` ports `CrvCoincidenceFinder` (hit building with the fiber-length time correction and dead-
+neighbour PE compensation, `filterHits`, the order-dependent greedy `findClusters`, `checkCoincidence` over 2/3/4-layer
+combinations with the time, slope and slope-difference cuts and the max-distance widening, the second clustering
+across readout sides, `clusterProperties`), with the `epilog_extracted_v04` cuts for EX, T1, T2 and M1-M8. It is the
+numpy reference (Python loops over the few hits of an event; events are the parallel axis for a later JAX twin).
+`crvfastsim reco-vr3` runs it on the stock pulses of a reference table and compares with the stock clusters.
+
+| sample | result |
+|---|---|
+| KPP data 124155_000001, all 45,066 events with pulses, 36,336 clusters | **pass: identical cluster lists in every event** (same sector type, same pulse set); PE, start and end times identical, slope within 6e-8, hit time within 0.03 ns (float rounding at t ~ 76 us) |
+| cost (laptop, Python reference) | 0.72 ms/event (stock: 0.05-0.17 ms/event); a jitted twin is needed for R1, not for correctness |
+
