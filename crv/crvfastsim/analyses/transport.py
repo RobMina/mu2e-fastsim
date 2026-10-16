@@ -12,7 +12,7 @@ import numpy as np
 
 from .. import geometry, tables
 from .. import transport as tr
-from .. import world as world_mod
+from mu2efastsim import world as world_mod
 
 DEFAULT_COUNTERS = "Offline/Mu2eG4/geom/crv_counters_extracted_v04.txt"
 GDML_NAME = "geometry/mu2e_extracted_v04.gdml"  # under $CRVFS_DATA (geometry/README.md)

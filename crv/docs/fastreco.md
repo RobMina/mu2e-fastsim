@@ -48,7 +48,8 @@ Matching by truth particle where truth is used, all sectors, no free scale facto
 - `art/CrvFastSim/src/CrvRecoTableDumper_module.cc` and `art/dump_crvreco_ref.sh mc|data`: stock chain tables (SiPM
   charges, digi MC voltages, digis, pulses, clusters, conditions) from an extracted dts file (MC) or a KPP raw file
   (data). The KPP data has the real noise, double pulses and failed fits.
-- `crvfastsim/reco/`: `python3 -m crvfastsim.reco vr2|vr2stock|vr1|direct|cost REF.root ...` (README section 10).
+- `crvfastsim/reco/`: `python3 -m crvfastsim reco-vr2|reco-vr2jax|reco-bench|reco-vr1|reco-direct|reco-cost REF.root ...`
+  (README section 10).
 - Stock cost for scale (TimeTracker means per event): `CrvRecoPulsesFinder` 1.6 ms (extracted MC) and 3.7 ms (KPP
   data), 97 % of it in `TGraph::Fit`; the CRV response 19.8 ms per accepted event (`plan.md` section 3).
 

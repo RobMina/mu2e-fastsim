@@ -11,7 +11,7 @@ Threshold: every bar centre and half length within 1 um, identical (sector, modu
 import numpy as np
 
 from .. import geometry as geo
-from .. import plots
+from mu2efastsim import plots
 
 TOL_MM = 1e-3
 PRINT_TOL_MM = 0.06  # the printout has one decimal

@@ -27,4 +27,4 @@ Jobs (no art output; `dump_crvreco_ref.sh mc|data`, outputs `$CRVFS_DATA/reco_re
 - `CrvFastSim/fcl/dump_crvreco_from_dts.fcl`: stock CRV-only extracted digitisation + CRV reco on a dts file (MC).
 - `CrvFastSim/fcl/dump_crvreco_from_dig.fcl`: CRV reco on KPP data digis (unpack first with the KPP unpack fcl on
   `CRVFS_FCL_PATH`).
-Readers and comparisons: `crvfastsim/reco/` (`python3 -m crvfastsim.reco ...`).
+Readers and comparisons: `crvfastsim/reco/` (`python3 -m crvfastsim reco-<cmd> ...`).

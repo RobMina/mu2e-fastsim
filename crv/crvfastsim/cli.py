@@ -3,11 +3,13 @@
 Validation subcommands (docs/plan.md section 5) and, later, the fast-sim drivers. Run from the repository root so the
 package imports (Mu2e machines: $CRVFS_CODE; Polaris: the Eagle clone).
 Common flags: --outdir DIR (default plots/<cmd>), --compare REF [...], --emit X.json / --merge for batchable ones.
+Fast CRV reco: reco-vr2, reco-vr2stock, reco-vr2jax, reco-bench, reco-vr1, reco-direct, reco-cost, reco-inspect.
 """
 import argparse
 import sys
 
 from .analyses import census, g4cost, transport, v0check, v1compare
+from .reco import cli as reco_cli
 
 ANALYSES = {
     "g4cost":    (g4cost.run,    "baseline cost of the stock G4 chain from TimeTracker SQLite (sim + digi), per accepted event"),
@@ -48,11 +50,16 @@ def build_parser():
         if name == "v1compare":
             sp.add_argument("--compare", nargs="+", default=None, metavar="ROOT",
                             help="G4 reference CrvStep tables (crvsteps.*.root)")
+    for name in reco_cli.RECO_CMDS:
+        sp = sub.add_parser(f"reco-{name}", help=f"fast CRV reco: {name} (reco/cli.py)")
+        reco_cli.add_reco_args(sp, name)
     return p
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if args.cmd.startswith("reco-"):
+        return reco_cli.run_reco(args.cmd[len("reco-"):], args)
     kw = vars(args)
     cmd = kw.pop("cmd")
     inputs = kw.pop("inputs")

@@ -18,7 +18,7 @@ mkdir -p "$O"
 run() {  # name cmd input [args]
   local name=$1 cmd=$2 in=$3; shift 3
   local t0=$SECONDS
-  python3 -m crvfastsim.reco "$cmd" "$in" --outdir "$O/$name" "$@" >| "$O/$name.txt" 2>&1
+  python3 -m crvfastsim "reco-$cmd" "$in" --outdir "$O/$name" "$@" >| "$O/$name.txt" 2>&1
   echo "$name exit=$? wall=$((SECONDS-t0))s"
 }
 case "$WHAT" in

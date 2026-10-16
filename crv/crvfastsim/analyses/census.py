@@ -15,7 +15,9 @@ import os
 import numpy as np
 import pandas as pd
 
-from .. import geometry, plots, tables
+from mu2efastsim import plots
+
+from .. import geometry, tables
 
 CLASSES = ("mu_primary", "mu_descendant", "nonmu_primary", "nonmu_descendant")
 SECTOR_GROUP = np.array(["EX", "T1", "T2"] + ["M"] * 8)

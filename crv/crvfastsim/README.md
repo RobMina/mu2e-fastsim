@@ -9,9 +9,12 @@ are in [`../docs/plan.md`](../docs/plan.md); this file is the living reference f
 .venv/bin/python3 -m crvfastsim <subcommand> <inputs> [--compare REF ...] [--outdir DIR] [--emit X.json | --merge]
 ```
 
-Run from the repository root (`mu2e-crv-fastsim/`) so the package imports. Laptop: `~/mu2e/.venv` (numpy, pandas,
-uproot, matplotlib, jax CPU, pytest). GPVM: `source setupmu2e-art.sh && pyenv ana` (no JAX: the validation
-subcommands do not need it). Polaris: the project venv on Eagle (`iri/scripts/setup_venv.sh`, `jax[cuda12]`).
+`crvfastsim` builds on `mu2efastsim` (the `core/` submodule of the umbrella `mu2e-fastsim`: energy loss, materials,
+world, generic crossings/transport/tables, statistics, plots, key matching, the IRI job tools). Put both on the path:
+from the umbrella root, `export PYTHONPATH=$M2FS_CODE/core:$M2FS_CODE/crv:$M2FS_CODE/tracker` (what `site.env` does), or
+`pip install -e core -e crv` in a venv. Laptop: `~/mu2e/.venv` (numpy, pandas, uproot, matplotlib, jax CPU, pytest).
+GPVM: `source setupmu2e-art.sh && pyenv ana` (no JAX: the validation subcommands do not need it). Polaris: the project
+venv on Eagle (`core/iri/scripts/setup_venv.sh`, `jax[cuda12]`).
 
 ---
 
@@ -108,14 +111,12 @@ crvfastsim/
   __init__.py   package doc + version
   cli.py        argparse subcommand dispatch (+ __main__.py)
   geometry.py   CRV bar geometry (Offline counters file, GDML readers, find_counters)
-  crossings.py  ray-box crossings (JAX if installed, else numpy; identical in float64)
-  materials.py  material constants matched to Geant4 11.3.2 (GDML composition/I, Sternheimer, Birks, Urban params)
-  eloss.py      restricted MuBetheBloch dE/dx, Urban fluctuation sampler, Birks, delta-ray rate and spectrum
-  transport.py  tier-1a muon transport (stage A: straight lines in air)
-  tables.py     CrvStep-table readers, primary-muon crossings
-  stats.py      robust stats, MPV, binned ratio band
-  plots.py      save / write_json / ratio_panel
+  crossings.py  CRV bar boxes on mu2efastsim.crossings (JAX if installed, else numpy; identical in float64)
+  transport.py  tier-1a muon transport to the CRV bars (stages A-C); shared MSC and slab loss from mu2efastsim.transport
+  tables.py     CrvStep tree on mu2efastsim.tables; primary-muon crossings
   analyses/     g4cost, census, transport, v0check, v1compare
+  reco/         fast CRV reconstruction (section 10; subcommands reco-*)
+mu2efastsim (core/): eloss, materials, world, crossings, transport, tables, stats, plots, match
 scripts/        run_transport_v1.sh (transport the 20 g4ref_v1 shards + V1, one GPVM, ~40 s)
 tests/          pytest unit tests (synthetic inputs; geometry tests need only the counters file)
 ```
@@ -148,5 +149,6 @@ Two paths from SiPM charges to reco pulses are prototyped and compared on fideli
 | `reco/direct.py` | direct charge -> pulse model (v0: conditional empirical resampling per charge/spread bin) |
 | `reco/compare.py` | V-R1/V-R2 matching and summaries, KS |
 
-Own CLI for now (`python3 -m crvfastsim.reco vr2|vr2stock|vr1|direct|cost REF.root ...`), to stay out of the shared
-`cli.py` while other work is in progress; to be folded in later. Tests: `tests/test_reco_pulsefit.py`.
+Subcommands of the package CLI: `python3 -m crvfastsim reco-vr2|reco-vr2stock|reco-vr2jax|reco-bench|reco-vr1|
+reco-direct|reco-cost|reco-inspect REF.root ...` (alias `python3 -m crvfastsim.reco <cmd>`); key joins and the KS test
+come from `mu2efastsim.match`. Tests: `tests/test_reco_pulsefit.py`.

@@ -5,31 +5,16 @@ channel and start TDC. Everything is array joins on int64 keys; no per-event loo
 """
 import numpy as np
 
+from mu2efastsim import match
+
 V_R2 = {"finding_identical": True, "failed_flag_agree": 0.995, "pe_rel": 0.005, "time_ns": 0.1, "good_frac": 0.99}
 V_R1_KS_P = 0.01
 
 
-def _as_void(k):
-    k = np.ascontiguousarray(np.asarray(k, np.int64).reshape(len(k), -1))
-    return k.view(np.dtype((np.void, k.dtype.itemsize * k.shape[1]))).ravel()
-
-
-def _join(ka, kb):
-    """Indices (ia, ib) of rows with equal keys in both; keys are int64 arrays [N] or [N, ncol], unique per side."""
-    va, vb = _as_void(ka), _as_void(kb)
-    _, ia, ib = np.intersect1d(va, vb, assume_unique=False, return_indices=True)
-    return ia, ib
-
-
-def lookup(keys, table_keys, table_vals, missing=np.nan):
-    """Many-to-one lookup: table_vals of the row of table_keys equal to each row of keys (table keys unique)."""
-    vk, vt = _as_void(keys), _as_void(table_keys)
-    order = np.argsort(vt)
-    pos = np.clip(np.searchsorted(vt[order], vk), 0, max(len(vt) - 1, 0))
-    hit = (len(vt) > 0) & (vt[order][pos] == vk) if len(vt) else np.zeros(len(vk), bool)
-    out = np.full(len(vk), missing, dtype=float)
-    out[hit] = np.asarray(table_vals, float)[order][pos[hit]]
-    return out
+_as_void = match.as_void
+_join = match.join
+lookup = match.lookup
+ks_2samp = match.ks_2samp
 
 
 def pulse_key(evkey, wf_first_digi, seq):
@@ -88,20 +73,6 @@ def vr1(fast, ref):
             "sample_identical_frac": float(same.mean()) if len(ia) else float("nan"),
             "max_abs_adc_diff": int(np.abs(d).max()) if d.size else 0,
             "pass_noise_free": bool(len(ia) == len(fast["key"]) == len(ref["key"]) and same.all())}
-
-
-def ks_2samp(a, b):
-    """Two-sample KS statistic and asymptotic p-value (no scipy dependency on the GPVM env)."""
-    a, b = np.sort(np.asarray(a, float)), np.sort(np.asarray(b, float))
-    if not len(a) or not len(b):
-        return float("nan"), float("nan")
-    x = np.concatenate([a, b])
-    d = np.max(np.abs(np.searchsorted(a, x, "right") / len(a) - np.searchsorted(b, x, "right") / len(b)))
-    ne = len(a) * len(b) / (len(a) + len(b))
-    lam = (np.sqrt(ne) + 0.12 + 0.11 / np.sqrt(ne)) * d
-    k = np.arange(1, 101)
-    p = float(np.clip(2 * np.sum((-1) ** (k - 1) * np.exp(-2 * (k * lam) ** 2)), 0, 1))
-    return float(d), p
 
 
 def distribution_summary(fast, ref, columns=("pe", "time", "beta")):

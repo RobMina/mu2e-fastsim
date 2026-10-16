@@ -22,7 +22,9 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 
-from .. import geometry, plots, tables
+from mu2efastsim import plots
+
+from .. import geometry, tables
 
 GROUPS = {"EX": [0], "T1": [1], "T2": [2], "M": list(range(3, 11))}
 EDGES = {"len": np.linspace(0.0, 120.0, 601), "edep": np.linspace(0.0, 30.0, 601), "dt": np.linspace(-5.0125, 5.0125, 402)}  # 0.025 ns bins centred on 0

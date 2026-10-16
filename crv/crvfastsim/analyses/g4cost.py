@@ -10,7 +10,7 @@ import sqlite3
 import numpy as np
 import pandas as pd
 
-from .. import plots
+from mu2efastsim import plots
 
 CRV_LABELS = ("CrvPhotons", "CrvSiPMCharges", "CrvWaveforms", "CrvDigi")
 
