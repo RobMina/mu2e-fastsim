@@ -27,7 +27,8 @@ from .. import geometry, plots, tables
 GROUPS = {"EX": [0], "T1": [1], "T2": [2], "M": list(range(3, 11))}
 EDGES = {"len": np.linspace(0.0, 120.0, 601), "edep": np.linspace(0.0, 30.0, 601), "dt": np.linspace(-5.0125, 5.0125, 402)}  # 0.025 ns bins centred on 0
 THRESH = {"crossings_per_event_rel": 0.01, "len_mean_rel": 0.005, "len_ratio_band": 0.02,
-          "edep_mean_rel": 0.01, "edep_mpv_rel": 0.01, "edep_ratio_band": 0.03, "t0_bias_ns": 0.1}
+          "edep_mean_rel": 0.01, "edep_mpv_rel": 0.01, "edep_ratio_band": 0.03, "t0_bias_ns": 0.1,
+          "ratio_chi2_ndf": 1.5}  # binned-ratio pass rule (user, 2026-10-16); the bands are reported only
 DEFAULT_COUNTERS = "Offline/Mu2eG4/geom/crv_counters_extracted_v04.txt"
 
 
@@ -133,11 +134,12 @@ def _hist_ratio_band(hf, hr, edges, q=(0.05, 0.95), min_ref=400):
     rr = np.array([hr[g].sum() for g in groups if len(g)])
     ok = rr >= min_ref
     if not ok.any():
-        return {"max_abs_dev": None, "max_abs_dev_minus_2sigma": None, "nbins_used": 0}
+        return {"max_abs_dev": None, "max_abs_dev_minus_2sigma": None, "chi2_ndf": None, "nbins_used": 0}
     r = (rf[ok] / hf.sum()) / (rr[ok] / hr.sum())
     err = r * np.sqrt(1 / np.maximum(rf[ok], 1) + 1 / rr[ok])
     return {"max_abs_dev": float(np.abs(r - 1).max()),
             "max_abs_dev_minus_2sigma": float(np.maximum(np.abs(r - 1) - 2 * err, 0).max()),
+            "chi2_ndf": float(np.sum(((r - 1) / err) ** 2) / ok.sum()),
             "nbins_used": int(ok.sum()), "range": [float(edges[lo_i]), float(edges[min(hi_i, len(hr))])]}
 
 
@@ -164,10 +166,10 @@ def summarise(S):
         checks = {
             "crossings": abs(res["crossings_per_event_rel"]) <= THRESH["crossings_per_event_rel"],
             "len_mean": abs(res["len_mean_rel"]) <= THRESH["len_mean_rel"],
-            "len_ratio": (res["len_ratio"]["max_abs_dev_minus_2sigma"] or 0) <= THRESH["len_ratio_band"],
+            "len_ratio": (res["len_ratio"]["chi2_ndf"] or 0) <= THRESH["ratio_chi2_ndf"],
             "edep_mean": abs(res["edep_mean_rel"]) <= THRESH["edep_mean_rel"],
             "edep_mpv": max(abs(res["edep_mpv_rel"]) - 2 * res["edep_mpv_rel_err"], 0) <= THRESH["edep_mpv_rel"],
-            "edep_ratio": (res["edep_ratio"]["max_abs_dev_minus_2sigma"] or 0) <= THRESH["edep_ratio_band"],
+            "edep_ratio": (res["edep_ratio"]["chi2_ndf"] or 0) <= THRESH["ratio_chi2_ndf"],
             "t0_bias": res["t0_bias_ns"] is None or abs(res["t0_bias_ns"]) <= THRESH["t0_bias_ns"],
         }
         res["checks"] = checks

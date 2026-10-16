@@ -132,8 +132,8 @@ Comparisons go by truth-particle identity, never by time or distance pairing, an
 | V0 geometry | every one of the 576 bar placements and dimensions against `GeometryService` (v04) | <= 1 um, exact bar index |
 | V0 generator | CRY primaries identical to the G4 job's `GenParticles` for the same seed | exact |
 | V1 crossings (primary muons) | crossings per accepted event per sector | within 1 % |
-| V1 | path length per crossing: mean, and distribution in the 5-95 % range | mean within 0.5 %; binned ratio within +-2 % |
-| V1 | visible energy per crossing: MPV, mean, and distribution in the 5-95 % range | MPV and mean within 1 %; binned ratio within +-3 % |
+| V1 | path length per crossing: mean, and distribution in the 5-95 % range | mean within 0.5 %; binned ratio chi2/ndf <= 1.5 (was +-2 %; changed 2026-10-16) |
+| V1 | visible energy per crossing: MPV, mean, and distribution in the 5-95 % range | MPV and mean within 1 %; binned ratio chi2/ndf <= 1.5 (was +-3 %; changed 2026-10-16) |
 | V1 | crossing time and position | time bias <= 0.1 ns; position bias <= 0.1 mm |
 | V2 response, same digi on both arms | `crvpulses` PE per pulse, per sector: median, and spectrum over 5-150 PE | median within 2 %; binned ratio within +-5 % |
 | V2 | per-bar pulse rate over all 576 bars | chi2/ndf <= 1.5 against G4, no bar beyond 5 sigma |

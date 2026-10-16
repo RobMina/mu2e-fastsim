@@ -14,9 +14,12 @@ TWOPI_MC2_RCL2 = 2 * np.pi * ME * (2.8179403262e-12) ** 2   # MeV mm2
 TWOLN10 = 2 * np.log(10.0)
 
 
+P_FLOOR = 1e-3  # MeV/c: momenta below this are clamped (stopped particles carried through array code)
+
+
 def kinematics(p, mass=MMU):
-    """|p| [MeV/c] -> (kinetic energy, beta^2, beta*gamma squared, gamma, Tmax)."""
-    p = np.asarray(p, float)
+    """|p| [MeV/c] -> (kinetic energy, beta^2, beta*gamma squared, gamma, Tmax); p is clamped at P_FLOOR."""
+    p = np.maximum(np.asarray(p, float), P_FLOOR)
     e = np.sqrt(p * p + mass * mass)
     gam = e / mass
     bg2 = (p / mass) ** 2

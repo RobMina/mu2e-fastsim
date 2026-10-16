@@ -65,7 +65,7 @@ Matching is **by truth-particle identity, never by time or distance** (a Mu2e an
 | level | subcommand | thresholds |
 |---|---|---|
 | V0 geometry | `v0check` | every bar centre and half length within 1 um; same ids at every index; no rotations |
-| V1 muon crossings | `v1compare` | per group (EX, T1, T2, M): crossings/event 1 %; path mean 0.5 %, binned ratio ±2 %; visible-energy mean and MPV 1 %, binned ratio ±3 % (binned ratios allow 2 sigma); t0 bias ≤ 0.1 ns |
+| V1 muon crossings | `v1compare` | per group (EX, T1, T2, M): crossings/event 1 %; path mean 0.5 %; visible-energy mean and MPV 1 % (MPV allows 2 sigma of its fit error); path and visible-energy binned ratios chi2/ndf ≤ 1.5 over 20 bins (user, 2026-10-16: the earlier per-bin ±2 %/±3 % after 2 sigma failed identical samples 22 % of the time; the band values are still reported); t0 bias ≤ 0.1 ns |
 | V2-V4 | not written yet | `docs/plan.md` section 5 |
 
 **V1 event universe: the union of both arms.** Each arm holds every event in which the primary muon crossed a bar:
@@ -127,6 +127,8 @@ tests/          pytest unit tests (synthetic inputs; geometry tests need only th
 | V0 | v04 GDML (2026-10-16) | **pass**: 576 bars, max centre residual 3.6e-12 mm |
 | census | `g4ref_v1` | run `crvfastsim census`; shares not quoted here |
 | V1 | self-test (G4 vs itself) | pass by construction; harness check only |
+| V1 | transport stage C (B + GDML world: concrete, overburden, steel, Al; sliced range-out; height-band MSC) vs `g4ref_v1` (2026-10-16) | **pass** in every group. Crossings EX -0.26 %, T1 +0.87 %, T2 -0.26 %, M -0.85 %; every path and visible-energy mean within 0.43 %, MPV within 0.7 %; binned-ratio chi2/ndf 0.31-1.08. 10 s per 50 k-event shard (GPVM, numpy) |
+| V1 | transport stage B (air + Highland MSC to a plane above the CRV) vs `g4ref_v1` (2026-10-16) | **pass** in every group (crossings within 0.92 %, means within 0.70 %) |
 | V1 | transport stage A (straight lines in air, no MSC) vs `g4ref_v1`, all 20 shards, 43,422 common events (2026-10-16) | EX, T1, T2 **pass** every check (EX: crossings -0.84 %, path +0.01 %, edep -0.22 %, MPV -0.03 %); taggers **fail** (crossings -1.0 %, path -0.54 %, MPV -1.6 %): ~24 % of tagger crossings land on a neighbouring bar because the straight line misses G4's track by 5 mm (median) to 40 mm (p90) after ~13 m without multiple scattering, against a 105.5 mm wide tagger crossed edge-on. Matched crossings agree (edep +0.01 %). Stage B adds MSC and the world material |
 
 ---
