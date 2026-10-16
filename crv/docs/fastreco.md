@@ -130,5 +130,13 @@ window and a lax.scan for the 12-sample digi split; ADC conversion). Against the
 sample-identical ADCs and voltages within 1e-12 (unit test). Against the stock noise-free reference (`reco-vr1 --jax`,
 5,000 MC events): **all 128,718 stock digis reproduced sample-identically**, the same 7 extra digis as the numpy path
 (FEBs without a stock digi in the event, TDC0 unknown to the test). CPU (laptop) synthetic throughput: ~42,000
-events/s; GPU throughput (R2) measured with `reco-bench --stage waveforms` in the Polaris bench job.
+events/s.
+
+**GPU (PBS 7755673, reservation R7728155, one process per A100):** waveform synthesis **1.148-1.154 M events/s per A100**
+(0.87 us/event; 20 SiPM clusters of ~28 PE per event, noise on, compile 0.75 s), i.e. **R2 met by a wide margin**
+(the stock `CrvWaveforms` + `CrvDigi` are part of the 19.8 ms/event CRV response on one core); pulse reco in the same
+job 49.4-49.6 k events/s per A100 (3 rounds), reproducing PBS 7755621. All 21 GPU-node tests pass, including JAX-vs-
+numpy for both kernels. The job fetches the one public Offline data file the synthesis needs
+(`CRVResponse/data/singlePEWaveform_v3.txt`, from GitHub) onto Eagle, since Polaris has no CVMFS; the first run
+without it (7755663) failed that test only.
 
