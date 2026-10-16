@@ -91,3 +91,21 @@ def test_waveform_then_reco_roundtrip():
     res = PF.reconstruct(mat, n, start, np.full(len(n), 100.0), np.ones(len(n)), np.ones(len(n)), CFG)
     assert len(res["wf"]) >= 1
     assert 290.0 < res["time"][0] < 360.0
+
+
+def test_direct_model_threshold_and_resampling():
+    from crvfastsim.reco import direct as DR
+    rng = np.random.default_rng(5)
+    C = 40000
+    q = rng.uniform(2.0, 30.0, C)
+    feat = {"q": q, "pfrac": rng.uniform(0.3, 0.9, C), "t10": np.zeros(C)}
+    found = rng.random(C) < 1 / (1 + np.exp(-(q - 9.0) / 0.7))
+    npul = found.astype(np.int64)
+    first = {"pe": np.where(found, 0.9 * q, np.nan), "dt": np.where(found, 5.0, np.nan),
+             "beta": np.where(found, 18.0, np.nan), "failed": np.zeros(C, bool)}
+    m = DR.DirectModel.fit(feat, npul, first)
+    s = m.sample(feat, np.random.default_rng(6))
+    for lo, hi in ((6, 8), (8, 10), (10, 12)):
+        sel = (q >= lo) & (q < hi)
+        assert abs((s["n"][sel] > 0).mean() - found[sel].mean()) < 0.03
+    assert abs(np.nanmedian(s["pe"] / q) - 0.9) < 1e-6

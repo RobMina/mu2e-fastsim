@@ -9,21 +9,44 @@ V_R2 = {"finding_identical": True, "failed_flag_agree": 0.995, "pe_rel": 0.005, 
 V_R1_KS_P = 0.01
 
 
+def _as_void(k):
+    k = np.ascontiguousarray(np.asarray(k, np.int64).reshape(len(k), -1))
+    return k.view(np.dtype((np.void, k.dtype.itemsize * k.shape[1]))).ravel()
+
+
 def _join(ka, kb):
-    """Indices (ia, ib) of equal int64 keys present in both (keys unique within each side)."""
-    sa, sb = np.argsort(ka), np.argsort(kb)
-    common, ia, ib = np.intersect1d(ka[sa], kb[sb], assume_unique=False, return_indices=True)
-    return sa[ia], sb[ib]
+    """Indices (ia, ib) of rows with equal keys in both; keys are int64 arrays [N] or [N, ncol], unique per side."""
+    va, vb = _as_void(ka), _as_void(kb)
+    _, ia, ib = np.intersect1d(va, vb, assume_unique=False, return_indices=True)
+    return ia, ib
 
 
-def pulse_key(evkey, chan, seq):
-    return (np.asarray(evkey, np.int64) << 20) ^ (np.asarray(chan, np.int64) << 4) ^ np.asarray(seq, np.int64)
+def lookup(keys, table_keys, table_vals, missing=np.nan):
+    """Many-to-one lookup: table_vals of the row of table_keys equal to each row of keys (table keys unique)."""
+    vk, vt = _as_void(keys), _as_void(table_keys)
+    order = np.argsort(vt)
+    pos = np.clip(np.searchsorted(vt[order], vk), 0, max(len(vt) - 1, 0))
+    hit = (len(vt) > 0) & (vt[order][pos] == vk) if len(vt) else np.zeros(len(vk), bool)
+    out = np.full(len(vk), missing, dtype=float)
+    out[hit] = np.asarray(table_vals, float)[order][pos[hit]]
+    return out
 
 
-def vr2(fast, ref):
-    """fast, ref: dicts with 'key' (pulse_key), 'pe', 'time', 'failed'. Returns the V-R2 summary."""
+def pulse_key(evkey, wf_first_digi, seq):
+    """(event, collection index of the waveform's first digi, sequence index): unique per pulse."""
+    return np.stack([np.asarray(evkey, np.int64), np.asarray(wf_first_digi, np.int64), np.asarray(seq, np.int64)], 1)
+
+
+def vr2(fast, ref, excluded_wf=None):
+    """fast, ref: dicts with 'key' (pulse_key), 'pe', 'time', 'failed'. Returns the V-R2 summary.
+
+    excluded_wf: [M,2] (event, first digi) of waveforms outside the finding-identity rule (agreed 2026-10-16): those
+    with a failed fit (in either arm) or a residual within 1 ADC of minADCdifference; they are covered by the flag
+    agreement instead.
+    """
     ia, ib = _join(fast["key"], ref["key"])
     nf, nr, nm = len(fast["key"]), len(ref["key"]), len(ia)
+    assert len(np.unique(_as_void(fast["key"]))) == nf and len(np.unique(_as_void(ref["key"]))) == nr, "keys not unique"
     ff, fr = fast["failed"][ia].astype(bool), ref["failed"][ib].astype(bool)
     flag_agree = float((ff == fr).mean()) if nm else float("nan")
     good = ~ff & ~fr
@@ -37,8 +60,22 @@ def vr2(fast, ref):
            "pe_rel_quantiles": np.quantile(rel[good], [0.5, 0.9, 0.99]).tolist() if good.any() else None,
            "time_abs_quantiles_ns": np.quantile(dt[good], [0.5, 0.9, 0.99]).tolist() if good.any() else None,
            "failed_ref_frac": float(fr.mean()) if nm else float("nan")}
-    res["pass"] = bool(res["finding_identical"] and flag_agree >= V_R2["failed_flag_agree"]
-                       and gfrac >= V_R2["good_frac"])
+    wf_f, wf_r = fast["key"][:, :2], ref["key"][:, :2]
+    excl = np.zeros((0, 2), np.int64) if excluded_wf is None else np.asarray(excluded_wf, np.int64).reshape(-1, 2)
+    excl = np.concatenate([excl, wf_f[fast["failed"].astype(bool)], wf_r[ref["failed"].astype(bool)]])
+    xv = np.unique(_as_void(excl))
+    in_f = ~np.isin(_as_void(wf_f), xv)
+    in_r = ~np.isin(_as_void(wf_r), xv)
+    ja, jb = _join(fast["key"][in_f], ref["key"][in_r])
+    clean_ident = bool(len(ja) == in_f.sum() == in_r.sum())
+    res.update({"clean_waveform_pulses_fast": int(in_f.sum()), "clean_waveform_pulses_ref": int(in_r.sum()),
+                "clean_matched": int(len(ja)), "finding_identical_clean": clean_ident,
+                "excluded_waveforms": int(len(xv))})
+    res["pass"] = bool(clean_ident and flag_agree >= V_R2["failed_flag_agree"] and gfrac >= V_R2["good_frac"])
+    ufa = np.setdiff1d(np.arange(nf), ia)
+    ufr = np.setdiff1d(np.arange(nr), ib)
+    res["unmatched_fast_keys"] = fast["key"][ufa][:50].tolist()
+    res["unmatched_ref_keys"] = ref["key"][ufr][:50].tolist()
     return res
 
 

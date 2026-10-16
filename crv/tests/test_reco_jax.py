@@ -1,0 +1,43 @@
+"""JAX pulse reco (pulsefit_jax) against the numpy reference (pulsefit) on synthetic waveforms: identical pulse finding
+and parameters to fit tolerance, including double pulses, below-threshold, undershoot pedestal and saturation."""
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+jax = pytest.importorskip("jax")
+from crvfastsim.reco import pulsefit as PF                 # noqa: E402
+from crvfastsim.reco import pulsefit_jax as PJ             # noqa: E402
+
+
+def _batch(W=300, L=36, seed=2):
+    rng = np.random.default_rng(seed)
+    t = (100 + np.arange(L)) * PF.PERIOD
+    adc = np.zeros((W, L), np.int64)
+    for i in range(W):
+        y = PF.gumbel(t, rng.uniform(150, 3000), t[4] + rng.uniform(-6, 6), rng.uniform(12, 24))
+        if i % 3 == 0:   # second pulse
+            y += PF.gumbel(t, rng.uniform(100, 1500), t[12] + rng.uniform(-6, 6), rng.uniform(12, 24))
+        adc[i] = np.clip(np.round(y + 2045 + rng.normal(0, 2.0, L)), 0, 4095)
+    adc[0, :] = 2045                       # flat: no pulse
+    adc[1, 0] = 2030                       # pedestal undershoot
+    n = np.full(W, L)
+    n[5] = 12
+    return adc, n, np.full(W, 100), np.full(W, 2045.0), np.full(W, 400.0), np.full(W, 30.0)
+
+
+def test_jax_matches_numpy():
+    args = _batch()
+    cfg = PF.RecoConfig()
+    ref = PF.reconstruct(*args, cfg)
+    d = PJ.reconstruct_dense(*[np.asarray(a) for a in args], cfg=cfg)
+    out = PJ.to_flat(d)
+    assert not out["window_overflow"].any()
+    assert np.array_equal(out["wf"], ref["wf"]) and np.array_equal(out["seq"], ref["seq"])
+    assert np.array_equal(out["failed"], ref["failed"])
+    good = ~ref["failed"]
+    assert np.max(np.abs(out["pe"][good] / ref["pe"][good] - 1)) < 1e-6
+    assert np.max(np.abs(out["time"][good] - ref["time"][good])) < 1e-4
+    assert np.array_equal(out["wf_near_threshold"], ref["wf_near_threshold"])

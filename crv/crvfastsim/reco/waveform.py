@@ -71,8 +71,30 @@ def charge_clusters(chan, time, cfg):
     return np.cumsum(new) - 1
 
 
-def synthesize(chan, time, charge, tdc0_of_chan, cfg=WaveformConfig(), window=(0.0, 1e5), rng=None):
-    """Zero-suppressed digis from SiPM charges.
+def synthesize(chan, time, charge, tdc0_of_chan, cfg=WaveformConfig(), window=(0.0, 1e5), rng=None,
+               max_charges=2_000_000):
+    """Zero-suppressed digis from SiPM charges, in batches of whole charge clusters (memory ~ 10 x charges per batch).
+
+    chan [Q] channel id per charge (any int label, charges grouped by chan and time-ordered within it), time [Q] ns,
+    charge [Q] C, tdc0_of_chan: callable or array mapping chan -> TDC0 time [ns]. rng None = no noise.
+    Returns dict: per-digi 'chan', 'start' (ns), 'starttdc', 'volt' [D,12], 'adc' [D,12]; and per-cluster 'cluster_*'.
+    """
+    cid = charge_clusters(chan, time, cfg)
+    if len(cid) <= max_charges:
+        return _synthesize(chan, time, charge, tdc0_of_chan, cfg, window, rng)
+    starts = np.flatnonzero(np.r_[True, cid[1:] != cid[:-1]])
+    cuts = [0]
+    for s in starts[np.searchsorted(starts, np.arange(max_charges, len(cid), max_charges))]:
+        if s > cuts[-1]:
+            cuts.append(int(s))
+    cuts.append(len(cid))
+    parts = [_synthesize(chan[a:b], time[a:b], charge[a:b], tdc0_of_chan, cfg, window, rng)
+             for a, b in zip(cuts[:-1], cuts[1:])]
+    return {k: np.concatenate([p[k] for p in parts]) for k in parts[0]}
+
+
+def _synthesize(chan, time, charge, tdc0_of_chan, cfg, window, rng):
+    """One batch of synthesize.
 
     chan [Q] channel id per charge (any int label, charges grouped by chan and time-ordered within it), time [Q] ns,
     charge [Q] C, tdc0_of_chan: callable or array mapping chan -> TDC0 time [ns]. rng None = no noise.

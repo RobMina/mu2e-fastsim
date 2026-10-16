@@ -42,6 +42,16 @@ class RecoConfig:
     max_pulses: int = 8            # pulse rounds per waveform (stock: unbounded; 8 is never reached in the samples seen)
     lm_iterations: int = 40
     limit_tolerance: float = 0.01  # FailedFit's proximity to a limit, as a fraction of the limit range
+    knife_edge_adc: float = 1.0    # V-R2 bookkeeping: a residual this close to minADCdifference marks the waveform
+
+
+def near_threshold_peak(y, valid, thr, edge):
+    """Per row: a local maximum (y[b] >= y[b-1], y[b] > y[b+1]) whose value is within `edge` of `thr`."""
+    yv = np.where(valid, y, -1e9)
+    left = np.concatenate([np.full((y.shape[0], 1), -1e9), yv[:, :-1]], 1)
+    right = np.concatenate([yv[:, 1:], np.full((y.shape[0], 1), -1e9)], 1)
+    peak = valid & (yv >= left) & (yv > right)
+    return (peak & (np.abs(yv - thr) <= edge)).any(1)
 
 
 def round_half_away(x):
@@ -164,7 +174,26 @@ def fit_gumbel(t, y, mask, p0, lo, hi, iterations=40):
         r = np.where(better[:, None], rn, r)
         J = np.where(better[:, None, None], Jn, J)
         chi2 = np.where(better, chi2n, chi2)
-        lam = np.where(better, lam * 0.3, lam * 10.0)
+        lam = np.clip(np.where(better, lam * 0.3, lam * 10.0), 1e-9, 1e9)
+    # polish: plain Gauss-Newton with step halving (LM's damping can stall a step short of the minimum)
+    for _ in range(8):
+        JTJ = np.einsum("kpi,kpj->kij", J, J)
+        JTr = np.einsum("kpi,kp->ki", J, r)
+        try:
+            du = np.linalg.solve(JTJ + 1e-12 * np.eye(3), JTr[..., None])[..., 0]
+        except np.linalg.LinAlgError:
+            break
+        du = np.where(np.isfinite(du), du, 0.0)
+        for scale in (1.0, 0.5, 0.25, 0.125):
+            un = u + scale * du
+            rn, Jn = resid_jac(un)
+            chi2n = (rn * rn).sum(1)
+            better = chi2n < chi2
+            u = np.where(better[:, None], un, u)
+            r = np.where(better[:, None], rn, r)
+            J = np.where(better[:, None, None], Jn, J)
+            chi2 = np.where(better, chi2n, chi2)
+            du = np.where(better[:, None], 0.0, du)
     # convergence: one more step would not lower chi2 by more than 1e-6 relative (Minuit2 EDM-like)
     JTJ = np.einsum("kpi,kpj->kij", J, J)
     JTr = np.einsum("kpi,kp->ki", J, r)
@@ -201,6 +230,8 @@ def reconstruct(adc, n, start_tdc, pedestal_db, calib_area, calib_height, cfg=Re
     start = np.zeros(W, np.int64)
     active = np.ones(W, bool)
     failed_before = np.zeros(W, bool)
+    valid = np.arange(L)[None, :] < n[:, None]
+    near_thr = near_threshold_peak(y, valid, cfg.min_adc_difference, cfg.knife_edge_adc)
     out = {k: [] for k in ("wf", "seq", "pe", "peph", "time", "height", "beta", "chi2", "letime", "failed", "zerondf",
                            "ped", "pedfromdb", "fit_A", "fit_mu", "fit_b")}
     for seq in range(cfg.max_pulses):
@@ -245,11 +276,14 @@ def reconstruct(adc, n, start_tdc, pedestal_db, calib_area, calib_height, cfg=Re
         sub = round_half_away(gumbel(tgrid[k], A[:, None], mu[:, None], b[:, None]))
         sub[np.arange(L)[None, :] >= n[k, None]] = 0.0
         y[k] -= sub
+        near_thr[k] |= near_threshold_peak(y[k], valid[k], cfg.min_adc_difference, cfg.knife_edge_adc)
         start[k] = fe[k]
         active = found
     res = {key: (np.concatenate(v) if v else np.zeros(0)) for key, v in out.items()}
     order = np.lexsort((res["seq"], res["wf"])) if len(res["wf"]) else np.zeros(0, np.int64)
-    return {key: v[order] for key, v in res.items()}
+    res = {key: v[order] for key, v in res.items()}
+    res["wf_near_threshold"] = near_thr          # per waveform, not per pulse
+    return res
 
 
 def concat_waveforms(key, bar, sipm, start_tdc, adc_flat, lens):

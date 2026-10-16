@@ -20,7 +20,7 @@ import time
 import awkward as ak
 import numpy as np
 
-from .. import plots
+from .. import plots, stats
 from . import compare, pulsefit, reftables, waveform
 from .direct import DirectModel, assign_pulses, cluster_features
 
@@ -46,9 +46,10 @@ def _pulses(paths, events=None):
         keep = np.isin(ev, events)
         p, ev = p[keep], ev[keep]
     chan = ak.to_numpy(p.bar) * NCHAN_PER_BAR + ak.to_numpy(p.sipm)
+    wf0 = ak.to_numpy(ak.firsts(p.wfidx))
     return {"ev": ev, "chan": chan, "seq": ak.to_numpy(p.seq), "pe": ak.to_numpy(p.pe), "time": ak.to_numpy(p.time),
             "beta": ak.to_numpy(p.beta), "failed": (ak.to_numpy(p.flags) & 1).astype(bool),
-            "key": compare.pulse_key(ev, chan, ak.to_numpy(p.seq))}
+            "key": compare.pulse_key(ev, wf0, ak.to_numpy(p.seq))}
 
 
 def _prepare(paths, max_events, cfg):
@@ -66,7 +67,8 @@ def _prepare(paths, max_events, cfg):
     ok = np.ones(len(first), bool)
     if cfg.ignore_channels:
         ok = ~((C["status"][chan] >> 1) & 1).astype(bool)
-    return {"ev": sel["ev"][first][ok], "chan": chan[ok], "mat": mat[ok], "n": n[ok], "start": start[ok],
+    return {"ev": sel["ev"][first][ok], "chan": chan[ok], "digi0": sel["idx"][first][ok], "mat": mat[ok], "n": n[ok],
+            "start": start[ok],
             "ped": C["pedestal"][chan[ok]], "area": C["pulsearea"][chan[ok]],
             "height": C["pulseheight"][chan[ok]], "toff": C["timeoffset"][chan[ok]], "events": np.unique(D["ev"])}
 
@@ -76,24 +78,138 @@ def _with_offsets(res, W, cfg):
     return res["time"] + t_off   # offspill (extracted, KPP): TDC0time = 0 in CrvRecoPulsesFinder
 
 
-def cmd_vr2(args, oracle=False):
+def _pad_batches(W, L, batch):
+    """Fixed-shape batches for the jitted kernel: rows padded to a multiple of `batch`, samples to L."""
+    nw = len(W["n"])
+    nb = max(1, -(-nw // batch))
+    tot = nb * batch
+    mat = np.zeros((tot, L), np.int64)
+    m = min(L, W["mat"].shape[1])
+    mat[:nw, :m] = W["mat"][:, :m]
+    pad = lambda a, v: np.concatenate([a, np.full(tot - nw, v, dtype=np.asarray(a).dtype)])
+    return (mat, pad(np.minimum(W["n"], L), 0), pad(W["start"], 0), pad(W["ped"].astype(float), 0.0),
+            pad(W["area"].astype(float), 1.0), pad(W["height"].astype(float), 1.0)), nw, nb
+
+
+def _run_jax(W, cfg, L=36, batch=65536):
+    """pulsefit_jax over all waveforms in fixed (batch, L) shapes; longer waveforms and window overflows -> numpy."""
+    import jax
+    from . import pulsefit_jax as PJ
+    long_ = W["n"] > L
+    (mat, n, st, ped, area, height), nw, nb = _pad_batches(W, L, batch)
+    parts = []
+    t0 = time.perf_counter()
+    for b in range(nb):
+        s = slice(b * batch, (b + 1) * batch)
+        d = PJ.reconstruct_dense(mat[s], n[s], st[s], ped[s], area[s], height[s], cfg=cfg)
+        parts.append(jax.device_get(d))
+    dt = time.perf_counter() - t0
+    dense = {k: np.concatenate([p[k] for p in parts])[:nw] for k in parts[0]}
+    flat = PJ.to_flat(dense)
+    redo = long_ | flat["window_overflow"]
+    if redo.any():
+        rows = np.flatnonzero(redo)
+        sub = pulsefit.reconstruct(W["mat"][rows], W["n"][rows], W["start"][rows], W["ped"][rows], W["area"][rows],
+                                   W["height"][rows], cfg)
+        keep = ~np.isin(flat["wf"], rows)
+        flat2 = {k: np.concatenate([flat[k][keep], (rows[sub[k]] if k == "wf" else sub[k])])
+                 for k in ("wf", "seq", "pe", "time", "failed")}
+        o = np.lexsort((flat2["seq"], flat2["wf"]))
+        near = flat["wf_near_threshold"].copy()
+        near[rows] = sub["wf_near_threshold"]
+        flat = {k: v[o] for k, v in flat2.items()}
+        flat["wf_near_threshold"] = near
+    return flat, dt, int(redo.sum()), nb
+
+
+def cmd_vr2(args, oracle=False, use_jax=False):
     cfg = pulsefit.RecoConfig()
     W = _prepare(args.inputs, args.max_events, cfg)
     t0 = time.perf_counter()
-    if oracle:
+    extra = {}
+    if use_jax:
+        res, _, nredo, nb = _run_jax(W, cfg, args.length, args.batch)
+        extra = {"numpy_fallback_waveforms": nredo, "batches": nb, "backend": __import__("jax").default_backend()}
+    elif oracle:
         from . import stockfit
         ped_used = np.where(W["ped"] - W["mat"][:, 0] > cfg.pedestal_undershoot_threshold, W["mat"][:, 0], W["ped"])
         res = stockfit.reconstruct(W["mat"], W["n"], W["start"], ped_used, W["area"], W["height"], cfg)
     else:
         res = pulsefit.reconstruct(W["mat"], W["n"], W["start"], W["ped"], W["area"], W["height"], cfg)
     dt = time.perf_counter() - t0
-    fast = {"key": compare.pulse_key(W["ev"][res["wf"]], W["chan"][res["wf"]], res["seq"]), "pe": res["pe"],
+    fast = {"key": compare.pulse_key(W["ev"][res["wf"]], W["digi0"][res["wf"]], res["seq"]), "pe": res["pe"],
             "time": _with_offsets(res, W, cfg), "failed": res["failed"]}
     ref = _pulses(args.inputs, W["events"])
-    out = compare.vr2(fast, ref)
+    near = res.get("wf_near_threshold")
+    excl = np.stack([W["ev"], W["digi0"]], 1)[near] if near is not None else None
+    out = compare.vr2(fast, ref, excl)
     out.update({"events": int(len(W["events"])), "waveforms": int(len(W["n"])), "wall_s": dt,
-                "us_per_event": 1e6 * dt / max(len(W["events"]), 1), "mode": "stock-oracle" if oracle else "fast"})
-    _report(args, "vr2stock" if oracle else "vr2", out)
+                "us_per_event": 1e6 * dt / max(len(W["events"]), 1),
+                "mode": "stock-oracle" if oracle else ("fast-jax" if use_jax else "fast"), **extra})
+    _report(args, "vr2stock" if oracle else ("vr2jax" if use_jax else "vr2"), out)
+
+
+def cmd_bench(args):
+    """Throughput of the jitted pulse reco on the reference waveforms (compile excluded; repeated passes)."""
+    import jax
+    from . import pulsefit_jax as PJ
+    cfg = pulsefit.RecoConfig()
+    if args.inputs == ["synthetic"]:
+        from . import synth
+        ne = args.max_events or 200000
+        adc, n_, st_, ped_, area_, h_ = synth.waveforms(ne, seed=args.seed, L=args.length)
+        W = {"mat": adc, "n": n_, "start": st_, "ped": ped_, "area": area_, "height": h_, "events": np.arange(ne)}
+    else:
+        W = _prepare(args.inputs, args.max_events, cfg)
+    (mat, n, st, ped, area, height), nw, nb = _pad_batches(W, args.length, args.batch)
+    devs = jax.devices()
+    t0 = time.perf_counter()
+    jax.block_until_ready(PJ.reconstruct_dense(mat[:args.batch], n[:args.batch], st[:args.batch], ped[:args.batch],
+                                               area[:args.batch], height[:args.batch], cfg=cfg))
+    compile_s = time.perf_counter() - t0
+    dev = [jax.device_put(x, devs[0]) for x in (mat, n, st, ped, area, height)]
+    times = []
+    for _ in range(args.repeat):
+        t0 = time.perf_counter()
+        outs = [PJ.reconstruct_dense(*[x[b * args.batch:(b + 1) * args.batch] for x in dev], cfg=cfg)
+                for b in range(nb)]
+        jax.block_until_ready(outs)
+        times.append(time.perf_counter() - t0)
+    best = min(times)
+    ne = len(W["events"])
+    out = {"backend": jax.default_backend(), "device": str(devs[0]), "n_devices": len(devs), "events": int(ne),
+           "waveforms": int(nw), "batch": args.batch, "length": args.length, "batches": nb, "compile_s": compile_s,
+           "pass_s": times, "events_per_s": ne / best, "waveforms_per_s": nw / best,
+           "us_per_event": 1e6 * best / max(ne, 1),
+           "stock_reference_us_per_event": {"CrvRecoPulsesFinder_A8_kpp": 3730, "CrvRecoPulsesFinder_A6_mc": 1560}}
+    _report(args, "bench", out)
+
+
+def cmd_inspect(args):
+    """Waveforms whose pulses differ: ADCs, pedestal, fast pulses and reference pulses, for --keys from a vr2 JSON."""
+    keys = json.load(open(args.keys))
+    want = np.array(keys.get("unmatched_fast_keys", []) + keys.get("unmatched_ref_keys", []), np.int64).reshape(-1, 3)
+    cfg = pulsefit.RecoConfig()
+    W = _prepare(args.inputs, None, cfg)
+    wkey = np.stack([W["ev"], W["digi0"]], 1)
+    ia, _ = compare._join(wkey, np.unique(want[:, :2], axis=0))
+    if not len(ia):
+        print("no waveform found for the keys")
+        return
+    sub = {k: (v[ia] if isinstance(v, np.ndarray) and len(v) == len(W["ev"]) else v) for k, v in W.items()}
+    res = pulsefit.reconstruct(sub["mat"], sub["n"], sub["start"], sub["ped"], sub["area"], sub["height"], cfg)
+    ref = _pulses(args.inputs, np.unique(sub["ev"]))
+    out = []
+    for i in range(len(ia)):
+        rsel = (ref["key"][:, 0] == sub["ev"][i]) & (ref["key"][:, 1] == sub["digi0"][i])
+        fsel = res["wf"] == i
+        out.append({"event_key": int(sub["ev"][i]), "digi0": int(sub["digi0"][i]), "chan": int(sub["chan"][i]),
+                    "start_tdc": int(sub["start"][i]), "n": int(sub["n"][i]), "ped_db": float(sub["ped"][i]),
+                    "adc": sub["mat"][i, :sub["n"][i]].tolist(),
+                    "fast": {k: res[k][fsel].tolist() for k in ("seq", "pe", "time", "height", "beta", "failed",
+                                                                "fit_A", "fit_mu", "fit_b", "ped")},
+                    "ref": {k: ref[k][rsel].tolist() for k in ("seq", "pe", "time", "beta", "failed")}})
+    _report(args, "inspect", {"waveforms": out})
 
 
 def _charges(paths, events=None):
@@ -123,29 +239,34 @@ def cmd_vr1(args):
     mk = np.isin(mev, events)
     m, mev = m[mk], mev[mk]
     mchan = ak.to_numpy(m.bar) * NCHAN_PER_BAR + ak.to_numpy(m.sipm)
-    # one label per (event, channel): row index of the charges table
-    lab_key = (Q["ev_row"].astype(np.int64) << 16) | Q["chan_row"]
-    tdc0_by = {}
-    mkey = (mev.astype(np.int64) << 16) | mchan
-    _, fi = np.unique(mkey, return_index=True)
-    tdc0_map_keys, tdc0_map_vals = mkey[fi], ak.to_numpy(m.tdc0)[fi]
-    srt = np.argsort(tdc0_map_keys)
-    pos = np.searchsorted(tdc0_map_keys[srt], lab_key)
-    found = (pos < len(srt)) & (tdc0_map_keys[srt][np.clip(pos, 0, len(srt) - 1)] == lab_key)
-    tdc0_row = np.where(found, tdc0_map_vals[srt][np.clip(pos, 0, len(srt) - 1)], 0.0)
+    # TDC0 is drawn per FEB and event in the stock chain: take it from any reference digi on the same FEB
+    feb = reftables.calib(args.inputs)["feb"]
+    mkey = np.stack([mev, feb[mchan]], 1)
+    lab_key = np.stack([Q["ev_row"], feb[Q["chan_row"]]], 1)
+    _, fi = np.unique(compare._as_void(mkey), return_index=True)
+    tdc0_row = compare.lookup(lab_key, mkey[fi], ak.to_numpy(m.tdc0)[fi])
+    n_no_tdc0 = int(np.isnan(tdc0_row).sum())
+    tdc0_row = np.nan_to_num(tdc0_row, nan=0.0)
     t0 = time.perf_counter()
     out = waveform.synthesize(Q["row"], Q["time"], Q["charge"], tdc0_row, cfg, rng=None)
     dt = time.perf_counter() - t0
-    fkey = (Q["ev_row"][out["chan"]].astype(np.int64) << 24) ^ (Q["chan_row"][out["chan"]].astype(np.int64) << 12) ^ \
-        out["starttdc"].astype(np.int64)
+    fkey = np.stack([Q["ev_row"][out["chan"]], Q["chan_row"][out["chan"]], out["starttdc"]], 1).astype(np.int64)
     rv = ak.to_numpy(ak.fill_none(ak.pad_none(m.volt, cfg.samples_zs, clip=True), 0.0))
     radc = np.clip((rv * cfg.adc_conversion + cfg.pedestal + 0.5).astype(np.int16), cfg.min_adc, cfg.max_adc)
     rstart = np.rint((ak.to_numpy(m.start) - ak.to_numpy(m.tdc0)) / pulsefit.PERIOD).astype(np.int64)
-    rkey = (mev << 24) ^ (mchan.astype(np.int64) << 12) ^ rstart
+    rkey = np.stack([mev, mchan, rstart], 1).astype(np.int64)
     res = compare.vr1({"key": fkey, "adc": out["adc"]}, {"key": rkey, "adc": radc})
     ia, ib = compare._join(fkey, rkey)
     dv = np.abs(out["volt"][ia] - rv[ib]) if len(ia) else np.zeros((0, 1))
-    res.update({"note": "noise off in the fast path; the reference digi MC voltages include stock noise (0.4 mV)",
+    ua = np.setdiff1d(np.arange(len(fkey)), ia)
+    unknown = np.isnan(compare.lookup(lab_key, mkey[fi], ak.to_numpy(m.tdc0)[fi]))
+    extra = {"n": int(len(ua)), "n_on_feb_without_reference_tdc0": int(unknown[out["chan"][ua]].sum()),
+             "start_minus_window_end_ns": np.quantile(out["start"][ua] - args.window_end, [0, 0.5, 1]).tolist()
+             if len(ua) else None,
+             "start_rel_first_charge_ns": None,
+             "examples": fkey[ua][:10].tolist()}
+    res.update({"unmatched_fast": extra, "sipm_rows_without_feb_tdc0": n_no_tdc0,
+                "note": "fast path noise off; compare with a reference made with CrvWaveforms.noise 0",
                 "volt_abs_diff_quantiles_mV": (1e3 * np.quantile(dv, [0.5, 0.9, 0.99])).tolist() if dv.size else None,
                 "events": int(len(events)), "wall_s": dt, "us_per_event": 1e6 * dt / max(len(events), 1)})
     _report(args, "vr1", res)
@@ -206,13 +327,27 @@ def cmd_direct(args):
            "found_frac": {"ref": float((n_ref > 0).mean()), "fast": float((n_fast > 0).mean())},
            "found_frac_vs_q": _eff_vs_q(te["q"], n_ref > 0, n_fast > 0),
            "first_pulse": compare.distribution_summary(fast, ref),
+           "first_pulse_binned": {c: _band(fast[c], ref[c]) for c in ("pe", "beta")},
            "failed_frac": {"ref": float(first["failed"][~train][n_ref > 0].mean()) if (n_ref > 0).any() else None,
                            "fast": float(s["failed"][n_fast > 0].mean()) if (n_fast > 0).any() else None},
            "unassigned_ref_pulses": int((cl < 0).sum()), "wall_s_sample": dt,
            "us_per_event": 1e6 * dt / max(ntest, 1)}
+    out["first_pulse_binned_pass"] = {c: bool(out["first_pulse_binned"][c]["max_abs_dev_minus_2sigma"] is not None and
+                                              out["first_pulse_binned"][c]["max_abs_dev_minus_2sigma"] <= BAND_TOL[c])
+                                      for c in BAND_TOL}
     os.makedirs(args.outdir, exist_ok=True)
     model.save(os.path.join(args.outdir, "direct_model.npz"))
     _report(args, "direct", out)
+
+
+BAND_TOL = {"pe": 0.03, "beta": 0.03}   # binned-ratio tolerance (V-R4's +-3 %), 2 sigma allowed
+
+
+def _band(a, b):
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    r = stats.ratio_band(a[np.isfinite(a)], b[np.isfinite(b)], q=(0.02, 0.98), nbins=40, min_ref=400)
+    out = {k: r[k] for k in ("max_abs_dev", "max_abs_dev_minus_2sigma", "nbins_used")}
+    return out
 
 
 def _eff_vs_q(q, a, b, edges=(0, 2, 4, 6, 8, 10, 15, 20, 30, 50, 100, 1e9)):
@@ -272,18 +407,29 @@ def main(argv=None):
     p = argparse.ArgumentParser(prog="crvfastsim.reco", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
-    for name in ("vr2", "vr2stock", "vr1", "direct", "cost"):
+    for name in ("vr2", "vr2stock", "vr2jax", "bench", "vr1", "direct", "cost", "inspect"):
         sp = sub.add_parser(name)
-        sp.add_argument("inputs", nargs="+", help="CrvRecoTableDumper files (globs allowed, quoted)")
+        sp.add_argument("inputs", nargs="+", help="CrvRecoTableDumper files (globs allowed, quoted); bench also "
+                        "accepts the word 'synthetic' (KPP-like waveforms, reco/synth.py)")
         sp.add_argument("--outdir", default=None)
         sp.add_argument("--max-events", type=int, default=None)
         sp.add_argument("--seed", type=int, default=20261016)
+        if name in ("vr2jax", "bench"):
+            sp.add_argument("--length", type=int, default=36, help="padded samples per waveform (longer -> numpy)")
+            sp.add_argument("--batch", type=int, default=65536, help="waveforms per jitted call")
+        if name == "bench":
+            sp.add_argument("--repeat", type=int, default=3)
+        if name == "vr1":
+            sp.add_argument("--window-end", type=float, default=1e5, help="digitisation window end [ns] (offspill 1e5)")
+        if name == "inspect":
+            sp.add_argument("--keys", required=True, help="a vr2/vr2stock stats JSON (its unmatched_*_keys)")
         if name == "cost":
             sp.add_argument("--model", default=None, help="direct_model.npz from the direct subcommand")
     a = p.parse_args(argv)
     a.outdir = a.outdir or f"plots/reco_{a.cmd}"
     {"vr2": cmd_vr2, "vr2stock": lambda x: cmd_vr2(x, oracle=True), "vr1": cmd_vr1, "direct": cmd_direct,
-     "cost": cmd_cost}[a.cmd](a)
+     "cost": cmd_cost, "inspect": cmd_inspect, "vr2jax": lambda x: cmd_vr2(x, use_jax=True),
+     "bench": cmd_bench}[a.cmd](a)
 
 
 if __name__ == "__main__":

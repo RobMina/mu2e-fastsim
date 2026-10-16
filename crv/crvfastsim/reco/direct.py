@@ -5,9 +5,11 @@ waveform). Features per cluster: total charge in PE, charge-weighted time quanti
 from the stock pulses assigned to the cluster (same channel, time inside [t_first - 2 periods, t_last + 1PE length]):
   * n_pulses (0 = below threshold / zero-suppressed / not found)
   * for the first pulse: PE / Q_PE, t - t10 (TDC0 and DB time offset removed), beta, failed-fit flag
-Model v0 = conditional empirical resampling: clusters binned in (log Q_PE, spread); per bin the pulse-count
-probabilities and the residual vectors of the training clusters are stored and resampled. Vectorised throughout; no
-per-cluster Python. Later tiers (a parametric or learnt model) replace `DirectModel` behind the same two methods.
+Model = conditional empirical resampling: clusters binned in (Q_PE, prompt fraction); per bin the pulse-count
+probabilities and the residual vectors of the training clusters are stored and resampled. v0 binned (log Q, time
+spread) with 1.37x-wide charge bins, too coarse at the 6-10 PE threshold; v1 (2026-10-16) uses 0.5 PE bins up to
+20 PE and the prompt fraction (charge in the first PROMPT_NS of the cluster over its total), which sets the peak height
+the zero suppression and the peak finder cut on. Vectorised throughout; no per-cluster Python.
 """
 from dataclasses import dataclass, field
 
@@ -16,8 +18,9 @@ import numpy as np
 from .pulsefit import PERIOD
 from .waveform import WaveformConfig, charge_clusters
 
-Q_EDGES = np.r_[0.0, np.geomspace(1.0, 2000.0, 25), np.inf]
-S_EDGES = np.array([0.0, 2.0, 4.0, 7.0, 12.0, 25.0, np.inf])
+Q_EDGES = np.r_[0.0, np.arange(1.0, 20.01, 0.5), np.geomspace(21.0, 2000.0, 30), np.inf]
+F_EDGES = np.array([0.0, 0.3, 0.45, 0.6, 0.75, 0.9, 1.01])
+PROMPT_NS = 15.0
 MAX_PULSES = 4
 
 
@@ -43,8 +46,10 @@ def cluster_features(chan, time, pe, cfg=WaveformConfig()):
     t10, t50 = quant(0.1), quant(0.5)
     mean = np.bincount(cid, weights=w * time, minlength=C) / np.maximum(q, 1e-12)
     var = np.bincount(cid, weights=w * (time - mean[cid]) ** 2, minlength=C) / np.maximum(q, 1e-12)
+    prompt = np.bincount(cid, weights=w * (time - time[first][cid] < PROMPT_NS), minlength=C)
     return {"cid": cid, "chan": chan[first], "q": q, "t10": t10, "t50": t50, "spread": np.sqrt(var),
-            "tfirst": time[first], "tlast": time[last], "n": np.bincount(cid, minlength=C)}
+            "pfrac": prompt / np.maximum(q, 1e-12), "tfirst": time[first], "tlast": time[last],
+            "n": np.bincount(cid, minlength=C)}
 
 
 def assign_pulses(feat, p_chan, p_time, cfg=WaveformConfig()):
@@ -66,10 +71,13 @@ def assign_pulses(feat, p_chan, p_time, cfg=WaveformConfig()):
     return out
 
 
-def _bin(q, s):
-    iq = np.clip(np.searchsorted(Q_EDGES, q, side="right") - 1, 0, len(Q_EDGES) - 2)
-    js = np.clip(np.searchsorted(S_EDGES, s, side="right") - 1, 0, len(S_EDGES) - 2)
-    return iq * (len(S_EDGES) - 1) + js
+NBINS = (len(Q_EDGES) - 1) * (len(F_EDGES) - 1)
+
+
+def _bin(feat):
+    iq = np.clip(np.searchsorted(Q_EDGES, feat["q"], side="right") - 1, 0, len(Q_EDGES) - 2)
+    jf = np.clip(np.searchsorted(F_EDGES, feat["pfrac"], side="right") - 1, 0, len(F_EDGES) - 2)
+    return iq * (len(F_EDGES) - 1) + jf
 
 
 @dataclass
@@ -83,8 +91,8 @@ class DirectModel:
     @classmethod
     def fit(cls, feat, n_pulses, first):
         """feat: cluster_features; n_pulses [C]; first: dict of first-pulse arrays per cluster (NaN where none)."""
-        B = (len(Q_EDGES) - 1) * (len(S_EDGES) - 1)
-        b = _bin(feat["q"], feat["spread"])
+        B = NBINS
+        b = _bin(feat)
         npc = np.minimum(n_pulses, MAX_PULSES)
         cnt = np.zeros((B, MAX_PULSES + 1))
         np.add.at(cnt, (b, npc), 1.0)
@@ -101,7 +109,7 @@ class DirectModel:
 
     def sample(self, feat, rng):
         """Draw (n_pulses, first-pulse pe, time, beta, failed) per cluster. Empty bins borrow the nearest filled bin."""
-        b = _bin(feat["q"], feat["spread"])
+        b = _bin(feat)
         cum = np.cumsum(self.p_npulse[b], 1)
         npul = (rng.random(len(b))[:, None] > cum).sum(1)
         filled = np.flatnonzero(self.res_count > 0)
@@ -116,7 +124,7 @@ class DirectModel:
 
     def save(self, path):
         np.savez(path, p_npulse=self.p_npulse, res_start=self.res_start, res_count=self.res_count, res=self.res,
-                 q_edges=Q_EDGES, s_edges=S_EDGES)
+                 q_edges=Q_EDGES, f_edges=F_EDGES, prompt_ns=PROMPT_NS)
 
     @classmethod
     def load(cls, path):
