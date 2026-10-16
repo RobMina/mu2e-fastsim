@@ -195,11 +195,60 @@ def _bench_waveforms(args):
             "stock_reference_us_per_event": {"CrvWaveforms_plus_CrvDigi_estimate": "part of the 19.8 ms CRV response"}}
 
 
+def _coinc_geom():
+    from ..geometry import find_counters, from_offline_config, parse_simpleconfig
+    from . import coinc as C
+    cf = find_counters("Offline/Mu2eG4/geom/crv_counters_extracted_v04.txt")
+    return C.sector_geom(from_offline_config(cf), parse_simpleconfig(open(cf).read()))
+
+
+def _ref_pulses_sorted(paths):
+    p = reftables.read(paths, "pulses")
+    ev = reftables.event_key(p)
+    o = np.argsort(ev, kind="stable")
+    out = {k: ak.to_numpy(p[k])[o] for k in ("idx", "bar", "sipm", "time", "pe", "seq")}
+    out["ev"] = ev[o]
+    return out
+
+
+def _bench_coinc(args):
+    """Throughput of the JAX coincidence finder (coinc_jax.find incl. host packing and numpy fallback)."""
+    import jax
+    from . import coinc_jax as CJ
+    G = _coinc_geom()
+    if args.inputs == ["synthetic"]:
+        from . import synth
+        P = synth.coinc_events(args.max_events or 50000, G, seed=args.seed)
+        status = np.zeros(4 * len(G.sector), np.int64)
+    else:
+        P = _ref_pulses_sorted(args.inputs)
+        status = reftables.calib(args.inputs)["status"]
+    cols = [P[k] for k in ("ev", "idx", "bar", "sipm", "time", "pe", "seq")]
+    ne = len(np.unique(P["ev"]))
+    t0 = time.perf_counter()
+    CJ.find(*cols, G, status)
+    compile_s = time.perf_counter() - t0
+    times, tms = [], []
+    for _ in range(args.repeat):
+        tm = {}
+        t0 = time.perf_counter()
+        out = CJ.find(*cols, G, status, timers=tm)
+        times.append(time.perf_counter() - t0)
+        tms.append(tm)
+    best = int(np.argmin(times))
+    return {"backend": jax.default_backend(), "device": str(jax.devices()[0]), "events": int(ne),
+            "pulses": int(len(P["ev"])), "clusters": int(len(out["cl_event"])),
+            "fallback_events": int(len(out["fallback_events"])), "first_call_s": compile_s, "pass_s": times,
+            "timers_best": tms[best], "events_per_s": ne / times[best], "us_per_event": 1e6 * times[best] / ne}
+
+
 def cmd_bench(args):
     """Throughput of the jitted pulse reco (or, with --stage waveforms, the waveform synthesis); compile excluded."""
     import jax
     if getattr(args, "stage", "pulses") == "waveforms":
         return _report(args, "bench_waveforms", _bench_waveforms(args))
+    if getattr(args, "stage", "pulses") == "coinc":
+        return _report(args, "bench_coinc", _bench_coinc(args))
     from . import pulsefit_jax as PJ
     cfg = pulsefit.RecoConfig()
     if args.inputs == ["synthetic"]:
@@ -502,6 +551,8 @@ def cmd_vr3(args):
     corder = np.argsort(cev, kind="stable")
     clo, chi = np.searchsorted(cev[corder], evs), np.searchsorted(cev[corder], evs, side="right")
     cpul, cst = c.pulses, ak.to_numpy(c.sectortype)
+    if getattr(args, "jax", False):
+        return _vr3_jax(args, G, status, c, cev, evs)
     cnum = {k: ak.to_numpy(c[k]) for k in ("pe", "start", "end", "slope", "avgtime")}
     ident = nref = nfast = 0
     dprop = {k: [] for k in cnum}
@@ -533,6 +584,41 @@ def cmd_vr3(args):
     _report(args, "vr3", out)
 
 
+def _vr3_jax(args, G, status, c, cev, evs):
+    from . import coinc_jax as CJ
+    P = _ref_pulses_sorted(args.inputs)
+    m = np.isin(P["ev"], evs)
+    cols = [P[k][m] for k in ("ev", "idx", "bar", "sipm", "time", "pe", "seq")]
+    CJ.find(*cols, G, status)   # compile
+    tm = {}
+    t0 = time.perf_counter()
+    out = CJ.find(*cols, G, status, timers=tm)
+    dt = time.perf_counter() - t0
+    cm = np.isin(cev, evs)
+    keys = [(int(e), int(t), tuple(sorted(ak.to_list(x)))) for e, t, x in
+            zip(cev[cm], ak.to_numpy(c.sectortype)[cm], c.pulses[cm])]
+    refi = {k: i for k, i in zip(keys, np.flatnonzero(cm))}
+    fk = CJ.cluster_keys(out)
+    ref = set(refi)
+    bad_ev = {k[0] for k in ref ^ fk}
+    # cluster properties of the matched clusters
+    o = np.lexsort((out["mem_idx"], out["mem_cl"]))
+    cl, mi = out["mem_cl"][o].astype(np.int64), out["mem_idx"][o].astype(np.int64)
+    b = np.flatnonzero(np.diff(cl)) + 1
+    dprop = {q: 0.0 for q in ("pe", "start", "end", "slope", "avgtime")}
+    for i, g in zip(cl[np.r_[0, b]] if len(cl) else [], np.split(mi, b)):
+        j = refi.get((int(out["cl_event"][i]), int(out["cl_type"][i]), tuple(g.tolist())))
+        if j is not None:
+            for q in dprop:
+                dprop[q] = max(dprop[q], float(abs(out["cl_" + q][i] - c[q][j])))
+    res = {"finder": "coinc_jax", "events": int(len(evs)), "events_identical": int(len(evs) - len(bad_ev)),
+           "clusters_ref": len(ref), "clusters_fast": len(fk), "identical_cluster_lists": not bad_ev,
+           "max_abs_property_diff": dprop, "fallback_events": int(len(out["fallback_events"])), "timers": tm,
+           "wall_s": dt, "us_per_event": 1e6 * dt / max(len(evs), 1), "examples": sorted(bad_ev)[:10]}
+    res["pass"] = res["identical_cluster_lists"]
+    _report(args, "vr3", res)
+
+
 def add_reco_args(sp, name):
     """Arguments of one reco subcommand (shared by `crvfastsim reco-<name>` and `crvfastsim.reco <name>`)."""
     sp.add_argument("inputs", nargs="+", help="CrvRecoTableDumper files (globs allowed, quoted); bench also "
@@ -548,12 +634,15 @@ def add_reco_args(sp, name):
                         "pulse in the last round are redone by the numpy path")
     if name == "bench":
         sp.add_argument("--repeat", type=int, default=3)
-        sp.add_argument("--stage", default="pulses", choices=["pulses", "waveforms"],
-                        help="pulses: jitted pulse reco; waveforms: jitted waveform synthesis (synthetic charges)")
+        sp.add_argument("--stage", default="pulses", choices=["pulses", "waveforms", "coinc"],
+                        help="pulses: jitted pulse reco; waveforms: jitted waveform synthesis (synthetic charges); "
+                        "coinc: JAX coincidence finder (synthetic tracks+noise, or reference pulses)")
     if name == "vr1":
         sp.add_argument("--window-end", type=float, default=1e5, help="digitisation window end [ns] (offspill 1e5)")
         sp.add_argument("--jax", action="store_true", help="use the JAX waveform synthesis (waveform_jax)")
         sp.add_argument("--batch-clusters", type=int, default=2000, help="SiPM rows per jitted call (--jax)")
+    if name == "vr3":
+        sp.add_argument("--jax", action="store_true", help="use the JAX coincidence finder (coinc_jax)")
     if name == "inspect":
         sp.add_argument("--keys", required=True, help="a vr2/vr2stock stats JSON (its unmatched_*_keys)")
     if name == "cost":

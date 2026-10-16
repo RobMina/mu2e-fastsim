@@ -203,8 +203,55 @@ def _check_coincidence(cluster, cfg):
     return [keep[k] for k in sorted(keep)]   # stock: a set ordered by the pulse Ptr (collection index)
 
 
-def find_event(pulses, G, status, cfg=FinderConfig()):
-    """pulses: dict of arrays for ONE event in collection order (idx, bar, sipm, time, pe, seq). Returns cluster rows."""
+def _check_coincidence_vec(cluster, cfg, chunk=2_000_000):
+    """_check_coincidence with numpy broadcasting over the layer combinations (uniform cuts in the cluster only)."""
+    c = cluster[0]["cuts"]
+    if not cluster or any(h["cuts"] != c for h in cluster):
+        return _check_coincidence(cluster, cfg)
+    if len(cluster) > cfg.big_cluster_threshold and len({h["layer"] for h in cluster}) >= c.coincidence_layers:
+        return list(cluster)
+    n = c.coincidence_layers
+    by_layer = [[i for i, h in enumerate(cluster) if h["layer"] == l] for l in range(N_LAYERS)]
+    X = np.array([h["x"] for h in cluster]); Y = np.array([h["y"] for h in cluster]); T = np.array([h["t"] for h in cluster])
+    wid = np.full(len(cluster), -np.inf)
+    for layers in combinations(range(N_LAYERS), n):
+        sets = [np.array(by_layer[l], np.int64) for l in layers]
+        if any(len(q) == 0 for q in sets):
+            continue
+        grid = np.stack(np.meshgrid(*sets, indexing="ij"), -1).reshape(-1, n)
+        for a in range(0, len(grid), chunk):
+            cb = grid[a:a + chunk]
+            x, y, t = X[cb], Y[cb], T[cb]
+            ok = ~(t.max(1) - t.min(1) > c.max_dt)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                sl = (x[:, 1:] - x[:, :-1]) / (y[:, 1:] - y[:, :-1])
+            ok &= ~((sl < c.min_slope) | (sl > c.max_slope)).any(1)
+            if n > 2:
+                ok &= ~(np.abs(sl[:, 0] - sl[:, 1]) > c.max_slope_diff)
+            if n > 3:
+                ok &= ~((np.abs(sl[:, 0] - sl[:, 2]) > c.max_slope_diff) | (np.abs(sl[:, 1] - sl[:, 2]) > c.max_slope_diff))
+            cb, x = cb[ok], x[ok]
+            if not len(cb):
+                continue
+            o = np.argsort(x, axis=1, kind="stable")
+            xs, hs = np.take_along_axis(x, o, 1), np.take_along_axis(cb, o, 1)
+            gap = np.diff(xs, axis=1)
+            w = np.zeros_like(xs)
+            w[:, 1:] = gap
+            w[:, :-1] = np.maximum(w[:, :-1], gap)
+            np.maximum.at(wid, hs.ravel(), w.ravel())
+    out = []
+    for i in np.flatnonzero(wid > -np.inf):
+        hh = dict(cluster[i])
+        hh["maxd"] = max(c.final_max_distance, wid[i])
+        out.append(hh)
+    return sorted(out, key=lambda h: h["idx"])
+
+
+def find_event(pulses, G, status, cfg=FinderConfig(), vectorized=False):
+    """pulses: dict of arrays for ONE event in collection order (idx, bar, sipm, time, pe, seq). Returns cluster rows.
+    vectorized: numpy-broadcast combination check (same result; for the large events the JAX twin hands back)."""
+    check = _check_coincidence_vec if vectorized else _check_coincidence
     lim = _type_limits(G, cfg)
     hits = {}
     for i in range(len(pulses["idx"])):
@@ -253,7 +300,7 @@ def find_event(pulses, G, status, cfg=FinderConfig()):
                 if same + adj1 >= h["cuts"].pe_threshold or same + adj2 >= h["cuts"].pe_threshold:
                     filt.append(h)
             for cl in _find_clusters(filt, L["max_dt"]):
-                coinc += _check_coincidence(cl, cfg)
+                coinc += check(cl, cfg)
         both = L["side0"] and L["side1"]
         for cl in _find_clusters(coinc, L["max_dt"], both, 2.0 * L["half"] / cfg.fiber_signal_speed):
             row = _properties(t_type, cl, G, L, cfg)

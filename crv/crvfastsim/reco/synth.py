@@ -34,3 +34,57 @@ def waveforms(n_events, seed=1, L=12):
                                        b2[:, None]), 0.0)
     adc = np.clip(np.round(y + PEDESTAL + rng.normal(0, 2.0, (W, L))), 0, 4095).astype(np.int64)
     return (adc, np.full(W, L), start, np.full(W, PEDESTAL), np.full(W, CALIB_AREA), np.full(W, CALIB_AREA / 15.0))
+
+
+def coinc_events(n_events, G, seed=1, noise_mean=8.0, shower_frac=0.03, shower_mean=80.0):
+    """Synthetic reco pulses for the coincidence-finder benchmark (no reference data on Polaris).
+
+    Per event: one straight track (sector drawn with the KPP 124155 per-sector-type pulse shares, |slope| <= 1.5)
+    giving both SiPMs of each readout side in every bar it crosses, PE lognormal around 15; Poisson(noise_mean)
+    single noise pulses (PE ~3, random time); and in shower_frac of events Poisson(shower_mean) extra pulses in one
+    module within +-15 ns (the large-group tail that sets the padded sizes). Returns flat arrays sorted by
+    (event, channel) like the art collection: ev, idx, bar, sipm, time, pe, seq.
+    """
+    rng = np.random.default_rng(seed)
+    nb = len(G.sector)
+    share = {1: 0.71, 2: 0.07, 3: 0.18, 4: 0.04}
+    sec_w = np.array([share[int(G.sector_type[s])] / np.sum(G.sector_type == G.sector_type[s])
+                      for s in range(len(G.sector_names))])
+    sec_w /= sec_w.sum()
+    bars_of = [np.flatnonzero(G.sector == s) for s in range(len(G.sector_names))]
+    b0 = bars_of[0][G.layer[bars_of[0]] == 0]
+    width = np.median(np.diff(np.sort(G.x[b0])))
+    rows = []
+
+    def sides(s):
+        return [k for k, on in ((0, G.sipms_side0[s]), (1, G.sipms_side1[s])) if on]
+    secs = rng.choice(len(sec_w), n_events, p=sec_w)
+    for e in range(n_events):
+        s = secs[e]
+        b = bars_of[s]
+        x0 = rng.uniform(G.x[b].min(), G.x[b].max())
+        slope = rng.uniform(-1.5, 1.5)
+        y0 = G.y[b].mean()
+        hit = b[np.abs(G.x[b] - (x0 + slope * (G.y[b] - y0))) < width / 2]
+        t0 = rng.uniform(400, 1200)
+        for bar in hit:
+            for sd in sides(s):
+                for sp in (sd, sd + 2):
+                    rows.append((e, bar, sp, t0 + rng.normal(0, 2.0), rng.lognormal(np.log(15), 0.6)))
+        for _ in range(rng.poisson(noise_mean)):
+            bar = rng.integers(nb)
+            rows.append((e, bar, rng.choice([k + 2 * j for k in sides(G.sector[bar]) for j in (0, 1)]),
+                         rng.uniform(0, 2000), rng.lognormal(np.log(3), 0.8)))
+        if rng.random() < shower_frac:
+            bs = b[np.abs(G.x[b] - x0) < 8 * width]
+            ts = rng.uniform(400, 1200)
+            for _ in range(rng.poisson(shower_mean)):
+                bar = rng.choice(bs)
+                sd = rng.choice(sides(s))
+                rows.append((e, bar, sd + 2 * rng.integers(2), ts + rng.uniform(-15, 15), rng.lognormal(np.log(10), 0.8)))
+    a = np.array(rows, dtype=float)
+    ev, bar, sipm = a[:, 0].astype(np.int64), a[:, 1].astype(np.int64), a[:, 2].astype(np.int64)
+    o = np.lexsort((a[:, 3], bar * 4 + sipm, ev))
+    ev, bar, sipm, t, pe = ev[o], bar[o], sipm[o], a[o, 3], a[o, 4]
+    first = np.searchsorted(ev, ev)
+    return dict(ev=ev, idx=np.arange(len(ev)) - first, bar=bar, sipm=sipm, time=t, pe=pe, seq=np.zeros(len(ev), np.int64))
