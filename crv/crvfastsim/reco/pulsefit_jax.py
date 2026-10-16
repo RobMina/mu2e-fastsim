@@ -235,6 +235,7 @@ def reconstruct_dense(adc, n, start_tdc, pedestal_db, calib_area, calib_height, 
     out["pedfromdb"] = ~under
     out["wf_near_threshold"] = near
     out["window_overflow"] = overflow
+    out["rounds_exhausted"] = out["found"][:, -1]   # a pulse in the last round: more may follow -> numpy path
     return out
 
 
@@ -251,5 +252,6 @@ def to_flat(dense):
     out = {k: d[k][wf, seq] for k in ("pe", "peph", "time", "height", "beta", "chi2", "letime", "failed", "zerondf",
                                       "fit_A", "fit_mu", "fit_b")}
     out.update(wf=wf, seq=seq, ped=d["ped"][wf], pedfromdb=d["pedfromdb"][wf],
-               wf_near_threshold=d["wf_near_threshold"], window_overflow=d["window_overflow"])
+               wf_near_threshold=d["wf_near_threshold"], window_overflow=d["window_overflow"],
+               rounds_exhausted=d["rounds_exhausted"])
     return out

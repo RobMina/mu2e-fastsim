@@ -90,10 +90,15 @@ def _pad_batches(W, L, batch):
             pad(W["area"].astype(float), 1.0), pad(W["height"].astype(float), 1.0)), nw, nb
 
 
-def _run_jax(W, cfg, L=36, batch=65536):
+def _run_jax(W, cfg, L=36, batch=65536, rounds=None):
     """pulsefit_jax over all waveforms in fixed (batch, L) shapes; longer waveforms and window overflows -> numpy."""
+    import dataclasses
+
     import jax
     from . import pulsefit_jax as PJ
+    cfg_np = cfg
+    if rounds:
+        cfg = dataclasses.replace(cfg, max_pulses=rounds)
     long_ = W["n"] > L
     (mat, n, st, ped, area, height), nw, nb = _pad_batches(W, L, batch)
     parts = []
@@ -105,11 +110,11 @@ def _run_jax(W, cfg, L=36, batch=65536):
     dt = time.perf_counter() - t0
     dense = {k: np.concatenate([p[k] for p in parts])[:nw] for k in parts[0]}
     flat = PJ.to_flat(dense)
-    redo = long_ | flat["window_overflow"]
+    redo = long_ | flat["window_overflow"] | flat["rounds_exhausted"]
     if redo.any():
         rows = np.flatnonzero(redo)
         sub = pulsefit.reconstruct(W["mat"][rows], W["n"][rows], W["start"][rows], W["ped"][rows], W["area"][rows],
-                                   W["height"][rows], cfg)
+                                   W["height"][rows], cfg_np)
         keep = ~np.isin(flat["wf"], rows)
         flat2 = {k: np.concatenate([flat[k][keep], (rows[sub[k]] if k == "wf" else sub[k])])
                  for k in ("wf", "seq", "pe", "time", "failed")}
@@ -127,7 +132,7 @@ def cmd_vr2(args, oracle=False, use_jax=False):
     t0 = time.perf_counter()
     extra = {}
     if use_jax:
-        res, _, nredo, nb = _run_jax(W, cfg, args.length, args.batch)
+        res, _, nredo, nb = _run_jax(W, cfg, args.length, args.batch, args.rounds)
         extra = {"numpy_fallback_waveforms": nredo, "batches": nb, "backend": __import__("jax").default_backend()}
     elif oracle:
         from . import stockfit
@@ -161,6 +166,9 @@ def cmd_bench(args):
     else:
         W = _prepare(args.inputs, args.max_events, cfg)
     (mat, n, st, ped, area, height), nw, nb = _pad_batches(W, args.length, args.batch)
+    if args.rounds:
+        import dataclasses
+        cfg = dataclasses.replace(cfg, max_pulses=args.rounds)
     devs = jax.devices()
     t0 = time.perf_counter()
     jax.block_until_ready(PJ.reconstruct_dense(mat[:args.batch], n[:args.batch], st[:args.batch], ped[:args.batch],
@@ -175,9 +183,11 @@ def cmd_bench(args):
         jax.block_until_ready(outs)
         times.append(time.perf_counter() - t0)
     best = min(times)
+    exhausted = int(np.asarray(outs[0]["rounds_exhausted"]).sum()) if outs else 0
     ne = len(W["events"])
     out = {"backend": jax.default_backend(), "device": str(devs[0]), "n_devices": len(devs), "events": int(ne),
            "waveforms": int(nw), "batch": args.batch, "length": args.length, "batches": nb, "compile_s": compile_s,
+           "rounds": cfg.max_pulses, "rounds_exhausted_first_batch": exhausted,
            "pass_s": times, "events_per_s": ne / best, "waveforms_per_s": nw / best,
            "us_per_event": 1e6 * best / max(ne, 1),
            "stock_reference_us_per_event": {"CrvRecoPulsesFinder_A8_kpp": 3730, "CrvRecoPulsesFinder_A6_mc": 1560}}
@@ -415,6 +425,9 @@ def add_reco_args(sp, name):
     if name in ("vr2jax", "bench"):
         sp.add_argument("--length", type=int, default=36, help="padded samples per waveform (longer -> numpy)")
         sp.add_argument("--batch", type=int, default=65536, help="waveforms per jitted call")
+        sp.add_argument("--rounds", type=int, default=None,
+                        help="pulse rounds in the jitted kernel (default RecoConfig.max_pulses = 8); waveforms with a "
+                        "pulse in the last round are redone by the numpy path")
     if name == "bench":
         sp.add_argument("--repeat", type=int, default=3)
     if name == "vr1":
