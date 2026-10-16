@@ -122,3 +122,13 @@ numpy reference (Python loops over the few hits of an event; events are the para
 | KPP data 124155_000001, all 45,066 events with pulses, 36,336 clusters | **pass: identical cluster lists in every event** (same sector type, same pulse set); PE, start and end times identical, slope within 6e-8, hit time within 0.03 ns (float rounding at t ~ 76 us) |
 | cost (laptop, Python reference) | 0.72 ms/event (stock: 0.05-0.17 ms/event); a jitted twin is needed for R1, not for correctness |
 
+### V-R1 with the JAX waveform synthesis (2026-10-16)
+
+`crvfastsim/reco/waveform_jax.py`: the waveform synthesis as one jitted fixed-shape function (host packing of the stock
+charge clusters into [C, Q] matrices; on device a [C, Q, L] template gather and sum, noise, the 5-sample zero-suppression
+window and a lax.scan for the 12-sample digi split; ADC conversion). Against the numpy port on synthetic clusters:
+sample-identical ADCs and voltages within 1e-12 (unit test). Against the stock noise-free reference (`reco-vr1 --jax`,
+5,000 MC events): **all 128,718 stock digis reproduced sample-identically**, the same 7 extra digis as the numpy path
+(FEBs without a stock digi in the event, TDC0 unknown to the test). CPU (laptop) synthetic throughput: ~42,000
+events/s; GPU throughput (R2) measured with `reco-bench --stage waveforms` in the Polaris bench job.
+

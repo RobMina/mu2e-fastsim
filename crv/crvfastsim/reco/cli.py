@@ -153,9 +153,53 @@ def cmd_vr2(args, oracle=False, use_jax=False):
     _report(args, "vr2stock" if oracle else ("vr2jax" if use_jax else "vr2"), out)
 
 
-def cmd_bench(args):
-    """Throughput of the jitted pulse reco on the reference waveforms (compile excluded; repeated passes)."""
+def _bench_waveforms(args):
+    """Throughput of the jitted waveform synthesis on synthetic SiPM-charge clusters (compile excluded)."""
     import jax
+    from . import waveform_jax as WJ
+    cfg = waveform.WaveformConfig()
+    rng = np.random.default_rng(args.seed)
+    ne = args.max_events or 50000
+    C = ne * 20                                    # KPP-like: ~20 digitised SiPM clusters per event
+    Q = 64                                         # charges per cluster (median ~25 PE in data; padded)
+    n = np.minimum(rng.poisson(28, C), Q)
+    t0 = rng.uniform(100, 90000, C)
+    T = t0[:, None] + np.sort(rng.exponential(8.0, (C, Q)), 1)
+    W = np.where(np.arange(Q)[None, :] < n[:, None], rng.uniform(0.8, 1.2, (C, Q)), 0.0)
+    tdc0 = rng.random(C) * 12.5
+    t_start = np.ceil((t0 - 12.5 - tdc0) / 12.5) * 12.5 + tdc0
+    tmpl = WJ.single_pe_template(cfg.single_pe_file, cfg.single_pe_precision, cfg.single_pe_stretch,
+                                 cfg.single_pe_max_time)
+    keep = n * tmpl.max() >= cfg.min_voltage
+    L = 32
+    B = args.batch
+    nb = -(-C // B)
+    pad = lambda a, v: np.concatenate([a, np.full((nb * B - C,) + a.shape[1:], v, a.dtype)])
+    arrs = [jax.device_put(pad(x, v)) for x, v in ((T, 0.0), (W, 0.0), (n, 0), (t_start, 0.0), (keep, False))]
+    key = jax.random.PRNGKey(args.seed)
+    f = lambda b, k: WJ.synth_dense(*[a[b * B:(b + 1) * B] for a in arrs], tmpl, k, L, cfg.samples_zs,
+                                    cfg.single_pe_precision, cfg.noise, cfg.min_voltage, cfg.adc_conversion,
+                                    cfg.pedestal, cfg.min_adc, cfg.max_adc)
+    t = time.perf_counter()
+    jax.block_until_ready(f(0, key))
+    comp = time.perf_counter() - t
+    times = []
+    for _ in range(args.repeat):
+        t = time.perf_counter()
+        jax.block_until_ready([f(b, jax.random.fold_in(key, b)) for b in range(nb)])
+        times.append(time.perf_counter() - t)
+    best = min(times)
+    return {"stage": "waveforms", "backend": jax.default_backend(), "device": str(jax.devices()[0]), "events": ne,
+            "clusters": C, "Q": Q, "L": L, "batch": B, "compile_s": comp, "pass_s": times, "events_per_s": ne / best,
+            "us_per_event": 1e6 * best / ne,
+            "stock_reference_us_per_event": {"CrvWaveforms_plus_CrvDigi_estimate": "part of the 19.8 ms CRV response"}}
+
+
+def cmd_bench(args):
+    """Throughput of the jitted pulse reco (or, with --stage waveforms, the waveform synthesis); compile excluded."""
+    import jax
+    if getattr(args, "stage", "pulses") == "waveforms":
+        return _report(args, "bench_waveforms", _bench_waveforms(args))
     from . import pulsefit_jax as PJ
     cfg = pulsefit.RecoConfig()
     if args.inputs == ["synthetic"]:
@@ -257,7 +301,11 @@ def cmd_vr1(args):
     n_no_tdc0 = int(np.isnan(tdc0_row).sum())
     tdc0_row = np.nan_to_num(tdc0_row, nan=0.0)
     t0 = time.perf_counter()
-    out = waveform.synthesize(Q["row"], Q["time"], Q["charge"], tdc0_row, cfg, rng=None)
+    if getattr(args, "jax", False):
+        from . import waveform_jax
+        out = _synth_jax_batched(waveform_jax, Q, tdc0_row, cfg, args.batch_clusters)
+    else:
+        out = waveform.synthesize(Q["row"], Q["time"], Q["charge"], tdc0_row, cfg, rng=None)
     dt = time.perf_counter() - t0
     fkey = np.stack([Q["ev_row"][out["chan"]], Q["chan_row"][out["chan"]], out["starttdc"]], 1).astype(np.int64)
     rv = ak.to_numpy(ak.fill_none(ak.pad_none(m.volt, cfg.samples_zs, clip=True), 0.0))
@@ -279,6 +327,27 @@ def cmd_vr1(args):
                 "volt_abs_diff_quantiles_mV": (1e3 * np.quantile(dv, [0.5, 0.9, 0.99])).tolist() if dv.size else None,
                 "events": int(len(events)), "wall_s": dt, "us_per_event": 1e6 * dt / max(len(events), 1)})
     _report(args, "vr1", res)
+
+
+def _synth_jax_batched(WJ, Q, tdc0_row, cfg, batch):
+    """JAX synthesis over all SiPM rows in fixed-shape batches of whole rows (Q and L padded per batch to a bucket)."""
+    rows = Q["row"]
+    starts = np.flatnonzero(np.r_[True, rows[1:] != rows[:-1]])
+    edges = list(starts[::batch]) + [len(rows)]
+    parts = []
+    for a, b in zip(edges[:-1], edges[1:]):
+        sl = slice(a, b)
+        pk = WJ.pack(rows[sl], Q["time"][sl], Q["charge"][sl], tdc0_row, cfg)
+        Qb = int(2 ** np.ceil(np.log2(max(pk["T"].shape[1], 1))))
+        Lb = int(2 ** np.ceil(np.log2(max(pk["L"], 1))))
+        pk = WJ.pack(rows[sl], Q["time"][sl], Q["charge"][sl], tdc0_row, cfg, Q=Qb, L=Lb)
+        wave, adc, st, last = WJ.synth_dense(pk["T"], pk["W"], pk["n"], pk["t_start"], pk["keep"], pk["tmpl"],
+                                             __import__("jax").random.PRNGKey(0), pk["L"], cfg.samples_zs,
+                                             cfg.single_pe_precision, 0.0, cfg.min_voltage, cfg.adc_conversion,
+                                             cfg.pedestal, cfg.min_adc, cfg.max_adc)
+        parts.append(WJ.to_digis(pk, np.asarray(wave), np.asarray(adc), np.asarray(st), np.asarray(last), cfg,
+                                 (0.0, 1e5)))
+    return {k: np.concatenate([p[k] for p in parts]) for k in parts[0]}
 
 
 def cmd_direct(args):
@@ -479,8 +548,12 @@ def add_reco_args(sp, name):
                         "pulse in the last round are redone by the numpy path")
     if name == "bench":
         sp.add_argument("--repeat", type=int, default=3)
+        sp.add_argument("--stage", default="pulses", choices=["pulses", "waveforms"],
+                        help="pulses: jitted pulse reco; waveforms: jitted waveform synthesis (synthetic charges)")
     if name == "vr1":
         sp.add_argument("--window-end", type=float, default=1e5, help="digitisation window end [ns] (offspill 1e5)")
+        sp.add_argument("--jax", action="store_true", help="use the JAX waveform synthesis (waveform_jax)")
+        sp.add_argument("--batch-clusters", type=int, default=2000, help="SiPM rows per jitted call (--jax)")
     if name == "inspect":
         sp.add_argument("--keys", required=True, help="a vr2/vr2stock stats JSON (its unmatched_*_keys)")
     if name == "cost":

@@ -41,3 +41,23 @@ def test_jax_matches_numpy():
     assert np.max(np.abs(out["pe"][good] / ref["pe"][good] - 1)) < 1e-6
     assert np.max(np.abs(out["time"][good] - ref["time"][good])) < 1e-4
     assert np.array_equal(out["wf_near_threshold"], ref["wf_near_threshold"])
+
+
+def test_waveform_jax_matches_numpy():
+    from crvfastsim.reco import waveform as WF
+    from crvfastsim.reco import waveform_jax as WJ
+    cfg = WF.WaveformConfig()
+    rng = np.random.default_rng(4)
+    rows = []
+    for c in range(60):
+        n = rng.integers(1, 60)
+        t = np.sort(300.0 + rng.exponential(10.0, n) + (500.0 if c % 5 == 0 else 0.0) * (np.arange(n) > n // 2))
+        rows.append((np.full(n, c), t, rng.uniform(0.8, 1.2, n) * cfg.single_pe_reference_charge))
+    chan = np.concatenate([r[0] for r in rows]); t = np.concatenate([r[1] for r in rows]); q = np.concatenate([r[2] for r in rows])
+    tdc0 = rng.random(60) * 12.5
+    a = WF.synthesize(chan, t, q, tdc0, cfg)
+    b = WJ.synthesize(chan, t, q, tdc0, cfg)
+    assert len(a["chan"]) == len(b["chan"]) > 0
+    assert np.array_equal(a["chan"], b["chan"]) and np.array_equal(a["starttdc"], b["starttdc"])
+    assert np.array_equal(a["adc"], b["adc"])
+    assert np.max(np.abs(a["volt"] - b["volt"])) < 1e-12
