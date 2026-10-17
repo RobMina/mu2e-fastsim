@@ -32,8 +32,9 @@ def _lib(geom, bar):
     nb = len(T.GROUPS) * T.N_PBINS * T.N_LBINS
     c = geom.center[bar]
     return {
-        "libbins": pd.DataFrame({"kind": [0] * (T.N_PBINS - 1) + [1] * (T.N_LBINS - 1),
-                                 "edge": [1e3, 2e3, 3e3, 20.0, 22.0]}),
+        "libbins": pd.DataFrame([(0, g, e) for g in range(len(T.GROUPS)) for e in (1e3, 2e3, 3e3)] +
+                                [(1, g, e) for g in range(len(T.GROUPS)) for e in (20.0, 22.0, 25.0, 30.0)],
+                                columns=["kind", "group", "edge"]),
         "libxing": pd.DataFrame({"xid": np.arange(nb), "bin": np.arange(nb), "ux": 0.0, "uy": -1.0, "uz": 0.0}),
         "libdesc": pd.DataFrame({"xid": np.arange(nb), "sp": 7, "samebar": 1, "pdg": 11, "dt0": 0.1, "dt1": 0.2,
                                  "dx0": 0.0, "dy0": -1.0, "dz0": 0.0, "dx1": 0.0, "dy1": -2.0, "dz1": 0.0,

@@ -6,7 +6,8 @@ Two parts, both resampled from G4 CrvStep tables (CrvStepTableDumper) of trainin
    primary-muon bar crossing of its event: the crossing in the same bar, else the crossing whose entry point is closest
    to the step (a library-building convention; the arms are never paired this way). A library crossing stores its
    descendants as offsets from its entry point. Sampling: each fast crossing draws a library crossing from the same
-   (sector group, momentum, path-length) bin; the offsets are rotated from the G4 muon direction to the fast one and
+   (sector group, momentum, path-length) bin, with momentum and path-length edges at quantiles per sector group
+   (P_QUANTILES, L_QUANTILES; the path-length bins are finer in the tail); the offsets are rotated from the G4 muon direction to the fast one and
    added to the fast entry point and time; same-bar steps that fall outside are clamped into the fast crossing's bar.
    Steps in another bar keep the bar structure instead: the library stores the centre offset between their bar and the
    crossing's bar and their position inside their bar; the fast step goes to the bar at that centre offset from the fast
@@ -32,7 +33,9 @@ KEY = tables.KEY
 GROUPS = ("EX", "T1", "T2", "M")
 MASS = {11: 0.511, 13: 105.658, 22: 0.0, 211: 139.570, 321: 493.677, 2212: 938.272, 2112: 939.565}
 KE_EDGES = np.geomspace(1.0, 1e6, 19)
-N_PBINS, N_LBINS = 4, 3
+P_QUANTILES = (0.25, 0.5, 0.75)
+L_QUANTILES = (1 / 3, 2 / 3, 0.9, 0.97)  # finer in the long-path tail: long crossings carry more muon and delta energy
+N_PBINS, N_LBINS = len(P_QUANTILES) + 1, len(L_QUANTILES) + 1
 SHOWER_KEY_BASE = 10_000_000
 STEP_COLS = ["x0", "y0", "z0", "x1", "y1", "z1"]
 LIB_TREES = ("libbins", "libxing", "libdesc", "libshower", "libshowersteps", "libgen")
@@ -41,6 +44,17 @@ LIB_TREES = ("libbins", "libxing", "libdesc", "libshower", "libshowersteps", "li
 def _group_index(geom, bar):
     g = SECTOR_GROUP[geom.sector[np.asarray(bar, np.int64)]]
     return np.select([g == x for x in GROUPS], range(len(GROUPS)), -1)
+
+
+def _bin(libbins, group, p, length):
+    """Library bin of each crossing: (group, momentum bin, path-length bin) with the per-group edges of libbins."""
+    out = np.zeros(len(group), np.int64)
+    for gi in range(len(GROUPS)):
+        m = group == gi
+        pe = libbins.edge[(libbins.kind == 0) & (libbins.group == gi)].to_numpy()
+        le = libbins.edge[(libbins.kind == 1) & (libbins.group == gi)].to_numpy()
+        out[m] = (gi * N_PBINS + np.searchsorted(pe, p[m])) * N_LBINS + np.searchsorted(le, length[m])
+    return out
 
 
 def _ke_bin(ke):
@@ -96,9 +110,13 @@ def build(step_paths, gen_paths, geom):
     # 1. muon descendants per crossing
     x = _crossings(s[s.cls == "mu_primary"])
     x["group"] = _group_index(geom, x.bar)
-    p_edges = np.quantile(x.p, np.linspace(0, 1, N_PBINS + 1))[1:-1]
-    l_edges = np.quantile(x.len, np.linspace(0, 1, N_LBINS + 1))[1:-1]
-    x["bin"] = (x.group * N_PBINS + np.searchsorted(p_edges, x.p)) * N_LBINS + np.searchsorted(l_edges, x.len)
+    edges = []
+    for gi in range(len(GROUPS)):
+        xg = x[x.group == gi]
+        edges += [(0, gi, e) for e in np.quantile(xg.p, P_QUANTILES)]
+        edges += [(1, gi, e) for e in np.quantile(xg.len, L_QUANTILES)]
+    lib["libbins"] = pd.DataFrame(edges, columns=["kind", "group", "edge"]).astype({"kind": np.int64, "group": np.int64})
+    x["bin"] = _bin(lib["libbins"], x.group.to_numpy(), x.p.to_numpy(), x.len.to_numpy())
     x["xid"] = np.arange(len(x))
     d = s[s.cls == "mu_descendant"].reset_index(drop=True)
     d["did"] = np.arange(len(d))
@@ -128,8 +146,6 @@ def build(step_paths, gen_paths, geom):
         **{f"l{c}{e}": (d[f"{c}{e}"].to_numpy() - geom.center[db][:, j]) for j, c in enumerate("xyz") for e in "01"}})
     lib["libxing"] = pd.DataFrame({"xid": x.xid, "bin": x.bin.astype(np.int64),
                                    "ux": x.px0 / x.p, "uy": x.py0 / x.p, "uz": x.pz0 / x.p})
-    lib["libbins"] = pd.DataFrame({"kind": ["p"] * (N_PBINS - 1) + ["len"] * (N_LBINS - 1),
-                                   "edge": np.r_[p_edges, l_edges]}).assign(kind=lambda f: (f.kind == "len").astype(np.int64))
     n_unattached = int(len(s[s.cls == "mu_descendant"]) - len(d))
     # 2. non-muon showers, keyed by primary
     gen = tables.read_many(step_paths, "gen", KEY + ["idx", "pdg", "e", "t"])
@@ -179,12 +195,8 @@ def read_library(path):
 # ----------------------------------------------------------------------------------------------------------- sample
 def _desc_for_crossings(fx, lib, geom, rng):
     """Descendant steps for the fast crossings fx (one row per crossing). Returns (steps, n_dropped)."""
-    bins = lib["libbins"]
-    p_edges = bins.edge[bins.kind == 0].to_numpy()
-    l_edges = bins.edge[bins.kind == 1].to_numpy()
     p = np.sqrt(fx.px0 ** 2 + fx.py0 ** 2 + fx.pz0 ** 2).to_numpy()
-    b = (_group_index(geom, fx.bar) * N_PBINS + np.searchsorted(p_edges, p)) * N_LBINS + \
-        np.searchsorted(l_edges, fx.len.to_numpy())
+    b = _bin(lib["libbins"], _group_index(geom, fx.bar), p, fx.len.to_numpy())
     lx = lib["libxing"].sort_values("bin", kind="stable")
     lbin = lx.bin.to_numpy()
     lo, hi = np.searchsorted(lbin, b, "left"), np.searchsorted(lbin, b, "right")
