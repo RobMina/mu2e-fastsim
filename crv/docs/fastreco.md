@@ -122,6 +122,27 @@ numpy reference (Python loops over the few hits of an event; events are the para
 | KPP data 124155_000001, all 45,066 events with pulses, 36,336 clusters | **pass: identical cluster lists in every event** (same sector type, same pulse set); PE, start and end times identical, slope within 6e-8, hit time within 0.03 ns (float rounding at t ~ 76 us) |
 | cost (laptop, Python reference) | 0.72 ms/event (stock: 0.05-0.17 ms/event); a jitted twin is needed for R1, not for correctness |
 
+### V-R3 with the JAX coincidence finder (2026-10-16)
+
+`crvfastsim/reco/coinc_jax.py`: one jitted fixed-shape kernel per sector type over rows of (event, sector type) hit
+groups padded to H. Fixed-shape equivalences: stock `findClusters` grows a cluster until nothing joins and its link test
+is symmetric, so a cluster is the connected component of its seed (boolean transitive closure by log2 H squarings);
+`checkCoincidence` is a dense tensor over K filtered hits per (side, layer) slot, and the max-distance widening is a
+max over passing combinations (order-independent; the stable x-sort is reproduced with ranks). Only n = coincidence
+layers combinations are checked (cuts are uniform per sector type, asserted). Groups run in the smallest tier
+(H, K) = (16,6), (32,8), (64,12), (128,16), (256,24) they fit and are promoted when a (side, layer) slot overflows;
+beyond the last tier (54 of 45,066 KPP events, up to 1,650 pulses) the event goes to `coinc.find_event(...,
+vectorized=True)`, a numpy-broadcast combination check (same result as the scalar port; 15x faster on those events).
+
+| check | result |
+|---|---|
+| `reco-vr3 --jax`, KPP data 124155_000001, 45,066 events | **pass: identical cluster lists in every event** (36,336 clusters); PE within 2e-3, start/end identical, slope 2e-7, avgtime 0.03 ns |
+| unit test (synthetic tracks + noise + showers, small tiers so promotion and fallback run) | JAX == scalar numpy == vectorized numpy |
+| CPU throughput (laptop, incl. host packing and fallback) | KPP data 8,200 events/s (kernel 3.6 s, fallback 1.6 s, packing 0.2 s per 45 k events); synthetic (`synth.coinc_events`, 25 pulses and 1 cluster per event) 9,100 events/s |
+
+GPU throughput pending: `crv_reco_bench.sh` has the stage (`reco-bench synthetic --stage coinc`), but the reservation
+queue `R7728155` was gone at 19:12 ("Unknown queue") and `capacity` refused the job (per-project limit).
+
 ### V-R1 with the JAX waveform synthesis (2026-10-16)
 
 `crvfastsim/reco/waveform_jax.py`: the waveform synthesis as one jitted fixed-shape function (host packing of the stock
