@@ -13,7 +13,10 @@ reco on the same art events (scripts/run_v2_arms.sh): the candidate (fast sim, o
     the denominator is each arm's own truth crossings (--steps / --compare-steps); the agreed observable uses
     extrapolated tracks and the module-gap width D, which this does not compute.
 
-Both arms see the same events, so counts per event are counts per generated event up to one common factor.
+Rates are per event of each arm's art job. With --generated N (and --compare-generated M) they are per generated event
+instead: needed when the arms ran on different event sets, e.g. the candidate on the gen stream (every generated event)
+and the reference on the G4-accepted dts (G4-rejected events have no CRV step above 0.1 MeV, and the digitisation makes
+no digis without charge, so they would add nothing).
 Fixed-edge histograms make it batchable: --emit writes one JSON of counts; --merge sums them.
 
     v2compare FAST.root [...] --compare REF.root [...] [--steps FASTSTEPS.root ... --compare-steps REFSTEPS.root ...]
@@ -241,7 +244,8 @@ def report(S, outdir, labels=("reference", "fast sim")):
     return summ
 
 
-def run(inputs, outdir, compare=None, steps=None, compare_steps=None, emit=None, merge=False, counters=None, **kw):
+def run(inputs, outdir, compare=None, steps=None, compare_steps=None, emit=None, merge=False, counters=None,
+        generated=None, compare_generated=None, **kw):
     S = _new_state()
     if merge:
         for f in tables.expand(inputs):
@@ -252,6 +256,9 @@ def run(inputs, outdir, compare=None, steps=None, compare_steps=None, emit=None,
     geom = geometry.from_offline_config(geometry.find_counters(counters or DEFAULT_COUNTERS))
     _fill_arm(S["fast"], inputs, steps, geom)
     _fill_arm(S["ref"], compare, compare_steps, geom)
+    if generated:
+        S["fast"]["events"] = int(generated)
+        S["ref"]["events"] = int(compare_generated or generated)
     if emit:
         os.makedirs(os.path.dirname(emit) or ".", exist_ok=True)
         json.dump(S, open(emit, "w"))

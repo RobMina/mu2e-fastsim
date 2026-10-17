@@ -8,7 +8,7 @@ Fast CRV reco: reco-vr2, reco-vr2stock, reco-vr2jax, reco-bench, reco-vr1, reco-
 import argparse
 import sys
 
-from .analyses import census, g4cost, g4muon, transport, v0check, v1compare, v2compare
+from .analyses import census, g4cost, g4muon, secondaries, tier1b, transport, v0check, v1compare, v2compare
 from .reco import cli as reco_cli
 
 ANALYSES = {
@@ -18,6 +18,10 @@ ANALYSES = {
     "v0check":   (v0check.run,   "V0: CRV bar geometry (CosmicRayShieldMaker re-implementation) vs the Geant4 GDML, per bar"),
     "v1compare": (v1compare.run, "V1: primary-muon bar crossings (count, path length, visible energy, time) fast sim vs G4"),
     "v2compare": (v2compare.run, "V2: stock CRV response + reco on fast vs G4 CrvSteps (PE, per-bar rates, clusters, layer eff)"),
+    "secondaries": (secondaries.run, "tier-1b design input: G4 steps beyond the primary muon (descendants by process/birth, non-muon primaries)"),
+    "tier1b-build": (tier1b.build, "tier 1b: build the G4 library (muon descendants per crossing, non-muon showers) from training shards"),
+    "tier1b-apply": (tier1b.apply, "tier 1b: add library descendants and non-muon showers to fast tier-1a tables (fast1b.*.root)"),
+    "tier1b-check": (tier1b.check, "tier 1b: step-level closure per sector (descendant energy per crossing, non-muon) vs G4"),
     "g4muon":    (g4muon.run,    "G4 reference CrvStep tables cut to the primary muon's own steps (tier-1a-like V2 arm)"),
 }
 
@@ -52,6 +56,16 @@ def build_parser():
         if name == "v1compare":
             sp.add_argument("--compare", nargs="+", default=None, metavar="ROOT",
                             help="G4 reference CrvStep tables (crvsteps.*.root)")
+        if name == "tier1b-build":
+            sp.add_argument("--gen", nargs="+", default=None, metavar="ROOT", help="gen.*.root of the same shards")
+            sp.add_argument("--out", default=None, metavar="ROOT", help="library file to write")
+        if name == "tier1b-check":
+            sp.add_argument("--compare", nargs="+", default=None, metavar="ROOT", help="G4 CrvStep tables, same shards")
+        if name == "tier1b-apply":
+            sp.add_argument("--library", default=None, metavar="ROOT", help="library from tier1b-build")
+            sp.add_argument("--seed", type=int, default=1, help="base seed; file i uses (seed, 1000+i)")
+        if name == "secondaries":
+            sp.add_argument("--gen", nargs="+", default=None, metavar="ROOT", help="gen.*.root tables (CRY rates per pdg)")
         if name == "v2compare":
             sp.add_argument("--compare", nargs="+", default=None, metavar="ROOT",
                             help="reference arm CrvRecoTableDumper files")
@@ -59,6 +73,10 @@ def build_parser():
                             help="CrvStep tables behind the candidate arm (enables the layer-efficiency diagnostic)")
             sp.add_argument("--compare-steps", nargs="+", default=None, metavar="ROOT",
                             help="CrvStep tables behind the reference arm")
+            sp.add_argument("--generated", type=int, default=None,
+                            help="generated events behind the inputs: rates per generated event")
+            sp.add_argument("--compare-generated", type=int, default=None,
+                            help="generated events behind the reference (default: --generated)")
     for name in reco_cli.RECO_CMDS:
         sp = sub.add_parser(f"reco-{name}", help=f"fast CRV reco: {name} (reco/cli.py)")
         reco_cli.add_reco_args(sp, name)
