@@ -21,7 +21,7 @@ import numpy as np
 
 from mu2efastsim import match, plots, stats
 from . import compare, pulsefit, reftables, waveform
-from .direct import DirectModel, assign_pulses, cluster_features
+from .direct import N_MODELLED, DirectModel, DirectModelV2, assign_pulses, cluster_features
 
 NCHAN_PER_BAR = 4
 
@@ -399,7 +399,136 @@ def _synth_jax_batched(WJ, Q, tdc0_row, cfg, batch):
     return {k: np.concatenate([p[k] for p in parts]) for k in parts[0]}
 
 
+def _direct_inputs(paths, max_events):
+    """Charge clusters, the stock pulses assigned to them (time-ordered, DB time offset removed) and the reference
+    TDC0 of each cluster's (event, FEB)."""
+    cfg = waveform.WaveformConfig()
+    Q = _charges(paths)
+    events = np.unique(Q["ev_row"])
+    if max_events:
+        events = events[:max_events]
+    keep = np.isin(Q["ev_row"][Q["row"]], events)
+    feat = cluster_features(Q["row"][keep], Q["time"][keep], Q["pe"][keep], cfg)
+    P = _pulses(paths, events)
+    C_ = reftables.calib(paths)
+    rk = (Q["ev_row"].astype(np.int64) << 16) | Q["chan_row"]
+    pk = (P["ev"].astype(np.int64) << 16) | P["chan"]
+    srt = np.argsort(rk)
+    pos = np.clip(np.searchsorted(rk[srt], pk), 0, len(srt) - 1)
+    prow = np.where(rk[srt][pos] == pk, srt[pos], -1)
+    tn = P["time"] - C_["timeoffset"][P["chan"]]
+    cl = np.full(len(pk), -1, np.int64)
+    okp = prow >= 0
+    cl[okp] = assign_pulses(feat, prow[okp], tn[okp], cfg)
+    Cn = len(feat["q"])
+    npul = np.bincount(cl[cl >= 0], minlength=Cn)
+    a = np.flatnonzero(cl >= 0)
+    o = a[np.lexsort((tn[a], cl[a]))]
+    first = np.searchsorted(cl[o], cl[o])
+    rank = np.arange(len(o)) - first
+    m = rank < N_MODELLED
+    pul = {k: np.full((Cn, N_MODELLED), np.nan) for k in ("pe", "time", "beta")}
+    pul["failed"] = np.zeros((Cn, N_MODELLED), bool)
+    for k, src in (("pe", P["pe"]), ("time", tn), ("beta", P["beta"]), ("failed", P["failed"])):
+        pul[k][cl[o][m], rank[m]] = src[o][m]
+    # reference TDC0 per (event, FEB) from the digi MC
+    md = reftables.read(paths, "digimc", columns=["run", "subrun", "event", "bar", "sipm", "tdc0"])
+    mev = reftables.event_key(md)
+    mch = ak.to_numpy(md.bar) * NCHAN_PER_BAR + ak.to_numpy(md.sipm)
+    feb = C_["feb"]
+    cev, cch = Q["ev_row"][feat["chan"]], Q["chan_row"][feat["chan"]]
+    kref = mev * 4096 + feb[mch]
+    u, fi = np.unique(kref, return_index=True)
+    kc = cev * 4096 + feb[cch]
+    j = np.clip(np.searchsorted(u, kc), 0, len(u) - 1)
+    tdc0 = np.where(u[j] == kc, ak.to_numpy(md.tdc0)[fi][j], np.nan)
+    return dict(feat=feat, npul=npul, pul=pul, tdc0=tdc0, cev=cev, cch=cch, calib=C_, P=P, cl=cl, events=events,
+                feb=feb)
+
+
+def _coinc_from(ev, chan, time, pe, seq, G, status):
+    from . import coinc_jax as CJ
+    o = np.lexsort((seq, time, chan, ev))
+    ev, chan, time, pe, seq = ev[o], chan[o], time[o], pe[o], seq[o]
+    idx = np.arange(len(ev)) - np.searchsorted(ev, ev)
+    return CJ.find(ev, idx, chan // NCHAN_PER_BAR, chan % NCHAN_PER_BAR, time, pe, seq, G, status)
+
+
 def cmd_direct(args):
+    """Direct path v2: fit on even events, test on odd. Per cluster pulse count and the first N_MODELLED pulses vs
+    stock, then the coincidence finder on direct-path pulses vs on stock pulses of the same events (V-R4 style)."""
+    if getattr(args, "v1", False):
+        return cmd_direct_v1(args)
+    D = _direct_inputs(args.inputs, args.max_events)
+    feat, npul, pul, cev = D["feat"], D["npul"], D["pul"], D["cev"]
+    Cn = len(feat["q"])
+    rng = np.random.default_rng(args.seed)
+    train = (cev % 2) == 0
+    fsel = lambda m: {k: (v[m] if isinstance(v, np.ndarray) and len(v) == Cn else v) for k, v in feat.items()}
+    fit = train & (np.isfinite(D["tdc0"]) | (npul == 0))   # pulsed clusters need their FEB's reference TDC0
+    model = DirectModelV2.fit(fsel(fit), npul[fit], {k: v[fit] for k, v in pul.items()}, np.nan_to_num(D["tdc0"])[fit])
+    te = ~train
+    ft = fsel(te)
+    # one TDC0 per (event, FEB), uniform over a clock period, as stock
+    kc = cev[te] * 4096 + D["feb"][D["cch"][te]]
+    uk, inv = np.unique(kc, return_inverse=True)
+    t0 = time.perf_counter()
+    tdc0 = (rng.random(len(uk)) * pulsefit.PERIOD)[inv]
+    s = model.sample(ft, tdc0, rng)
+    dt_sample = time.perf_counter() - t0
+    toff = D["calib"]["timeoffset"][D["cch"][te]]
+    n_ref, n_fast = npul[te], s["n"]
+    ref_p = {k: v[te] for k, v in pul.items()}
+    out = {"model": "v2 joint resampling, TDC0 per (event, FEB)", "clusters_test": int(te.sum()),
+           "events_test": int(len(np.unique(cev[te]))),
+           "npulse_hist": {"ref": (np.bincount(np.minimum(n_ref, 4), minlength=5) / len(n_ref)).tolist(),
+                           "fast": (np.bincount(np.minimum(n_fast, 4), minlength=5) / len(n_fast)).tolist()},
+           "found_frac_vs_q": _eff_vs_q(ft["q"], n_ref > 0, n_fast > 0)}
+    for k in range(min(2, N_MODELLED)):
+        fast = {"pe": s["pe"][:, k], "time": s["time"][:, k], "beta": s["beta"][:, k]}
+        ref = {"pe": ref_p["pe"][:, k], "time": ref_p["time"][:, k], "beta": ref_p["beta"][:, k]}
+        if k > 0:
+            fast["time"] = s["time"][:, k] - s["time"][:, 0]
+            ref["time"] = ref_p["time"][:, k] - ref_p["time"][:, 0]
+        out[f"pulse{k}"] = {"summary": compare.distribution_summary(fast, ref),
+                            "binned": {c: _band(fast[c], ref[c]) for c in ("pe", "beta", "time")}}
+    out["failed_frac"] = {"ref": float(ref_p["failed"][:, 0][n_ref > 0].mean()),
+                          "fast": float(s["failed"][:, 0][n_fast > 0].mean())}
+    # downstream: coincidences from stock pulses vs direct-path pulses, same test events
+    G = _coinc_geom()
+    status = D["calib"]["status"]
+    P = D["P"]
+    pm = (P["ev"] % 2) == 1
+    ref_cl = _coinc_from(P["ev"][pm], P["chan"][pm], P["time"][pm], P["pe"][pm], P["seq"][pm], G, status)
+    h = s["has"]
+    ci, ki = np.nonzero(h)
+    t_fast = s["time"][ci, ki] + toff[ci]
+    fast_cl = _coinc_from(cev[te][ci], D["cch"][te][ci], t_fast, s["pe"][ci, ki], ki, G, status)
+    ne = out["events_test"]
+    per_type = lambda c: {int(t): int((c["cl_type"] == t).sum()) for t in np.unique(np.r_[ref_cl["cl_type"],
+                                                                                          fast_cl["cl_type"]])}
+    out["coincidences"] = {"per_event": {"ref": len(ref_cl["cl_type"]) / ne, "fast": len(fast_cl["cl_type"]) / ne},
+                           "ratio": len(fast_cl["cl_type"]) / max(len(ref_cl["cl_type"]), 1),
+                           "per_sector_type": {"ref": per_type(ref_cl), "fast": per_type(fast_cl)},
+                           "cluster_pe": _band(fast_cl["cl_pe"], ref_cl["cl_pe"]),
+                           "cluster_pe_median": {"ref": float(np.median(ref_cl["cl_pe"])),
+                                                 "fast": float(np.median(fast_cl["cl_pe"]))},
+                           "cluster_duration_median_ns": {
+                               "ref": float(np.median(ref_cl["cl_end"] - ref_cl["cl_start"])),
+                               "fast": float(np.median(fast_cl["cl_end"] - fast_cl["cl_start"]))}}
+    out["v_r4_checks"] = {"coincidences_per_event_within_1pct": abs(out["coincidences"]["ratio"] - 1) <= 0.01,
+                          "cluster_pe_median_within_2pct": abs(out["coincidences"]["cluster_pe_median"]["fast"] /
+                                                               out["coincidences"]["cluster_pe_median"]["ref"] - 1) <= 0.02,
+                          "pulse_pe_band": out["pulse0"]["binned"]["pe"]["max_abs_dev_minus_2sigma"] is not None and
+                          out["pulse0"]["binned"]["pe"]["max_abs_dev_minus_2sigma"] <= BAND_TOL["pe"]}
+    out["unassigned_ref_pulses"] = {"n": int((D["cl"] < 0).sum()), "frac": float((D["cl"] < 0).mean())}
+    out["us_per_event_sample"] = 1e6 * dt_sample / max(ne, 1)
+    os.makedirs(args.outdir, exist_ok=True)
+    model.save(os.path.join(args.outdir, "direct_model_v2.npz"))
+    _report(args, "direct", out)
+
+
+def cmd_direct_v1(args):
     """Fit on even events, test on odd: pulse count per cluster, first-pulse PE/time/beta vs stock pulses."""
     cfg = waveform.WaveformConfig()
     Q = _charges(args.inputs)
@@ -645,6 +774,8 @@ def add_reco_args(sp, name):
         sp.add_argument("--jax", action="store_true", help="use the JAX coincidence finder (coinc_jax)")
     if name == "inspect":
         sp.add_argument("--keys", required=True, help="a vr2/vr2stock stats JSON (its unmatched_*_keys)")
+    if name == "direct":
+        sp.add_argument("--v1", action="store_true", help="the v1 model (first pulse only, independent residuals)")
     if name == "cost":
         sp.add_argument("--model", default=None, help="direct_model.npz from the direct subcommand")
 

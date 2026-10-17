@@ -109,3 +109,26 @@ def test_direct_model_threshold_and_resampling():
         sel = (q >= lo) & (q < hi)
         assert abs((s["n"][sel] > 0).mean() - found[sel].mean()) < 0.03
     assert abs(np.nanmedian(s["pe"] / q) - 0.9) < 1e-6
+
+
+def test_direct_v2_resamples_whole_response():
+    """DirectModelV2 returns a training cluster's full response: count, pulse ordering and spacing, TDC0 shift."""
+    import numpy as np
+    from crvfastsim.reco.direct import N_MODELLED, DirectModelV2
+    rng = np.random.default_rng(3)
+    C = 2000
+    feat = {"q": np.full(C, 40.0), "pfrac": np.full(C, 0.8), "t10": rng.uniform(100, 200, C)}
+    n = rng.integers(1, 3, C)
+    tdc0 = rng.uniform(0, 12.5, C)
+    pul = {k: np.full((C, N_MODELLED), np.nan) for k in ("pe", "time", "beta")}
+    pul["failed"] = np.zeros((C, N_MODELLED), bool)
+    pul["pe"][:, 0], pul["time"][:, 0], pul["beta"][:, 0] = 38.0, feat["t10"] - tdc0 + 30.0, 15.0
+    two = n == 2
+    pul["pe"][two, 1], pul["time"][two, 1], pul["beta"][two, 1] = 5.0, pul["time"][two, 0] + 40.0, 14.0
+    m = DirectModelV2.fit(feat, n, pul, tdc0)
+    t_new = rng.uniform(0, 12.5, C)
+    s = m.sample(feat, t_new, rng)
+    assert set(np.unique(s["n"])) == {1, 2}
+    assert np.allclose(s["time"][:, 0], feat["t10"] - t_new + 30.0)
+    t2 = s["n"] == 2
+    assert np.allclose(s["time"][t2, 1] - s["time"][t2, 0], 40.0) and np.all(np.isnan(s["time"][~t2, 1]))

@@ -82,7 +82,7 @@ def _bin(feat):
 
 @dataclass
 class DirectModel:
-    """Conditional empirical resampling per (Q, spread) bin."""
+    """v1: per-bin pulse-count probabilities and independent first-pulse residuals (kept for comparison)."""
     p_npulse: np.ndarray = field(default=None)       # [B, MAX_PULSES+1]
     res_start: np.ndarray = field(default=None)      # [B] start index into res
     res_count: np.ndarray = field(default=None)      # [B]
@@ -130,3 +130,60 @@ class DirectModel:
     def load(cls, path):
         z = np.load(path)
         return cls(p_npulse=z["p_npulse"], res_start=z["res_start"], res_count=z["res_count"], res=z["res"])
+
+
+# v2 residual row: n, then per modelled pulse k: pe_k/Q, dt_k (k=0: t - t10 + TDC0; k>0: t_k - t_0), beta_k, failed_k
+N_MODELLED = 3
+ROW = 1 + 4 * N_MODELLED
+
+
+@dataclass
+class DirectModelV2:
+    """Joint empirical resampling: a test cluster takes the whole response (pulse count and the first N_MODELLED
+    pulses) of one training cluster from its (Q, prompt fraction) bin. Times are learnt with the FEB clock phase TDC0
+    removed and the sampled TDC0 (one per event and FEB, as stock) put back, so channels on one FEB shift together."""
+    res_start: np.ndarray = field(default=None)   # [B]
+    res_count: np.ndarray = field(default=None)   # [B]
+    res: np.ndarray = field(default=None)         # [R, ROW]
+
+    @classmethod
+    def fit(cls, feat, n_pulses, pulses, tdc0):
+        """pulses: dict of [C, N_MODELLED] arrays pe, time (DB offset removed), beta, failed (NaN/False where none),
+        in time order; tdc0 [C]: the FEB TDC0 of each training cluster's event."""
+        b = _bin(feat)
+        q = np.maximum(feat["q"], 1e-9)
+        cols = [np.minimum(n_pulses, MAX_PULSES).astype(float)]
+        for k in range(N_MODELLED):
+            dt = pulses["time"][:, k] - (feat["t10"] - tdc0 if k == 0 else pulses["time"][:, 0])
+            cols += [pulses["pe"][:, k] / q, dt, pulses["beta"][:, k], pulses["failed"][:, k].astype(float)]
+        vec = np.stack(cols, 1)
+        order = np.argsort(b, kind="stable")
+        rc = np.bincount(b, minlength=NBINS)
+        return cls(res_start=np.r_[0, np.cumsum(rc)[:-1]], res_count=rc, res=vec[order])
+
+    def sample(self, feat, tdc0, rng):
+        """Per cluster: n and [C, N_MODELLED] pe, time (relative to the FEB's TDC0, DB offset not added), beta,
+        failed; tdc0 [C] is the sampled TDC0 of the cluster's (event, FEB)."""
+        b = _bin(feat)
+        filled = np.flatnonzero(self.res_count > 0)
+        nb = filled[np.clip(np.searchsorted(filled, b), 0, len(filled) - 1)]
+        bb = np.where(self.res_count[b] > 0, b, nb)
+        r = self.res[self.res_start[bb] + (rng.random(len(b)) * self.res_count[bb]).astype(np.int64)]
+        n = r[:, 0].astype(np.int64)
+        k = np.arange(N_MODELLED)[None, :]
+        has = k < n[:, None]
+        g = lambda j: r[:, 1 + 4 * np.arange(N_MODELLED) + j]
+        t = g(1).copy()
+        t[:, 0] += feat["t10"] - tdc0
+        t[:, 1:] += t[:, :1]
+        return {"n": n, "has": has, "pe": np.where(has, g(0) * feat["q"][:, None], np.nan),
+                "time": np.where(has, t, np.nan), "beta": np.where(has, g(2), np.nan), "failed": has & (g(3) > 0.5)}
+
+    def save(self, path):
+        np.savez(path, version=2, res_start=self.res_start, res_count=self.res_count, res=self.res, q_edges=Q_EDGES,
+                 f_edges=F_EDGES, prompt_ns=PROMPT_NS)
+
+    @classmethod
+    def load(cls, path):
+        z = np.load(path)
+        return cls(res_start=z["res_start"], res_count=z["res_count"], res=z["res"])
