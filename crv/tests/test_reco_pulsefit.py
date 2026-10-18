@@ -132,3 +132,29 @@ def test_direct_v2_resamples_whole_response():
     assert np.allclose(s["time"][:, 0], feat["t10"] - t_new + 30.0)
     t2 = s["n"] == 2
     assert np.allclose(s["time"][t2, 1] - s["time"][t2, 0], 40.0) and np.all(np.isnan(s["time"][~t2, 1]))
+
+
+def test_noise_partner_and_model():
+    """Noise flag: a pulse pair on two SiPMs of one counter is signal, a lone pulse is noise; the fitted model
+    reproduces the per-event count and keeps generated pulses on the channels seen in training."""
+    import numpy as np
+    from crvfastsim.reco import noise as N
+    rng = np.random.default_rng(5)
+    rows = []
+    for e in range(4000):
+        b = rng.integers(0, 100)
+        rows += [(e, b * 4, 500.0, 30.0), (e, b * 4 + 2, 503.0, 28.0)]          # signal pair
+        for _ in range(rng.poisson(1.5)):
+            rows.append((e, 4 * rng.integers(100, 110) + 1, rng.uniform(0, 1e5), 6.0))   # noise channels 401..437
+    a = np.array(rows)
+    o = np.lexsort((a[:, 2], a[:, 1], a[:, 0]))
+    a = a[o]
+    P = {"ev": a[:, 0].astype(np.int64), "chan": a[:, 1].astype(np.int64), "time": a[:, 2], "pe": a[:, 3],
+         "beta": np.full(len(a), 14.0), "failed": np.zeros(len(a), bool), "wf": np.arange(len(a))}
+    wi, noise = N.noise_waveforms(P["ev"], P["chan"], P["time"], P["wf"])
+    assert not noise[P["pe"] > 20].any() and noise[P["pe"] < 10].all()
+    m = N.NoiseModel.fit(P, 4000, 2304)
+    s = m.sample(4000, rng)
+    assert abs(len(s["ev"]) / 4000 - 1.5) < 0.1
+    assert set(np.unique(s["chan"])) <= set(range(401, 440, 4))
+    assert np.allclose(s["pe"], 6.0)

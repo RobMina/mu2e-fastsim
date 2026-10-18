@@ -48,7 +48,7 @@ def _pulses(paths, events=None):
     wf0 = ak.to_numpy(ak.firsts(p.wfidx))
     return {"ev": ev, "chan": chan, "seq": ak.to_numpy(p.seq), "pe": ak.to_numpy(p.pe), "time": ak.to_numpy(p.time),
             "beta": ak.to_numpy(p.beta), "failed": (ak.to_numpy(p.flags) & 1).astype(bool),
-            "key": compare.pulse_key(ev, wf0, ak.to_numpy(p.seq))}
+            "key": compare.pulse_key(ev, wf0, ak.to_numpy(p.seq)), "wf": wf0}
 
 
 def _prepare(paths, max_events, cfg):
@@ -473,7 +473,7 @@ def cmd_direct(args):
     kc = cev[te] * 4096 + D["feb"][D["cch"][te]]
     uk, inv = np.unique(kc, return_inverse=True)
     t0 = time.perf_counter()
-    tdc0 = (rng.random(len(uk)) * pulsefit.PERIOD)[inv]
+    tdc0 = (args.feb_phase_offset + rng.random(len(uk)) * args.feb_phase_spread)[inv]
     s = model.sample(ft, tdc0, rng)
     dt_sample = time.perf_counter() - t0
     toff = D["calib"]["timeoffset"][D["cch"][te]]
@@ -526,6 +526,76 @@ def cmd_direct(args):
     os.makedirs(args.outdir, exist_ok=True)
     model.save(os.path.join(args.outdir, "direct_model_v2.npz"))
     _report(args, "direct", out)
+
+
+def cmd_noise(args):
+    """Noise-pulse model: fit on even events of a data table, generate for the odd events, compare with the held-out
+    data (count per event, channels, PE, time), then coincidences from (data signal pulses + generated noise) vs the
+    stock coincidences of the same events."""
+    from . import noise as N
+    G = _coinc_geom()
+    sl = dict(sector=G.sector_type[G.sector], layer=G.layer) if not args.counter_only else {}
+    P = _pulses(args.inputs)
+    evs_all = reftables.event_key(reftables.read(args.inputs, "events", columns=["run", "subrun", "event"]))
+    evs_all = np.unique(evs_all)
+    nchan = len(reftables.calib(args.inputs)["status"])
+    sub = None
+    if args.mc:
+        Pm = _pulses([args.mc])
+        nm = len(np.unique(reftables.event_key(reftables.read([args.mc], "events", columns=["run", "subrun", "event"]))))
+        wi, iso = N.noise_waveforms(Pm["ev"], Pm["chan"], Pm["time"], Pm["wf"], **sl)
+        fst = np.unique(wi, return_index=True)[1]
+        sel = fst[iso[fst]]
+        sub = np.bincount(Pm["chan"][sel], minlength=nchan) / nm
+    tr = (P["ev"] % 2) == 0
+    ntr, nte = int(((evs_all % 2) == 0).sum()), int(((evs_all % 2) == 1).sum())
+    model = N.NoiseModel.fit({k: v[tr] for k, v in P.items()}, ntr, nchan, subtract_rate=sub, **sl)
+    rng = np.random.default_rng(args.seed)
+    t0 = time.perf_counter()
+    g = model.sample(nte, rng, N.NoiseConfig(rate_scale=args.rate_scale))
+    dt = time.perf_counter() - t0
+    te = {k: v[~tr] for k, v in P.items()}
+    wi, noise = N.noise_waveforms(te["ev"], te["chan"], te["time"], te["wf"], **sl)
+    fst = np.unique(wi, return_index=True)[1]
+    nwf = fst[noise[fst]]
+    cnt_ref = np.bincount(np.searchsorted(np.unique(te["ev"]), te["ev"][nwf]), minlength=nte)
+    cnt_fast = np.bincount(g["ev"][g["seq"] == 0], minlength=nte)
+    ch_ref = np.bincount(te["chan"][nwf], minlength=nchan)
+    ch_fast = np.bincount(g["chan"][g["seq"] == 0], minlength=nchan)
+    ok = ch_ref > 50
+    ref_p = {"pe": te["pe"][noise], "time": te["time"][noise], "beta": te["beta"][noise]}
+    fast_p = {"pe": g["pe"], "time": g["time"], "beta": g["beta"]}
+    out = {"events_train": ntr, "events_test": nte, "mc_subtracted": bool(sub is not None),
+           "gamma_k": model.gamma_k, "library_waveforms": int(len(model.lib)),
+           "noise_waveforms_per_event": {"ref": float(cnt_ref.mean()), "fast": float(cnt_fast.mean())},
+           "count_var": {"ref": float(cnt_ref.var()), "fast": float(cnt_fast.var())},
+           "count_hist": {"ref": np.bincount(np.minimum(cnt_ref, 8), minlength=9).tolist(),
+                          "fast": np.bincount(np.minimum(cnt_fast, 8), minlength=9).tolist()},
+           "pulses_per_noise_waveform": {"ref": float(noise.sum() / max(len(nwf), 1)),
+                                         "fast": float(len(g["ev"]) / max((g["seq"] == 0).sum(), 1))},
+           "channel_rate_ratio_q": np.quantile(ch_fast[ok] / ch_ref[ok], [0.05, 0.5, 0.95]).tolist(),
+           "pulses": compare.distribution_summary(fast_p, ref_p),
+           "pulses_binned": {c: _band(fast_p[c], ref_p[c]) for c in ("pe", "beta")},
+           "us_per_event_sample": 1e6 * dt / max(nte, 1)}
+    # downstream: stock coincidences vs (signal pulses of the test events + generated noise)
+    status = reftables.calib(args.inputs)["status"]
+    ue = np.unique(te["ev"])
+    test_events = evs_all[(evs_all % 2) == 1]
+    ref_cl = _coinc_from(te["ev"], te["chan"], te["time"], te["pe"], te["seq"], G, status)
+    sig = ~noise
+    gev = test_events[g["ev"]]
+    cat = lambda a, b: np.concatenate([a, b])
+    fast_cl = _coinc_from(cat(te["ev"][sig], gev), cat(te["chan"][sig], g["chan"]), cat(te["time"][sig], g["time"]),
+                          cat(te["pe"][sig], g["pe"]), cat(te["seq"][sig], g["seq"]), G, status)
+    none_cl = _coinc_from(te["ev"][sig], te["chan"][sig], te["time"][sig], te["pe"][sig], te["seq"][sig], G, status)
+    pt = lambda c: {int(t): int((c["cl_type"] == t).sum()) for t in (1, 2, 3, 4)}
+    out["coincidences"] = {"stock": pt(ref_cl), "signal_plus_model_noise": pt(fast_cl), "signal_only": pt(none_cl),
+                           "per_event": {"stock": len(ref_cl["cl_type"]) / nte,
+                                         "signal_plus_model_noise": len(fast_cl["cl_type"]) / nte,
+                                         "signal_only": len(none_cl["cl_type"]) / nte}}
+    os.makedirs(args.outdir, exist_ok=True)
+    model.save(os.path.join(args.outdir, "noise_model.npz"))
+    _report(args, "noise", out)
 
 
 def cmd_direct_v1(args):
@@ -659,7 +729,7 @@ def _report(args, name, out):
     print(json.dumps(plots._clean(out), indent=1)[:4000])
 
 
-RECO_CMDS = ("vr2", "vr2stock", "vr2jax", "bench", "vr1", "vr3", "direct", "cost", "inspect")
+RECO_CMDS = ("vr2", "vr2stock", "vr2jax", "bench", "vr1", "vr3", "direct", "noise", "cost", "inspect")
 
 
 def cmd_vr3(args):
@@ -776,13 +846,23 @@ def add_reco_args(sp, name):
         sp.add_argument("--keys", required=True, help="a vr2/vr2stock stats JSON (its unmatched_*_keys)")
     if name == "direct":
         sp.add_argument("--v1", action="store_true", help="the v1 model (first pulse only, independent residuals)")
+        sp.add_argument("--feb-phase-spread", type=float, default=12.5,
+                        help="FEB clock phase (TDC0) drawn uniform in [offset, offset+spread] ns per (event, FEB); "
+                        "stock MC 12.5 (one period); a tuning knob for data")
+        sp.add_argument("--feb-phase-offset", type=float, default=0.0)
+    if name == "noise":
+        sp.add_argument("--mc", default=None, help="MC reference table: its isolated-waveform rate is subtracted")
+        sp.add_argument("--rate-scale", type=float, default=1.0)
+        sp.add_argument("--counter-only", action="store_true",
+                        help="noise = no partner on the same counter only (default also requires none in another "
+                        "layer of the sector)")
     if name == "cost":
         sp.add_argument("--model", default=None, help="direct_model.npz from the direct subcommand")
 
 
 def run_reco(name, a):
     a.outdir = a.outdir or f"plots/reco_{name}"
-    {"vr2": cmd_vr2, "vr2stock": lambda x: cmd_vr2(x, oracle=True), "vr1": cmd_vr1, "vr3": cmd_vr3, "direct": cmd_direct,
+    {"vr2": cmd_vr2, "vr2stock": lambda x: cmd_vr2(x, oracle=True), "vr1": cmd_vr1, "vr3": cmd_vr3, "direct": cmd_direct, "noise": cmd_noise,
      "cost": cmd_cost, "inspect": cmd_inspect, "vr2jax": lambda x: cmd_vr2(x, use_jax=True),
      "bench": cmd_bench}[name](a)
 
