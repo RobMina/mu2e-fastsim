@@ -8,7 +8,8 @@ Two parts, both resampled from G4 CrvStep tables (CrvStepTableDumper) of trainin
    descendants as offsets from its entry point. Sampling: each fast crossing draws a library crossing from the same
    (sector group, momentum, path-length) bin, with momentum and path-length edges at quantiles per sector group
    (P_QUANTILES, L_QUANTILES; the path-length bins are finer in the tail); the offsets are rotated from the G4 muon direction to the fast one and
-   added to the fast entry point and time; same-bar steps that fall outside are clamped into the fast crossing's bar.
+   added to the fast entry point and time; same-bar steps that fall outside are moved into the fast crossing's bar
+   (fit_inside: shift the step so its midpoint is INSET_MM inside every face, then trim the endpoints).
    Steps in another bar keep the bar structure instead: the library stores the centre offset between their bar and the
    crossing's bar and their position inside their bar; the fast step goes to the bar at that centre offset from the fast
    crossing's bar (same length axis), at the stored position, moved along the bar by the shift of the muon entry along
@@ -55,6 +56,18 @@ def _bin(libbins, group, p, length):
         le = libbins.edge[(libbins.kind == 1) & (libbins.group == gi)].to_numpy()
         out[m] = (gi * N_PBINS + np.searchsorted(pe, p[m])) * N_LBINS + np.searchsorted(le, length[m])
     return out
+
+
+INSET_MM = 0.1
+
+
+def fit_inside(r0, r1, lo, hi, inset=INSET_MM):
+    """Move each step (r0 -> r1) into its box [lo, hi]: shift it so its midpoint is >= inset inside every face, then
+    clip the endpoints. Clipping the endpoints alone put the step on a face, where the CRV lookup tables give no light."""
+    mid = 0.5 * (r0 + r1)
+    tgt = np.clip(mid, lo + inset, hi - inset)
+    d = tgt - mid
+    return np.clip(r0 + d, lo, hi), np.clip(r1 + d, lo, hi)
 
 
 def _ke_bin(ke):
@@ -233,14 +246,13 @@ def _desc_for_crossings(fx, lib, geom, rng):
         o1[rows_o, la] += shift
         lo_, hi_ = geom.center[tbs] - geom.halflen[tbs], geom.center[tbs] + geom.halflen[tbs]
         ok &= (0.5 * (o0 + o1) >= lo_).all(1) & (0.5 * (o0 + o1) <= hi_).all(1)
-        r0[other], r1[other] = np.clip(o0, lo_, hi_), np.clip(o1, lo_, hi_)
+        r0[other], r1[other] = fit_inside(o0, o1, lo_, hi_)
         bar[other] = np.where(ok, tb, -1)
         mom[other] = dd.loc[:, ["px0", "py0", "pz0"]].to_numpy()[other]
     clamp = same & (bar != xbar)
     if clamp.any():
         c, h = geom.center[xbar[clamp]], geom.halflen[xbar[clamp]]
-        r0[clamp] = np.clip(r0[clamp], c - h, c + h)
-        r1[clamp] = np.clip(r1[clamp], c - h, c + h)
+        r0[clamp], r1[clamp] = fit_inside(r0[clamp], r1[clamp], c - h, c + h)
         bar[clamp] = xbar[clamp]
     keep = bar >= 0
     out = pd.DataFrame({k: fx[k].to_numpy()[ix][keep] for k in KEY})

@@ -18,6 +18,17 @@ def test_rotate_maps_direction_and_keeps_length():
     assert np.allclose(np.linalg.norm(T.rotate(v, a, b), axis=1), np.linalg.norm(v, axis=1))
 
 
+def test_fit_inside_keeps_midpoint_off_faces():
+    lo, hi = np.zeros((3, 3)), np.array([[10.0, 20.0, 30.0]] * 3)
+    r0 = np.array([[-5.0, 1.0, 1.0], [9.0, 19.0, 29.0], [2.0, 2.0, 2.0]])
+    r1 = np.array([[-1.0, 3.0, 3.0], [12.0, 25.0, 29.5], [4.0, 4.0, 4.0]])
+    a, b = T.fit_inside(r0, r1, lo, hi)
+    mid = 0.5 * (a + b)
+    assert np.all(mid >= T.INSET_MM - 1e-9) and np.all(mid <= hi - T.INSET_MM + 1e-9)
+    assert np.all((a >= lo) & (a <= hi) & (b >= lo) & (b <= hi))
+    assert np.allclose(a[2], r0[2]) and np.allclose(b[2], r1[2])   # a step already inside is untouched
+
+
 @pytest.fixture(scope="module")
 def geom():
     from crvfastsim import geometry

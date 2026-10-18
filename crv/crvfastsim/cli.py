@@ -8,7 +8,7 @@ Fast CRV reco: reco-vr2, reco-vr2stock, reco-vr2jax, reco-bench, reco-vr1, reco-
 import argparse
 import sys
 
-from .analyses import census, g4cost, g4muon, secondaries, tier1b, transport, v0check, v1compare, v2compare
+from .analyses import census, g4cost, g4muon, secondaries, tier1b, transport, v0check, v1compare, v2compare, v2origin
 from .reco import cli as reco_cli
 
 ANALYSES = {
@@ -22,6 +22,7 @@ ANALYSES = {
     "tier1b-build": (tier1b.build, "tier 1b: build the G4 library (muon descendants per crossing, non-muon showers) from training shards"),
     "tier1b-apply": (tier1b.apply, "tier 1b: add library descendants and non-muon showers to fast tier-1a tables (fast1b.*.root)"),
     "tier1b-check": (tier1b.check, "tier 1b: step-level closure per sector (descendant energy per crossing, non-muon) vs G4"),
+    "v2origin":  (v2origin.run,  "V2 diagnostic: reco pulses by deposit origin (muon / descendant / non-muon / none) per PE bin, two arms"),
     "g4muon":    (g4muon.run,    "G4 reference CrvStep tables cut to the primary muon's own steps (tier-1a-like V2 arm)"),
 }
 
@@ -66,6 +67,12 @@ def build_parser():
             sp.add_argument("--seed", type=int, default=1, help="base seed; file i uses (seed, 1000+i)")
         if name == "secondaries":
             sp.add_argument("--gen", nargs="+", default=None, metavar="ROOT", help="gen.*.root tables (CRY rates per pdg)")
+        if name == "v2origin":
+            sp.add_argument("--steps", nargs="+", default=None, metavar="ROOT", help="CrvStep table behind the inputs")
+            sp.add_argument("--compare", nargs="+", default=None, metavar="ROOT", help="reference CrvRecoTableDumper files")
+            sp.add_argument("--compare-steps", nargs="+", default=None, metavar="ROOT", help="CrvStep tables behind the reference")
+            sp.add_argument("--generated", type=int, default=None, help="generated events behind the inputs")
+            sp.add_argument("--compare-generated", type=int, default=None, help="generated events behind the reference")
         if name == "v2compare":
             sp.add_argument("--compare", nargs="+", default=None, metavar="ROOT",
                             help="reference arm CrvRecoTableDumper files")

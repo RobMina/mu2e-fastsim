@@ -70,6 +70,25 @@ def _per_crossing(paths, geom):
         nm.groupby(tables.KEY + ["bar"]).edep.sum().reset_index().assign(group=lambda f: SECTOR_GROUP[geom.sector[f.bar.to_numpy()]])
 
 
+def _desc_geometry(paths, geom):
+    """Muon-descendant steps: local midpoint |offset|/half-length in thickness, width and length, step length, |p|."""
+    from .census import classify
+    steps = tables.read_many(paths, "steps", tables.KEY + ["bar", "sp", "edep", "len", "x0", "y0", "z0", "x1", "y1",
+                                                          "z1", "px0", "py0", "pz0"])
+    parts = tables.read_many(paths, "particles", tables.KEY + ["key", "parent", "pdg"])
+    s = classify(steps, parts, geom.sector)
+    d = s[s.cls == "mu_descendant"]
+    b = d.bar.to_numpy()
+    mid = 0.5 * (d[["x0", "y0", "z0"]].to_numpy() + d[["x1", "y1", "z1"]].to_numpy())
+    rel = np.abs(mid - geom.center[b]) / geom.halflen[b]
+    ax = geom.local_to_world[b]
+    r = np.arange(len(b))
+    seg = np.linalg.norm(d[["x1", "y1", "z1"]].to_numpy() - d[["x0", "y0", "z0"]].to_numpy(), axis=1)
+    return {"thick": rel[r, ax[:, 0]], "width": rel[r, ax[:, 1]], "length": rel[r, ax[:, 2]], "seg": seg,
+            "len": d.len.to_numpy(), "p": np.linalg.norm(d[["px0", "py0", "pz0"]].to_numpy(), axis=1),
+            "edep": d.edep.to_numpy()}
+
+
 def check(inputs, outdir, compare=None, counters=None, **kw):
     """tier1b-check FAST1B.root [...] --compare crvsteps.root [...]: step-level tier-1b closure per sector group."""
     from mu2efastsim import plots
@@ -94,12 +113,31 @@ def check(inputs, outdir, compare=None, counters=None, **kw):
                   "desc_outside_muon_bars_per_crossing_ref": float(orr.get(g, 0.0) / len(b)),
                   "nonmu_edep_fast_over_ref": float(nf.get(g, 0.0) / max(nr.get(g, 0.0), 1e-9)),
                   "nonmu_bar_hits_fast_over_ref": float((bf.group == g).sum() / max((br.group == g).sum(), 1))}
+    gf, gr = _desc_geometry(tables.expand(inputs), geom), _desc_geometry(tables.expand(compare), geom)
+    geo = {}
+    for k in gf:
+        w = {"fast": gf, "ref": gr}
+        geo[k] = {a: {"q10_50_90": [float(v) for v in np.quantile(w[a][k], (0.1, 0.5, 0.9))],
+                      "edep_weighted_mean": float(np.average(w[a][k], weights=np.maximum(w[a]["edep"], 0)))}
+                  for a in w}
+    for a, w in (("fast", gf), ("ref", gr)):
+        geo.setdefault("on_face_frac", {})[a] = float(((w["thick"] >= 1 - 1e-6) | (w["width"] >= 1 - 1e-6)).mean())
+        geo.setdefault("seg_over_len_q10", {})[a] = float(np.quantile(w["seg"] / np.maximum(w["len"], 1e-9), 0.1))
+    res["desc_geometry"] = geo
     plots.write_json(outdir, "tier1b_check.json", res)
     for g, r in res.items():
+        if g not in GROUPS:
+            continue
         print(f"{g:3s} extra/mu {r['extra_over_muon_ref']:.3f}->{r['extra_over_muon_fast']:.3f}  with extra "
               f"{r['frac_with_extra_ref']:.3f}->{r['frac_with_extra_fast']:.3f}  extra q50/90/99 "
               f"{np.round(r['extra_q_ref'], 2)}->{np.round(r['extra_q_fast'], 2)}  bar total q50/90/99 "
               f"{np.round(r['bar_total_q_ref'], 2)}->{np.round(r['bar_total_q_fast'], 2)}  desc outside/xing "
               f"{r['desc_outside_muon_bars_per_crossing_ref']:.3f}->{r['desc_outside_muon_bars_per_crossing_fast']:.3f}  "
               f"nonmu edep f/r {r['nonmu_edep_fast_over_ref']:.3f}, bar hits f/r {r['nonmu_bar_hits_fast_over_ref']:.3f}")
+    print("descendant steps (ref -> fast): " + "; ".join(
+        f"{k} q50 {geo[k]['ref']['q10_50_90'][1]:.3g}->{geo[k]['fast']['q10_50_90'][1]:.3g} "
+        f"wmean {geo[k]['ref']['edep_weighted_mean']:.3g}->{geo[k]['fast']['edep_weighted_mean']:.3g}"
+        for k in ("thick", "width", "length", "seg", "len", "p")))
+    print(f"  midpoint on a bar face: {geo['on_face_frac']['ref']:.4f} -> {geo['on_face_frac']['fast']:.4f}; "
+          f"chord/path q10 {geo['seg_over_len_q10']['ref']:.3f} -> {geo['seg_over_len_q10']['fast']:.3f}")
     return res
