@@ -23,7 +23,8 @@ jax.config.update("jax_enable_x64", True)
 
 H_DEFAULT = 32
 K_DEFAULT = 8
-TIERS = ((16, 6, 16384), (32, 8, 8192), (64, 12, 2048), (128, 16, 256), (256, 24, 32))   # (H, K, groups per call)
+TIERS = ((16, 6, 16384), (32, 8, 8192), (64, 12, 2048), (128, 16, 256), (256, 24, 32), (512, 48, 4), (1024, 96, 1))
+K_MAX_4LAYER = 32   # the 4-layer combination tensor is [2, K, K, K, K]: cap K there (overflow -> next tier/numpy)   # (H, K, groups per call)
 
 
 def type_params(G, cfg=C.FinderConfig()):
@@ -99,6 +100,34 @@ def pack(ev, idx, bar, sipm, time, pe, seq, G, tables, t_type, H=H_DEFAULT, cfg=
                pe=dense(pe[sel] * tables["pefac"][ch[sel]]),
                pos=dense(G.pos[b]))
     return out, gev, gev[cnt > H]
+
+
+def link_scales(G, P):
+    """Largest time and x separation over which any finder step can link two hits of one sector type: filterHits
+    (maxTimeDifferenceAdjacentPulses), clustering (maxTimeDifference + opposite-side fibre delay; initialMaxDistance,
+    finalMaxDistance, and maxDistance widened at most to |slope| x layer-stack thickness)."""
+    (thr, dt_adj, max_dt, lo, hi, msd, ncl, min_pe, maxd0, maxd_f, p0, p1, both, ld, v, mti, toff) = P
+    t_link = max(dt_adj, max_dt + (2.0 * (p1 - p0) / 2.0 / v if both else 0.0))
+    return t_link, maxd0, maxd_f, max(abs(lo), abs(hi))
+
+
+def split_blocks(key, t, x, t_link, x_link, max_iter=16):
+    """Refine group ids so that hits are only in one block if they are chained by gaps <= the link scales, alternately
+    in time and in x, until stable. Hits in different blocks can never be linked by the finder (exact split)."""
+    key = np.unique(key, return_inverse=True)[1].ravel()
+    nb = key.max() + 1 if len(key) else 0
+    for _ in range(max_iter):
+        before = nb
+        for v, lim in ((t, t_link), (x, x_link)):
+            o = np.lexsort((v, key))
+            ko, vo = key[o], v[o]
+            new = np.r_[True, (ko[1:] != ko[:-1]) | (np.diff(vo) > lim)]
+            key = np.empty_like(key)
+            key[o] = np.cumsum(new) - 1
+            nb = int(key.max()) + 1 if len(key) else 0
+        if nb == before:
+            break
+    return key
 
 
 def _closure(A):
@@ -255,10 +284,12 @@ def _run_tier(arr, P, K, batch):
 
 
 def find(ev, idx, bar, sipm, time, pe, seq, G, status, cfg=C.FinderConfig(), tiers=TIERS, fallback=True,
-         timers=None):
+         timers=None, split=True):
     """Flat pulses of many events (sorted by event, collection order within) -> clusters.
-    Each (event, sector type) group runs in the smallest (H, K) tier it fits, promoted on overflow; groups beyond the
-    last tier are redone by coinc.py ('fallback_events'). Returns cl_* per cluster and the member table mem_*."""
+    split: each (event, sector type) group is first cut into independent blocks at time and x gaps larger than any
+    link (split_blocks); blocks are the kernel rows and their clusters are mapped back to the event.
+    Each row runs in the smallest (H, K) tier it fits, promoted on overflow; rows beyond the last tier send their
+    event to coinc.py ('fallback_events'). Returns cl_* per cluster and the member table mem_*."""
     import time as _time
     timers = timers if timers is not None else {}
     params = type_params(G, cfg)
@@ -269,7 +300,29 @@ def find(ev, idx, bar, sipm, time, pe, seq, G, status, cfg=C.FinderConfig(), tie
         m = tables["stype"][ch] == tt
         if cfg.ignore_secondary_pulses:
             m &= seq == 0
-        gev, cnt = np.unique(ev[m], return_counts=True)
+        sel = np.flatnonzero(m)
+        if split:
+            t0 = _time.perf_counter()
+            t_link, maxd0, maxd_f, smax = link_scales(G, P)
+            bars = np.flatnonzero(tables["stype"][np.arange(0, 4 * len(G.sector), 4)] == tt)
+            ys = G.y[bars]
+            x_link = max(maxd0, maxd_f, smax * (ys.max() - ys.min()))
+            tt_hit = time[sel] + tables["tcorr"][ch[sel]]
+            blk = split_blocks(ev[sel], tt_hit, G.x[bar[sel]], t_link, x_link)
+            o = np.lexsort((sel, blk))
+            sel, blk = sel[o], blk[o]
+            blk_ev = np.zeros(blk.max() + 1 if len(blk) else 0, ev.dtype)
+            blk_ev[blk] = ev[sel]
+            timers["split_s"] = timers.get("split_s", 0.0) + _time.perf_counter() - t0
+            timers[f"blocks_t{tt}"] = int(len(blk_ev))
+            g_ev, g_idx, g_bar, g_sipm, g_time, g_pe, g_seq = blk, idx[sel], bar[sel], sipm[sel], time[sel], pe[sel], \
+                seq[sel]
+        else:
+            g_ev, g_idx, g_bar, g_sipm, g_time, g_pe, g_seq = ev[sel], idx[sel], bar[sel], sipm[sel], time[sel], \
+                pe[sel], seq[sel]
+            blk_ev = None
+        to_ev = (lambda b: blk_ev[b]) if split else (lambda b: b)
+        gev, cnt = np.unique(g_ev, return_counts=True)
         pending = np.zeros(len(gev), bool)
         hprev = 0
         for H, K, batch in tiers:
@@ -279,10 +332,11 @@ def find(ev, idx, bar, sipm, time, pe, seq, G, status, cfg=C.FinderConfig(), tie
             if not todo.any():
                 continue
             t0 = _time.perf_counter()
-            arr, tev, _ = pack(ev, idx, bar, sipm, time, pe, seq, G, tables, tt, H, cfg, events=gev[todo])
+            arr, tev, _ = pack(g_ev, g_idx, g_bar, g_sipm, g_time, g_pe, g_seq, G, tables, tt, H, cfg,
+                               events=gev[todo])
             timers["pack_s"] = timers.get("pack_s", 0.0) + _time.perf_counter() - t0
             t0 = _time.perf_counter()
-            d = _run_tier(arr, P, K, batch)
+            d = _run_tier(arr, P, min(K, K_MAX_4LAYER) if P[6] == 4 else K, batch)
             timers["kernel_s"] = timers.get("kernel_s", 0.0) + _time.perf_counter() - t0
             timers[f"groups_H{H}"] = timers.get(f"groups_H{H}", 0) + len(tev)
             ov = d["overflow"]
@@ -290,14 +344,14 @@ def find(ev, idx, bar, sipm, time, pe, seq, G, status, cfg=C.FinderConfig(), tie
             good = ~ov
             g, r = np.nonzero(d["root"] & good[:, None])
             cid0 = sum(len(x["cl_event"]) for x in rows)
-            rows.append(dict(cl_event=tev[g], cl_type=np.full(len(g), tt), **{f"cl_{k}": d[k][g, r] for k in
+            rows.append(dict(cl_event=to_ev(tev[g]), cl_type=np.full(len(g), tt), **{f"cl_{k}": d[k][g, r] for k in
                              ("pe", "start", "end", "slope", "avgtime", "poscalc")}))
             cmap = np.full(d["root"].shape, -1, np.int64)
             cmap[g, r] = cid0 + np.arange(len(g))
             hg, hh = np.nonzero((d["label"] >= 0) & good[:, None])
             cl = cmap[hg, d["label"][hg, hh]]
-            mems.append(dict(mem_cl=cl[cl >= 0], mem_idx=arr["idx"][hg, hh][cl >= 0], mem_event=tev[hg][cl >= 0]))
-        redo.update(gev[pending | (cnt > hprev)].tolist())
+            mems.append(dict(mem_cl=cl[cl >= 0], mem_idx=arr["idx"][hg, hh][cl >= 0], mem_event=to_ev(tev[hg][cl >= 0])))
+        redo.update(to_ev(gev[pending | (cnt > hprev)]).tolist())
     cat = lambda L, k: np.concatenate([x[k] for x in L]) if L else np.zeros(0)
     out = {k: cat(rows, k) for k in ("cl_event", "cl_type", "cl_pe", "cl_start", "cl_end", "cl_slope", "cl_avgtime",
                                       "cl_poscalc")}
