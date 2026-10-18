@@ -8,8 +8,10 @@ Two parts, both resampled from G4 CrvStep tables (CrvStepTableDumper) of trainin
    descendants as offsets from its entry point. Sampling: each fast crossing draws a library crossing from the same
    (sector group, momentum, path-length) bin, with momentum and path-length edges at quantiles per sector group
    (P_QUANTILES, L_QUANTILES; the path-length bins are finer in the tail); the offsets are rotated from the G4 muon direction to the fast one and
-   added to the fast entry point and time; same-bar steps that fall outside are moved into the fast crossing's bar
-   (fit_inside: shift the step so its midpoint is INSET_MM inside every face, then trim the endpoints).
+   added to the fast entry point and time. A same-bar step that falls outside the fast crossing's bar keeps its
+   rotated position along the bar but takes its G4 position across the bar (thickness and width, both endpoints, from
+   the library's in-bar coordinates); fit_inside then guards the box. Pushing such steps onto the nearest face (first
+   version) or just inside it piled descendant energy at the faces, where the CRV lookup tables give less light.
    Steps in another bar keep the bar structure instead: the library stores the centre offset between their bar and the
    crossing's bar and their position inside their bar; the fast step goes to the bar at that centre offset from the fast
    crossing's bar (same length axis), at the stored position, moved along the bar by the shift of the muon entry along
@@ -251,7 +253,16 @@ def _desc_for_crossings(fx, lib, geom, rng):
         mom[other] = dd.loc[:, ["px0", "py0", "pz0"]].to_numpy()[other]
     clamp = same & (bar != xbar)
     if clamp.any():
-        c, h = geom.center[xbar[clamp]], geom.halflen[xbar[clamp]]
+        xc = xbar[clamp]
+        c, h = geom.center[xc], geom.halflen[xc]
+        rc = np.arange(len(xc))
+        for r, cols in ((r0, ["lx0", "ly0", "lz0"]), (r1, ["lx1", "ly1", "lz1"])):
+            loc = r[clamp] - c
+            g4 = dd.loc[:, cols].to_numpy()[clamp]
+            for k in (0, 1):  # thickness and width axes from G4; length axis keeps the rotated placement
+                ax = geom.local_to_world[xc, k]
+                loc[rc, ax] = g4[rc, ax]
+            r[clamp] = c + loc
         r0[clamp], r1[clamp] = fit_inside(r0[clamp], r1[clamp], c - h, c + h)
         bar[clamp] = xbar[clamp]
     keep = bar >= 0

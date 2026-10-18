@@ -29,6 +29,24 @@ def test_fit_inside_keeps_midpoint_off_faces():
     assert np.allclose(a[2], r0[2]) and np.allclose(b[2], r1[2])   # a step already inside is untouched
 
 
+def test_outside_same_bar_takes_g4_transverse_position(geom):
+    bar = 10
+    c, h = geom.center[bar], geom.halflen[bar]
+    top = c.copy()
+    top[1] += h[1] - 0.1
+    fs = pd.DataFrame({"run": [1400], "subrun": [1], "event": [5], "nstep": [1], "bar": [bar], "sp": [1],
+                       "t0": [100.0], "t1": [100.1], "x0": [top[0]], "y0": [top[1]], "z0": [top[2]],
+                       "x1": [top[0]], "y1": [top[1] - 20], "z1": [top[2]], "px0": [0.0], "py0": [-2500.0],
+                       "pz0": [0.0], "p1": [2490.0], "len": [20.0], "edep": [3.0]})
+    lib = _lib(geom, bar)
+    lib["libdesc"]["dy0"], lib["libdesc"]["dy1"] = 5.0, 4.0          # rotated placement lands above the bar
+    out, ndrop, nclamp = T._desc_for_crossings(fs, lib, geom, np.random.default_rng(0))
+    assert nclamp == 1 and ndrop == 0
+    ax = geom.local_to_world[bar]
+    loc0 = out[["x0", "y0", "z0"]].to_numpy()[0] - c
+    assert np.isclose(loc0[ax[0]], [2.0, 3.0, 4.0][ax[0]]) and np.isclose(loc0[ax[1]], [2.0, 3.0, 4.0][ax[1]])
+
+
 @pytest.fixture(scope="module")
 def geom():
     from crvfastsim import geometry
@@ -49,7 +67,9 @@ def _lib(geom, bar):
         "libxing": pd.DataFrame({"xid": np.arange(nb), "bin": np.arange(nb), "ux": 0.0, "uy": -1.0, "uz": 0.0}),
         "libdesc": pd.DataFrame({"xid": np.arange(nb), "sp": 7, "samebar": 1, "pdg": 11, "dt0": 0.1, "dt1": 0.2,
                                  "dx0": 0.0, "dy0": -1.0, "dz0": 0.0, "dx1": 0.0, "dy1": -2.0, "dz1": 0.0,
-                                 "px0": 0.0, "py0": -1.0, "pz0": 0.0, "p1": 0.0, "len": 1.0, "edep": 0.5}),
+                                 "px0": 0.0, "py0": -1.0, "pz0": 0.0, "p1": 0.0, "len": 1.0, "edep": 0.5,
+                                 "dcx": 0.0, "dcy": 0.0, "dcz": 0.0, "entrylen": 0.0,
+                                 "lx0": 2.0, "ly0": 3.0, "lz0": 4.0, "lx1": 2.0, "ly1": 2.0, "lz1": 4.0}),
         "libshower": pd.DataFrame({"shid": [0], "apdg": [22], "kebin": [T._ke_bin(np.array([100.0]))[0]], "ke": [100.0]}),
         "libshowersteps": pd.DataFrame({"shid": [0, 0], "sp": [1, 5], "isroot": [0, 0], "pdg": [11, -11], "bar": [bar, bar],
                                         "dt0": [5.0, 6.0], "dt1": [5.1, 6.1],
