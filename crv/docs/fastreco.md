@@ -150,6 +150,11 @@ the host packing (0.7 s) and the numpy fallback for 0.2 % of events (5.7-6.2 s) 
 10,000 events/s until the fallback leaves the critical path (a larger last tier on GPU, or the fallback on spare CPU
 cores in parallel with the next GPU batch).
 
+**With the exact block split (PBS 7760400, same bench):** 19,100-19,800 events/s per A100 end to end (51 us/event):
+kernel 2.0-2.1 s, host splitting ~2.3 s, packing 0.5 s, numpy fallback 0.2-0.4 s (4-10 of 100 k events) per 100 k
+events. Pulses + coincidences: 20 + 51 us -> ~14,000 events/s end to end (kernels alone 20 + 21 us -> ~24,000).
+The remaining gap to R1 is host work (split + pack, ~28 us/event), which can overlap the GPU or move onto it.
+
 ### V-R1 with the JAX waveform synthesis (2026-10-16)
 
 `crvfastsim/reco/waveform_jax.py`: the waveform synthesis as one jitted fixed-shape function (host packing of the stock
