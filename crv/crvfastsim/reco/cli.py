@@ -357,8 +357,97 @@ def _charges(paths, events=None):
             "charge": ak.to_numpy(ak.flatten(q.charge)), "pe": ak.to_numpy(ak.flatten(q.pe))}
 
 
+def _vr1_noise(args, Q, out, m, mev, mchan, rv, radc, cfg):
+    """V-R1 with noise: the reference is the stock chain with noise on (same charges, same TDC0). Per-channel ADC
+    distributions (all samples of all digis) by KS, plus digi counts per channel and sample-level summaries."""
+    fch = Q["chan_row"][out["chan"]]
+    fadc = out["adc"].astype(np.int64)
+    nch = int(max(fch.max(initial=0), mchan.max(initial=0))) + 1
+    nd_f, nd_r = np.bincount(fch, minlength=nch), np.bincount(mchan, minlength=nch)
+    # per-channel ADC KS over all samples; channels with >= min_digis digis in both arms
+    of, orr = np.argsort(fch, kind="stable"), np.argsort(mchan, kind="stable")
+    sf, sr = np.r_[0, np.cumsum(nd_f)], np.r_[0, np.cumsum(nd_r)]
+    chans = np.flatnonzero((nd_f >= args.min_digis) & (nd_r >= args.min_digis))
+    ps, ds = [], []
+    for c in chans:
+        a = fadc[of[sf[c]:sf[c + 1]]].ravel()
+        b = radc[orr[sr[c]:sr[c + 1]]].astype(np.int64).ravel()
+        d, p = match.ks_2samp(a + 0.0, b + 0.0)
+        ds.append(d)
+        ps.append(p)
+    ps, ds = np.array(ps), np.array(ds)
+    # pedestal-region samples (first two of each digi: before the signal crosses threshold) -> noise width
+    integ_f, integ_r = (fadc - cfg.pedestal).sum(1), (radc.astype(np.int64) - cfg.pedestal).sum(1)
+    ntest = len(chans)
+    res = {"digis_fast": int(len(fch)), "digis_ref": int(len(mchan)),
+           "digis_per_event": {"fast": len(fch) / args._nev, "ref": len(mchan) / args._nev},
+           "channels_tested": int(ntest), "min_digis_per_channel": args.min_digis,
+           "per_channel_ks_p": {"min": float(ps.min()) if ntest else None,
+                                "frac_below_0.01": float((ps < 0.01).mean()) if ntest else None,
+                                "expected_frac_below_0.01": 0.01,
+                                "quantiles_5_50_95": np.quantile(ps, [0.05, 0.5, 0.95]).tolist() if ntest else None},
+           "per_channel_ks_d_max": float(ds.max()) if ntest else None,
+           "digi_count_ratio_per_channel_q": np.quantile(nd_f[chans] / nd_r[chans], [0.05, 0.5, 0.95]).tolist()
+           if ntest else None,
+           "ks_note": "per-channel and pooled ADC KS are dominated by the shared signal (noise 0.92 ADC rms); the "
+                      "noise itself is tested by noise_residual (each arm minus the noise-free reference)",
+           "digi_integral": compare.distribution_summary({"pe": integ_f}, {"pe": integ_r}, columns=("pe",))["pe"],
+           "pooled_adc_ks": dict(zip(("d", "p"), match.ks_2samp(fadc.ravel() + 0.0, radc.astype(np.int64).ravel() + 0.0)))}
+    if args.nonoise_ref:
+        res["noise_residual"] = _noise_residual(args, out, Q, mev, mchan, radc, cfg)
+    # with independent noise, a per-channel KS at p>0.01 fails 1 % of channels by chance: pass if the failing
+    # fraction is consistent with 1 % (binomial, 3 sigma)
+    if ntest:
+        k, n = int((ps < 0.01).sum()), ntest
+        res["pass_per_channel_ks"] = bool(k <= 0.01 * n + 3 * np.sqrt(0.01 * 0.99 * n))
+        res["pass"] = res["pass_per_channel_ks"] and res.get("noise_residual", {}).get("pass", True)
+    return res
+
+
+def _noise_residual(args, out, Q, mev, mchan, radc, cfg):
+    """Noise test proper: on digis present in all three tables (fast-with-noise, stock-with-noise, stock-noise-free;
+    same event, channel, startTDC) the sample residual of each noisy arm against the noise-free stock digi. Same
+    width and shape = same noise model; mean ~0 = no bias; neighbour-sample correlation (stock noise is white)."""
+    m0 = reftables.read([args.nonoise_ref], "digimc", columns=["run", "subrun", "event", "bar", "sipm", "start",
+                                                                "tdc0", "volt"])
+    ev0 = reftables.event_key(m0)
+    keep = np.isin(ev0, np.unique(mev))
+    m0, ev0 = m0[keep], ev0[keep]
+    ch0 = ak.to_numpy(m0.bar) * NCHAN_PER_BAR + ak.to_numpy(m0.sipm)
+    v0 = ak.to_numpy(ak.fill_none(ak.pad_none(m0.volt, cfg.samples_zs, clip=True), 0.0))
+    adc0 = np.clip((v0 * cfg.adc_conversion + cfg.pedestal + 0.5).astype(np.int16), cfg.min_adc, cfg.max_adc)
+    st0 = np.rint((ak.to_numpy(m0.start) - ak.to_numpy(m0.tdc0)) / pulsefit.PERIOD).astype(np.int64)
+    k0 = np.stack([ev0, ch0, st0], 1).astype(np.int64)
+    m = reftables.read(args.inputs, "digimc", columns=["run", "subrun", "event", "start", "tdc0"])
+    m = m[np.isin(reftables.event_key(m), np.unique(mev))]
+    kr = np.stack([mev, mchan, np.rint((ak.to_numpy(m.start) - ak.to_numpy(m.tdc0)) / pulsefit.PERIOD)], 1).astype(np.int64)
+    kf = np.stack([Q["ev_row"][out["chan"]], Q["chan_row"][out["chan"]], out["starttdc"]], 1).astype(np.int64)
+    i0r, ir = compare._join(k0, kr)
+    i0f, iff = compare._join(k0, kf)
+    to_r, to_f = np.full(len(k0), -1), np.full(len(k0), -1)
+    to_r[i0r], to_f[i0f] = ir, iff
+    both = np.flatnonzero((to_r >= 0) & (to_f >= 0))
+    rr = radc[to_r[both]].astype(np.int64) - adc0[both]
+    rf = out["adc"][to_f[both]].astype(np.int64) - adc0[both]
+    # samples away from saturation and the ADC floor
+    ok = (adc0[both] > cfg.min_adc + 5) & (adc0[both] < cfg.max_adc - 5)
+    a, b = rf[ok].astype(float), rr[ok].astype(float)
+    corr = lambda r: float(np.corrcoef(r[:, :-1].ravel(), r[:, 1:].ravel())[0, 1])
+    d, p = match.ks_2samp(a, b)
+    expect = cfg.noise * cfg.adc_conversion
+    return {"digis_in_all_three": int(len(both)), "samples": int(ok.sum()),
+            "expected_rms_adc": float(np.sqrt(expect ** 2 + 1 / 12)),
+            "rms_adc": {"fast": float(a.std()), "ref": float(b.std())}, "mean_adc": {"fast": float(a.mean()),
+                                                                                  "ref": float(b.mean())},
+            "hist_-4_to_4": {"fast": np.bincount(np.clip(a, -4, 4).astype(int) + 4, minlength=9).tolist(),
+                             "ref": np.bincount(np.clip(b, -4, 4).astype(int) + 4, minlength=9).tolist()},
+            "ks": {"d": d, "p": p}, "neighbour_corr": {"fast": corr(rf), "ref": corr(rr)},
+            "pass": bool(p > 0.01)}
+
+
 def cmd_vr1(args):
-    """Noise-free V-R1 against the dumped digi MC voltages (rng None), with TDC0 taken from the reference digi MC."""
+    """Noise-free V-R1 against the dumped digi MC voltages (rng None), with TDC0 taken from the reference digi MC.
+    --noise: the fast arm adds noise (JAX key or numpy rng); compare with a noise-on reference statistically."""
     cfg = waveform.WaveformConfig()
     Q = _charges(args.inputs)
     events = np.unique(Q["ev_row"])
@@ -379,18 +468,28 @@ def cmd_vr1(args):
     tdc0_row = compare.lookup(lab_key, mkey[fi], ak.to_numpy(m.tdc0)[fi])
     n_no_tdc0 = int(np.isnan(tdc0_row).sum())
     tdc0_row = np.nan_to_num(tdc0_row, nan=0.0)
+    noise = getattr(args, "noise", False)
     t0 = time.perf_counter()
     if getattr(args, "jax", False):
         from . import waveform_jax
-        out = _synth_jax_batched(waveform_jax, Q, tdc0_row, cfg, args.batch_clusters)
+        out = _synth_jax_batched(waveform_jax, Q, tdc0_row, cfg, args.batch_clusters,
+                                 noise=cfg.noise if noise else 0.0, seed=args.seed)
     else:
-        out = waveform.synthesize(Q["row"], Q["time"], Q["charge"], tdc0_row, cfg, rng=None)
+        out = waveform.synthesize(Q["row"], Q["time"], Q["charge"], tdc0_row, cfg,
+                                  rng=np.random.default_rng(args.seed) if noise else None)
     dt = time.perf_counter() - t0
     fkey = np.stack([Q["ev_row"][out["chan"]], Q["chan_row"][out["chan"]], out["starttdc"]], 1).astype(np.int64)
     rv = ak.to_numpy(ak.fill_none(ak.pad_none(m.volt, cfg.samples_zs, clip=True), 0.0))
     radc = np.clip((rv * cfg.adc_conversion + cfg.pedestal + 0.5).astype(np.int16), cfg.min_adc, cfg.max_adc)
     rstart = np.rint((ak.to_numpy(m.start) - ak.to_numpy(m.tdc0)) / pulsefit.PERIOD).astype(np.int64)
     rkey = np.stack([mev, mchan, rstart], 1).astype(np.int64)
+    if noise:
+        args._nev = len(events)
+        res = _vr1_noise(args, Q, out, m, mev, mchan, rv, radc, cfg)
+        res.update({"events": int(len(events)), "wall_s": dt, "us_per_event": 1e6 * dt / max(len(events), 1),
+                    "fast": "jax" if getattr(args, "jax", False) else "numpy",
+                    "note": "reference = stock chain with noise on (crvreco_mc); same charges and TDC0"})
+        return _report(args, "vr1noise", res)
     res = compare.vr1({"key": fkey, "adc": out["adc"]}, {"key": rkey, "adc": radc})
     ia, ib = compare._join(fkey, rkey)
     dv = np.abs(out["volt"][ia] - rv[ib]) if len(ia) else np.zeros((0, 1))
@@ -408,7 +507,7 @@ def cmd_vr1(args):
     _report(args, "vr1", res)
 
 
-def _synth_jax_batched(WJ, Q, tdc0_row, cfg, batch):
+def _synth_jax_batched(WJ, Q, tdc0_row, cfg, batch, noise=0.0, seed=0):
     """JAX synthesis over all SiPM rows in fixed-shape batches of whole rows (Q and L padded per batch to a bucket)."""
     rows = Q["row"]
     starts = np.flatnonzero(np.r_[True, rows[1:] != rows[:-1]])
@@ -421,8 +520,9 @@ def _synth_jax_batched(WJ, Q, tdc0_row, cfg, batch):
         Lb = int(2 ** np.ceil(np.log2(max(pk["L"], 1))))
         pk = WJ.pack(rows[sl], Q["time"][sl], Q["charge"][sl], tdc0_row, cfg, Q=Qb, L=Lb)
         wave, adc, st, last = WJ.synth_dense(pk["T"], pk["W"], pk["n"], pk["t_start"], pk["keep"], pk["tmpl"],
-                                             __import__("jax").random.PRNGKey(0), pk["L"], cfg.samples_zs,
-                                             cfg.single_pe_precision, 0.0, cfg.min_voltage, cfg.adc_conversion,
+                                             __import__("jax").random.fold_in(__import__("jax").random.PRNGKey(seed),
+                                                                              a), pk["L"], cfg.samples_zs,
+                                             cfg.single_pe_precision, noise, cfg.min_voltage, cfg.adc_conversion,
                                              cfg.pedestal, cfg.min_adc, cfg.max_adc)
         parts.append(WJ.to_digis(pk, np.asarray(wave), np.asarray(adc), np.asarray(st), np.asarray(last), cfg,
                                  (0.0, 1e5)))
@@ -871,6 +971,11 @@ def add_reco_args(sp, name):
         sp.add_argument("--window-end", type=float, default=1e5, help="digitisation window end [ns] (offspill 1e5)")
         sp.add_argument("--jax", action="store_true", help="use the JAX waveform synthesis (waveform_jax)")
         sp.add_argument("--batch-clusters", type=int, default=2000, help="SiPM rows per jitted call (--jax)")
+        sp.add_argument("--noise", action="store_true", help="fast arm with noise; reference must be the noise-on "
+                        "table (crvreco_mc); statistical per-channel comparison instead of sample identity")
+        sp.add_argument("--nonoise-ref", default=None, help="--noise: the noise-free reference of the same events "
+                        "(crvreco_mcnonoise) for the residual test")
+        sp.add_argument("--min-digis", type=int, default=200, help="--noise: channels with fewer digis are not tested")
     if name == "vr3":
         sp.add_argument("--jax", action="store_true", help="use the JAX coincidence finder (coinc_jax)")
     if name == "inspect":

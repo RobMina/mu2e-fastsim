@@ -173,3 +173,25 @@ numpy for both kernels. The job fetches the one public Offline data file the syn
 (`CRVResponse/data/singlePEWaveform_v3.txt`, from GitHub) onto Eagle, since Polaris has no CVMFS; the first run
 without it (7755663) failed that test only.
 
+
+### V-R1 with noise on (2026-10-19)
+
+`reco-vr1 --noise [--jax] --nonoise-ref crvreco_mcnonoise...root crvreco_mc...root`: the fast arm adds its own
+Gaussian noise (0.4 mV per sample; JAX key or numpy rng) to the same stock charges with the reference TDC0s and is
+compared with the stock chain run with noise on (`crvreco_mc`, same events, charges and TDC0 as the noise-free table).
+Noise is 0.92 ADC rms against signals of hundreds of ADC, so a per-channel ADC KS (the V-R1 criterion) mostly tests the
+shared signal; the noise model itself is tested by the residual of each noisy arm against the stock noise-free digi
+(digis present in all three tables).
+
+| check (MC 001400_00014516, 22,095 events) | JAX | numpy |
+|---|---|---|
+| digis (stock 565,639) | 565,655 | 565,615 |
+| per-channel ADC KS, 1,144 channels with >= 200 digis | **min p 0.81**, 0 below 0.01 (pass) | min p 0.76, 0 below 0.01 |
+| digi count per channel, fast/stock (5-95 %) | 0.995-1.005 | |
+| residual vs noise-free stock, 6.7 M samples: rms (stock 0.9762; expected 0.964 = 0.92 (+) 1/sqrt(12)) | 0.9755 | 0.9760 |
+| residual mean (ADC) | 0.0025 (stock 0.0027) | 0.0020 |
+| residual KS vs stock residual | **p 0.85** | p 0.13 |
+| neighbour-sample correlation (white noise) | -2e-5 (stock -7e-4) | 5e-4 |
+
+**V-R1 passes with noise on** for both implementations: same noise width, shape and whiteness as stock, digi counts
+per channel within 0.5 %. The +-16 digis are threshold crossings decided by the noise draw.
