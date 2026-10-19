@@ -1,0 +1,43 @@
+Bootstrap: docker
+From: python:3.13-slim-bookworm
+
+%labels
+    org.opencontainers.image.title mu2e-fastsim
+    org.opencontainers.image.source https://github.com/RobMina/mu2e-fastsim
+    org.opencontainers.image.licenses Apache-2.0
+
+%help
+    Built from git-tracked files only (see /opt/mu2e-fastsim/VERSION for the commits).
+    Mu2e Geant4-free fast simulation and CRV fast reconstruction (mu2efastsim, crvfastsim, trkfastsim) with JAX.
+    One image for CPU and NVIDIA GPU (JAX's pip CUDA 12 wheels; on a GPU node run with --nv).
+    No CVMFS: the public Offline files the code reads are under /opt/offline_data (MU2E_SEARCH_PATH).
+    No Mu2e-internal data inside; mount inputs and outputs at run time.
+      apptainer run --nv mu2efastsim.sif crvfastsim reco-bench synthetic --stage chain --max-events 20000
+      apptainer exec mu2efastsim.sif python -m pytest -q /opt/mu2e-fastsim/crv/tests
+
+%files
+    . /opt/mu2e-fastsim
+
+%environment
+    export MU2E_SEARCH_PATH=/opt/offline_data
+    export XLA_PYTHON_CLIENT_PREALLOCATE=false
+    export JAX_ENABLE_X64=1
+    export MPLBACKEND=Agg
+    export PYTHONDONTWRITEBYTECODE=1
+
+%post
+    set -e
+    export PIP_NO_CACHE_DIR=1
+    apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
+    python -m pip install -q --upgrade pip
+    python -m pip install -q "jax[cuda12]==0.11.2" numpy pandas awkward uproot matplotlib pytest
+    for p in core crv tracker; do python -m pip install -q --no-deps /opt/mu2e-fastsim/$p; done
+    sh /opt/mu2e-fastsim/container/fetch_offline_data.sh /opt/offline_data
+    find / -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
+    printf '#!/bin/sh\nexec python -m crvfastsim "$@"\n' > /usr/local/bin/crvfastsim && chmod +x /usr/local/bin/crvfastsim
+
+%runscript
+    exec "$@"
+
+%test
+    python -c "import mu2efastsim, crvfastsim, crvfastsim.reco.chain_jax, jax; print('jax', jax.__version__)"
