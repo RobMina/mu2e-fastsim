@@ -147,6 +147,11 @@ V2 is run with two candidate arms through the same stock digitisation (`crvfasts
 sim, and G4's own steps cut to the primary muon. The second isolates the tier-1a closure from the tier-1b deficit;
 V2 proper (against full G4) needs tier 1b.
 
+Tier 1b status (2026-10-19): the library (`crvfastsim/tier1b.py`, `crvfastsim/README.md`) is built from 20 production
+dts files and tested on held-out reference shards; V2 against full G4 passes in EX, T2 and the taggers and fails only
+the T1 PE-spectrum row, through muon-dominated pulses (a tier-1a effect). Known limits: non-muon showers keep the bar
+indices of their G4 event (they do not follow a geometry move); descendants in other bars are under-produced.
+
 Pass means every row passes. A failure is investigated, not tuned away: no free scale factors to force agreement,
 because the response parameters are what the downstream BO fits.
 

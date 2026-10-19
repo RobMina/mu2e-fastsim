@@ -60,6 +60,8 @@ def build_parser():
         if name == "tier1b-build":
             sp.add_argument("--gen", nargs="+", default=None, metavar="ROOT", help="gen.*.root of the same shards")
             sp.add_argument("--out", default=None, metavar="ROOT", help="library file to write")
+            sp.add_argument("--generated", type=int, default=None,
+                            help="generated events behind the inputs when --gen is not their own gen stream (production)")
         if name == "tier1b-check":
             sp.add_argument("--compare", nargs="+", default=None, metavar="ROOT", help="G4 CrvStep tables, same shards")
         if name == "tier1b-apply":

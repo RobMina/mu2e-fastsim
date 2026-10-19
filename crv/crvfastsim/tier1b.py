@@ -116,8 +116,82 @@ def _crossings(mu):
     return x
 
 
-def build(step_paths, gen_paths, geom):
-    """Library trees {name: DataFrame} from G4 CrvStep tables (step_paths) and the gen tables of the same shards."""
+def _bin_edges(step_paths, geom):
+    """Per-group momentum and path-length quantile edges of the primary-muon crossings over all step_paths (one file at
+    a time: crossings only, so memory stays small)."""
+    xs = []
+    for f in step_paths:
+        steps = tables.read(f, "steps", KEY + ["bar", "sp", "t0", "edep", "len", "x0", "y0", "z0", "px0", "py0", "pz0"])
+        parts = tables.read(f, "particles", KEY + ["key", "pdg", "isprim"])
+        prim = parts[(parts.isprim == 1) & (parts.pdg.abs() == tables.PRIMARY_MUON_PDG)]  # every primary muon, as classify
+        mu = steps.merge(prim[KEY + ["key"]].rename(columns={"key": "sp"}), on=KEY + ["sp"])
+        x = _crossings(mu)
+        xs.append(pd.DataFrame({"group": _group_index(geom, x.bar), "p": x.p.to_numpy(), "len": x.len.to_numpy()}))
+    x = pd.concat(xs, ignore_index=True)
+    edges = []
+    for gi in range(len(GROUPS)):
+        xg = x[x.group == gi]
+        edges += [(0, gi, e) for e in np.quantile(xg.p, P_QUANTILES)]
+        edges += [(1, gi, e) for e in np.quantile(xg.len, L_QUANTILES)]
+    return pd.DataFrame(edges, columns=["kind", "group", "edge"]).astype({"kind": np.int64, "group": np.int64})
+
+
+def build(step_paths, gen_paths, geom, generated=None):
+    """Library from G4 CrvStep tables, one file at a time (a GPVM holds ~5 production files at once, not 20).
+
+    Bin edges come from all files first; each file's crossings, descendants and showers get ids offset past the previous
+    files'; the reach probability uses the showers of all files over the scaled gen-table counts.
+    """
+    step_paths = list(step_paths)
+    libbins = _bin_edges(step_paths, geom)
+    parts_out = {k: [] for k in ("libxing", "libdesc", "libshower", "libshowersteps")}
+    info = {"crossings": 0, "desc_steps": 0, "desc_steps_unattached": 0, "showers": 0, "shower_steps": 0,
+            "max_shower_sp": 0}
+    xoff = soff = 0
+    for f in step_paths:
+        lib, inf = _build_one([f], geom, libbins)
+        lib["libxing"]["xid"] += xoff
+        lib["libdesc"]["xid"] += xoff
+        lib["libshower"]["shid"] += soff
+        lib["libshowersteps"]["shid"] += soff
+        xoff += inf["crossings"]
+        soff += inf["showers"]
+        for k in parts_out:
+            parts_out[k].append(lib[k])
+        for k in info:
+            info[k] = max(info[k], inf[k]) if k == "max_shower_sp" else info[k] + inf[k]
+    lib = {k: pd.concat(v, ignore_index=True) for k, v in parts_out.items()}
+    lib["libbins"] = libbins
+    lib["libgen"], info["generated_nonmu"] = _reach(lib["libshower"], gen_paths, generated)
+    info["generated_scaled_to"] = generated
+    info["files"] = len(step_paths)
+    return lib, info
+
+
+def _reach(libshower, gen_paths, generated):
+    """Generated non-muon primaries per (pdg, KE bin) and the library showers of each: the reach probability."""
+    g = tables.read_many(gen_paths, "gen", KEY + ["pdg", "e"])
+    n_gen_tables = int(g[KEY].drop_duplicates().shape[0])
+    g = g[g.pdg.abs() != tables.PRIMARY_MUON_PDG]
+    g["apdg"] = g.pdg.abs()
+    g["kebin"] = _ke_bin((g.e - g.apdg.map(MASS).fillna(0.0)).to_numpy())
+    ng = g.groupby(["apdg", "kebin"]).size().rename("ngen").reset_index()
+    if generated:
+        ng["ngen"] = np.rint(ng.ngen * (float(generated) / n_gen_tables)).astype(np.int64)
+    ns = libshower.groupby(["apdg", "kebin"]).size().rename("nshower").reset_index()
+    lg = ng.merge(ns, on=["apdg", "kebin"], how="left").fillna({"nshower": 0})
+    return lg.astype({"apdg": np.int64, "kebin": np.int64, "ngen": np.int64, "nshower": np.int64}), int(len(g))
+
+
+def _build_one(step_paths, geom, libbins):
+    """Library trees {name: DataFrame} of the given G4 CrvStep tables with the given bin edges (libgen not included).
+
+
+    gen_paths of build(): the generated non-muon primaries per (pdg, KE bin), the denominator of the reach probability.
+    By default the gen streams of the same shards. generated: generated events behind step_paths when they are not
+    those shards (production dts have no gen stream; dh.gencount per file): the gen-table counts are scaled by
+    generated / (generated events in gen_paths), i.e. the same CRY configuration is assumed.
+    """
     steps = tables.read_many(step_paths, "steps")
     parts = tables.read_many(step_paths, "particles", KEY + ["key", "parent", "pdg", "isprim", "genidx"])
     s = classify(steps, parts, geom.sector)
@@ -125,13 +199,7 @@ def build(step_paths, gen_paths, geom):
     # 1. muon descendants per crossing
     x = _crossings(s[s.cls == "mu_primary"])
     x["group"] = _group_index(geom, x.bar)
-    edges = []
-    for gi in range(len(GROUPS)):
-        xg = x[x.group == gi]
-        edges += [(0, gi, e) for e in np.quantile(xg.p, P_QUANTILES)]
-        edges += [(1, gi, e) for e in np.quantile(xg.len, L_QUANTILES)]
-    lib["libbins"] = pd.DataFrame(edges, columns=["kind", "group", "edge"]).astype({"kind": np.int64, "group": np.int64})
-    x["bin"] = _bin(lib["libbins"], x.group.to_numpy(), x.p.to_numpy(), x.len.to_numpy())
+    x["bin"] = _bin(libbins, x.group.to_numpy(), x.p.to_numpy(), x.len.to_numpy())
     x["xid"] = np.arange(len(x))
     d = s[s.cls == "mu_descendant"].reset_index(drop=True)
     d["did"] = np.arange(len(d))
@@ -184,18 +252,8 @@ def build(step_paths, gen_paths, geom):
         "bar": nm.bar.to_numpy().astype(np.int64),
         "dt0": (nm.t0 - nm.t).to_numpy(), "dt1": (nm.t1 - nm.t).to_numpy(),
         **{c: nm[c].to_numpy().astype(float) for c in STEP_COLS + ["px0", "py0", "pz0", "p1", "len", "edep"]}})
-    # generated non-muon primaries per (pdg, KE bin): the denominator of the reach probability
-    g = tables.read_many(gen_paths, "gen", KEY + ["pdg", "e"])
-    g = g[g.pdg.abs() != tables.PRIMARY_MUON_PDG]
-    g["apdg"] = g.pdg.abs()
-    g["kebin"] = _ke_bin((g.e - g.apdg.map(MASS).fillna(0.0)).to_numpy())
-    ng = g.groupby(["apdg", "kebin"]).size().rename("ngen").reset_index()
-    ns = sh.groupby(["apdg", "kebin"]).size().rename("nshower").reset_index()
-    lg = ng.merge(ns, on=["apdg", "kebin"], how="left").fillna({"nshower": 0})
-    lib["libgen"] = lg.astype({"apdg": np.int64, "kebin": np.int64, "ngen": np.int64, "nshower": np.int64})
     info = {"crossings": len(x), "desc_steps": len(d), "desc_steps_unattached": n_unattached,
-            "showers": len(sh), "shower_steps": len(nm), "generated_nonmu": int(len(g)),
-            "max_shower_sp": int(nm.sp.max()) if len(nm) else 0}
+            "showers": len(sh), "shower_steps": len(nm), "max_shower_sp": int(nm.sp.max()) if len(nm) else 0}
     return lib, info
 
 

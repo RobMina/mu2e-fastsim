@@ -20,10 +20,10 @@ def _geom(counters):
     return geometry.from_offline_config(geometry.find_counters(counters or DEFAULT_COUNTERS))
 
 
-def build(inputs, outdir, gen=None, out=None, counters=None, **kw):
+def build(inputs, outdir, gen=None, out=None, generated=None, counters=None, **kw):
     if not gen or not out:
         raise SystemExit("tier1b-build needs --gen and --out")
-    lib, info = tier1b.build(tables.expand(inputs), tables.expand(gen), _geom(counters))
+    lib, info = tier1b.build(tables.expand(inputs), tables.expand(gen), _geom(counters), generated=generated)
     tier1b.write_library(out, lib)
     with open(os.path.splitext(out)[0] + ".json", "w") as fh:
         json.dump({"inputs": tables.expand(inputs), "gen": tables.expand(gen), **info}, fh, indent=2)
