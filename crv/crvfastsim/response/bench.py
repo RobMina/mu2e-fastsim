@@ -49,6 +49,44 @@ def synthetic_rows(rng, n, yield_per_mev=28610.0, edep=3.4, length=20.0):
             "n_ck_f": photons._per_substep(photons.cerenkov_per_mm(beta, np.ones(n), ck) * length, nsub, rng)}
 
 
+def run_sipm(n_sipms=200_000, mean_pe=130.0, repeat=3, seed=1, jax=True, numpy_sipms=20_000):
+    """SiPM-charge stage on synthetic photons: n_sipms SiPMs with Poisson(mean_pe / 0.407) photons in a 5 ns spread,
+    a synthetic photon map (random, peaked). ~130 photons per (step, SiPM) row as in the photon bench."""
+    from . import sipm
+    rng = np.random.default_rng(seed)
+    cfg = sipm.SiPMConfig()
+    pmap = rng.random((40, 40)) ** 4
+    n = rng.poisson(mean_pe, n_sipms)
+    chan = np.repeat(np.arange(n_sipms), n)
+    t = np.repeat(rng.uniform(0, 1e5, n_sipms), n) + rng.exponential(5.0, len(chan))
+    out = {"sipms": n_sipms, "photons": int(len(chan))}
+    if numpy_sipms:
+        m = chan < numpy_sipms
+        a = time.process_time()
+        F = sipm.simulate(chan[m], t[m], np.arange(m.sum()), pmap, cfg, np.random.default_rng(seed))
+        dt = time.process_time() - a
+        out.update({"numpy_sipms_per_s": numpy_sipms / dt, "numpy_charges_per_photon": len(F["pe"]) / m.sum()})
+    if jax:
+        import jax as _jax
+        from . import sipm_jax
+        key = _jax.random.PRNGKey(seed)
+        a = time.perf_counter()
+        sipm_jax.simulate(chan, t, np.arange(len(chan)), pmap, cfg, np.random.default_rng(seed), key)
+        out["jax_first_call_s"] = time.perf_counter() - a
+        best = 1e9
+        for r in range(repeat):
+            a = time.perf_counter()
+            J = sipm_jax.simulate(chan, t, np.arange(len(chan)), pmap, cfg, np.random.default_rng(seed + r + 1),
+                                  _jax.random.fold_in(key, r + 1))
+            best = min(best, time.perf_counter() - a)
+        out.update({"device": str(_jax.devices()[0]), "jax_s": best, "jax_sipms_per_s": n_sipms / best,
+                    "jax_charges_per_photon": len(J["pe"]) / len(chan)})
+        if numpy_sipms:
+            out["speedup_vs_numpy_core"] = out["jax_sipms_per_s"] / out["numpy_sipms_per_s"]
+    print(json.dumps(out))
+    return out
+
+
 def run(n_rows=200_000, prob=0.0015, repeat=3, seed=1, jax=True, numpy_rows=20_000, outdir=None):
     rng = np.random.default_rng(seed)
     L = synthetic_table(rng, prob)
@@ -96,5 +134,14 @@ if __name__ == "__main__":
     p.add_argument("--numpy-rows", type=int, default=20_000)
     p.add_argument("--no-jax", action="store_true")
     p.add_argument("--outdir", default=None)
+    p.add_argument("--stage", default="photons", choices=["photons", "sipm"])
+    p.add_argument("--sipms", type=int, default=200_000)
+    p.add_argument("--numpy-sipms", type=int, default=20_000)
     a = p.parse_args()
-    run(a.rows, a.prob, a.repeat, a.seed, not a.no_jax, a.numpy_rows, a.outdir)
+    if a.stage == "sipm":
+        r = run_sipm(a.sipms, repeat=a.repeat, seed=a.seed, jax=not a.no_jax, numpy_sipms=a.numpy_sipms)
+        if a.outdir:
+            os.makedirs(a.outdir, exist_ok=True)
+            json.dump(r, open(os.path.join(a.outdir, "sipm_bench.json"), "w"), indent=2)
+    else:
+        run(a.rows, a.prob, a.repeat, a.seed, not a.no_jax, a.numpy_rows, a.outdir)

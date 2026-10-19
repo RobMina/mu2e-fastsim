@@ -101,3 +101,17 @@ def test_sipm_recovery_reduces_second_firing():
     late = out["pe"][out["time"] == 1.0]
     v1 = 1 - np.exp(-1 / cfg.time_constant)        # a pixel that fired 1 ns earlier is at 7 % of Vov
     assert np.isclose(late.min(), v1) and np.isclose(late.max(), 1.0)
+
+
+def test_sipm_jax_matches_numpy_statistically():
+    jax = pytest.importorskip("jax")
+    from crvfastsim.response import sipm, sipm_jax
+    rng = np.random.default_rng(5)
+    cfg, pmap = sipm.SiPMConfig(), rng.random((40, 40)) ** 4
+    n = rng.poisson(60, 3000)
+    chan = np.repeat(np.arange(3000), n)
+    t = np.repeat(rng.uniform(0, 1e4, 3000), n) + rng.normal(0, 3, len(chan))
+    F = sipm.simulate(chan, t, np.arange(len(chan)), pmap, cfg, np.random.default_rng(1))
+    J = sipm_jax.simulate(chan, t, np.arange(len(chan)), pmap, cfg, np.random.default_rng(2), jax.random.PRNGKey(2))
+    assert abs(J["pe"].sum() / F["pe"].sum() - 1) < 4 / np.sqrt(len(F["pe"]))
+    assert abs((J["pe"] < 0.99).mean() - (F["pe"] < 0.99).mean()) < 0.003

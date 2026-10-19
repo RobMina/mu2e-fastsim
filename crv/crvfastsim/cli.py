@@ -75,6 +75,8 @@ def build_parser():
         if name == "v4sipm":
             sp.add_argument("--deviation", default=None, metavar="CSV", help="CRVPhoton table, channel,deviation (default 0)")
             sp.add_argument("--max-steps", type=int, default=None, help="first N steps only")
+            sp.add_argument("--jax", action="store_true", help="fast arm = JAX twin (response/sipm_jax.py)")
+            sp.add_argument("--no-stock", action="store_true", help="reference = numpy port (no Offline needed)")
             sp.add_argument("--seed", type=int, default=1)
         if name == "pulsematch":
             for a in ("--fast", "--fast-mu", "--ref", "--ref-mu"):
