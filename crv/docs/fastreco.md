@@ -201,6 +201,31 @@ per channel within 0.5 %. The +-16 digis are threshold crossings decided by the 
 `reco-repro` runs the jitted stages on seeded synthetic inputs (waveform synthesis with noise from a JAX threefry key;
 pulse reco, 3 rounds + numpy redo; the pipelined coincidence finder) and hashes each stage's output. Laptop CPU, 2,000
 events: the same seed gives identical hashes in one process and across processes (`--against` a saved run), another
-seed changes all three; unit test `test_repro_bit_identical_per_seed`. The GPU half (two GPU runs bit-identical, GPU
-vs CPU statistically equal: the PRNG is backend independent, so only fit rounding can differ) is a stage of
-`crv_reco_bench.sh`, pending a Polaris node.
+seed changes all three; unit test `test_repro_bit_identical_per_seed`. **Polaris (PBS 7761649), 5,000 events:** two GPU runs
+bit-identical in all three stages; GPU vs CPU on the same node: **waveforms (with noise) sample-identical** (100,000
+digis, threefry is backend independent), pulses all matched (99,948) with PE within 3e-9 relative and time within
+6e-8 ns (98 % differ in the last bits: XLA fuses the fit arithmetic differently), **clusters: same 4,812 clusters per
+event and sector type**, PE within 2e-7. KS p 0.60 / 0.10 (pulse PE / time), 0.88 (cluster PE). The run reported
+`pass_statistical: false` only because `match.ks_2samp` returned p = 0 for identical samples (the alternating
+Kolmogorov series does not converge at small lambda); fixed with the small-lambda form (agrees with scipy). **R5 met:**
+bit-identical per seed and backend, CPU and GPU equal to float rounding.
+
+### R1 measured: pulses -> coincidences in one pipelined pass (2026-10-19, PBS 7761649)
+
+`reco-bench synthetic --stage chain` (chain_jax: chunked; pulse reco of chunk k on the device while the host collects
+chunk k-1's pulses and launches its coincidence finding and finishes chunk k-2), 200,000 synthetic events per A100
+(25 waveforms per event, ~1 coincidence per event), 3 pulse rounds, 8 chunks, one process per GPU:
+
+| GPU | events/s | us/event |
+|---|---|---|
+| 0 | 22,146 | 45.2 |
+| 1 | 22,622 | 44.2 |
+| 2 | 23,020 | 43.4 |
+| 3 | 20,104 | 49.7 |
+
+**R1 met: 20,100-23,000 events/s per A100 end to end** (>= 20,000), including the numpy redo of exhausted pulse fits
+and the numpy coincidence fallback (1-8 of 200 k events). GPU 3 was also slower in the pulse-only and waveform stages of
+the same job (41 k and 1.06 M vs 49 k and 1.15 M), a node effect. Coincidence stage alone in the same job: 51,800-56,100
+events/s per A100 (was 19,100-19,800 before async dispatch and the 64-hit split threshold). Host time per 200 k events:
+pulse launch 5.2 s, pulse collect 0.3 s, coincidence prepare+launch 1.8 s, coincidence finish 1.6 s of a 8.7-9.9 s
+wall: the remaining headroom is in overlapping the pulse launch (host batching) with the coincidence host work.
