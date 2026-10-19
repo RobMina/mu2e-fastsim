@@ -8,7 +8,7 @@ Fast CRV reco: reco-vr2, reco-vr2stock, reco-vr2jax, reco-bench, reco-vr1, reco-
 import argparse
 import sys
 
-from .analyses import census, crossingpos, g4cost, g4muon, pulsematch, secondaries, tier1b, transport, v0check, v1compare, v2compare, v2origin, v4photons
+from .analyses import census, crossingpos, g4cost, g4muon, pulsematch, secondaries, tier1b, transport, v0check, v1compare, v2compare, v2origin, v4photons, v4sipm
 from .reco import cli as reco_cli
 
 ANALYSES = {
@@ -26,6 +26,7 @@ ANALYSES = {
     "crossingpos": (crossingpos.run, "diagnostic: primary-muon crossing position along/across the bar, fast vs G4 (matched by event and bar)"),
     "pulsematch": (pulsematch.run, "diagnostic: per-channel PE of four V2 arms (fast, fast-mu, ref, ref-mu) on the same events"),
     "v4photons": (v4photons.run, "V4 photon stage: fast photons (response/photons.py) vs stock MakeCrvPhotons (PyROOT) on the same steps"),
+    "v4sipm":    (v4sipm.run,    "V4 SiPM-charge stage: fast charges (response/sipm.py) vs stock MakeCrvSiPMCharges (PyROOT) on the same photons"),
     "g4muon":    (g4muon.run,    "G4 reference CrvStep tables cut to the primary muon's own steps (tier-1a-like V2 arm)"),
 }
 
@@ -70,6 +71,10 @@ def build_parser():
             sp.add_argument("--max-steps", type=int, default=None, help="first N steps only (the stock arm is a Python loop)")
             sp.add_argument("--jax", action="store_true", help="fast arm = JAX twin (response/photons_jax.py)")
             sp.add_argument("--no-stock", action="store_true", help="reference = numpy port (no Offline needed)")
+            sp.add_argument("--seed", type=int, default=1)
+        if name == "v4sipm":
+            sp.add_argument("--deviation", default=None, metavar="CSV", help="CRVPhoton table, channel,deviation (default 0)")
+            sp.add_argument("--max-steps", type=int, default=None, help="first N steps only")
             sp.add_argument("--seed", type=int, default=1)
         if name == "pulsematch":
             for a in ("--fast", "--fast-mu", "--ref", "--ref-mu"):

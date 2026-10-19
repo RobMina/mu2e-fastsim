@@ -76,3 +76,28 @@ def test_jax_substeps_match_numpy_statistically():
     assert abs(d1.mean() - d2.mean()) < 0.1
     s3, _, t3 = PJ.substep_photons(PJ.DeviceTable(L), rows, jax.random.PRNGKey(1))
     assert np.array_equal(t2, t3)                                     # same key -> bit-identical
+
+
+def test_sipm_single_photons_full_pe_and_crosstalk_rate():
+    from crvfastsim.response import sipm
+    rng = np.random.default_rng(3)
+    cfg = sipm.SiPMConfig()
+    n = 200_000                                    # one photon per SiPM: every firing has v = Vov -> 1 PE
+    out = sipm.simulate(np.arange(n), np.zeros(n), np.arange(n), np.ones((40, 40)), cfg, rng)
+    assert np.allclose(out["pe"], 1.0)
+    p = cfg.p_fire(cfg.overvoltage)                # 0.407: p1 (1 - exp(-3 / 2.7))
+    live = 1 - 0.1 * 0.1                           # dead 4 x 4 centre: 4/40 per axis
+    ct = 4 * (1 - (1 - cfg.cross_talk) ** 0.25)    # expected cross-talk firings per firing (edges ignored)
+    assert abs(len(out["pe"]) / n - p * live * (1 + ct)) < 0.004
+
+
+def test_sipm_recovery_reduces_second_firing():
+    from crvfastsim.response import sipm
+    cfg = sipm.SiPMConfig(cross_talk=0.0)
+    pmap = np.zeros((40, 40)); pmap[5, 5] = 1.0    # lands on pixels 5-6 x 5-6
+    n = 50_000
+    out = sipm.simulate(np.repeat(np.arange(n), 2), np.tile([0.0, 1.0], n), np.arange(2 * n), pmap, cfg,
+                        np.random.default_rng(4))
+    late = out["pe"][out["time"] == 1.0]
+    v1 = 1 - np.exp(-1 / cfg.time_constant)        # a pixel that fired 1 ns earlier is at 7 % of Vov
+    assert np.isclose(late.min(), v1) and np.isclose(late.max(), 1.0)
