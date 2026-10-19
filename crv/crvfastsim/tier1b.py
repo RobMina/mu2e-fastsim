@@ -7,7 +7,7 @@ Two parts, both resampled from G4 CrvStep tables (CrvStepTableDumper) of trainin
    to the step (a library-building convention; the arms are never paired this way). A library crossing stores its
    descendants as offsets from its entry point. Sampling: each fast crossing draws a library crossing from the same
    (sector group, momentum, path-length) bin, with momentum and path-length edges at quantiles per sector group
-   (P_QUANTILES, L_QUANTILES; the path-length bins are finer in the tail); the offsets are rotated from the G4 muon direction to the fast one and
+   (P_QUANTILES, L_QUANTILES; the path-length bins are finer in both tails); the offsets are rotated from the G4 muon direction to the fast one and
    added to the fast entry point and time. A same-bar step that falls outside the fast crossing's bar keeps its
    rotated position along the bar but takes its G4 position across the bar (thickness and width, both endpoints, from
    the library's in-bar coordinates); fit_inside then guards the box. Pushing such steps onto the nearest face (first
@@ -37,7 +37,7 @@ GROUPS = ("EX", "T1", "T2", "M")
 MASS = {11: 0.511, 13: 105.658, 22: 0.0, 211: 139.570, 321: 493.677, 2212: 938.272, 2112: 939.565}
 KE_EDGES = np.geomspace(1.0, 1e6, 19)
 P_QUANTILES = (0.25, 0.5, 0.75)
-L_QUANTILES = (1 / 3, 2 / 3, 0.9, 0.97)  # finer in the long-path tail: long crossings carry more muon and delta energy
+L_QUANTILES = (0.05, 0.15, 1 / 3, 2 / 3, 0.9, 0.97)  # finer in both tails: corner clips (small pulses) and long crossings
 N_PBINS, N_LBINS = len(P_QUANTILES) + 1, len(L_QUANTILES) + 1
 SHOWER_KEY_BASE = 10_000_000
 STEP_COLS = ["x0", "y0", "z0", "x1", "y1", "z1"]

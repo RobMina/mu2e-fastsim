@@ -8,7 +8,7 @@ Fast CRV reco: reco-vr2, reco-vr2stock, reco-vr2jax, reco-bench, reco-vr1, reco-
 import argparse
 import sys
 
-from .analyses import census, g4cost, g4muon, secondaries, tier1b, transport, v0check, v1compare, v2compare, v2origin
+from .analyses import census, crossingpos, g4cost, g4muon, pulsematch, secondaries, tier1b, transport, v0check, v1compare, v2compare, v2origin
 from .reco import cli as reco_cli
 
 ANALYSES = {
@@ -23,6 +23,8 @@ ANALYSES = {
     "tier1b-apply": (tier1b.apply, "tier 1b: add library descendants and non-muon showers to fast tier-1a tables (fast1b.*.root)"),
     "tier1b-check": (tier1b.check, "tier 1b: step-level closure per sector (descendant energy per crossing, non-muon) vs G4"),
     "v2origin":  (v2origin.run,  "V2 diagnostic: reco pulses by deposit origin (muon / descendant / non-muon / none) per PE bin, two arms"),
+    "crossingpos": (crossingpos.run, "diagnostic: primary-muon crossing position along/across the bar, fast vs G4 (matched by event and bar)"),
+    "pulsematch": (pulsematch.run, "diagnostic: per-channel PE of four V2 arms (fast, fast-mu, ref, ref-mu) on the same events"),
     "g4muon":    (g4muon.run,    "G4 reference CrvStep tables cut to the primary muon's own steps (tier-1a-like V2 arm)"),
 }
 
@@ -62,6 +64,11 @@ def build_parser():
             sp.add_argument("--out", default=None, metavar="ROOT", help="library file to write")
             sp.add_argument("--generated", type=int, default=None,
                             help="generated events behind the inputs when --gen is not their own gen stream (production)")
+        if name == "pulsematch":
+            for a in ("--fast", "--fast-mu", "--ref", "--ref-mu"):
+                sp.add_argument(a, nargs="+", default=None, metavar="ROOT", help="CrvRecoTableDumper files of that arm")
+        if name == "crossingpos":
+            sp.add_argument("--compare", nargs="+", default=None, metavar="ROOT", help="G4 CrvStep tables, same shards")
         if name == "tier1b-check":
             sp.add_argument("--compare", nargs="+", default=None, metavar="ROOT", help="G4 CrvStep tables, same shards")
         if name == "tier1b-apply":

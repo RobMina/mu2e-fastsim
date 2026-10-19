@@ -77,7 +77,7 @@ Matching is **by truth-particle identity, never by time or distance** (a Mu2e an
 descendants (deltas above the production cut, decay electrons) and the non-muon CRY primaries with their showers,
 resampled from G4 CrvStep tables of **training** shards and checked on others.
 - *Descendants*: each fast crossing draws a G4 crossing from the same (sector group, momentum, path-length) bin; edges
-  are per-group quantiles, path length finer in the tail (1/3, 2/3, 90, 97 %). Same-bar descendants are offsets from
+  are per-group quantiles, path length finer in both tails (5, 15, 33, 67, 90, 97 %). Same-bar descendants are offsets from
   the muon entry, rotated to the fast direction; if they fall outside the fast bar they keep the rotated position
   along the bar and take their G4 position across it (thickness, width). Other-bar descendants keep the bar structure
   (G4 bar offset and in-bar position, shifted along the bar with the muon entry). `fit_inside` keeps every midpoint
@@ -127,6 +127,8 @@ Outputs are a stats JSON (`plots.write_json`: NaN → null) plus figures.
 | `tier1b-build` | tier-1b library from G4 CrvStep tables (`--gen`, `--out`, `--generated`) | `lib.root` + `lib.json` |
 | `tier1b-apply` | add library descendants and showers to fast tables (`--library`, `--seed`) | `fast1b.*.root` |
 | `tier1b-check` | V3 step-level closure per group vs G4 tables of the same shards (`--compare`) | `tier1b_check.json` |
+| `pulsematch` | V2 diagnostic: per-channel PE of four arms (`--fast`, `--fast-mu`, `--ref`, `--ref-mu`) on the same events; the secondaries' added PE per muon-only PE bin, G4 vs fast | `pulsematch_stats.json` |
+| `crossingpos` | V2 diagnostic: primary-muon crossing position along and across the bar, fast vs G4, matched by event and bar (`--compare`) | `crossingpos_stats.json`, `crossingpos_along.png` |
 | `v2origin` | V2 diagnostic: pulses per PE bin and light yield by deposit origin, two arms (`--steps`, `--compare`, `--compare-steps`, `--generated`) | `v2origin_stats.json` |
 
 **Batch + merge** (same contract as crvextrap §7): workers `--emit batch_NN.json` on a slice of files (one job per
@@ -152,7 +154,7 @@ crvfastsim/
   transport.py  tier-1a muon transport to the CRV bars (stages A-C); shared MSC and slab loss from mu2efastsim.transport
   tables.py     CrvStep tree on mu2efastsim.tables; primary-muon crossings
   tier1b.py     tier-1b library: build (G4 tables) and sample (fast tables)
-  analyses/     g4cost, census, transport, v0check, v1compare, g4muon, v2compare, v2origin, secondaries, tier1b
+  analyses/     g4cost, census, transport, v0check, v1compare, g4muon, v2compare, v2origin, pulsematch, crossingpos, secondaries, tier1b
   reco/         fast CRV reconstruction (section 10; subcommands reco-*)
 mu2efastsim (core/): eloss, materials, world, crossings, transport, tables, stats, plots, match
 scripts/        run_transport_v1.sh (transport the 20 g4ref_v1 shards + V1, one GPVM, ~40 s);
@@ -169,8 +171,9 @@ tests/          pytest unit tests (synthetic inputs; geometry tests need only th
 | V1 | self-test (G4 vs itself) | pass by construction; harness check only |
 | V2 | path A, all 20 `g4ref_v1` shards (50,008 events), `fast` (stage C) vs `g4mu` (2026-10-16) | **pass** in every group: PE median within 0.5 % (EX -0.09 %, T1 -0.06 %, T2 -0.12 %, M -0.48 %), PE spectrum within 2.5 %, clusters per event within 1.8 % (all within 1 sigma), per-bar chi2/ndf 0.33 (max pull 2.6). Layer-efficiency diagnostic within 0.7 points |
 | V2 | path A, `fast1b` (stage C + tier 1b, library from 20 production files = 10 M generated events) vs `ref`, held-out `g4ref_v1` shards 11-20 (500 k generated), candidate on the gen stream (2026-10-19) | **EX, T2, M pass; T1 fails the PE spectrum** (worst bin 6.8 % after 2 sigma, limit 5 %). PE median EX -1.4 %, T1 -1.8 %, T2 -1.1 %, M +0.05 %; clusters per generated event within 0.8 % (M -3.2 ± 3.3 %); per-bar chi2/ndf 0.41. Light yield per MeV: muon and non-muon within 0.5 %, descendants 2-3 % low (M 6 %). The T1 residual is in muon-dominated pulses (fewer at 5-20 PE, more at 20-50 PE): tier 1a, not the library |
+| V2 | as above with path-length bins also at 5 and 15 % (library `v7`, 2026-10-19) | **EX, T2, M pass; T1 fails the PE spectrum** (worst bin 8.5 % after 2 sigma). PE median EX -0.01 %, T1 +0.1 %, T2 +0.4 %, M +0.5 %; spectrum chi2/ndf 1.7 / 1.9 / 1.3 / 0.8; clusters within 0.8 % (M -3.3 ± 3.2 %); per-bar chi2/ndf 0.45. T1 lacks small pulses (5-15 PE 0.85): channels lit only by secondaries 1,189 vs 1,704 in G4 (`pulsematch`) |
 | V3 | `tier1b-check`, same library and shards (2026-10-19) | descendant energy in the muon's bar within 3 % of G4 (q99 of the bar total within 0.3 MeV); non-muon energy 0.94-0.99 of G4 per group; descendants in other bars 40-70 % of G4 in EX/T1/T2 (about 0.03 MeV per crossing short), 20 % in M |
-| V2 tier-1b history | same shards (2026-10-16..19) | worst spectrum bin EX/T1/T2 after 2 sigma: no tier 1b 80/75/84 %; first library 11/9/11 %; other-bar placement 9/6/8 %; tail bins 7/8/5 %; no step on a face 5/6/3 %; G4 transverse position 4/8/4 %; production library 4/7/4 % |
+| V2 tier-1b history | same shards (2026-10-16..19) | worst spectrum bin EX/T1/T2 after 2 sigma: no tier 1b 80/75/84 %; first library 11/9/11 %; other-bar placement 9/6/8 %; tail bins 7/8/5 %; no step on a face 5/6/3 %; G4 transverse position 4/8/4 %; production library 4/7/4 %; low path-length bins 1/8/3 % |
 | V2 | path A, `fast` vs `ref` (full G4) (2026-10-16) | **fails**, as expected without tier 1b: `g4mu` vs `ref` shows the same deficit, so it comes from the missing secondaries, not the transport or the table injection. Tier 1b is required for V2 |
 | V1 | transport stage C (B + GDML world: concrete, overburden, steel, Al; sliced range-out; height-band MSC) vs `g4ref_v1` (2026-10-16) | **pass** in every group. Crossings EX -0.26 %, T1 +0.87 %, T2 -0.26 %, M -0.85 %; every path and visible-energy mean within 0.43 %, MPV within 0.7 %; binned-ratio chi2/ndf 0.31-1.08. 10 s per 50 k-event shard (GPVM, numpy) |
 | P1 | transport CPU cost, one GPVM core (numpy backend, mu2egpvm05 shared with other users' jobs; CPU time, best of 2), shard 2 = 50,000 generated, 1,976 with CRV crossings (2026-10-16) | stage A 0.74, B 1.52, **C 2.34 ms per event with crossings** (29 / 60 / 92 us per generated event); world load 3.3 s once per job; RSS 1.8 GB. Against the stock G4 stage 433 ms per accepted event: C is ~185x. P1 target (<= 2 ms per accepted event) is missed by 17 % for C on CPU; the cost is per generated muon (MSC, world tracing, crossings), so the GPU port is the planned lever |
