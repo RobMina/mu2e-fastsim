@@ -728,6 +728,34 @@ def cmd_noise(args):
     _report(args, "noise", out)
 
 
+def cmd_repro(args):
+    """R5: seeded synthetic runs of the jitted stages. Same seed twice in one process (and against --against, a saved
+    run of the same backend from another process) must be bit-identical; --against from another backend is compared
+    statistically. Writes repro_<backend>.npz for later comparisons."""
+    import jax
+    from . import repro
+    G = _coinc_geom()
+    ne = args.max_events or 5000
+    a = repro.run(ne, G, seed=args.seed)
+    b = repro.run(ne, G, seed=args.seed)
+    c = repro.run(ne, G, seed=args.seed + 1)
+    fa, fb, fc = repro.fingerprint(a), repro.fingerprint(b), repro.fingerprint(c)
+    be = jax.default_backend()
+    out = {"backend": be, "device": str(jax.devices()[0]), "events": ne, "seed": args.seed, "fingerprint": fa,
+           "same_seed_identical": {s: fa[s] == fb[s] for s in repro.STAGES},
+           "other_seed_differs": {s: fa[s] != fc[s] for s in repro.STAGES}}
+    os.makedirs(args.outdir, exist_ok=True)
+    np.savez(os.path.join(args.outdir, f"repro_{be}.npz"), **repro.flatten(a))
+    if args.against:
+        z = np.load(args.against)
+        other = repro.unflatten(z)
+        fo = repro.fingerprint(other)
+        out["against"] = {"file": args.against, "fingerprint": fo, "identical": {s: fo[s] == fa[s] for s in repro.STAGES},
+                          "comparison": repro.compare(a, other)}
+    out["pass_bit_identical"] = all(out["same_seed_identical"].values()) and all(out["other_seed_differs"].values())
+    _report(args, "repro", out)
+
+
 def cmd_direct_v1(args):
     """Fit on even events, test on odd: pulse count per cluster, first-pulse PE/time/beta vs stock pulses."""
     cfg = waveform.WaveformConfig()
@@ -859,7 +887,7 @@ def _report(args, name, out):
     print(json.dumps(plots._clean(out), indent=1)[:4000])
 
 
-RECO_CMDS = ("vr2", "vr2stock", "vr2jax", "bench", "vr1", "vr3", "direct", "noise", "cost", "inspect")
+RECO_CMDS = ("vr2", "vr2stock", "vr2jax", "bench", "vr1", "vr3", "direct", "noise", "repro", "cost", "inspect")
 
 
 def cmd_vr3(args):
@@ -986,6 +1014,8 @@ def add_reco_args(sp, name):
                         help="FEB clock phase (TDC0) drawn uniform in [offset, offset+spread] ns per (event, FEB); "
                         "stock MC 12.5 (one period); a tuning knob for data")
         sp.add_argument("--feb-phase-offset", type=float, default=0.0)
+    if name == "repro":
+        sp.add_argument("--against", default=None, help="repro_<backend>.npz from another run (process or backend)")
     if name == "noise":
         sp.add_argument("--mc", default=None, help="MC reference table: its isolated-waveform rate is subtracted")
         sp.add_argument("--rate-scale", type=float, default=1.0)
@@ -998,7 +1028,7 @@ def add_reco_args(sp, name):
 
 def run_reco(name, a):
     a.outdir = a.outdir or f"plots/reco_{name}"
-    {"vr2": cmd_vr2, "vr2stock": lambda x: cmd_vr2(x, oracle=True), "vr1": cmd_vr1, "vr3": cmd_vr3, "direct": cmd_direct, "noise": cmd_noise,
+    {"vr2": cmd_vr2, "vr2stock": lambda x: cmd_vr2(x, oracle=True), "vr1": cmd_vr1, "vr3": cmd_vr3, "direct": cmd_direct, "noise": cmd_noise, "repro": cmd_repro,
      "cost": cmd_cost, "inspect": cmd_inspect, "vr2jax": lambda x: cmd_vr2(x, use_jax=True),
      "bench": cmd_bench}[name](a)
 

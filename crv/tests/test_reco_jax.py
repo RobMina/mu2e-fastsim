@@ -111,3 +111,13 @@ def test_chain_jax_chunking_and_consistency():
     ref = CJ.find(ev, np.arange(len(ev)) - np.searchsorted(ev, ev), W["bar"][wrow], W["sipm"][wrow], tm, pe, seq, G,
                   status)
     assert CJ.cluster_keys(ref) == key(a)
+
+
+def test_repro_bit_identical_per_seed():
+    """R5: the jitted stages are bit-identical for the same seed and differ for another seed."""
+    from crvfastsim.reco import repro
+    from crvfastsim.reco.cli import _coinc_geom
+    G = _coinc_geom()
+    a, b, c = (repro.fingerprint(repro.run(150, G, seed=s, batch=2048)) for s in (5, 5, 6))
+    assert a == b
+    assert all(a[k] != c[k] for k in repro.STAGES)

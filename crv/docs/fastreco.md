@@ -195,3 +195,12 @@ shared signal; the noise model itself is tested by the residual of each noisy ar
 
 **V-R1 passes with noise on** for both implementations: same noise width, shape and whiteness as stock, digi counts
 per channel within 0.5 %. The +-16 digis are threshold crossings decided by the noise draw.
+
+### R5 reproducibility (2026-10-19)
+
+`reco-repro` runs the jitted stages on seeded synthetic inputs (waveform synthesis with noise from a JAX threefry key;
+pulse reco, 3 rounds + numpy redo; the pipelined coincidence finder) and hashes each stage's output. Laptop CPU, 2,000
+events: the same seed gives identical hashes in one process and across processes (`--against` a saved run), another
+seed changes all three; unit test `test_repro_bit_identical_per_seed`. The GPU half (two GPU runs bit-identical, GPU
+vs CPU statistically equal: the PRNG is backend independent, so only fit rounding can differ) is a stage of
+`crv_reco_bench.sh`, pending a Polaris node.
