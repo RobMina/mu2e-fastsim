@@ -148,9 +148,10 @@ sim, and G4's own steps cut to the primary muon. The second isolates the tier-1a
 V2 proper (against full G4) needs tier 1b.
 
 Tier 1b status (2026-10-19): the library (`crvfastsim/tier1b.py`, `crvfastsim/README.md`) is built from 20 production
-dts files and tested on held-out reference shards; V2 against full G4 passes in EX, T2 and the taggers and fails only
-the T1 PE-spectrum row, through muon-dominated pulses (a tier-1a effect). Known limits: non-muon showers keep the bar
-indices of their G4 event (they do not follow a geometry move); descendants in other bars are under-produced.
+dts files and tested on held-out reference shards; **V2 against full G4 passes in every sector group** (PE median,
+PE spectrum, clusters per generated event, per-bar rates). Known limits: non-muon showers keep the bar indices of
+their G4 event (they do not follow a geometry move); in the taggers, channels lit only by secondaries are about half
+of G4's (within the thresholds). The EX layer-efficiency and gap-width rows of V2 are not computed yet.
 
 Pass means every row passes. A failure is investigated, not tuned away: no free scale factors to force agreement,
 because the response parameters are what the downstream BO fits.

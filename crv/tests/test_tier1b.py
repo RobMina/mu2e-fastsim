@@ -40,11 +40,19 @@ def test_outside_same_bar_takes_g4_transverse_position(geom):
                        "pz0": [0.0], "p1": [2490.0], "len": [20.0], "edep": [3.0]})
     lib = _lib(geom, bar)
     lib["libdesc"]["dy0"], lib["libdesc"]["dy1"] = 5.0, 4.0          # rotated placement lands above the bar
-    out, ndrop, nclamp = T._desc_for_crossings(fs, lib, geom, np.random.default_rng(0))
+    out, ndrop, nclamp, _ = T._desc_for_crossings(fs, lib, geom, np.random.default_rng(0))
     assert nclamp == 1 and ndrop == 0
     ax = geom.local_to_world[bar]
     loc0 = out[["x0", "y0", "z0"]].to_numpy()[0] - c
     assert np.isclose(loc0[ax[0]], [2.0, 3.0, 4.0][ax[0]]) and np.isclose(loc0[ax[1]], [2.0, 3.0, 4.0][ax[1]])
+
+
+def test_nearest_bar_same_axis(geom):
+    b = 10
+    a = geom.local_to_world[b, 2]
+    p = geom.center[b][None, :].copy()
+    p[0, a] += 1e5                                            # far along the length: still this bar
+    assert T.nearest_bar(p, np.array([a]), geom)[0] == b
 
 
 @pytest.fixture(scope="module")

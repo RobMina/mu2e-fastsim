@@ -15,7 +15,9 @@ Two parts, both resampled from G4 CrvStep tables (CrvStepTableDumper) of trainin
    Steps in another bar keep the bar structure instead: the library stores the centre offset between their bar and the
    crossing's bar and their position inside their bar; the fast step goes to the bar at that centre offset from the fast
    crossing's bar (same length axis), at the stored position, moved along the bar by the shift of the muon entry along
-   the length. Those with no bar there (edge of the CRV, module gap) are dropped (counted).
+   the length. With no bar of the same length axis there (module gap, sector edge, a bar along another axis) the
+   step goes to the nearest such bar in the transverse plane (nearest_bar); a step shifted past a bar end is moved
+   back inside (fit_inside). Dropping both cases (first versions) lost ~44 % of other-bar steps.
 2. Non-muon primaries (e, gamma, n, p, pi from CRY). A library shower is every CrvStep whose primary is that particle,
    with absolute positions and times relative to the primary's generation time. Sampling: each non-muon CRY primary of
    the event (gen table) reaches the CRV with the library probability of its (pdg, kinetic-energy) bin, and then gets a
@@ -70,6 +72,21 @@ def fit_inside(r0, r1, lo, hi, inset=INSET_MM):
     tgt = np.clip(mid, lo + inset, hi - inset)
     d = tgt - mid
     return np.clip(r0 + d, lo, hi), np.clip(r1 + d, lo, hi)
+
+
+def nearest_bar(points, length_axis, geom):
+    """Per point, the bar with the given length axis whose centre is nearest in the two transverse coordinates."""
+    out = np.full(len(points), -1, np.int64)
+    bar_axis = geom.local_to_world[:, 2]
+    for a in np.unique(length_axis):
+        m = length_axis == a
+        cand = np.flatnonzero(bar_axis == a)
+        if not len(cand):
+            continue
+        t = [k for k in range(3) if k != a]
+        d = ((points[m][:, None, t] - geom.center[cand][None, :, t]) ** 2).sum(axis=2)
+        out[m] = cand[np.argmin(d, axis=1)]
+    return out
 
 
 def _ke_bin(ke):
@@ -292,10 +309,16 @@ def _desc_for_crossings(fx, lib, geom, rng):
     xbar = fx.bar.to_numpy()[ix]
     same = dd.samebar.to_numpy() == 1
     other = ~same
+    why = {"other": int(other.sum()), "no_bar": 0, "axis": 0, "off_end": 0}
     if other.any():
-        tb = bar_containing(geom.center[xbar[other]] + dd.loc[:, ["dcx", "dcy", "dcz"]].to_numpy()[other], geom)
+        target = geom.center[xbar[other]] + dd.loc[:, ["dcx", "dcy", "dcz"]].to_numpy()[other]
+        tb = bar_containing(target, geom)
+        xa = geom.local_to_world[xbar[other], 2]
+        why["no_bar"] = int((tb < 0).sum())
+        bad = (tb < 0) | (geom.local_to_world[np.maximum(tb, 0), 2] != xa)
+        why["axis"] = int(bad.sum() - why["no_bar"])
+        tb[bad] = nearest_bar(target[bad], xa[bad], geom)
         ok = tb >= 0
-        ok[ok] = geom.local_to_world[tb[ok], 2] == geom.local_to_world[xbar[other][ok], 2]
         tbs = np.where(ok, tb, 0)
         la = geom.local_to_world[tbs, 2]
         rows_o = np.arange(ok.size)
@@ -305,7 +328,8 @@ def _desc_for_crossings(fx, lib, geom, rng):
         o0[rows_o, la] += shift
         o1[rows_o, la] += shift
         lo_, hi_ = geom.center[tbs] - geom.halflen[tbs], geom.center[tbs] + geom.halflen[tbs]
-        ok &= (0.5 * (o0 + o1) >= lo_).all(1) & (0.5 * (o0 + o1) <= hi_).all(1)
+        inside = (0.5 * (o0 + o1) >= lo_).all(1) & (0.5 * (o0 + o1) <= hi_).all(1)
+        why["off_end"] = int((ok & ~inside).sum())  # moved back inside by fit_inside, not dropped
         r0[other], r1[other] = fit_inside(o0, o1, lo_, hi_)
         bar[other] = np.where(ok, tb, -1)
         mom[other] = dd.loc[:, ["px0", "py0", "pz0"]].to_numpy()[other]
@@ -336,7 +360,7 @@ def _desc_for_crossings(fx, lib, geom, rng):
         out[f"{c}0"], out[f"{c}1"], out[f"p{c}0"] = r0[keep, j], r1[keep, j], mom[keep, j]
     for c in ("p1", "len", "edep"):
         out[c] = dd[c].to_numpy()[keep]
-    return out, int((~keep).sum()), int(clamp.sum())
+    return out, int((~keep).sum()), int(clamp.sum()), why
 
 
 def _showers_for_gen(gen, lib, rng):
@@ -363,7 +387,7 @@ def _showers_for_gen(gen, lib, rng):
 def sample(fast_steps, fast_parts, gen, lib, geom, rng):
     """Fast tier-1a tables + tier 1b: (steps, particles, info). The muon keeps key 1; descendants 2..; showers k*1e7+sp."""
     fx = fast_steps.copy()
-    desc, n_drop, n_clamp = _desc_for_crossings(fx, lib, geom, rng)
+    desc, n_drop, n_clamp, why = _desc_for_crossings(fx, lib, geom, rng)
     # descendant particles: one per (event, crossing, library particle), keys 2.. within the event
     u = desc[KEY + ["xi", "lsp", "pdg"]].drop_duplicates(KEY + ["xi", "lsp"]).reset_index(drop=True)
     u["key"] = u.groupby(KEY).cumcount() + 2
@@ -403,6 +427,6 @@ def sample(fast_steps, fast_parts, gen, lib, geom, rng):
             steps[c] = steps[c].astype(np.float64)
     parts = parts.astype({"key": np.int64, "parent": np.int64, "isprim": np.int64, "pdg": np.int32})
     steps = steps.sort_values(KEY + ["t0"], kind="stable").reset_index(drop=True)
-    info = {"desc_steps": len(desc), "desc_dropped": n_drop, "desc_clamped": n_clamp,
+    info = {"desc_steps": len(desc), "desc_dropped": n_drop, "desc_clamped": n_clamp, "other_bar": why,
             "showers": int(len(roots)), "shower_steps": len(sh), "nonmu_primaries": int(len(gsign))}
     return steps, parts, info
