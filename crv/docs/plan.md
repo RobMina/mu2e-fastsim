@@ -153,6 +153,12 @@ PE spectrum, clusters per generated event, per-bar rates). Known limits: non-muo
 their G4 event (they do not follow a geometry move); in the taggers, channels lit only by secondaries are about half
 of G4's (within the thresholds). The EX layer-efficiency and gap-width rows of V2 are not computed yet.
 
+V4 status (2026-10-19): the photon stage (`crvfastsim/response/`) passes V4 against Offline's `MakeCrvPhotons` on the
+same steps (three reference shards); the time criterion is read as the horizontal CDF distance at each level (the tables
+store whole-ns delays). Its JAX twin runs ~300 k (step, SiPM) rows/s per A100, ~250-300x the stock photon module on a
+core. `CrvSiPMCharges` is not ported yet. The lookup tables may be copied to the Eagle work area for a test and must be
+deleted after it (user, 2026-10-19).
+
 Pass means every row passes. A failure is investigated, not tuned away: no free scale factors to force agreement,
 because the response parameters are what the downstream BO fits.
 

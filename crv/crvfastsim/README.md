@@ -71,7 +71,18 @@ Matching is **by truth-particle identity, never by time or distance** (a Mu2e an
 | V1 muon crossings | `v1compare` | per group (EX, T1, T2, M): crossings/event 1 %; path mean 0.5 %; visible-energy mean and MPV 1 % (MPV allows 2 sigma of its fit error); path and visible-energy binned ratios chi2/ndf ≤ 1.5 over 20 bins (user, 2026-10-16: the earlier per-bin ±2 %/±3 % after 2 sigma failed identical samples 22 % of the time; the band values are still reported); t0 bias ≤ 0.1 ns |
 | V2 response (path A) | `v2compare` | per group: seq-0 pulse PE median 2 % (2 sigma allowed); PE spectrum 5-150 PE in 20 equal-content bins, ±5 % after 2 sigma; coincidence clusters per event 1 % (2 sigma allowed); per-bar rate = events with a ≥ 5 PE pulse in the bar, all 576 bars, chi2/ndf ≤ 1.5 and no bar beyond 5 sigma (user, 2026-10-16: counted once per event and bar, since counting each SiPM's pulse gave ~4 correlated entries per crossing). Per-layer efficiency of truth crossings is a diagnostic only (the agreed observable uses extrapolated tracks and the gap width D) |
 | V3 tier 1b (step level) | `tier1b-check` | per group, held-out shards: descendant visible energy per muon crossing (same bar, other bars), non-muon visible energy and bar hits, within 10 % relative (plan V3); descendant positions in the bar (no midpoint on a face) |
-| V4 | not written yet | `docs/plan.md` section 5 |
+| V4 photons | `v4photons` | same CrvSteps into the fast photon stage and into Offline's `MakeCrvPhotons` (PyROOT, `response/stockphotons.py`), same yield deviations: photons per SiPM per event within 0.5 % (paired error, 2 sigma allowed); arrival time minus step start at the 10/50/90 % levels within 0.2 ns, measured as the horizontal distance between the two CDFs at the reference quantile (the tables store delays in whole ns, so a raw quantile can jump a plateau: 0.84 ns at a median on identical laws); `--jax` tests the JAX twin, `--no-stock` compares it with the numpy port without Offline |
+| V4 SiPM charges | not written yet | `docs/plan.md` section 5 |
+
+**Fast response** (`response/`). `lookup.py` reads the v6 photon lookup tables (Mu2e-internal: read at run time from
+`$CRVFS_LOOKUP_DIR`, default the Mu2e CVMFS DataFiles area; never committed, never in an image; on Polaris copied into
+the Eagle work area for a test and deleted after it). `photons.py` is a vectorised port of `MakeCrvPhotons` and
+`CrvPhotonGenerator` with the `epilog_extracted_v05` sector tables, yields and reflectors, `photonYieldScaleFactor` 0.94
+and the per-channel `CRVPhoton` deviations (CSV from `dbTool`, `Sim_best v1_5`); steps with a NaN time are skipped as in
+the stock module. Photon numbers per step and type are drawn once (Gauss above 10, else Poisson, divided over 0.1 mm
+substeps), arrivals as Binomial(n, p) per substep and type (the stock code draws n Bernoullis: same law).
+`photons_jax.py` is the JAX twin (two jitted kernels, fixed power-of-two buckets, float64; bit-identical per key).
+`bench.py` times the substep kernel on synthetic tables (no Mu2e-internal input).
 
 **Tier 1b library** (`tier1b.py`). Tier 1a writes only the primary muon. Tier 1b adds what G4 also makes: the muon's
 descendants (deltas above the production cut, decay electrons) and the non-muon CRY primaries with their showers,
@@ -128,6 +139,7 @@ Outputs are a stats JSON (`plots.write_json`: NaN → null) plus figures.
 | `tier1b-build` | tier-1b library from G4 CrvStep tables (`--gen`, `--out`, `--generated`) | `lib.root` + `lib.json` |
 | `tier1b-apply` | add library descendants and showers to fast tables (`--library`, `--seed`) | `fast1b.*.root` |
 | `tier1b-check` | V3 step-level closure per group vs G4 tables of the same shards (`--compare`) | `tier1b_check.json` |
+| `v4photons` | V4 photon stage vs stock `MakeCrvPhotons` on the same steps (`--deviation`, `--max-steps`, `--jax`, `--no-stock`); the stock arm needs `muse setup SimJob ...` plus the `pyenv ana` site-packages on `PYTHONPATH` for pandas | `v4photons_stats.json` |
 | `pulsematch` | V2 diagnostic: per-channel PE of four arms (`--fast`, `--fast-mu`, `--ref`, `--ref-mu`) on the same events; the secondaries' added PE per muon-only PE bin, G4 vs fast | `pulsematch_stats.json` |
 | `crossingpos` | V2 diagnostic: primary-muon crossing position along and across the bar, fast vs G4, matched by event and bar (`--compare`) | `crossingpos_stats.json`, `crossingpos_along.png` |
 | `v2origin` | V2 diagnostic: pulses per PE bin and light yield by deposit origin, two arms (`--steps`, `--compare`, `--compare-steps`, `--generated`) | `v2origin_stats.json` |
@@ -155,6 +167,7 @@ crvfastsim/
   transport.py  tier-1a muon transport to the CRV bars (stages A-C); shared MSC and slab loss from mu2efastsim.transport
   tables.py     CrvStep tree on mu2efastsim.tables; primary-muon crossings
   tier1b.py     tier-1b library: build (G4 tables) and sample (fast tables)
+  response/     lookup (v6 tables), photons (numpy port), photons_jax (JAX twin), stockphotons (PyROOT oracle), bench
   analyses/     g4cost, census, transport, v0check, v1compare, g4muon, v2compare, v2origin, pulsematch, crossingpos, secondaries, tier1b
   reco/         fast CRV reconstruction (section 10; subcommands reco-*)
 mu2efastsim (core/): eloss, materials, world, crossings, transport, tables, stats, plots, match
@@ -172,6 +185,9 @@ tests/          pytest unit tests (synthetic inputs; geometry tests need only th
 | V1 | self-test (G4 vs itself) | pass by construction; harness check only |
 | V2 | path A, all 20 `g4ref_v1` shards (50,008 events), `fast` (stage C) vs `g4mu` (2026-10-16) | **pass** in every group: PE median within 0.5 % (EX -0.09 %, T1 -0.06 %, T2 -0.12 %, M -0.48 %), PE spectrum within 2.5 %, clusters per event within 1.8 % (all within 1 sigma), per-bar chi2/ndf 0.33 (max pull 2.6). Layer-efficiency diagnostic within 0.7 points |
 | V2 | path A, `fast1b` (stage C + tier 1b, library from 20 production files = 10 M generated events) vs `ref`, held-out `g4ref_v1` shards 11-20 (500 k generated), candidate on the gen stream (2026-10-19) | **EX, T2, M pass; T1 fails the PE spectrum** (worst bin 6.8 % after 2 sigma, limit 5 %). PE median EX -1.4 %, T1 -1.8 %, T2 -1.1 %, M +0.05 %; clusters per generated event within 0.8 % (M -3.2 ± 3.3 %); per-bar chi2/ndf 0.41. Light yield per MeV: muon and non-muon within 0.5 %, descendants 2-3 % low (M 6 %). The T1 residual is in muon-dominated pulses (fewer at 5-20 PE, more at 20-50 PE): tier 1a, not the library |
+| V4 photons | numpy port vs stock `MakeCrvPhotons`, G4 shards 11, 12, 13 (240 k steps, 24 M photons), `Sim_best v1_5` deviations (2026-10-19) | **pass on all three shards**: photons per SiPM per event within 0.5 % in every group (largest +0.46 ± 0.26 %, M, shard 13), time levels within 0.10 ns. CPU 9.8 s against 49 s for the stock class on one GPVM core (5x) |
+| V4 photons | JAX twin vs numpy port, shard 11 (laptop CPU) | **pass**: within 0.17 %, 0.09 ns |
+| P2 photons | `response/bench.py`, synthetic tables (prob 0.0015, ~137 photons per row), Polaris PBS 7761901, one process per A100 (2026-10-19) | **290-305 k (step, SiPM) rows/s per A100**; numpy 7.4 k rows/s per core. An accepted event is ~37 steps, ~130 rows: ~2,000 events/s per A100 against stock `CrvPhotons` 18.2 ms/event on a core, ~250-300x (P2 target 50x; SiPM charges not ported yet) |
 | V2 | as above, other-bar descendants never dropped (`nearest_bar`, library `v7` + sampler `v8`, 2026-10-19) | **pass in every group.** Worst spectrum bin after 2 sigma EX 0.7 %, T1 3.0 %, T2 0.2 %, M 0 %; spectrum chi2/ndf 1.11 / 1.14 / 1.13 / 0.73; PE median EX -0.03 %, T1 -0.4 %, T2 +0.5 %, M -0.03 %; clusters per generated event EX -0.7 ± 1.0 %, T1 +0.1 ± 2.5 %, T2 -0.9 ± 2.1 %, M -2.8 ± 3.3 %; per-bar chi2/ndf 0.44 (max pull 2.3). Open: taggers' channels lit only by secondaries are half of G4's (5-10 PE bin 0.81, within the band) |
 | V2 | as above with path-length bins also at 5 and 15 % (library `v7`, 2026-10-19) | **EX, T2, M pass; T1 fails the PE spectrum** (worst bin 8.5 % after 2 sigma). PE median EX -0.01 %, T1 +0.1 %, T2 +0.4 %, M +0.5 %; spectrum chi2/ndf 1.7 / 1.9 / 1.3 / 0.8; clusters within 0.8 % (M -3.3 ± 3.2 %); per-bar chi2/ndf 0.45. T1 lacks small pulses (5-15 PE 0.85): channels lit only by secondaries 1,189 vs 1,704 in G4 (`pulsematch`) |
 | V3 | `tier1b-check`, same library and shards (2026-10-19) | descendant energy in the muon's bar within 3 % of G4 (q99 of the bar total within 0.3 MeV); non-muon energy 0.94-0.99 of G4 per group; descendants in other bars 40-70 % of G4 in EX/T1/T2 (about 0.03 MeV per crossing short), 20 % in M |
