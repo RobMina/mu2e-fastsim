@@ -156,7 +156,8 @@ of G4's (within the thresholds). The EX layer-efficiency and gap-width rows of V
 V4 status (2026-10-19): the photon stage (`crvfastsim/response/`) passes V4 against Offline's `MakeCrvPhotons` on the
 same steps (three reference shards); the time criterion is read as the horizontal CDF distance at each level (the tables
 store whole-ns delays). Its JAX twin runs ~300 k (step, SiPM) rows/s per A100, ~250-300x the stock photon module on a
-core. `CrvSiPMCharges` is not ported yet. The lookup tables may be copied to the Eagle work area for a test and must be
+core. The SiPM-charge stage (`MakeCrvSiPMCharges`) is ported too and passes V4 against the stock class on the same
+photons; its JAX twin matches the port. The lookup tables may be copied to the Eagle work area for a test and must be
 deleted after it (user, 2026-10-19).
 
 Pass means every row passes. A failure is investigated, not tuned away: no free scale factors to force agreement,
