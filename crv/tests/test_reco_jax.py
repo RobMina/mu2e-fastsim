@@ -87,3 +87,27 @@ def test_coinc_jax_matches_numpy():
     assert len(ref) > 100
     assert refv == ref
     assert CJ.cluster_keys(out) == ref
+
+
+def test_chain_jax_chunking_and_consistency():
+    """Pipelined pulses -> coincidences: the clusters do not depend on the chunking and equal coinc_jax.find run on the
+    chain's own pulses."""
+    from crvfastsim.reco import chain_jax, synth
+    from crvfastsim.reco import coinc_jax as CJ
+    from crvfastsim.reco.cli import _coinc_geom
+    G = _coinc_geom()
+    W = synth.chain_events(400, G, seed=11)
+    status = np.zeros(4 * len(G.sector), np.int64)
+    key = lambda outs: set().union(*[CJ.cluster_keys(o) for o in outs])
+    a, _ = chain_jax.run(W, G, status, n_chunks=1, batch=4096)
+    b, _ = chain_jax.run(W, G, status, n_chunks=3, batch=4096)
+    assert len(key(a)) > 100 and key(a) == key(b)
+    import dataclasses
+    cfg = dataclasses.replace(PF.RecoConfig(), max_pulses=3)
+    rows = np.arange(len(W["ev"]))
+    wrow, seq, pe, tm, _ = chain_jax._pulse_collect(chain_jax._pulse_dispatch(W, rows, cfg, 4096, 12), W, rows,
+                                                    PF.RecoConfig())
+    ev = W["ev"][wrow]
+    ref = CJ.find(ev, np.arange(len(ev)) - np.searchsorted(ev, ev), W["bar"][wrow], W["sipm"][wrow], tm, pe, seq, G,
+                  status)
+    assert CJ.cluster_keys(ref) == key(a)

@@ -1,0 +1,97 @@
+"""Pulses -> coincidences on the device in one pipelined pass (the R1 measurement).
+
+Events are processed in chunks. For chunk k the jitted pulse reco is launched (asynchronously); meanwhile the host
+collects chunk k-1's pulses, builds the coincidence-finder input (find_async: split, pack, launch) and finishes chunk
+k-2 (collects clusters, promotions, numpy fallback). On a GPU the host work of one chunk overlaps the device work of
+the next; on CPU the stages simply run in turn. Waveforms whose fit used all kernel rounds or overflowed its window go
+to the numpy pulse reco (as in reco-vr2jax), so the pulses are those of the validated path.
+"""
+import dataclasses
+import time as _time
+
+import numpy as np
+
+from . import coinc as C
+from . import coinc_jax as CJ
+from . import pulsefit, pulsefit_jax as PJ
+
+PULSE_KEYS = ("found", "pe", "time", "rounds_exhausted", "window_overflow")
+
+
+def _pulse_dispatch(W, rows, cfg, batch, L):
+    import jax.numpy as jnp
+    outs = []
+    for a in range(0, len(rows), batch):
+        r = rows[a:a + batch]
+        n = len(r)
+        pad = lambda x, v: np.concatenate([x[r], np.full((batch - n,) + x.shape[1:], v, x.dtype)]) if n < batch else x[r]
+        d = PJ.reconstruct_dense(jnp.asarray(pad(W["adc"][:, :L], 0)), jnp.asarray(pad(np.minimum(W["n"], L), 0)),
+                                 jnp.asarray(pad(W["start"], 0)), jnp.asarray(pad(W["ped"].astype(float), 0.0)),
+                                 jnp.asarray(pad(W["area"].astype(float), 1.0)),
+                                 jnp.asarray(pad(W["height"].astype(float), 1.0)), cfg=cfg)
+        outs.append(({k: d[k] for k in PULSE_KEYS}, n))
+    return outs
+
+
+def _pulse_collect(outs, W, rows, cfg_np):
+    """Flat pulses (waveform row, seq, pe, time) in (waveform, seq) order; flagged waveforms redone in numpy."""
+    d = {k: np.concatenate([np.asarray(o[k])[:n] for o, n in outs]) for k in PULSE_KEYS}
+    wf, seq = np.nonzero(d["found"])
+    redo = d["rounds_exhausted"] | d["window_overflow"]
+    pe, tm = d["pe"][wf, seq], d["time"][wf, seq]
+    nredo = int(redo.sum())
+    if nredo:
+        rr = np.flatnonzero(redo)
+        g = rows[rr]
+        sub = pulsefit.reconstruct(W["adc"][g], W["n"][g], W["start"][g], W["ped"][g].astype(float),
+                                   W["area"][g].astype(float), W["height"][g].astype(float), cfg_np)
+        keep = ~redo[wf]
+        wf = np.concatenate([wf[keep], rr[sub["wf"]]])
+        seq = np.concatenate([seq[keep], sub["seq"]])
+        pe = np.concatenate([pe[keep], sub["pe"]])
+        tm = np.concatenate([tm[keep], sub["time"]])
+        o = np.lexsort((seq, wf))
+        wf, seq, pe, tm = wf[o], seq[o], pe[o], tm[o]
+    return rows[wf], seq, pe, tm, nredo
+
+
+def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.FinderConfig(), timers=None):
+    """W: waveforms sorted by (ev, channel, time) with pulsefit inputs and ev, bar, sipm. Returns per-chunk cluster
+    outputs (list) and timers (pulse_dispatch_s, pulse_collect_s, coinc_async_s, coinc_finish_s, wall_s)."""
+    timers = timers if timers is not None else {}
+    cfg_np = pulsefit.RecoConfig()
+    cfg = dataclasses.replace(cfg_np, max_pulses=rounds)
+    params, tables = CJ.type_params(G, coinc_cfg), CJ.hit_tables(G, status, coinc_cfg)
+    ue = np.unique(W["ev"])
+    edges = np.searchsorted(W["ev"], ue[np.linspace(0, len(ue), n_chunks + 1).astype(int)[:-1]])
+    edges = np.r_[edges, len(W["ev"])]
+    chunks = [np.arange(edges[i], edges[i + 1]) for i in range(n_chunks) if edges[i + 1] > edges[i]]
+    pul, coin, outs = {}, {}, []
+    tic = lambda: _time.perf_counter()
+    add = lambda k, t0: timers.__setitem__(k, timers.get(k, 0.0) + tic() - t0)
+    t_all = tic()
+    for k in range(len(chunks) + 2):
+        if k < len(chunks):
+            t0 = tic()
+            pul[k] = _pulse_dispatch(W, chunks[k], cfg, batch, L)
+            add("pulse_dispatch_s", t0)
+        if 0 <= k - 1 < len(chunks):
+            t0 = tic()
+            wrow, seq, pe, tm, nredo = _pulse_collect(pul.pop(k - 1), W, chunks[k - 1], cfg_np)
+            timers["pulse_numpy_redo"] = timers.get("pulse_numpy_redo", 0) + nredo
+            ev = W["ev"][wrow]
+            idx = np.arange(len(ev)) - np.searchsorted(ev, ev)
+            add("pulse_collect_s", t0)
+            t0 = tic()
+            coin[k - 1] = CJ.find_async(ev, idx, W["bar"][wrow], W["sipm"][wrow], tm, pe, seq, G, status, coinc_cfg,
+                                        params=params, tables=tables, timers=timers)
+            add("coinc_async_s", t0)
+            timers["pulses"] = timers.get("pulses", 0) + len(ev)
+        if 0 <= k - 2 < len(chunks):
+            t0 = tic()
+            outs.append(CJ.finish(coin.pop(k - 2)))
+            add("coinc_finish_s", t0)
+    timers["wall_s"] = tic() - t_all
+    timers["events"] = int(len(ue))
+    timers["waveforms"] = int(len(W["ev"]))
+    return outs, timers

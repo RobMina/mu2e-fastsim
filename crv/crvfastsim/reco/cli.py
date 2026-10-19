@@ -242,6 +242,34 @@ def _bench_coinc(args):
             "timers_best": tms[best], "events_per_s": ne / times[best], "us_per_event": 1e6 * times[best] / ne}
 
 
+def _bench_chain(args):
+    """Pulses -> coincidences in one pipelined pass (chain_jax) on synthetic waveforms that make coincidences."""
+    import jax
+    from . import chain_jax, synth
+    G = _coinc_geom()
+    ne = args.max_events or 100000
+    W = synth.chain_events(ne, G, seed=args.seed, L=args.length)
+    status = np.zeros(4 * len(G.sector), np.int64)
+    rounds = args.rounds or 3
+    t0 = time.perf_counter()
+    chain_jax.run(W, G, status, n_chunks=args.chunks, rounds=rounds, batch=args.batch, L=args.length)   # compile
+    first = time.perf_counter() - t0
+    best, tms = None, []
+    for _ in range(args.repeat):
+        tm = {}
+        outs, tm = chain_jax.run(W, G, status, n_chunks=args.chunks, rounds=rounds, batch=args.batch, L=args.length,
+                                 timers=tm)
+        tms.append(tm)
+        best = tm if best is None or tm["wall_s"] < best["wall_s"] else best
+    ncl = int(sum(len(o["cl_event"]) for o in outs))
+    nfb = int(sum(len(o["fallback_events"]) for o in outs))
+    return {"backend": jax.default_backend(), "device": str(jax.devices()[0]), "events": best["events"],
+            "waveforms": best["waveforms"], "pulses": best.get("pulses"), "clusters": ncl, "coinc_fallback_events": nfb,
+            "rounds": rounds, "chunks": args.chunks, "first_call_s": first, "pass_wall_s": [t["wall_s"] for t in tms],
+            "timers_best": best, "events_per_s": best["events"] / best["wall_s"],
+            "us_per_event": 1e6 * best["wall_s"] / best["events"]}
+
+
 def cmd_bench(args):
     """Throughput of the jitted pulse reco (or, with --stage waveforms, the waveform synthesis); compile excluded."""
     import jax
@@ -249,6 +277,8 @@ def cmd_bench(args):
         return _report(args, "bench_waveforms", _bench_waveforms(args))
     if getattr(args, "stage", "pulses") == "coinc":
         return _report(args, "bench_coinc", _bench_coinc(args))
+    if getattr(args, "stage", "pulses") == "chain":
+        return _report(args, "bench_chain", _bench_chain(args))
     from . import pulsefit_jax as PJ
     cfg = pulsefit.RecoConfig()
     if args.inputs == ["synthetic"]:
@@ -833,7 +863,8 @@ def add_reco_args(sp, name):
                         "pulse in the last round are redone by the numpy path")
     if name == "bench":
         sp.add_argument("--repeat", type=int, default=3)
-        sp.add_argument("--stage", default="pulses", choices=["pulses", "waveforms", "coinc"],
+        sp.add_argument("--chunks", type=int, default=8, help="chain stage: event chunks in the pipeline")
+        sp.add_argument("--stage", default="pulses", choices=["pulses", "waveforms", "coinc", "chain"],
                         help="pulses: jitted pulse reco; waveforms: jitted waveform synthesis (synthetic charges); "
                         "coinc: JAX coincidence finder (synthetic tracks+noise, or reference pulses)")
     if name == "vr1":

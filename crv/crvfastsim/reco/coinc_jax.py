@@ -269,7 +269,12 @@ def find_dense(valid, idx, side, layer, counter, x, y, t, pe, pos, P, K=K_DEFAUL
                 sidehits=jnp.stack(nh, -1), layers=lay, overflow=overflow)
 
 
-def _run_tier(arr, P, K, batch):
+SPLIT_MIN = 64   # only (event, sector type) groups larger than this are split into blocks
+OUT_KEYS = ("label", "root", "pe", "start", "end", "slope", "avgtime", "poscalc", "overflow")
+
+
+def _dispatch_tier(arr, P, K, batch):
+    """Launch the jitted kernel on fixed-shape batches without waiting (JAX async dispatch)."""
     Ng = len(arr["valid"])
     outs = []
     for a in range(0, Ng, batch):
@@ -279,79 +284,138 @@ def _run_tier(arr, P, K, batch):
             sl = {k: np.concatenate([v, np.zeros((batch - n,) + v.shape[1:], v.dtype)]) for k, v in sl.items()}
         d = find_dense(*[jnp.asarray(sl[k]) for k in ("valid", "idx", "side", "layer", "counter", "x", "y", "t",
                                                       "pe", "pos")], P=P, K=K)
-        outs.append({k: np.asarray(v)[:n] for k, v in d.items()})
-    return {k: np.concatenate([o[k] for o in outs]) for k in outs[0]}
+        outs.append(({k: d[k] for k in OUT_KEYS}, n))
+    return outs
 
 
-def find(ev, idx, bar, sipm, time, pe, seq, G, status, cfg=C.FinderConfig(), tiers=TIERS, fallback=True,
-         timers=None, split=True):
-    """Flat pulses of many events (sorted by event, collection order within) -> clusters.
-    split: each (event, sector type) group is first cut into independent blocks at time and x gaps larger than any
-    link (split_blocks); blocks are the kernel rows and their clusters are mapped back to the event.
-    Each row runs in the smallest (H, K) tier it fits, promoted on overflow; rows beyond the last tier send their
-    event to coinc.py ('fallback_events'). Returns cl_* per cluster and the member table mem_*."""
+def _collect_tier(outs):
+    host = [({k: np.asarray(v) for k, v in d.items()}, n) for d, n in outs]
+    return {k: np.concatenate([d[k][:n] for d, n in host]) for k in OUT_KEYS}
+
+
+def _run_tier(arr, P, K, batch):
+    return _collect_tier(_dispatch_tier(arr, P, K, batch))
+
+
+def _kfor(P, K):
+    return min(K, K_MAX_4LAYER) if P[6] == 4 else K
+
+
+def _groups(tt, P, ev, idx, bar, sipm, time, pe, seq, G, tables, cfg, split, split_min, timers):
+    """Hits of one sector type as kernel groups: (event) or, for groups above split_min hits, exact blocks."""
+    import time as _time
+    ch = bar * 4 + sipm
+    m = tables["stype"][ch] == tt
+    if cfg.ignore_secondary_pulses:
+        m &= seq == 0
+    sel = np.flatnonzero(m)
+    e = ev[sel]
+    if not split or not len(sel):
+        return dict(g=e, sel=sel, gev_of=None)
+    t0 = _time.perf_counter()
+    ue, inv, cnt = np.unique(e, return_inverse=True, return_counts=True)
+    big = cnt[inv] > split_min
+    gid = inv.astype(np.int64)
+    if big.any():
+        t_link, maxd0, maxd_f, smax = link_scales(G, P)
+        bars = np.flatnonzero(tables["stype"][np.arange(0, 4 * len(G.sector), 4)] == tt)
+        ys = G.y[bars]
+        x_link = max(maxd0, maxd_f, smax * (ys.max() - ys.min()))
+        bs = sel[big]
+        blk = split_blocks(e[big], time[bs] + tables["tcorr"][ch[bs]], G.x[bar[bs]], t_link, x_link)
+        gid[big] = len(ue) + blk
+    o = np.lexsort((sel, gid))
+    sel, gid = sel[o], gid[o]
+    g, gid = np.unique(gid, return_inverse=True)
+    gev_of = np.zeros(len(g), ev.dtype)
+    gev_of[gid] = ev[sel]
+    timers["split_s"] = timers.get("split_s", 0.0) + _time.perf_counter() - t0
+    timers[f"groups_t{tt}"] = int(len(g))
+    return dict(g=gid, sel=sel, gev_of=gev_of)
+
+
+def find_async(ev, idx, bar, sipm, time, pe, seq, G, status, cfg=C.FinderConfig(), tiers=TIERS, split=True,
+               split_min=SPLIT_MIN, timers=None, params=None, tables=None):
+    """Host preparation and kernel launch for all sector types and first-choice tiers; returns a handle for finish().
+    The GPU starts on the first type while the host prepares the next."""
     import time as _time
     timers = timers if timers is not None else {}
-    params = type_params(G, cfg)
-    tables = hit_tables(G, status, cfg)
-    rows, mems, redo = [], [], set()
-    ch = bar * 4 + sipm
+    params = params or type_params(G, cfg)
+    tables = tables or hit_tables(G, status, cfg)
+    jobs = []
     for tt, P in sorted(params.items()):
-        m = tables["stype"][ch] == tt
-        if cfg.ignore_secondary_pulses:
-            m &= seq == 0
-        sel = np.flatnonzero(m)
-        if split:
-            t0 = _time.perf_counter()
-            t_link, maxd0, maxd_f, smax = link_scales(G, P)
-            bars = np.flatnonzero(tables["stype"][np.arange(0, 4 * len(G.sector), 4)] == tt)
-            ys = G.y[bars]
-            x_link = max(maxd0, maxd_f, smax * (ys.max() - ys.min()))
-            tt_hit = time[sel] + tables["tcorr"][ch[sel]]
-            blk = split_blocks(ev[sel], tt_hit, G.x[bar[sel]], t_link, x_link)
-            o = np.lexsort((sel, blk))
-            sel, blk = sel[o], blk[o]
-            blk_ev = np.zeros(blk.max() + 1 if len(blk) else 0, ev.dtype)
-            blk_ev[blk] = ev[sel]
-            timers["split_s"] = timers.get("split_s", 0.0) + _time.perf_counter() - t0
-            timers[f"blocks_t{tt}"] = int(len(blk_ev))
-            g_ev, g_idx, g_bar, g_sipm, g_time, g_pe, g_seq = blk, idx[sel], bar[sel], sipm[sel], time[sel], pe[sel], \
-                seq[sel]
-        else:
-            g_ev, g_idx, g_bar, g_sipm, g_time, g_pe, g_seq = ev[sel], idx[sel], bar[sel], sipm[sel], time[sel], \
-                pe[sel], seq[sel]
-            blk_ev = None
-        to_ev = (lambda b: blk_ev[b]) if split else (lambda b: b)
-        gev, cnt = np.unique(g_ev, return_counts=True)
-        pending = np.zeros(len(gev), bool)
-        hprev = 0
-        for H, K, batch in tiers:
-            todo = ((cnt > hprev) & (cnt <= H)) | (pending & (cnt <= H))
-            pending &= ~todo
-            hprev = H
+        gr = _groups(tt, P, ev, idx, bar, sipm, time, pe, seq, G, tables, cfg, split, split_min, timers)
+        sel = gr["sel"]
+        gcols = (gr["g"], idx[sel], bar[sel], sipm[sel], time[sel], pe[sel], seq[sel])
+        gev, cnt = np.unique(gr["g"], return_counts=True)
+        tier = np.searchsorted([h for h, _, _ in tiers], cnt)       # smallest tier with H >= count
+        for ti, (H, K, batch) in enumerate(tiers):
+            todo = tier == ti
             if not todo.any():
                 continue
             t0 = _time.perf_counter()
-            arr, tev, _ = pack(g_ev, g_idx, g_bar, g_sipm, g_time, g_pe, g_seq, G, tables, tt, H, cfg,
-                               events=gev[todo])
+            arr, tg, _ = pack(*gcols, G, tables, tt, H, cfg, events=gev[todo])
             timers["pack_s"] = timers.get("pack_s", 0.0) + _time.perf_counter() - t0
             t0 = _time.perf_counter()
-            d = _run_tier(arr, P, min(K, K_MAX_4LAYER) if P[6] == 4 else K, batch)
-            timers["kernel_s"] = timers.get("kernel_s", 0.0) + _time.perf_counter() - t0
-            timers[f"groups_H{H}"] = timers.get(f"groups_H{H}", 0) + len(tev)
-            ov = d["overflow"]
-            pending |= np.isin(gev, tev[ov])
-            good = ~ov
-            g, r = np.nonzero(d["root"] & good[:, None])
-            cid0 = sum(len(x["cl_event"]) for x in rows)
-            rows.append(dict(cl_event=to_ev(tev[g]), cl_type=np.full(len(g), tt), **{f"cl_{k}": d[k][g, r] for k in
-                             ("pe", "start", "end", "slope", "avgtime", "poscalc")}))
-            cmap = np.full(d["root"].shape, -1, np.int64)
-            cmap[g, r] = cid0 + np.arange(len(g))
-            hg, hh = np.nonzero((d["label"] >= 0) & good[:, None])
-            cl = cmap[hg, d["label"][hg, hh]]
-            mems.append(dict(mem_cl=cl[cl >= 0], mem_idx=arr["idx"][hg, hh][cl >= 0], mem_event=to_ev(tev[hg][cl >= 0])))
-        redo.update(to_ev(gev[pending | (cnt > hprev)]).tolist())
+            jobs.append(dict(tt=tt, P=P, ti=ti, arr=arr, tg=tg, outs=_dispatch_tier(arr, P, _kfor(P, K), batch)))
+            timers["dispatch_s"] = timers.get("dispatch_s", 0.0) + _time.perf_counter() - t0
+            timers[f"groups_H{H}"] = timers.get(f"groups_H{H}", 0) + len(tg)
+        jobs.append(dict(tt=tt, meta=True, gcols=gcols, gev_of=gr["gev_of"], gev=gev, tier=tier))
+    return dict(jobs=jobs, cols=(ev, idx, bar, sipm, time, pe, seq), G=G, status=status, cfg=cfg, tiers=tiers,
+                tables=tables, timers=timers)
+
+
+def finish(h, fallback=True):
+    """Collect the kernels of a find_async handle; overflowing groups are promoted to the next tier (synchronously),
+    groups beyond the last tier send their event to coinc.py. Returns cl_* per cluster and the member table mem_*."""
+    import time as _time
+    G, cfg, tiers, tables, timers = h["G"], h["cfg"], h["tiers"], h["tables"], h["timers"]
+    rows, mems, redo = [], [], set()
+    ncl = [0]
+
+    def take(d, arr, tg, tt, to_ev):
+        good = ~d["overflow"]
+        g, r = np.nonzero(d["root"] & good[:, None])
+        rows.append(dict(cl_event=to_ev(tg[g]), cl_type=np.full(len(g), tt), **{f"cl_{k}": d[k][g, r] for k in
+                         ("pe", "start", "end", "slope", "avgtime", "poscalc")}))
+        cmap = np.full(d["root"].shape, -1, np.int64)
+        cmap[g, r] = ncl[0] + np.arange(len(g))
+        ncl[0] += len(g)
+        hg, hh = np.nonzero((d["label"] >= 0) & good[:, None])
+        cl = cmap[hg, d["label"][hg, hh]]
+        mems.append(dict(mem_cl=cl[cl >= 0], mem_idx=arr["idx"][hg, hh][cl >= 0], mem_event=to_ev(tg[hg][cl >= 0])))
+        return tg[d["overflow"]]
+
+    t0 = _time.perf_counter()
+    pend = {}
+    for j in h["jobs"]:
+        if j.get("meta"):
+            continue
+        meta = next(m for m in h["jobs"] if m.get("meta") and m["tt"] == j["tt"])
+        to_ev = (lambda b, m=meta: m["gev_of"][b]) if meta["gev_of"] is not None else (lambda b: b)
+        ov = take(_collect_tier(j["outs"]), j["arr"], j["tg"], j["tt"], to_ev)
+        if len(ov):
+            pend.setdefault(j["tt"], []).append((j["ti"], ov))
+    timers["kernel_s"] = timers.get("kernel_s", 0.0) + _time.perf_counter() - t0
+    for tt, lst in pend.items():
+        meta = next(m for m in h["jobs"] if m.get("meta") and m["tt"] == tt)
+        to_ev = (lambda b, m=meta: m["gev_of"][b]) if meta["gev_of"] is not None else (lambda b: b)
+        P = type_params(G, cfg)[tt]
+        for ti0, ov in lst:
+            ti = ti0 + 1
+            while len(ov) and ti < len(tiers):
+                H, K, batch = tiers[ti]
+                arr, tg, _ = pack(*meta["gcols"], G, tables, tt, H, cfg, events=ov)
+                d = _run_tier(arr, P, _kfor(P, K), batch)
+                timers[f"promoted_H{H}"] = timers.get(f"promoted_H{H}", 0) + len(tg)
+                ov = take(d, arr, tg, tt, to_ev)
+                ti += 1
+            redo.update(to_ev(ov).tolist())
+        # groups larger than the last tier never ran
+    for m in h["jobs"]:
+        if m.get("meta"):
+            to_ev = (lambda b, mm=m: mm["gev_of"][b]) if m["gev_of"] is not None else (lambda b: b)
+            redo.update(to_ev(m["gev"][m["tier"] >= len(tiers)]).tolist())
     cat = lambda L, k: np.concatenate([x[k] for x in L]) if L else np.zeros(0)
     out = {k: cat(rows, k) for k in ("cl_event", "cl_type", "cl_pe", "cl_start", "cl_end", "cl_slope", "cl_avgtime",
                                       "cl_poscalc")}
@@ -360,9 +424,19 @@ def find(ev, idx, bar, sipm, time, pe, seq, G, status, cfg=C.FinderConfig(), tie
     out["fallback_events"] = redo
     if fallback and len(redo):
         t0 = _time.perf_counter()
-        _replace_with_numpy(out, redo, ev, idx, bar, sipm, time, pe, seq, G, status, cfg)
+        _replace_with_numpy(out, redo, *h["cols"], G, h["status"], cfg)
         timers["fallback_s"] = timers.get("fallback_s", 0.0) + _time.perf_counter() - t0
     return out
+
+
+def find(ev, idx, bar, sipm, time, pe, seq, G, status, cfg=C.FinderConfig(), tiers=TIERS, fallback=True,
+         timers=None, split=True, split_min=SPLIT_MIN):
+    """Flat pulses of many events (sorted by event, collection order within) -> clusters (find_async + finish).
+    split: (event, sector type) groups above split_min hits are cut into independent blocks at time and x gaps larger
+    than any link (split_blocks, exact); each kernel row runs in the smallest (H, K) tier it fits, promoted on
+    overflow; rows beyond the last tier send their event to coinc.py ('fallback_events')."""
+    return finish(find_async(ev, idx, bar, sipm, time, pe, seq, G, status, cfg, tiers, split, split_min, timers),
+                  fallback)
 
 
 def _replace_with_numpy(out, redo, ev, idx, bar, sipm, time, pe, seq, G, status, cfg):

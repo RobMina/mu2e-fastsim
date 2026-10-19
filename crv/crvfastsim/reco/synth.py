@@ -88,3 +88,23 @@ def coinc_events(n_events, G, seed=1, noise_mean=8.0, shower_frac=0.03, shower_m
     ev, bar, sipm, t, pe = ev[o], bar[o], sipm[o], a[o, 3], a[o, 4]
     first = np.searchsorted(ev, ev)
     return dict(ev=ev, idx=np.arange(len(ev)) - first, bar=bar, sipm=sipm, time=t, pe=pe, seq=np.zeros(len(ev), np.int64))
+
+
+def chain_events(n_events, G, seed=1, L=12, **kw):
+    """Synthetic digitised waveforms whose pulses make coincidences, for the pulses -> coincidences chain bench.
+
+    The pulses of coinc_events (tracks, noise, showers) are each turned into one L-sample waveform (Gumbel of the
+    pulse's PE and a drawn beta, KPP-like pedestal and noise, start 3 samples before the peak). Waveforms are ordered
+    by (event, channel, time), the order the pulse reco hands to the coincidence finder. Returns the pulsefit inputs
+    and per waveform: ev, bar, sipm.
+    """
+    rng = np.random.default_rng(seed + 7)
+    p = coinc_events(n_events, G, seed=seed, **kw)
+    W = len(p["ev"])
+    start = np.floor(p["time"] / PERIOD).astype(np.int64) - 3
+    t = (start[:, None] + np.arange(L)[None, :]) * PERIOD
+    beta = rng.normal(15.0, 2.2, W).clip(8, 30)
+    y = gumbel(t, (p["pe"] * CALIB_AREA / beta)[:, None], p["time"][:, None], beta[:, None])
+    adc = np.clip(np.round(y + PEDESTAL + rng.normal(0, 2.0, (W, L))), 0, 4095).astype(np.int64)
+    return dict(adc=adc, n=np.full(W, L), start=start, ped=np.full(W, PEDESTAL), area=np.full(W, CALIB_AREA),
+                height=np.full(W, CALIB_AREA / 15.0), ev=p["ev"], bar=p["bar"], sipm=p["sipm"])
