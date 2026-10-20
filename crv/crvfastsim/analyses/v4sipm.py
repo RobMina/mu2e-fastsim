@@ -71,13 +71,15 @@ def run(inputs, outdir, deviation=None, max_steps=None, seed=1, counters=None, j
         dev_info = {"batches": len(rs), "n_long_streams_max": max(int(r["n_long_streams"]) for r in rs),
                     "max_long_stream": max(int(r["max_long_stream"]) for r in rs),
                     "max_stream": max(int(r["max_stream"]) for r in rs), "first_pass_s": t_fast, "warm_pass_s": []}
+        del rs                        # free the first pass on the device before the warm passes
         for i in range(int(repeat)):  # warm passes (compiled): steps -> charges left on the device, no host transfer
             a = time.perf_counter()
             rw = DV.response_batched(steps, pdg, geom, cfg, scfg, DT, cond.deviation, cond.status,
                                      ((steps.subrun.to_numpy().astype(np.int64) << 32) | steps.event.to_numpy().astype(np.int64)),
-                                     np.random.default_rng(int(seed) + 100 + i), _jax.random.PRNGKey(int(seed) + 100 + i), pmap)
-            _jax.block_until_ready([r["charge"] for r in rw])
+                                     np.random.default_rng(int(seed) + 100 + i), _jax.random.PRNGKey(int(seed) + 100 + i), pmap,
+                                     keep=False)
             dev_info["warm_pass_s"].append(time.perf_counter() - a)
+            dev_info.setdefault("warm_overflow", []).append(any(bool(r["overflow"]) for r in rw))
             del rw
         keep = (cond.status[c] & 0b101) == 0
         s, c, t, key = s[keep], c[keep], t[keep], key[keep]

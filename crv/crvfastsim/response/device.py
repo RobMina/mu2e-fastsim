@@ -32,29 +32,31 @@ def response(steps, pdg, geom, rcfg, scfg, device_tables, deviation, status, ev_
     valid &= (status_d[chan] & 0b101) == 0                     # stock: no charges on status bits 0 / 2
     valid &= t <= 1e5
     label = jnp.asarray(ev_key)[step] * 4096 + chan
+    # compact to the valid photons: the arrival buffers are padded 3-5x, and the SiPM stage's memory scales with its input
+    nv = int(valid.sum())                                       # one scalar sync per batch
+    NB, Ms, Ntot, q_ct = sipm_jax.device_buckets(nv, scfg)
+    keep = jnp.nonzero(valid, size=NB, fill_value=0)[0]
+    vc = jnp.arange(NB) < nv
+    step, t, label = step[keep], t[keep], label[keep]
     # SiPM slots on device: dense rank of the label among valid photons
     big = jnp.iinfo(jnp.int64).max
-    lab = jnp.where(valid, label, big)
+    lab = jnp.where(vc, label, big)
     order = jnp.argsort(lab)
     ls = lab[order]
     newl = jnp.concatenate([jnp.array([True]), ls[1:] != ls[:-1]])
     rank_sorted = jnp.cumsum(newl) - 1
     slot = jnp.zeros_like(rank_sorted).at[order].set(rank_sorted)
-    n = valid.shape[0]
-    NB, Ms, Ntot, q_ct = sipm_jax.device_buckets(n, scfg)
-    pad = NB - n
+    n = max(nv, 1)
     dead = np.zeros(NPIX * NPIX, bool)
     for x, y in scfg.inactive:
         dead[x * NPIX + y] = True
-    args = (jnp.pad(slot, (0, pad)), jnp.pad(t, (0, pad)), jnp.pad(valid, (0, pad)), k_si,
+    args = (slot, t, vc, k_si,
             jnp.asarray(np.cumsum(pmap.ravel()) / pmap.sum()), pmap.shape[1], jnp.asarray(dead),
             q_ct, scfg.overvoltage, scfg.time_constant, scfg.p1, scfg.p2, scfg.capacitance, NB, *Ms, Ntot)
     r = sipm_jax.run_device_sipm(args, scfg)   # same key on the retry, so the result is the larger table's
     root = jnp.minimum(r["root"], n - 1)
-    lab_p = jnp.pad(label, (0, pad))
-    step_p = jnp.pad(step, (0, pad))
-    return {"fired": r["fired"], "label": lab_p[root], "time": r["time"], "charge": r["charge"], "pe": r["pe"],
-            "step": step_p[root], "overflow": over | r["overflow"], "overflow_photons": over,
+    return {"fired": r["fired"], "label": label[root], "time": r["time"], "charge": r["charge"], "pe": r["pe"],
+            "step": step[root], "overflow": over | r["overflow"], "overflow_photons": over,
             "overflow_sipm": r["overflow"], "n_long_streams": r["n_long_streams"],
             "max_long_stream": r["max_long_stream"], "max_stream": r["max_stream"]}
 
@@ -69,12 +71,13 @@ def to_host(r):
     return out
 
 
-BATCH_STEPS = 20000  # steps per device batch (whole events); bounds the [hits, STREAM_L] short table of device_sipm
+BATCH_STEPS = 10000  # steps per device batch (whole events); ~4 M photons on synthetic muons, ~7 GiB in device_sipm
 
 
 def response_batched(steps, pdg, geom, rcfg, scfg, device_tables, deviation, status, ev_key, rng, key, pmap,
-                     batch_steps=BATCH_STEPS):
-    """response() over batches of whole events (steps sorted by event key). Returns a list of device dicts."""
+                     batch_steps=BATCH_STEPS, keep=True):
+    """response() over batches of whole events (steps sorted by event key). Returns a list of device dicts; keep=False
+    waits for each batch and keeps only its overflow flag (timing without holding every batch on the device)."""
     o = np.argsort(ev_key, kind="stable")
     steps, pdg, ev_key = steps.iloc[o].reset_index(drop=True), np.asarray(pdg)[o], np.asarray(ev_key)[o]
     starts = np.flatnonzero(np.r_[True, ev_key[1:] != ev_key[:-1]])
@@ -85,6 +88,12 @@ def response_batched(steps, pdg, geom, rcfg, scfg, device_tables, deviation, sta
         key, sub = jax.random.split(key)
         r = response(steps.iloc[a:b].reset_index(drop=True), pdg[a:b], geom, rcfg, scfg, device_tables, deviation,
                      status, ev_key[a:b], rng, sub, pmap)
+        if not keep:
+            jax.block_until_ready(r["charge"])
+            outs.append({"overflow": r["overflow"]})
+            del r
+            a = b
+            continue
         r["step"] = r["step"] + a          # step rows of the event-sorted table
         r["order"] = o                     # host map back to the caller's step rows
         outs.append(r)
