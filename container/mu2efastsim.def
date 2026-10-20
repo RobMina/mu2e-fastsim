@@ -7,6 +7,7 @@ From: python:3.13-slim-bookworm
     org.opencontainers.image.licenses Apache-2.0
 
 %help
+    Variant: @VARIANT@ (trimmed CUDA wheels: @TRIM@).
     Built from git-tracked files only (see /opt/mu2e-fastsim/VERSION for the commits).
     Mu2e Geant4-free fast simulation and CRV fast reconstruction (mu2efastsim, crvfastsim, trkfastsim) with JAX.
     One image for CPU and NVIDIA GPU (JAX's pip CUDA 12 wheels; on a GPU node run with --nv).
@@ -30,7 +31,13 @@ From: python:3.13-slim-bookworm
     export PIP_NO_CACHE_DIR=1
     apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
     python -m pip install -q --upgrade pip
-    python -m pip install -q "jax[cuda12]==0.11.2" numpy pandas awkward uproot matplotlib pytest
+    # VARIANT gpu: JAX with the pip CUDA 12 wheels, minus the ones the kernels never load (TRIM, below); cpu: no CUDA
+    if [ "@VARIANT@" = cpu ]; then
+        python -m pip install -q "jax==0.11.2" numpy pandas awkward uproot matplotlib pytest
+    else
+        python -m pip install -q "jax[cuda12]==0.11.2" numpy pandas awkward uproot matplotlib pytest
+        for w in @TRIM@; do python -m pip uninstall -q -y "$w" || true; done
+    fi
     for p in core crv tracker; do python -m pip install -q --no-deps /opt/mu2e-fastsim/$p; done
     sh /opt/mu2e-fastsim/container/fetch_offline_data.sh /opt/offline_data
     find / -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true

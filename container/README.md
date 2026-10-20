@@ -1,7 +1,8 @@
 # mu2e-fastsim container (R4)
 
-One Apptainer image for CPU and NVIDIA GPU: Python 3.13, JAX 0.11.2 with the pip CUDA 12 wheels (the same JAX as the
-Polaris venv), the three packages installed from git-tracked sources, and the two public Offline files the code reads
+Two variants of one Apptainer definition (`VARIANT=gpu|cpu container/build.sh`): Python 3.13, JAX 0.11.2 (the same
+JAX as the Polaris venv); `gpu` with the pip CUDA 12 wheels minus the ones no kernel loads (cuDNN, NCCL, NVSHMEM, cuFFT:
+`TRIM`, override with `TRIM=""`), `cpu` without CUDA (FermiGrid, local, CI, CPU endpoints); the three packages installed from git-tracked sources, and the two public Offline files the code reads
 (`singlePEWaveform_v3.txt`, `crv_counters_extracted_v04.txt`, Offline v13_39_00) under `/opt/offline_data`
 (`MU2E_SEARCH_PATH`). No CVMFS. No Mu2e-internal data: inputs and outputs are bind-mounted at run time.
 
@@ -14,5 +15,9 @@ apptainer exec --nv mu2efastsim.sif crvfastsim reco-bench synthetic --stage chai
 - `build.sh` exports the umbrella and submodules with `git archive` at their checked-out commits (recorded in
   `/opt/mu2e-fastsim/VERSION`), so nothing untracked (site.env, work areas, build outputs, data) can enter the image.
 - `fetch_offline_data.sh <dest>` is also usable on its own on a site without CVMFS.
-- Polaris: `crv_reco_bench.sh` runs from the Eagle venv; the image runs under `apptainer` on compute nodes (module
-  `spack-pe-base apptainer` or `/usr/bin/apptainer`, to be confirmed by `core/iri/scripts/sif_check.sh`).
+- Polaris compute nodes: `module use /soft/spack/base/0.8.1/install/modulefiles/Core; module load apptainer`
+  (1.3.2; the 1.4.1 module under spack-pe-base 0.10.x does not put apptainer on PATH). `core/iri/scripts/sif_check.sh`
+  builds the variants on the node (~2 min each, fakeroot works), times a cold start and runs the GPU tests and the
+  chain bench inside each image.
+- Size: the untrimmed GPU image is 3.5 GB (5.6 GB unpacked, 4.8 GB of it CUDA wheels; cuDNN alone 1.2 GB). R4 asks for
+  "the fast-sim image + < 0.5 GB": the reco adds ~1 MB of code and data to the shared JAX/CUDA stack.
