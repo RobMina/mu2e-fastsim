@@ -1,11 +1,15 @@
 """The split photon kernels (oneAPI path) give the same photons as the fused one on the same key."""
 import numpy as np
+import pytest
 
 import jax
 
 
 def test_device_photons_split_equals_fused():
     from crvfastsim.response import bench, photons_jax
+    from crvfastsim.reco.coinc_jax import is_oneapi
+    if is_oneapi():
+        pytest.skip("the fused kernel aborts the oneAPI compiler; the split path is checked there by v4sipm --device")
     rng = np.random.default_rng(3)
     L = bench.synthetic_table(rng, prob=0.0015)
     dt = photons_jax.DeviceTable(L)
