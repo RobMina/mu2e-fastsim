@@ -32,7 +32,8 @@ def _cdf_shift(df, ds, levels=(0.1, 0.5, 0.9)):
     return -(cdf(df, qs) - cdf(ds, qs)) / np.maximum(dens, 1e-12)
 
 
-def run(inputs, outdir, deviation=None, max_steps=None, seed=1, counters=None, jax=False, no_stock=False, **kw):
+def run(inputs, outdir, deviation=None, max_steps=None, seed=1, counters=None, jax=False, no_stock=False,
+        device=False, calib=None, **kw):
     geom = geometry.from_offline_config(geometry.find_counters(counters or DEFAULT_COUNTERS))
     steps = tables.read_many(tables.expand(inputs), "steps")
     parts = tables.read_many(tables.expand(inputs), "particles", tables.KEY + ["key", "pdg"])
@@ -48,7 +49,23 @@ def run(inputs, outdir, deviation=None, max_steps=None, seed=1, counters=None, j
     t_rel = t - steps.t0.to_numpy()[s]
     scfg = sipm.SiPMConfig()
     pmap = sipm.photon_map()
-    if jax:
+    if device:  # the fused photons -> SiPM path (response/device.py) on the same steps, against numpy photons + SiPM
+        import jax as _jax
+        from .. import chain as CH
+        from ..response import device as DV, photons_jax
+        cond = CH.Conditions.from_csv(calib, deviation)
+        DT = {k: photons_jax.DeviceTable(v) for k, v in photons.load_tables(cfg).items()}
+        a = time.perf_counter()
+        rs = DV.response_batched(steps, pdg, geom, cfg, scfg, DT, cond.deviation, cond.status,
+                                 ((steps.subrun.to_numpy().astype(np.int64) << 32) | steps.event.to_numpy().astype(np.int64)),
+                                 np.random.default_rng(int(seed) + 7), _jax.random.PRNGKey(int(seed)), pmap)
+        F = DV.to_host_batches(rs)
+        F["chan"] = F["chan"]  # labels are event key * 4096 + channel, as `key` below
+        t_fast = time.perf_counter() - a
+        out_over = any(bool(r["overflow"]) for r in rs)
+        keep = (cond.status[c] & 0b101) == 0
+        s, c, t, key = s[keep], c[keep], t[keep], key[keep]
+    elif jax:
         import jax as _jax
         from ..response import sipm_jax
         sipm_jax.simulate(key[:20000], t[:20000], s[:20000], pmap, scfg, np.random.default_rng(0), _jax.random.PRNGKey(0))
@@ -66,7 +83,8 @@ def run(inputs, outdir, deviation=None, max_steps=None, seed=1, counters=None, j
         S = stocksipm.run(key, t, s, scfg, stocksipm.photon_map_path(), seed=int(seed))
     t_stock = time.process_time() - a
     out = {"steps": len(steps), "photons": len(s), "charges_fast": len(F["pe"]), "charges_stock": len(S["pe"]),
-           "fast_arm": "jax" if jax else "numpy", "reference_arm": "numpy" if no_stock else "stock",
+           "fast_arm": "device" if device else ("jax" if jax else "numpy"),
+           "device_overflow": out_over if device else None, "reference_arm": "numpy" if no_stock else "stock",
            "time_s_fast": t_fast, "cpu_s_reference": t_stock, "thresholds": THRESH, "groups": {}}
     grp_key = lambda k: SECTOR_GROUP[geom.sector[(k % 4096) // 4]]
     for g in GROUPS:

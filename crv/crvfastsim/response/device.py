@@ -70,3 +70,35 @@ def to_host(r):
     out = {k: v[o] for k, v in out.items()}
     out["chan"], out["photon"] = out.pop("label"), out.pop("step")
     return out
+
+
+BATCH_STEPS = 20000  # steps per device batch (whole events); bounds the [hits, L] stream table of device_sipm
+
+
+def response_batched(steps, pdg, geom, rcfg, scfg, device_tables, deviation, status, ev_key, rng, key, pmap,
+                     batch_steps=BATCH_STEPS):
+    """response() over batches of whole events (steps sorted by event key). Returns a list of device dicts."""
+    o = np.argsort(ev_key, kind="stable")
+    steps, pdg, ev_key = steps.iloc[o].reset_index(drop=True), np.asarray(pdg)[o], np.asarray(ev_key)[o]
+    starts = np.flatnonzero(np.r_[True, ev_key[1:] != ev_key[:-1]])
+    outs, a = [], 0
+    while a < len(ev_key):
+        j = int(np.searchsorted(starts, a + batch_steps, side="right")) - 1
+        b = int(starts[j]) if j < len(starts) and starts[j] > a else len(ev_key)
+        key, sub = jax.random.split(key)
+        r = response(steps.iloc[a:b].reset_index(drop=True), pdg[a:b], geom, rcfg, scfg, device_tables, deviation,
+                     status, ev_key[a:b], rng, sub, pmap)
+        r["step"] = r["step"] + a          # step rows of the event-sorted table
+        r["order"] = o                     # host map back to the caller's step rows
+        outs.append(r)
+        a = b
+    return outs
+
+
+def to_host_batches(rs):
+    """to_host over a list of batch outputs; step ids mapped back to the caller's row order."""
+    parts = [to_host(r) for r in rs]
+    out = {k: np.concatenate([p[k] for p in parts]) for k in parts[0]}
+    out["photon"] = rs[0]["order"][out["photon"]]
+    o = np.lexsort((out["time"], out["chan"]))
+    return {k: v[o] for k, v in out.items()}
