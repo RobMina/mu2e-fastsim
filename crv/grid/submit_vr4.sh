@@ -35,7 +35,7 @@ rm -rf $T
 OUT_TOKEN=$(echo "$OUT" | sed 's|^/pnfs/mu2e|/mu2e|')
 CMD=(jobsub_submit -N "$N" -G mu2e --role=Analysis --expected-lifetime=2h
   --resource-provides=usage_model=DEDICATED,OPPORTUNISTIC --lines='+FERMIHTC_AutoRelease=True'
-  --memory=12000MB --disk=8000MB --need-storage-modify="$OUT_TOKEN"
+  --memory=8000MB --disk=8000MB --need-storage-modify="$OUT_TOKEN"
   -e SIF_PNFS="$IN/mu2efastsim_cpu.sif" -e CODE_PNFS="$IN/$CODE_TGZ" -e SHARD_OFFSET=$((FIRST - 1))
   "file://$HERE/grid_vr4.sh" "$OUT" "$IN")
 echo "${CMD[@]}"
