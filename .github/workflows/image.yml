@@ -1,0 +1,70 @@
+# Build the public OCI image (container/Dockerfile) and push it to ghcr.io/robmina/mu2e-fastsim.
+# Tags: <umbrella sha7>-cpu|gpu and latest-cpu|gpu. Run by hand (workflow_dispatch) or on a container/ change.
+name: image
+on:
+  workflow_dispatch:
+    inputs:
+      variants:
+        description: "space-separated: cpu gpu"
+        default: "cpu gpu"
+  push:
+    branches: [main]
+    paths: [container/**, .github/workflows/image.yml]
+permissions:
+  contents: read
+  packages: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [cpu, gpu]
+    steps:
+      - name: skip variant not requested
+        id: want
+        run: |
+          v="${{ github.event.inputs.variants || 'cpu gpu' }}"
+          case " $v " in *" ${{ matrix.variant }} "*) echo ok=1 >> "$GITHUB_OUTPUT";; *) echo ok=0 >> "$GITHUB_OUTPUT";; esac
+      - if: steps.want.outputs.ok == '1'
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - if: steps.want.outputs.ok == '1'
+        name: free disk for the CUDA wheels
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL; df -h /
+      - if: steps.want.outputs.ok == '1'
+        name: version file and docker ignore
+        run: |
+          { git log -1 --format="umbrella %H"; git submodule status; } > VERSION; cat VERSION
+          echo "SHA7=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_ENV"
+      - if: steps.want.outputs.ok == '1'
+        uses: docker/setup-buildx-action@v3
+      - if: steps.want.outputs.ok == '1'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - if: steps.want.outputs.ok == '1'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: container/Dockerfile
+          platforms: linux/amd64
+          build-args: VARIANT=${{ matrix.variant }}
+          push: true
+          provenance: false
+          tags: |
+            ghcr.io/robmina/mu2e-fastsim:${{ env.SHA7 }}-${{ matrix.variant }}
+            ghcr.io/robmina/mu2e-fastsim:latest-${{ matrix.variant }}
+      - if: steps.want.outputs.ok == '1' && matrix.variant == 'cpu'
+        name: smoke test (cpu)
+        shell: bash
+        run: |
+          # per package (same test basenames in core/ and tracker/); tracker needs > 7 GB in one test, not run here
+          for p in core crv; do
+            docker run --rm --user 50008:50008 ghcr.io/robmina/mu2e-fastsim:${{ env.SHA7 }}-cpu \
+              python -m pytest -q -p no:cacheprovider /opt/mu2e-fastsim/$p/tests 2>&1 | tail -3
+            test "${PIPESTATUS[0]}" = 0
+          done

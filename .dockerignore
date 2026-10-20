@@ -1,0 +1,8 @@
+site.env
+**/.venv
+**/__pycache__
+**/*.root
+**/*.h5
+**/*.parquet
+**/*.npz
+**/*.sif
