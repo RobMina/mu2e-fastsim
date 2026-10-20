@@ -25,6 +25,21 @@ jax.config.update("jax_enable_x64", True)
 H_DEFAULT = 32
 K_DEFAULT = 8
 TIERS = ((16, 6, 16384), (32, 8, 8192), (64, 12, 2048), (128, 16, 256), (256, 24, 32), (512, 48, 4), (1024, 96, 1))
+# oneAPI (Intel PVC): the H=32 kernel aborts the SPIR-V compiler (32-component vector needs SPV_EXT_long_vector)
+ONEAPI_SKIP_H = (32,)
+
+
+def backend_tiers(tiers):
+    """Tiers usable on the current backend: on oneAPI those with H in ONEAPI_SKIP_H are dropped (rows go one tier up)."""
+    try:
+        plat = jax.devices()[0].platform.lower()
+    except Exception:
+        return tuple(tiers)
+    if plat not in ("oneapi", "sycl", "xpu"):
+        return tuple(tiers)
+    return tuple(t for t in tiers if t[0] not in ONEAPI_SKIP_H)
+
+
 K_MAX_4LAYER = 32   # the 4-layer combination tensor is [2, K, K, K, K]: cap K there (overflow -> next tier/numpy)   # (H, K, groups per call)
 
 
@@ -394,6 +409,7 @@ def find_async(ev, idx, bar, sipm, time, pe, seq, G, status, cfg=C.FinderConfig(
     """Host preparation and kernel launch for all sector types and first-choice tiers; returns a handle for finish().
     The GPU starts on the first type while the host prepares the next."""
     import time as _time
+    tiers = backend_tiers(tiers)
     timers = timers if timers is not None else {}
     params = params or type_params(G, cfg)
     tables = tables or hit_tables(G, status, cfg)

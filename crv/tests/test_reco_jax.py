@@ -217,3 +217,16 @@ def test_chain_jax_adds_db_time_offsets():
     c, _ = chain_jax.run(dict(W, toff=np.full(len(W["ev"]), 7.5)), G, status, n_chunks=1, batch=4096)
     assert np.array_equal(cat(a, "cl_start"), cat(b, "cl_start")) and len(cat(a, "cl_start")) > 50
     assert np.allclose(cat(c, "cl_start") - cat(a, "cl_start"), 7.5)
+
+
+def test_backend_tiers_skip_h32_on_oneapi(monkeypatch):
+    """On oneAPI the H=32 tier is dropped (SPIR-V compile abort); other backends keep every tier."""
+    import jax
+    from crvfastsim.reco import coinc_jax as CJ
+    tiers = ((16, 6, 1), (32, 8, 1), (64, 12, 1))
+    assert CJ.backend_tiers(tiers) == (tiers if jax.devices()[0].platform != "oneapi" else (tiers[0], tiers[2]))
+
+    class Dev:
+        platform = "oneapi"
+    monkeypatch.setattr(CJ.jax, "devices", lambda *a: [Dev()])
+    assert CJ.backend_tiers(tiers) == (tiers[0], tiers[2])
