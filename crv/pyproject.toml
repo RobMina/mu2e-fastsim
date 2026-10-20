@@ -14,5 +14,5 @@ dependencies = ["mu2efastsim", "numpy", "pandas", "uproot", "awkward", "matplotl
 jax = ["jax"]
 test = ["pytest"]
 
-[tool.setuptools]
-packages = ["crvfastsim", "crvfastsim.analyses", "crvfastsim.reco"]
+[tool.setuptools.packages.find]
+include = ["crvfastsim*"]
