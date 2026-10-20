@@ -9,6 +9,10 @@ Every step mirrors pulsefit.py (which mirrors Offline MakeCrvRecoPulses), in flo
   fit: fixed-iteration Levenberg-Marquardt in Minuit's sine-mapped coordinates, then Gauss-Newton polish steps
   failed-fit rule, fallback values, rounded subtraction, failure propagation
 Outputs are dense [W, P] arrays plus a count per waveform; `to_flat` turns them into pulsefit's flat dict on the host.
+
+Only shape-setting settings are compile-time (STATIC_FIELDS: pulse rounds, fit-window sizes, LM iterations); every
+physics setting (thresholds, beta and time limits, height ratios, failed-fit tolerance) is passed as data, so a new
+value of a tuning knob reuses the compiled kernel.
 """
 from functools import partial
 
@@ -23,6 +27,14 @@ from .pulsefit import E, PERIOD, RecoConfig
 jax.config.update("jax_enable_x64", True)
 
 PLATEAU_SLOTS = 6   # extra fit-window slots for flat-topped (saturated) peaks
+STATIC_FIELDS = ("max_pulses", "samples_before", "samples_after", "lm_iterations")
+KNOBS = ("min_adc_difference", "default_beta", "min_beta", "max_beta", "max_time_difference", "min_pulse_height_ratio",
+         "max_pulse_height_ratio", "le_time_factor", "pedestal_undershoot_threshold", "limit_tolerance", "knife_edge_adc")
+
+
+def knobs_of(cfg):
+    """The traced physics settings of a RecoConfig as float64 device scalars."""
+    return {k: jnp.asarray(float(getattr(cfg, k)), jnp.float64) for k in KNOBS}
 
 
 def _near_peak(y, valid, thr, edge):
@@ -170,12 +182,18 @@ def _fit(t, y, w, p0, lo, hi, lm_iter, gn_iter):
     return _to_ext(u, lo, hi), chi2, conv, hess_ok
 
 
-@partial(jax.jit, static_argnames=("cfg",))
 def reconstruct_dense(adc, n, start_tdc, pedestal_db, calib_area, calib_height, cfg=RecoConfig()):
-    """adc [W,L] (padded), n, start_tdc, pedestal_db, calib_area, calib_height [W]. Dense outputs [W, P]."""
+    """adc [W,L] (padded), n, start_tdc, pedestal_db, calib_area, calib_height [W]. Dense outputs [W, P].
+    Recompiles only for a new (W, L) or a new STATIC_FIELDS value; the other settings of cfg are data."""
+    return _reconstruct_dense(adc, n, start_tdc, pedestal_db, calib_area, calib_height, knobs_of(cfg),
+                              P=cfg.max_pulses, sb=cfg.samples_before, sa=cfg.samples_after, lm=cfg.lm_iterations)
+
+
+@partial(jax.jit, static_argnames=("P", "sb", "sa", "lm"))
+def _reconstruct_dense(adc, n, start_tdc, pedestal_db, calib_area, calib_height, cfg, P, sb, sa, lm):
     W, L = adc.shape
-    P = cfg.max_pulses
-    PW = cfg.samples_before + cfg.samples_after + 1 + PLATEAU_SLOTS
+    cfg = _Knobs(cfg)
+    PW = sb + sa + 1 + PLATEAU_SLOTS
     adc = adc.astype(jnp.float64)
     under = pedestal_db - adc[:, 0] > cfg.pedestal_undershoot_threshold
     ped = jnp.where(under, adc[:, 0], pedestal_db)
@@ -187,7 +205,7 @@ def reconstruct_dense(adc, n, start_tdc, pedestal_db, calib_area, calib_height, 
     def round_(carry, _):
         y, start, active, failed_before, near, overflow = carry
         found, ps, pe = _peak(y, n, start, active, cfg.min_adc_difference)
-        fs, fe = _window(y, n, ps, pe, found, cfg.samples_before, cfg.samples_after)
+        fs, fe = _window(y, n, ps, pe, found, sb, sa)
         overflow = overflow | (found & (fe - fs + 1 > PW))
         yps = jnp.take_along_axis(y, ps[:, None], 1)[:, 0]
         t_ps = (start_tdc + ps) * PERIOD
@@ -204,7 +222,7 @@ def reconstruct_dense(adc, n, start_tdc, pedestal_db, calib_area, calib_height, 
         idxc = jnp.clip(idx, 0, L - 1)
         tt = jnp.take_along_axis(tgrid, idxc, 1)
         yy = jnp.take_along_axis(y, idxc, 1)
-        par, chi2, conv, hok = _fit(tt, yy, mask.astype(jnp.float64), p0, lo, hi, cfg.lm_iterations, 8)
+        par, chi2, conv, hok = _fit(tt, yy, mask.astype(jnp.float64), p0, lo, hi, lm, 8)
         npts = mask.sum(1)
         ndf = npts - 3
         span = hi - lo
@@ -237,6 +255,12 @@ def reconstruct_dense(adc, n, start_tdc, pedestal_db, calib_area, calib_height, 
     out["window_overflow"] = overflow
     out["rounds_exhausted"] = out["found"][:, -1]   # a pulse in the last round: more may follow -> numpy path
     return out
+
+
+class _Knobs:
+    """Attribute access to the traced knob dict inside the kernel (cfg.min_beta etc., as in pulsefit.py)."""
+    def __init__(self, d):
+        self.__dict__.update(d)
 
 
 def jnp_round_half_away(x):

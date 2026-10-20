@@ -229,3 +229,27 @@ the same job (41 k and 1.06 M vs 49 k and 1.15 M), a node effect. Coincidence st
 events/s per A100 (was 19,100-19,800 before async dispatch and the 64-hit split threshold). Host time per 200 k events:
 pulse launch 5.2 s, pulse collect 0.3 s, coincidence prepare+launch 1.8 s, coincidence finish 1.6 s of a 8.7-9.9 s
 wall: the remaining headroom is in overlapping the pulse launch (host batching) with the coincidence host work.
+
+### Tuning knobs as runtime data (2026-10-19)
+
+A Mu2eBO point that changes a reco or response setting no longer recompiles the jitted kernels (a recompile is
+40-50 s per point on Polaris). Only settings that fix array shapes stay compile-time:
+
+| kernel | compile-time | data (any value reuses the compiled kernel) |
+|---|---|---|
+| `pulsefit_jax.reconstruct_dense` | `max_pulses` (rounds), `samples_before`/`samples_after` (window), `lm_iterations` | minADCdifference, default/min/max beta, max time difference, pulse-height ratios, LE-time factor, pedestal undershoot threshold, failed-fit limit tolerance (`pulsefit_jax.KNOBS`) |
+| `waveform_jax.synth_dense` | `L` (samples), `zs` (digi length) | noise, minVoltage, ADC conversion, pedestal, ADC range, 1PE template and its precision |
+| `coinc_jax.find_dense` | length axis, which combination sizes can occur, K (slots), whether the sector type has one set of cuts | every `sectorConfig` cut **per sector** (PE threshold, adjacent and coincidence time windows, slopes, slope difference, coincidence layers, minClusterPEs, initial/final max distance); fibre speed, max time interval, time offset |
+
+- **Per-sector cuts.** The cuts travel with each hit, so sectors of one type may differ (Run 2 per-sector thresholds);
+  the finder applies them as `CrvCoincidenceFinder` does (time window, slope limits and slope difference of a
+  combination from its hits' sectors; the layers checked per cluster from the min and max `coincidenceLayers` of its
+  hits; minClusterPEs per cluster). Types whose sectors share their cuts take a scalar path (same result, no cost:
+  50 k synthetic events 9,300-9,500 events/s on the laptop CPU before and after).
+- **Identity at the default settings:** waveforms (with and without noise) and every discrete output are bitwise
+  identical to the previous kernels; pulse PE, time and beta move at the last-bit level (max 1.3e-9 relative: XLA
+  folds traced constants differently from compile-time ones); V-R3 identical cluster lists on KPP data (45,066
+  events) and MC (22,032); V-R2 (5,000 data events, 3 rounds) clean finding identical.
+- Tests: `test_knobs_are_runtime_data_no_recompile` (sweeps of 8 pulse-reco, 3 waveform and 3 coincidence settings
+  compile each kernel once, and the outputs follow the knobs); `test_coinc_jax_per_sector_cuts` (mixed 3/4-layer
+  taggers, per-sector thresholds, slopes, distances and minClusterPEs: JAX equals the numpy port).

@@ -51,10 +51,12 @@ def pack(chan, time, charge, tdc0_of_chan, cfg=WaveformConfig(), Q=None, L=None)
     return dict(T=T, W=W, n=nq, t_start=t_start, tdc0=tdc0, keep=keep, chan=cchan, est=est, L=L, tmpl=tmpl)
 
 
-@partial(jax.jit, static_argnames=("L", "zs", "precision", "noise"))
+@partial(jax.jit, static_argnames=("L", "zs"))
 def synth_dense(T, W, n, t_start, keep, tmpl, key, L, zs, precision, noise, min_voltage, adc_conv, pedestal, adc_lo,
                 adc_hi):
-    """Dense waveforms, ADCs and digi starts for C clusters. T, W [C,Q]; n, t_start, keep [C]."""
+    """Dense waveforms, ADCs and digi starts for C clusters. T, W [C,Q]; n, t_start, keep [C].
+    Only L (samples) and zs (digi length) are compile-time; noise, threshold, ADC conversion, pedestal, template
+    precision and the template itself are data (a tuning knob reuses the compiled kernel)."""
     C, Q = T.shape
     qmask = jnp.arange(Q)[None, :] < n[:, None]
     ts = t_start[:, None] + jnp.arange(L)[None, :] * PERIOD                       # [C, L]
@@ -64,8 +66,7 @@ def synth_dense(T, W, n, t_start, keep, tmpl, key, L, zs, precision, noise, min_
     contrib = jnp.where(ok, tmpl[jnp.clip(ti, 0, tmpl.shape[0] - 1)] * W[:, :, None], 0.0)
     wave = contrib.sum(1)
     last = jnp.where(ok, jnp.arange(L)[None, None, :] + 1, 0).max((1, 2))
-    if noise > 0:
-        wave = wave + noise * jax.random.normal(key, wave.shape) * (jnp.arange(L)[None, :] < last[:, None])
+    wave = wave + noise * jax.random.normal(key, wave.shape) * (jnp.arange(L)[None, :] < last[:, None])
     valid = jnp.arange(L)[None, :] < last[:, None]
     above = (wave > min_voltage) & valid
     pad = jnp.zeros((C, 2), bool)

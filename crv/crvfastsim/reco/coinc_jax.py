@@ -9,6 +9,7 @@ sector type (cuts are static per type). Equivalences used to get fixed shapes:
   - only n == coincidenceLayers combinations are checked (cuts are uniform within a sector type: asserted)
 Groups with more than H hits, or a (side, layer) with more than K filtered hits, are flagged and redone by coinc.py.
 """
+import functools
 from functools import partial
 from itertools import combinations
 
@@ -27,23 +28,40 @@ TIERS = ((16, 6, 16384), (32, 8, 8192), (64, 12, 2048), (128, 16, 256), (256, 24
 K_MAX_4LAYER = 32   # the 4-layer combination tensor is [2, K, K, K, K]: cap K there (overflow -> next tier/numpy)   # (H, K, groups per call)
 
 
+CUT_COLS = ("pe_threshold", "max_dt_adjacent", "max_dt", "min_slope", "max_slope", "max_slope_diff",
+            "coincidence_layers", "min_cluster_pes", "initial_max_distance", "final_max_distance")
+TP_COLS = ("max_dt", "p0", "p1", "both", "fiber_signal_speed", "max_time_interval", "time_offset")
+
+
+class TypeParams:
+    """One sector type: compile-time structure (length axis `ld`, combination sizes `ns`) and the type-level settings
+    as data (`tp`, TP_COLS). Per-sector cuts travel with each hit (hit_tables()['cuts'], CUT_COLS)."""
+    def __init__(self, ld, ns, tp, cuts):
+        self.ld, self.ns, self.tp, self.cuts = ld, ns, tp, cuts
+        self.uniform = len(set(cuts)) == 1      # all sectors of the type share their cuts: scalar fast path
+        self.cu = np.array([float(getattr(cuts[0], c)) for c in CUT_COLS], np.float64)
+
+    @property
+    def max_layers(self):
+        return max(self.ns)
+
+
 def type_params(G, cfg=C.FinderConfig()):
-    """Static per-sector-type parameters (hashable tuples) and per-bar/channel tables for hit building."""
+    """TypeParams per sector type. The cuts may differ between the sectors of a type (as Run 2 per-sector thresholds):
+    the kernel applies them per hit as the stock finder does."""
     lim = C._type_limits(G, cfg)
     out = {}
     for t, L in lim.items():
         secs = [s for s in np.flatnonzero(G.sector_type == t) if G.sector_names[s] in cfg.cuts]
-        cuts = {cfg.cuts[G.sector_names[s]] for s in secs}
-        assert len(cuts) == 1, f"sector type {t}: non-uniform cuts {cuts}"
+        cuts = [cfg.cuts[G.sector_names[s]] for s in secs]
         lds = {int(G.length_dir[s]) for s in secs}
         assert len(lds) == 1
-        c = cuts.pop()
-        assert c.coincidence_layers in (2, 3, 4)
-        out[t] = (float(c.pe_threshold), float(c.max_dt_adjacent), float(L["max_dt"]), float(c.min_slope),
-                  float(c.max_slope), float(c.max_slope_diff), int(c.coincidence_layers), float(c.min_cluster_pes),
-                  float(c.initial_max_distance), float(c.final_max_distance), float(L["p0"]), float(L["p1"]),
-                  bool(L["side0"] and L["side1"]), lds.pop(), float(cfg.fiber_signal_speed),
-                  float(cfg.max_time_interval), float(cfg.time_offset))
+        nl = [c.coincidence_layers for c in cuts]
+        assert set(nl) <= {2, 3, 4}
+        ns = tuple(n for n, need in ((2, min(nl) == 2), (3, min(nl) <= 3 <= max(nl)), (4, max(nl) == 4)) if need)
+        tp = np.array([L["max_dt"], L["p0"], L["p1"], float(L["side0"] and L["side1"]), cfg.fiber_signal_speed,
+                       cfg.max_time_interval, cfg.time_offset], np.float64)
+        out[t] = TypeParams(lds.pop(), ns, tp, cuts)
     return out
 
 
@@ -64,7 +82,11 @@ def hit_tables(G, status, cfg=C.FinderConfig()):
     comp = np.zeros(nch, bool)
     for b in cfg.compensate_status_bits:
         comp |= ((st_o >> b) & 1).astype(bool)
-    return dict(stype=np.where(ok, st, -1), tcorr=tc, pefac=np.where(comp, 2.0, 1.0))
+    cut_tab = np.zeros((len(G.sector_names), len(CUT_COLS)))
+    for k, name in enumerate(G.sector_names):
+        if name in cfg.cuts:
+            cut_tab[k] = [float(getattr(cfg.cuts[name], c)) for c in CUT_COLS]
+    return dict(stype=np.where(ok, st, -1), tcorr=tc, pefac=np.where(comp, 2.0, 1.0), cuts=cut_tab[s])
 
 
 def pack(ev, idx, bar, sipm, time, pe, seq, G, tables, t_type, H=H_DEFAULT, cfg=C.FinderConfig(), events=None):
@@ -98,7 +120,8 @@ def pack(ev, idx, bar, sipm, time, pe, seq, G, tables, t_type, H=H_DEFAULT, cfg=
                x=dense(G.x[b]), y=dense(G.y[b]),
                t=dense(time[sel] + tables["tcorr"][ch[sel]]),
                pe=dense(pe[sel] * tables["pefac"][ch[sel]]),
-               pos=dense(G.pos[b]))
+               pos=dense(G.pos[b]),
+               cut=dense(tables["cuts"][ch[sel]]))
     return out, gev, gev[cnt > H]
 
 
@@ -106,9 +129,13 @@ def link_scales(G, P):
     """Largest time and x separation over which any finder step can link two hits of one sector type: filterHits
     (maxTimeDifferenceAdjacentPulses), clustering (maxTimeDifference + opposite-side fibre delay; initialMaxDistance,
     finalMaxDistance, and maxDistance widened at most to |slope| x layer-stack thickness)."""
-    (thr, dt_adj, max_dt, lo, hi, msd, ncl, min_pe, maxd0, maxd_f, p0, p1, both, ld, v, mti, toff) = P
+    max_dt, p0, p1, both, v = P.tp[:5]
+    dt_adj = max(c.max_dt_adjacent for c in P.cuts)
+    maxd0 = max(c.initial_max_distance for c in P.cuts)
+    maxd_f = max(c.final_max_distance for c in P.cuts)
+    smax = max(max(abs(c.min_slope), abs(c.max_slope)) for c in P.cuts)
     t_link = max(dt_adj, max_dt + (2.0 * (p1 - p0) / 2.0 / v if both else 0.0))
-    return t_link, maxd0, maxd_f, max(abs(lo), abs(hi))
+    return t_link, maxd0, maxd_f, smax
 
 
 def split_blocks(key, t, x, t_link, x_link, max_iter=16):
@@ -144,10 +171,18 @@ def _labels(A, valid):
     return jnp.where(valid, jnp.argmax(R, axis=-1), -1)
 
 
-@partial(jax.jit, static_argnames=("P", "K"))
-def find_dense(valid, idx, side, layer, counter, x, y, t, pe, pos, P, K=K_DEFAULT):
-    """One sector type, [G, H] hits -> per-hit cluster label (root hit, -1 = no cluster) and per-root properties."""
-    (thr, dt_adj, max_dt, lo, hi, msd, ncl, min_pe, maxd0, maxd_f, p0, p1, both, ld, v, mti, toff) = P
+@partial(jax.jit, static_argnames=("ld", "ns", "uniform", "K"))
+def find_dense(valid, idx, side, layer, counter, x, y, t, pe, pos, cut, tp, cu, ld, ns, uniform, K=K_DEFAULT):
+    """One sector type, [G, H] hits -> per-hit cluster label (root hit, -1 = no cluster) and per-root properties.
+    cut [G, H, len(CUT_COLS)]: each hit's sector cuts; cu [len(CUT_COLS)]: the shared cuts when `uniform`;
+    tp [len(TP_COLS)]: type-level settings. Static: ld (length axis), ns (combination sizes that can be needed),
+    uniform (one set of cuts for the whole type: scalar path, same result), K (slots per side and layer)."""
+    max_dt, p0, p1, both, v, mti, toff = (tp[i] for i in range(len(TP_COLS)))
+    both = both > 0.5
+    src = cu if uniform else cut
+    (thr, dt_adj, cmax_dt, lo_h, hi_h, msd_h, ncl_h, minpe_h, maxd0_h, maxdf_h) = (src[..., i] for i in range(len(CUT_COLS)))
+    pair = (lambda a: a) if uniform else (lambda a: jnp.maximum(a[:, :, None], a[:, None, :]))
+    row = (lambda a: a) if uniform else (lambda a: a[:, :, None])
     Gn, H = valid.shape
     I = jnp.eye(H, dtype=bool)
     vv = valid[:, :, None] & valid[:, None, :]
@@ -155,7 +190,7 @@ def find_dense(valid, idx, side, layer, counter, x, y, t, pe, pos, P, K=K_DEFAUL
     dtt = jnp.abs(t[:, :, None] - t[:, None, :])
     same_side = side[:, :, None] == side[:, None, :]
     # filterHits (per side, same layer, |dt| <= maxTimeDifferenceAdjacentPulses)
-    near = vv & same_side & (layer[:, :, None] == layer[:, None, :]) & (dtt <= dt_adj)
+    near = vv & same_side & (layer[:, :, None] == layer[:, None, :]) & (dtt <= row(dt_adj))
     dc = counter[:, None, :] - counter[:, :, None]
     pej = jnp.broadcast_to(pe[:, None, :], near.shape)
     s0 = jnp.sum(jnp.where(near & (dc == 0), pej, 0.0), -1)
@@ -164,8 +199,12 @@ def find_dense(valid, idx, side, layer, counter, x, y, t, pe, pos, P, K=K_DEFAUL
     filt = valid & ((s0 + s1 >= thr) | (s0 + s2 >= thr))
     # first clustering per side: |dx| <= initialMaxDistance, |dt| < maxTimeDifference
     ff = filt[:, :, None] & filt[:, None, :]
-    A1 = ff & same_side & (((dx <= maxd0) & (dtt < max_dt)) | I)
+    A1 = ff & same_side & (((dx <= pair(maxd0_h)) & (dtt < max_dt)) | I)
     comp = _labels(A1, filt)
+    if not uniform:   # coincidence layers required in each first-stage cluster: min and max over its hits
+        same_c = filt[:, :, None] & filt[:, None, :] & (comp[:, :, None] == comp[:, None, :])
+        nmin = jnp.min(jnp.where(same_c, ncl_h[:, None, :], 99.0), -1)
+        nmax = jnp.max(jnp.where(same_c, ncl_h[:, None, :], -1.0), -1)
     # slot of each filtered hit within its (side, layer)
     sl = filt[:, None, :] & same_side & (layer[:, :, None] == layer[:, None, :]) & \
         (jnp.arange(H)[None, None, :] < jnp.arange(H)[None, :, None])
@@ -180,8 +219,11 @@ def find_dense(valid, idx, side, layer, counter, x, y, t, pe, pos, P, K=K_DEFAUL
     gi = jnp.arange(Gn)[:, None, None, None]
     sx, sy, st_ = pad(x, 0.0)[gi, tab], pad(y, 0.0)[gi, tab], pad(t, 0.0)[gi, tab]
     sc, sv = pad(comp, -2)[gi, tab], tab < H
+    if not uniform:
+        sdt, slo, shi, smsd, sncl = (pad(a, 0.0)[gi, tab] for a in (cmax_dt, lo_h, hi_h, msd_h, ncl_h))
+        snmin, snmax = pad(nmin, 99.0)[gi, tab], pad(nmax, -1.0)[gi, tab]
     wid = jnp.full((Gn, 2, C.N_LAYERS, K), -jnp.inf)
-    for layers in combinations(range(C.N_LAYERS), ncl):
+    for layers in (c for n_ in ns for c in combinations(range(C.N_LAYERS), n_)):
         n = len(layers)
 
         def at(a, p, l):   # slot attribute of layer l on combo axis p: [G, 2, 1.., K, ..1]
@@ -197,11 +239,22 @@ def find_dense(valid, idx, side, layer, counter, x, y, t, pe, pos, P, K=K_DEFAUL
         tmax, tmin = T[0], T[0]
         for p in range(1, n):
             tmax, tmin = jnp.maximum(tmax, T[p]), jnp.minimum(tmin, T[p])
-        ok = ok & ~(tmax - tmin > max_dt)
+        if uniform:
+            c_dt, c_lo, c_hi, msd = cmax_dt, lo_h, hi_h, msd_h
+        else:
+            A_ = lambda a: [at(a, p, l) for p, l in enumerate(layers)]
+            red = lambda f, xs: functools.reduce(f, xs)
+            c_dt, c_lo, c_hi, msd = (red(f, A_(a)) for f, a in ((jnp.maximum, sdt), (jnp.minimum, slo),
+                                                                (jnp.maximum, shi), (jnp.maximum, smsd)))
+            # this combination size is checked for the cluster (nmin/nmax) and not every hit asks for more layers
+            nmn, nmx = at(snmin, 0, layers[0]), at(snmax, 0, layers[0])
+            need = (nmn == 2) if n == 2 else ((nmn <= 3) & (nmx >= 3)) if n == 3 else (nmx == 4)
+            ok = ok & need & ~red(jnp.logical_and, [c > n for c in A_(sncl)])
+        ok = ok & ~(tmax - tmin > c_dt)
         S = []
         for p in range(n - 1):
             s = (X[p + 1] - X[p]) / jnp.where(Y[p + 1] == Y[p], 1.0, Y[p + 1] - Y[p])
-            ok = ok & ~((s < lo) | (s > hi))
+            ok = ok & ~((s < c_lo) | (s > c_hi))
             S.append(s)
         if n > 2:
             ok = ok & ~(jnp.abs(S[0] - S[1]) > msd)
@@ -223,7 +276,7 @@ def find_dense(valid, idx, side, layer, counter, x, y, t, pe, pos, P, K=K_DEFAUL
     hw = jnp.where(put, wid.reshape(Gn, -1)[jnp.arange(Gn)[:, None], jnp.minimum(flat, 2 * C.N_LAYERS * K - 1)],
                    -jnp.inf)
     kept = put & (hw > -jnp.inf)
-    maxd = jnp.maximum(maxd_f, hw)
+    maxd = jnp.maximum(maxdf_h, hw)
     # final clustering across both readout sides
     kk = kept[:, :, None] & kept[:, None, :]
     mt = max_dt + jnp.where(both & ~same_side, 2.0 * (p1 - p0) / 2.0 / v, 0.0)
@@ -236,6 +289,7 @@ def find_dense(valid, idx, side, layer, counter, x, y, t, pe, pos, P, K=K_DEFAUL
     sm = lambda a: jnp.einsum("grh,gh->gr", Mf, a)
     tot = sm(pe)
     is_root = jnp.any(M, -1)
+    min_pe = minpe_h if uniform else jnp.min(jnp.where(M, minpe_h[:, None, :], jnp.inf), -1)
     ok_r = is_root & ~(tot < min_pe)
     safe = jnp.where(tot != 0, tot, 1.0)
     posw = jnp.einsum("grh,ghk->grk", Mf, pos * pe[..., None]) / safe[..., None]
@@ -283,7 +337,8 @@ def _dispatch_tier(arr, P, K, batch):
         if n < batch:   # one static shape per tier
             sl = {k: np.concatenate([v, np.zeros((batch - n,) + v.shape[1:], v.dtype)]) for k, v in sl.items()}
         d = find_dense(*[jnp.asarray(sl[k]) for k in ("valid", "idx", "side", "layer", "counter", "x", "y", "t",
-                                                      "pe", "pos")], P=P, K=K)
+                                                      "pe", "pos", "cut")], jnp.asarray(P.tp), jnp.asarray(P.cu), ld=P.ld, ns=P.ns,
+                       uniform=P.uniform, K=K)
         outs.append(({k: d[k] for k in OUT_KEYS}, n))
     return outs
 
@@ -298,7 +353,7 @@ def _run_tier(arr, P, K, batch):
 
 
 def _kfor(P, K):
-    return min(K, K_MAX_4LAYER) if P[6] == 4 else K
+    return min(K, K_MAX_4LAYER) if P.max_layers == 4 else K
 
 
 def _groups(tt, P, ev, idx, bar, sipm, time, pe, seq, G, tables, cfg, split, split_min, timers):
