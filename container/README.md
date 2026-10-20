@@ -1,8 +1,9 @@
 # mu2e-fastsim container (R4)
 
 Two variants of one Apptainer definition (`VARIANT=gpu|cpu container/build.sh`): Python 3.13, JAX 0.11.2 (the same
-JAX as the Polaris venv); `gpu` with the pip CUDA 12 wheels minus the ones no kernel loads (cuDNN, NCCL, NVSHMEM, cuFFT:
-`TRIM`, override with `TRIM=""`), `cpu` without CUDA (FermiGrid, local, CI, CPU endpoints); the three packages installed from git-tracked sources, and the two public Offline files the code reads
+JAX as the Polaris venv); `gpu` with the pip CUDA 12 wheels minus the ones no kernel loads (NCCL, NVSHMEM, cuFFT: `TRIM`,
+override with `TRIM=""`; cuDNN stays, the JAX CUDA plugin will not start without it), `cpu` without CUDA (FermiGrid,
+local, CI, CPU endpoints; 234 MB); the three packages installed from git-tracked sources, and the two public Offline files the code reads
 (`singlePEWaveform_v3.txt`, `crv_counters_extracted_v04.txt`, Offline v13_39_00) under `/opt/offline_data`
 (`MU2E_SEARCH_PATH`). No CVMFS. No Mu2e-internal data: inputs and outputs are bind-mounted at run time.
 
