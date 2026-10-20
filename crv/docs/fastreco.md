@@ -297,9 +297,16 @@ ratio within +-3 % after 2 sigma, coincidence clusters per event within 1 % afte
 - Bar rates (events with a >= 5 PE pulse per bar, 576 bars): chi2/ndf 0.01, max pull 0.4. Both arms see the same
   muon crossings, so the counts are strongly correlated and the independent-sample errors used for the 2-sigma
   allowances are conservative; the raw differences above are the measure.
-- Not covered yet: the EX layer-efficiency row (needs extrapolated tracks, as in V2), the JAX chain end to end on these
-  shards (the JAX response and reco twins are each validated against their numpy references, V4 and V-R2/V-R3), and
-  response knobs away from the nominal point.
+- **JAX chain, all 20 shards (FNAL grid, 2026-10-20): V-R4 passes in every group** (EX PE median 46.47 -> 46.47,
+  T1 76.25 -> 76.05 (-0.26 %), T2 47.69 -> 47.69, taggers 76.13 -> 76.17; clusters per event within 0.2 % in every
+  group; bar rates chi2/ndf 0.01). Grid jobs (`grid/submit_vr4.sh`, `grid/grid_vr4.sh`): one shard per job, the CPU
+  container unpacked to a sandbox on the worker (grid jobs run inside the worker's container without /dev/fuse, so a
+  SIF cannot be mounted there), the committed core+crv code shipped as a 285 kB tarball, inputs and outputs via
+  pnfs scratch. 10.8 min and 5.7 GB per shard on a grid node; 3 of 20 shards exceeded 8 GB with 250-event batches
+  and reran with `--batch-events 100` and 12 GB. Shard 1 on the grid equals the same shard run on a GPVM bit for bit.
+  Memory-hungry runs go to the grid, not to the GPVMs.
+- Not covered yet: the EX layer-efficiency row (needs extrapolated tracks, as in V2) and response knobs away from the
+  nominal point.
 - The JAX pulse path (`chain_jax.run`) now adds the per-channel DB time offset (`W["toff"]`), as `CrvRecoPulsesFinder`
   and the numpy path do; earlier callers passed no offsets (test `test_chain_jax_adds_db_time_offsets`).
 - Cost of the numpy chain per event with CRV steps (mu2egpvm06, one core): photons 3.4, SiPM 1.6, waveforms 0.5,
