@@ -50,6 +50,7 @@ class DeviceTable:
         self.prob = jnp.asarray(np.concatenate([t.prob for t in T]).astype(np.float64))
         self.dsum = jnp.asarray(np.concatenate([t.delay_sum for t in T]).astype(np.float64))
         self.edges = {k: jnp.asarray(v) for k, v in L.edges.items()}
+        self.p_typical = 2.0 * float(L.tables["scint"].prob.mean())  # buffer estimate for device_photons (x2 margin)
         self.nb = _NB({k: len(v) - 1 for k, v in L.edges.items()})
         self.const = (L.half_thickness, L.half_width, L.half_length, L.fiber_separation, L.hole_radius_x,
                       L.hole_radius_y, L.fiber_radius, L.corner_radius)
@@ -168,3 +169,37 @@ def make_photons(steps, pdg, geom, cfg, device_tables, deviation, rng, key):
 
 def load_device_tables(cfg, directory=None):
     return {k: DeviceTable(v) for k, v in photons.load_tables(cfg, directory).items()}
+
+
+ARRIVAL_SAFETY = 1.25  # kernel-B buffer = 1.25 x expected arrivals + 8 sigma + 4096; overflow flagged
+
+
+@partial(jax.jit, static_argnames=("SB", "AB", "nb", "const", "offsets"))
+def _photons_device(chunk, step, chan, key, edges, prob, cum, dsum, SB, AB, nb, const, offsets):
+    """Kernels A and B in one call with a static arrival buffer: (step, channel, time, valid, overflow) on device."""
+    ka, kb = jax.random.split(key)
+    narr, gbin, t, ri = _kernel_a(chunk, ka, edges, prob, SB, nb, const, offsets)
+    tt, rr, valid = _kernel_b(narr, gbin, t, ri, kb, cum, dsum, AB)
+    return step[rr], chan[rr], tt, valid, narr.sum() > AB
+
+
+def device_photons(dt, rows, key, row_step_offset=0):
+    """Photons of one iter_rows block, left on the device. The arrival buffer comes from the expected count (rows'
+    photon numbers x mean arrival probability), not from a host sync. Returns dict of device arrays + overflow flag."""
+    nsub = rows["nsub"]
+    R = len(nsub)
+    RB = _bucket(R)
+    pad = RB - R
+    chunk = {k: jnp.asarray(np.pad(rows[k], ((0, pad), (0, 0)))) for k in ("s", "d")}
+    for k in ("t0", "t1", "beta", "theta", "dev", "n_scint", "n_ck_s", "n_ck_f"):
+        chunk[k] = jnp.asarray(np.pad(rows[k], (0, pad)))
+    chunk["nsub"] = jnp.asarray(np.pad(nsub, (0, pad)))
+    SB = _bucket(int(nsub.sum()))
+    ntot = float(((rows["n_scint"] + rows["n_ck_s"] + rows["n_ck_f"]) * nsub * np.minimum(rows["dev"], 1.0)).sum())
+    mu = ntot * dt.p_typical                             # expected arrivals; overflow is flagged and redone
+    AB = _bucket(int(ARRIVAL_SAFETY * mu + 8 * np.sqrt(mu) + 4096))
+    step = jnp.asarray(np.pad(rows["step"] + row_step_offset, (0, pad)))
+    chan = jnp.asarray(np.pad(rows["chan"], (0, pad)))
+    s, c, t, v, over = _photons_device(chunk, step, chan, key, dt.edges, dt.prob, dt.cum, dt.dsum, SB, AB, dt.nb,
+                                       dt.const, dt.offsets)
+    return {"step": s, "chan": c, "time": t, "valid": v, "overflow": over}
