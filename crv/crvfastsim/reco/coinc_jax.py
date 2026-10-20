@@ -31,13 +31,17 @@ ONEAPI_SKIP_H = (32,)
 
 def backend_tiers(tiers):
     """Tiers usable on the current backend: on oneAPI those with H in ONEAPI_SKIP_H are dropped (rows go one tier up)."""
+    return tuple(t for t in tiers if t[0] not in ONEAPI_SKIP_H) if is_oneapi() else tuple(tiers)
+
+
+def is_oneapi():
+    """True on the JAX oneAPI plugin (Intel GPUs), which reports its platform as 'gpu'."""
     try:
-        plat = jax.devices()[0].platform.lower()
+        d = jax.devices()[0]
     except Exception:
-        return tuple(tiers)
-    if plat not in ("oneapi", "sycl", "xpu"):
-        return tuple(tiers)
-    return tuple(t for t in tiers if t[0] not in ONEAPI_SKIP_H)
+        return False
+    tags = (getattr(d, "platform", ""), type(d).__name__, getattr(d, "device_kind", ""), getattr(d.client, "platform_version", ""))
+    return any(k in str(t).lower() for t in tags for k in ("oneapi", "sycl", "level_zero", "intel"))
 
 
 K_MAX_4LAYER = 32   # the 4-layer combination tensor is [2, K, K, K, K]: cap K there (overflow -> next tier/numpy)   # (H, K, groups per call)

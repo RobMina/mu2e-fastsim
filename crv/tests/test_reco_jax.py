@@ -224,9 +224,12 @@ def test_backend_tiers_skip_h32_on_oneapi(monkeypatch):
     import jax
     from crvfastsim.reco import coinc_jax as CJ
     tiers = ((16, 6, 1), (32, 8, 1), (64, 12, 1))
-    assert CJ.backend_tiers(tiers) == (tiers if jax.devices()[0].platform != "oneapi" else (tiers[0], tiers[2]))
+    assert CJ.backend_tiers(tiers) == ((tiers[0], tiers[2]) if CJ.is_oneapi() else tiers)
 
-    class Dev:
-        platform = "oneapi"
-    monkeypatch.setattr(CJ.jax, "devices", lambda *a: [Dev()])
-    assert CJ.backend_tiers(tiers) == (tiers[0], tiers[2])
+    class Client:
+        platform_version = "x"
+
+    class OneapiDevice:   # the plugin reports platform 'gpu'; the type name and device kind identify it
+        platform, device_kind, client = "gpu", "Intel(R) Data Center GPU Max 1550", Client()
+    monkeypatch.setattr(CJ.jax, "devices", lambda *a: [OneapiDevice()])
+    assert CJ.is_oneapi() and CJ.backend_tiers(tiers) == (tiers[0], tiers[2])
