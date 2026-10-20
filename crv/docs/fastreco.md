@@ -262,12 +262,15 @@ only (`git archive` of the umbrella and submodules at their checked-out commits,
 
 - **Polaris (PBS 7763332, apptainer 1.3.2 from `/soft/spack/base/0.8.1/install/modulefiles/Core`):** image built on
   the compute node in 109 s (fakeroot works); **cold start 10.7 s** (2.3 s copy to node-local disk + 8.4 s first exec
-  with an empty cache; goal <= 5 min); all 4 A100s visible; JAX GPU tests pass inside the image. The chain bench inside
+  with an empty cache; goal <= 5 min); all 4 A100s visible; JAX GPU tests pass inside the image. The first chain bench inside
   it failed on a packaging bug (the subpackage lists in `pyproject.toml` missed `crvfastsim.response` and
-  `trkfastsim.analyses`; source-tree runs never notice); fixed with automatic package discovery, rerun pending.
+  `trkfastsim.analyses`; source-tree runs never notice); fixed with automatic package discovery. **Rerun (PBS
+  7763444): pulses -> coincidences chain inside the container 20,918 events/s on one A100** (47.8 us/event; venv
+  20,100-23,000), cold start again 10.7 s.
 - **Size:** the GPU image is 3.5 GB (5.6 GB unpacked, 4.8 GB of it the pip CUDA wheels). R4's target is "the fast-sim
   image + < 0.5 GB" (decision 2026-10-20: read as the reco's increment on the shared JAX/CUDA image, ~1 MB, within the
   fast sim's own P5 limit of 5 GB), so **R4 is met on size and cold start**. To make the image cheaper to move anyway:
   `build.sh` now drops the CUDA wheels no kernel loads (cuDNN 1.2 GB, NCCL 0.47 GB, NVSHMEM 0.40 GB, cuFFT 0.28 GB
   unpacked; `TRIM`, override with `TRIM=""`) and has a CPU-only variant (`VARIANT=cpu`) for FermiGrid, local runs, CI
-  and CPU endpoints (veto plan E8). Both pending their first build and test.
+  and CPU endpoints (veto plan E8; unpacked tree 0.8 GB). Trimmed vs full GPU image on Polaris: PBS 7763477 (pending);
+  CPU image: building on mu2egpvm06.
