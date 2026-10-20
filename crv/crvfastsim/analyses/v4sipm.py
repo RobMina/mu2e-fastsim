@@ -33,7 +33,7 @@ def _cdf_shift(df, ds, levels=(0.1, 0.5, 0.9)):
 
 
 def run(inputs, outdir, deviation=None, max_steps=None, seed=1, counters=None, jax=False, no_stock=False,
-        device=False, calib=None, **kw):
+        device=False, calib=None, repeat=0, **kw):
     geom = geometry.from_offline_config(geometry.find_counters(counters or DEFAULT_COUNTERS))
     steps = tables.read_many(tables.expand(inputs), "steps")
     parts = tables.read_many(tables.expand(inputs), "particles", tables.KEY + ["key", "pdg"])
@@ -68,6 +68,17 @@ def run(inputs, outdir, deviation=None, max_steps=None, seed=1, counters=None, j
         F["chan"] = F["chan"]  # labels are event key * 4096 + channel, as `key` below
         t_fast = time.perf_counter() - a
         out_over = any(bool(r["overflow"]) for r in rs)
+        dev_info = {"batches": len(rs), "n_long_streams_max": max(int(r["n_long_streams"]) for r in rs),
+                    "max_long_stream": max(int(r["max_long_stream"]) for r in rs),
+                    "max_stream": max(int(r["max_stream"]) for r in rs), "first_pass_s": t_fast, "warm_pass_s": []}
+        for i in range(int(repeat)):  # warm passes (compiled): steps -> charges left on the device, no host transfer
+            a = time.perf_counter()
+            rw = DV.response_batched(steps, pdg, geom, cfg, scfg, DT, cond.deviation, cond.status,
+                                     ((steps.subrun.to_numpy().astype(np.int64) << 32) | steps.event.to_numpy().astype(np.int64)),
+                                     np.random.default_rng(int(seed) + 100 + i), _jax.random.PRNGKey(int(seed) + 100 + i), pmap)
+            _jax.block_until_ready([r["charge"] for r in rw])
+            dev_info["warm_pass_s"].append(time.perf_counter() - a)
+            del rw
         keep = (cond.status[c] & 0b101) == 0
         s, c, t, key = s[keep], c[keep], t[keep], key[keep]
     elif jax:
@@ -89,7 +100,7 @@ def run(inputs, outdir, deviation=None, max_steps=None, seed=1, counters=None, j
     t_stock = time.process_time() - a
     out = {"steps": len(steps), "photons": len(s), "charges_fast": len(F["pe"]), "charges_stock": len(S["pe"]),
            "fast_arm": "device" if device else ("jax" if jax else "numpy"),
-           "device_overflow": out_over if device else None, "reference_arm": "numpy" if no_stock else "stock",
+           "device_overflow": out_over if device else None, "device": dev_info if device else None, "reference_arm": "numpy" if no_stock else "stock",
            "time_s_fast": t_fast, "cpu_s_reference": t_stock, "thresholds": THRESH, "groups": {}}
     grp_key = lambda k: SECTOR_GROUP[geom.sector[(k % 4096) // 4]]
     for g in GROUPS:
@@ -127,5 +138,17 @@ def run(inputs, outdir, deviation=None, max_steps=None, seed=1, counters=None, j
               f"({r['pe_per_sipm_rel']:+.4f} +- {r['pe_per_sipm_rel_err']:.4f}); charges/photon "
               f"{r['charges_per_photon_stock']:.4f} -> {r['charges_per_photon_fast']:.4f}; partial "
               f"{r['frac_partial_stock']:.4f} -> {r['frac_partial_fast']:.4f}; t shift {np.round(r['time_cdf_shift_ns'], 3)} | {flags}")
+    if device:
+        d = out["device"]
+        nev = len(np.unique((steps.subrun.to_numpy().astype(np.int64) << 32) | steps.event.to_numpy().astype(np.int64)))
+        d["events"], d["steps"] = int(nev), int(len(steps))
+        if d["warm_pass_s"]:
+            w = min(d["warm_pass_s"])
+            d["warm_events_per_s"], d["warm_steps_per_s"] = nev / w, len(steps) / w
+            print(f"device warm pass (compiled, outputs on device): {w:.2f} s = {nev / w:,.0f} events/s, "
+                  f"{len(steps) / w:,.0f} steps/s (min of {len(d['warm_pass_s'])}); first pass {d['first_pass_s']:.1f} s")
+        print(f"device batches {d['batches']}; long streams per batch <= {d['n_long_streams_max']}, longest "
+              f"{d['max_long_stream']}; overflow {out['device_overflow']}")
+        plots.write_json(outdir, "v4sipm_stats.json", out)
     print(f"V4-sipm {'PASS' if out['pass'] else 'FAIL'}")
     return out

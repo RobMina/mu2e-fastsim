@@ -49,17 +49,14 @@ def response(steps, pdg, geom, rcfg, scfg, device_tables, deviation, status, ev_
     args = (jnp.pad(slot, (0, pad)), jnp.pad(t, (0, pad)), jnp.pad(valid, (0, pad)), k_si,
             jnp.asarray(np.cumsum(pmap.ravel()) / pmap.sum()), pmap.shape[1], jnp.asarray(dead),
             q_ct, scfg.overvoltage, scfg.time_constant, scfg.p1, scfg.p2, scfg.capacitance, NB, *Ms, Ntot)
-    L = sipm_jax.STREAM_L
-    r = sipm_jax.device_sipm(*args, L, scfg.n_pixels_x, scfg.n_pixels_y)
-    while bool(r["stream_overflow"]) and L < 1024:   # one scalar sync; same key, so the result is the larger-L one
-        L *= 2
-        r = sipm_jax.device_sipm(*args, L, scfg.n_pixels_x, scfg.n_pixels_y)
+    r = sipm_jax.run_device_sipm(args, scfg)   # same key on the retry, so the result is the larger table's
     root = jnp.minimum(r["root"], n - 1)
     lab_p = jnp.pad(label, (0, pad))
     step_p = jnp.pad(step, (0, pad))
     return {"fired": r["fired"], "label": lab_p[root], "time": r["time"], "charge": r["charge"], "pe": r["pe"],
             "step": step_p[root], "overflow": over | r["overflow"], "overflow_photons": over,
-            "overflow_sipm": r["overflow"]}
+            "overflow_sipm": r["overflow"], "n_long_streams": r["n_long_streams"],
+            "max_long_stream": r["max_long_stream"], "max_stream": r["max_stream"]}
 
 
 def to_host(r):
@@ -72,7 +69,7 @@ def to_host(r):
     return out
 
 
-BATCH_STEPS = 20000  # steps per device batch (whole events); bounds the [hits, L] stream table of device_sipm
+BATCH_STEPS = 20000  # steps per device batch (whole events); bounds the [hits, STREAM_L] short table of device_sipm
 
 
 def response_batched(steps, pdg, geom, rcfg, scfg, device_tables, deviation, status, ev_key, rng, key, pmap,

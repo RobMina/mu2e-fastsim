@@ -89,6 +89,7 @@ def build_parser():
             sp.add_argument("--no-stock", action="store_true", help="reference = numpy port (no Offline needed)")
             sp.add_argument("--device", action="store_true", help="fast arm = fused device response (response/device.py)")
             sp.add_argument("--calib", default=None, metavar="CSV", help="CRVCalib CSV (status mask) for --device")
+            sp.add_argument("--repeat", type=int, default=0, help="--device: N warm timed passes after the first (P2)")
             sp.add_argument("--seed", type=int, default=1)
         if name == "pulsematch":
             for a in ("--fast", "--fast-mu", "--ref", "--ref-mu"):

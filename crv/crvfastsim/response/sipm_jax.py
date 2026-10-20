@@ -47,37 +47,56 @@ def _candidates(slot, pix, t, valid, key, q_ct, M, nx, ny):
     return slot[r], (nxp * NPIX + nyp)[r, j], t[r], r, v, n
 
 
-@partial(jax.jit, static_argnames=("L", "rounds"))
-def _solve(key_sort, t, u, parent, valid, dead, vov, tau, p1, p2, L, rounds):
-    """Sort hits into pixel streams, then the fixed point over the active set. Returns fired, v (per hit, input order)."""
+def _gather(arr_sorted, fill, di):
+    return jnp.concatenate([arr_sorted, jnp.array([fill], arr_sorted.dtype)])[di]
+
+
+@partial(jax.jit, static_argnames=("L", "SL", "LL", "rounds"))
+def _solve(key_sort, t, u, parent, valid, dead, vov, tau, p1, p2, L, SL, LL, rounds):
+    """Sort hits into pixel streams, then the fixed point over the active set.
+
+    Streams of at most L hits go to a short table [N, L]; longer streams (rare) go to a long table [SL, LL], so a few
+    long streams do not inflate every row. Returns fired, v (per hit, input order), the long-stream count and the
+    longest stream; the long table overflowed if count > SL or longest > LL (caller retries with exact buckets)."""
     N = t.shape[0]
+    pad_key = jnp.iinfo(jnp.int64).max
     o = jnp.lexsort((t, key_sort))
     ks, ts, us = key_sort[o], t[o], u[o]
+    real = ks != pad_key
     new = jnp.concatenate([jnp.array([True]), ks[1:] != ks[:-1]])
-    start = jnp.where(new, jnp.arange(N), 0)
-    start = lax.cummax(start, axis=0)
+    start = lax.cummax(jnp.where(new, jnp.arange(N), 0), axis=0)
     pos = jnp.arange(N) - start
-    nst = jnp.cumsum(new) - 1                      # stream id per sorted hit
-    S = N                                          # upper bound on streams
-    dense_idx = jnp.full((S, L), N, jnp.int64).at[nst, jnp.minimum(pos, L - 1)].set(jnp.arange(N))
-    tsd = jnp.concatenate([ts, jnp.array([0.0])])[dense_idx]
-    usd = jnp.concatenate([us, jnp.array([2.0])])[dense_idx]
-    deadd = jnp.concatenate([dead[ks % NP2], jnp.array([True])])[dense_idx]
-    inv = jnp.zeros(N, jnp.int64).at[o].set(jnp.arange(N))   # input index -> sorted index
+    nst = jnp.cumsum(new) - 1
+    slen = jax.ops.segment_sum(jnp.ones(N, jnp.int64), nst, num_segments=N)[nst]
+    long_ = real & (slen > L)
+    short = real & ~long_
+    sid = jnp.cumsum(new & short) - 1
+    lid = jnp.cumsum(new & long_) - 1
+    n_long = (new & long_).sum()
+    max_len = jnp.max(jnp.where(real, slen, 0))
+    max_long = jnp.max(jnp.where(long_, slen, 0))
+    hit = jnp.arange(N)
+    di_s = jnp.full((N, L), N, jnp.int64).at[jnp.where(short, sid, N), jnp.minimum(pos, L - 1)].set(hit, mode="drop")
+    di_l = jnp.full((SL, LL), N, jnp.int64).at[jnp.where(long_, lid, SL), jnp.minimum(pos, LL - 1)].set(hit, mode="drop")
+    dead_s = dead[ks % NP2]
+    tabs = [(di, _gather(ts, 0.0, di), _gather(us, 2.0, di), _gather(dead_s, True, di)) for di in (di_s, di_l)]
+    inv = jnp.zeros(N, jnp.int64).at[o].set(hit)   # input index -> sorted index
+
+    def step(last, xs):
+        tt, uu, aa = xs
+        v = vov * (1.0 - jnp.exp(-(tt - last) / tau))
+        f = aa & (uu < p1 * (1.0 - jnp.exp(-v / p2)))
+        return jnp.where(f, tt, last), (f, v)
 
     def scan_streams(act_sorted):
-        actd = jnp.concatenate([act_sorted, jnp.array([False])])[dense_idx] & ~deadd
-
-        def step(last, xs):
-            tt, uu, aa = xs
-            v = vov * (1.0 - jnp.exp(-(tt - last) / tau))
-            f = aa & (uu < p1 * (1.0 - jnp.exp(-v / p2)))
-            return jnp.where(f, tt, last), (f, v)
-
-        _, (f, v) = lax.scan(step, jnp.full(S, -jnp.inf), (tsd.T, usd.T, actd.T))
-        fired_sorted = jnp.zeros(N + 1, bool).at[dense_idx.T.ravel()].set(f.ravel())[:N]
-        v_sorted = jnp.zeros(N + 1).at[dense_idx.T.ravel()].set(v.ravel())[:N]
-        return fired_sorted, v_sorted
+        fired_sorted, v_sorted = jnp.zeros(N + 1, bool), jnp.zeros(N + 1)
+        for di, tsd, usd, deadd in tabs:
+            actd = _gather(act_sorted, False, di) & ~deadd
+            _, (f, v) = lax.scan(step, jnp.full(di.shape[0], -jnp.inf), (tsd.T, usd.T, actd.T))
+            idx = di.T.ravel()                      # sentinel N collects the empty cells and is dropped
+            fired_sorted = fired_sorted.at[idx].set(f.ravel())
+            v_sorted = v_sorted.at[idx].set(v.ravel())
+        return fired_sorted[:N], v_sorted[:N]
 
     def body(_, state):
         active, fired = state
@@ -89,23 +108,26 @@ def _solve(key_sort, t, u, parent, valid, dead, vov, tau, p1, p2, L, rounds):
     active0 = valid & (parent < 0)
     active, fired = lax.fori_loop(0, rounds, body, (active0, jnp.zeros(N, bool)))
     f_s, v_s = scan_streams(active[o])
-    return f_s[inv] & active, v_s[inv]
+    return f_s[inv] & active, v_s[inv], n_long, max_long, max_len
 
 
 CT_SAFETY = 1.25  # candidate buffer per generation = CT_SAFETY x expected + 8 sigma + 256 (no power-of-two rounding);
                   # overflow is flagged and the chunk redone on the host, never lost silently
-STREAM_L = 8      # hits per (SiPM, pixel) stream in the first attempt; a longer stream (showers: up to ~2000 photons
-                  # on one SiPM) is flagged and only the stream-length bucket is enlarged (L = 16, 32, ...), on device
+STREAM_L = 8      # short-table stream length: (SiPM, pixel) streams up to L hits (nearly all of them)
+LONG_SL = 256     # first-attempt long table: streams longer than STREAM_L (showers) ...
+LONG_LL = 64      # ... and their length; on overflow the caller retries once with buckets of the measured count/length
+LONG_CELLS_MAX = 1 << 26  # long-table cells beyond which the chunk goes to the host path instead (memory guard)
 
 
-@partial(jax.jit, static_argnames=("NB", "M1", "M2", "M3", "Ntot", "L", "nx", "ny", "gens"))
+@partial(jax.jit, static_argnames=("NB", "M1", "M2", "M3", "Ntot", "L", "SL", "LL", "nx", "ny", "gens"))
 def device_sipm(slot, t, valid, key, cum, ncol, dead, q_ct, vov, tau, p1, p2, cap,
-                NB, M1, M2, M3, Ntot, L, nx, ny, gens=GENERATIONS):
+                NB, M1, M2, M3, Ntot, L, SL, LL, nx, ny, gens=GENERATIONS):
     """All of the SiPM stage in one jitted call, fixed shapes, no host round trip.
 
     slot [NB] SiPM slot per photon, t [NB], valid [NB]; cum: normalised cumulative photon map; ncol: its row length.
     Returns per hit (photons first, then cross-talk candidates): slot, time, root photon index, fired, charge, pe, and
-    an overflow flag (a candidate buffer filled up, or a pixel stream exceeded L): rerun those inputs on the host path.
+    an overflow flag (a candidate buffer filled up, or the long-stream table [SL, LL] was too small: retry with
+    long_buckets(r), else rerun those inputs on the host path).
     """
     kp, kx, ku, *kg = jax.random.split(key, 3 + gens)
     b_ = jnp.searchsorted(cum, jax.random.uniform(kp, (NB,)), side="right")
@@ -126,16 +148,32 @@ def device_sipm(slot, t, valid, key, cum, ncol, dead, q_ct, vov, tau, p1, p2, ca
     PAR, V_ = jnp.pad(PAR, (0, pad), constant_values=-1), jnp.pad(V_, (0, pad))
     U = jax.random.uniform(ku, (Ntot,))
     ksort = jnp.where(V_, S_ * NP2 + P_, jnp.iinfo(jnp.int64).max)
-    sk = jnp.sort(ksort)
-    run_start = jnp.concatenate([jnp.array([True]), sk[1:] != sk[:-1]])
-    first = lax.cummax(jnp.where(run_start, jnp.arange(Ntot), 0), axis=0)
-    stream_over = jnp.any(((jnp.arange(Ntot) - first) >= L) & (sk != jnp.iinfo(jnp.int64).max))
-    fired, v = _solve(ksort, T_, U, PAR, V_, dead, vov, tau, p1, p2, L, gens + 1)
+    fired, v, n_long, max_long, max_len = _solve(ksort, T_, U, PAR, V_, dead, vov, tau, p1, p2, L, SL, LL, gens + 1)
+    stream_over = (n_long > SL) | (max_long > LL)
     root = jnp.arange(Ntot)
     for _ in range(gens):
         root = jnp.where(PAR[root] >= 0, PAR[root], root)
     return {"slot": S_, "time": T_, "root": root, "fired": fired, "charge": cap * v, "pe": v / vov,
-            "overflow": over | stream_over, "candidate_overflow": over, "stream_overflow": stream_over}
+            "overflow": over | stream_over, "candidate_overflow": over, "stream_overflow": stream_over,
+            "n_long_streams": n_long, "max_long_stream": max_long, "max_stream": max_len}
+
+
+def long_buckets(r):
+    """Long-table shapes (SL, LL) that fit the measured long streams of a device_sipm result (two scalar syncs), or
+    None when that table would exceed LONG_CELLS_MAX (send the chunk to the host path)."""
+    SL = _bucket(int(r["n_long_streams"]), LONG_SL)
+    LL = _bucket(int(r["max_long_stream"]), LONG_LL)
+    return None if SL * LL > LONG_CELLS_MAX else (SL, LL)
+
+
+def run_device_sipm(args, cfg):
+    """device_sipm with the default long table, retried once with measured buckets on a stream overflow."""
+    r = device_sipm(*args, STREAM_L, LONG_SL, LONG_LL, cfg.n_pixels_x, cfg.n_pixels_y)
+    if bool(r["stream_overflow"]):
+        b = long_buckets(r)
+        if b is not None:
+            r = device_sipm(*args, STREAM_L, *b, cfg.n_pixels_x, cfg.n_pixels_y)
+    return r
 
 
 def device_buckets(n_photons, cfg):
@@ -186,11 +224,7 @@ def simulate(chan, time, photon, pmap, cfg, rng, key, t_end=1e5, max_photons=1 <
         args = (jnp.asarray(np.pad(slot_np.ravel(), (0, NB - n))), jnp.asarray(np.pad(time[a:b], (0, NB - n))),
                 jnp.arange(NB) < n, sub, cum, pmap.shape[1], dead_d, q_ct, cfg.overvoltage,
                 cfg.time_constant, cfg.p1, cfg.p2, cfg.capacitance, NB, *Ms, Ntot)
-        L = STREAM_L
-        r = device_sipm(*args, L, cfg.n_pixels_x, cfg.n_pixels_y)
-        while bool(r["stream_overflow"]) and L < 1024:
-            L *= 2
-            r = device_sipm(*args, L, cfg.n_pixels_x, cfg.n_pixels_y)
+        r = run_device_sipm(args, cfg)
         if bool(r["overflow"]):
             outs.append(SI.simulate(chan[a:b], time[a:b], photon[a:b], pmap, cfg, rng, t_end=t_end))
             continue
