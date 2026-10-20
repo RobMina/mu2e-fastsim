@@ -140,7 +140,7 @@ Comparisons go by truth-particle identity, never by time or distance pairing, an
 | V2 | coincidence clusters per generated event, per sector, at the data operating point (EX 3/8 PE/20 ns, T1/T2 4/8/10) | within 1 % |
 | V2 | EX per-layer pulse efficiency for tracks into EX; module-gap dead width D per gap (`exdenom`) | layer efficiency within 0.3 points; \|Delta D\| <= 0.1 mm (the method's own systematic) |
 | V3 non-muon (tier 1b) | non-muon share of visible energy per sector; non-muon coincidences per generated event | within 10 % relative; otherwise reported as a known deficit |
-| V4 GPU response against stock `CrvPhotons`/`CrvSiPMCharges` on identical CrvSteps | photoelectrons per SiPM per event; arrival-time distribution | mean within 0.5 %; time quantiles (10/50/90 %) within 0.2 ns |
+| V4 GPU response against stock `CrvPhotons`/`CrvSiPMCharges` on identical CrvSteps | photoelectrons per SiPM per event; arrival-time distribution | mean within 0.5 %; time quantiles (10/50/90 %) within 0.2 ns, measured as the horizontal CDF distance at each level (agreed 2026-10-19, below) |
 | Guard rail | fast-sim minus G4, for every V2 metric | <= 1/10 of the present MC-data difference in that metric |
 
 V2 is run with two candidate arms through the same stock digitisation (`crvfastsim/README.md`, "V2 arms"): the fast
@@ -152,6 +152,14 @@ dts files and tested on held-out reference shards; **V2 against full G4 passes i
 PE spectrum, clusters per generated event, per-bar rates). Known limits: non-muon showers keep the bar indices of
 their G4 event (they do not follow a geometry move); in the taggers, channels lit only by secondaries are about half
 of G4's (within the thresholds). The EX layer-efficiency and gap-width rows of V2 are not computed yet.
+
+**V4 time criterion (agreed 2026-10-19).** The timed quantity is the arrival time minus the start time of the step that
+made the photon (or charge). The lookup tables store that delay in whole nanoseconds, so its distribution is a
+staircase (almost all photons at x.00-x.07 ns) and a raw sample quantile jumps across a step: two samples of the same law
+gave medians 0.84 ns apart. The 0.2 ns limit is therefore applied to the horizontal distance between the two cumulative
+distributions at the reference arm's 10, 50 and 90 % times t_q: shift = -(F_fast(t_q) - F_ref(t_q)) / f(t_q), with the
+density f averaged over t_q +- 1 ns. For a smooth law this equals the quantile difference; a whole-ns offset is still
+caught. Raw quantile differences are reported alongside (`v4photons`, `v4sipm`).
 
 V4 status (2026-10-19): the photon stage (`crvfastsim/response/`) passes V4 against Offline's `MakeCrvPhotons` on the
 same steps (three reference shards); the time criterion is read as the horizontal CDF distance at each level (the tables
