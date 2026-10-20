@@ -5,13 +5,16 @@
 #   submit_vr4.sh --test                   # one job (shard 1)
 #   submit_vr4.sh [--first N] [--n M]      # M jobs from shard N (default 1..20)
 #   submit_vr4.sh --dry-run ...            # print the jobsub command only
+#   [--memory 12000MB] [--batch-events 100]  # for shards that went over the memory limit
 # Sizing (measured on mu2egpvm06): ~4.5 min and ~8 GB RSS peak per shard (2,500 events, batches of 250).
 BASE=/pnfs/mu2e/scratch/users/ram2aq/crvfs_vr4; IN=$BASE/in; OUT=$BASE/out_jax_v1
 D=/exp/mu2e/data/users/ram2aq/crv_fastsim; SIF=/exp/mu2e/data/users/ram2aq/container/mu2efastsim_cpu.sif
 HERE=$(cd "$(dirname "$0")" && pwd); FIRST=1; N=20; DRY=false; STAGE=false
 while [ $# -gt 0 ]; do case "$1" in
   --stage) STAGE=true; shift ;; --test) N=1; shift ;; --first) FIRST=$2; shift 2 ;; --n) N=$2; shift 2 ;;
-  --out) OUT=$2; shift 2 ;; --dry-run) DRY=true; shift ;; *) echo "unknown $1"; exit 2 ;; esac; done
+  --out) OUT=$2; shift 2 ;; --dry-run) DRY=true; shift ;; --memory) MEM=$2; shift 2 ;;
+  --batch-events) BEV=$2; shift 2 ;; *) echo "unknown $1"; exit 2 ;; esac; done
+MEM=${MEM:-8000MB}; BEV=${BEV:-}
 source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh >/dev/null 2>&1 || true
 muse setup ops >/dev/null 2>&1 || true
 command -v ifdh >/dev/null 2>&1 || setup ifdhc
@@ -35,9 +38,9 @@ rm -rf $T
 OUT_TOKEN=$(echo "$OUT" | sed 's|^/pnfs/mu2e|/mu2e|')
 CMD=(jobsub_submit -N "$N" -G mu2e --role=Analysis --expected-lifetime=2h
   --resource-provides=usage_model=DEDICATED,OPPORTUNISTIC --lines='+FERMIHTC_AutoRelease=True'
-  --memory=8000MB --disk=8000MB --need-storage-modify="$OUT_TOKEN"
+  --memory="$MEM" --disk=8000MB --need-storage-modify="$OUT_TOKEN"
   -e SIF_PNFS="$IN/mu2efastsim_cpu.sif" -e CODE_PNFS="$IN/$CODE_TGZ" -e SHARD_OFFSET=$((FIRST - 1))
-  "file://$HERE/grid_vr4.sh" "$OUT" "$IN")
+  "file://$HERE/grid_vr4.sh" "$OUT" "$IN" ${BEV:+--batch-events $BEV})
 echo "${CMD[@]}"
 $DRY && exit 0
 ifdh mkdir_p "$OUT"

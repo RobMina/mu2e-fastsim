@@ -94,7 +94,7 @@ def summarise(S):
 
 
 def run(steps, refs, calib, outdir, deviation=None, jax=False, max_events=None, seed=1, counters=None, emit=None,
-        noise=True):
+        noise=True, batch_events=None):
     """steps / refs: matching lists (same shards, same order) of CrvStep tables and stock CrvRecoTableDumper files."""
     import json
     import os
@@ -123,7 +123,8 @@ def run(steps, refs, calib, outdir, deviation=None, jax=False, max_events=None, 
         rng = np.random.default_rng([int(seed), i])
         t0 = time.perf_counter()
         ref_ev = V2.reftables.event_key(V2.reftables.read([rp], "events", ["run", "subrun", "event"]))
-        pulses, cl_type, cl_event = fast_arm(sp, cond, cfg, rng, tabs, pmap, geom, ccfg, max_events, key, T)
+        pulses, cl_type, cl_event = fast_arm(sp, cond, cfg, rng, tabs, pmap, geom, ccfg, max_events, key, T,
+                                             batch_events=batch_events)
         # the reference art job's events define the universe; the fast chain keys events as (subrun << 20) | event
         ref_short = ref_ev & ((1 << 40) - 1)
         if max_events:

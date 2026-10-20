@@ -738,7 +738,8 @@ def cmd_vr4(args):
     if not (args.refs and args.calib):
         raise SystemExit("reco-vr4 needs --refs and --calib (or --merge)")
     return vr4.run(args.inputs, args.refs, args.calib, args.outdir, deviation=args.deviation, jax=args.jax,
-                   max_events=args.max_events, seed=args.seed, emit=args.emit, noise=not args.no_noise)
+                   max_events=args.max_events, seed=args.seed, emit=args.emit, noise=not args.no_noise,
+                   batch_events=args.batch_events)
 
 
 def cmd_repro(args):
@@ -1035,6 +1036,8 @@ def add_reco_args(sp, name):
         sp.add_argument("--no-noise", action="store_true", help="no electronics noise in the fast waveforms")
         sp.add_argument("--emit", default=None, help="write the accumulators to this JSON (batchable)")
         sp.add_argument("--merge", action="store_true", help="inputs are --emit JSONs: sum and report")
+        sp.add_argument("--batch-events", type=int, default=None, help="events per fast-chain batch (JAX default 250; "
+                        "smaller bounds memory)")
     if name == "repro":
         sp.add_argument("--against", default=None, help="repro_<backend>.npz from another run (process or backend)")
     if name == "noise":
