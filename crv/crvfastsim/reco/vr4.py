@@ -19,25 +19,42 @@ from ..analyses import v2compare as V2
 THRESH = dict(V2.THRESH, pe_ratio_band=0.03)   # V-R4: response observables binned ratio within +-3 %
 
 
-def fast_arm(step_path, cond, cfg, rng, tabs, pmap, geom, ccfg, max_events=None, key=None, timers=None):
-    """Run the fast chain on one CrvStep table; returns flat pulses (ev, bar, seq, pe) and cluster sector types, plus
-    the event keys of the table."""
+def fast_arm(step_path, cond, cfg, rng, tabs, pmap, geom, ccfg, max_events=None, key=None, timers=None,
+             batch_events=None):
+    """Run the fast chain on one CrvStep table, in batches of whole events (bounds the memory of the JAX SiPM stage);
+    returns flat pulses (ev, bar, seq, pe), cluster sector types and cluster event keys."""
     steps = tables.read(step_path, "steps")
     parts = tables.read(step_path, "particles", tables.KEY + ["key", "pdg"])
+    evk = chain.event_key(steps).astype(np.int64)
+    uev = np.unique(evk)
     if max_events:
-        ev = np.sort(chain.event_key(steps).astype(np.int64))
-        keep_keys = np.unique(ev)[:int(max_events)]
-        m = np.isin(chain.event_key(steps), keep_keys)
-        steps = steps[m].reset_index(drop=True)
-    Q = chain.charges(steps, parts, geom, cond, cfg, rng, key=key, tabs=tabs, pmap=pmap, timers=timers)
-    D = chain.digis(Q, cond, cfg, rng, key=key, timers=timers)
-    W = chain.reco_waveforms(D, cond)
-    W["toff"] = cond.timeoffset[W["chan"]]       # DB time offsets: chain_jax adds them (the numpy path does itself)
-    pulses = _pulses(W, cond, cfg, timers)
-    outs, _ = chain.clusters(W, cond, geom, ccfg, cfg, timers=timers)
-    cl_type = np.concatenate([o["cl_type"] for o in outs]).astype(int) if outs else np.zeros(0, int)
-    cl_event = np.concatenate([o["cl_event"] for o in outs]).astype(np.int64) if outs else np.zeros(0, np.int64)
-    return pulses, cl_type, cl_event
+        uev = uev[:int(max_events)]
+    batch_events = batch_events or (250 if cfg.jax else len(uev))
+    P, T, E = [], [], []
+    for b in range(0, len(uev), batch_events):
+        sel = np.isin(evk, uev[b:b + batch_events])
+        st = steps[sel].reset_index(drop=True)
+        if key is not None:
+            import jax
+            key, sub = jax.random.split(key)
+        else:
+            sub = None
+        Q = chain.charges(st, parts, geom, cond, cfg, rng, key=sub, tabs=tabs, pmap=pmap, timers=timers)
+        if not len(Q["time"]):
+            continue
+        D = chain.digis(Q, cond, cfg, rng, key=sub, timers=timers)
+        if not len(D["chan"]):
+            continue
+        W = chain.reco_waveforms(D, cond)
+        W["toff"] = cond.timeoffset[W["chan"]]       # DB time offsets: chain_jax adds them (numpy path does itself)
+        P.append(_pulses(W, cond, cfg, timers))
+        outs, _ = chain.clusters(W, cond, geom, ccfg, cfg, timers=timers)
+        for o in outs:
+            T.append(np.asarray(o["cl_type"]).astype(int))
+            E.append(np.asarray(o["cl_event"]).astype(np.int64))
+    cat = lambda L, dt: np.concatenate(L) if L else np.zeros(0, dt)
+    pulses = {k: cat([p[k] for p in P], np.float64 if k == "pe" else np.int64) for k in ("ev", "bar", "seq", "pe")}
+    return pulses, cat(T, int), cat(E, np.int64)
 
 
 def _pulses(W, cond, cfg, timers):
