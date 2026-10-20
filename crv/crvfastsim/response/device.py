@@ -6,6 +6,8 @@ block (photons_jax.device_photons) are concatenated, masked by the SiPM status, 
 sipm_jax.device_sipm. Static buffers come from expected counts; any overflow flag makes the caller redo the event
 batch on the host path. Outputs stay on the device (the waveform stage takes them as they are).
 """
+from functools import partial
+
 import numpy as np
 
 import jax
@@ -13,6 +15,35 @@ import jax.numpy as jnp
 
 from . import photons, photons_jax, sipm_jax
 from .sipm import NPIX
+
+
+@jax.jit
+def _mask_label(step, chan, t, valid, status, ev_key):
+    """Status and time masks and the SiPM label in one kernel (eager gathers over the photon buffer abort the oneAPI
+    compiler: 7-wide vector in the index conversion)."""
+    valid = valid & ((status[chan] & 0b101) == 0) & (t <= 1e5)   # stock: no charges on status bits 0 / 2
+    return valid, ev_key[step] * 4096 + chan
+
+
+@partial(jax.jit, static_argnames=("NB",))
+def _compact_slots(valid, step, t, label, nv, NB):
+    """Compact to the first NB valid photons and give each SiPM label a dense slot (rank among the valid labels)."""
+    keep = jnp.nonzero(valid, size=NB, fill_value=0)[0]
+    vc = jnp.arange(NB) < nv
+    step, t, label = step[keep], t[keep], label[keep]
+    lab = jnp.where(vc, label, jnp.iinfo(jnp.int64).max)
+    order = jnp.argsort(lab)
+    ls = lab[order]
+    newl = jnp.concatenate([jnp.array([True]), ls[1:] != ls[:-1]])
+    rank_sorted = jnp.cumsum(newl) - 1
+    slot = jnp.zeros_like(rank_sorted).at[order].set(rank_sorted)
+    return step, t, label, vc, slot
+
+
+@jax.jit
+def _take_root(root, label, step, n):
+    root = jnp.minimum(root, n - 1)
+    return label[root], step[root]
 
 
 def response(steps, pdg, geom, rcfg, scfg, device_tables, deviation, status, ev_key, rng, key, pmap):
@@ -28,24 +59,11 @@ def response(steps, pdg, geom, rcfg, scfg, device_tables, deviation, status, ev_
     t = jnp.concatenate([p["time"] for p in parts])
     valid = jnp.concatenate([p["valid"] for p in parts])
     over = jnp.any(jnp.stack([p["overflow"] for p in parts]))
-    status_d = jnp.asarray(status)
-    valid &= (status_d[chan] & 0b101) == 0                     # stock: no charges on status bits 0 / 2
-    valid &= t <= 1e5
-    label = jnp.asarray(ev_key)[step] * 4096 + chan
+    valid, label = _mask_label(step, chan, t, valid, jnp.asarray(status), jnp.asarray(ev_key))
     # compact to the valid photons: the arrival buffers are padded 3-5x, and the SiPM stage's memory scales with its input
     nv = int(valid.sum())                                       # one scalar sync per batch
     NB, Ms, Ntot, q_ct = sipm_jax.device_buckets(nv, scfg)
-    keep = jnp.nonzero(valid, size=NB, fill_value=0)[0]
-    vc = jnp.arange(NB) < nv
-    step, t, label = step[keep], t[keep], label[keep]
-    # SiPM slots on device: dense rank of the label among valid photons
-    big = jnp.iinfo(jnp.int64).max
-    lab = jnp.where(vc, label, big)
-    order = jnp.argsort(lab)
-    ls = lab[order]
-    newl = jnp.concatenate([jnp.array([True]), ls[1:] != ls[:-1]])
-    rank_sorted = jnp.cumsum(newl) - 1
-    slot = jnp.zeros_like(rank_sorted).at[order].set(rank_sorted)
+    step, t, label, vc, slot = _compact_slots(valid, step, t, label, nv, NB)
     n = max(nv, 1)
     dead = np.zeros(NPIX * NPIX, bool)
     for x, y in scfg.inactive:
@@ -54,9 +72,9 @@ def response(steps, pdg, geom, rcfg, scfg, device_tables, deviation, status, ev_
             jnp.asarray(np.cumsum(pmap.ravel()) / pmap.sum()), pmap.shape[1], jnp.asarray(dead),
             q_ct, scfg.overvoltage, scfg.time_constant, scfg.p1, scfg.p2, scfg.capacitance, NB, *Ms, Ntot)
     r = sipm_jax.run_device_sipm(args, scfg)   # same key on the retry, so the result is the larger table's
-    root = jnp.minimum(r["root"], n - 1)
-    return {"fired": r["fired"], "label": label[root], "time": r["time"], "charge": r["charge"], "pe": r["pe"],
-            "step": step[root], "overflow": over | r["overflow"], "overflow_photons": over,
+    lab_r, step_r = _take_root(r["root"], label, step, n)
+    return {"fired": r["fired"], "label": lab_r, "time": r["time"], "charge": r["charge"], "pe": r["pe"],
+            "step": step_r, "overflow": over | r["overflow"], "overflow_photons": over,
             "overflow_sipm": r["overflow"], "n_long_streams": r["n_long_streams"],
             "max_long_stream": r["max_long_stream"], "max_stream": r["max_stream"]}
 
