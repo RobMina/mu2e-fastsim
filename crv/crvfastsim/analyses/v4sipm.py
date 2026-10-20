@@ -53,7 +53,12 @@ def run(inputs, outdir, deviation=None, max_steps=None, seed=1, counters=None, j
         import jax as _jax
         from .. import chain as CH
         from ..response import device as DV, photons_jax
-        cond = CH.Conditions.from_csv(calib, deviation)
+        if calib:
+            cond = CH.Conditions.from_csv(calib, deviation)
+        else:  # no CRVCalib CSV (e.g. Polaris): every channel live, yield deviations as given
+            nch = geom.nbars * 4
+            z = np.zeros(nch)
+            cond = CH.Conditions(z, z, z, z, np.zeros(nch, np.int64), np.zeros(nch, np.int64), np.zeros(nch, np.int64), dev)
         DT = {k: photons_jax.DeviceTable(v) for k, v in photons.load_tables(cfg).items()}
         a = time.perf_counter()
         rs = DV.response_batched(steps, pdg, geom, cfg, scfg, DT, cond.deviation, cond.status,
