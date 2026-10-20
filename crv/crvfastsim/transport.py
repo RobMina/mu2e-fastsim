@@ -117,7 +117,12 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None):
             pp = p0.copy()
             pp[down] = p_plane
             p_plane = np.where(keep_mu, pp, 0.0)
-    xs = crossings.crossings(o, d, geom)
+    # only tracks whose line enters the CRV bounding box can cross a bar (exact superset: one slab test per track)
+    lo_all, hi_all = (geom.center - geom.halflen).min(0), (geom.center + geom.halflen).max(0)
+    b_in, b_out = crossings.slab_crossings(o, d, lo_all[None, :], hi_all[None, :])
+    near = np.flatnonzero(b_out[:, 0] > np.maximum(b_in[:, 0], 0.0))
+    xs = crossings.crossings(o[near], d[near], geom)
+    xs[:, 0] = near[xs[:, 0].astype(np.int64)]
     it = xs[:, 0].astype(np.int64)
     bar = xs[:, 1].astype(np.int64)
     t_in, t_out, path = xs[:, 2], xs[:, 3], xs[:, 4]
