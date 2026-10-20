@@ -147,8 +147,40 @@ def reco_waveforms(D, cond):
 
 
 def clusters(W, cond, geom, counters_cfg, cfg, timers=None):
-    """Reco waveforms -> pulses -> coincidence clusters (reco.chain_jax.run); returns (list of cluster dicts, timers)."""
-    from .reco import chain_jax, coinc as C
+    """Reco waveforms -> pulses -> coincidence clusters. JAX: reco.chain_jax.run (pipelined pulses + coincidences);
+    numpy: reco.pulsefit.reconstruct then reco.coinc.find_event per event (the validated references; no JAX needed).
+    Returns (list of cluster dicts with cl_event, cl_type, cl_pe, ..., timers)."""
+    from .reco import coinc as C
+    timers = timers if timers is not None else {}
     G = C.sector_geom(geom, counters_cfg)
-    return chain_jax.run(W, G, cond.status, n_chunks=max(1, min(8, len(np.unique(W["ev"])) // 1000)),
-                         rounds=cfg.rounds, L=12, timers=timers if timers is not None else {})  # reco default window
+    if cfg.jax:
+        from .reco import chain_jax
+        return chain_jax.run(W, G, cond.status, n_chunks=max(1, min(8, len(np.unique(W["ev"])) // 1000)),
+                             rounds=cfg.rounds, L=12, timers=timers)
+    from .reco import pulsefit
+    t0 = _time.perf_counter()
+    rcfg = pulsefit.RecoConfig()
+    P = pulsefit.reconstruct(W["adc"], W["n"], W["start"], W["ped"], W["area"], W["height"], rcfg)
+    if rcfg.use_time_offset_db:  # CrvRecoPulsesFinder adds the DB time offset (offspill: TDC0time = 0)
+        P["time"] = P["time"] + cond.timeoffset[W["chan"][P["wf"]]] * rcfg.time_offset_scale
+    timers["pulses_s"] = timers.get("pulses_s", 0.0) + _time.perf_counter() - t0
+    wf = P["wf"]
+    ev = W["ev"][wf]
+    o = np.lexsort((P["seq"], wf, ev))
+    ev, wf = ev[o], wf[o]
+    idx = np.arange(len(ev)) - np.searchsorted(ev, ev)
+    bar, sipm, time, pe, seq = W["bar"][wf], W["sipm"][wf], P["time"][o], P["pe"][o], P["seq"][o]
+    t0 = _time.perf_counter()
+    cl = {k: [] for k in ("cl_event", "cl_type", "cl_pe", "cl_start", "cl_end", "cl_slope", "cl_avgtime", "cl_poscalc")}
+    ue, lo = np.unique(ev, return_index=True)
+    hi = np.r_[lo[1:], len(ev)]
+    for e, a, b in zip(ue, lo, hi):
+        p = dict(idx=idx[a:b], bar=bar[a:b], sipm=sipm[a:b], time=time[a:b], pe=pe[a:b], seq=seq[a:b])
+        for r in C.find_event(p, G, cond.status, C.FinderConfig()):
+            cl["cl_event"].append(e)
+            for k, src in (("cl_type", "sectortype"), ("cl_pe", "pe"), ("cl_start", "start"), ("cl_end", "end"),
+                           ("cl_slope", "slope"), ("cl_avgtime", "avgtime"), ("cl_poscalc", "poscalc")):
+                cl[k].append(r[src])
+    timers["coinc_s"] = timers.get("coinc_s", 0.0) + _time.perf_counter() - t0
+    timers["pulses"] = timers.get("pulses", 0) + len(ev)
+    return [{k: np.asarray(v) for k, v in cl.items()}], timers
