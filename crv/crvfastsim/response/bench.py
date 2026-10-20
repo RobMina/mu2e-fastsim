@@ -49,17 +49,17 @@ def synthetic_rows(rng, n, yield_per_mev=28610.0, edep=3.4, length=20.0):
             "n_ck_f": photons._per_substep(photons.cerenkov_per_mm(beta, np.ones(n), ck) * length, nsub, rng)}
 
 
-def run_sipm(n_sipms=200_000, mean_pe=130.0, repeat=3, seed=1, jax=True, numpy_sipms=20_000):
+def run_sipm(n_sipms=200_000, mean_pe=130.0, repeat=3, seed=1, jax=True, numpy_sipms=20_000, photon_map_path=None):
     """SiPM-charge stage on synthetic photons: n_sipms SiPMs with Poisson(mean_pe / 0.407) photons in a 5 ns spread,
     a synthetic photon map (random, peaked). ~130 photons per (step, SiPM) row as in the photon bench."""
     from . import sipm
     rng = np.random.default_rng(seed)
     cfg = sipm.SiPMConfig()
-    pmap = rng.random((40, 40)) ** 4
+    pmap = sipm.photon_map(photon_map_path) if photon_map_path else rng.random((40, 40)) ** 4
     n = rng.poisson(mean_pe, n_sipms)
     chan = np.repeat(np.arange(n_sipms), n)
     t = np.repeat(rng.uniform(0, 1e5, n_sipms), n) + rng.exponential(5.0, len(chan))
-    out = {"sipms": n_sipms, "photons": int(len(chan))}
+    out = {"sipms": n_sipms, "photons": int(len(chan)), "photon_map": photon_map_path or "synthetic"}
     if numpy_sipms:
         m = chan < numpy_sipms
         a = time.process_time()
@@ -87,11 +87,12 @@ def run_sipm(n_sipms=200_000, mean_pe=130.0, repeat=3, seed=1, jax=True, numpy_s
     return out
 
 
-def run(n_rows=200_000, prob=0.0015, repeat=3, seed=1, jax=True, numpy_rows=20_000, outdir=None):
+def run(n_rows=200_000, prob=0.0015, repeat=3, seed=1, jax=True, numpy_rows=20_000, outdir=None, table=None):
+    """table: a real lookup-table name (e.g. '3200_0', read from $CRVFS_LOOKUP_DIR) instead of the synthetic one."""
     rng = np.random.default_rng(seed)
-    L = synthetic_table(rng, prob)
+    L = lookup.load(table) if table else synthetic_table(rng, prob)
     rows = synthetic_rows(rng, n_rows)
-    out = {"rows": n_rows, "prob": prob, "substeps": int(rows["nsub"].sum())}
+    out = {"rows": n_rows, "table": table or f"synthetic p={prob}", "substeps": int(rows["nsub"].sum())}
     if numpy_rows:
         sub = {k: v[:numpy_rows] for k, v in rows.items()}
         a = time.process_time()
@@ -136,12 +137,15 @@ if __name__ == "__main__":
     p.add_argument("--outdir", default=None)
     p.add_argument("--stage", default="photons", choices=["photons", "sipm"])
     p.add_argument("--sipms", type=int, default=200_000)
+    p.add_argument("--table", default=None, help="real lookup table name (from $CRVFS_LOOKUP_DIR), default synthetic")
+    p.add_argument("--photon-map", default=None, help="real photonMap.root for --stage sipm, default synthetic")
     p.add_argument("--numpy-sipms", type=int, default=20_000)
     a = p.parse_args()
     if a.stage == "sipm":
-        r = run_sipm(a.sipms, repeat=a.repeat, seed=a.seed, jax=not a.no_jax, numpy_sipms=a.numpy_sipms)
+        r = run_sipm(a.sipms, repeat=a.repeat, seed=a.seed, jax=not a.no_jax, numpy_sipms=a.numpy_sipms,
+                     photon_map_path=a.photon_map)
         if a.outdir:
             os.makedirs(a.outdir, exist_ok=True)
             json.dump(r, open(os.path.join(a.outdir, "sipm_bench.json"), "w"), indent=2)
     else:
-        run(a.rows, a.prob, a.repeat, a.seed, not a.no_jax, a.numpy_rows, a.outdir)
+        run(a.rows, a.prob, a.repeat, a.seed, not a.no_jax, a.numpy_rows, a.outdir, a.table)
