@@ -200,3 +200,20 @@ def test_coinc_jax_per_sector_cuts():
         ref |= {(int(e), r["sectortype"], tuple(sorted(r["pulses"]))) for r in C.find_event(p, G, status, cfg)}
     assert len(ref) > 100
     assert CJ.cluster_keys(out) == ref
+
+
+def test_chain_jax_adds_db_time_offsets():
+    """chain_jax.run shifts pulse times by the per-waveform DB time offset W['toff'] (CrvRecoPulsesFinder
+    useTimeOffsetDB); with toff = 0 the clusters equal the run without it, and a uniform shift moves every cluster
+    time by the same amount."""
+    from crvfastsim.reco import chain_jax, synth
+    from crvfastsim.reco.cli import _coinc_geom
+    G = _coinc_geom()
+    W = synth.chain_events(150, G, seed=4)
+    status = np.zeros(4 * len(G.sector), np.int64)
+    cat = lambda outs, k: np.concatenate([o[k] for o in outs])
+    a, _ = chain_jax.run(W, G, status, n_chunks=1, batch=4096)
+    b, _ = chain_jax.run(dict(W, toff=np.zeros(len(W["ev"]))), G, status, n_chunks=1, batch=4096)
+    c, _ = chain_jax.run(dict(W, toff=np.full(len(W["ev"]), 7.5)), G, status, n_chunks=1, batch=4096)
+    assert np.array_equal(cat(a, "cl_start"), cat(b, "cl_start")) and len(cat(a, "cl_start")) > 50
+    assert np.allclose(cat(c, "cl_start") - cat(a, "cl_start"), 7.5)

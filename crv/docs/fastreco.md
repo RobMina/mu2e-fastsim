@@ -274,3 +274,33 @@ only (`git archive` of the umbrella and submodules at their checked-out commits,
   unpacked; `TRIM`, override with `TRIM=""`) and has a CPU-only variant (`VARIANT=cpu`) for FermiGrid, local runs, CI
   and CPU endpoints (veto plan E8; unpacked tree 0.8 GB). Trimmed vs full GPU image on Polaris: PBS 7763477 (pending);
   CPU image: building on mu2egpvm06.
+
+### V-R4: fast chain vs stock chain from the same CrvSteps (2026-10-20)
+
+`crvfastsim reco-vr4` (`reco/vr4.py`, batch `scripts/run_vr4.sh`): each G4 CrvStep table of the g4ref_v1 shards
+(`crvsteps.<shard>.root`, the steps of the G4 dts file) runs through the fast chain (`crvfastsim/chain.py`: fast photons
+-> fast SiPM charges -> fast waveforms/digis with noise and one TDC0 per (event, FEB) -> pulses -> coincidences;
+SiPM-status mask and CRVCalib constants from the reference job's conditions, Sim_best v1_5 run 1400) and is compared
+with the stock art chain on the same dts file (`ref.<shard>.root` of `scripts/run_v2_arms.sh`). Accumulators and checks
+are v2compare's, per sector group, with the V-R4 thresholds: PE per seq-0 pulse median within 2 %, binned PE spectrum
+ratio within +-3 % after 2 sigma, coincidence clusters per event within 1 % after 2 sigma, bar-rate chi2/ndf.
+
+**All 20 shards (50,008 events, numpy chain on mu2egpvm06, 30 s per shard): V-R4 passes in every group.**
+
+| group | seq-0 pulses stock / fast | PE median stock -> fast | binned PE ratio, max dev (raw) | clusters stock / fast |
+|---|---|---|---|---|
+| EX | 739,064 / 739,194 | 46.47 -> 46.48 (+0.02 %) | 0.9 % | 39,363 / 39,369 (+0.02 %) |
+| T1 | 75,078 / 75,134 | 76.25 -> 76.19 (-0.08 %) | 4.0 % (0 after 2 sigma) | 6,763 / 6,759 (-0.06 %) |
+| T2 | 197,640 / 197,622 | 47.69 -> 47.71 (+0.05 %) | 2.3 % | 9,424 / 9,422 (-0.02 %) |
+| taggers | 35,272 / 35,286 | 76.13 -> 76.16 (+0.04 %) | 5.5 % (0 after 2 sigma) | 3,624 / 3,628 (+0.11 %) |
+
+- Bar rates (events with a >= 5 PE pulse per bar, 576 bars): chi2/ndf 0.01, max pull 0.4. Both arms see the same
+  muon crossings, so the counts are strongly correlated and the independent-sample errors used for the 2-sigma
+  allowances are conservative; the raw differences above are the measure.
+- Not covered yet: the EX layer-efficiency row (needs extrapolated tracks, as in V2), the JAX chain end to end on these
+  shards (the JAX response and reco twins are each validated against their numpy references, V4 and V-R2/V-R3), and
+  response knobs away from the nominal point.
+- The JAX pulse path (`chain_jax.run`) now adds the per-channel DB time offset (`W["toff"]`), as `CrvRecoPulsesFinder`
+  and the numpy path do; earlier callers passed no offsets (test `test_chain_jax_adds_db_time_offsets`).
+- Cost of the numpy chain per event with CRV steps (mu2egpvm06, one core): photons 3.4, SiPM 1.6, waveforms 0.5,
+  pulses 1.7, coincidences 0.7 ms.

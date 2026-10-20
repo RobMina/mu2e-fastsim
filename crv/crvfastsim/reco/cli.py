@@ -728,6 +728,19 @@ def cmd_noise(args):
     _report(args, "noise", out)
 
 
+def cmd_vr4(args):
+    """V-R4: fast chain (fast response + fast reco) vs the stock chain from the same G4 CrvSteps, per sector group.
+    inputs: CrvStep tables (crvsteps.<shard>.root); --refs: the stock CrvRecoTableDumper files of the same shards.
+    --merge: inputs are --emit JSONs to sum."""
+    from . import vr4
+    if args.merge:
+        return vr4.report(vr4.merge(args.inputs), args.outdir)
+    if not (args.refs and args.calib):
+        raise SystemExit("reco-vr4 needs --refs and --calib (or --merge)")
+    return vr4.run(args.inputs, args.refs, args.calib, args.outdir, deviation=args.deviation, jax=args.jax,
+                   max_events=args.max_events, seed=args.seed, emit=args.emit, noise=not args.no_noise)
+
+
 def cmd_repro(args):
     """R5: seeded synthetic runs of the jitted stages. Same seed twice in one process (and against --against, a saved
     run of the same backend from another process) must be bit-identical; --against from another backend is compared
@@ -887,7 +900,7 @@ def _report(args, name, out):
     print(json.dumps(plots._clean(out), indent=1)[:4000])
 
 
-RECO_CMDS = ("vr2", "vr2stock", "vr2jax", "bench", "vr1", "vr3", "direct", "noise", "repro", "cost", "inspect")
+RECO_CMDS = ("vr2", "vr2stock", "vr2jax", "bench", "vr1", "vr3", "vr4", "direct", "noise", "repro", "cost", "inspect")
 
 
 def cmd_vr3(args):
@@ -1014,6 +1027,14 @@ def add_reco_args(sp, name):
                         help="FEB clock phase (TDC0) drawn uniform in [offset, offset+spread] ns per (event, FEB); "
                         "stock MC 12.5 (one period); a tuning knob for data")
         sp.add_argument("--feb-phase-offset", type=float, default=0.0)
+    if name == "vr4":
+        sp.add_argument("--refs", nargs="+", default=None, help="stock CrvRecoTableDumper files, same shards and order")
+        sp.add_argument("--calib", default=None, help="CRVCalib CSV of the reference job (crvdump/calib dump)")
+        sp.add_argument("--deviation", default=None, help="CRVPhoton yield deviations CSV")
+        sp.add_argument("--jax", action="store_true", help="JAX twins for the response, waveforms and reco")
+        sp.add_argument("--no-noise", action="store_true", help="no electronics noise in the fast waveforms")
+        sp.add_argument("--emit", default=None, help="write the accumulators to this JSON (batchable)")
+        sp.add_argument("--merge", action="store_true", help="inputs are --emit JSONs: sum and report")
     if name == "repro":
         sp.add_argument("--against", default=None, help="repro_<backend>.npz from another run (process or backend)")
     if name == "noise":
@@ -1028,7 +1049,7 @@ def add_reco_args(sp, name):
 
 def run_reco(name, a):
     a.outdir = a.outdir or f"plots/reco_{name}"
-    {"vr2": cmd_vr2, "vr2stock": lambda x: cmd_vr2(x, oracle=True), "vr1": cmd_vr1, "vr3": cmd_vr3, "direct": cmd_direct, "noise": cmd_noise, "repro": cmd_repro,
+    {"vr2": cmd_vr2, "vr2stock": lambda x: cmd_vr2(x, oracle=True), "vr1": cmd_vr1, "vr3": cmd_vr3, "direct": cmd_direct, "noise": cmd_noise, "repro": cmd_repro, "vr4": cmd_vr4,
      "cost": cmd_cost, "inspect": cmd_inspect, "vr2jax": lambda x: cmd_vr2(x, use_jax=True),
      "bench": cmd_bench}[name](a)
 

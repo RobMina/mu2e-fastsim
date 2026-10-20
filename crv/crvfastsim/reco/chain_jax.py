@@ -56,8 +56,10 @@ def _pulse_collect(outs, W, rows, cfg_np):
 
 
 def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.FinderConfig(), timers=None):
-    """W: waveforms sorted by (ev, channel, time) with pulsefit inputs and ev, bar, sipm. Returns per-chunk cluster
-    outputs (list) and timers (pulse_dispatch_s, pulse_collect_s, coinc_async_s, coinc_finish_s, wall_s)."""
+    """W: waveforms sorted by (ev, channel, time) with pulsefit inputs and ev, bar, sipm; optional "toff" (per-waveform
+    DB time offset [ns], added to the pulse times as CrvRecoPulsesFinder does with useTimeOffsetDB; offspill TDC0time
+    is 0). Returns per-chunk cluster outputs (list) and timers (pulse_dispatch_s, pulse_collect_s, coinc_async_s,
+    coinc_finish_s, wall_s)."""
     timers = timers if timers is not None else {}
     cfg_np = pulsefit.RecoConfig()
     cfg = dataclasses.replace(cfg_np, max_pulses=rounds)
@@ -78,6 +80,8 @@ def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.Finde
         if 0 <= k - 1 < len(chunks):
             t0 = tic()
             wrow, seq, pe, tm, nredo = _pulse_collect(pul.pop(k - 1), W, chunks[k - 1], cfg_np)
+            if "toff" in W and cfg_np.use_time_offset_db:
+                tm = tm + W["toff"][wrow] * cfg_np.time_offset_scale
             timers["pulse_numpy_redo"] = timers.get("pulse_numpy_redo", 0) + nredo
             ev = W["ev"][wrow]
             idx = np.arange(len(ev)) - np.searchsorted(ev, ev)
