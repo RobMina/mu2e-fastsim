@@ -742,6 +742,24 @@ def cmd_vr4(args):
                    batch_events=args.batch_events)
 
 
+def cmd_vr4eff(args):
+    """V-R4 EX layer efficiency on crvonly_v05 events. --prep NTUPLE OUT.npz (GPVM, light: tracks + stock pulses);
+    inputs = CrvStep table, --prep-npz, --calib, --emit (grid: fast chain); --merge JSONs."""
+    from . import vr4eff
+    if args.prep:
+        return vr4eff.prep(args.inputs[0], args.prep)
+    if args.merge:
+        out = vr4eff.merge(args.inputs)
+        plots.write_json(args.outdir, "vr4eff_stats.json", out)
+        for L, r in out["layers"].items():
+            print(f"EX layer {L}: den {r['den']}  eff stock {100*r['eff_stock']:.2f} fast {100*r['eff_fast']:.2f}  "
+                  f"diff {100*r['diff']:+.3f}+-{100*r['diff_err']:.3f} pts | {'ok' if r['pass'] else 'FAIL'}")
+        print(f"V-R4 EX layer efficiency {'PASS' if out['pass'] else 'FAIL'} over {out['files']} files")
+        return out
+    return vr4eff.run(args.inputs[0], args.prep_npz, args.calib, args.emit, deviation=args.deviation, jax=args.jax,
+                      seed=args.seed, batch_events=args.batch_events, max_events=args.max_events)
+
+
 def cmd_repro(args):
     """R5: seeded synthetic runs of the jitted stages. Same seed twice in one process (and against --against, a saved
     run of the same backend from another process) must be bit-identical; --against from another backend is compared
@@ -901,7 +919,7 @@ def _report(args, name, out):
     print(json.dumps(plots._clean(out), indent=1)[:4000])
 
 
-RECO_CMDS = ("vr2", "vr2stock", "vr2jax", "bench", "vr1", "vr3", "vr4", "direct", "noise", "repro", "cost", "inspect")
+RECO_CMDS = ("vr2", "vr2stock", "vr2jax", "bench", "vr1", "vr3", "vr4", "vr4eff", "direct", "noise", "repro", "cost", "inspect")
 
 
 def cmd_vr3(args):
@@ -1038,6 +1056,15 @@ def add_reco_args(sp, name):
         sp.add_argument("--merge", action="store_true", help="inputs are --emit JSONs: sum and report")
         sp.add_argument("--batch-events", type=int, default=None, help="events per fast-chain batch (JAX default 250; "
                         "smaller bounds memory)")
+    if name == "vr4eff":
+        sp.add_argument("--prep", default=None, help="with an EventNtuple input: write tracks + stock pulses here")
+        sp.add_argument("--prep-npz", default=None)
+        sp.add_argument("--calib", default=None)
+        sp.add_argument("--deviation", default=None)
+        sp.add_argument("--jax", action="store_true")
+        sp.add_argument("--emit", default=None)
+        sp.add_argument("--merge", action="store_true")
+        sp.add_argument("--batch-events", type=int, default=None)
     if name == "repro":
         sp.add_argument("--against", default=None, help="repro_<backend>.npz from another run (process or backend)")
     if name == "noise":
@@ -1052,7 +1079,7 @@ def add_reco_args(sp, name):
 
 def run_reco(name, a):
     a.outdir = a.outdir or f"plots/reco_{name}"
-    {"vr2": cmd_vr2, "vr2stock": lambda x: cmd_vr2(x, oracle=True), "vr1": cmd_vr1, "vr3": cmd_vr3, "direct": cmd_direct, "noise": cmd_noise, "repro": cmd_repro, "vr4": cmd_vr4,
+    {"vr2": cmd_vr2, "vr2stock": lambda x: cmd_vr2(x, oracle=True), "vr1": cmd_vr1, "vr3": cmd_vr3, "direct": cmd_direct, "noise": cmd_noise, "repro": cmd_repro, "vr4": cmd_vr4, "vr4eff": cmd_vr4eff,
      "cost": cmd_cost, "inspect": cmd_inspect, "vr2jax": lambda x: cmd_vr2(x, use_jax=True),
      "bench": cmd_bench}[name](a)
 

@@ -53,7 +53,8 @@ def fast_arm(step_path, cond, cfg, rng, tabs, pmap, geom, ccfg, max_events=None,
             T.append(np.asarray(o["cl_type"]).astype(int))
             E.append(np.asarray(o["cl_event"]).astype(np.int64))
     cat = lambda L, dt: np.concatenate(L) if L else np.zeros(0, dt)
-    pulses = {k: cat([p[k] for p in P], np.float64 if k == "pe" else np.int64) for k in ("ev", "bar", "seq", "pe")}
+    pulses = {k: cat([p[k] for p in P], np.float64 if k in ("pe", "time") else np.int64)
+              for k in ("ev", "bar", "seq", "pe", "time")}
     return pulses, cat(T, int), cat(E, np.int64)
 
 
@@ -62,8 +63,9 @@ def _pulses(W, cond, cfg, timers):
     equal these to fit tolerance, V-R2)."""
     from . import pulsefit
     P = pulsefit.reconstruct(W["adc"], W["n"], W["start"], W["ped"], W["area"], W["height"], pulsefit.RecoConfig())
+    t = P["time"] + (W["toff"][P["wf"]] if "toff" in W else 0.0)
     return {"ev": W["ev"][P["wf"]].astype(np.int64), "bar": W["bar"][P["wf"]].astype(np.int64), "seq": P["seq"],
-            "pe": P["pe"].astype(float)}
+            "pe": P["pe"].astype(float), "time": t}
 
 
 def fill_fast(A, pulses, cl_type, n_events, geom):
