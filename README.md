@@ -5,7 +5,7 @@ extracted (KPP, no-field) cosmic configuration. It pins compatible versions of t
 
 | Submodule | Repository | What it holds |
 |---|---|---|
-| `core/` | [mu2e-fastsim-core](https://github.com/RobMina/mu2e-fastsim-core) | detector-independent physics and infrastructure: energy loss and fluctuations matched to Geant4, materials, GDML world, crossings, transport helpers, table I/O, statistics, ALCF IRI job drivers |
+| `core/` | [mu2e-fastsim-core](https://github.com/RobMina/mu2e-fastsim-core) | detector-independent physics and infrastructure: energy loss and fluctuations matched to Geant4, materials, GDML world, crossings, transport helpers, table I/O, statistics, compute-endpoint drivers and the Mu2eBO kit |
 | `crv/` | [mu2e-crv-fastsim](https://github.com/RobMina/mu2e-crv-fastsim) | stage 1: CRV `CrvStep`s, GPU CRV response and fast CRV reconstruction |
 | `tracker/` | [mu2e-tracker-fastsim](https://github.com/RobMina/mu2e-tracker-fastsim) | stage 2: tracker `StrawGasStep`s and fast tracker reconstruction |
 
@@ -23,12 +23,30 @@ cd mu2e-fastsim
 git submodule update --remote --merge     # move every submodule to its branch head, then commit the new pins
 ```
 
-## Status (2026-10-20)
+## Status (2026-10-21)
 
 | stage | state | reproduce |
 |---|---|---|
 | CRV (`crv/`) | fast CrvStep transport, tier 1b secondaries, GPU CRV response and fast reco; validation in progress | `crv/README.md`, `crv/crvfastsim/README.md` |
 | tracker (`tracker/`) | fast primary-muon StrawGasSteps: world transport, support-structure loss, in-tracker multiple scattering in support and straws with a single-scattering tail, G4-matched eIon, G4 secondary library; fast reco not started | `tracker/README.md` ("Reproducing the validation on a Mu2e GPVM") |
+
+## Compute endpoints and the Mu2eBO kit
+
+| endpoint | submission | runtime | state | drivers |
+|---|---|---|---|---|
+| ALCF Polaris (A100) | IRI API | Eagle venv or the image | reference for the performance goals | `core/iri/` |
+| ALCF Aurora (Intel PVC) | SSH + PBS | venv with `jax[oneapi]` | CRV response runs; fast reco does not port yet | `core/aurora/` |
+| ESnet East (AWS) | IRI API v2 | OCI image as Kubernetes pods | CPU and T4 pods run | `core/iri/` (`IRI_FACILITY=esnet`) |
+| UVA Rivanna/Afton (A100, B200) | SSH + Slurm | the Apptainer image | in-image validation passes on A100 and B200 | `core/uva/` |
+
+`fastsimkit` (`core/mu2efastsim/endpoints/kit.py`) is the [Mu2eBO](https://github.com/Mu2e/Mu2eBO) native kit for
+the fast chain: it speaks the evaluator contract (`submit`/`status`/`results`/`check`/`describe`/`cancel`) and runs
+one point as one job through an endpoint adapter (`core/mu2efastsim/endpoints/`; Slurm over SSH today). Its tasks:
+`reco_bench` (synthetic reco chain throughput), `response_bench` (photon and SiPM throughput with the real lookup
+table and photon map) and `v4_response` (the V4 photon and SiPM checks with the real tables, pass flags and largest
+deviation as metrics); all three pass end to end on UVA. Tasks that use the Mu2e-internal tables fetch them per job
+into node memory and delete them at exit, and the kit refuses results without the job's deletion record. The veto
+objectives are in development. The `kits.toml` entry is in `core/uva/README.md`.
 
 ## Setup on a Mu2e GPVM
 
