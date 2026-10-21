@@ -121,8 +121,15 @@ def digis(Q, cond, cfg, rng, key=None, timers=None):
     if cfg.jax:
         import jax
         from .reco import waveform_jax
-        D = waveform_jax.synthesize(Q["chan"], Q["time"], Q["charge"], lut, wcfg, window=cfg.window,
-                                    rng_key=(key if cfg.noise else None))
+        from .reco.coinc_jax import is_oneapi
+        if is_oneapi():   # one call padded to the largest cluster needs tens of GiB: shape-bucketed calls instead
+            from .reco.cli import _synth_jax_bucketed
+            seed = int(rng.integers(2 ** 31))
+            D = _synth_jax_bucketed(waveform_jax, {"row": Q["chan"], "time": Q["time"], "charge": Q["charge"]},
+                                    lut, wcfg, noise=wcfg.noise if cfg.noise else 0.0, seed=seed, window=cfg.window)
+        else:
+            D = waveform_jax.synthesize(Q["chan"], Q["time"], Q["charge"], lut, wcfg, window=cfg.window,
+                                        rng_key=(key if cfg.noise else None))
     else:
         D = WF.synthesize(Q["chan"], Q["time"], Q["charge"], lut, wcfg, window=cfg.window,
                           rng=(rng if cfg.noise else None))
