@@ -183,7 +183,27 @@ def _photons_device(chunk, step, chan, key, edges, prob, cum, dsum, SB, AB, nb, 
     return step[rr], chan[rr], tt, valid, narr.sum() > AB
 
 
-def device_photons(dt, rows, key, row_step_offset=0):
+@jax.jit
+def _take_rows(step, chan, rr, narr, AB):
+    return step[rr], chan[rr], narr.sum() > AB
+
+
+def _photons_device_split(chunk, step, chan, key, edges, prob, cum, dsum, SB, AB, nb, const, offsets):
+    """_photons_device as two compiled kernels (no cross-kernel fusion); same keys, so the same photons."""
+    ka, kb = jax.random.split(key)
+    narr, gbin, t, ri = _kernel_a(chunk, ka, edges, prob, SB, nb, const, offsets)
+    tt, rr, valid = _kernel_b(narr, gbin, t, ri, kb, cum, dsum, AB)
+    s, c, over = _take_rows(step, chan, rr, narr, AB)
+    return s, c, tt, valid, over
+
+
+def _use_split():
+    """oneAPI (Intel PVC): the fused kernel aborts the SPIR-V compiler (integer of a width other than 8/16/32/64)."""
+    from ..reco.coinc_jax import is_oneapi
+    return is_oneapi()
+
+
+def device_photons(dt, rows, key, row_step_offset=0, split=None):
     """Photons of one iter_rows block, left on the device. The arrival buffer comes from the expected count (rows'
     photon numbers x mean arrival probability), not from a host sync. Returns dict of device arrays + overflow flag."""
     nsub = rows["nsub"]
@@ -200,6 +220,6 @@ def device_photons(dt, rows, key, row_step_offset=0):
     AB = _bucket(int(ARRIVAL_SAFETY * mu + 8 * np.sqrt(mu) + 4096))
     step = jnp.asarray(np.pad(rows["step"] + row_step_offset, (0, pad)))
     chan = jnp.asarray(np.pad(rows["chan"], (0, pad)))
-    s, c, t, v, over = _photons_device(chunk, step, chan, key, dt.edges, dt.prob, dt.cum, dt.dsum, SB, AB, dt.nb,
-                                       dt.const, dt.offsets)
+    fn = _photons_device_split if (_use_split() if split is None else split) else _photons_device
+    s, c, t, v, over = fn(chunk, step, chan, key, dt.edges, dt.prob, dt.cum, dt.dsum, SB, AB, dt.nb, dt.const, dt.offsets)
     return {"step": s, "chan": c, "time": t, "valid": v, "overflow": over}
