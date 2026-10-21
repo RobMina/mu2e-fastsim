@@ -36,7 +36,7 @@ CODE_TGZ=code_$(git -C $C/crv rev-parse --short HEAD).tgz
 tar -czf $T/$CODE_TGZ -C $T core crv VERSION && ($DRY || { ifdh rm $IN/$CODE_TGZ >/dev/null 2>&1; ifdh cp $T/$CODE_TGZ $IN/$CODE_TGZ; })
 rm -rf $T
 OUT_TOKEN=$(echo "$OUT" | sed 's|^/pnfs/mu2e|/mu2e|')
-CMD=(jobsub_submit -N "$N" -G mu2e --role=Analysis --expected-lifetime=2h
+CMD=(jobsub_submit -N "$N" -G mu2e --role=Analysis --expected-lifetime=4h
   --resource-provides=usage_model=DEDICATED,OPPORTUNISTIC --lines='+FERMIHTC_AutoRelease=True'
   --memory="$MEM" --disk=8000MB --need-storage-modify="$OUT_TOKEN"
   -e SIF_PNFS="$IN/mu2efastsim_cpu.sif" -e CODE_PNFS="$IN/$CODE_TGZ" -e SHARD_OFFSET=$((FIRST - 1))
