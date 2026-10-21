@@ -305,8 +305,8 @@ ratio within +-3 % after 2 sigma, coincidence clusters per event within 1 % afte
   pnfs scratch. 10.8 min and 5.7 GB per shard on a grid node; 3 of 20 shards exceeded 8 GB with 250-event batches
   and reran with `--batch-events 100` and 12 GB. Shard 1 on the grid equals the same shard run on a GPVM bit for bit.
   Memory-hungry runs go to the grid, not to the GPVMs.
-- Not covered yet: the EX layer-efficiency row (needs extrapolated tracks, as in V2) and response knobs away from the
-  nominal point.
+- Not covered yet: response knobs away from the nominal point. (The EX layer-efficiency row was covered on 2026-10-21:
+  next section.)
 - The JAX pulse path (`chain_jax.run`) now adds the per-channel DB time offset (`W["toff"]`), as `CrvRecoPulsesFinder`
   and the numpy path do; earlier callers passed no offsets (test `test_chain_jax_adds_db_time_offsets`).
 - Cost of the numpy chain per event with CRV steps (mu2egpvm06, one core): photons 3.4, SiPM 1.6, waveforms 0.5,
@@ -335,3 +335,35 @@ comes from the discordant tracks (same tracks in both arms).
 The ~81 % level is the track-pointing resolution (~24 mm at EX, as in `crvextrap exdenom`), common to both arms. The
 last file (`001400_00001023`) exceeded the 4 h lifetime and reruns with 50-event batches and 8 h (cluster 30742793).
 With this row, **V-R4 is complete**.
+
+### R3 driver and the response objective (2026-10-21)
+
+`crvfastsim reco-r3` (`reco/r3.py`): cached G4 CrvStep tables (e.g. `prod_as_tables/crvsteps.*.root`, pdg joined at
+load) replayed with fresh seeds until `--target` events with CRV steps (the R3 unit), through response (JAX: fused
+device response; numpy: `chain.charges`), waveforms, grouping, pulses + clusters and, with `--objective`, the
+`crvextrap crvresponse` histograms. One process per accelerator; `--merge` sums a node's JSONs (`--wall` = job wall)
+and gives the minutes for 1 M events. `--v05` applies the `crvonly_v05` digitisation settings. Pass 0 includes JIT.
+
+The objective path: `chain.clusters(..., detail=True)` (JAX: `chain_jax.run(keep_pulses=True, with_pos=True)`;
+`coinc_jax` returns `cl_pos` only when asked, so the default R1 path is unchanged) -> `reco/ntview.py` (crvpulses /
+crvcoincs jagged arrays with EventNtuple branch names, detector frame, `crvHitIndex` links) ->
+`crvextrap.crvline.fit_arrays` (CRV-only line) -> `crvextrap/analyses/crvresponse.py` (plan §2.3 observables; objective
+= mean over terms of shape chi2/ndf, plus a relative-tolerance term for the out-of-time rate). Tests: JAX positions
+equal `coinc.py` per cluster; `ntview` links and member sums.
+
+First numbers (CPU only; GPU pending):
+
+| run | events with steps | ms/event (response / digis / reco / view + objective) |
+|---|---|---|
+| numpy, mu2egpvm04, `crvsteps.001400_00000990` (v05 settings) | 22,573 | 6.61 / 0.64 / 4.21 / 0.16 |
+| JAX on the laptop CPU, g4ref shard 11, 3 passes | 6,633 | 12.4 / 3.2 / 6.5 / 0.12 |
+
+- **Host glue is negligible (A3).** On the GPVM numpy chain: pdg join 0.007, TDC0 draw 0.001, digi grouping 0.008,
+  `ntview` 0.010, line fit + histograms 0.15 ms/event. In the JAX CPU profile, Python outside JAX kernels is 1.5
+  ms/event of 22; the rest is kernel time and compilation. The R3 risk is device time (response, then reco), not glue.
+- **Objective closes fast vs stock on the same steps:** fast (numpy, v05 settings) vs the stock v05 EventNtuple of the
+  same dts file: objective 0.90 over 32 terms (largest term 1.7, tagger out-of-time rate); lines 19,863 vs 19,862 (z),
+  3,763 vs 3,763 (x). Fast JAX vs fast numpy on shard 11: 0.87.
+- **Stock v05 MC vs data (124336, 200 k events):** objective 178. Largest: out-of-time rates 8-19x lower in MC than in
+  data, `dt_cluster_T2` and `dt_cluster_T1` (data timing tails), `pe_layer_T1`. This is the MC-data gap the response
+  fit is meant to close; the term weights and the out-of-time definition need a review before BO uses it.

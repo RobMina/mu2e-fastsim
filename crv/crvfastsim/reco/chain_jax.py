@@ -55,11 +55,13 @@ def _pulse_collect(outs, W, rows, cfg_np):
     return rows[wf], seq, pe, tm, nredo
 
 
-def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.FinderConfig(), timers=None):
+def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.FinderConfig(), timers=None,
+        keep_pulses=False, with_pos=False):
     """W: waveforms sorted by (ev, channel, time) with pulsefit inputs and ev, bar, sipm; optional "toff" (per-waveform
     DB time offset [ns], added to the pulse times as CrvRecoPulsesFinder does with useTimeOffsetDB; offspill TDC0time
     is 0). Returns per-chunk cluster outputs (list) and timers (pulse_dispatch_s, pulse_collect_s, coinc_async_s,
-    coinc_finish_s, wall_s)."""
+    coinc_finish_s, wall_s). keep_pulses: each chunk output also carries its flat pulses under "pulses" (ev, idx, bar,
+    sipm, seq, pe, time; idx is the member index mem_idx refers to). with_pos: clusters carry cl_pos [n, 3]."""
     timers = timers if timers is not None else {}
     cfg_np = pulsefit.RecoConfig()
     cfg = dataclasses.replace(cfg_np, max_pulses=rounds)
@@ -68,7 +70,7 @@ def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.Finde
     edges = np.searchsorted(W["ev"], ue[np.linspace(0, len(ue), n_chunks + 1).astype(int)[:-1]])
     edges = np.r_[edges, len(W["ev"])]
     chunks = [np.arange(edges[i], edges[i + 1]) for i in range(n_chunks) if edges[i + 1] > edges[i]]
-    pul, coin, outs = {}, {}, []
+    pul, coin, outs, kept = {}, {}, [], {}
     tic = lambda: _time.perf_counter()
     add = lambda k, t0: timers.__setitem__(k, timers.get(k, 0.0) + tic() - t0)
     t_all = tic()
@@ -88,12 +90,16 @@ def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.Finde
             add("pulse_collect_s", t0)
             t0 = tic()
             coin[k - 1] = CJ.find_async(ev, idx, W["bar"][wrow], W["sipm"][wrow], tm, pe, seq, G, status, coinc_cfg,
-                                        params=params, tables=tables, timers=timers)
+                                        params=params, tables=tables, timers=timers, with_pos=with_pos)
             add("coinc_async_s", t0)
             timers["pulses"] = timers.get("pulses", 0) + len(ev)
+            if keep_pulses:
+                kept[k - 1] = dict(ev=ev, idx=idx, bar=W["bar"][wrow], sipm=W["sipm"][wrow], seq=seq, pe=pe, time=tm)
         if 0 <= k - 2 < len(chunks):
             t0 = tic()
             outs.append(CJ.finish(coin.pop(k - 2)))
+            if keep_pulses:
+                outs[-1]["pulses"] = kept.pop(k - 2)
             add("coinc_finish_s", t0)
     timers["wall_s"] = tic() - t_all
     timers["events"] = int(len(ue))

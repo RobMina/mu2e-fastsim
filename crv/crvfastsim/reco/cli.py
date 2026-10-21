@@ -799,6 +799,25 @@ def cmd_vr4(args):
                    batch_events=args.batch_events)
 
 
+def cmd_r3(args):
+    """R3: cached CrvStep tables replayed through the whole fast chain (+ objective histograms) to --target events with
+    CRV steps, timed per stage. --merge: inputs are per-process --emit JSONs (node totals; --wall = job wall [s])."""
+    from . import r3
+    if args.merge:
+        out = r3.merge(args.inputs, wall=args.wall)
+        st = out.pop("response_state", None)
+        plots.write_json(args.outdir, "r3_merge.json", out)
+        if st is not None:
+            json.dump(st, open(os.path.join(args.outdir, "r3_response_state.json"), "w"))
+        print(json.dumps(out, indent=1))
+        return out
+    if not args.calib:
+        raise SystemExit("reco-r3 needs --calib")
+    return r3.run(args.inputs, args.calib, deviation=args.deviation, target=args.target, jax=args.jax, seed=args.seed,
+                  batch_events=args.batch_events, emit=args.emit, objective=args.objective, noise=not args.no_noise,
+                  time_limit=args.time_limit, v05=args.v05)
+
+
 def cmd_vr4eff(args):
     """V-R4 EX layer efficiency on crvonly_v05 events. --prep NTUPLE OUT.npz (GPVM, light: tracks + stock pulses);
     inputs = CrvStep table, --prep-npz, --calib, --emit (grid: fast chain); --merge JSONs."""
@@ -976,7 +995,7 @@ def _report(args, name, out):
     print(json.dumps(plots._clean(out), indent=1)[:4000])
 
 
-RECO_CMDS = ("vr2", "vr2stock", "vr2jax", "bench", "vr1", "vr3", "vr4", "vr4eff", "direct", "noise", "repro", "cost", "inspect")
+RECO_CMDS = ("vr2", "vr2stock", "vr2jax", "bench", "vr1", "vr3", "vr4", "vr4eff", "r3", "direct", "noise", "repro", "cost", "inspect")
 
 
 def cmd_vr3(args):
@@ -1113,6 +1132,20 @@ def add_reco_args(sp, name):
         sp.add_argument("--merge", action="store_true", help="inputs are --emit JSONs: sum and report")
         sp.add_argument("--batch-events", type=int, default=None, help="events per fast-chain batch (JAX default 250; "
                         "smaller bounds memory)")
+    if name == "r3":
+        sp.add_argument("--calib", default=None, help="CRVCalib CSV (channel map, status, constants)")
+        sp.add_argument("--deviation", default=None, help="CRVPhoton yield deviations CSV")
+        sp.add_argument("--target", type=int, default=1_000_000, help="events with CRV steps to process (replays the cache)")
+        sp.add_argument("--jax", action="store_true", help="JAX: fused device response, JAX waveforms and reco")
+        sp.add_argument("--no-noise", action="store_true")
+        sp.add_argument("--objective", action="store_true", help="fill the crvextrap crvresponse histograms (needs "
+                        "crvextrap on PYTHONPATH)")
+        sp.add_argument("--batch-events", type=int, default=2000)
+        sp.add_argument("--time-limit", type=float, default=None, help="stop after this many seconds (wall)")
+        sp.add_argument("--v05", action="store_true", help="crvonly_v05 settings: one FEB phase per event, CRVTime net zero")
+        sp.add_argument("--emit", default=None, help="per-process JSON")
+        sp.add_argument("--merge", action="store_true", help="inputs are --emit JSONs of one node job")
+        sp.add_argument("--wall", type=float, default=None, help="--merge: the job wall [s] (default: slowest process)")
     if name == "vr4eff":
         sp.add_argument("--prep", default=None, help="with an EventNtuple input: write tracks + stock pulses here")
         sp.add_argument("--prep-npz", default=None)
@@ -1136,7 +1169,7 @@ def add_reco_args(sp, name):
 
 def run_reco(name, a):
     a.outdir = a.outdir or f"plots/reco_{name}"
-    {"vr2": cmd_vr2, "vr2stock": lambda x: cmd_vr2(x, oracle=True), "vr1": cmd_vr1, "vr3": cmd_vr3, "direct": cmd_direct, "noise": cmd_noise, "repro": cmd_repro, "vr4": cmd_vr4, "vr4eff": cmd_vr4eff,
+    {"vr2": cmd_vr2, "vr2stock": lambda x: cmd_vr2(x, oracle=True), "vr1": cmd_vr1, "vr3": cmd_vr3, "direct": cmd_direct, "noise": cmd_noise, "repro": cmd_repro, "vr4": cmd_vr4, "vr4eff": cmd_vr4eff, "r3": cmd_r3,
      "cost": cmd_cost, "inspect": cmd_inspect, "vr2jax": lambda x: cmd_vr2(x, use_jax=True),
      "bench": cmd_bench}[name](a)
 

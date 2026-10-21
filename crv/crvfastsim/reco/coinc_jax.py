@@ -344,6 +344,7 @@ def find_dense(valid, idx, side, layer, counter, x, y, t, pe, pos, cut, tp, cu, 
 
 SPLIT_MIN = 64   # only (event, sector type) groups larger than this are split into blocks
 OUT_KEYS = ("label", "root", "pe", "start", "end", "slope", "avgtime", "poscalc", "overflow")
+POS_KEYS = OUT_KEYS + ("pos",)   # with_pos: cluster positions too (transferred only when asked for)
 
 
 def _dispatch_tier(arr, P, K, batch):
@@ -358,17 +359,17 @@ def _dispatch_tier(arr, P, K, batch):
         d = find_dense(*[jnp.asarray(sl[k]) for k in ("valid", "idx", "side", "layer", "counter", "x", "y", "t",
                                                       "pe", "pos", "cut")], jnp.asarray(P.tp), jnp.asarray(P.cu), ld=P.ld, ns=P.ns,
                        uniform=P.uniform, K=K)
-        outs.append(({k: d[k] for k in OUT_KEYS}, n))
+        outs.append(({k: d[k] for k in POS_KEYS}, n))
     return outs
 
 
-def _collect_tier(outs):
-    host = [({k: np.asarray(v) for k, v in d.items()}, n) for d, n in outs]
-    return {k: np.concatenate([d[k][:n] for d, n in host]) for k in OUT_KEYS}
+def _collect_tier(outs, keys=OUT_KEYS):
+    host = [({k: np.asarray(d[k]) for k in keys}, n) for d, n in outs]
+    return {k: np.concatenate([d[k][:n] for d, n in host]) for k in keys}
 
 
-def _run_tier(arr, P, K, batch):
-    return _collect_tier(_dispatch_tier(arr, P, K, batch))
+def _run_tier(arr, P, K, batch, keys=OUT_KEYS):
+    return _collect_tier(_dispatch_tier(arr, P, K, batch), keys)
 
 
 def _kfor(P, K):
@@ -409,9 +410,10 @@ def _groups(tt, P, ev, idx, bar, sipm, time, pe, seq, G, tables, cfg, split, spl
 
 
 def find_async(ev, idx, bar, sipm, time, pe, seq, G, status, cfg=C.FinderConfig(), tiers=TIERS, split=True,
-               split_min=SPLIT_MIN, timers=None, params=None, tables=None):
+               split_min=SPLIT_MIN, timers=None, params=None, tables=None, with_pos=False):
     """Host preparation and kernel launch for all sector types and first-choice tiers; returns a handle for finish().
-    The GPU starts on the first type while the host prepares the next."""
+    The GPU starts on the first type while the host prepares the next. with_pos: finish() also returns cl_pos [n, 3]
+    (Mu2e frame, length axis from the timing when cl_poscalc)."""
     import time as _time
     tiers = backend_tiers(tiers)
     timers = timers if timers is not None else {}
@@ -437,7 +439,7 @@ def find_async(ev, idx, bar, sipm, time, pe, seq, G, status, cfg=C.FinderConfig(
             timers[f"groups_H{H}"] = timers.get(f"groups_H{H}", 0) + len(tg)
         jobs.append(dict(tt=tt, meta=True, gcols=gcols, gev_of=gr["gev_of"], gev=gev, tier=tier))
     return dict(jobs=jobs, cols=(ev, idx, bar, sipm, time, pe, seq), G=G, status=status, cfg=cfg, tiers=tiers,
-                tables=tables, timers=timers)
+                tables=tables, timers=timers, with_pos=with_pos)
 
 
 def finish(h, fallback=True):
@@ -445,6 +447,7 @@ def finish(h, fallback=True):
     groups beyond the last tier send their event to coinc.py. Returns cl_* per cluster and the member table mem_*."""
     import time as _time
     G, cfg, tiers, tables, timers = h["G"], h["cfg"], h["tiers"], h["tables"], h["timers"]
+    keys = POS_KEYS if h.get("with_pos") else OUT_KEYS
     rows, mems, redo = [], [], set()
     ncl = [0]
 
@@ -452,7 +455,7 @@ def finish(h, fallback=True):
         good = ~d["overflow"]
         g, r = np.nonzero(d["root"] & good[:, None])
         rows.append(dict(cl_event=to_ev(tg[g]), cl_type=np.full(len(g), tt), **{f"cl_{k}": d[k][g, r] for k in
-                         ("pe", "start", "end", "slope", "avgtime", "poscalc")}))
+                         ("pe", "start", "end", "slope", "avgtime", "poscalc") + (("pos",) if "pos" in d else ())}))
         cmap = np.full(d["root"].shape, -1, np.int64)
         cmap[g, r] = ncl[0] + np.arange(len(g))
         ncl[0] += len(g)
@@ -468,7 +471,7 @@ def finish(h, fallback=True):
             continue
         meta = next(m for m in h["jobs"] if m.get("meta") and m["tt"] == j["tt"])
         to_ev = (lambda b, m=meta: m["gev_of"][b]) if meta["gev_of"] is not None else (lambda b: b)
-        ov = take(_collect_tier(j["outs"]), j["arr"], j["tg"], j["tt"], to_ev)
+        ov = take(_collect_tier(j["outs"], keys), j["arr"], j["tg"], j["tt"], to_ev)
         if len(ov):
             pend.setdefault(j["tt"], []).append((j["ti"], ov))
     timers["kernel_s"] = timers.get("kernel_s", 0.0) + _time.perf_counter() - t0
@@ -481,7 +484,7 @@ def finish(h, fallback=True):
             while len(ov) and ti < len(tiers):
                 H, K, batch = tiers[ti]
                 arr, tg, _ = pack(*meta["gcols"], G, tables, tt, H, cfg, events=ov)
-                d = _run_tier(arr, P, _kfor(P, K), batch)
+                d = _run_tier(arr, P, _kfor(P, K), batch, keys)
                 timers[f"promoted_H{H}"] = timers.get(f"promoted_H{H}", 0) + len(tg)
                 ov = take(d, arr, tg, tt, to_ev)
                 ti += 1
@@ -495,6 +498,8 @@ def finish(h, fallback=True):
     out = {k: cat(rows, k) for k in ("cl_event", "cl_type", "cl_pe", "cl_start", "cl_end", "cl_slope", "cl_avgtime",
                                       "cl_poscalc")}
     out.update({k: cat(mems, k) for k in ("mem_cl", "mem_idx", "mem_event")})
+    if h.get("with_pos"):
+        out["cl_pos"] = np.concatenate([x["cl_pos"] for x in rows]) if rows else np.zeros((0, 3))
     redo = np.array(sorted(redo), np.int64)
     out["fallback_events"] = redo
     if fallback and len(redo):
@@ -519,7 +524,9 @@ def _replace_with_numpy(out, redo, ev, idx, bar, sipm, time, pe, seq, G, status,
     keep_cl = ~np.isin(out["cl_event"], redo)
     newid = np.cumsum(keep_cl) - 1
     km = keep_cl[out["mem_cl"].astype(np.int64)] if len(out["mem_cl"]) else np.zeros(0, bool)
-    for k in ("cl_event", "cl_type", "cl_pe", "cl_start", "cl_end", "cl_slope", "cl_avgtime", "cl_poscalc"):
+    pos = "cl_pos" in out
+    for k in ("cl_event", "cl_type", "cl_pe", "cl_start", "cl_end", "cl_slope", "cl_avgtime", "cl_poscalc") + \
+            (("cl_pos",) if pos else ()):
         out[k] = out[k][keep_cl]
     out["mem_cl"] = newid[out["mem_cl"].astype(np.int64)[km]]
     out["mem_idx"], out["mem_event"] = out["mem_idx"][km], out["mem_event"][km]
@@ -534,6 +541,8 @@ def _replace_with_numpy(out, redo, ev, idx, bar, sipm, time, pe, seq, G, status,
                            ("cl_slope", "slope"), ("cl_avgtime", "avgtime"), ("cl_poscalc", "poscalc")):
                 add[k].append(r[src])
             add["cl_event"].append(e)
+            if pos:
+                add.setdefault("cl_pos", []).append(np.asarray(r["pos"], float))
             add["mem_cl"] += [nxt] * len(r["pulses"])
             add["mem_idx"] += list(r["pulses"])
             add["mem_event"] += [e] * len(r["pulses"])

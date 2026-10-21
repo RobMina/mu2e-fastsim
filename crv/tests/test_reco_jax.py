@@ -233,3 +233,62 @@ def test_backend_tiers_skip_h32_on_oneapi(monkeypatch):
         platform, device_kind, client = "gpu", "Intel(R) Data Center GPU Max 1550", Client()
     monkeypatch.setattr(CJ.jax, "devices", lambda *a: [OneapiDevice()])
     assert CJ.is_oneapi() and CJ.backend_tiers(tiers) == (tiers[0], tiers[2])
+
+
+def test_chain_jax_detail_matches_numpy_finder():
+    """keep_pulses / with_pos (the EventNtuple view of the fast chain): per cluster, the JAX position equals coinc.py's
+    on the chain's own pulses, the default output is unchanged, and the member table points into the kept pulses."""
+    from crvfastsim.reco import chain_jax, synth
+    from crvfastsim.reco import coinc as C
+    from crvfastsim.reco import coinc_jax as CJ
+    from crvfastsim.reco.cli import _coinc_geom
+    G = _coinc_geom()
+    W = synth.chain_events(200, G, seed=7)
+    status = np.zeros(4 * len(G.sector), np.int64)
+    a, _ = chain_jax.run(W, G, status, n_chunks=2, batch=4096)
+    b, _ = chain_jax.run(W, G, status, n_chunks=2, batch=4096, keep_pulses=True, with_pos=True)
+    assert set().union(*[CJ.cluster_keys(o) for o in a]) == set().union(*[CJ.cluster_keys(o) for o in b])
+    n = 0
+    for o in b:
+        P = o["pulses"]
+        assert o["cl_pos"].shape == (len(o["cl_event"]), 3)
+        ref = {}
+        for e in np.unique(P["ev"]):
+            lo, hi = np.searchsorted(P["ev"], e), np.searchsorted(P["ev"], e, side="right")
+            p = {k: P[k][lo:hi] for k in ("idx", "bar", "sipm", "time", "pe", "seq")}
+            for r in C.find_event(p, G, status):
+                ref[(int(e), r["sectortype"], tuple(sorted(r["pulses"])))] = np.asarray(r["pos"])
+        oc = np.lexsort((o["mem_idx"], o["mem_cl"]))
+        for i in range(len(o["cl_event"])):
+            mem = tuple(sorted(o["mem_idx"][o["mem_cl"] == i].tolist()))
+            k = (int(o["cl_event"][i]), int(o["cl_type"][i]), mem)
+            assert np.allclose(o["cl_pos"][i], ref[k], atol=1e-6)
+            n += 1
+        assert len(oc) == len(o["mem_idx"])
+    assert n > 50
+
+
+def test_ntview_links_and_frame():
+    """reco.ntview: crvHitIndex points at the pulse's own cluster, nHits/PEsPerLayer are member sums, positions are
+    in the detector frame."""
+    from crvfastsim import geometry
+    from crvfastsim.reco import chain_jax, ntview, synth
+    from crvfastsim.reco.cli import _coinc_geom
+    import awkward as ak
+    G = _coinc_geom()
+    geom = geometry.from_offline_config(geometry.find_counters("Offline/Mu2eG4/geom/crv_counters_extracted_v04.txt"))
+    W = synth.chain_events(120, G, seed=5)
+    status = np.zeros(4 * len(G.sector), np.int64)
+    outs, _ = chain_jax.run(W, G, status, n_chunks=1, batch=4096, keep_pulses=True, with_pos=True)
+    c, p, ev = ntview.build(outs, geom)
+    assert len(c) == len(p) == len(ev)
+    hi = p["crvpulses.crvHitIndex"]
+    assert ak.all(hi < ak.num(c["crvcoincs.sectorType"]))
+    nh = ak.to_numpy(ak.flatten(c["crvcoincs.nHits"]))
+    cnt = ak.to_numpy(ak.flatten(ak.run_lengths(ak.sort(hi[hi >= 0]))))
+    assert nh.sum() == cnt.sum() == int(ak.sum(hi >= 0))
+    pe_l = ak.to_numpy(ak.flatten(ak.sum(c["crvcoincs.PEsPerLayer[4]"], axis=-1)))
+    assert np.allclose(pe_l, ak.to_numpy(ak.flatten(c["crvcoincs.PEs"])), rtol=1e-4)
+    y = ak.to_numpy(ak.flatten(p["crvpulses.pos.fCoordinates.fY"]))
+    z = ak.to_numpy(ak.flatten(p["crvpulses.pos.fCoordinates.fZ"]))
+    assert y.min() > 4000 and np.abs(z).max() < 5000

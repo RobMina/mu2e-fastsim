@@ -70,11 +70,13 @@ def event_key(df):
     return (df.subrun.to_numpy().astype(np.int64) << 20) | df.event.to_numpy().astype(np.int64)
 
 
-def charges(steps, parts, geom, cond, cfg, rng, key=None, tabs=None, pmap=None, timers=None):
-    """CrvSteps (+ particles for pdg) -> SiPM charges. Returns dict chan (label), time, charge, pe, photon (step row)."""
+def charges(steps, parts, geom, cond, cfg, rng, key=None, tabs=None, pmap=None, timers=None, pdg=None):
+    """CrvSteps (+ particles for pdg, or pdg per step given) -> SiPM charges. Returns dict chan (label), time, charge,
+    pe, photon (step row)."""
     timers = timers if timers is not None else {}
-    pdg = steps.merge(parts[tables.KEY + ["key", "pdg"]].rename(columns={"key": "sp"}), on=tables.KEY + ["sp"],
-                      how="left").pdg.fillna(0).to_numpy()
+    if pdg is None:
+        pdg = steps.merge(parts[tables.KEY + ["key", "pdg"]].rename(columns={"key": "sp"}), on=tables.KEY + ["sp"],
+                          how="left").pdg.fillna(0).to_numpy()
     t0 = _time.perf_counter()
     if cfg.jax:
         import jax
@@ -153,17 +155,18 @@ def reco_waveforms(D, cond):
             "ped": cond.pedestal[c0], "area": cond.pulsearea[c0], "height": cond.pulseheight[c0]}
 
 
-def clusters(W, cond, geom, counters_cfg, cfg, timers=None):
+def clusters(W, cond, geom, counters_cfg, cfg, timers=None, detail=False):
     """Reco waveforms -> pulses -> coincidence clusters. JAX: reco.chain_jax.run (pipelined pulses + coincidences);
     numpy: reco.pulsefit.reconstruct then reco.coinc.find_event per event (the validated references; no JAX needed).
-    Returns (list of cluster dicts with cl_event, cl_type, cl_pe, ..., timers)."""
+    Returns (list of cluster dicts with cl_event, cl_type, cl_pe, ..., timers). detail: each dict also carries cl_pos,
+    the member table (mem_cl, mem_idx, mem_event) and its flat pulses under "pulses" (reco.ntview input)."""
     from .reco import coinc as C
     timers = timers if timers is not None else {}
     G = C.sector_geom(geom, counters_cfg)
     if cfg.jax:
         from .reco import chain_jax
         return chain_jax.run(W, G, cond.status, n_chunks=max(1, min(8, len(np.unique(W["ev"])) // 1000)),
-                             rounds=cfg.rounds, L=12, timers=timers)
+                             rounds=cfg.rounds, L=12, timers=timers, keep_pulses=detail, with_pos=detail)
     from .reco import pulsefit
     t0 = _time.perf_counter()
     rcfg = pulsefit.RecoConfig()
@@ -179,6 +182,7 @@ def clusters(W, cond, geom, counters_cfg, cfg, timers=None):
     bar, sipm, time, pe, seq = W["bar"][wf], W["sipm"][wf], P["time"][o], P["pe"][o], P["seq"][o]
     t0 = _time.perf_counter()
     cl = {k: [] for k in ("cl_event", "cl_type", "cl_pe", "cl_start", "cl_end", "cl_slope", "cl_avgtime", "cl_poscalc")}
+    mem = {"cl_pos": [], "mem_cl": [], "mem_idx": [], "mem_event": []}
     ue, lo = np.unique(ev, return_index=True)
     hi = np.r_[lo[1:], len(ev)]
     for e, a, b in zip(ue, lo, hi):
@@ -188,6 +192,17 @@ def clusters(W, cond, geom, counters_cfg, cfg, timers=None):
             for k, src in (("cl_type", "sectortype"), ("cl_pe", "pe"), ("cl_start", "start"), ("cl_end", "end"),
                            ("cl_slope", "slope"), ("cl_avgtime", "avgtime"), ("cl_poscalc", "poscalc")):
                 cl[k].append(r[src])
+            if detail:
+                n = len(cl["cl_event"]) - 1
+                mem["cl_pos"].append(np.asarray(r["pos"], float))
+                mem["mem_cl"] += [n] * len(r["pulses"])
+                mem["mem_idx"] += list(r["pulses"])
+                mem["mem_event"] += [e] * len(r["pulses"])
     timers["coinc_s"] = timers.get("coinc_s", 0.0) + _time.perf_counter() - t0
     timers["pulses"] = timers.get("pulses", 0) + len(ev)
-    return [{k: np.asarray(v) for k, v in cl.items()}], timers
+    out = {k: np.asarray(v) for k, v in cl.items()}
+    if detail:
+        out.update({k: np.asarray(v, np.int64) for k, v in mem.items() if k != "cl_pos"})
+        out["cl_pos"] = np.asarray(mem["cl_pos"], float).reshape(-1, 3)
+        out["pulses"] = dict(ev=ev, idx=idx, bar=bar, sipm=sipm, seq=seq, pe=pe, time=time)
+    return [out], timers
