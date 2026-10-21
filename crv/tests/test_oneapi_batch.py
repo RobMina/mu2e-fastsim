@@ -38,3 +38,17 @@ def test_bucketed_noise_statistics():
     (na, sa), (nb, sb) = out["batched"], out["bucketed"]
     assert abs(na - nb) <= 0.002 * na
     assert abs(sb / sa - 1) < 0.05 and abs(sa / cfg.noise - 1) < 0.1 and abs(sb / cfg.noise - 1) < 0.1
+
+
+def test_bucketed_matches_synthesize_with_label_tdc0():
+    """chain.digis on oneAPI: bucketed synthesis with SiPM labels and a callable TDC0 == waveform_jax.synthesize."""
+    from crvfastsim.reco import cli, waveform, waveform_jax as WJ
+    cfg = waveform.WaveformConfig()
+    Q, tdc0 = _inputs(200, 9)
+    labels = Q["row"] * 7 + 4096                                   # sparse labels, as event key * 4096 + channel
+    lut = lambda lab: tdc0[(lab - 4096) // 7]
+    a = WJ.synthesize(labels, Q["time"], Q["charge"], lut, cfg)
+    b = cli._synth_jax_bucketed(WJ, {"row": labels, "time": Q["time"], "charge": Q["charge"]}, lut, cfg,
+                                budget_gib=0.01)
+    for k in ("chan", "start", "starttdc", "adc"):
+        assert np.array_equal(a[k], b[k]), k

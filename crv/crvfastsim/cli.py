@@ -28,6 +28,7 @@ ANALYSES = {
     "v4photons": (v4photons.run, "V4 photon stage: fast photons (response/photons.py) vs stock MakeCrvPhotons (PyROOT) on the same steps"),
     "v4sipm":    (v4sipm.run,    "V4 SiPM-charge stage: fast charges (response/sipm.py) vs stock MakeCrvSiPMCharges (PyROOT) on the same photons"),
     "runchain":  (runchain.run,  "the whole fast chain on CRY gen tables (no art): steps, charges, digis, pulses, clusters; stage costs"),
+    "runchain-merge": (runchain.merge, "combine runchain --emit files of a node job: totals and accepted events per node-hour"),
     "g4muon":    (g4muon.run,    "G4 reference CrvStep tables cut to the primary muon's own steps (tier-1a-like V2 arm)"),
 }
 
@@ -82,6 +83,10 @@ def build_parser():
             sp.add_argument("--max-events", type=int, default=None, help="first N generated events per file")
             sp.add_argument("--seed", type=int, default=1)
             sp.add_argument("--compare", nargs="+", default=None, metavar="ROOT", help="stock CrvRecoTableDumper files")
+            sp.add_argument("--reco-cpu", action="store_true", help="with --jax: pulses and coincidences on the JAX CPU backend")
+            sp.add_argument("--emit", default=None, metavar="JSON", help="per-shard accumulators for runchain-merge")
+        if name == "runchain-merge":
+            sp.add_argument("--wall", type=float, default=None, help="node job wall time [s] (default: slowest shard)")
         if name == "v4sipm":
             sp.add_argument("--deviation", default=None, metavar="CSV", help="CRVPhoton table, channel,deviation (default 0)")
             sp.add_argument("--max-steps", type=int, default=None, help="first N steps only")

@@ -540,11 +540,12 @@ def _p2(x):
     return (2 ** np.ceil(np.log2(np.maximum(x, 1)))).astype(np.int64)
 
 
-def _synth_jax_bucketed(WJ, Q, tdc0_row, cfg, noise=0.0, seed=0, budget_gib=SYNTH_BUCKET_GIB):
+def _synth_jax_bucketed(WJ, Q, tdc0_row, cfg, noise=0.0, seed=0, budget_gib=SYNTH_BUCKET_GIB, window=(0.0, 1e5)):
     """_synth_jax_batched with charge clusters grouped by padded shape (power-of-two charges Q and samples L) and each
     call filled up to budget_gib: few calls (~30 for a 22 k-event MC file instead of ~300) and no batch padded to the
     largest cluster. Used on oneAPI, where many small noisy calls intermittently abort the Level Zero runtime
-    (urEventWait on an internal event). Noise off: same digis as _synth_jax_batched; noise on: another noise draw."""
+    (urEventWait on an internal event), and by the chain (chain.digis). Noise off: same digis as _synth_jax_batched;
+    noise on: another noise draw. tdc0_row: array indexed by row, or a callable of the row labels (WJ.pack)."""
     import jax
     rows, t, q = Q["row"], Q["time"], Q["charge"]
     cid = waveform.charge_clusters(rows, t, cfg)
@@ -578,7 +579,7 @@ def _synth_jax_bucketed(WJ, Q, tdc0_row, cfg, noise=0.0, seed=0, budget_gib=SYNT
                                                  cfg.single_pe_precision, noise, cfg.min_voltage, cfg.adc_conversion,
                                                  cfg.pedestal, cfg.min_adc, cfg.max_adc)
             parts.append(WJ.to_digis(pk, np.asarray(wave)[:n], np.asarray(adc)[:n], np.asarray(st)[:n],
-                                     np.asarray(last)[:n], cfg, (0.0, 1e5)))
+                                     np.asarray(last)[:n], cfg, window))
             call += 1
     out = {k: np.concatenate([p[k] for p in parts]) for k in parts[0]}
     o = np.lexsort((out["start"], out["chan"]))                         # the row order of _synth_jax_batched
