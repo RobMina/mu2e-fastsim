@@ -4,7 +4,7 @@
 FROM python:3.13-slim-bookworm
 
 ARG VARIANT=cpu
-ARG TRIM="nvidia-nccl-cu12 nvidia-nvshmem-cu12 nvidia-cufft-cu12"
+ARG TRIM="nvidia-nccl-cu12 nvidia-nvshmem-cu12"   # cuFFT and cuDNN stay: the JAX CUDA plugin checks both at start
 LABEL org.opencontainers.image.title="mu2e-fastsim" \
       org.opencontainers.image.source="https://github.com/RobMina/mu2e-fastsim" \
       org.opencontainers.image.description="Mu2e Geant4-free fast simulation and CRV fast reconstruction (JAX); public code and public Offline files only" \
@@ -20,7 +20,7 @@ ENV MU2E_SEARCH_PATH=/opt/offline_data \
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/* && python -m pip install -q --upgrade pip
 
-# Dependencies first (cached layer); gpu: pip CUDA 12 wheels minus the ones no kernel loads (cuDNN must stay)
+# Dependencies first (cached layer); gpu: pip CUDA 12 wheels minus the ones no kernel loads
 RUN if [ "$VARIANT" = cpu ]; then \
       python -m pip install -q "jax==0.11.2" numpy pandas awkward uproot matplotlib pytest; \
     else \
