@@ -89,20 +89,69 @@ def to_host(r):
     return out
 
 
-BATCH_STEPS = 10000  # steps per device batch (whole events); ~4 M photons on synthetic muons, ~7 GiB in device_sipm
+BATCH_STEPS = 10000  # fallback steps per batch when the device reports no memory (CPU); ~7 GiB on synthetic muons
+SIPM_BYTES_PER_SLOT = 920   # device_sipm memory per photon slot (compiled memory_analysis, 1-8 M photons)
+PHOTONS_PER_YIELD_MEV = 0.0030  # photons at the SiPMs per (yield x visible MeV), G4 shard 11 and synthetic alike
+MEM_FRACTION = 0.6          # share of the free device memory a batch may plan for (photon buffers, tables, headroom)
+HOLD_BYTES_PER_PHOTON = 100  # kept outputs (keep=True): ~47 B per slot, slots padded up to 2x the photons
+MIN_PHOTONS, MAX_PHOTONS = 1 << 18, 1 << 24
+BUDGET_MARGIN = 0.85        # plan for 85 % of the power-of-two slot count: a batch slightly above it would double NB
+
+
+def photon_budget(device=None, fraction=MEM_FRACTION, reserve=0):
+    """Photons per batch that fit the device's free memory less `reserve` bytes, or None when the device reports no
+    memory (CPU: use BATCH_STEPS). device_sipm rounds its slots up to a power of two, so the budget is the largest
+    power of two that fits."""
+    d = device or jax.devices()[0]
+    ms = d.memory_stats() if hasattr(d, "memory_stats") else None
+    if not ms or "bytes_limit" not in ms:
+        return None
+    free = ms["bytes_limit"] - ms.get("bytes_in_use", 0) - reserve
+    n = int(fraction * free / SIPM_BYTES_PER_SLOT)
+    return int(BUDGET_MARGIN * min(MAX_PHOTONS, max(MIN_PHOTONS, 1 << max(n, 1).bit_length() - 1)))
+
+
+def batch_bounds(ev_key, est, budget=None, batch_steps=BATCH_STEPS):
+    """Step-index cuts [a, b) of whole events (ev_key sorted): at most batch_steps steps and, when budget is given, at
+    most budget estimated photons per batch (the memory cap). An event over either limit gets a batch of its own.
+    The step limit stays because larger batches run slower per photon (EAF 1g.10gb, 2026-10-21)."""
+    starts = np.flatnonzero(np.r_[True, ev_key[1:] != ev_key[:-1]])
+    ends = np.r_[starts[1:], len(ev_key)]
+    if not len(starts):
+        return []
+    cum_st = ends.astype(float)                               # steps up to the end of each event
+    cum_ph = np.cumsum(np.add.reduceat(est, starts)) if budget is not None else None
+    out, i = [], 0
+    while i < len(starts):
+        j = int(np.searchsorted(cum_st, starts[i] + batch_steps, side="right"))
+        if cum_ph is not None:
+            base = cum_ph[i - 1] if i else 0.0
+            j = min(j, int(np.searchsorted(cum_ph, base + budget, side="right")))
+        j = max(j, i + 1)
+        out.append((int(starts[i]), int(ends[j - 1])))
+        i = j
+    return out
+
+
+def photon_estimate(steps, geom, rcfg):
+    """Expected photons at the SiPMs per step from the step's visible energy and its sector's yield (host, cheap)."""
+    Y = np.array([rcfg.sectors[n].yield_per_mev for n in geom.sector_names])
+    return PHOTONS_PER_YIELD_MEV * Y[geom.sector[steps.bar.to_numpy().astype(np.int64)]] * steps.edep.to_numpy()
 
 
 def response_batched(steps, pdg, geom, rcfg, scfg, device_tables, deviation, status, ev_key, rng, key, pmap,
-                     batch_steps=BATCH_STEPS, keep=True):
+                     batch_steps=BATCH_STEPS, keep=True, budget="auto"):
     """response() over batches of whole events (steps sorted by event key). Returns a list of device dicts; keep=False
-    waits for each batch and keeps only its overflow flag (timing without holding every batch on the device)."""
+    waits for each batch and keeps only its overflow flag (timing without holding every batch on the device).
+    budget: photons per batch; "auto" sizes it from the device's free memory (photon_budget), None cuts by batch_steps."""
     o = np.argsort(ev_key, kind="stable")
     steps, pdg, ev_key = steps.iloc[o].reset_index(drop=True), np.asarray(pdg)[o], np.asarray(ev_key)[o]
-    starts = np.flatnonzero(np.r_[True, ev_key[1:] != ev_key[:-1]])
-    outs, a = [], 0
-    while a < len(ev_key):
-        j = int(np.searchsorted(starts, a + batch_steps, side="right")) - 1
-        b = int(starts[j]) if j < len(starts) and starts[j] > a else len(ev_key)
+    est = photon_estimate(steps, geom, rcfg)
+    if budget == "auto":   # outputs kept on the device for the caller take memory from every later batch
+        budget = photon_budget(reserve=int(keep) * HOLD_BYTES_PER_PHOTON * float(est.sum()))
+    bounds = batch_bounds(ev_key, est, budget, batch_steps)
+    outs = []
+    for a, b in bounds:
         key, sub = jax.random.split(key)
         r = response(steps.iloc[a:b].reset_index(drop=True), pdg[a:b], geom, rcfg, scfg, device_tables, deviation,
                      status, ev_key[a:b], rng, sub, pmap)
@@ -110,12 +159,11 @@ def response_batched(steps, pdg, geom, rcfg, scfg, device_tables, deviation, sta
             jax.block_until_ready(r["charge"])
             outs.append({"overflow": r["overflow"]})
             del r
-            a = b
             continue
         r["step"] = r["step"] + a          # step rows of the event-sorted table
         r["order"] = o                     # host map back to the caller's step rows
+        r["budget"] = budget
         outs.append(r)
-        a = b
     return outs
 
 
