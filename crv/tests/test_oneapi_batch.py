@@ -52,3 +52,23 @@ def test_bucketed_matches_synthesize_with_label_tdc0():
                                 budget_gib=0.01)
     for k in ("chan", "start", "starttdc", "adc"):
         assert np.array_equal(a[k], b[k]), k
+
+
+def test_chain_digis_bucketed_default_equals_unbucketed():
+    """chain.digis now uses bucketed synthesis on every JAX backend (one padded call ran out of memory on A100s):
+    noise off, the default and ChainConfig(unbucketed_synth=True) give the same digis."""
+    from types import SimpleNamespace
+    from crvfastsim import chain
+    Q, _ = _inputs(300, 11)
+    labels = Q["row"] * 7 + 4096
+    QC = {"chan": labels, "time": Q["time"], "charge": Q["charge"]}
+    cond = SimpleNamespace()
+    orig = chain.tdc0_per_feb
+    chain.tdc0_per_feb = lambda lab, cond, rng: (np.arange(len(lab)) % 12).astype(np.float64)
+    try:
+        a = chain.digis(QC, cond, chain.ChainConfig(jax=True, noise=False), np.random.default_rng(1))
+        b = chain.digis(QC, cond, chain.ChainConfig(jax=True, noise=False, unbucketed_synth=True), np.random.default_rng(1))
+    finally:
+        chain.tdc0_per_feb = orig
+    for k in a:
+        assert np.array_equal(np.asarray(a[k]), np.asarray(b[k])), k

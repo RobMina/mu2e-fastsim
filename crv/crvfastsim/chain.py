@@ -64,6 +64,7 @@ class ChainConfig:
     noise: bool = True                  # electronics noise in the waveforms
     jax: bool = False                   # JAX twins for photons, SiPM charges and waveforms
     rounds: int = 3                     # pulse-reco kernel rounds (chain_jax)
+    unbucketed_synth: bool = False      # JAX waveforms in one call padded to the largest cluster (OOM on real files)
 
 
 def event_key(df):
@@ -124,8 +125,8 @@ def digis(Q, cond, cfg, rng, key=None, timers=None):
         import jax
         from .reco import waveform_jax
         from .reco.coinc_jax import is_oneapi
-        if is_oneapi():   # one call padded to the largest cluster needs tens of GiB: shape-bucketed calls instead
-            from .reco.cli import _synth_jax_bucketed
+        if is_oneapi() or not cfg.unbucketed_synth:   # one call padded to the largest cluster needs tens of GiB
+            from .reco.cli import _synth_jax_bucketed    # (OOM on A100-40/80, UVA jobs 21732754-60): bucketed calls
             seed = int(rng.integers(2 ** 31))
             D = _synth_jax_bucketed(waveform_jax, {"row": Q["chan"], "time": Q["time"], "charge": Q["charge"]},
                                     lut, wcfg, noise=wcfg.noise if cfg.noise else 0.0, seed=seed, window=cfg.window)
