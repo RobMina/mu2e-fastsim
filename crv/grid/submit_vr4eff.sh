@@ -13,8 +13,8 @@ HERE=$(cd "$(dirname "$0")" && pwd); FIRST=1; N=20; DRY=false; STAGE=false
 while [ $# -gt 0 ]; do case "$1" in
   --stage) STAGE=true; shift ;; --test) N=1; shift ;; --first) FIRST=$2; shift 2 ;; --n) N=$2; shift 2 ;;
   --out) OUT=$2; shift 2 ;; --dry-run) DRY=true; shift ;; --memory) MEM=$2; shift 2 ;;
-  --batch-events) BEV=$2; shift 2 ;; *) echo "unknown $1"; exit 2 ;; esac; done
-MEM=${MEM:-12000MB}; BEV=${BEV:-100}
+  --batch-events) BEV=$2; shift 2 ;; --lifetime) LIFE=$2; shift 2 ;; *) echo "unknown $1"; exit 2 ;; esac; done
+LIFE=${LIFE:-4h}; MEM=${MEM:-12000MB}; BEV=${BEV:-100}
 source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh >/dev/null 2>&1 || true
 muse setup ops >/dev/null 2>&1 || true
 command -v ifdh >/dev/null 2>&1 || setup ifdhc
@@ -36,7 +36,7 @@ CODE_TGZ=code_$(git -C $C/crv rev-parse --short HEAD).tgz
 tar -czf $T/$CODE_TGZ -C $T core crv VERSION && ($DRY || { ifdh rm $IN/$CODE_TGZ >/dev/null 2>&1; ifdh cp $T/$CODE_TGZ $IN/$CODE_TGZ; })
 rm -rf $T
 OUT_TOKEN=$(echo "$OUT" | sed 's|^/pnfs/mu2e|/mu2e|')
-CMD=(jobsub_submit -N "$N" -G mu2e --role=Analysis --expected-lifetime=4h
+CMD=(jobsub_submit -N "$N" -G mu2e --role=Analysis --expected-lifetime="$LIFE"
   --resource-provides=usage_model=DEDICATED,OPPORTUNISTIC --lines='+FERMIHTC_AutoRelease=True'
   --memory="$MEM" --disk=8000MB --need-storage-modify="$OUT_TOKEN"
   -e SIF_PNFS="$IN/mu2efastsim_cpu.sif" -e CODE_PNFS="$IN/$CODE_TGZ" -e SHARD_OFFSET=$((FIRST - 1))

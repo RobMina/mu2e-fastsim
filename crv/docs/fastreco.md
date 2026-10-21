@@ -311,3 +311,27 @@ ratio within +-3 % after 2 sigma, coincidence clusters per event within 1 % afte
   and the numpy path do; earlier callers passed no offsets (test `test_chain_jax_adds_db_time_offsets`).
 - Cost of the numpy chain per event with CRV steps (mu2egpvm06, one core): photons 3.4, SiPM 1.6, waveforms 0.5,
   pulses 1.7, coincidences 0.7 ms.
+
+### V-R4 EX layer efficiency with extrapolated tracks (2026-10-21)
+
+`crvfastsim reco-vr4eff` (`reco/vr4eff.py`; grid `grid/submit_vr4eff.sh`, `grid/grid_vr4eff.sh`). Sample: the
+timing-fixed CRV-only MC `crvonly_v05` (CRVTime applied with scale -1, one FEB clock phase per event). Stock arm: its
+EventNtuples (`crvpulses`); fast arm: the fast chain (JAX, CPU container on the grid) on the CrvSteps of the same
+production dts files, with the v05 settings (common FEB phase, CRVTime net zero). Both arms use the same quality
+KKLine track per event (`crvextrap.trackline`, from the tracker; detector frame converted to Mu2e coordinates). Per EX
+layer: denominator = tracks crossing the layer inside the sector; hit = seq-0 pulse >= 8 PE within one counter of the
+predicted one and within +-20 ns of the track time + 54.4 ns (offset measured on the stock arm). The difference error
+comes from the discordant tracks (same tracks in both arms).
+
+**19 of 20 files (prep on a GPVM in seconds; fast arm 1.6-4 h per file on the grid): passes in every layer.**
+
+| EX layer | tracks | stock | fast | fast - stock (points) |
+|---|---|---|---|---|
+| 0 | 2,179 | 81.28 % | 81.41 % | +0.14 +- 0.10 |
+| 1 | 2,170 | 81.24 % | 81.20 % | -0.05 +- 0.05 |
+| 2 | 2,154 | 80.97 % | 81.01 % | +0.05 +- 0.08 |
+| 3 | 2,140 | 80.05 % | 80.09 % | +0.05 +- 0.08 |
+
+The ~81 % level is the track-pointing resolution (~24 mm at EX, as in `crvextrap exdenom`), common to both arms. The
+last file (`001400_00001023`) exceeded the 4 h lifetime and reruns with 50-event batches and 8 h (cluster 30742793).
+With this row, **V-R4 is complete**.
