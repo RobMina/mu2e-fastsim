@@ -1,8 +1,8 @@
 #!/bin/bash
 # Build the mu2e-fastsim Apptainer image from this umbrella checkout on a machine with apptainer and user namespaces
 # (a Mu2e GPVM, or a Polaris compute node). usage: [VARIANT=gpu|cpu] [TRIM="..."] container/build.sh [out.sif]
-# gpu (default): JAX + pip CUDA 12 wheels without TRIM (default: NCCL, NVSHMEM, cuFFT, which no kernel loads; cuDNN
-# must stay: the JAX CUDA plugin refuses to start without it and falls back to CPU); TRIM="" keeps them all. cpu: CPU-only JAX (FermiGrid, local, CI). ~2-10 min.
+# gpu (default): JAX + pip CUDA 12 wheels without TRIM (default: NCCL, NVSHMEM, which no kernel loads; cuDNN and cuFFT
+# must stay: the JAX CUDA plugin checks both at start and falls back to CPU without them); TRIM="" keeps them all. cpu: CPU-only JAX (FermiGrid, local, CI). ~2-10 min.
 # Only git-tracked files of the umbrella and its submodules go in (a `git archive` export at the checked-out commits):
 # never site.env, work areas, build products or Mu2e-internal data.
 set -e
@@ -19,7 +19,7 @@ done
 { git log -1 --format="umbrella %H"; git submodule status; } > "$STAGE/VERSION"
 cat "$STAGE/VERSION"; du -sh "$STAGE"
 VARIANT=${VARIANT:-gpu}
-TRIM=${TRIM-nvidia-nccl-cu12 nvidia-nvshmem-cu12 nvidia-cufft-cu12}
+TRIM=${TRIM-nvidia-nccl-cu12 nvidia-nvshmem-cu12}   # cuFFT and cuDNN stay: the JAX CUDA plugin checks both at start
 [ "$VARIANT" = cpu ] && TRIM=""
 echo "variant $VARIANT trim [$TRIM]" | tee -a "$STAGE/VERSION"
 sed -e "s#^    \. /opt/mu2e-fastsim#    $STAGE /opt/mu2e-fastsim#" -e "s#@VARIANT@#$VARIANT#g" -e "s#@TRIM@#$TRIM#g" \
