@@ -472,7 +472,7 @@ def cmd_vr1(args):
     t0 = time.perf_counter()
     if getattr(args, "jax", False):
         from . import waveform_jax
-        out = _synth_jax_batched(waveform_jax, Q, tdc0_row, cfg, args.batch_clusters,
+        out = _synth_jax_batched(waveform_jax, Q, tdc0_row, cfg, _batch_rows(args.batch_clusters),
                                  noise=cfg.noise if noise else 0.0, seed=args.seed)
     else:
         out = waveform.synthesize(Q["row"], Q["time"], Q["charge"], tdc0_row, cfg,
@@ -505,6 +505,16 @@ def cmd_vr1(args):
                 "volt_abs_diff_quantiles_mV": (1e3 * np.quantile(dv, [0.5, 0.9, 0.99])).tolist() if dv.size else None,
                 "events": int(len(events)), "wall_s": dt, "us_per_event": 1e6 * dt / max(len(events), 1)})
     _report(args, "vr1", res)
+
+
+ONEAPI_MIN_BATCH_ROWS = 50000
+
+
+def _batch_rows(batch):
+    """oneAPI (Intel PVC): >= ONEAPI_MIN_BATCH_ROWS SiPM rows per call; many small noisy calls intermittently abort the
+    Level Zero runtime (urEventWait on an internal event)."""
+    from .coinc_jax import is_oneapi
+    return max(batch, ONEAPI_MIN_BATCH_ROWS) if is_oneapi() else batch
 
 
 def _synth_jax_batched(WJ, Q, tdc0_row, cfg, batch, noise=0.0, seed=0):
