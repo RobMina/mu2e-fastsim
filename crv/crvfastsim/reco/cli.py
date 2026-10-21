@@ -472,8 +472,12 @@ def cmd_vr1(args):
     t0 = time.perf_counter()
     if getattr(args, "jax", False):
         from . import waveform_jax
-        out = _synth_jax_batched(waveform_jax, Q, tdc0_row, cfg, _batch_rows(args.batch_clusters),
-                                 noise=cfg.noise if noise else 0.0, seed=args.seed)
+        from .coinc_jax import is_oneapi
+        if is_oneapi():
+            out = _synth_jax_bucketed(waveform_jax, Q, tdc0_row, cfg, noise=cfg.noise if noise else 0.0, seed=args.seed)
+        else:
+            out = _synth_jax_batched(waveform_jax, Q, tdc0_row, cfg, args.batch_clusters,
+                                     noise=cfg.noise if noise else 0.0, seed=args.seed)
     else:
         out = waveform.synthesize(Q["row"], Q["time"], Q["charge"], tdc0_row, cfg,
                                   rng=np.random.default_rng(args.seed) if noise else None)
@@ -507,16 +511,6 @@ def cmd_vr1(args):
     _report(args, "vr1", res)
 
 
-ONEAPI_MIN_BATCH_ROWS = 50000
-
-
-def _batch_rows(batch):
-    """oneAPI (Intel PVC): >= ONEAPI_MIN_BATCH_ROWS SiPM rows per call; many small noisy calls intermittently abort the
-    Level Zero runtime (urEventWait on an internal event)."""
-    from .coinc_jax import is_oneapi
-    return max(batch, ONEAPI_MIN_BATCH_ROWS) if is_oneapi() else batch
-
-
 def _synth_jax_batched(WJ, Q, tdc0_row, cfg, batch, noise=0.0, seed=0):
     """JAX synthesis over all SiPM rows in fixed-shape batches of whole rows (Q and L padded per batch to a bucket)."""
     rows = Q["row"]
@@ -537,6 +531,58 @@ def _synth_jax_batched(WJ, Q, tdc0_row, cfg, batch, noise=0.0, seed=0):
         parts.append(WJ.to_digis(pk, np.asarray(wave), np.asarray(adc), np.asarray(st), np.asarray(last), cfg,
                                  (0.0, 1e5)))
     return {k: np.concatenate([p[k] for p in parts]) for k in parts[0]}
+
+
+SYNTH_BUCKET_GIB = 2.0   # [C, Q, L] float64 per call in _synth_jax_bucketed
+
+
+def _p2(x):
+    return (2 ** np.ceil(np.log2(np.maximum(x, 1)))).astype(np.int64)
+
+
+def _synth_jax_bucketed(WJ, Q, tdc0_row, cfg, noise=0.0, seed=0, budget_gib=SYNTH_BUCKET_GIB):
+    """_synth_jax_batched with charge clusters grouped by padded shape (power-of-two charges Q and samples L) and each
+    call filled up to budget_gib: few calls (~30 for a 22 k-event MC file instead of ~300) and no batch padded to the
+    largest cluster. Used on oneAPI, where many small noisy calls intermittently abort the Level Zero runtime
+    (urEventWait on an internal event). Noise off: same digis as _synth_jax_batched; noise on: another noise draw."""
+    import jax
+    rows, t, q = Q["row"], Q["time"], Q["charge"]
+    cid = waveform.charge_clusters(rows, t, cfg)
+    if not len(cid):
+        return _synth_jax_batched(WJ, Q, tdc0_row, cfg, 1, noise, seed)
+    C = int(cid[-1]) + 1
+    first = np.flatnonzero(np.r_[True, cid[1:] != cid[:-1]])
+    nq = np.bincount(cid, minlength=C)
+    span = np.zeros(C)
+    np.maximum.at(span, cid, t - t[first][cid])
+    need = (np.ceil(span + cfg.single_pe_max_time) / pulsefit.PERIOD).astype(np.int64) + 2 + cfg.samples_zs  # as WJ.pack
+    qb, lb = _p2(nq), _p2(need)
+    shape = qb * (1 << 20) + lb
+    root = jax.random.PRNGKey(seed)
+    parts, call = [], 0
+    for k in np.unique(shape):
+        Qb, Lb = int(k >> 20), int(k & ((1 << 20) - 1))
+        cl = np.flatnonzero(shape == k)                                 # clusters in their original order
+        cap = int(2 ** np.floor(np.log2(max(1, budget_gib * 2 ** 30 / (Qb * Lb * 8)))))
+        for a in range(0, len(cl), cap):
+            c = cl[a:a + cap]
+            lens = nq[c]
+            idx = np.repeat(first[c] - np.r_[0, np.cumsum(lens)[:-1]], lens) + np.arange(lens.sum())
+            pk = WJ.pack(rows[idx], t[idx], q[idx], tdc0_row, cfg, Q=Qb, L=Lb)
+            n = len(pk["n"])
+            Cp = cap if n == cap else int(_p2(n))                       # few distinct shapes -> few compiles
+            pad = lambda x, v: np.concatenate([x, np.full((Cp - n,) + x.shape[1:], v, x.dtype)]) if Cp > n else x
+            wave, adc, st, last = WJ.synth_dense(pad(pk["T"], 0.0), pad(pk["W"], 0.0), pad(pk["n"], 0),
+                                                 pad(pk["t_start"], 0.0), pad(pk["keep"], False), pk["tmpl"],
+                                                 jax.random.fold_in(root, call), Lb, cfg.samples_zs,
+                                                 cfg.single_pe_precision, noise, cfg.min_voltage, cfg.adc_conversion,
+                                                 cfg.pedestal, cfg.min_adc, cfg.max_adc)
+            parts.append(WJ.to_digis(pk, np.asarray(wave)[:n], np.asarray(adc)[:n], np.asarray(st)[:n],
+                                     np.asarray(last)[:n], cfg, (0.0, 1e5)))
+            call += 1
+    out = {k: np.concatenate([p[k] for p in parts]) for k in parts[0]}
+    o = np.lexsort((out["start"], out["chan"]))                         # the row order of _synth_jax_batched
+    return {k: v[o] for k, v in out.items()}
 
 
 def _direct_inputs(paths, max_events):
