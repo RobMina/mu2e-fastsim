@@ -24,3 +24,23 @@ live time (`gen.*`: GenParticles, CosmicLivetime, GenEventCount), so the fast si
 The test job logs 108 `Mu2eG4TrackingAction::swapTrajectory: SimParticle is not found` warnings from one event with a
 very large shower (SimParticleCollection size limit; event 8204). Present in the stock chain too; the event keeps its
 steps but not every MCTrajectory.
+
+## crygen_v1: CRY-only gen tables (2026-10-22)
+
+The 20 `g4ref_v1` shards (1 M generated) are too few for production `chain_point` points (fastsimkit), and production
+`dts.mu2e.CosmicCRYExtracted.MDC2025as` keeps only accepted events (no gen stream). The fast sim needs every generated
+event's CRY primary, so `crygen_v1` reruns the generator alone: same `ExtractedCRY.fcl`, run 1400, but only
+`generate`, `genCounter` and `cosmicTimeOffset`; `g4run` stays on a path behind a filter that rejects every event,
+because `CosmicCRY` needs the `WorldG4` geometry that `g4run` adds at beginRun (without it: "Failed to retrieve detector
+element of type WorldG4"). Output: the `gen` stream only (GenParticles, CosmicLivetime, GenEventCount), dumped later
+with `art/CrvFastSim/fcl/dump_gen.fcl`.
+
+| file | role |
+|---|---|
+| `fcl/gen_only_extracted.fcl` | generator-only configuration |
+| `grid_crygen.sh` | worker: shard k = subrun 1001+k, baseSeed 20263000+k; skips if the output exists |
+| `submit_crygen.sh [--test\|--cluster -N n]` | stages the fcl, submits (lifetime 3 h, 2.5 GB memory, 2 GB disk); default 100 x 1 M |
+
+GPVM check (20,000 events, mu2egpvm03): 42 s CPU (2.1 ms per generated event), VmHWM 1.9 GB (Geant4 initialisation),
+1.7 MB of art; dumped table has the g4ref_v1 columns, 20,105 primaries for 20,000 events, live time 0.308 s
+(15.4 us per event, g4ref_v1 15.59 us).
