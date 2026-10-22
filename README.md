@@ -23,12 +23,12 @@ cd mu2e-fastsim
 git submodule update --remote --merge     # move every submodule to its branch head, then commit the new pins
 ```
 
-## Status (2026-10-21)
+## Status (2026-10-22)
 
 | stage | state | reproduce |
 |---|---|---|
-| CRV (`crv/`) | fast CrvStep transport, tier 1b secondaries, GPU CRV response and fast reco; validation in progress | `crv/README.md`, `crv/crvfastsim/README.md` |
-| tracker (`tracker/`) | fast primary-muon StrawGasSteps: world transport, support-structure loss, in-tracker multiple scattering in support and straws with a single-scattering tail, G4-matched eIon, G4 secondary library; fast reco not started | `tracker/README.md` ("Reproducing the validation on a Mu2e GPVM") |
+| CRV (`crv/`) | fast CrvStep transport, tier 1b secondaries, fused GPU CRV response (photons -> SiPM charges) and fast reco (waveforms, pulses, coincidences) in numpy and JAX. The fast chain (fast response + fast reco) reproduces the stock chain from the same G4 steps (V-R4), and the CRV response objective has the same minimum from both paths on a knob scan (V-R5). One objective point on 1 M cached events runs end to end in 10.4 min on one Polaris node (R3). An out-of-time background model resampled from KPP data (`crvfastsim.reco.background`) is the newest piece | `crv/README.md`, `crv/crvfastsim/README.md`, `crv/docs/fastreco.md` |
+| tracker (`tracker/`) | fast primary-muon StrawGasSteps: world transport, support-structure loss, in-tracker multiple scattering in support and straws with a single-scattering tail, G4-matched eIon, G4 secondary library. Fast reco started (`trkfastsim.reco`, numpy with JAX twins): straw-hit and combo-hit reco reproduce stock on the same digis (T-VR1), time clusters and line seeds too (T-VR1b); digitisation and the track fit are next | `tracker/README.md` ("Reproducing the validation on a Mu2e GPVM") |
 
 ## Compute endpoints and the Mu2eBO kit
 
@@ -37,14 +37,15 @@ git submodule update --remote --merge     # move every submodule to its branch h
 | ALCF Polaris (A100) | IRI API | Eagle venv or the image | reference for the performance goals | `core/iri/` |
 | ALCF Aurora (Intel PVC) | SSH + PBS | venv with `jax[oneapi]` | CRV response runs; fast reco does not port yet | `core/aurora/` |
 | ESnet East (AWS) | IRI API v2 | OCI image as Kubernetes pods | CPU and T4 pods run | `core/iri/` (`IRI_FACILITY=esnet`) |
-| UVA Rivanna/Afton (A100, B200) | SSH + Slurm | the Apptainer image | in-image validation passes on A100 and B200 | `core/uva/` |
+| UVA Rivanna/Afton (A100, B200) | SSH + Slurm | the Apptainer image | in-image validation passes on A100 and B200; production as one-GPU jobs | `core/uva/` |
+| Fermilab EAF (A100 MIG slices) | JupyterHub API, driven from a GPVM | `venv_eaf` (JAX) | Mu2eBO endpoint: queue, auto-stop, keepalive; Mu2e inputs stay at FNAL | `core/eaf/` |
 
 `fastsimkit` (`core/mu2efastsim/endpoints/kit.py`) is the [Mu2eBO](https://github.com/Mu2e/Mu2eBO) native kit for
 the fast chain: it speaks the evaluator contract (`submit`/`status`/`results`/`check`/`describe`/`cancel`) and runs
-one point as one job through an endpoint adapter (`core/mu2efastsim/endpoints/`; Slurm over SSH today). Its tasks:
+one point as one job through an endpoint adapter (`core/mu2efastsim/endpoints/`: Slurm over SSH, and Fermilab EAF). Its tasks:
 `reco_bench` (synthetic reco chain throughput), `response_bench` (photon and SiPM throughput with the real lookup
 table and photon map) and `v4_response` (the V4 photon and SiPM checks with the real tables, pass flags and largest
-deviation as metrics); all three pass end to end on UVA. Tasks that use the Mu2e-internal tables fetch them per job
+deviation as metrics); all three pass end to end on UVA, and a Mu2eBO `graph.run` has run end to end on EAF. Tasks that use the Mu2e-internal tables fetch them per job
 into node memory and delete them at exit, and the kit refuses results without the job's deletion record. The veto
 objectives are in development. The `kits.toml` entry is in `core/uva/README.md`.
 
