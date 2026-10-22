@@ -67,11 +67,14 @@ def _shape(name):
 N_BODY = CL.N_BODY
 EX_BODIES = 4                         # alignment bodies 0-3 are EX M0-M3
 DTP_EDGES = np.linspace(-40.0, 40.0, 161)   # per-(EX module, module) cluster time differences [ns], 0.5 ns bins
+FEB_GROUPS = 4                        # EX/T2 FEB groups per module: (layer pair 0-1 / 2-3) x (side 0 / 1)
+FTP_EDGES = np.linspace(-20.0, 20.0, 81)    # first pulse time minus its cluster time, per (body, FEB group) [ns]
 
 
 def new_state():
     S = {"events": 0, "files": 0, "exposure_ns": 0.0, "lines_z": 0, "lines_x": 0, "lines_xz": 0, "h": {}, "oot_n": {},
-         "dtp": np.zeros((EX_BODIES, N_BODY, len(DTP_EDGES) - 1)).tolist()}
+         "dtp": np.zeros((EX_BODIES, N_BODY, len(DTP_EDGES) - 1)).tolist(),
+         "ftp": np.zeros((N_BODY, FEB_GROUPS, len(FTP_EDGES) - 1)).tolist()}
     for name in SHAPES:
         for s in SLOTS_OF.get(name, SLOTS):
             S["h"][f"{name}_{s}"] = np.zeros(_shape(name)).tolist()
@@ -166,6 +169,18 @@ def accumulate_arrays(c, p, S, window_ns):
                                    bins=[np.arange(-0.5, EX_BODIES), np.arange(-0.5, N_BODY), DTP_EDGES])[0]
                 dtp += h
     S["dtp"] = dtp.tolist()
+    # FEB-group timing within a module: chosen-cluster first pulses (propagation-corrected tc) minus their cluster mean,
+    # per (body, layer pair x side); EX and T2 only (T1 and tagger FEB groups coincide with modules or span several)
+    ftp = np.asarray(S.get("ftp", new_state()["ftp"]))
+    mt2 = has_al & np.isin(s, [0, 2])
+    if mt2.any():
+        gk2 = e.astype(np.int64) * 4 + s
+        ug2, gi2 = np.unique(gk2[mt2], return_inverse=True)
+        mean2 = np.bincount(gi2, tc[mt2]) / np.bincount(gi2)
+        grp = (o["hit_layer"][mt2] >= 2).astype(np.int64) * 2 + side[mt2]
+        ftp += np.histogramdd(np.stack([o["hit_body"][mt2], grp, tc[mt2] - mean2[gi2]], 1),
+                              bins=[np.arange(-0.5, N_BODY), np.arange(-0.5, FEB_GROUPS), FTP_EDGES])[0]
+    S["ftp"] = ftp.tolist()
     chosen, _ = CL._choose_clusters(c)
     pl = c["crvcoincs.PEsPerLayer[4]"]
     idx = ak.local_index(c["crvcoincs.sectorType"])
@@ -268,8 +283,9 @@ def merge_states(states):
             T["h"][k] = (np.asarray(T["h"][k]) + np.asarray(v)).tolist()
         for k, v in S["oot_n"].items():
             T["oot_n"][k] += v
-        if "dtp" in S:
-            T["dtp"] = (np.asarray(T["dtp"]) + np.asarray(S["dtp"])).tolist()
+        for key in ("dtp", "ftp"):
+            if key in S:
+                T[key] = (np.asarray(T[key]) + np.asarray(S[key])).tolist()
         T["window_ns"] = sorted(set(T.get("window_ns", [])) | set(S.get("window_ns", [])))
     return T
 
@@ -320,9 +336,10 @@ def shape_term(a, b, n0=N0, rng=None):
             "raw_chi2ndf": c2 / ndf, "entries": float(a.sum()), "entries_ref": float(b.sum())}
 
 
-def objective(S, R, n0=N0):
+def objective(S, R, n0=N0, exclude=()):
     """Objective of S (candidate, e.g. MC) against R (reference, e.g. data). Returns the size-free total (objective,
-    with its statistical sigma), the old raw-chi2 total (objective_raw) and the per-term values."""
+    with its statistical sigma), the old raw-chi2 total (objective_raw) and the per-term values. exclude: term names
+    left out of the totals (still reported per term), e.g. a data-quality exclusion; objective_all keeps every term."""
     terms = {}
     rng = np.random.default_rng(20261022)
     for k in S["h"]:
@@ -342,13 +359,15 @@ def objective(S, R, n0=N0):
                                       "sigma_ref": float(sigr)}
     if not terms:
         return {"objective": float("nan"), "n_terms": 0, "terms": terms}
-    n = len(terms)
-    tot = float(np.mean([v["chi2ndf"] for v in terms.values()]))
-    sig = float(np.sqrt(sum(v["sigma"] ** 2 for v in terms.values())) / n)
-    sigr = float(np.sqrt(sum(v["sigma_ref"] ** 2 for v in terms.values())) / n)
-    raw = float(np.mean([v["raw_chi2ndf"] for v in terms.values()]))
+    used = {k: v for k, v in terms.items() if k not in set(exclude)}
+    n = len(used)
+    tot = float(np.mean([v["chi2ndf"] for v in used.values()]))
+    sig = float(np.sqrt(sum(v["sigma"] ** 2 for v in used.values())) / n)
+    sigr = float(np.sqrt(sum(v["sigma_ref"] ** 2 for v in used.values())) / n)
+    raw = float(np.mean([v["raw_chi2ndf"] for v in used.values()]))
     return {"objective": tot, "sigma": sig, "sigma_ref": sigr, "objective_raw": raw, "n0": n0, "n_terms": n,
-            "terms": terms}
+            "excluded": sorted(set(exclude) & set(terms)),
+            "objective_all": float(np.mean([v["chi2ndf"] for v in terms.values()])), "terms": terms}
 
 
 def _expand(inputs):
@@ -380,14 +399,16 @@ def write_json(outdir, name, obj):
     return path
 
 
-def report(S, outdir, R=None, n0=N0):
+def report(S, outdir, R=None, n0=N0, exclude=()):
     res = {k: S[k] for k in ("events", "files", "exposure_ns", "lines_z", "lines_x", "lines_xz")}
     res["window_ns"] = S.get("window_ns")
     res["oot_rate_per_event_per_us"] = {s: S["oot_n"][s] / max(S["exposure_ns"] * 1e-3, 1e-300) for s in SLOTS}
     if R is not None:
-        o = res["objective"] = objective(S, R, n0)
+        o = res["objective"] = objective(S, R, n0, exclude)
         print(f"objective {o['objective']:.3f} +- {o['sigma']:.3f} (candidate) +- {o['sigma_ref']:.3f} (reference) "
               f"(size-free, N0 {n0:g}) over {o['n_terms']} terms; raw chi2/ndf mean {o['objective_raw']:.3f}")
+        if o["excluded"]:
+            print(f"  excluded {', '.join(o['excluded'])}: with them {o['objective_all']:.3f}")
         worst = sorted(o["terms"].items(), key=lambda kv: -kv[1]["chi2ndf"])[:8]
         for k, v in worst:
             print(f"  {k:24s} chi2/ndf@N0 {v['chi2ndf']:9.2f} +- {v['sigma']:7.2f} +- {v['sigma_ref']:7.2f}   "
@@ -397,11 +418,11 @@ def report(S, outdir, R=None, n0=N0):
 
 
 def run(inputs, outdir, config=None, emit=None, merge=False, compare=None, entry_stop=None, window_ns=None, n0=N0,
-        time_corr=None, **kw):
+        time_corr=None, exclude=(), **kw):
     if merge:
         S = merge_states([json.load(open(f)) for f in _expand(inputs)])
         R = merge_states([json.load(open(f)) for f in _expand(compare)]) if compare else None
-        return report(S, outdir, R, n0)
+        return report(S, outdir, R, n0, exclude)
     S = new_state()
     for f in _expand(inputs):
         accumulate_file(f, S, window_ns=window_ns, entry_stop=entry_stop, time_corr=time_corr)

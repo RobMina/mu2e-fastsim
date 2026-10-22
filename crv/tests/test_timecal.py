@@ -39,3 +39,16 @@ def test_shift_times():
     c2, p2 = R.shift_times(c, p, corr)
     assert p2["crvpulses.time"].tolist() == [[11.0, 12.0, 18.0], [5.5]]
     assert c2["crvcoincs.time"].tolist() == [[11.5, 18.0], []]
+
+
+def test_channel_table():
+    mod = np.zeros(16)
+    mod[6] = 2.0                                           # T20
+    feb = np.zeros((16, 4))
+    feb[6, 3] = 0.5                                        # T20, layers 2-3, side 1
+    t = TC.channel_table(mod, feb)
+    ch = lambda bar, sipm: 4 * bar + sipm
+    assert t[ch(384, 0)] == 2.0                            # T20 bar 384: layer 0, SiPM 0 (side 0)
+    assert t[ch(416, 1)] == 2.5                            # T20 bar 416: layer 2, SiPM 1 (side 1) -> + FEB group 3
+    assert t[ch(416, 2)] == 2.0                            # SiPM 2 is side 0
+    assert t[ch(0, 0)] == 0.0

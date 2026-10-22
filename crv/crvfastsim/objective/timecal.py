@@ -18,7 +18,7 @@ entries each at 125 k events) are grouped in the MC by default; the data keeps o
 import numpy as np
 
 from . import crvline as CL
-from .crvresponse import DTP_EDGES, EX_BODIES
+from .crvresponse import DTP_EDGES, EX_BODIES, FEB_GROUPS, FTP_EDGES
 
 MIN_ENTRIES = 200      # per (EX module, module) pair; the MC (5 files, 125 k events) has ~100 per tagger pair
 C = 0.5 * (DTP_EDGES[1:] + DTP_EDGES[:-1])
@@ -133,6 +133,56 @@ def fit_difference(data_state, mc_state, min_entries=MIN_ENTRIES, group_mc_tagge
             "bodies": list(CL.BODY_NAMES)}
 
 
+def feb_offsets(data_state, mc_state, min_entries=200):
+    """Per (body, FEB group) data - MC offset of the first-pulse time relative to its cluster mean [ns], EX and T2
+    (groups: layer pair x side). Medians of the ftp histograms; a module's four groups average to ~0 by construction
+    (the module offset is fitted separately), so these refine the module calibration within a module."""
+    fd, fm = np.asarray(data_state["ftp"], float), np.asarray(mc_state["ftp"], float)
+    cc = 0.5 * (FTP_EDGES[1:] + FTP_EDGES[:-1])
+
+    def med(h):
+        c = np.cumsum(h)
+        return float(np.interp(0.5 * c[-1], c, cc)) if c[-1] >= min_entries else np.nan
+    out = np.full((CL.N_BODY, FEB_GROUPS), np.nan)
+    for b in list(range(4)) + [6, 7]:
+        for g in range(FEB_GROUPS):
+            out[b, g] = med(fd[b, g]) - med(fm[b, g])
+    return out
+
+
+def channel_table(module_corr, feb_corr=None, nchan=2304):
+    """Per-channel time shift [ns] (channel = 4 barId + SiPMId) from per-body offsets and optional (body, FEB group)
+    offsets: the table the chains add to pulse times (fast chain: timeoffset; stock: a CRVTime text table)."""
+    from .bars import bar_slot_body_layer
+    ch = np.arange(nchan)
+    bar, sipm = ch // 4, ch % 4
+    slot, body, layer = bar_slot_body_layer(bar)
+    t = np.asarray(module_corr, float)[body].copy()
+    if feb_corr is not None:
+        fc = np.nan_to_num(np.asarray(feb_corr, float))
+        grp = (layer >= 2).astype(np.int64) * 2 + (sipm % 2)
+        t += fc[body, grp]
+    return t
+
+
+def write_crvtime_digi(path, base_offsets, shift, note=""):
+    """CRVTime text table for the stock MC DIGITISATION job only, so that MC pulse times move by +shift [ns] per channel.
+    crvonly_v05 digitisation applies CRVTime with timeOffsetScale -1 and the reco adds the DB table (Sim_best, the base
+    here): net = base - T_digi, so T_digi = base - shift. Use with services.DbService.textFile in the digi job, never in
+    the reco job (which keeps the DB table, as for data)."""
+    return write_crvtime(path, base_offsets, -np.asarray(shift, float), note + " (digi-only: base - shift)")
+
+
+def write_crvtime(path, base_offsets, shift, cid_note=""):
+    """DbService text table CRVTime: base per-channel timeOffset (e.g. the Sim_best table the MC used) plus shift."""
+    off = np.asarray(base_offsets, float) + np.asarray(shift, float)
+    with open(path, "w") as fh:
+        fh.write(f"TABLE CRVTime\n# timeOffset + module/FEB time calibration from CRV-only lines {cid_note}\n")
+        for c, o in enumerate(off):
+            fh.write(f"{c},{o:.6f}\n")
+    return path
+
+
 def apply_to_state(state, corr):
     """Shift an accumulator's dt_cluster and dtp histograms as if every body's times moved by corr[body] (bin-level,
     0.5 ns dtp bins, 1 ns dt_cluster bins: the shift is rounded to the bin). Returns a new state; for checks only, the
@@ -177,18 +227,34 @@ def main(argv=None):
     ap.add_argument("--out", required=True)
     ap.add_argument("--label", default="")
     ap.add_argument("--per-tagger-mc", action="store_true", help="do not group the MC taggers")
+    ap.add_argument("--no-feb", action="store_true", help="module offsets only (no FEB-group refinement)")
+    ap.add_argument("--crvtime-base", default=None, help="CRVCalib CSV of the MC (timeoffset column): also write the "
+                    "digi-only CRVTime text table <out>.crvtime_digi.txt for the stock MC")
     a = ap.parse_args(argv)
     D = merge_states([json.load(open(f)) for f in a.data])
     M = merge_states([json.load(open(f)) for f in a.mc])
     f = fit_difference(D, M, group_mc_taggers=not a.per_tagger_mc)
     off = np.asarray(f["offset"], float)
     corr = -np.where(np.isfinite(off), off, 0.0)
+    feb = feb_offsets(D, M) if ("ftp" in D and "ftp" in M and not a.no_feb) else None
     out = {"label": a.label, "fit": f, "correction": corr.tolist(), "bodies": list(CL.BODY_NAMES),
+           "feb_offset": None if feb is None else np.where(np.isfinite(feb), feb, None).tolist(),
+           "mc_channel_shift": channel_table(np.where(np.isfinite(off), off, 0.0), feb).tolist(),
            "data_files": a.data, "mc_files": a.mc}
     json.dump(out, open(a.out, "w"), indent=1)
+    if a.crvtime_base:
+        base = np.loadtxt(a.crvtime_base, delimiter=",", comments="#")
+        b = np.zeros(len(out["mc_channel_shift"]))
+        b[base[:, 0].astype(int)] = base[:, 4]
+        p = a.out.rsplit(".json", 1)[0] + ".crvtime_digi.txt"
+        write_crvtime_digi(p, b, out["mc_channel_shift"], f"{a.label}")
+        print("wrote", p)
     print(f"{a.label}: pairs {f['pairs']}, residual rms {f['rms_resid']:.2f} ns, chi2/ndf {f['chi2ndf']:.1f}")
     print("data - MC offsets " + " ".join(f"{n}:{o:+.2f}+-{e:.2f}" for n, o, e in zip(CL.BODY_NAMES, f["offset"], f["error"])
                                          if o == o))
+    if feb is not None:
+        print("FEB groups (L01S0 L01S1 L23S0 L23S1) data - MC: " + "; ".join(
+            f"{CL.BODY_NAMES[b]} " + " ".join(f"{x:+.2f}" for x in feb[b]) for b in (0, 1, 2, 3, 6, 7)))
 
 
 if __name__ == "__main__":

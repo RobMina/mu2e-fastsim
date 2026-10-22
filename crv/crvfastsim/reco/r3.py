@@ -61,7 +61,7 @@ def _bg_without_waveforms(events, cfg, rng, objective, T):
     T["background_pulses_nowf"] = T.get("background_pulses_nowf", 0) + len(B["ev"])
 
 
-def run_batch(c, a, b, cond, cfg, geom, ccfg, tabs, pmap, rng, key, T, objective=None, window_ns=1e5):
+def run_batch(c, a, b, cond, cfg, geom, ccfg, tabs, pmap, rng, key, T, objective=None, window_ns=1e5, time_shift=None):
     """Events [a, b) of the step-sorted table c through the chain. Returns events processed."""
     lo = np.searchsorted(c["ek"], c["events"][a])
     hi = np.searchsorted(c["ek"], c["events"][b - 1], side="right")
@@ -98,6 +98,8 @@ def run_batch(c, a, b, cond, cfg, geom, ccfg, tabs, pmap, rng, key, T, objective
     t0 = time.perf_counter()
     W = chain.reco_waveforms(D, cond)
     W["toff"] = cond.timeoffset[W["chan"]]
+    if time_shift is not None:                     # module / FEB time calibration (objective.timecal), data frame
+        W["toff"] = W["toff"] + time_shift[W["chan"]]
     _add(T, "group_s", t0)
     T["waveforms"] = T.get("waveforms", 0) + len(W["ev"])
     t0 = time.perf_counter()
@@ -118,7 +120,8 @@ def run_batch(c, a, b, cond, cfg, geom, ccfg, tabs, pmap, rng, key, T, objective
 
 
 def run(steps, calib, deviation=None, target=1_000_000, jax=False, seed=1, batch_events=2000, counters=None,
-        emit=None, objective=False, noise=True, max_passes=1000, time_limit=None, v05=False, knobs=None, background=None):
+        emit=None, objective=False, noise=True, max_passes=1000, time_limit=None, v05=False, knobs=None, background=None,
+        time_shift=None):
     """v05: the crvonly_v05 digitisation settings (one FEB clock phase per event, CRVTime net zero), as reco-vr4eff,
     for comparisons with the v05 EventNtuples."""
     T = {}
@@ -137,6 +140,10 @@ def run(steps, calib, deviation=None, target=1_000_000, jax=False, seed=1, batch
         from .background import BackgroundModel
         bg = BackgroundModel.load(background)
     cfg = chain.apply_knobs(chain.ChainConfig(jax=bool(jax), noise=bool(noise), background=bg), knobs)
+    tshift = None
+    if time_shift:                                 # timecal JSON: mc_channel_shift, per channel [ns], added in the reco
+        import json as _json
+        tshift = np.asarray(_json.load(open(time_shift))["mc_channel_shift"], float)
     from ..response import photons as PH
     from ..response import sipm as SI
     tabs = PH.load_tables(cfg.response)
@@ -164,7 +171,7 @@ def run(steps, calib, deviation=None, target=1_000_000, jax=False, seed=1, batch
             for a in range(0, ne, batch_events):
                 b = min(ne, a + batch_events, a + (target - done))
                 n, key = run_batch(c, a, b, cond, cfg, geom, ccfg, tabs, pmap, rng, key, T, obj,
-                                   window_ns=cfg.window[1] - cfg.window[0])
+                                   window_ns=cfg.window[1] - cfg.window[0], time_shift=tshift)
                 done += n
                 n_pass += n
                 per_cache[i] += n
@@ -190,7 +197,7 @@ def run(steps, calib, deviation=None, target=1_000_000, jax=False, seed=1, batch
            "events_per_s": done / wall if wall else 0.0,
            "warm_events_per_s": (sum(x["events"] for x in warm) / sum(x["wall_s"] for x in warm)) if warm else None,
            "cache_files": [c["path"] for c in cache], "cache_events": int(sum(len(c["events"]) for c in cache)),
-           "timers": T, "jax": bool(jax), "noise": bool(noise), "v05": bool(v05), "knobs": dict(knobs or {}), "background": background, "batch_events": batch_events, "seed": seed,
+           "timers": T, "jax": bool(jax), "noise": bool(noise), "v05": bool(v05), "knobs": dict(knobs or {}), "background": background, "time_shift": time_shift, "batch_events": batch_events, "seed": seed,
            "ms_per_event": {k[:-2]: 1e3 * v / max(done, 1) for k, v in T.items()
                             if isinstance(v, float) and k.endswith("_s")}}
     if jax:

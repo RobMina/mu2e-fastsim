@@ -14,6 +14,7 @@ def main(argv=None):
     p.add_argument("--n0", type=float, default=crvresponse.N0, help="nominal entries of the size-free chi2/ndf scale")
     p.add_argument("--entry-stop", type=int, default=None, dest="entry_stop")
     p.add_argument("--window-ns", type=float, default=None, dest="window_ns")
+    p.add_argument("--exclude", nargs="*", default=(), help="terms left out of the total (reported with and without)")
     p.add_argument("--time-corr", default=None, help="timecal correction JSON ({'correction': [16 ns]}) added to pulse and "
                    "cluster times per module before accumulating (class-D module time calibration)")
     a = p.parse_args(argv)
@@ -22,7 +23,7 @@ def main(argv=None):
         import json
         corr = json.load(open(a.time_corr))["correction"]
     return crvresponse.run(a.inputs, a.outdir, emit=a.emit, merge=a.merge, compare=a.compare, entry_stop=a.entry_stop,
-                           window_ns=a.window_ns, n0=a.n0, time_corr=corr)
+                           window_ns=a.window_ns, n0=a.n0, time_corr=corr, exclude=a.exclude)
 
 
 if __name__ == "__main__":

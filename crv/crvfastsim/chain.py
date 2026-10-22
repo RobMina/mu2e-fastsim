@@ -215,7 +215,8 @@ def clusters(W, cond, geom, counters_cfg, cfg, timers=None, detail=False, rng=No
     rcfg = pulsefit.RecoConfig()
     P = pulsefit.reconstruct(W["adc"], W["n"], W["start"], W["ped"], W["area"], W["height"], rcfg)
     if rcfg.use_time_offset_db:  # CrvRecoPulsesFinder adds the DB time offset (offspill: TDC0time = 0)
-        P["time"] = P["time"] + cond.timeoffset[W["chan"][P["wf"]]] * rcfg.time_offset_scale
+        toff = W["toff"] if "toff" in W else cond.timeoffset[W["chan"]]   # W["toff"]: DB offset (+ time calibration)
+        P["time"] = P["time"] + toff[P["wf"]] * rcfg.time_offset_scale
     timers["pulses_s"] = timers.get("pulses_s", 0.0) + _time.perf_counter() - t0
     wf = P["wf"]
     ev = W["ev"][wf]

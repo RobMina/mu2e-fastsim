@@ -816,7 +816,7 @@ def cmd_r3(args):
     return r3.run(args.inputs, args.calib, deviation=args.deviation, target=args.target, jax=args.jax, seed=args.seed,
                   batch_events=args.batch_events, emit=args.emit, objective=args.objective, noise=not args.no_noise,
                   time_limit=args.time_limit, v05=args.v05,
-                  knobs=dict(kv.split("=", 1) for kv in (args.knob or [])), background=args.background)
+                  knobs=dict(kv.split("=", 1) for kv in (args.knob or [])), background=args.background, time_shift=args.time_shift)
 
 
 def cmd_background(args):
@@ -1197,6 +1197,8 @@ def add_reco_args(sp, name):
         sp.add_argument("--time-limit", type=float, default=None, help="stop after this many seconds (wall)")
         sp.add_argument("--v05", action="store_true", help="crvonly_v05 settings: one FEB phase per event, CRVTime net zero")
         sp.add_argument("--background", default=None, help="out-of-time background model npz (reco-background fit)")
+        sp.add_argument("--time-shift", default=None, help="timecal JSON (objective.timecal): its mc_channel_shift [ns] "
+                        "is added to the MC pulse times, bringing the MC to the data period's module/FEB timing")
         sp.add_argument("--knob", nargs="*", default=None, help="response knobs NAME=VALUE (chain.KNOBS), e.g. "
                         "photon_yield_scale=1.1 cross_talk=0.06")
         sp.add_argument("--emit", default=None, help="per-process JSON")
