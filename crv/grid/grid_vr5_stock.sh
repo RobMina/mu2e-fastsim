@@ -30,6 +30,7 @@ echo "--- step 2: config ---"
 ifdh cp "$OUTBASE/config/config.tar.bz2" ./config.tar.bz2 || die "stage config tarball"
 mkdir -p cfg && tar -C cfg -xjf config.tar.bz2 || die "untar config"
 export FHICL_FILE_PATH="$PWD/cfg/fcl:$FHICL_FILE_PATH"
+[ -d cfg/textfiles ] && export MU2E_SEARCH_PATH="$PWD/cfg/textfiles:$MU2E_SEARCH_PATH"   # DbService text tables (digi only)
 PT=$(sed -n "$((P / NFILES + 1))p" cfg/points.txt); [ -n "$PT" ] || die "no point for PROCESS $P"
 IN=$(sed -n "$((P % NFILES + 1))p" cfg/filelist.txt); [ -n "$IN" ] || die "no dts for PROCESS $P"
 B=$(basename "$IN" .art); SEQ="${B##*.}"
@@ -49,7 +50,7 @@ stage() {  # stage <name> <fcl> <in> <outflag> <out>
   [ $rc -eq 0 ] && [ -s "$5" ] || { tail -40 "$1.log" >&2; die "$1 failed rc=$rc"; }
 }
 echo "--- step 4: digi ($PT) ---"; stage digi "digi_$PT.fcl" input.art -o dig.art; rm -f input.art
-grep -E "photonYieldScaleFactor|CrossTalkProb|timeConstant|ThermalRate" "cfg/fcl/digi_$PT.fcl" || true
+grep -E "photonYieldScaleFactor|CrossTalkProb|timeConstant|ThermalRate|textFile" "cfg/fcl/digi_$PT.fcl" || true
 echo "--- step 5: reco ---";       stage reco reco_crvonly_extracted_v05.fcl dig.art -o mcs.art; rm -f dig.art
 echo "--- step 6: ntuple ---";     stage ntuple ntuple_crvonly_v05.fcl mcs.art -T "$N"; rm -f mcs.art
 echo "--- step 7: objective accumulator ---"

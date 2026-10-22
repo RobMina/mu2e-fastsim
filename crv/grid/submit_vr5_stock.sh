@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # submit_vr5_stock.sh NAME CODE [--first-line 31] [--nfiles 5] [--points FILE] [--nevts N] [--lifetime 2h] [--test] [--dry-run]
+#                    [--digi-textfile TABLE.txt]   (DbService text table, e.g. a timecal CRVTime digi table, in the digi job only)
 #
 # V-R5 stock arm: every point of vr5_points.txt on NFILES dts files (filelist lines FIRST..FIRST+NFILES-1; default the
 # five MDC2025as files 990-1122 whose CrvStep tables the fast arm replays), one grid job per (point, file), through the
@@ -16,6 +17,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; POINTS="$HERE/vr5_points.t
 while [[ $# -gt 0 ]]; do case "$1" in
   --first-line) FIRST=$2; shift 2 ;; --nfiles) NF=$2; shift 2 ;; --points) POINTS=$2; shift 2 ;;
   --nevts) NEVTS=$2; shift 2 ;; --lifetime) LIFE=$2; shift 2 ;; --test) TEST=true; shift ;; --dry-run) DRY=true; shift ;;
+  --digi-textfile) DTF=$2; shift 2 ;;
   *) echo "Unknown option: $1" >&2; exit 1 ;; esac; done
 FILELIST="${FILELIST:-/exp/mu2e/data/users/ram2aq/crvonly_mc/dts_filelist_as.txt}"
 MCR="${MCR:-/exp/mu2e/app/users/ram2aq/analysis/mu2e_track_crv_mcresponse}"
@@ -35,14 +37,16 @@ grep -v '^#' "$POINTS" | while read -r pt kv; do
   echo "$pt" >> "$STAGE/points.txt"
   { echo '#include "digi_crvonly_extracted_v05.fcl"'
     for x in $kv; do echo "${x%%=*} : ${x#*=}"; done
+    [ -n "${DTF:-}" ] && echo "services.DbService.textFile : [ \"$(basename "$DTF")\" ]"
     echo "outputs.Output.fileName : \"dig.owner.VR5$pt.version.sequencer.art\""; } > "$STAGE/fcl/digi_$pt.fcl"
 done
 LC_ALL=C grep -l '[^ -~]' "$STAGE"/fcl/*.fcl && { echo "ERROR: non-ASCII character in a staged fcl" >&2; exit 1; }
 sed -n "${FIRST},$((FIRST + NF - 1))p" "$FILELIST" > "$STAGE/filelist.txt"
 [ "$(wc -l < "$STAGE/filelist.txt")" -eq "$NF" ] || { echo "ERROR: filelist too short" >&2; exit 1; }
+[ -n "${DTF:-}" ] && { mkdir -p "$STAGE/textfiles"; cp "$DTF" "$STAGE/textfiles/"; }
 touch "$STAGE/crvfastsim/__init__.py"
 tar -C "$HERE/../crvfastsim" --exclude='__pycache__' --exclude='*.pyc' -cf - objective | tar -C "$STAGE/crvfastsim" -xf -
-tar -C "$STAGE" -cjf "$STAGE.cfg.tar.bz2" fcl filelist.txt points.txt crvfastsim
+tar -C "$STAGE" -cjf "$STAGE.cfg.tar.bz2" fcl filelist.txt points.txt crvfastsim $( [ -n "${DTF:-}" ] && echo textfiles )
 [ -n "${KEEP_STAGE:-}" ] && { rm -rf "$KEEP_STAGE"; cp -r "$STAGE" "$KEEP_STAGE"; }   # keep the staged config (fhicl-dump check)
 NP=$(wc -l < "$STAGE/points.txt"); NJOBS=$((NP * NF)); $TEST && NJOBS=1
 
