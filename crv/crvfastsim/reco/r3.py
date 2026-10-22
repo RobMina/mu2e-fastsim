@@ -50,6 +50,17 @@ def _add(T, k, t0):
     T[k] = T.get(k, 0.0) + time.perf_counter() - t0
 
 
+def _bg_without_waveforms(events, cfg, rng, objective, T):
+    """Background for events of the batch that produced no waveform (no pulses, no clusters): straight into the
+    out-of-time histograms."""
+    smp = chain.background_sampler(cfg, rng)
+    if smp is None or objective is None or not len(events):
+        return
+    B = smp(np.asarray(events, np.int64))
+    objective["mod"].fill_oot_only(objective["state"], B["bar"], B["pe"], B["seq"])
+    T["background_pulses_nowf"] = T.get("background_pulses_nowf", 0) + len(B["ev"])
+
+
 def run_batch(c, a, b, cond, cfg, geom, ccfg, tabs, pmap, rng, key, T, objective=None, window_ns=1e5):
     """Events [a, b) of the step-sorted table c through the chain. Returns events processed."""
     lo = np.searchsorted(c["ek"], c["events"][a])
@@ -72,11 +83,17 @@ def run_batch(c, a, b, cond, cfg, geom, ccfg, tabs, pmap, rng, key, T, objective
     _add(T, "response_s", t0)
     T["charges"] = T.get("charges", 0) + len(Q["time"])
     if not len(Q["time"]):
+        if objective is not None:
+            objective["mod"].add_empty_events(objective["state"], b - a, window_ns)
+            _bg_without_waveforms(c["events"][a:b], cfg, rng, objective, T)
         return b - a, key
     t0 = time.perf_counter()
     D = chain.digis(Q, cond, cfg, rng, key=k_w)
     _add(T, "digis_s", t0)
     if not len(D["chan"]):
+        if objective is not None:
+            objective["mod"].add_empty_events(objective["state"], b - a, window_ns)
+            _bg_without_waveforms(c["events"][a:b], cfg, rng, objective, T)
         return b - a, key
     t0 = time.perf_counter()
     W = chain.reco_waveforms(D, cond)
@@ -85,7 +102,7 @@ def run_batch(c, a, b, cond, cfg, geom, ccfg, tabs, pmap, rng, key, T, objective
     T["waveforms"] = T.get("waveforms", 0) + len(W["ev"])
     t0 = time.perf_counter()
     outs, _ = chain.clusters(W, cond, geom, ccfg, cfg, timers=T.setdefault("reco_detail", {}),
-                             detail=objective is not None)
+                             detail=objective is not None, rng=rng)
     _add(T, "reco_s", t0)
     T["clusters"] = T.get("clusters", 0) + int(sum(len(o["cl_event"]) for o in outs))
     if objective is not None:
@@ -95,12 +112,13 @@ def run_batch(c, a, b, cond, cfg, geom, ccfg, tabs, pmap, rng, key, T, objective
         _add(T, "view_s", t0)
         t0 = time.perf_counter()
         objective["mod"].accumulate_arrays(cc, pp, objective["state"], window_ns)
+        _bg_without_waveforms(np.setdiff1d(c["events"][a:b], W["ev"]), cfg, rng, objective, T)
         _add(T, "objective_s", t0)
     return b - a, key
 
 
 def run(steps, calib, deviation=None, target=1_000_000, jax=False, seed=1, batch_events=2000, counters=None,
-        emit=None, objective=False, noise=True, max_passes=1000, time_limit=None, v05=False, knobs=None):
+        emit=None, objective=False, noise=True, max_passes=1000, time_limit=None, v05=False, knobs=None, background=None):
     """v05: the crvonly_v05 digitisation settings (one FEB clock phase per event, CRVTime net zero), as reco-vr4eff,
     for comparisons with the v05 EventNtuples."""
     T = {}
@@ -114,7 +132,11 @@ def run(steps, calib, deviation=None, target=1_000_000, jax=False, seed=1, batch
         import dataclasses
         cond = dataclasses.replace(cond, roc=np.zeros_like(cond.roc), feb=np.zeros_like(cond.feb),
                                    timeoffset=np.zeros_like(cond.timeoffset))
-    cfg = chain.apply_knobs(chain.ChainConfig(jax=bool(jax), noise=bool(noise)), knobs)
+    bg = None
+    if background:
+        from .background import BackgroundModel
+        bg = BackgroundModel.load(background)
+    cfg = chain.apply_knobs(chain.ChainConfig(jax=bool(jax), noise=bool(noise), background=bg), knobs)
     from ..response import photons as PH
     from ..response import sipm as SI
     tabs = PH.load_tables(cfg.response)
@@ -160,13 +182,15 @@ def run(steps, calib, deviation=None, target=1_000_000, jax=False, seed=1, batch
         empty = int(round(sum(k * (c["ngen"] - len(c["events"])) / len(c["events"]) for k, c in zip(per_cache, cache))))
         if obj is not None:
             obj["mod"].add_empty_events(obj["state"], empty, cfg.window[1] - cfg.window[0])
+            _bg_without_waveforms(-1 - np.arange(empty, dtype=np.int64), cfg, np.random.default_rng([int(seed), 99]),
+                                  obj, T)
     wall = time.perf_counter() - t_all
     warm = [x for x in per_pass[1:] if x["events"]]
     res = {"events_with_steps": done, "events_without_steps": empty, "target": target, "wall_s": wall, "passes": per_pass,
            "events_per_s": done / wall if wall else 0.0,
            "warm_events_per_s": (sum(x["events"] for x in warm) / sum(x["wall_s"] for x in warm)) if warm else None,
            "cache_files": [c["path"] for c in cache], "cache_events": int(sum(len(c["events"]) for c in cache)),
-           "timers": T, "jax": bool(jax), "noise": bool(noise), "v05": bool(v05), "knobs": dict(knobs or {}), "batch_events": batch_events, "seed": seed,
+           "timers": T, "jax": bool(jax), "noise": bool(noise), "v05": bool(v05), "knobs": dict(knobs or {}), "background": background, "batch_events": batch_events, "seed": seed,
            "ms_per_event": {k[:-2]: 1e3 * v / max(done, 1) for k, v in T.items()
                             if isinstance(v, float) and k.endswith("_s")}}
     if jax:

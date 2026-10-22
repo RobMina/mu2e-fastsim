@@ -66,18 +66,22 @@ class ChainConfig:
     rounds: int = 3                     # pulse-reco kernel rounds (chain_jax)
     unbucketed_synth: bool = False      # JAX waveforms in one call padded to the largest cluster (OOM on real files)
     waveform: object = None             # reco.waveform.WaveformConfig (None: the stock prolog_v12 values)
+    background: object = None           # reco.background.BackgroundModel: out-of-time deposits added before clustering
+    background_scale: float = 1.0       # multiplies the background model's net rate (knob background_scale)
 
 
 # V-R5 / BO knobs: name -> (config block, field). Stock FHiCL names in KNOB_FCL (run_crvonly_knob.sh arm).
 KNOBS = {"photon_yield_scale": ("response", "photon_yield_scale"), "time_constant": ("sipm", "time_constant"),
          "cross_talk": ("sipm", "cross_talk"), "min_voltage": ("waveform", "min_voltage"),
-         "wf_noise": ("waveform", "noise"), "pe_stretch": ("waveform", "single_pe_stretch")}
+         "wf_noise": ("waveform", "noise"), "pe_stretch": ("waveform", "single_pe_stretch"),
+         "background_scale": (None, "background_scale")}
 KNOB_FCL = {"photon_yield_scale": "physics.producers.CrvPhotons.photonYieldScaleFactor",
             "time_constant": "physics.producers.CrvSiPMCharges.timeConstant",
             "cross_talk": "physics.producers.CrvSiPMCharges.CrossTalkProb",
             "min_voltage": "physics.producers.CrvWaveforms.minVoltage",
             "wf_noise": "physics.producers.CrvWaveforms.noise",
-            "pe_stretch": "physics.producers.CrvWaveforms.singlePEWaveformStretchFactor"}
+            "pe_stretch": "physics.producers.CrvWaveforms.singlePEWaveformStretchFactor",
+            "background_scale": None}     # fast chain only: no stock counterpart
 
 
 def apply_knobs(cfg, knobs):
@@ -90,7 +94,10 @@ def apply_knobs(cfg, knobs):
         if k not in KNOBS:
             raise KeyError(f"unknown knob {k}; known: {sorted(KNOBS)}")
         blk, fld = KNOBS[k]
-        cfg = dataclasses.replace(cfg, **{blk: dataclasses.replace(getattr(cfg, blk), **{fld: float(v)})})
+        if blk is None:
+            cfg = dataclasses.replace(cfg, **{fld: float(v)})
+        else:
+            cfg = dataclasses.replace(cfg, **{blk: dataclasses.replace(getattr(cfg, blk), **{fld: float(v)})})
     return cfg
 
 
@@ -183,7 +190,14 @@ def reco_waveforms(D, cond):
             "ped": cond.pedestal[c0], "area": cond.pulsearea[c0], "height": cond.pulseheight[c0]}
 
 
-def clusters(W, cond, geom, counters_cfg, cfg, timers=None, detail=False):
+def background_sampler(cfg, rng):
+    """Callable(events) -> background pulses for chain_jax.run / the numpy path, or None without a model."""
+    if cfg.background is None or cfg.background_scale <= 0:
+        return None
+    return lambda events: cfg.background.sample(events, cfg.window, rng, rate_scale=cfg.background_scale)
+
+
+def clusters(W, cond, geom, counters_cfg, cfg, timers=None, detail=False, rng=None):
     """Reco waveforms -> pulses -> coincidence clusters. JAX: reco.chain_jax.run (pipelined pulses + coincidences);
     numpy: reco.pulsefit.reconstruct then reco.coinc.find_event per event (the validated references; no JAX needed).
     Returns (list of cluster dicts with cl_event, cl_type, cl_pe, ..., timers). detail: each dict also carries cl_pos,
@@ -194,7 +208,8 @@ def clusters(W, cond, geom, counters_cfg, cfg, timers=None, detail=False):
     if cfg.jax:
         from .reco import chain_jax
         return chain_jax.run(W, G, cond.status, n_chunks=max(1, min(8, len(np.unique(W["ev"])) // 1000)),
-                             rounds=cfg.rounds, L=12, timers=timers, keep_pulses=detail, with_pos=detail)
+                             rounds=cfg.rounds, L=12, timers=timers, keep_pulses=detail, with_pos=detail,
+                             add_pulses=background_sampler(cfg, rng if rng is not None else np.random.default_rng()))
     from .reco import pulsefit
     t0 = _time.perf_counter()
     rcfg = pulsefit.RecoConfig()
@@ -208,6 +223,12 @@ def clusters(W, cond, geom, counters_cfg, cfg, timers=None, detail=False):
     ev, wf = ev[o], wf[o]
     idx = np.arange(len(ev)) - np.searchsorted(ev, ev)
     bar, sipm, time, pe, seq = W["bar"][wf], W["sipm"][wf], P["time"][o], P["pe"][o], P["seq"][o]
+    smp = background_sampler(cfg, rng if rng is not None else np.random.default_rng())
+    if smp is not None:
+        from .reco.background import merge_pulses
+        B = smp(np.unique(W["ev"]))
+        ev, idx, bar, sipm, time, pe, seq, _ = merge_pulses(ev, idx, bar, sipm, time, pe, seq, B)
+        timers["background_pulses"] = timers.get("background_pulses", 0) + len(B["ev"])
     t0 = _time.perf_counter()
     cl = {k: [] for k in ("cl_event", "cl_type", "cl_pe", "cl_start", "cl_end", "cl_slope", "cl_avgtime", "cl_poscalc")}
     mem = {"cl_pos": [], "mem_cl": [], "mem_idx": [], "mem_event": []}

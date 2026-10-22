@@ -197,6 +197,20 @@ def add_empty_events(S, n, window_ns):
     return S
 
 
+def fill_oot_only(S, bar, pe, seq):
+    """Out-of-time pulses of events with no other CRV activity (no clusters, so every first pulse is out of time): the
+    fast chain's background for events without waveforms. Exposure is counted elsewhere (accumulate_arrays or
+    add_empty_events)."""
+    bar, pe, seq = np.asarray(bar), np.asarray(pe, float), np.asarray(seq)
+    m = seq == 0
+    slot, _, _ = G.bar_slot_body_layer(bar[m])
+    for k, name in enumerate(SLOTS):
+        mk = slot == k
+        S["oot_n"][name] += int(mk.sum())
+        _fill(S, f"oot_pe_{name}", pe[m][mk])
+    return S
+
+
 def merge_states(states):
     T = new_state()
     for S in states:

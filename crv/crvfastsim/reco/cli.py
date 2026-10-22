@@ -816,7 +816,59 @@ def cmd_r3(args):
     return r3.run(args.inputs, args.calib, deviation=args.deviation, target=args.target, jax=args.jax, seed=args.seed,
                   batch_events=args.batch_events, emit=args.emit, objective=args.objective, noise=not args.no_noise,
                   time_limit=args.time_limit, v05=args.v05,
-                  knobs=dict(kv.split("=", 1) for kv in (args.knob or [])))
+                  knobs=dict(kv.split("=", 1) for kv in (args.knob or [])), background=args.background)
+
+
+def cmd_background(args):
+    """Out-of-time background model (reco.background). Three modes:
+      --emit PART.npz          one partial per input file list (data: library kept with --keep-frac; --mc: rate only)
+      --merge --out MODEL.npz  inputs are data partials, --mc partials subtracted; model saved mode 600
+      --out MODEL.npz          scan + merge in one process (small tests only)
+    The model and partials hold data-derived content (Mu2e-internal): keep them with the conditions, mode 700 dirs."""
+    from . import background as BGM
+    from crvfastsim.objective import bars
+    inputs, mc = _expand_inputs(args.inputs), _expand_inputs(args.mc or [])
+    if args.emit:
+        frac = 0.0 if args.rate_only else args.keep_frac
+        parts = [BGM.scan_file(p, frac, args.seed + i, args.max_events) for i, p in enumerate(inputs)]
+        part = parts[0]
+        for q in parts[1:]:                      # several files in one partial: sum the counts, offset the library
+            off = int(part["lib"]["group"].max()) + 1 if len(part["lib"]["group"]) else 0
+            for k in ("events", "exposure_ns", "groups", "cnt_sum", "cnt_sumsq"):
+                part[k] += q[k]
+            part["windows"] = sorted(set(part["windows"]) | set(q["windows"]))
+            part["lib"] = {k: np.r_[part["lib"][k], (q["lib"][k] + off) if k == "group" else q["lib"][k]] for k in BGM.LIB_KEYS}
+            part["file"] = part["file"] + "," + q["file"]
+        BGM.save_partial(args.emit, part)
+        print(json.dumps({k: v for k, v in part.items() if k != "lib"}, default=float))
+        return part
+    if args.merge:
+        m = BGM.BackgroundModel.from_partials([BGM.load_partial(p) for p in inputs], [BGM.load_partial(p) for p in mc])
+    else:
+        m = BGM.BackgroundModel.fit(inputs, mc, entry_stop=args.max_events, keep_frac=args.keep_frac, seed=args.seed)
+    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+    m.save(args.out)
+    os.chmod(args.out, 0o600)
+    slot, _, _ = bars.bar_slot_body_layer(m.bar)
+    one = [len(np.unique(m.bar[a:a + c])) == 1 for a, c in zip(m.start[:20000], m.count[:20000])]
+    out = dict(m.info, net_rate_per_event_per_us=1e3 * m.rate_per_ns, gamma_k=m.gamma_k,
+               pulses_by_slot={n: int((slot == i).sum()) for i, n in enumerate(bars.SLOT_NAME)},
+               pe_median=float(np.median(m.pe)) if len(m.pe) else None, groups_one_bar=float(np.mean(one)) if one else None)
+    print(json.dumps({k: v for k, v in out.items() if k not in ("data_files", "mc_files")}, indent=1, default=float))
+    if args.outdir:
+        plots.write_json(args.outdir, "background_model.json", out)
+    return out
+
+
+def _expand_inputs(paths):
+    import glob
+    out = []
+    for p in paths:
+        if p.endswith(".txt") and os.path.isfile(p):
+            out += [l.strip() for l in open(p) if l.strip() and not l.startswith("#")]
+        else:
+            out += sorted(glob.glob(p)) or [p]
+    return out
 
 
 def cmd_vr4eff(args):
@@ -996,7 +1048,8 @@ def _report(args, name, out):
     print(json.dumps(plots._clean(out), indent=1)[:4000])
 
 
-RECO_CMDS = ("vr2", "vr2stock", "vr2jax", "bench", "vr1", "vr3", "vr4", "vr4eff", "r3", "direct", "noise", "repro", "cost", "inspect")
+RECO_CMDS = ("vr2", "vr2stock", "vr2jax", "bench", "vr1", "vr3", "vr4", "vr4eff", "r3", "direct", "noise", "repro", "cost", "inspect",
+             "background")
 
 
 def cmd_vr3(args):
@@ -1143,6 +1196,7 @@ def add_reco_args(sp, name):
         sp.add_argument("--batch-events", type=int, default=2000)
         sp.add_argument("--time-limit", type=float, default=None, help="stop after this many seconds (wall)")
         sp.add_argument("--v05", action="store_true", help="crvonly_v05 settings: one FEB phase per event, CRVTime net zero")
+        sp.add_argument("--background", default=None, help="out-of-time background model npz (reco-background fit)")
         sp.add_argument("--knob", nargs="*", default=None, help="response knobs NAME=VALUE (chain.KNOBS), e.g. "
                         "photon_yield_scale=1.1 cross_talk=0.06")
         sp.add_argument("--emit", default=None, help="per-process JSON")
@@ -1159,6 +1213,13 @@ def add_reco_args(sp, name):
         sp.add_argument("--batch-events", type=int, default=None)
     if name == "repro":
         sp.add_argument("--against", default=None, help="repro_<backend>.npz from another run (process or backend)")
+    if name == "background":
+        sp.add_argument("--mc", nargs="*", default=None, help="MC EventNtuples (or a .txt list) whose own out-of-time rate is subtracted")
+        sp.add_argument("--out", default=None, help="model npz (with --merge, or a one-process fit)")
+        sp.add_argument("--emit", default=None, help="write one partial (npz) for the inputs")
+        sp.add_argument("--merge", action="store_true", help="inputs (and --mc) are partials")
+        sp.add_argument("--rate-only", action="store_true", help="--emit: no library (MC partials)")
+        sp.add_argument("--keep-frac", type=float, default=0.003, help="fraction of data groups kept in the library")
     if name == "noise":
         sp.add_argument("--mc", default=None, help="MC reference table: its isolated-waveform rate is subtracted")
         sp.add_argument("--rate-scale", type=float, default=1.0)
@@ -1171,7 +1232,7 @@ def add_reco_args(sp, name):
 
 def run_reco(name, a):
     a.outdir = a.outdir or f"plots/reco_{name}"
-    {"vr2": cmd_vr2, "vr2stock": lambda x: cmd_vr2(x, oracle=True), "vr1": cmd_vr1, "vr3": cmd_vr3, "direct": cmd_direct, "noise": cmd_noise, "repro": cmd_repro, "vr4": cmd_vr4, "vr4eff": cmd_vr4eff, "r3": cmd_r3,
+    {"vr2": cmd_vr2, "vr2stock": lambda x: cmd_vr2(x, oracle=True), "vr1": cmd_vr1, "vr3": cmd_vr3, "direct": cmd_direct, "noise": cmd_noise, "background": cmd_background, "repro": cmd_repro, "vr4": cmd_vr4, "vr4eff": cmd_vr4eff, "r3": cmd_r3,
      "cost": cmd_cost, "inspect": cmd_inspect, "vr2jax": lambda x: cmd_vr2(x, use_jax=True),
      "bench": cmd_bench}[name](a)
 
