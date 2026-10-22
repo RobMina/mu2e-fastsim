@@ -19,17 +19,7 @@ from mu2efastsim import plots
 from .. import geometry, tables
 from ..response import photons, sipm, stocksipm
 from .census import SECTOR_GROUP
-from .v4photons import DEFAULT_COUNTERS, GROUPS, THRESH, _deviation
-
-
-def _cdf_shift(df, ds, levels=(0.1, 0.5, 0.9)):
-    df, ds = np.sort(df), np.sort(ds)
-    qs = np.quantile(ds, levels)
-
-    def cdf(a, x):
-        return np.searchsorted(a, x, side="right") / len(a)
-    dens = (cdf(ds, qs + 1.0) - cdf(ds, qs - 1.0)) / 2.0
-    return -(cdf(df, qs) - cdf(ds, qs)) / np.maximum(dens, 1e-12)
+from .v4photons import DEFAULT_COUNTERS, GROUPS, THRESH, _deviation, cdf_shift, time_check
 
 
 def run(inputs, outdir, deviation=None, max_steps=None, seed=1, counters=None, jax=False, no_stock=False,
@@ -120,14 +110,15 @@ def run(inputs, outdir, deviation=None, max_steps=None, seed=1, counters=None, j
         err = np.sqrt(len(allk) * np.var(xf - xs)) / xs.sum()  # paired: same photons per SiPM in both arms
         tf = F["time"][mf] - steps.t0.to_numpy()[F["photon"][mf]]
         ts = S["time"][ms] - steps.t0.to_numpy()[S["photon"][ms]]
-        shift = _cdf_shift(tf, ts)
+        evk = ((steps.subrun.to_numpy().astype(np.int64) << 32) | steps.event.to_numpy().astype(np.int64))
+        shift, serr = cdf_shift(tf, ts, evk[F["photon"][mf]], evk[S["photon"][ms]])
         nph = int(np.isin(key, allk).sum())
         res = {"sipm_events": len(allk), "pe_per_sipm_fast": xf.mean(), "pe_per_sipm_stock": xs.mean(),
-               "pe_per_sipm_rel": rel, "pe_per_sipm_rel_err": err, "time_cdf_shift_ns": shift,
+               "pe_per_sipm_rel": rel, "pe_per_sipm_rel_err": err, "time_cdf_shift_ns": shift, "time_cdf_shift_err_ns": serr,
                "charges_per_photon_fast": mf.sum() / max(nph, 1), "charges_per_photon_stock": ms.sum() / max(nph, 1),
                "frac_partial_fast": float((F["pe"][mf] < 0.99).mean()), "frac_partial_stock": float((S["pe"][ms] < 0.99).mean())}
         res["checks"] = {"pe_per_sipm": max(abs(rel) - 2 * err, 0) <= THRESH["pe_per_sipm_rel"],
-                         "time_quantiles": bool(np.all(np.abs(shift) <= THRESH["time_quantile_ns"]))}
+                         "time_quantiles": time_check(shift, serr)}
         res["pass"] = all(res["checks"].values())
         out["groups"][g] = res
     out["pass"] = all(r["pass"] for r in out["groups"].values())
@@ -139,7 +130,7 @@ def run(inputs, outdir, deviation=None, max_steps=None, seed=1, counters=None, j
         print(f"{g:3s} PE/SiPM/event {r['pe_per_sipm_stock']:.2f} -> {r['pe_per_sipm_fast']:.2f} "
               f"({r['pe_per_sipm_rel']:+.4f} +- {r['pe_per_sipm_rel_err']:.4f}); charges/photon "
               f"{r['charges_per_photon_stock']:.4f} -> {r['charges_per_photon_fast']:.4f}; partial "
-              f"{r['frac_partial_stock']:.4f} -> {r['frac_partial_fast']:.4f}; t shift {np.round(r['time_cdf_shift_ns'], 3)} | {flags}")
+              f"{r['frac_partial_stock']:.4f} -> {r['frac_partial_fast']:.4f}; t shift {np.round(r['time_cdf_shift_ns'], 3)} +- {np.round(r['time_cdf_shift_err_ns'], 3)} | {flags}")
     if device:
         d = out["device"]
         nev = len(np.unique((steps.subrun.to_numpy().astype(np.int64) << 32) | steps.event.to_numpy().astype(np.int64)))

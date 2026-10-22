@@ -29,6 +29,44 @@ THRESH = {"pe_per_sipm_rel": 0.005, "time_quantile_ns": 0.2}
 DEFAULT_COUNTERS = "Offline/Mu2eG4/geom/crv_counters_extracted_v04.txt"
 
 
+def cdf_shift(tf, ts, cf=None, cs=None, levels=(0.1, 0.5, 0.9), window=1.0):
+    """V4 time criterion: horizontal distance between the fast and reference CDFs at the reference's quantiles,
+    shift = -(F_fast(t_q) - F_ref(t_q)) / f(t_q), f = reference density over t_q +- window; and its standard error.
+
+    tf, ts: delays [ns]; cf, cs: cluster ids (event keys) of each entry. The error is cluster-robust (photons of one
+    event share steps, so they are not independent) and paired by cluster across the two arms (same steps in both):
+    var(F_fast - F_ref) = sum_c d_c^2 with d_c = (k_f,c - F_f n_f,c) / N_f - (k_s,c - F_s n_s,c) / N_s, where k counts the
+    cluster's entries below t_q. Without cluster ids each entry is its own cluster (binomial, too small for photons).
+    Returns (shift [L], error [L])."""
+    tf, ts = np.asarray(tf, float), np.asarray(ts, float)
+    srt_f, srt_s = np.sort(tf), np.sort(ts)
+    qs = np.quantile(srt_s, levels)
+
+    def cdf(a, x):
+        return np.searchsorted(a, x, side="right") / len(a)
+    dens = np.maximum((cdf(srt_s, qs + window) - cdf(srt_s, qs - window)) / (2.0 * window), 1e-12)
+    Ff, Fs = cdf(srt_f, qs), cdf(srt_s, qs)
+    shift = -(Ff - Fs) / dens
+    cf = np.arange(len(tf)) if cf is None else np.asarray(cf)
+    cs = (np.arange(len(ts)) + len(tf)) if cs is None else np.asarray(cs)
+    keys, inv = np.unique(np.concatenate([cf, cs]), return_inverse=True)
+    i_f, i_s = inv[:len(tf)], inv[len(tf):]
+    nf_c = np.bincount(i_f, minlength=len(keys)).astype(float)
+    ns_c = np.bincount(i_s, minlength=len(keys)).astype(float)
+    err = np.empty(len(qs))
+    for j, q in enumerate(qs):                      # three levels: a short loop, vectorised over clusters
+        kf_c = np.bincount(i_f, weights=(tf <= q).astype(float), minlength=len(keys))
+        ks_c = np.bincount(i_s, weights=(ts <= q).astype(float), minlength=len(keys))
+        d = (kf_c - Ff[j] * nf_c) / len(tf) - (ks_c - Fs[j] * ns_c) / len(ts)
+        err[j] = np.sqrt(np.sum(d * d)) / dens[j]
+    return shift, err
+
+
+def time_check(shift, err):
+    """Each level passes if its shift is within the limit after allowing 2 standard errors (as the PE check)."""
+    return bool(np.all(np.maximum(np.abs(shift) - 2.0 * err, 0.0) <= THRESH["time_quantile_ns"]))
+
+
 def _deviation(path, n):
     dev = np.zeros(n)
     if path:
@@ -105,18 +143,16 @@ def run(inputs, outdir, deviation=None, max_steps=None, seed=1, counters=None, j
         vs = np.zeros(len(allk)); vs[np.searchsorted(allk, ks)] = ns
         rel = vf.mean() / vs.mean() - 1
         err = np.sqrt(len(pf) * np.var(pf - ps)) / ps.sum()  # paired: same steps in both arms
-        df, ds = np.sort(F["dt"][F["grp"] == g]), np.sort(S["dt"][S["grp"] == g])
+        mf_, ms_ = F["grp"] == g, S["grp"] == g
+        df, ds = F["dt"][mf_], S["dt"][ms_]
         qf, qs = np.quantile(df, (0.1, 0.5, 0.9)), np.quantile(ds, (0.1, 0.5, 0.9))
-
-        def cdf(arr, x):
-            return np.searchsorted(arr, x, side="right") / len(arr)
-        dens = (cdf(ds, qs + 1.0) - cdf(ds, qs - 1.0)) / 2.0
-        shift = -(cdf(df, qs) - cdf(ds, qs)) / np.maximum(dens, 1e-12)
+        shift, serr = cdf_shift(df, ds, F["ev"][mf_], S["ev"][ms_])
         res = {"sipm_events": len(allk), "pe_per_sipm_fast": vf.mean(), "pe_per_sipm_stock": vs.mean(),
                "pe_per_sipm_rel": rel, "pe_per_sipm_rel_err": err, "photons_per_step_rel": pf.sum() / ps.sum() - 1,
-               "dt_q10_50_90_fast": qf, "dt_q10_50_90_stock": qs, "dt_q_diff_raw": qf - qs, "dt_cdf_shift_ns": shift}
+               "dt_q10_50_90_fast": qf, "dt_q10_50_90_stock": qs, "dt_q_diff_raw": qf - qs, "dt_cdf_shift_ns": shift,
+               "dt_cdf_shift_err_ns": serr}
         res["checks"] = {"pe_per_sipm": max(abs(rel) - 2 * err, 0) <= THRESH["pe_per_sipm_rel"],
-                         "time_quantiles": bool(np.all(np.abs(shift) <= THRESH["time_quantile_ns"]))}
+                         "time_quantiles": time_check(shift, serr)}
         res["pass"] = all(res["checks"].values())
         out["groups"][g] = res
     out["pass"] = all(r["pass"] for r in out["groups"].values())
@@ -127,6 +163,6 @@ def run(inputs, outdir, deviation=None, max_steps=None, seed=1, counters=None, j
         flags = " ".join(f"{k}={'ok' if v else 'FAIL'}" for k, v in r["checks"].items())
         print(f"{g:3s} PE/SiPM/event {r['pe_per_sipm_stock']:.2f} -> {r['pe_per_sipm_fast']:.2f} "
               f"({r['pe_per_sipm_rel']:+.4f} +- {r['pe_per_sipm_rel_err']:.4f}); per step {r['photons_per_step_rel']:+.4f}; "
-              f"dt shift q10/50/90 {np.round(r['dt_cdf_shift_ns'], 3)} ns (raw {np.round(r['dt_q_diff_raw'], 2)}) | {flags}")
+              f"dt shift q10/50/90 {np.round(r['dt_cdf_shift_ns'], 3)} +- {np.round(r['dt_cdf_shift_err_ns'], 3)} ns (raw {np.round(r['dt_q_diff_raw'], 2)}) | {flags}")
     print(f"V4-photons {'PASS' if out['pass'] else 'FAIL'}")
     return out

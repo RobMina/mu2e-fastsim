@@ -163,6 +163,14 @@ distributions at the reference arm's 10, 50 and 90 % times t_q: shift = -(F_fast
 density f averaged over t_q +- 1 ns. For a smooth law this equals the quantile difference; a whole-ns offset is still
 caught. Raw quantile differences are reported alongside (`v4photons`, `v4sipm`).
 
+**Statistical allowance (user, 2026-10-22).** On one shard the 90 % level is noise-limited: numpy against numpy with
+another seed failed the bare 0.2 ns limit in 3 of 28 (seed, group) cells (shard 11, seeds 1-7). The shift now carries a
+standard error, and each level passes if |shift| - 2 x error <= 0.2 ns, the form of the PE check
+(`v4photons.cdf_shift`, `time_check`). The error is cluster-robust and paired: photons of one event share steps, and both
+arms see the same steps, so var(F_fast - F_ref) is summed over events, not photons (binomial errors are too small).
+On the same 28 cells the pulls have mean +0.04 and rms 0.92, 5 % beyond 2 sigma; the new rule fails 0 of 28; a 0.4 ns
+offset on 3,000 synthetic events is still caught (`tests/test_v4_time_check.py`).
+
 V4 status (2026-10-19): the photon stage (`crvfastsim/response/`) passes V4 against Offline's `MakeCrvPhotons` on the
 same steps (three reference shards); the time criterion is read as the horizontal CDF distance at each level (the tables
 store whole-ns delays). Its JAX twin runs ~300 k (step, SiPM) rows/s per A100, ~250-300x the stock photon module on a
