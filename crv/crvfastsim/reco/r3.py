@@ -36,7 +36,12 @@ def load_cache(paths, timers):
         ek = chain.event_key(st).astype(np.int64)
         o = np.argsort(ek, kind="stable")
         st, pdg, ek = st.iloc[o].reset_index(drop=True), pdg[o], ek[o]
-        out.append(dict(path=p, steps=st, pdg=pdg, ek=ek, events=np.unique(ek)))
+        try:                                  # events of the source file, CrvSteps or not (gen tree of the dumper)
+            g = tables.read(p, "gen", tables.KEY)
+            ngen = len(np.unique(chain.event_key(g)))
+        except Exception:
+            ngen = None
+        out.append(dict(path=p, steps=st, pdg=pdg, ek=ek, events=np.unique(ek), ngen=ngen))
     timers["io_s"] = timers.get("io_s", 0.0) + time.perf_counter() - t0
     return out
 
@@ -126,6 +131,7 @@ def run(steps, calib, deviation=None, target=1_000_000, jax=False, seed=1, batch
         obj = {"mod": crvresponse, "state": crvresponse.new_state()}
     _add(T, "setup_s", t0)
     cache = load_cache(steps, T)
+    per_cache = [0] * len(cache)
     per_pass, done, p = [], 0, 0
     while done < target and p < max_passes:
         tp = time.perf_counter()
@@ -139,6 +145,7 @@ def run(steps, calib, deviation=None, target=1_000_000, jax=False, seed=1, batch
                                    window_ns=cfg.window[1] - cfg.window[0])
                 done += n
                 n_pass += n
+                per_cache[i] += n
                 if done >= target or (time_limit and time.perf_counter() - t_all > time_limit):
                     break
             if done >= target or (time_limit and time.perf_counter() - t_all > time_limit):
@@ -147,9 +154,15 @@ def run(steps, calib, deviation=None, target=1_000_000, jax=False, seed=1, batch
         p += 1
         if time_limit and time.perf_counter() - t_all > time_limit:
             break
+    # events of the source files with no CRV steps, in proportion to the replayed events of each table
+    empty = None
+    if all(c["ngen"] is not None for c in cache):
+        empty = int(round(sum(k * (c["ngen"] - len(c["events"])) / len(c["events"]) for k, c in zip(per_cache, cache))))
+        if obj is not None:
+            obj["mod"].add_empty_events(obj["state"], empty, cfg.window[1] - cfg.window[0])
     wall = time.perf_counter() - t_all
     warm = [x for x in per_pass[1:] if x["events"]]
-    res = {"events_with_steps": done, "target": target, "wall_s": wall, "passes": per_pass,
+    res = {"events_with_steps": done, "events_without_steps": empty, "target": target, "wall_s": wall, "passes": per_pass,
            "events_per_s": done / wall if wall else 0.0,
            "warm_events_per_s": (sum(x["events"] for x in warm) / sum(x["wall_s"] for x in warm)) if warm else None,
            "cache_files": [c["path"] for c in cache], "cache_events": int(sum(len(c["events"]) for c in cache)),

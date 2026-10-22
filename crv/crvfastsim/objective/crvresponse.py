@@ -188,6 +188,15 @@ def accumulate_file(path, S, window_ns=None, chunk=CL.CHUNK, entry_stop=None):
     S["files"] += 1
 
 
+def add_empty_events(S, n, window_ns):
+    """Count n events with no CRV activity (no pulses, no lines): they add exposure, so the out-of-time rates stay per
+    generated event, as in a stock EventNtuple, which holds every event. The fast chain replays only events with CRV
+    steps and adds the rest here."""
+    S["events"] += int(n)
+    S["exposure_ns"] += float(n) * float(window_ns)
+    return S
+
+
 def merge_states(states):
     T = new_state()
     for S in states:
