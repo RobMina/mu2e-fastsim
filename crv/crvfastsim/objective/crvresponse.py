@@ -64,8 +64,14 @@ def _shape(name):
     return tuple(2 if a == "side" else len(E[a]) - 1 for a in SHAPES[name])
 
 
+N_BODY = CL.N_BODY
+EX_BODIES = 4                         # alignment bodies 0-3 are EX M0-M3
+DTP_EDGES = np.linspace(-40.0, 40.0, 161)   # per-(EX module, module) cluster time differences [ns], 0.5 ns bins
+
+
 def new_state():
-    S = {"events": 0, "files": 0, "exposure_ns": 0.0, "lines_z": 0, "lines_x": 0, "lines_xz": 0, "h": {}, "oot_n": {}}
+    S = {"events": 0, "files": 0, "exposure_ns": 0.0, "lines_z": 0, "lines_x": 0, "lines_xz": 0, "h": {}, "oot_n": {},
+         "dtp": np.zeros((EX_BODIES, N_BODY, len(DTP_EDGES) - 1)).tolist()}
     for name in SHAPES:
         for s in SLOTS_OF.get(name, SLOTS):
             S["h"][f"{name}_{s}"] = np.zeros(_shape(name)).tolist()
@@ -141,11 +147,25 @@ def accumulate_arrays(c, p, S, window_ns):
         m = (gs == k) & (n >= MIN_SPREAD_HITS)
         _fill(S, f"tspread_{name}", rms[m])
     f = o["feat"]
-    for name in SLOTS:
+    # module (alignment body) of each chosen cluster: the body of its largest-weight first pulse
+    body = np.full((nev, 4), -1, np.int64)
+    if len(e):
+        ws = np.lexsort((-o["hit_w"], s, e))
+        firstrow = np.r_[True, (e[ws][1:] != e[ws][:-1]) | (s[ws][1:] != s[ws][:-1])]
+        body[e[ws][firstrow], s[ws][firstrow]] = o["hit_body"][ws][firstrow]
+    dtp = np.asarray(S.get("dtp", new_state()["dtp"]))
+    for k, name in enumerate(SLOTS):
         hs = o["has"][name]
         _fill(S, f"nlayers_{name}", f[f"nl_{name}"][hs])
         if name != "EX":
-            _fill(S, f"dt_cluster_{name}", (f[f"t_{name}"] - f["t_EX"])[hs])
+            dt = f[f"t_{name}"] - f["t_EX"]
+            _fill(S, f"dt_cluster_{name}", dt[hs])
+            m = hs & (body[:, 0] >= 0) & (body[:, 0] < EX_BODIES) & (body[:, k] >= 0)
+            if m.any():
+                h = np.histogramdd(np.stack([body[m, 0], body[m, k], dt[m]], 1),
+                                   bins=[np.arange(-0.5, EX_BODIES), np.arange(-0.5, N_BODY), DTP_EDGES])[0]
+                dtp += h
+    S["dtp"] = dtp.tolist()
     chosen, _ = CL._choose_clusters(c)
     pl = c["crvcoincs.PEsPerLayer[4]"]
     idx = ak.local_index(c["crvcoincs.sectorType"])
@@ -169,7 +189,33 @@ def accumulate_arrays(c, p, S, window_ns):
     return o
 
 
-def accumulate_file(path, S, window_ns=None, chunk=CL.CHUNK, entry_stop=None):
+def shift_times(c, p, corr):
+    """Add corr[body] [ns] to every pulse time (body of its bar) and to every cluster time (body of its largest-PE
+    member pulse). Module-level shifts leave the coincidence finding unchanged (it works within a module), so applying
+    a module time calibration at this level is exact. Returns new (c, p)."""
+    corr = np.asarray(corr, float)
+    bar = p["crvpulses.barId"]
+    counts = ak.num(bar)
+    flatbar = ak.to_numpy(ak.flatten(bar)).astype(np.int64)
+    _, body, _ = G.bar_slot_body_layer(flatbar)
+    dpt = corr[body]
+    p = ak.with_field(p, ak.unflatten(ak.to_numpy(ak.flatten(p["crvpulses.time"])) + dpt, counts), "crvpulses.time")
+    hit = ak.to_numpy(ak.flatten(p["crvpulses.crvHitIndex"])).astype(np.int64)
+    pe = ak.to_numpy(ak.flatten(p["crvpulses.PEs"])).astype(float)
+    ev = np.repeat(np.arange(len(counts)), ak.to_numpy(counts))
+    ncl = ak.to_numpy(ak.num(c["crvcoincs.time"]))
+    first = np.r_[0, np.cumsum(ncl)[:-1]]
+    m = hit >= 0
+    gid = first[ev[m]] + hit[m]
+    o = np.lexsort((-pe[m], gid))
+    lead = np.r_[True, gid[o][1:] != gid[o][:-1]] if len(o) else np.zeros(0, bool)
+    dct = np.zeros(int(ncl.sum()))
+    dct[gid[o][lead]] = dpt[m][o][lead]
+    c = ak.with_field(c, ak.unflatten(ak.to_numpy(ak.flatten(c["crvcoincs.time"])) + dct, ncl), "crvcoincs.time")
+    return c, p
+
+
+def accumulate_file(path, S, window_ns=None, chunk=CL.CHUNK, entry_stop=None, time_corr=None):
     """Stock EventNtuple: read COINC_BR and PULSE_BR in chunks and accumulate. window_ns None: the digitisation window
     is the largest pulse time rounded to the nearest 100 us (KPP data 400 us, MC 100 us)."""
     import uproot
@@ -184,6 +230,8 @@ def accumulate_file(path, S, window_ns=None, chunk=CL.CHUNK, entry_stop=None):
             tmax = float(ak.max(p["crvpulses.time"], axis=None) or 0.0)
             w = max(1e5, np.round(tmax / 1e5) * 1e5)
         S.setdefault("window_ns", []).append(float(w))
+        if time_corr is not None:
+            c, p = shift_times(c, p, time_corr)
         accumulate_arrays(c, p, S, w)
     S["files"] += 1
 
@@ -220,6 +268,8 @@ def merge_states(states):
             T["h"][k] = (np.asarray(T["h"][k]) + np.asarray(v)).tolist()
         for k, v in S["oot_n"].items():
             T["oot_n"][k] += v
+        if "dtp" in S:
+            T["dtp"] = (np.asarray(T["dtp"]) + np.asarray(S["dtp"])).tolist()
         T["window_ns"] = sorted(set(T.get("window_ns", [])) | set(S.get("window_ns", [])))
     return T
 
@@ -347,14 +397,14 @@ def report(S, outdir, R=None, n0=N0):
 
 
 def run(inputs, outdir, config=None, emit=None, merge=False, compare=None, entry_stop=None, window_ns=None, n0=N0,
-        **kw):
+        time_corr=None, **kw):
     if merge:
         S = merge_states([json.load(open(f)) for f in _expand(inputs)])
         R = merge_states([json.load(open(f)) for f in _expand(compare)]) if compare else None
         return report(S, outdir, R, n0)
     S = new_state()
     for f in _expand(inputs):
-        accumulate_file(f, S, window_ns=window_ns, entry_stop=entry_stop)
+        accumulate_file(f, S, window_ns=window_ns, entry_stop=entry_stop, time_corr=time_corr)
         print(f"# {f}: cumulative {S['events']:,} events", flush=True)
     if emit:
         os.makedirs(os.path.dirname(emit) or ".", exist_ok=True)
