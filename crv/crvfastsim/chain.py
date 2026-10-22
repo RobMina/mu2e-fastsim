@@ -75,7 +75,8 @@ KNOBS = {"photon_yield_scale": ("response", "photon_yield_scale"), "time_constan
          "cross_talk": ("sipm", "cross_talk"), "min_voltage": ("waveform", "min_voltage"),
          "wf_noise": ("waveform", "noise"), "pe_stretch": ("waveform", "single_pe_stretch"),
          "background_scale": (None, "background_scale"),
-         **{f"yield_{n}": ("sector_yield", n) for n in ("EX", "T1", "T2", "TAG")}}
+         **{f"yield_{n}": ("sector_yield", n) for n in ("EX", "T1", "T2", "TAG")},
+         **{f"fiber_speed_{n}": ("sector_speed", n) for n in ("EX", "T1", "T2", "TAG")}}
 KNOB_FCL = {"photon_yield_scale": "physics.producers.CrvPhotons.photonYieldScaleFactor",
             "time_constant": "physics.producers.CrvSiPMCharges.timeConstant",
             "cross_talk": "physics.producers.CrvSiPMCharges.CrossTalkProb",
@@ -86,7 +87,10 @@ KNOB_FCL = {"photon_yield_scale": "physics.producers.CrvPhotons.photonYieldScale
             # per-sector scintillation yield [photons/MeV]: element of CrvPhotons.scintillationYields (sector order EX, T1,
             # T2, M1..M8; TAG sets all eight taggers). Fibre diameter and scintillator batch enter here (DocDB 56425:
             # CRV-T 1.8 mm 39794, CRV-T 1.4 mm 30482, batch-2 modules 28610)
-            **{f"yield_{n}": "physics.producers.CrvPhotons.scintillationYields" for n in ("EX", "T1", "T2", "TAG")}}
+            **{f"yield_{n}": "physics.producers.CrvPhotons.scintillationYields" for n in ("EX", "T1", "T2", "TAG")},
+            # fibre propagation speed [mm/ns] per sector: fast chain only (stock: baked into the lookup tables, all
+            # v6_0 tables 1.4 mm fibre, ~164 mm/ns); KPP data DocDB 56968: EX (1.8 mm) 145.7, T2 (1.4 mm) 168.7
+            **{f"fiber_speed_{n}": None for n in ("EX", "T1", "T2", "TAG")}}
 
 
 def apply_knobs(cfg, knobs):
@@ -99,11 +103,12 @@ def apply_knobs(cfg, knobs):
         if k not in KNOBS:
             raise KeyError(f"unknown knob {k}; known: {sorted(KNOBS)}")
         blk, fld = KNOBS[k]
-        if blk == "sector_yield":
+        if blk in ("sector_yield", "sector_speed"):
             names = [f"M{i}" for i in range(1, 9)] if fld == "TAG" else [fld]
             secs = dict(cfg.response.sectors)
+            attr = "yield_per_mev" if blk == "sector_yield" else "fiber_speed"
             for nm in names:
-                secs[nm] = dataclasses.replace(secs[nm], yield_per_mev=float(v))
+                secs[nm] = dataclasses.replace(secs[nm], **{attr: float(v)})
             cfg = dataclasses.replace(cfg, response=dataclasses.replace(cfg.response, sectors=secs))
             continue
         if blk is None:

@@ -22,11 +22,15 @@ from . import lookup
 PRECISION_MM = 0.1
 
 
+TABLE_FIBER_SPEED = 164.0   # mm/ns: effective speed in the v6_0 tables (10 % arrival time vs distance, all three tables)
+
+
 @dataclass
 class SectorConfig:
     table: str
     reflector: int
     yield_per_mev: float
+    fiber_speed: float = None   # mm/ns; None = the table's own (1.4 mm fibre geometry for every v6_0 table)
 
 
 # Offline CRVResponse/fcl/epilog_extracted_v05.fcl (included by Production digitize/Extracted.fcl)
@@ -246,8 +250,14 @@ def iter_rows(steps, pdg, geom, cfg, tables, deviation, rng):
                 theta = np.where(dl > 0, np.arccos(np.clip(d[:, 2] / np.where(dl > 0, dl, 1.0), -1, 1)), 0.0)
                 nsub = np.maximum((dl / PRECISION_MM).astype(np.int64), 1)
                 ch_dev = bar[idx] * 4 + s
+                # fibre speed: arrival times + d (1/v - 1/v_table), d = distance to this SiPM's end; in the table frame
+                # (z flipped for sides 1, 3) the readout is at z = -half_length, so d is linear in z: exact through t0/t1
+                vs = np.array([cfg.sectors[names[i]].fiber_speed or TABLE_FIBER_SPEED for i in range(len(names))])[sec[m]]
+                k = 1.0 / vs - 1.0 / TABLE_FIBER_SPEED
+                ta = t0[idx] + k * (a[:, 2] + L.half_length)
+                tb = t1[idx] + k * (b[:, 2] + L.half_length)
                 dev = (deviation[ch_dev] * cfg.photon_yield_variation_scale + 1.0) * cfg.photon_yield_scale
-                yield L, {"s": a, "d": d, "t0": t0[idx], "t1": t1[idx], "nsub": nsub, "beta": beta[idx],
+                yield L, {"s": a, "d": d, "t0": ta, "t1": tb, "nsub": nsub, "beta": beta[idx],
                           "theta": theta, "dev": dev, "step": idx, "chan": bar[idx] * 4 + (s + 1 if refl < 0 else s),
                           "n_scint": _per_substep(Y * edep[idx], nsub, rng),
                           "n_ck_s": _per_substep(cerenkov_per_mm(beta[idx], charge[idx], L.ck_scint) * length[idx],
