@@ -1,0 +1,13 @@
+# V-R5 stock arm: one point per line, NAME then FHiCL overrides (KEY=VALUE, keys as chain.KNOB_FCL) on
+# digi_crvonly_extracted_v05.fcl. The fast arm runs the same points with reco-r3 --knob (chain.KNOBS names).
+nominal
+ly085 physics.producers.CrvPhotons.photonYieldScaleFactor=0.85
+ly103 physics.producers.CrvPhotons.photonYieldScaleFactor=1.03
+ly112 physics.producers.CrvPhotons.photonYieldScaleFactor=1.12
+ct002 physics.producers.CrvSiPMCharges.CrossTalkProb=0.02
+ct006 physics.producers.CrvSiPMCharges.CrossTalkProb=0.06
+ct008 physics.producers.CrvSiPMCharges.CrossTalkProb=0.08
+tc10 physics.producers.CrvSiPMCharges.timeConstant=10.0
+tc166 physics.producers.CrvSiPMCharges.timeConstant=16.6
+tc20 physics.producers.CrvSiPMCharges.timeConstant=20.0
+th1e4 physics.producers.CrvSiPMCharges.ThermalRate=1.0e-4
