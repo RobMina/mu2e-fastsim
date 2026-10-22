@@ -71,12 +71,13 @@ class ChainConfig:
 # V-R5 / BO knobs: name -> (config block, field). Stock FHiCL names in KNOB_FCL (run_crvonly_knob.sh arm).
 KNOBS = {"photon_yield_scale": ("response", "photon_yield_scale"), "time_constant": ("sipm", "time_constant"),
          "cross_talk": ("sipm", "cross_talk"), "min_voltage": ("waveform", "min_voltage"),
-         "wf_noise": ("waveform", "noise")}
+         "wf_noise": ("waveform", "noise"), "pe_stretch": ("waveform", "single_pe_stretch")}
 KNOB_FCL = {"photon_yield_scale": "physics.producers.CrvPhotons.photonYieldScaleFactor",
             "time_constant": "physics.producers.CrvSiPMCharges.timeConstant",
             "cross_talk": "physics.producers.CrvSiPMCharges.CrossTalkProb",
             "min_voltage": "physics.producers.CrvWaveforms.minVoltage",
-            "wf_noise": "physics.producers.CrvWaveforms.noise"}
+            "wf_noise": "physics.producers.CrvWaveforms.noise",
+            "pe_stretch": "physics.producers.CrvWaveforms.singlePEWaveformStretchFactor"}
 
 
 def apply_knobs(cfg, knobs):

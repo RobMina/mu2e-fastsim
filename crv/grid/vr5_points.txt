@@ -1,5 +1,6 @@
 # V-R5 stock arm: one point per line, NAME then FHiCL overrides (KEY=VALUE, keys as chain.KNOB_FCL) on
 # digi_crvonly_extracted_v05.fcl. The fast arm runs the same points with reco-r3 --knob (chain.KNOBS names).
+# First submission (cluster 87212366); the tc* and nominal jobs were removed before running (see vr5_points_ws.txt).
 nominal
 ly085 physics.producers.CrvPhotons.photonYieldScaleFactor=0.85
 ly103 physics.producers.CrvPhotons.photonYieldScaleFactor=1.03

@@ -1,0 +1,6 @@
+# V-R5 stock arm, second submission (2026-10-22): single-PE waveform stretch (pulse width) points, replacing the time
+# constant points of vr5_points.txt (tc dropped: pixel recovery time, no effect on pulses; plan 4.1.32). Nominal comes
+# from the crvonly_v05 production ntuples of the same files (identical code and FHiCL).
+ws095 physics.producers.CrvWaveforms.singlePEWaveformStretchFactor=0.95
+ws120 physics.producers.CrvWaveforms.singlePEWaveformStretchFactor=1.2
+ws135 physics.producers.CrvWaveforms.singlePEWaveformStretchFactor=1.35
