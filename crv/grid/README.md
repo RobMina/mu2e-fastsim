@@ -38,9 +38,15 @@ with `art/CrvFastSim/fcl/dump_gen.fcl`.
 | file | role |
 |---|---|
 | `fcl/gen_only_extracted.fcl` | generator-only configuration |
-| `grid_crygen.sh` | worker: shard k = subrun 1001+k, baseSeed 20263000+k; skips if the output exists |
+| `grid_crygen.sh` | worker: shard k = subrun 2001+k, baseSeed 20263000+k (subruns 1001-1020 belong to the tracker's gen_as_v1); skips if the output exists |
 | `submit_crygen.sh [--test\|--cluster -N n]` | stages the fcl, submits (lifetime 3 h, 2.5 GB memory, 2 GB disk); default 100 x 1 M |
 
 GPVM check (20,000 events, mu2egpvm03): 42 s CPU (2.1 ms per generated event), VmHWM 1.9 GB (Geant4 initialisation),
 1.7 MB of art; dumped table has the g4ref_v1 columns, 20,105 primaries for 20,000 events, live time 0.308 s
 (15.4 us per event, g4ref_v1 15.59 us).
+
+Test job `30476047.0@jobsub04` (2026-10-22, before the subrun change): 1,000,000 generated, 15.565 s live, CPU 1,856 s,
+wall 39:43, VmHWM 1.93 GB. It used subrun 1001, which the tracker's `gen_as_v1` already uses (different seed, so a
+different sample, but the same run/subrun/event keys): its output was renamed `...crygen_test_subrun1001...` and is not
+part of `crygen_v1`. Register every new sample in the ai-config wiki `environment/datasets-samples-and-provenance.md`
+before submitting.

@@ -2,11 +2,11 @@
 # submit_crygen.sh [--test | --cluster] [-N njobs] [--nevts N] [--outdir DIR]
 # CRY-only gen tables for mu2e-crv-fastsim chain_point (the 20 g4ref_v1 shards are too few for production points):
 # NJOBS x NEVTS generated events, generator + genCounter + cosmicTimeOffset only (fcl/gen_only_extracted.fcl; g4run is
-# initialised but tracks nothing). Shard k: subrun SUBRUN0+k (1001.., disjoint from g4ref_v1's 1..20), baseSeed
+# initialised but tracks nothing). Shard k: subrun SUBRUN0+k (2001.., disjoint from g4ref_v1 1-20 and gen_as_v1 1001-1020), baseSeed
 # BASESEED+k. Sizing (GPVM 2026-10-22): 2.1 ms CPU per generated event, VmHWM 1.9 GB -> 1 M events ~35-60 min.
 # Prereq on the submit host: setupmu2e-art.sh, muse setup ops, valid token, site.env (CRVFS_PNFS). Run from a data-area dir.
 set -euo pipefail
-MODE="test"; NJOBS=100; NEVTS=1000000; BASESEED=20263000; SUBRUN0=1001
+MODE="test"; NJOBS=100; NEVTS=1000000; BASESEED=20263000; SUBRUN0=2001
 OUTDIR="${CRVFS_PNFS:?source site.env}/crygen_v1"
 while [[ $# -gt 0 ]]; do
   case "$1" in
