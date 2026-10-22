@@ -114,6 +114,8 @@ an analysis.
 | P5 | Container | one image, no CVMFS, cold start <= 5 min on a Polaris node, < 5 GB | < 2 GB | Polaris has no CVMFS ([apptainer page]) |
 | P6 | Reproducibility | same seed + same backend gives bit-identical output; CPU and GPU agree statistically (section 5) | CPU/GPU bit-identical | needed for the A/B harness |
 
+Status (2026-10-22): **P1** ~1.9 ms per accepted event on one core (met, re-measure on an idle host); **P2 met** on one whole A100 with real G4 steps, 51-57x per accepted event (~2,600-2,900 accepted events/s; UVA A100-SXM4-80GB, `core/uva/p2_uva.sh`); **P3 met** on one Aurora node, 1.46 M accepted events per node-hour; **P4**: the fast reco's R3 (response + waveforms + reco + objective on 1 M cached events in 10.4 min on one Polaris node, PBS 7771210, `docs/fastreco.md`) covers it; **P5 met** (R4 container); **P6**: R5 (bit-identical per seed, CPU/GPU statistical) passes for the reco and the fused response's V4 is bit-identical per seed across devices. Details in `crvfastsim/README.md`.
+
 Where the stock digitisation (`CrvWaveforms`, `CrvDigi`) or reco must run, it runs on the CPU cores of the same
 Polaris node inside the Offline image. Those two modules cost 0.15 ms per event, so they are not a bottleneck.
 
