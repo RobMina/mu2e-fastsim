@@ -5,21 +5,24 @@ detector-independent code (energy loss, materials, world, generic crossings/tran
 matching and the ALCF IRI job tools) lives in [`mu2e-fastsim-core`](https://github.com/RobMina/mu2e-fastsim-core)
 (package `mu2efastsim`); this repository holds only the CRV-specific code and depends on it.
 
-A Geant4-free, GPU-accelerated simulation of the Mu2e KPP (extracted) Cosmic Ray Veto cosmic sample, for MC/data
-agreement studies. It runs in a container on ALCF Polaris and is submitted through the ALCF IRI API. The CRV comes
-first; the tracker follows.
+A Geant4-free, GPU-accelerated simulation and fast reconstruction of the Mu2e KPP (extracted) Cosmic Ray Veto cosmic
+sample, for MC/data agreement studies: fast CrvSteps, the fused GPU CRV response, waveforms, pulse and coincidence
+reco, and the CRV response objective, in numpy and JAX. It runs on ALCF Polaris (IRI API) and Aurora, ESnet, UVA and
+Fermilab EAF through the endpoint drivers in `mu2e-fastsim-core`, and as the Mu2eBO kit `fastsimkit`. Validation
+status: the umbrella README; fast reco goals and results: `docs/fastreco.md`.
 
 | path | content |
 |---|---|
 | `docs/plan.md` | scope, measured baseline, agreed performance goals and validation thresholds, architecture, schedule |
+| `docs/fastreco.md` | fast reconstruction: goals R1-R6, thresholds V-R1..V-R5, results (V-R4, V-R5, R3, the out-of-time background model) |
 | `docs/schema_and_transport.md` | CrvStep-table design notes and the muon-transport design |
 | `crvfastsim/` | the Python package and CLI (`python3 -m crvfastsim`); **reference: `crvfastsim/README.md`** |
 | `tests/` | pytest unit tests (from the umbrella root: `PYTHONPATH=core:crv python3 -m pytest -q crv/tests`) |
 | `art/` | muse area with the `CrvFastSim` art package (`CrvStepTableDumper`) and `dump_g4ref.sh` |
-| `grid/` | FermiGrid jobs for the G4 reference sample (`g4ref_v1`) |
+| `grid/` | FermiGrid jobs: the G4 reference sample (`g4ref_v1`), V-R4 and V-R5 stock arms, CRY generator tables (`grid/README.md`) |
 | `geometry/` | Offline job that exports the G4 world (GDML + bar printout) for `crvfastsim v0check` |
 | `profile/` | Offline job configs and driver of the 2026-10-15 baseline profile; summaries in `profile/results/` |
-| `containers/` | Polaris image recipe (not started) |
+| `scripts/` | GPVM drivers (reco checks, V-R4 runs, the background-model fit) |
 | `site.env.example` | site paths and accounts for the job scripts; copy to `site.env` (git-ignored) and source it |
 
 Python conventions follow `crvextrap` (`RobMina/mu2e_track_crv_mcresponse`): one package, every analysis a subcommand,

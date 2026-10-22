@@ -1,6 +1,8 @@
 # Fast CRV reconstruction (stage 1): goals, validation, prototype
 
 Status: **goals and thresholds agreed 2026-10-16.** First comparisons on existing digis done 2026-10-16 (Results).
+As of 2026-10-22: V-R1 to V-R5 pass, and R1, R2, R3, R4 and R5 are met (R3 and V-R5 at the end of Results); R6 is not
+formally assessed. Newest: the out-of-time background model (last section).
 
 ## Purpose
 
@@ -367,3 +369,51 @@ First numbers (CPU only; GPU pending):
 - **Stock v05 MC vs data (124336, 200 k events):** objective 178. Largest: out-of-time rates 8-19x lower in MC than in
   data, `dt_cluster_T2` and `dt_cluster_T1` (data timing tails), `pe_layer_T1`. This is the MC-data gap the response
   fit is meant to close; the term weights and the out-of-time definition need a review before BO uses it.
+
+### R3 met on Polaris (2026-10-22)
+
+`reco-r3` on one Polaris node (4 A100, PBS 7771210, `--v05`, 20 MDC2025as step tables replayed with fresh seeds): **1 M
+events with CRV steps end to end (response + waveforms + reco + objective) in a 624 s job wall = 10.4 min** (goal
+<= 15 min, stretch 3). Warm throughput 3,161 events/s per node (790 per A100); per A100 warm ms/event: response 1.45,
+digis 0.30, reco 0.34, objective 0.06. JIT compilation (pass 0) takes ~370 s of the ~570 s per process, so a small-N R3
+run measures compilation, not throughput. The fast chain on GPU still agrees with stock on the same steps (objective
+1.2 against the stock v05 EventNtuple of the same file).
+
+### Size-free objective (2026-10-22)
+
+The objective now lives in this package as `crvfastsim.objective` (`crvline`, `crvresponse`, `bars`; numpy/awkward
+only; `python -m crvfastsim.objective`), so the fast chain, the grid jobs and Mu2eBO import one copy. The raw shape
+chi2/ndf grew with the sample size for a fixed MC-data difference, which a BO loop cannot use. Each histogram term is
+now the bias-corrected triangular discrimination of the two shapes, on the chi2/ndf scale at N0 = 10 k entries, with
+`sigma` (Poisson resampling of the candidate: the BO `obs_noise`) and `sigma_ref` (the reference's own noise). The raw
+value is kept as `objective_raw`. Check: the same comparison at 22 k and 1 M events now agrees within its errors.
+`reco-r3 --knob NAME=VALUE` (`chain.KNOBS`) and `R3_KNOBFILE` in `r3_polaris.sh` (one point per GPU) run a knob point.
+
+### V-R5: the objective from both paths on a knob scan (2026-10-22)
+
+Stock arm on the FermiGrid (`grid/submit_vr5_stock.sh`, points in `grid/vr5_points.txt`), fast arm through
+`reco-r3 --knob`, both on the same five MDC2025as files, scored against one reference (`grid/vr5_collect.sh`,
+`grid/vr5_verdict.py`). Knobs: photon yield (0.85-1.12), crosstalk (0.02-0.08), single-PE waveform stretch (0.95-1.35;
+`CrvWaveforms.singlePEWaveformStretchFactor`, which replaced the time constant because that only shifts the pulse).
+**Pass:** the same minimum from both paths for every knob, and every fast - stock difference (largest 0.27, 0.49,
+0.27) within 1/10 of the stock spread over the scanned range (3.8, 11.6) where that spread exceeds the noise of a
+difference, and within noise otherwise (crosstalk is flat within noise).
+
+One fix was needed first: the fast arm replays only events with CRV steps, so its per-event out-of-time rates were
+~10 % high and every fast point sat below stock. `reco-r3` now adds the source files' events without CRV steps to the
+exposure (`events_without_steps`, `crvresponse.add_empty_events`), as a stock EventNtuple holds every event. A stock
+run with thermal noise on (ThermalRate 1e-4) gives the same out-of-time rates and objective as nominal, so thermal
+noise is not the missing out-of-time source.
+
+### Out-of-time background model (2026-10-22)
+
+The out-of-time CRV pulses in KPP data are real single-bar light (most have the partner SiPM within 20 ns and come one
+bar at a time, flat in the window), which the cosmic MC makes at only ~10 % of the data rate, and none of the V-R5 knobs
+moves them. `crvfastsim.reco.background` adds them to the fast chain: groups of out-of-time pulses (per event and
+sector, gaps <= 30 ns) resampled from a library built from data, at the net rate data - MC, with a negative-binomial
+count per event. They are merged with the signal pulses before the coincidence finder (the `add_pulses` hook in
+`chain_jax`, and the numpy path); events without waveforms are filled directly. Knob `background_scale` (fast chain
+only). Library and rate: `reco-background --emit/--merge` (per-file partials; GPVM scatter `scripts/run_background_fit.sh`).
+Check on CPU (`scripts/background_check.py`): the out-of-time rates come within a few % of the reference, the
+out-of-time terms of the objective drop to shape level, and the coincidence count is unchanged (30,138 vs 30,132).
+Tests: `tests/test_background.py`.
