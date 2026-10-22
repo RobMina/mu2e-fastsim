@@ -815,7 +815,8 @@ def cmd_r3(args):
         raise SystemExit("reco-r3 needs --calib")
     return r3.run(args.inputs, args.calib, deviation=args.deviation, target=args.target, jax=args.jax, seed=args.seed,
                   batch_events=args.batch_events, emit=args.emit, objective=args.objective, noise=not args.no_noise,
-                  time_limit=args.time_limit, v05=args.v05)
+                  time_limit=args.time_limit, v05=args.v05,
+                  knobs=dict(kv.split("=", 1) for kv in (args.knob or [])))
 
 
 def cmd_vr4eff(args):
@@ -1138,11 +1139,12 @@ def add_reco_args(sp, name):
         sp.add_argument("--target", type=int, default=1_000_000, help="events with CRV steps to process (replays the cache)")
         sp.add_argument("--jax", action="store_true", help="JAX: fused device response, JAX waveforms and reco")
         sp.add_argument("--no-noise", action="store_true")
-        sp.add_argument("--objective", action="store_true", help="fill the crvextrap crvresponse histograms (needs "
-                        "crvextrap on PYTHONPATH)")
+        sp.add_argument("--objective", action="store_true", help="fill the crvfastsim.objective response histograms")
         sp.add_argument("--batch-events", type=int, default=2000)
         sp.add_argument("--time-limit", type=float, default=None, help="stop after this many seconds (wall)")
         sp.add_argument("--v05", action="store_true", help="crvonly_v05 settings: one FEB phase per event, CRVTime net zero")
+        sp.add_argument("--knob", nargs="*", default=None, help="response knobs NAME=VALUE (chain.KNOBS), e.g. "
+                        "photon_yield_scale=1.1 cross_talk=0.06")
         sp.add_argument("--emit", default=None, help="per-process JSON")
         sp.add_argument("--merge", action="store_true", help="inputs are --emit JSONs of one node job")
         sp.add_argument("--wall", type=float, default=None, help="--merge: the job wall [s] (default: slowest process)")

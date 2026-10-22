@@ -7,8 +7,7 @@ Replays differ only in their random numbers; the cost per event depends on the s
 
 Chain per batch of whole events: response (JAX: fused device photons -> SiPM charges, response/device.py; numpy:
 chain.charges) -> waveforms/digis (chain.digis) -> reco waveforms (chain.reco_waveforms) -> pulses + clusters
-(chain.clusters) -> objective histograms (crvextrap.analyses.crvresponse on reco.ntview, if crvextrap is importable
-and --objective is given). The output JSON has the per-stage times, the per-pass walls (pass 0 includes compilation),
+(chain.clusters) -> objective histograms (crvfastsim.objective.crvresponse on reco.ntview, with --objective). The output JSON has the per-stage times, the per-pass walls (pass 0 includes compilation),
 the events, and the response accumulator for a later merge against data.
 
 Timers: setup_s (geometry, conditions, lookup tables), io_s (read tables, pdg join), response_s, digis_s, group_s
@@ -96,7 +95,7 @@ def run_batch(c, a, b, cond, cfg, geom, ccfg, tabs, pmap, rng, key, T, objective
 
 
 def run(steps, calib, deviation=None, target=1_000_000, jax=False, seed=1, batch_events=2000, counters=None,
-        emit=None, objective=False, noise=True, max_passes=1000, time_limit=None, v05=False):
+        emit=None, objective=False, noise=True, max_passes=1000, time_limit=None, v05=False, knobs=None):
     """v05: the crvonly_v05 digitisation settings (one FEB clock phase per event, CRVTime net zero), as reco-vr4eff,
     for comparisons with the v05 EventNtuples."""
     T = {}
@@ -110,7 +109,7 @@ def run(steps, calib, deviation=None, target=1_000_000, jax=False, seed=1, batch
         import dataclasses
         cond = dataclasses.replace(cond, roc=np.zeros_like(cond.roc), feb=np.zeros_like(cond.feb),
                                    timeoffset=np.zeros_like(cond.timeoffset))
-    cfg = chain.ChainConfig(jax=bool(jax), noise=bool(noise))
+    cfg = chain.apply_knobs(chain.ChainConfig(jax=bool(jax), noise=bool(noise)), knobs)
     from ..response import photons as PH
     from ..response import sipm as SI
     tabs = PH.load_tables(cfg.response)
@@ -123,7 +122,7 @@ def run(steps, calib, deviation=None, target=1_000_000, jax=False, seed=1, batch
     pmap = SI.photon_map()
     obj = None
     if objective:
-        from crvextrap.analyses import crvresponse
+        from ..objective import crvresponse
         obj = {"mod": crvresponse, "state": crvresponse.new_state()}
     _add(T, "setup_s", t0)
     cache = load_cache(steps, T)
@@ -154,7 +153,7 @@ def run(steps, calib, deviation=None, target=1_000_000, jax=False, seed=1, batch
            "events_per_s": done / wall if wall else 0.0,
            "warm_events_per_s": (sum(x["events"] for x in warm) / sum(x["wall_s"] for x in warm)) if warm else None,
            "cache_files": [c["path"] for c in cache], "cache_events": int(sum(len(c["events"]) for c in cache)),
-           "timers": T, "jax": bool(jax), "noise": bool(noise), "v05": bool(v05), "batch_events": batch_events, "seed": seed,
+           "timers": T, "jax": bool(jax), "noise": bool(noise), "v05": bool(v05), "knobs": dict(knobs or {}), "batch_events": batch_events, "seed": seed,
            "ms_per_event": {k[:-2]: 1e3 * v / max(done, 1) for k, v in T.items()
                             if isinstance(v, float) and k.endswith("_s")}}
     if jax:
@@ -184,6 +183,6 @@ def merge(paths, wall=None):
            "devices": sorted({str(j.get("device")) for j in J})}
     states = [j["response_state"] for j in J if "response_state" in j]
     if states:
-        from crvextrap.analyses import crvresponse
+        from ..objective import crvresponse
         out["response_state"] = crvresponse.merge_states(states)
     return out

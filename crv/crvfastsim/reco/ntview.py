@@ -2,7 +2,7 @@
 
 Input: the chunk outputs of chain.clusters(..., detail=True) (cl_* per cluster, cl_pos, the member table mem_* and the
 flat pulses). Output: two awkward record arrays, one entry per event of `events`, with the fields of
-crvextrap.crvline's COINC_BR and PULSE_BR, so the CRV-only line fit and the response observables run unchanged on the
+crvfastsim.objective.crvline's COINC_BR and PULSE_BR, so the CRV-only line fit and the response observables run unchanged on the
 fast chain and on stock EventNtuples.
 
 Conventions reproduced from EventNtuple CrvInfoHelper:

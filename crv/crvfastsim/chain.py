@@ -65,6 +65,32 @@ class ChainConfig:
     jax: bool = False                   # JAX twins for photons, SiPM charges and waveforms
     rounds: int = 3                     # pulse-reco kernel rounds (chain_jax)
     unbucketed_synth: bool = False      # JAX waveforms in one call padded to the largest cluster (OOM on real files)
+    waveform: object = None             # reco.waveform.WaveformConfig (None: the stock prolog_v12 values)
+
+
+# V-R5 / BO knobs: name -> (config block, field). Stock FHiCL names in KNOB_FCL (run_crvonly_knob.sh arm).
+KNOBS = {"photon_yield_scale": ("response", "photon_yield_scale"), "time_constant": ("sipm", "time_constant"),
+         "cross_talk": ("sipm", "cross_talk"), "min_voltage": ("waveform", "min_voltage"),
+         "wf_noise": ("waveform", "noise")}
+KNOB_FCL = {"photon_yield_scale": "physics.producers.CrvPhotons.photonYieldScaleFactor",
+            "time_constant": "physics.producers.CrvSiPMCharges.timeConstant",
+            "cross_talk": "physics.producers.CrvSiPMCharges.CrossTalkProb",
+            "min_voltage": "physics.producers.CrvWaveforms.minVoltage",
+            "wf_noise": "physics.producers.CrvWaveforms.noise"}
+
+
+def apply_knobs(cfg, knobs):
+    """ChainConfig with knob overrides {name: value} (KNOBS). Unknown names raise."""
+    import dataclasses
+    from .reco import waveform as WF
+    if cfg.waveform is None:
+        cfg = dataclasses.replace(cfg, waveform=WF.WaveformConfig())
+    for k, v in (knobs or {}).items():
+        if k not in KNOBS:
+            raise KeyError(f"unknown knob {k}; known: {sorted(KNOBS)}")
+        blk, fld = KNOBS[k]
+        cfg = dataclasses.replace(cfg, **{blk: dataclasses.replace(getattr(cfg, blk), **{fld: float(v)})})
+    return cfg
 
 
 def event_key(df):
@@ -119,7 +145,7 @@ def digis(Q, cond, cfg, rng, key=None, timers=None):
     labels = np.unique(Q["chan"])
     tdc0 = tdc0_per_feb(labels, cond, rng)
     lut = lambda lab: tdc0[np.searchsorted(labels, lab)]
-    wcfg = WF.WaveformConfig()
+    wcfg = cfg.waveform if cfg.waveform is not None else WF.WaveformConfig()
     t0 = _time.perf_counter()
     if cfg.jax:
         import jax
