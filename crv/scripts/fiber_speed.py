@@ -7,6 +7,9 @@ so x_timing - centre = (v_reco / v_true) (x_line - centre): v_true = v_reco / sl
 |x_line - centre| < 0.75 half length).
 
     python3 fiber_speed.py NTUPLE.root [...] [--entry-stop N] [--out OUT.json]
+
+--truth (MC diagnostic, closure test of a simulated speed): every timing-positioned cluster of the sector against its
+own truth position (crvcoincsmc.pos x), no line fit and no cluster choice, so ~15x more clusters per file.
 """
 import argparse
 import json
@@ -46,6 +49,20 @@ def per_file(path, entry_stop):
     return out
 
 
+TRUTH_BR = ["crvcoincs.sectorType", "crvcoincs.hitPosAndTimeCalculated", "crvcoincs.pos.fCoordinates.fX",
+            "crvcoincsmc.valid", "crvcoincsmc.pos.fCoordinates.fX"]
+SECTOR_CODE = {"EX": 1, "T2": 3}
+
+
+def per_file_truth(path, entry_stop):
+    a = uproot.open(path)[R.TREE].arrays(TRUTH_BR, entry_stop=entry_stop)
+    st = ak.to_numpy(ak.flatten(a["crvcoincs.sectorType"]))
+    ok = ak.to_numpy(ak.flatten(a["crvcoincs.hitPosAndTimeCalculated"] & a["crvcoincsmc.valid"]))
+    xr = ak.to_numpy(ak.flatten(a["crvcoincs.pos.fCoordinates.fX"]))
+    xm = ak.to_numpy(ak.flatten(a["crvcoincsmc.pos.fCoordinates.fX"]))
+    return {k: (xm[ok & (st == c)], xr[ok & (st == c)]) for k, c in SECTOR_CODE.items()}
+
+
 def fit(xl, xt, half):
     keep = np.abs(xl) < 0.75 * half                         # bar centre at x = 0 for EX and T2 (detector frame)
     xl, xt = xl[keep], xt[keep]
@@ -55,7 +72,9 @@ def fit(xl, xt, half):
         mad = 1.4826 * np.median(np.abs(r - np.median(r)))
         k = np.abs(r - np.median(r)) < 2.5 * mad
         sl, ic = np.polyfit(xl[k], xt[k], 1)
-    return sl, ic, int(k.sum())
+    r = xt[k] - (sl * xl[k] + ic)
+    esl = np.std(r) / (np.std(xl[k]) * np.sqrt(k.sum()))   # LSQ slope error on the kept clusters
+    return sl, ic, int(k.sum()), esl
 
 
 def main():
@@ -63,18 +82,23 @@ def main():
     ap.add_argument("inputs", nargs="+")
     ap.add_argument("--entry-stop", type=int, default=None)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--truth", action="store_true", help="MC diagnostic: reco vs truth cluster position")
     a = ap.parse_args()
     acc = {"EX": ([], []), "T2": ([], [])}
+    one = per_file_truth if a.truth else per_file
     for f in a.inputs:
-        for k, (xl, xt) in per_file(f, a.entry_stop).items():
+        for k, (xl, xt) in one(f, a.entry_stop).items():
             acc[k][0].append(xl)
             acc[k][1].append(xt)
     res = {}
     for k, (xl, xt) in acc.items():
         xl, xt = np.concatenate(xl), np.concatenate(xt)
-        sl, ic, n = fit(xl, xt, R.HALF[k])
-        res[k] = {"slope": float(sl), "intercept_mm": float(ic), "speed_mm_ns": V_RECO / sl, "n": n}
-        print(f"{k}: slope {sl:.4f} -> effective speed {V_RECO / sl:.1f} mm/ns (offset {ic:+.0f} mm, {n} clusters)")
+        sl, ic, n, esl = fit(xl, xt, R.HALF[k])
+        v, ev = V_RECO / sl, V_RECO * esl / sl ** 2
+        res[k] = {"slope": float(sl), "slope_err": float(esl), "intercept_mm": float(ic), "speed_mm_ns": v,
+                  "speed_err": ev, "n": n}
+        print(f"{k}: slope {sl:.4f} +- {esl:.4f} -> effective speed {v:.1f} +- {ev:.1f} mm/ns "
+              f"(offset {ic:+.0f} mm, {n} clusters)")
     if a.out:
         json.dump(res, open(a.out, "w"), indent=1)
 
