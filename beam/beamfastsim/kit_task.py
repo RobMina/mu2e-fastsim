@@ -2,8 +2,8 @@
 
 Registered in mu2efastsim.endpoints.kit by `register(TASKS, Task, Resources, FNAL_TASKS)`. Reads the Mu2e-internal
 DS-entrance muons (g4ref table made from MuBeamCat) in place, so it runs only on an endpoint that mounts FNAL storage
-(eaf). Params:
-  geom     geometry file: absolute path on FNAL storage, a name under beam/geom, or "nominal" (geom_common)
+(eaf), or with the muon table streamed into the job on a Slurm-over-SSH endpoint (UVA; kit_uva). Params:
+  geom     geometry file: absolute path on FNAL storage (/exp/mu2e/...), a name under beam/geom, or "nominal"
   muons    number of DS-entrance muons to transport (<= the table size, 105,350 for MDC2025ac)
   seed     random seed
   repeat   warm passes for the throughput metric (0 = none)
@@ -37,3 +37,21 @@ def register(tasks, task_cls, resources_cls, fnal_tasks):
                                    resources=resources_cls(cores=4, mem_gb=24, gpus=1, gpu_type="a100", minutes=30),
                                    body=BODY)
     fnal_tasks.add("beam_point")
+
+
+class _UVADelegate:
+    """beam_point on a Slurm-over-SSH endpoint (no FNAL storage): stream the muon table in (kit_uva)."""
+
+    @staticmethod
+    def applies(endpoint):
+        return not getattr(endpoint, "fnal_data", None) and hasattr(endpoint, "stream_in")
+
+    @staticmethod
+    def make(kit):
+        from .kit_uva import BeamPointStream
+        return BeamPointStream(kit)
+
+
+def register_delegate(delegates):
+    """beam_point on endpoints without FNAL storage runs through kit_uva (inputs streamed into the job)."""
+    delegates["beam_point"] = _UVADelegate
