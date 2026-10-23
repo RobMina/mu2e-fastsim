@@ -1,0 +1,24 @@
+# G4 reference for the flash fast transport: stock EleBeamResampler (DS stage of the electron beam), early-flash path
+# only, unprescaled; every event's tracker StrawGasSteps (before the detector-step filter) and SimParticles are dumped.
+#include "Production/JobConfig/pileup/EleBeamResampler.fcl"
+
+physics.analyzers.dump : {
+  module_type : StrawGasStepTableDumper
+  strawGasSteps : "StrawGasStepMaker"
+  surfaceSteps : "none"
+  mcTrajectories : "none"
+  vdSteps : "g4run:virtualdetector"
+  simParticles : "g4run"
+  primaryParticle : "none"
+  genParticles : "beamResampler"
+  livetime : "none"
+  writeTrajectories : false
+}
+physics.dumpPath : [ dump ]
+physics.trigger_paths : [ earlyFlashPath ]
+physics.outPath : [ ]
+physics.end_paths : [ dumpPath ]
+outputs : { }
+services.TFileService.fileName : "nts.owner.flashfs_g4ref.version.sequencer.root"
+physics.filters.EarlyPrescaleFilter.nPrescale : 1
+physics.filters.beamResampler.mu2e.MaxEventsToSkip : 0

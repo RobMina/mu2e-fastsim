@@ -22,3 +22,17 @@ apptainer exec --nv mu2efastsim.sif crvfastsim reco-bench synthetic --stage chai
   chain bench inside each image.
 - Size: the untrimmed GPU image is 3.5 GB (5.6 GB unpacked, 4.8 GB of it CUDA wheels; cuDNN alone 1.2 GB). R4 asks for
   "the fast-sim image + < 0.5 GB": the reco adds ~1 MB of code and data to the shared JAX/CUDA stack.
+
+## Celeritas image (`celeritas.def`, `build_celeritas.sh`)
+
+A second, separate image for the GPU electromagnetic transport feasibility study of the Mu2eBO `elebeam_flash` stage:
+Celeritas 0.7.0 (CUDA, sm_80), Geant4 11.3.2, VecGeom 2.2.0 (+gdml, CUDA), G4VG and covfie, built with spack on
+`nvidia/cuda:12.6.3-devel-rockylinux9` along the lines of Celeritas' own `scripts/docker/dev/rocky-cuda12.yaml`. It
+provides `celer-g4` (Celeritas' standalone Geant4 application) to run the Mu2e GDML export with the DS field map.
+Built by the user on a UVA node (1-3 h, needs `--fakeroot` and outbound internet):
+
+```bash
+module load apptainer
+JOBS=32 container/build_celeritas.sh /scratch/$USER/mu2efastsim/mu2e-celeritas.sif
+```
+

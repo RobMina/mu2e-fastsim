@@ -1,0 +1,79 @@
+Bootstrap: docker
+From: nvidia/cuda:12.6.3-devel-rockylinux9
+
+%labels
+    org.opencontainers.image.title mu2e-celeritas
+    org.opencontainers.image.source https://github.com/RobMina/mu2e-fastsim
+    org.opencontainers.image.description Celeritas (GPU EM transport) + Geant4 11.3 + VecGeom for the Mu2e elebeam_flash feasibility study
+
+%help
+    Celeritas @CELERITAS@ with CUDA (sm_80, A100), VecGeom (+gdml, CUDA), Geant4 11.3.2 (Mu2e's version), VecGeom 2.2.0, G4VG, covfie,
+    built with spack following Celeritas' own rocky-cuda12 recipe (scripts/docker/dev/rocky-cuda12.yaml).
+    Purpose: run Celeritas' standalone Geant4 app celer-g4 on the Mu2e GDML export with the DS field map, as the first
+    step of route A in ai-config wiki mu2e/wiki/sim/elebeam-flash-gpu-plan.md. No Mu2e-internal data inside.
+      apptainer exec --nv mu2e-celeritas.sif celer-g4 --help
+      apptainer exec --nv mu2e-celeritas.sif ctest --test-dir /opt/celeritas-build -L app   (if the build dir is kept)
+
+%environment
+    export SPACK_ROOT=/opt/spack
+    . /opt/spack-environment/activate.sh 2>/dev/null || true
+    export G4FORCENUMBEROFTHREADS=1
+
+%post
+    set -e
+    dnf install -y -q epel-release
+    dnf --enablerepo epel install -y -q bzip2 curl-minimal file findutils gcc-c++ gcc gcc-gfortran git gnupg2 \
+        hostname iproute make patch python3 python3-pip python3-setuptools unzip xz zstd which
+    dnf clean all
+    export SPACK_ROOT=/opt/spack
+    mkdir -p $SPACK_ROOT
+    curl -sL https://api.github.com/repos/spack/spack/tarball/@SPACK_VERSION@ | tar xzC $SPACK_ROOT --strip 1
+    . $SPACK_ROOT/share/spack/setup-env.sh
+    spack bootstrap now >/dev/null
+    spack compiler find >/dev/null
+    mkdir -p /opt/spack-environment
+    cat > /opt/spack-environment/spack.yaml <<'EOF'
+spack:
+  specs:
+    - "celeritas@@CELERITAS@ +cuda +geant4 +vecgeom +covfie cuda_arch=80 cxxstd=20"
+    - "geant4@11.3.2 cxxstd=20 ~opengl ~qt ~motif ~x11 +threads"
+    - "vecgeom@2.2.0 +gdml +cuda cuda_arch=80 cxxstd=20"
+    - "g4vg"
+    - "covfie +cuda cuda_arch=80"
+    - cmake
+    - ninja
+    - nlohmann-json
+    - cli11
+    - hepmc3
+  concretizer:
+    unify: true
+  packages:
+    cuda:
+      buildable: false
+      externals:
+        - spec: cuda@12.6.3
+          prefix: /usr/local/cuda
+    all:
+      target: [x86_64_v3]
+      variants: +cuda cuda_arch=80 cxxstd=20
+  config:
+    install_tree: /opt/software
+    build_jobs: @JOBS@
+  view: /opt/view
+EOF
+    cd /opt/spack-environment
+    spack env activate -d .
+    spack concretize -f
+    spack install --fail-fast
+    spack gc -y
+    spack env activate --sh -d . > /opt/spack-environment/activate.sh
+    rm -rf /root/.spack/cache $SPACK_ROOT/var/spack/cache /tmp/*
+    # Geant4 data sets (EM: G4EMLOW, G4ENSDFSTATE, PhotonEvaporation are what celer-g4 with EM physics needs)
+    . /opt/spack-environment/activate.sh
+    geant4-config --install-datasets >/dev/null 2>&1 || true
+
+%test
+    . /opt/spack-environment/activate.sh
+    which celer-g4 celer-sim
+    geant4-config --version
+    nvcc --version | tail -1
