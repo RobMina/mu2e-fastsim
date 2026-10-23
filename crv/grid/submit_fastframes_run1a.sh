@@ -44,7 +44,8 @@ if [ "$MODE" = prepare ]; then
   ifdh ls $IN
   exit 0
 fi
-NL=$(ifdh cp $IN/list.txt /dev/stdout 2>/dev/null | wc -l)
+T=$(mktemp -d); ifdh cp $IN/list.txt $T/list.txt >/dev/null 2>&1; NL=$(cat $T/list.txt 2>/dev/null | wc -l); rm -rf $T   # ifdh cp never overwrites
+[ "$NL" -gt 0 ] || { echo "ERROR: empty or missing $IN/list.txt" >&2; exit 1; }
 [ "$MODE" = test ] && N=1
 N=${N:-$NL}
 OUT_TOKEN=$(echo "$OUT" | sed 's|^/pnfs/mu2e|/mu2e|')
