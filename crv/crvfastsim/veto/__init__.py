@@ -6,6 +6,8 @@ ai-config wiki sim/crv-fast-veto-optimisation.md (decisions E3, E4, E11: the car
               from_mu2e_cosmic_ana(cutset) reads S. Grant's YAML cut sets, from_dict for anything else
     apply     vetoed(tracks, coincs, card) -> bool per track, fully vectorised on awkward arrays
     metrics   inefficiency / deadtime with a Jeffreys interval, per sector of the vetoing coincidence
+    deadtime  methods S (each selected signal track against its own event) and F (beam frames against the selected
+              signal t0 distribution), python -m crvfastsim.veto.deadtime
 
 Inputs are flat awkward records named as the EventNtuple branches the existing analyses read: per track t0
 (trksegs.time at the tracker middle, or a track time), and per event crvcoincs.{time, timeStart, timeEnd, PEs,

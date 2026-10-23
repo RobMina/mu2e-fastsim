@@ -35,6 +35,7 @@ def _import_mca(mca):
 
 
 NARROWER = {"wide": ("within_ext_win", "within_sig_win"), "ext": ("within_sig_win",), "sig": ()}
+GATE = ("within_coinc_start_time", "within_coinc_end_time")   # flash gate: kept out of the selection for deadtime
 
 
 def select_file(path, analyse, CutManager, location="tape", drop=NARROWER["wide"]):
@@ -71,6 +72,8 @@ def main(argv=None):
     ap.add_argument("--location", default="tape", help="mdh location for bare file names (tape, disk, scratch)")
     ap.add_argument("--window", choices=sorted(NARROWER), default="wide",
                     help="momentum window: the cut set's windows narrower than this are switched off (55234's table is 'wide', 85-200)")
+    ap.add_argument("--no-gate", action="store_true",
+                    help="also switch off the coincidence start/end gate cuts (deadtime: the gate is applied with the veto)")
     ap.add_argument("--files", help="text file of inputs, one per line (added to the positional ones)")
     ap.add_argument("--out", required=True, help="parquet with one row per event holding its selected tracks")
     a = ap.parse_args(argv)
@@ -80,7 +83,7 @@ def main(argv=None):
     inputs = list(a.inputs) + ([ln.strip() for ln in open(a.files) if ln.strip()] if a.files else [])
     parts = []
     for i, f in enumerate(inputs):
-        r = select_file(f, analyse, CutManager, a.location, NARROWER[a.window])
+        r = select_file(f, analyse, CutManager, a.location, NARROWER[a.window] + (GATE if a.no_gate else ()))
         parts.append(r)
         print(f"{i + 1}/{len(inputs)} {os.path.basename(f)}: {len(r)} events, {int(ak.sum(ak.num(r.t_mid)))} tracks",
               flush=True)

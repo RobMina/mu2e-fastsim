@@ -76,3 +76,28 @@ def test_jeffreys_and_fraction():
     assert lo < 10 / 21423 < hi
     f = fraction(np.array([True, False, False, True]))
     assert (f["k"], f["n"], f["frac"]) == (2, 4, 0.5)
+
+
+def test_deadtime_full_and_factorised():
+    from crvfastsim.veto.deadtime import factorised, full
+    co = ak.zip({"time": ak.Array([[1000.0], [], [300.0]]), "timeStart": ak.Array([[995.0], [], [295.0]]),
+                 "timeEnd": ak.Array([[1005.0], [], [305.0]]), "PEs": ak.Array([[50.0], [], [500.0]])})
+    t = ak.Array([[1050.0], [1050.0], [1050.0]])
+    card = VetoCard(dt_lo=0.0, dt_hi=150.0, gate_start_lo=420.0)
+    S = full(t, co, card)
+    assert (S["k"], S["vetoed_passing_gate"], S["gate_fail"]) == (2, 1, 1)      # event 0 vetoed, event 2 flash
+    F = factorised(np.array([1050.0, 1050.0, 1050.0]), co, card)
+    assert F["frames"] == 3 and abs(F["frac"] - 2 / 3) < 1e-12
+    coinc = VetoCard(dt_lo=0.0, dt_hi=150.0, gate_start_lo=420.0, gate_mode="coinc")
+    assert full(t, co, coinc)["k"] == 1                                          # the flash coinc can no longer veto
+    assert abs(factorised(np.array([1050.0]), co, coinc)["frac"] - 1 / 3) < 1e-12
+    # t0 spread: coverage (1000, 1150) of tracks uniform on 900-1300 is 150/400 for the one busy frame
+    ts = np.linspace(900.0, 1300.0, 40001)[:-1] + 0.005
+    F = factorised(ts, co[:2], VetoCard(dt_lo=0.0, dt_hi=150.0), step=0.25)
+    assert abs(F["frac"] - 0.5 * 150 / 400) < 2e-3
+
+
+def test_deadtime_gate_mode_sha():
+    assert VetoCard().sha() == VetoCard(gate_mode="event").sha() != VetoCard(gate_mode="coinc").sha()
+    with pytest.raises(ValueError):
+        VetoCard.from_dict({"gate_mode": "frame"})

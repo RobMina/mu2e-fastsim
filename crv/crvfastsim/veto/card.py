@@ -21,18 +21,23 @@ class VetoCard:
     min_pe_by_sector: Dict[int, float] = field(default_factory=dict)   # overrides min_pe per sectorType
     gate_start_lo: Optional[float] = None   # event gate: all coincidences timeStart > this (None: off)
     gate_end_hi: Optional[float] = None     # event gate: all coincidences timeEnd < this (None: off)
+    gate_mode: str = "event"           # "event": a gated coincidence removes the event; "coinc": it only cannot veto
     source: str = ""                   # where the card came from (file, cut set)
 
     def sha(self) -> str:
         """Identity of the rule (goes into a kit's measure_sha)."""
         d = asdict(self)
         d.pop("source")
+        if d["gate_mode"] == "event":  # default: keeps the sha of cards made before gate_mode existed
+            d.pop("gate_mode")
         d["min_pe_by_sector"] = sorted((int(k), float(v)) for k, v in d["min_pe_by_sector"].items())
         return hashlib.sha256(json.dumps(d, sort_keys=True).encode()).hexdigest()[:16]
 
     @classmethod
     def from_dict(cls, d: dict) -> "VetoCard":
         d = dict(d)
+        if d.get("gate_mode", "event") not in ("event", "coinc"):
+            raise ValueError(f"gate_mode must be 'event' or 'coinc', not {d['gate_mode']!r}")
         if "sectors" in d and d["sectors"] is not None:
             d["sectors"] = tuple(int(s) for s in d["sectors"])
         if "min_pe_by_sector" in d:

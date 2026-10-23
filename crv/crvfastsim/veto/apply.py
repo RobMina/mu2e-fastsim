@@ -17,6 +17,11 @@ def coinc_mask(coincs, card: VetoCard):
         m = m & (coincs["PEs"] >= thr)
     if card.min_layers > 0:
         m = m & (coincs["nLayers"] >= card.min_layers)
+    if card.gate_mode == "coinc":       # 58017-style flash gate: coincidences outside it cannot veto
+        if card.gate_start_lo is not None:
+            m = m & (coincs["timeStart"] > card.gate_start_lo)
+        if card.gate_end_hi is not None:
+            m = m & (coincs["timeEnd"] < card.gate_end_hi)
     if card.sectors is not None:
         ok = ak.zeros_like(m)
         for s in card.sectors:
@@ -26,8 +31,11 @@ def coinc_mask(coincs, card: VetoCard):
 
 
 def gate(coincs, card: VetoCard):
-    """[E] event gate (beam-flash timing): True where every coincidence is inside the gate (no coincidences: True)."""
+    """[E] event gate (beam-flash timing): True where every coincidence is inside the gate (no coincidences: True).
+    All True for gate_mode "coinc" (the gate then acts per coincidence in coinc_mask)."""
     g = ak.ones_like(ak.num(coincs["time"], axis=1), dtype=bool)
+    if card.gate_mode == "coinc":
+        return ak.to_numpy(g)
     if card.gate_start_lo is not None:
         g = g & ak.all(coincs["timeStart"] > card.gate_start_lo, axis=1)
     if card.gate_end_hi is not None:
