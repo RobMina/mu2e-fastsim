@@ -1,0 +1,3 @@
+# The A/B arms of fiberprop_points.txt without nominal (cluster submission after the --test identity job).
+sp108 speed_EX=1.08
+at058 atten_T1=0.58
