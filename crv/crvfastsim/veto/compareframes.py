@@ -66,6 +66,11 @@ def compare(fast, stock):
     for c in ("PEs", "time"):
         a, b = ak.to_numpy(ak.flatten(f.coincs[c])), ak.to_numpy(ak.flatten(s.coincs[c]))
         out[f"ks_{c}"] = float(ks_2samp(a, b).pvalue) if len(a) and len(b) else float("nan")
+    for name, m in (("stock_only", ~hf & hs), ("fast_only", hf & ~hs), ("both_stock", hf & hs)):
+        src = s if name != "fast_only" else f
+        out[f"{name}_summary"] = summary(src[m])
+        out[f"{name}_summary"]["nlayers"] = {int(k): int(c) for k, c in zip(*np.unique(
+            ak.to_numpy(ak.flatten(src[m].coincs.nLayers)), return_counts=True))}
     # per-event time shift on events where both have exactly one coincidence
     one = (ak.to_numpy(ak.num(f.coincs.time)) == 1) & (ak.to_numpy(ak.num(s.coincs.time)) == 1)
     if one.any():
