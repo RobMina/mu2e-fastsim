@@ -1,0 +1,38 @@
+# Arm A0 of the stock-equivalent validation (wiki sim/crv-fastsim-dqm-validation): stock CRV-only extracted
+# digitisation + stock CRV reco on a G4 dts file, then the stock histogram makers: Offline Validation (level 2),
+# CRVDQM DqmCrvDigi/DqmCrvReco (configuration extracted, binning v3) and the legacy nightly DqmCrv. No art output.
+# Needs the crvval area (Offline main + DQM#48 + CrvFastSim). The floor arm A0' only changes the seed.
+# Usage: mu2e -c CrvFastSim/fcl/valhist_stock.fcl -s dts....art -T valhist.root
+#        (A0': append  services.SeedService.baseSeed : <other seed>)
+#include "CrvFastSim/fcl/dump_crvreco_from_dts.fcl"
+#include "Offline/CRVDQM/fcl/prolog.fcl"
+
+physics.analyzers : {
+  Validation : { module_type : Validation validation_level : 2 }
+  crvDigiDQM : {
+    module_type   : DqmCrvDigi
+    digiTag       : "CrvDigi"
+    statusTag     : ""
+    configuration : "extracted"
+    catalogueFile : ""
+    dqm           : @local::CRVDQM.Digi
+  }
+  crvRecoDQM : {
+    module_type   : DqmCrvReco
+    clusterTag    : "CrvCoincidenceClusterFinder"
+    pulseTag      : "CrvRecoPulses"
+    configuration : "extracted"
+    catalogueFile : ""
+    dqm           : @local::CRVDQM.Reco
+  }
+  dqmCrv : {
+    module_type : DqmCrv
+    digiTag     : "CrvDigi"
+    recoTag     : "CrvRecoPulses"
+    clusTag     : "CrvCoincidenceClusterFinder"
+  }
+}
+physics.ValPath : [ Validation, crvDigiDQM, crvRecoDQM, dqmCrv ]
+physics.end_paths : [ ValPath ]
+services.TFileService.fileName : "valhist.root"
+services.SeedService.baseSeed : 20261023
