@@ -1,0 +1,9 @@
+# Arm A2 of the stock-equivalent validation: digis from a CrvRecoTableDumper-layout table (CrvDigisFromTable; the
+# fast response + waveforms of valhist/fasttables.py digis), then the STOCK CRV reco and the histogram makers of
+# valhist_stock.fcl (same geometry, conditions and coincidence settings). Set at the end:
+#   physics.producers.CrvDigi.tableFile
+#include "CrvFastSim/fcl/valhist_stock.fcl"
+
+physics.producers.CrvDigi : { module_type : CrvDigisFromTable tableFile : "table.root" }
+physics.FromPath : [ PBISim, EWMProducer, CrvDigi, CrvRecoPulses, CrvCoincidenceClusterFinder ]
+physics.trigger_paths : [ FromPath ]

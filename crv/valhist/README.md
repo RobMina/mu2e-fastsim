@@ -13,6 +13,10 @@ and the legacy `DqmCrv`, run unchanged in the `crvval` muse area.
 | `compare.py` | `merge` shard files (with `--alias` to line up product directories) and `compare` two arms: chi2/ndf, KS, totals, mean shift, pulls; floor-calibrated flags; `report.tsv`, `summary.json`, overlay PDF |
 | `../art/CrvFastSim/fcl/valhist_stock.fcl` | stock CRV digitisation + reco + the three histogram sets on a G4 dts file |
 | `../art/CrvFastSim/fcl/valhist_faststeps.fcl` | the same with `CrvStepsFromTable` steps, on the gen stream |
+| `fasttables.py` | fast chain -> CrvRecoTableDumper-layout tables: `digis` (A2), `reco` on stock digis (A3), `chain` (A4 on G4 steps, E2E on fast steps); numpy pulse fit (chi2, LE, height, beta) and coincidence finder |
+| `run_fasttables.sh` | `fasttables.py` over `g4ref_v1` shards |
+| `../art/CrvFastSim/src/Crv{Digis,RecoPulses,CoincidenceClusters}FromTable` | art producers reading those tables (and stock dumps, for the round trip) into the stock collections |
+| `../art/CrvFastSim/fcl/valhist_{fromtable,digisfromtable}.fcl`, `run_fromtable.sh` | table arms: all three products from the table, or digis only + stock reco |
 
 Run from the umbrella with `PYTHONPATH=crv:core`: `python3 -m valhist.compare ...`, `python3 -m valhist.g4table ...`.
 

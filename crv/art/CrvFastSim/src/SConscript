@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# CrvFastSim: art modules for mu2e-crv-fastsim (CrvStepTableDumper, CrvRecoTableDumper).
+# CrvFastSim: art modules for mu2e-crv-fastsim (table dumpers; CrvSteps/CrvDigis/CrvRecoPulses/CrvCoincidenceClusters FromTable).
 Import('env')
 Import('mu2e_helper')
 helper = mu2e_helper(env)

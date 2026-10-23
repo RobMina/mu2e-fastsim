@@ -28,3 +28,14 @@ Jobs (no art output; `dump_crvreco_ref.sh mc|data`, outputs `$CRVFS_DATA/reco_re
 - `CrvFastSim/fcl/dump_crvreco_from_dig.fcl`: CRV reco on KPP data digis (unpack first with the KPP unpack fcl on
   `CRVFS_FCL_PATH`).
 Readers and comparisons: `crvfastsim/reco/` (`python3 -m crvfastsim reco-<cmd> ...`).
+
+## *FromTable producers (stock-equivalent validation, `valhist/`)
+
+| module | role |
+|---|---|
+| `CrvDigisFromTable` | `crvdump/digis` rows of the event -> `CrvDigiCollection` (ROC/FEB from the table, or from `CRVOrdinal` when -1) |
+| `CrvRecoPulsesFromTable` | `crvdump/pulses` -> `CrvRecoPulseCollection` in table order (waveform indices into the digis of the same table) |
+| `CrvCoincidenceClustersFromTable` | `crvdump/clusters` -> `CrvCoincidenceClusterCollection`; member pulse indices -> `art::Ptr` into `pulseTag` |
+
+Tables: `valhist/fasttables.py` (fast chain) or a `CrvRecoTableDumper` file (round trip). Jagged columns may be
+`std::vector` branches or uproot counted arrays (`CrvRecoTable.hh`).
