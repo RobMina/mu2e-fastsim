@@ -1,4 +1,4 @@
-"""python -m crvfastsim.veto SNAPSHOT.root [...] (--card JSON | --cosmic-ana CUTS.yaml CUTSET) [--pmin 85 --pmax 200]
+"""python -m crvfastsim.veto (SNAPSHOT.root | SELECTION.parquet) [...] (--card JSON | --cosmic-ana CUTS.yaml CUTSET) [--pmin 85 --pmax 200]
     [--track-time BRANCH] --outdir DIR
 
 C4 on selected-track snapshots: N. Harrison's singleElectron outputs (outTree: trkfit_mom_R, trkfit_time,
@@ -17,6 +17,14 @@ from . import VetoCard, fraction, vetoed
 from .apply import gate
 
 PFX = "crvcoincs_reco."
+
+
+def read_selection(paths):
+    """Parquet from crvfastsim.veto.cosmic_ana: one row per event, its selected tracks (t_mid, p_mid) and coincidences."""
+    a = ak.concatenate([ak.from_parquet(p) for p in paths])
+    co = a["coincs"]
+    co = ak.zip({c: co[c] for c in ("time", "timeStart", "timeEnd", "PEs", "nLayers", "sectorType")})
+    return a["p_mid"], a["t_mid"], co
 
 
 def read_snapshot(paths, track_time="trkfit_time"):
@@ -41,15 +49,19 @@ def main(argv=None):
     if bool(a.card) == bool(a.cosmic_ana):
         ap.error("give exactly one of --card and --cosmic-ana")
     card = VetoCard.from_dict(json.load(open(a.card))) if a.card else VetoCard.from_mu2e_cosmic_ana(*a.cosmic_ana)
-    p, t, co = read_snapshot(a.inputs, a.track_time)
+    if all(x.endswith(".parquet") for x in a.inputs):      # cosmic_ana selection: [E, T] tracks per event
+        p, t, co = read_selection(a.inputs)
+    else:                                                    # singleElectron snapshot: one track per row
+        p, t, co = read_snapshot(a.inputs, a.track_time)
+        p, t = p[:, None], t[:, None]
+    v, sec = vetoed(t, co, card, return_sector=True)
+    g = ak.broadcast_arrays(ak.Array(gate(co, card))[:, None], t)[0]
+    p, v, sec, g = (ak.to_numpy(ak.flatten(x)) for x in (p, v, sec, g))
     sel = np.ones(len(p), bool)
     if a.pmin is not None:
-        sel &= ak.to_numpy(p) > a.pmin
+        sel &= p > a.pmin
     if a.pmax is not None:
-        sel &= ak.to_numpy(p) < a.pmax
-    g = gate(co, card)
-    v, sec = vetoed(t[:, None], co, card, return_sector=True)
-    v, sec = ak.to_numpy(ak.firsts(v)), ak.to_numpy(ak.firsts(sec))
+        sel &= p < a.pmax
     out = {"card": card.__dict__ | {"sha": card.sha()}, "inputs": a.inputs, "tracks": int(len(p)),
            "selected": int(sel.sum()), "passing_gate": int((sel & g).sum()), "vetoed": fraction(v[sel & g])}
     out["vetoed_by_sector"] = {int(s): int(((sec == s) & sel & g).sum()) for s in np.unique(sec[sel & g & v])}
