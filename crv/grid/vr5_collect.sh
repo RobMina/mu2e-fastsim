@@ -6,14 +6,16 @@
 #          reach ALCF: from the laptop, ssh polaris "tar -C <outdir> -cf - ." | ssh <gpvm> "tar -C .../fast_raw/<job> -xf -");
 #          split per point by knobs.txt; nominal seeds kept apart (nominal_s<job>). FAST_EMPTY: events without CRV steps
 #          to add to each fast point whose JSON predates r3's own count (V-R5 v1: 125,433 - 112,304 = 13,129)
+# Env VR5_RUNS: stock runs to collect (default "vr5_v1 vr5_v1ws"; light propagation: fiberprop_v1).
 # Output: OUTDIR/{stock,fast}/<point>.json (merged accumulator) and OUTDIR/scores.json + scores.txt (objective vs DATAREF
 # per point per arm). Run on a GPVM after `source setupmu2e-art.sh && pyenv ana` with PYTHONPATH=<mu2e-fastsim>/crv.
 set -u
 OUT=${1:?outdir}; REF=${2:-/exp/mu2e/data/users/ram2aq/crv_fastsim/r3/dataref/dataref_3runs.json}
+RUNS=${VR5_RUNS:-vr5_v1 vr5_v1ws}                   # stock runs under /pnfs/.../vr5/ to collect (e.g. fiberprop_v1)
 P=/pnfs/mu2e/scratch/users/$USER/vr5; V05=/pnfs/mu2e/scratch/users/$USER/crvonly_mc/crvonly_v05/nts
 SEQS="00000990 00001023 00001056 00001089 00001122"
 mkdir -p "$OUT/stock_emit" "$OUT/stock" "$OUT/fast"
-for run in vr5_v1 vr5_v1ws; do
+for run in $RUNS; do
   for pt in $(ifdh ls $P/$run/emit 2>/dev/null | sed -n "s|^$P/$run/emit/\([^/]*\)/\?$|\1|p"); do
     mkdir -p "$OUT/stock_emit/$pt"
     for f in $(ifdh ls $P/$run/emit/$pt 2>/dev/null | grep '\.json$'); do

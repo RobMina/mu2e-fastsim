@@ -10,7 +10,8 @@ Glue added here: the SiPM-status mask (stock CrvSiPMChargeGenerator skips status
 (event, FEB) uniform in a 12.5 ns clock period (stock CrvWaveformsGenerator), digis grouped into reco waveforms with
 the CRVCalib constants of their channel.
 
-Event key: (subrun << 20) | event (fits the reco's int64 event keys); a SiPM label is event key * 4096 + channel.
+Event key: (subrun << 20) | event (fits the reco's int64 event keys); a SiPM label is event key * CHAN_MULT + channel
+(CHAN_MULT 8192: Run 1A has 5,120 channels, the full CRV 22,016 would need 32768).
 """
 import time as _time
 from dataclasses import dataclass, field
@@ -21,7 +22,7 @@ from . import geometry, tables
 from .response import photons as PH
 from .response import sipm as SI
 
-CHAN_MULT = 4096
+CHAN_MULT = 8192
 PERIOD = 12.5
 
 
@@ -154,6 +155,8 @@ def charges(steps, parts, geom, cond, cfg, rng, key=None, tabs=None, pmap=None, 
     # stock SiPM stage: no charges on channels flagged not connected (bit 0) or no data (bit 2)
     keep = ((cond.status[c] & 0b101) == 0)
     s, c, t = s[keep], c[keep], t[keep]
+    if len(c) and int(c.max()) >= CHAN_MULT:
+        raise ValueError(f"channel {int(c.max())} >= CHAN_MULT {CHAN_MULT}: SiPM labels would overlap the next event")
     label = event_key(steps)[s] * CHAN_MULT + c
     t0 = _time.perf_counter()
     if cfg.jax:

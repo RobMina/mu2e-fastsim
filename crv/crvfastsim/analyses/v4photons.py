@@ -134,7 +134,7 @@ def run(inputs, outdir, deviation=None, max_steps=None, seed=1, counters=None, j
         # per SiPM per event: group photons by (event, channel)
         def per_sipm(D):
             m = D["grp"] == g
-            k = D["ev"][m] * 4096 + D["chan"][m]
+            k = D["ev"][m] * 8192 + D["chan"][m]   # any multiplier > channel count
             return np.unique(k, return_counts=True)
         kf, nf = per_sipm(F)
         ks, ns = per_sipm(S)
