@@ -1,0 +1,13 @@
+// Geometry move for the beam fastsim A/B (G4 and fast on the same muons): base geom_common (MDC2025ac) with 6 thicker,
+// wider foils added upstream and 6 downstream of the 37-foil stack, same pitch and hole (a Mu2eBO "foils" style point
+// expressible without the per-foil holeRadii patch). Foil i centre z = 5871 + (i - 24) * 22.222222 for 49 foils.
+#include "Offline/Mu2eG4/geom/geom_common.txt"
+vector<double> stoppingTarget.radii = { 120, 120, 120, 120, 120, 120,
+  75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75,
+  130, 130, 130, 130, 130, 130 };
+vector<double> stoppingTarget.halfThicknesses = { 0.1, 0.1, 0.1, 0.1, 0.1, 0.1,
+  0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528, 0.0528,
+  0.2, 0.2, 0.2, 0.2, 0.2, 0.2 };
+vector<double> stoppingTarget.zVars = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+double protonabsorber.distFromTargetEnd = 491.666672;

@@ -1,0 +1,21 @@
+# G4 reference for the beam fast sim: stock MuBeamResampler (DS stage) plus a per-muon tree (start at the DS entrance, end state).
+#include "Production/JobConfig/pileup/MuBeamResampler.fcl"
+
+physics.analyzers.mutree : {
+  module_type : ReadVirtualDetector
+  vdStepPoints : "g4run:virtualdetector"
+  simParticleColl : "g4run"
+  savePDG : [ "mu_minus", "mu_plus" ]
+  navigateToParent : false
+  writeNTVD : false
+  writeNTTVD : false
+  writeNTPART1 : false
+}
+physics.stopDump : [ mutree ]
+physics.trigger_paths : [ targetStopPath ]
+physics.outPath : [ ]
+physics.end_paths : [ stopDump ]
+outputs : { }
+services.TFileService.fileName : "nts.owner.beamfs_g4ref.version.sequencer.root"
+physics.filters.TargetStopPrescaleFilter.nPrescale : 1
+physics.filters.beamResampler.mu2e.MaxEventsToSkip : 0
