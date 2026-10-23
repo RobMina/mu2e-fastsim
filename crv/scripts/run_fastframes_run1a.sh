@@ -3,7 +3,8 @@
 # (dump_crvsteps_mix.fcl) and the stock CRV conditions/pbtime of its mcs child (dump_crvreco_from_mcs_run1a.fcl), then
 # crvfastsim.veto.fastframes; the step dump is deleted after use (1.4 GB per subrun). No build: the CrvFastSim art area
 # must already be built. usage: run_fastframes_run1a.sh <subrun> [...]   (8-digit, e.g. 00000003)
-# env: OUT (default $CRVFS_DATA/deadtime_run1a/ffast), CHUNK (500), KEEP_STEPS=1
+# env: OUT (default $CRVFS_DATA/deadtime_run1a/ffast), CHUNK (500), KEEP_STEPS=1, REDIGI=1 (also the stock Run 1A
+#      response + reco re-run on the same kept steps: redigi_crv_from_dig_run1a.fcl -> crvredigi_<subrun>.root)
 D=${CRVFS_DATA:-/exp/mu2e/data/users/ram2aq/crv_fastsim}
 C=${M2FS_CODE:-/exp/mu2e/app/users/ram2aq/analysis/mu2e-fastsim}
 A=$C/crv/art
@@ -27,6 +28,9 @@ for s in "$@"; do
     export FHICL_FILE_PATH=$A:$FHICL_FILE_PATH
     mu2e -c CrvFastSim/fcl/dump_crvsteps_mix.fcl -s "$pdig" -T "$O/mixsteps_$s.root" > "$O/dump_mix_$s.log" 2>&1 || exit 5
     mu2e -c CrvFastSim/fcl/dump_crvreco_from_mcs_run1a.fcl -s "$pmcs" -T "$O/crvreco_mcs_$s.root" > "$O/dump_mcs_$s.log" 2>&1 || exit 6
+    if [ -n "${REDIGI:-}" ]; then
+      mu2e -c CrvFastSim/fcl/redigi_crv_from_dig_run1a.fcl -s "$pdig" -T "$O/crvredigi_$s.root" > "$O/redigi_$s.log" 2>&1 || exit 8
+    fi
   ) || { echo "subrun $s: art dump failed (exit $?), see $O/dump_*_$s.log"; rc=5; rm -f "$O/mixsteps_$s.root"; continue; }
   ( cd "$C" && CRVFS_LOOKUP_DIR=$L PYTHONPATH=core:crv JAX_PLATFORMS=cpu \
       MU2E_SEARCH_PATH=/cvmfs/mu2e.opensciencegrid.org/Musings/Offline/v13_33_00 \
