@@ -1,0 +1,8 @@
+# Dump the mixed CrvSteps (signal + every beam-frame mixer) that a digitisation job kept in compressDigiMCs, for the
+# fast chain's deadtime frames (crvfastsim.veto.fastframes). Usage: mu2e -c CrvFastSim/fcl/dump_crvsteps_mix.fcl -s dig.<...>.art -T mixsteps.root
+#include "CrvFastSim/fcl/dump_crvsteps.fcl"
+physics.analyzers.dump.crvSteps : "compressDigiMCs"
+physics.analyzers.dump.simParticles : "compressDigiMCs"
+physics.analyzers.dump.genParticles : "compressDigiMCs"
+physics.analyzers.dump.livetime : "none"
+services.TFileService.fileName : "mixsteps.root"
