@@ -39,6 +39,24 @@ def stock_frames(paths, keys=None):
     return a
 
 
+def dump_frames(paths, keys=None):
+    """CrvRecoTableDumper clusters per event as frames (the stock chain re-run on the same steps: redigi control)."""
+    from ..reco import reftables
+    ev = reftables.read(paths, "events", ["run", "subrun", "event"])
+    c = reftables.read(paths, "clusters", ["subrun", "event", "sectortype", "start", "end", "pe", "layers", "avgtime"])
+    ek = (ak.to_numpy(ev.subrun).astype(np.int64) << 20) | ak.to_numpy(ev.event).astype(np.int64)
+    ck = (ak.to_numpy(c.subrun).astype(np.int64) << 20) | ak.to_numpy(c.event).astype(np.int64)
+    o = np.argsort(ck, kind="stable")
+    ek = np.unique(ek)
+    cnt = np.searchsorted(ck[o], ek, "right") - np.searchsorted(ck[o], ek, "left")
+    col = {"time": "avgtime", "timeStart": "start", "timeEnd": "end", "PEs": "pe", "sectorType": "sectortype"}
+    co = {k: ak.unflatten(ak.to_numpy(c[v])[o], cnt) for k, v in col.items()}
+    co["nLayers"] = ak.unflatten(ak.to_numpy(ak.num(c.layers))[o], cnt)
+    a = ak.zip({"run": np.full(len(ek), int(ak.to_numpy(ev.run)[0]), np.int64), "subrun": ek >> 20,
+                "event": ek & ((1 << 20) - 1), "coincs": ak.zip(co)}, depth_limit=1)
+    return a if keys is None else a[np.isin(ek, keys)]
+
+
 def evkey(a):
     return (ak.to_numpy(a.subrun).astype(np.int64) << 20) | ak.to_numpy(a.event).astype(np.int64)
 
@@ -84,7 +102,8 @@ def compare(fast, stock):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("fast", nargs="+")
-    ap.add_argument("--nts", nargs="+", required=True)
+    ap.add_argument("--nts", nargs="+", help="EventNtuples of the same events (stock crvcoincs)")
+    ap.add_argument("--dump", nargs="+", help="CrvRecoTableDumper files instead of --nts (e.g. the redigi control)")
     ap.add_argument("--selection", nargs="*")
     ap.add_argument("--cosmic-ana", nargs=2, metavar=("CUTS_YAML", "CUTSET"))
     ap.add_argument("--card")
@@ -93,7 +112,9 @@ def main(argv=None):
     ap.add_argument("--outdir", required=True)
     a = ap.parse_args(argv)
     fast = ak.concatenate([ak.from_parquet(p) for p in a.fast])
-    stock = stock_frames(a.nts, evkey(fast))
+    if bool(a.nts) == bool(a.dump):
+        ap.error("give exactly one of --nts and --dump")
+    stock = stock_frames(a.nts, evkey(fast)) if a.nts else dump_frames(a.dump, evkey(fast))
     out = compare(fast, stock)
     if a.selection and (a.cosmic_ana or a.card):
         from .card import VetoCard

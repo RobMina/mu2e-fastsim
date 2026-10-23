@@ -16,13 +16,15 @@ import jax.numpy as jnp
 from . import photons, photons_jax, sipm_jax
 from .sipm import NPIX
 
+CHAN_MULT = 8192   # = chain.CHAN_MULT (chain imports response, not the reverse)
+
 
 @jax.jit
 def _mask_label(step, chan, t, valid, status, ev_key):
     """Status and time masks and the SiPM label in one kernel (eager gathers over the photon buffer abort the oneAPI
     compiler: 7-wide vector in the index conversion)."""
     valid = valid & ((status[chan] & 0b101) == 0) & (t <= 1e5)   # stock: no charges on status bits 0 / 2
-    return valid, ev_key[step] * 4096 + chan
+    return valid, ev_key[step] * CHAN_MULT + chan
 
 
 @partial(jax.jit, static_argnames=("NB",))

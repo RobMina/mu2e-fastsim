@@ -29,3 +29,11 @@ def test_reco_waveforms_concatenates_consecutive_digis():
     W = chain.reco_waveforms(D, cond)
     assert W["n"].tolist() == [24, 12] and W["start"].tolist() == [10, 40] and W["ev"].tolist() == [5, 5]
     assert W["bar"].tolist() == [0, 0] and W["sipm"].tolist() == [2, 2] and np.all(W["ped"] == 100)
+
+
+def test_label_has_room_for_every_run1a_channel():
+    """SiPM labels are event key * CHAN_MULT + channel: Run 1A has 5,120 channels (T2 starts at 4352), so CHAN_MULT
+    4096 put T2 and the last 64 T1 bars into the next event's labels (fast deadtime frames lost them)."""
+    assert chain.CHAN_MULT > 1280 * 4
+    from crvfastsim.response import device
+    assert device.CHAN_MULT == chain.CHAN_MULT

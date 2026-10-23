@@ -16,7 +16,7 @@ import numpy as np
 
 from mu2efastsim import plots
 
-from .. import geometry, tables
+from .. import chain, geometry, tables
 from ..response import photons, sipm, stocksipm
 from .census import SECTOR_GROUP
 from .v4photons import DEFAULT_COUNTERS, GROUPS, THRESH, _deviation, cdf_shift, time_check
@@ -35,7 +35,7 @@ def run(inputs, outdir, deviation=None, max_steps=None, seed=1, counters=None, j
     s, c, t = photons.make_photons(steps, pdg, geom, cfg, photons.load_tables(cfg), dev, np.random.default_rng(int(seed)))
     ev = ((steps.subrun.to_numpy().astype(np.int64) << 32) | steps.event.to_numpy().astype(np.int64))[s]
     # one simulated SiPM per (event, channel): the event goes into the channel key
-    key = ev * 4096 + c
+    key = ev * chain.CHAN_MULT + c
     t_rel = t - steps.t0.to_numpy()[s]
     scfg = sipm.SiPMConfig()
     pmap = sipm.photon_map()
@@ -55,7 +55,7 @@ def run(inputs, outdir, deviation=None, max_steps=None, seed=1, counters=None, j
                                  ((steps.subrun.to_numpy().astype(np.int64) << 32) | steps.event.to_numpy().astype(np.int64)),
                                  np.random.default_rng(int(seed) + 7), _jax.random.PRNGKey(int(seed)), pmap)
         F = DV.to_host_batches(rs)
-        F["chan"] = F["chan"]  # labels are event key * 4096 + channel, as `key` below
+        F["chan"] = F["chan"]  # labels are event key * CHAN_MULT + channel, as `key` below
         t_fast = time.perf_counter() - a
         out_over = any(bool(r["overflow"]) for r in rs)
         dev_info = {"batches": len(rs), "n_long_streams_max": max(int(r["n_long_streams"]) for r in rs),
@@ -94,7 +94,7 @@ def run(inputs, outdir, deviation=None, max_steps=None, seed=1, counters=None, j
            "fast_arm": "device" if device else ("jax" if jax else "numpy"),
            "device_overflow": out_over if device else None, "device": dev_info if device else None, "reference_arm": "numpy" if no_stock else "stock",
            "time_s_fast": t_fast, "cpu_s_reference": t_stock, "thresholds": THRESH, "groups": {}}
-    grp_key = lambda k: SECTOR_GROUP[geom.sector[(k % 4096) // 4]]
+    grp_key = lambda k: SECTOR_GROUP[geom.sector[(k % chain.CHAN_MULT) // 4]]
     for g in GROUPS:
         mf, ms = grp_key(F["chan"]) == g, grp_key(S["chan"]) == g
         if not ms.any():
