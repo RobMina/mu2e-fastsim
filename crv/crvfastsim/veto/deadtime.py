@@ -10,7 +10,7 @@ F neglects the signal's own CRV activity and any t0-pileup correlation; S - F me
 evaluated on a time grid (default 0.25 ns) with difference arrays, chunked over frames: no per-event loop.
 
     python -m crvfastsim.veto.deadtime SEL.parquet [...] (--card JSON | --cosmic-ana CUTS.yaml CUTSET)
-        [--frames FRAMES.parquet ...] [--pmin 85 --pmax 200] --outdir DIR
+        [--frames FRAMES.parquet ...] [--pmin 85 --pmax 200] [--scan-dt-hi 50 100 ...] --outdir DIR
 """
 from __future__ import annotations
 
@@ -95,6 +95,7 @@ def main(argv=None):
     ap.add_argument("--pmin", type=float, default=None)
     ap.add_argument("--pmax", type=float, default=None)
     ap.add_argument("--step", type=float, default=0.25, help="coverage grid (ns)")
+    ap.add_argument("--scan-dt-hi", type=float, nargs="*", help="also S and F for these dt_hi values (ns): scan.json")
     ap.add_argument("--outdir", required=True)
     a = ap.parse_args(argv)
     if bool(a.card) == bool(a.cosmic_ana):
@@ -117,6 +118,15 @@ def main(argv=None):
            "S_minus_F": S["frac"] - F["frac"]}
     os.makedirs(a.outdir, exist_ok=True)
     json.dump(out, open(os.path.join(a.outdir, "deadtime_stats.json"), "w"), indent=1, default=float)
+    if a.scan_dt_hi:
+        rows = []
+        for h in a.scan_dt_hi:
+            c = VetoCard.from_dict({**card.__dict__, "dt_hi": float(h)})
+            s, f = full(t, co, c, sel), factorised(ak.to_numpy(ak.flatten(t))[sel], frames, c, a.step)
+            rows.append({"dt_hi": float(h), "S": s["frac"], "S_lo": s["lo"], "S_hi": s["hi"], "S_k": s["k"],
+                         "F": f["frac"], "F_err": f["err"]})
+            print(f"  dt_hi {h:6.1f} ns: S {s['frac']:.5f} ({s['k']}), F {f['frac']:.5f} +- {f['err']:.5f}")
+        json.dump(rows, open(os.path.join(a.outdir, "scan.json"), "w"), indent=1)
     print(f"{card.name} gate={card.gate_mode} ({card.sha()}), {out['selected']} selected tracks:\n"
           f"  S full       {S['k']} / {S['n']} = {S['frac']:.5f} [{S['lo']:.5f}, {S['hi']:.5f}]  "
           f"(vetoed {S['vetoed_passing_gate']}, gate fail {S['gate_fail']})\n"
