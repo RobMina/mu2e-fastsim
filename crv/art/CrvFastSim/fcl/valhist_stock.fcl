@@ -4,8 +4,9 @@
 # Needs the crvval area (Offline main + DQM#48 + CrvFastSim). The floor arm A0' only changes the seed.
 # Usage: mu2e -c CrvFastSim/fcl/valhist_stock.fcl -s dts....art -T valhist.root
 #        (A0': append  services.SeedService.baseSeed : <other seed>)
-#include "CrvFastSim/fcl/dump_crvreco_from_dts.fcl"
+# prologs must precede every non-prolog line: CRVDQM's first, then the job (which includes its own prologs first)
 #include "Offline/CRVDQM/fcl/prolog.fcl"
+#include "CrvFastSim/fcl/dump_crvreco_from_dts.fcl"
 
 physics.analyzers : {
   Validation : { module_type : Validation validation_level : 2 }
