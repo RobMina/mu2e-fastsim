@@ -1,17 +1,20 @@
 """fastsimkit task `crv_response`: one CRV response-tuning point of the fast chain (reco-r3) scored against KPP data.
 
-Registered in mu2efastsim.endpoints.kit by `register(...)` when crvfastsim is importable. FNAL endpoints only (EAF): the
-CrvStep tables, CRVCalib/CRVPhoton CSVs, background model, time calibration and data reference are Mu2e-internal and
-read in place under the endpoint's fnal_data; the lookup tables are fetched from CVMFS into node tmpfs (copy-compute-
-delete, cleanup record). One point = one reco-r3 process on one GPU: `--jax --objective --v05` on the cached MDC2025as
-CrvSteps, then crvresponse.objective against the period's data reference.
+Registered in mu2efastsim.endpoints.kit by `register(...)` when crvfastsim is importable. One point = one reco-r3 process
+on one GPU: `--jax --objective --v05` on the cached MDC2025as CrvSteps, then crvresponse.objective against the period's
+data reference. The inputs (CrvStep tables, CRVCalib/CRVPhoton CSVs, background model, time calibration, data
+reference) are Mu2e-internal:
+  - on an endpoint that mounts FNAL storage (EAF) the rendered body reads them in place (X = fnal_data);
+  - on a Slurm-over-SSH endpoint (UVA; crvfastsim.kit_uva) the kit streams exactly `inputs(params)` from the FNAL host
+    into the job's tmpfs (X = that dir), md5-checked, deleted by the job's EXIT trap (cleanup record).
+The lookup tables come from CVMFS into node tmpfs on both (copy-compute-delete).
 
 Params
   every chain.KNOBS name (speed_EX, atten_T10, photon_yield_scale, ...): optional; absent or empty = nominal
   period      P4 (run 125026, module time calibration corr_P4_v2mod; default), P3 (124336 + 124571, corr_P3_v2mod,
               dt_cluster_T2 excluded: the P3 T2 timing defect) or raw (merged 3-run reference, no time calibration)
   tables      vr5 (the five V-R5 / fiberprop_v1 files 990-1122, 112,304 events with CRV steps; default) or all
-              (the 20 prod_as tables)
+              (the 20 prod_as tables; EAF only)
   events      events with CRV steps to process (default 0 = one pass over the tables)
   background  1 = add the out-of-time background model (background/fit_v1/bg.npz; default), 0 = none
   seed
@@ -34,32 +37,63 @@ METRICS = ("objective", "objective_sigma", "objective_all", "n_terms", "events_w
 VR5_TABLES = ("00000990", "00001023", "00001056", "00001089", "00001122")
 VR5_EVENTS = 112304
 
+# inputs relative to the FNAL data dir (crv_fastsim)
+STEPS = tuple(f"prod_as_tables/crvsteps.001400_{q}.root" for q in VR5_TABLES)
+CALIB = "geometry/crvcalib_sim_best_v1_5_run1400.csv"
+DEVIATION = "geometry/crvphoton_sim_best_v1_5_run1400.csv"
+BACKGROUND = "background/fit_v1/bg.npz"
+PERIODS = {"P4": ("timecal/corr_P4_v2mod.json", "r3/dataref/dataref_P4.json", ""),
+           "P3": ("timecal/corr_P3_v2mod.json", "r3/dataref/dataref_P3.json", "dt_cluster_T2"),
+           "raw": ("", "r3/dataref/dataref_3runs.json", "")}
+
+
+def _base(rel):
+    return rel.rsplit("/", 1)[1]
+
+
+def inputs(params):
+    """{FNAL relative path: file name in the job's input dir} that a point reads (UVA streams exactly these)."""
+    period = params.get("period", DEFAULTS["period"]) or DEFAULTS["period"]
+    if period not in PERIODS:
+        raise ValueError(f"crv_response: period must be one of {sorted(PERIODS)}, got {period!r}")
+    if (params.get("tables", DEFAULTS["tables"]) or "vr5") != "vr5":
+        raise ValueError("crv_response: tables=all reads 20 tables in place (EAF only); stream tables=vr5")
+    ts, ref, _ = PERIODS[period]
+    files = STEPS + (CALIB, DEVIATION, ref) + ((ts,) if ts else ())
+    if int(float(params.get("background", DEFAULTS["background"]))):
+        files += (BACKGROUND,)
+    return {f: _base(f) for f in files}
+
+
+def _period_case():
+    rows = []
+    for k, (ts, ref, excl) in PERIODS.items():
+        t = f'TS=$(P {ts})' if ts else 'TS=""'
+        rows.append(f'  {k}) {t}; REF=$(P {ref}); EXCL="{excl}" ;;')
+    return "\n".join(rows)
+
+
+BODY_HEAD = ("D=@fnal_data@; X=@inputs_dir@   # X: the inputs (D itself on EAF, the streamed tmpfs dir on UVA)\n"
+             'P() { if [ "$X" = "$D" ]; then echo "$D/$1"; else echo "$X/${1##*/}"; fi; }\n'
+             f"CAL=$(P {CALIB}); DEVF=$(P {DEVIATION})\n"
+             "case @p_period@ in\n" + _period_case() + "\n"
+             '  *) echo "unknown period @p_period@ (P4, P3, raw)"; exit 2 ;;\nesac\n'
+             "case @p_tables@ in\n"
+             f'  vr5) FILES=(); for q in {" ".join(VR5_TABLES)}; do FILES+=("$(P prod_as_tables/crvsteps.001400_$q.root)"); done; NDEF={VR5_EVENTS} ;;\n'
+             '  all) FILES=("$D"/prod_as_tables/crvsteps.001400_*.root); NDEF=0 ;;\n'
+             '  *) echo "unknown tables @p_tables@ (vr5, all)"; exit 2 ;;\nesac\n'
+             'for f in "${FILES[@]}" "$CAL" "$DEVF" "$REF" ${TS:+"$TS"}; do [ -r "$f" ] || { echo "missing $f"; exit 3; }; done\n'
+             'N=@p_events@; [ "$N" = 0 ] && N=$NDEF\n'
+             '[ "$N" -gt 0 ] || { echo "events must be > 0 with tables=@p_tables@"; exit 2; }\n'
+             f'BG=(); [ @p_background@ = 1 ] && BG=(--background "$(P {BACKGROUND})")\n'
+             'TSA=(); [ -n "$TS" ] && TSA=(--time-shift "$TS")\n'
+             "KN=()\n")
+
 
 def _knob_lines():
     """One bash line per knob: append NAME=VALUE to KN when the param is non-empty."""
     return "".join(f'[ -n @p_{k}@ ] && KN+=("{k}=@p_{k}@")\n' for k in KNOB_PARAMS)
 
-
-BODY_HEAD = r'''D=@fnal_data@
-I=$D/prod_as_tables; G=$D/geometry; CAL=$G/crvcalib_sim_best_v1_5_run1400.csv; DEVF=$G/crvphoton_sim_best_v1_5_run1400.csv
-case @p_period@ in
-  P4) TS=$D/timecal/corr_P4_v2mod.json; REF="$D/r3/dataref/125026/*.json"; EXCL="" ;;
-  P3) TS=$D/timecal/corr_P3_v2mod.json; REF="$D/r3/dataref/124336/*.json $D/r3/dataref/124571/*.json"; EXCL="dt_cluster_T2" ;;
-  raw) TS=""; REF="$D/r3/dataref/dataref_3runs.json"; EXCL="" ;;
-  *) echo "unknown period @p_period@ (P4, P3, raw)"; exit 2 ;;
-esac
-case @p_tables@ in
-  vr5) FILES=(); for q in ''' + " ".join(VR5_TABLES) + r'''; do FILES+=("$I/crvsteps.001400_$q.root"); done; NDEF=''' + str(VR5_EVENTS) + r''' ;;
-  all) FILES=("$I"/crvsteps.001400_*.root); NDEF=0 ;;
-  *) echo "unknown tables @p_tables@ (vr5, all)"; exit 2 ;;
-esac
-for f in "${FILES[@]}" "$CAL" "$DEVF" ${TS:+"$TS"}; do [ -r "$f" ] || { echo "missing $f"; exit 3; }; done
-N=@p_events@; [ "$N" = 0 ] && N=$NDEF
-[ "$N" -gt 0 ] || { echo "events must be > 0 with tables=@p_tables@"; exit 2; }
-BG=(); [ @p_background@ = 1 ] && BG=(--background "$D/background/fit_v1/bg.npz")
-TSA=(); [ -n "$TS" ] && TSA=(--time-shift "$TS")
-KN=()
-'''
 
 BODY_TAIL = r'''KA=(); [ ${#KN[@]} -gt 0 ] && KA=(--knob "${KN[@]}")
 echo "period @p_period@ tables @p_tables@ (${#FILES[@]}) events $N background @p_background@ knobs ${KN[*]:-nominal}"
@@ -67,37 +101,45 @@ T python -m crvfastsim reco-r3 "${FILES[@]}" --calib "$CAL" --deviation "$DEVF" 
   --seed @p_seed@ "${BG[@]}" "${TSA[@]}" "${KA[@]}" --emit "$M2FS_OUT/r3.json" \
   > "$M2FS_OUT/r3.txt" 2>&1 || { tail -30 "$M2FS_OUT/r3.txt"; exit 6; }
 tail -2 "$M2FS_OUT/r3.txt"
-A python - "$M2FS_OUT" "$EXCL" $REF <<'EOF'
-import glob, json, os, sys
+A python - "$M2FS_OUT" "$EXCL" "$REF" <<'EOF'
+import json, os, sys
 from crvfastsim.kit_task import TERMS
 from crvfastsim.objective import crvresponse as R
-o, excl, refs = sys.argv[1], [x for x in sys.argv[2].split(",") if x], sys.argv[3:]
+o, excl, ref_path = sys.argv[1], [x for x in sys.argv[2].split(",") if x], sys.argv[3]
 j = json.load(open(os.path.join(o, "r3.json")))
-files = sorted(f for r in refs for f in (glob.glob(r) or [r]))
-ref = R.merge_states([json.load(open(f)) for f in files])
-ob = R.objective(j["response_state"], ref, exclude=excl)
+ob = R.objective(j["response_state"], json.load(open(ref_path)), exclude=excl)
 m = {"objective": ob["objective"], "objective_sigma": ob["sigma"], "objective_all": ob["objective_all"],
      "n_terms": ob["n_terms"], "events_with_steps": j["events_with_steps"], "wall_s": j["wall_s"]}
 m.update({"term_" + k: v["chi2ndf"] for k, v in ob["terms"].items()})
 missing = [t for t in TERMS if "term_" + t not in m]
 if missing:
     print("terms missing (empty histogram): " + " ".join(missing))
-json.dump({"knobs": j.get("knobs", {}), "reference_files": len(files), "excluded": ob["excluded"],
+json.dump({"knobs": j.get("knobs", {}), "reference": os.path.basename(ref_path), "excluded": ob["excluded"],
            "objective": ob}, open(os.path.join(o, "objective.json"), "w"), indent=1)
 json.dump({k: float(v) for k, v in m.items()}, open(os.path.join(o, "metrics.json"), "w"))
-print(f"objective {m['objective']:.3f} +- {m['objective_sigma']:.3f} ({m['n_terms']:.0f} terms, {len(files)} reference files)")
+print(f"objective {m['objective']:.3f} +- {m['objective_sigma']:.3f} ({m['n_terms']:.0f} terms, {os.path.basename(ref_path)})")
 EOF
 '''
 
+LOOKUP = "LookupTable_6000_0 LookupTable_2370_1 LookupTable_3200_0 photonMap.root"
 
-def register(tasks, task_cls, resources_cls, fnal_tasks, table_tasks=None, common="", tables=""):
-    """Add crv_response to a fastsimkit TASKS dict. `common` and `tables` are the kit's GPU-check and copy-compute-
-    delete snippets (kit._COMMON, kit._TABLES), so the lookup tables and photon map land in node tmpfs."""
-    tab = tables.replace("@tables@", "LookupTable_6000_0 LookupTable_2370_1 LookupTable_3200_0 photonMap.root")
+
+def body(common, tables):
+    """The point's bash: the kit's GPU check (common), lookup tables to tmpfs (tables), then the reco and objective.
+    @inputs_dir@ is left for the caller (EAF: @fnal_data@; UVA: the streamed tmpfs dir)."""
+    return common + tables.replace("@tables@", LOOKUP) + BODY_HEAD + _knob_lines() + BODY_TAIL
+
+
+def register(tasks, task_cls, resources_cls, fnal_tasks, table_tasks=None, common="", tables="", delegates=None):
+    """Add crv_response to a fastsimkit TASKS dict (FNAL endpoints: inputs in place) and, with `delegates`, the
+    streaming handler for Slurm-over-SSH endpoints (crvfastsim.kit_uva)."""
     tasks["crv_response"] = task_cls(
         params=PARAMS, metrics=METRICS,
         resources=resources_cls(cores=8, mem_gb=48, gpus=1, gpu_type="a100", minutes=60),
-        body=common + tab + BODY_HEAD + _knob_lines() + BODY_TAIL, defaults=dict(DEFAULTS))
+        body=body(common, tables).replace("@inputs_dir@", "@fnal_data@"), defaults=dict(DEFAULTS))
     fnal_tasks.add("crv_response")
     if table_tasks is not None:
         table_tasks.add("crv_response")
+    if delegates is not None:
+        from . import kit_uva
+        delegates["crv_response"] = kit_uva.Delegate
