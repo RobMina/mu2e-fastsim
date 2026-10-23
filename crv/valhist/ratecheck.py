@@ -26,6 +26,9 @@ def main():
     ap.add_argument("--gen", nargs="+", required=True)
     ap.add_argument("--seeds", type=int, default=3)
     ap.add_argument("--margin", type=float, default=None, help="diagnostic: near_crv footprint margin [mm] (default 1500)")
+    ap.add_argument("--msc-tail", action="store_true")
+    ap.add_argument("--tail-k", type=float, default=None)
+    ap.add_argument("--sliced-msc", action="store_true")
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
     if a.margin is not None:   # diagnostic only: transport() calls near_crv(o, d, geom) with the module default
@@ -48,7 +51,9 @@ def main():
         row = {"file": nf.rsplit("/", 1)[-1], "g4": len(G), "stored": len(F), "stored_and_g4": len(F & G)}
         R = []
         for s in range(a.seeds):
-            st, _ = TR.transport(gen, geom, np.random.default_rng([97, s, len(out["per_file"])]), stage="C", world=world)
+            opts = {k: v for k, v in (("msc_tail", a.msc_tail), ("tail_k", a.tail_k), ("sliced_msc", a.sliced_msc)) if v}
+            st, _ = TR.transport(gen, geom, np.random.default_rng([97, s, len(out["per_file"])]), stage="C", world=world,
+                                 **opts)
             R.append(set(_key(st)))
         row["rerun"] = [len(r) for r in R]
         row["rerun_and_g4"] = [len(r & G) for r in R]
