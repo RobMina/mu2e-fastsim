@@ -21,17 +21,23 @@ Params
 Metrics: objective (size-free total of the used terms) and objective_sigma, objective_all (every term), n_terms,
 events_with_steps, wall_s, and term_<name> (chi2ndf scale) for every objective term.
 """
-from . import chain
-from .objective import crvresponse as R
-
-KNOB_PARAMS = tuple(sorted(chain.KNOBS))
+# Static names (no numpy/awkward import: the kit process on a laptop may lack them); tests/test_kit_uva.py keeps them
+# equal to chain.KNOBS and the crvresponse shapes.
+_PROP_KEYS = (("EX", "T1", "T2", "TAG") + tuple(f"EX{i}" for i in range(4)) + ("T10", "T11", "T20", "T21")
+              + tuple(f"M{i}" for i in range(1, 9)))
+KNOB_PARAMS = tuple(sorted(("background_scale", "cross_talk", "min_voltage", "pe_stretch", "photon_yield_scale",
+                            "time_constant", "wf_noise") + tuple(f"yield_{n}" for n in ("EX", "T1", "T2", "TAG"))
+                           + tuple(f"{q}_{n}" for q in ("speed", "atten") for n in _PROP_KEYS)))
+_SLOTS = ("EX", "T1", "T2", "TAG")
+_SHAPES = {"pe_along": _SLOTS, "pe_path": _SLOTS, "asym": ("EX", "T2"), "tdiff": ("EX", "T2"), "tspread": _SLOTS,
+           "dt_cluster": ("T1", "T2", "TAG"), "nlayers": _SLOTS, "pe_layer": _SLOTS, "oot_pe": _SLOTS}
 FIXED = ("period", "tables", "events", "background", "seed")
 PARAMS = KNOB_PARAMS + FIXED
 DEFAULTS = {**{k: "" for k in KNOB_PARAMS}, "period": "P4", "tables": "vr5", "events": 0, "background": 1}
 # nlayers of T1, T2 and the taggers have one populated bin (in-time clusters always have every layer): no ndf, no term
 NO_TERM = ("nlayers_T1", "nlayers_T2", "nlayers_TAG")
-TERMS = tuple(sorted([f"{n}_{s}" for n in R.SHAPES for s in R.SLOTS_OF.get(n, R.SLOTS) if f"{n}_{s}" not in NO_TERM]
-                     + [f"oot_rate_{s}" for s in R.SLOTS]))
+TERMS = tuple(sorted([f"{n}_{s}" for n, sl in _SHAPES.items() for s in sl if f"{n}_{s}" not in NO_TERM]
+                     + [f"oot_rate_{s}" for s in _SLOTS]))
 METRICS = ("objective", "objective_sigma", "objective_all", "n_terms", "events_with_steps", "wall_s") + \
     tuple(f"term_{t}" for t in TERMS)
 VR5_TABLES = ("00000990", "00001023", "00001056", "00001089", "00001122")

@@ -132,3 +132,12 @@ def test_registered_as_delegate():
     assert K.DELEGATES.get("crv_response") is KU.Delegate
     assert KU.Delegate.applies(type("U", (), {"stream_in": lambda *a: None})())
     assert not KU.Delegate.applies(type("E", (), {"fnal_data": "/exp"})())
+
+
+def test_static_names_match_the_chain_and_objective():
+    """kit_task carries the knob and term names statically (importable without numpy/awkward): keep them in sync."""
+    from crvfastsim import chain
+    from crvfastsim.objective import crvresponse as R
+    assert set(KT.KNOB_PARAMS) == set(chain.KNOBS)
+    assert KT._SLOTS == tuple(R.SLOTS)
+    assert {n: tuple(s) for n, s in KT._SHAPES.items()} == {n: tuple(R.SLOTS_OF.get(n, R.SLOTS)) for n in R.SHAPES}
