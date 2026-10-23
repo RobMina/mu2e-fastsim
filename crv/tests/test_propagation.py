@@ -165,5 +165,6 @@ def test_kit_task_metrics_cover_objective_terms():
     from crvfastsim.objective import crvresponse as R
     S = R.new_state()
     terms = set(S["h"]) | {f"oot_rate_{s}" for s in R.SLOTS}
-    assert {f"term_{t}" for t in terms} == {m for m in KT.METRICS if m.startswith("term_")}
+    assert {f"term_{t}" for t in terms} - {f"term_{t}" for t in KT.NO_TERM} == \
+        {m for m in KT.METRICS if m.startswith("term_")}
     assert set(chain.KNOBS) <= set(KT.PARAMS) and all(KT.DEFAULTS[k] == "" for k in chain.KNOBS)

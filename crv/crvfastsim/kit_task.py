@@ -25,7 +25,9 @@ KNOB_PARAMS = tuple(sorted(chain.KNOBS))
 FIXED = ("period", "tables", "events", "background", "seed")
 PARAMS = KNOB_PARAMS + FIXED
 DEFAULTS = {**{k: "" for k in KNOB_PARAMS}, "period": "P4", "tables": "vr5", "events": 0, "background": 1}
-TERMS = tuple(sorted([f"{n}_{s}" for n in R.SHAPES for s in R.SLOTS_OF.get(n, R.SLOTS)]
+# nlayers of T1, T2 and the taggers have one populated bin (in-time clusters always have every layer): no ndf, no term
+NO_TERM = ("nlayers_T1", "nlayers_T2", "nlayers_TAG")
+TERMS = tuple(sorted([f"{n}_{s}" for n in R.SHAPES for s in R.SLOTS_OF.get(n, R.SLOTS) if f"{n}_{s}" not in NO_TERM]
                      + [f"oot_rate_{s}" for s in R.SLOTS]))
 METRICS = ("objective", "objective_sigma", "objective_all", "n_terms", "events_with_steps", "wall_s") + \
     tuple(f"term_{t}" for t in TERMS)
@@ -67,6 +69,7 @@ T python -m crvfastsim reco-r3 "${FILES[@]}" --calib "$CAL" --deviation "$DEVF" 
 tail -2 "$M2FS_OUT/r3.txt"
 A python - "$M2FS_OUT" "$EXCL" $REF <<'EOF'
 import glob, json, os, sys
+from crvfastsim.kit_task import TERMS
 from crvfastsim.objective import crvresponse as R
 o, excl, refs = sys.argv[1], [x for x in sys.argv[2].split(",") if x], sys.argv[3:]
 j = json.load(open(os.path.join(o, "r3.json")))
@@ -76,6 +79,9 @@ ob = R.objective(j["response_state"], ref, exclude=excl)
 m = {"objective": ob["objective"], "objective_sigma": ob["sigma"], "objective_all": ob["objective_all"],
      "n_terms": ob["n_terms"], "events_with_steps": j["events_with_steps"], "wall_s": j["wall_s"]}
 m.update({"term_" + k: v["chi2ndf"] for k, v in ob["terms"].items()})
+missing = [t for t in TERMS if "term_" + t not in m]
+if missing:
+    print("terms missing (empty histogram): " + " ".join(missing))
 json.dump({"knobs": j.get("knobs", {}), "reference_files": len(files), "excluded": ob["excluded"],
            "objective": ob}, open(os.path.join(o, "objective.json"), "w"), indent=1)
 json.dump({k: float(v) for k, v in m.items()}, open(os.path.join(o, "metrics.json"), "w"))
