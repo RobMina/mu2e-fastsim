@@ -55,6 +55,7 @@ def build_parser():
             sp.add_argument("--stage", default="A", choices=["A", "B", "C"],
                             help="world model (A: air, no MSC; B: air + MSC; C: + GDML world material)")
             sp.add_argument("--gdml", default=None, help="GDML world export for --stage C (geometry/README.md)")
+            sp.add_argument("--world-mods", default=None, help="--stage C: named world modification (trkfastsim.worldmods)")
         if name == "g4cost":
             sp.add_argument("--digi", required=True, help="the digi job's TimeTracker SQLite (timing_digi.db)")
         if name == "v0check":

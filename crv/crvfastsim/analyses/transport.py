@@ -25,11 +25,17 @@ def default_gdml():
     return os.path.join(data, GDML_NAME)
 
 
-def run(inputs, outdir, seed=1, stage="A", counters=None, gdml=None, **kw):
+def run(inputs, outdir, seed=1, stage="A", counters=None, gdml=None, world_mods=None, **kw):
     geom = geometry.from_offline_config(geometry.find_counters(counters or DEFAULT_COUNTERS))
     world = None
     if stage == "C":
-        world = [p for p in world_mod.load(gdml or default_gdml(), y_min=tr.Y_MSC_PLANE) if p[0] != "G4_POLYSTYRENE"]
+        names = []
+        world = world_mod.load(gdml or default_gdml(), y_min=tr.Y_MSC_PLANE, names=names)
+        if world_mods:                 # geometry sensitivity: named edits of the world (trkfastsim.worldmods)
+            from trkfastsim import worldmods
+            world, names = worldmods.apply(world_mods, world, names)
+            print(f"# world modification: {world_mods}", flush=True)
+        world = [p for p in world if p[0] != "G4_POLYSTYRENE"]
     for i, f in enumerate(tables.expand(inputs)):
         rng = np.random.default_rng([int(seed), i])
         gen = tables.read(f, "gen")

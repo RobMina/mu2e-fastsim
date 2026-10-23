@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Grid worker: one shard of the G4 reference sample (stock ExtractedCRY, Musing SimJob MDC2025ay from CVMFS).
-# Shard k = PROCESS: subrun k+1, baseSeed BASESEED+k, NEVTS events. Writes dts (accepted) + gen (all primaries).
+# Shard k = PROCESS: subrun FIRST_SUBRUN+k (default 1), baseSeed BASESEED+FIRST_SUBRUN-1+k, NEVTS events. Writes dts
+# (accepted) + gen (all primaries). TAG names the files (default v0, as g4ref_v1).
 set -o pipefail
 OUTDIR="${1:?need OUTDIR (pnfs scratch)}"
 NEVTS="${NEVTS:?}"; BASESEED="${BASESEED:?}"; FCL_PNFS="${FCL_PNFS:?}"; MUSING="${MUSING:-MDC2025ay}"
-K="${PROCESS:?}"; SUBRUN=$((K + 1)); SEED=$((BASESEED + K))
+FIRST_SUBRUN="${FIRST_SUBRUN:-1}"; TAG="${TAG:-v0}"
+K="${PROCESS:?}"; SUBRUN=$((FIRST_SUBRUN + K)); SEED=$((BASESEED + FIRST_SUBRUN - 1 + K))
 SEQ=$(printf "001400_%08d" "$SUBRUN")
 OWNER="${OWNER:-mu2e}"
-DTS="dts.${OWNER}.CosmicCRYExtractedRef.v0.${SEQ}.art"; GEN="gen.${OWNER}.CosmicCRYExtractedRef.v0.${SEQ}.art"
+DTS="dts.${OWNER}.CosmicCRYExtractedRef.${TAG}.${SEQ}.art"; GEN="gen.${OWNER}.CosmicCRYExtractedRef.${TAG}.${SEQ}.art"
 echo "=== grid_ref_sim: shard $K subrun $SUBRUN seed $SEED nevts $NEVTS host $(hostname) $(date -u)"
 
 source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh || true
