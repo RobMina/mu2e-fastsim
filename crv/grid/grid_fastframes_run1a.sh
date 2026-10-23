@@ -32,7 +32,8 @@ mu2e -c CrvFastSim/fcl/dump_crvreco_from_mcs_run1a.fcl -s "$(x "$MCS")" -T crvre
 mu2e -c CrvFastSim/fcl/redigi_crv_from_dig_run1a.fcl -s "$(x "$DIG")" -T crvredigi_$S.root > redigi_$S.log 2>&1 || { tail -20 redigi_$S.log; die "redigi"; }
 grep -h "TrigReport Events total" dump_mix_$S.log dump_mcs_$S.log redigi_$S.log
 ifdh cp "$NTS" nts.root || die "stage nts"
-pyenv ana >/dev/null 2>&1 || echo "(pyenv ana rc=$?)"
+set +u; pyenv ana >/dev/null 2>&1 || echo "(pyenv ana rc=$?)"; set -u   # the ana activate script reads unset CONDA_PREFIX
+command -v python3 && python3 -c "import uproot, awkward, pandas" || die "ana env"
 L=$PWD/lookup; mkdir -p $L
 for f in LookupTable_6000_0 photonMap.root; do cp /cvmfs/mu2e.opensciencegrid.org/DataFiles/CRVConditions/v6_0/$f $L/ || die "lookup $f"; done
 /usr/bin/time -v env CRVFS_LOOKUP_DIR=$L PYTHONPATH=$PWD/code/core:$PWD/code/crv \
