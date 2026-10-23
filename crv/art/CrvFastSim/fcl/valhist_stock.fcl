@@ -26,6 +26,7 @@ physics.analyzers : {
     catalogueFile : ""
     dqm           : @local::CRVDQM.Reco
   }
+  crvdump : { module_type : CrvRecoTableDumper mc : true }
   dqmCrv : {
     module_type : DqmCrv
     digiTag     : "CrvDigi"
@@ -37,3 +38,5 @@ physics.ValPath : [ Validation, crvDigiDQM, crvRecoDQM, dqmCrv ]
 physics.end_paths : [ ValPath ]
 services.TFileService.fileName : "valhist.root"
 services.SeedService.baseSeed : 20261023
+# crvdump (CrvRecoTableDumper) is configured but off: add it to ValPath to also write the stock products as tables in
+# crvdump/ (input of the round trip and of fast reco):  physics.ValPath : [ Validation, crvDigiDQM, crvRecoDQM, dqmCrv, crvdump ]

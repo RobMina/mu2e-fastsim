@@ -17,6 +17,13 @@ and the legacy `DqmCrv`, run unchanged in the `crvval` muse area.
 | `run_fasttables.sh` | `fasttables.py` over `g4ref_v1` shards |
 | `../art/CrvFastSim/src/Crv{Digis,RecoPulses,CoincidenceClusters}FromTable` | art producers reading those tables (and stock dumps, for the round trip) into the stock collections |
 | `../art/CrvFastSim/fcl/valhist_{fromtable,digisfromtable}.fcl`, `run_fromtable.sh` | table arms: all three products from the table, or digis only + stock reco |
+| `run_compare_g4ref.sh` | merge each arm's shards and compare every arm with its reference (dts arms vs A0, gen-stream arms vs A0g), floor = A0' vs A0 |
+| `deficit.py`, `oneside.py` | where a digi/pulse count difference between two arms sits: per sector group, SiPM charge, pulse PE and time; events with activity in one arm only, by CRY primary class |
+
+Arms on `g4ref_v1` (outputs `$CRVFS_DATA/valhist/g4ref_v1/<arm>/`): `a0` stock reference, `a0p` floor (other digi seed),
+`a0_dump` = `a0` + tables, `rt` round trip (stock tables -> *FromTable), `a0g` G4 steps injected on the gen stream,
+`a1_<tables>` fast steps + stock digi/reco, `a2` fast digis + stock reco, `a3` stock digis + fast reco, `a4` fast
+digis + fast reco on G4 steps, `e2e_<tables>` fast steps + fast digis + fast reco (gen stream).
 
 Run from the umbrella with `PYTHONPATH=crv:core`: `python3 -m valhist.compare ...`, `python3 -m valhist.g4table ...`.
 

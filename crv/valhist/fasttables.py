@@ -107,8 +107,27 @@ def fast_reco(D, cond, geom, ccfg, rcfg=None, fcfg=None):
     return pulses, cl
 
 
+def _tree(f, name, cols):
+    """Write a TTree (not RNTuple, the uproot >= 5.7 default): flat numpy columns and jagged awkward columns, the latter
+    as counted arrays (counter n<name>) that the *FromTable producers read."""
+    types = {k: (v.layout.content.dtype if isinstance(v, ak.Array) else v.dtype) for k, v in cols.items()}
+    jag = {k for k, v in cols.items() if isinstance(v, ak.Array)}
+    f.mktree(name, {k: ("var * " + str(types[k]) if k in jag else types[k]) for k in cols})
+    n = len(next(iter(cols.values())))
+    if n:
+        f[name].extend(cols)
+
+
+def _jagged(rows, dtype):
+    """list of per-row sequences (or an awkward array) -> awkward array of dtype, also for zero rows."""
+    if isinstance(rows, ak.Array):
+        return ak.values_astype(rows, dtype)
+    flat = np.concatenate([np.asarray(r, dtype) for r in rows]) if len(rows) else np.zeros(0, dtype)
+    return ak.unflatten(flat, np.array([len(r) for r in rows], np.int64))
+
+
 def write(path, run, D, pulses=None, cl=None, events=None):
-    """CrvRecoTableDumper-layout file; events: event labels of the job (every event, also those without rows)."""
+    """CrvRecoTableDumper-layout file (TTrees in crvdump/); events: event labels of the job (also those without rows)."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     i32, f32, f64 = np.int32, np.float32, np.float64
 
@@ -117,41 +136,39 @@ def write(path, run, D, pulses=None, cl=None, events=None):
         return {"run": r, "subrun": s, "event": e}
 
     with uproot.recreate(path) as f:
-        didx = np.arange(len(D["ev"])) - np.searchsorted(D["ev"], D["ev"])
-        f["crvdump/digis"] = {**keyed(D["ev"]), "idx": didx.astype(i32), "bar": D["bar"].astype(i32),
-                              "sipm": D["sipm"].astype(i32), "starttdc": D["starttdc"].astype(i32),
-                              "nzs": np.zeros(len(D["ev"]), i32), "roc": np.full(len(D["ev"]), -1, i32),
-                              "feb": np.full(len(D["ev"]), -1, i32), "febch": np.full(len(D["ev"]), -1, i32),
-                              "adc": ak.values_astype(ak.Array(list(D["adc"])) if len(D["ev"]) else
-                                                      ak.Array([[0]])[:0], np.int16)}
+        nd = len(D["ev"])
+        didx = np.arange(nd) - np.searchsorted(D["ev"], D["ev"])
+        _tree(f, "crvdump/digis", {**keyed(D["ev"]), "idx": didx.astype(i32), "bar": D["bar"].astype(i32),
+                                   "sipm": D["sipm"].astype(i32), "starttdc": D["starttdc"].astype(i32),
+                                   "nzs": np.zeros(nd, i32), "roc": np.full(nd, -1, i32), "feb": np.full(nd, -1, i32),
+                                   "febch": np.full(nd, -1, i32), "adc": _jagged(list(D["adc"]), np.int16)})
         if pulses is not None:
-            f["crvdump/pulses"] = {**keyed(pulses["ev"]), "idx": pulses["idx"].astype(i32),
-                                   "bar": pulses["bar"].astype(i32), "sipm": pulses["sipm"].astype(i32),
-                                   **{k: np.asarray(pulses[k], f32) for k in ("pe", "peph", "height", "beta", "chi2",
-                                                                              "ped")},
-                                   "time": np.asarray(pulses["time"], f64), "letime": np.asarray(pulses["letime"], f64),
-                                   **{k: np.asarray(pulses[k], i32) for k in ("seq", "flags", "pedfromdb")},
-                                   "wfidx": ak.values_astype(pulses["wfidx"], np.int32)}
+            _tree(f, "crvdump/pulses", {**keyed(pulses["ev"]), "idx": pulses["idx"].astype(i32),
+                                        "bar": pulses["bar"].astype(i32), "sipm": pulses["sipm"].astype(i32),
+                                        **{k: np.asarray(pulses[k], f32) for k in ("pe", "peph", "height", "beta",
+                                                                                    "chi2", "ped")},
+                                        "time": np.asarray(pulses["time"], f64),
+                                        "letime": np.asarray(pulses["letime"], f64),
+                                        **{k: np.asarray(pulses[k], i32) for k in ("seq", "flags", "pedfromdb")},
+                                        "wfidx": _jagged(pulses["wfidx"], np.int32)})
         if cl is not None:
             n = len(cl["ev"])
-            f["crvdump/clusters"] = {**keyed(np.asarray(cl["ev"], np.int64)),
-                                     **{k: np.asarray(cl[k], i32).reshape(n) for k in
-                                        ("idx", "sectortype", "poscalc", "sidehits0", "sidehits1")},
-                                     **{k: np.asarray(cl[k], f64).reshape(n) for k in
-                                        ("start", "end", "avgtime", "sidetime0", "sidetime1")},
-                                     **{k: np.asarray(cl[k], f32).reshape(n) for k in
-                                        ("pe", "slope", "x", "y", "z", "sidepe0", "sidepe1")},
-                                     "layers": ak.values_astype(ak.Array(cl["layers"]) if n else ak.Array([[0]])[:0],
-                                                                np.int32),
-                                     "pulses": ak.values_astype(ak.Array(cl["pulses"]) if n else ak.Array([[0]])[:0],
-                                                                np.int32)}
+            _tree(f, "crvdump/clusters", {**keyed(np.asarray(cl["ev"], np.int64)),
+                                          **{k: np.asarray(cl[k], i32).reshape(n) for k in
+                                             ("idx", "sectortype", "poscalc", "sidehits0", "sidehits1")},
+                                          **{k: np.asarray(cl[k], f64).reshape(n) for k in
+                                             ("start", "end", "avgtime", "sidetime0", "sidetime1")},
+                                          **{k: np.asarray(cl[k], f32).reshape(n) for k in
+                                             ("pe", "slope", "x", "y", "z", "sidepe0", "sidepe1")},
+                                          "layers": _jagged(cl["layers"], np.int32),
+                                          "pulses": _jagged(cl["pulses"], np.int32)})
         if events is not None:
             ev = np.unique(np.asarray(events, np.int64))
             count = lambda x: np.bincount(np.searchsorted(ev, np.asarray(x, np.int64)), minlength=len(ev)).astype(i32) \
                 if len(x) else np.zeros(len(ev), i32)
-            f["crvdump/events"] = {**keyed(ev), "ndigi": count(D["ev"]),
-                                   "npulse": count(pulses["ev"]) if pulses is not None else np.zeros(len(ev), i32),
-                                   "ncluster": count(cl["ev"]) if cl is not None else np.zeros(len(ev), i32)}
+            _tree(f, "crvdump/events", {**keyed(ev), "ndigi": count(D["ev"]),
+                                        "npulse": count(pulses["ev"]) if pulses is not None else np.zeros(len(ev), i32),
+                                        "ncluster": count(cl["ev"]) if cl is not None else np.zeros(len(ev), i32)})
 
 
 def main():
