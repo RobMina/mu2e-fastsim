@@ -56,6 +56,13 @@ def build_parser():
                             help="world model (A: air, no MSC; B: air + MSC; C: + GDML world material)")
             sp.add_argument("--gdml", default=None, help="GDML world export for --stage C (geometry/README.md)")
             sp.add_argument("--world-mods", default=None, help="--stage C: named world modification (trkfastsim.worldmods)")
+            sp.add_argument("--msc-tail", action="store_true",
+                            help="stage C: single-scattering tail above the Gaussian MSC core, per height band")
+            sp.add_argument("--tail-k", type=float, default=None,
+                            help="with --msc-tail: tail threshold in units of theta0 (default: density crossing)")
+            sp.add_argument("--sliced-msc", action="store_true", help="stage C: per-band |p| in the MSC")
+            sp.add_argument("--first-muon-only", action="store_true",
+                            help="transport only the first generated muon of each event (before 2026-10-23; default: all)")
         if name == "g4cost":
             sp.add_argument("--digi", required=True, help="the digi job's TimeTracker SQLite (timing_digi.db)")
         if name == "v0check":
@@ -80,6 +87,13 @@ def build_parser():
             sp.add_argument("--calib", default=None, metavar="CSV", help="CRVCalib + channel map CSV")
             sp.add_argument("--deviation", default=None, metavar="CSV", help="CRVPhoton deviations")
             sp.add_argument("--gdml", default=None, help="GDML world for stage C transport")
+            sp.add_argument("--msc-tail", action="store_true",
+                            help="stage C: single-scattering tail above the Gaussian MSC core, per height band")
+            sp.add_argument("--tail-k", type=float, default=None,
+                            help="with --msc-tail: tail threshold in units of theta0 (default: density crossing)")
+            sp.add_argument("--sliced-msc", action="store_true", help="stage C: per-band |p| in the MSC")
+            sp.add_argument("--first-muon-only", action="store_true",
+                            help="transport only the first generated muon of each event (before 2026-10-23; default: all)")
             sp.add_argument("--jax", action="store_true", help="JAX twins for photons, SiPM charges, waveforms")
             sp.add_argument("--max-events", type=int, default=None, help="first N generated events per file")
             sp.add_argument("--seed", type=int, default=1)

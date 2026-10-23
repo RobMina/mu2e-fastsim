@@ -385,16 +385,22 @@ def _showers_for_gen(gen, lib, rng):
 
 
 def sample(fast_steps, fast_parts, gen, lib, geom, rng):
-    """Fast tier-1a tables + tier 1b: (steps, particles, info). The muon keeps key 1; descendants 2..; showers k*1e7+sp."""
+    """Fast tier-1a tables + tier 1b: (steps, particles, info). Muons keep their keys (1, or 1..n with all_muons);
+    descendants follow them; showers k*1e7+sp."""
     fx = fast_steps.copy()
     desc, n_drop, n_clamp, why = _desc_for_crossings(fx, lib, geom, rng)
-    # descendant particles: one per (event, crossing, library particle), keys 2.. within the event
+    # descendant particles: one per (event, crossing, library particle), keys after the event's muon keys (2.. with one
+    # muon), parent = the muon of the crossing (tier-1a `sp`)
+    nmu = fast_parts.groupby(KEY, sort=False).key.max().rename("kmax").reset_index() if len(fast_parts) else None
     u = desc[KEY + ["xi", "lsp", "pdg"]].drop_duplicates(KEY + ["xi", "lsp"]).reset_index(drop=True)
-    u["key"] = u.groupby(KEY).cumcount() + 2
+    base = (u[KEY].merge(nmu, on=KEY, how="left").kmax.fillna(1).to_numpy().astype(np.int64) if nmu is not None
+            else np.ones(len(u), np.int64))
+    u["key"] = u.groupby(KEY).cumcount().to_numpy() + 1 + base
+    u["parent"] = fx.sp.to_numpy()[u.xi.to_numpy()] if "sp" in fx.columns else 1
     desc = desc.merge(u[KEY + ["xi", "lsp", "key"]], on=KEY + ["xi", "lsp"])
     desc["sp"] = desc.key
     dparts = pd.DataFrame({k: u[k].to_numpy() for k in KEY})
-    dparts["key"], dparts["parent"], dparts["pdg"], dparts["isprim"] = u.key, 1, u.pdg, 0
+    dparts["key"], dparts["parent"], dparts["pdg"], dparts["isprim"] = u.key, u.parent, u.pdg, 0
     sh = _showers_for_gen(gen, lib, rng)
     sh["sp"] = (sh.k + 1) * SHOWER_KEY_BASE + sh.sp
     su = sh[KEY + ["sp", "pdg", "isroot", "k", "shid"]].drop_duplicates(KEY + ["sp"])

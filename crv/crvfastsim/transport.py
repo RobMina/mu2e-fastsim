@@ -16,6 +16,7 @@ import pandas as pd
 
 from mu2efastsim import eloss, materials
 from mu2efastsim import world as world_mod
+from mu2efastsim import transport as core_tr
 from mu2efastsim.transport import msc_to_plane, slab_loss  # noqa: F401  (shared pieces; re-exported)
 
 from . import crossings, tables
@@ -88,12 +89,34 @@ def world_loss(rng, o, d, p, world):
     return p_plane, band_xx0.sum(1), tk > 0.5, band_xx0, band_h
 
 
-def transport(gen, geom, rng, air_loss=True, stage="A", world=None):
+def all_primary_muons(gen):
+    """Every generated muon, one row per muon, ordered by event and gen index, with `mukey` = its SimParticle key:
+    1 for the first muon of an event (as primary_muons gives), 2, 3, ... for further muons of the same event."""
+    mu = gen[gen.pdg.abs() == tables.PRIMARY_MUON_PDG]
+    order = [c for c in tables.KEY + ["idx"] if c in mu.columns]
+    mu = mu.sort_values(order, kind="stable").reset_index(drop=True)
+    mu["mukey"] = mu.groupby(tables.KEY, sort=False).cumcount().to_numpy() + 1
+    return mu
+
+
+def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=False, tail_k=None, sliced_msc=False,
+              all_muons=True):
     """Return (steps, particles) for the primary muons in `gen`.
 
     Stage A: air, no MSC. B: air + MSC to Y_MSC_PLANE. C: GDML world material (world = world.load(...)) + MSC.
+    Stage C options (opt-in; defaults reproduce the earlier output bit for bit):
+      msc_tail: single-scattering (screened Rutherford) tail per height band above the Gaussian core
+        (mu2efastsim.transport.single_scatter_tail; tail_k = threshold in units of theta0, None = density crossing);
+      sliced_msc: each band scatters with its own |p| (band_p) instead of the column's geometric mean.
+    Both come from the shared core world_loss (the tracker's --msc-tail / --sliced-msc); the default path keeps the
+    CRV's own world_loss.
+    all_muons (default True since 2026-10-23): transport every generated muon, not only the first of each event (CRY
+    makes 0.3 % multi-muon events, which carried 2.5 GeV of the 7.3 GeV G4-minus-fast CRV energy on g4ref_v1 11-20).
+    Muon i of an event gets SimParticle key i (1 = the first muon, so single-muon events are unchanged); steps point to
+    it through `sp`. all_muons=False (CLI --first-muon-only) reproduces the earlier tables.
     """
-    mu = primary_muons(gen)
+    mu = all_primary_muons(gen) if all_muons else primary_muons(gen)
+    mukey = mu.mukey.to_numpy() if all_muons else np.ones(len(mu), np.int64)
     p0 = np.sqrt(mu.px ** 2 + mu.py ** 2 + mu.pz ** 2).to_numpy()
     o = mu[["x", "y", "z"]].to_numpy()
     d = mu[["px", "py", "pz"]].to_numpy() / p0[:, None]
@@ -103,7 +126,16 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None):
         down = near_crv(o, d, geom)
         xx0 = None
         bxx0 = bh = None
-        if stage == "C":
+        tail = None
+        if stage == "C" and (msc_tail or sliced_msc):
+            res = core_tr.world_loss(rng, o[down], d[down], p0[down], world, BAND_EDGES_Y, return_band_p=True,
+                                     return_tail=msc_tail)
+            p_plane, xx0, alive_w, bxx0, bh, bp = res[:6]
+            tail = dict(band_p=bp if sliced_msc else None, band_chic2=res[6] if msc_tail else None,
+                        band_thn=res[7] if msc_tail else None, tail_k=tail_k)
+            keep_mu = np.ones(len(mu), bool)
+            keep_mu[np.flatnonzero(down)[~alive_w]] = False
+        elif stage == "C":
             p_plane, xx0, alive_w, bxx0, bh = world_loss(rng, o[down], d[down], p0[down], world)
             keep_mu = np.ones(len(mu), bool)
             keep_mu[np.flatnonzero(down)[~alive_w]] = False
@@ -111,7 +143,8 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None):
         p_msc = p0[down] if stage == "B" else np.maximum(np.sqrt(p0[down] * np.maximum(p_plane, 1.0)), 1.0)
         bands = (bxx0, bh) if stage == "C" else (None, None)
         o2[down], d2[down], L[down] = msc_to_plane(rng, o[down], d[down], p_msc, Y_MSC_PLANE,
-                                                   eloss.radiation_length_mm(materials.AIR), xx0, *bands)
+                                                   eloss.radiation_length_mm(materials.AIR), xx0, *bands,
+                                                   **(tail or {}))
         o, d, t_off = o2, d2, L
         if stage == "C":
             pp = p0.copy()
@@ -172,7 +205,7 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None):
     steps = pd.DataFrame({k: mu[k].to_numpy()[it] for k in tables.KEY})
     steps["nstep"] = np.bincount(it, minlength=len(mu))[it]
     steps["bar"] = bar
-    steps["sp"] = 1
+    steps["sp"] = mukey[it]
     steps["t0"] = t0
     steps["t1"] = t0 + path / (beta * C_MM_PER_NS)
     for j, c in enumerate("xyz"):
@@ -183,7 +216,7 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None):
     steps["len"] = path
     steps["edep"] = vis
     parts = pd.DataFrame({k: mu[k].to_numpy() for k in tables.KEY})
-    parts["key"] = 1
+    parts["key"] = mukey
     parts["parent"] = -1
     parts["pdg"] = mu.pdg.to_numpy()
     parts["isprim"] = 1

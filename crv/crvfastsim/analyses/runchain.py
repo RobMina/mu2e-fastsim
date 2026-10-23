@@ -24,7 +24,8 @@ SECTOR_TYPES = {1: "EX", 2: "T1", 3: "T2", 4: "M"}
 
 
 def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax=False, max_events=None, seed=1,
-        compare=None, counters=None, reco_cpu=False, emit=None, **kw):
+        compare=None, counters=None, reco_cpu=False, emit=None, msc_tail=False, tail_k=None, sliced_msc=False,
+        first_muon_only=False, **kw):
     if not (library and calib):
         raise SystemExit("runchain needs --library and --calib")
     from .transport import default_gdml
@@ -52,7 +53,8 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
             gen = gen[keep].reset_index(drop=True)
         n_gen += int(gen[tables.KEY].drop_duplicates().shape[0])
         a = time.perf_counter()
-        st, pa = tr.transport(gen, geom, rng, stage="C", world=world)
+        st, pa = tr.transport(gen, geom, rng, stage="C", world=world, msc_tail=msc_tail, tail_k=tail_k,
+                              sliced_msc=sliced_msc, all_muons=not first_muon_only)
         T["transport_s"] = T.get("transport_s", 0.0) + time.perf_counter() - a
         a = time.perf_counter()
         st, pa, _ = tier1b.sample(st, pa, gen, lib, geom, rng)
