@@ -7,8 +7,9 @@ From: nvidia/cuda:12.6.3-devel-rockylinux9
     org.opencontainers.image.description Celeritas (GPU EM transport) + Geant4 11.3 + VecGeom for the Mu2e elebeam_flash feasibility study
 
 %help
-    Celeritas @CELERITAS@ with CUDA (sm_80, A100), VecGeom (+gdml, CUDA), Geant4 11.3.2 (Mu2e's version), VecGeom 2.2.0, G4VG, covfie,
-    built with spack following Celeritas' own rocky-cuda12 recipe (scripts/docker/dev/rocky-cuda12.yaml).
+    Celeritas @CELERITAS@ with CUDA (sm_80, A100), VecGeom (+gdml, CUDA), Geant4 11.3.2 (Mu2e's version), VecGeom 1.2.11, G4VG, covfie,
+    built with spack 1.2 following Celeritas' own rocky-cuda12 recipe (scripts/docker/dev/rocky-cuda12.yaml). The spack
+    builtin repo has Celeritas up to 0.6.3, which needs VecGeom 1.2.x (0.7.0 and VecGeom 2.2 are not packaged there yet).
     Purpose: run Celeritas' standalone Geant4 app celer-g4 on the Mu2e GDML export with the DS field map, as the first
     step of route A in ai-config wiki mu2e/wiki/sim/elebeam-flash-gpu-plan.md. No Mu2e-internal data inside.
       apptainer exec --nv mu2e-celeritas.sif celer-g4 --help
@@ -37,7 +38,7 @@ spack:
   specs:
     - "celeritas@@CELERITAS@ +cuda +geant4 +vecgeom +covfie cuda_arch=80 cxxstd=20"
     - "geant4@11.3.2 cxxstd=20 ~opengl ~qt ~motif ~x11 +threads"
-    - "vecgeom@2.2.0 +gdml +cuda cuda_arch=80 cxxstd=20"
+    - "vecgeom@1.2.11 +gdml +cuda cuda_arch=80 cxxstd=20"
     - "g4vg"
     - "covfie +cuda cuda_arch=80"
     - cmake
@@ -55,9 +56,10 @@ spack:
           prefix: /usr/local/cuda
     all:
       target: [x86_64_v3]
-      variants: +cuda cuda_arch=80 cxxstd=20
+      variants: +cuda cuda_arch=80
   config:
-    install_tree: /opt/software
+    install_tree:
+      root: /opt/software
     build_jobs: @JOBS@
   view: /opt/view
 EOF
