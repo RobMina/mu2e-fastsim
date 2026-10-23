@@ -56,7 +56,7 @@ def test_bucketed_matches_synthesize_with_label_tdc0():
 
 def test_chain_digis_bucketed_default_equals_unbucketed():
     """chain.digis now uses bucketed synthesis on every JAX backend (one padded call ran out of memory on A100s):
-    noise off, the default and ChainConfig(unbucketed_synth=True) give the same digis."""
+    noise off, the default and ChainConfig(unbucketed_synth=True) give the same digis (volt to rounding)."""
     from types import SimpleNamespace
     from crvfastsim import chain
     Q, _ = _inputs(300, 11)
@@ -70,5 +70,7 @@ def test_chain_digis_bucketed_default_equals_unbucketed():
         b = chain.digis(QC, cond, chain.ChainConfig(jax=True, noise=False, unbucketed_synth=True), np.random.default_rng(1))
     finally:
         chain.tdc0_per_feb = orig
-    for k in a:
+    assert set(a) == set(b) == {"chan", "start", "tdc0", "starttdc", "volt", "adc"}
+    for k in ("chan", "start", "tdc0", "starttdc", "adc"):
         assert np.array_equal(np.asarray(a[k]), np.asarray(b[k])), k
+    assert np.max(np.abs(np.asarray(a["volt"]) - np.asarray(b["volt"]))) < 1e-12   # GPU sums depend on the padded Q
