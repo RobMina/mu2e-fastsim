@@ -5,6 +5,7 @@ Keys are alignment bodies (EX0..EX3, T10, T11, T20, T21, M1..M8) or sector slots
 over its sector. Unlisted bars get 1.
 
     python3 write_crv_propagation.py OUT.txt [--speed EX=1.08 T2=1.02] [--atten T1=0.58 T10=0.55] [--json KNOBS.json]
+    python3 write_crv_propagation.py OUT.txt --knob speed_EX=1.08 atten_T10=0.55   (fast-chain knob names, chain.KNOBS)
 
 KNOBS.json: {"speed": {key: ratio}, "atten": {key: ratio}}. Use in the digi job (stock arm):
     services.ProditionsService.crvLightPropagation.useDb : true
@@ -47,8 +48,13 @@ def main():
     ap.add_argument("--speed", nargs="*", help="KEY=ratio, fibre signal speed relative to the table")
     ap.add_argument("--atten", nargs="*", help="KEY=ratio, attenuation length relative to the table")
     ap.add_argument("--json", help='{"speed": {...}, "atten": {...}}')
+    ap.add_argument("--knob", nargs="*", help="speed_<KEY>=ratio / atten_<KEY>=ratio (chain.KNOBS); others ignored")
     a = ap.parse_args()
     sp, at = kv(a.speed), kv(a.atten)
+    for k, v in kv(a.knob).items():
+        q, _, key = k.partition("_")
+        if q in ("speed", "atten") and key:
+            (sp if q == "speed" else at)[key] = v
     if a.json:
         j = json.load(open(a.json))
         sp.update(j.get("speed", {}))

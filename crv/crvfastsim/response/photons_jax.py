@@ -56,6 +56,14 @@ class DeviceTable:
                       L.hole_radius_y, L.fiber_radius, L.corner_radius)
 
 
+ROW_KEYS = ("t0", "t1", "beta", "theta", "dev", "mu", "n_scint", "n_ck_s", "n_ck_f")
+
+
+def _row(rows, k):
+    """Per-row array k; rows without an attenuation shift (mu) get zeros."""
+    return rows[k] if k in rows else np.zeros(len(rows["nsub"]))
+
+
 def _find_bin(edges, v):
     i = jnp.searchsorted(edges, v, side="left")
     i = jnp.where(v == edges[0], 1, i)
@@ -101,7 +109,7 @@ def _kernel_a(rows, key, edges, prob, SB, nb, const, offsets):
     bins = jnp.stack([sbin, cbin, fbin], 1)
     n = jnp.stack([rows["n_scint"][ri], rows["n_ck_s"][ri], rows["n_ck_f"][ri]], 1)
     gbin = jnp.where(bins >= 0, bins + jnp.asarray(offsets)[None, :], 0)
-    pr = jnp.minimum(prob[gbin] * rows["dev"][ri][:, None], 1.0)
+    pr = jnp.minimum(prob[gbin] * (rows["dev"][ri] * jnp.exp(-rows["mu"][ri] * z))[:, None], 1.0)
     n = jnp.where((bins >= 0) & valid[:, None], n, 0)
     narr = jax.random.binomial(key, n.astype(jnp.float64), pr).astype(jnp.int64)
     narr = jnp.where(n > 0, narr, 0)
@@ -136,8 +144,8 @@ def substep_photons(dt, rows, key, max_sub=1 << 22):
         chunk = {}
         for kname in ("s", "d"):
             chunk[kname] = jnp.asarray(np.pad(rows[kname][a:b], ((0, pad), (0, 0))))
-        for kname in ("t0", "t1", "beta", "theta", "dev", "n_scint", "n_ck_s", "n_ck_f"):
-            chunk[kname] = jnp.asarray(np.pad(rows[kname][a:b], (0, pad)))
+        for kname in ROW_KEYS:
+            chunk[kname] = jnp.asarray(np.pad(_row(rows, kname)[a:b], (0, pad)))
         chunk["nsub"] = jnp.asarray(np.pad(nsub[a:b], (0, pad)))  # padded rows have 0 substeps
         SB = _bucket(int(nsub[a:b].sum()))
         key, ka, kb = jax.random.split(key, 3)
@@ -211,8 +219,8 @@ def device_photons(dt, rows, key, row_step_offset=0, split=None):
     RB = _bucket(R)
     pad = RB - R
     chunk = {k: jnp.asarray(np.pad(rows[k], ((0, pad), (0, 0)))) for k in ("s", "d")}
-    for k in ("t0", "t1", "beta", "theta", "dev", "n_scint", "n_ck_s", "n_ck_f"):
-        chunk[k] = jnp.asarray(np.pad(rows[k], (0, pad)))
+    for k in ROW_KEYS:
+        chunk[k] = jnp.asarray(np.pad(_row(rows, k), (0, pad)))
     chunk["nsub"] = jnp.asarray(np.pad(nsub, (0, pad)))
     SB = _bucket(int(nsub.sum()))
     ntot = float(((rows["n_scint"] + rows["n_ck_s"] + rows["n_ck_f"]) * nsub * np.minimum(rows["dev"], 1.0)).sum())

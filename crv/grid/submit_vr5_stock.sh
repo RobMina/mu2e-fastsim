@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # submit_vr5_stock.sh NAME CODE [--first-line 31] [--nfiles 5] [--points FILE] [--nevts N] [--lifetime 2h] [--test] [--dry-run]
 #                    [--digi-textfile TABLE.txt]   (DbService text table, e.g. a timecal CRVTime digi table, in the digi job only)
+# A point's KEY=VALUE is a FHiCL override, or a light-propagation knob speed_<KEY>/atten_<KEY> (chain.KNOBS, no dot):
+# those become a per-point CRVPropagation text table (scripts/write_crv_propagation.py) with crvLightPropagation.useDb
+# true, and need CODE built with Offline PR crv-fiber-atten.
 #
 # V-R5 stock arm: every point of vr5_points.txt on NFILES dts files (filelist lines FIRST..FIRST+NFILES-1; default the
 # five MDC2025as files 990-1122 whose CrvStep tables the fast arm replays), one grid job per (point, file), through the
@@ -32,21 +35,32 @@ for f in digi_crvonly_extracted_v04.fcl digi_crvonly_extracted_v05.fcl reco_crvo
   cp "$MCR/fcl/$f" "$STAGE/fcl/" || { echo "ERROR: missing fcl $f" >&2; exit 1; }
 done
 : > "$STAGE/points.txt"
+mkdir -p "$STAGE/textfiles"
 grep -v '^#' "$POINTS" | while read -r pt kv; do
   [ -n "$pt" ] || continue
   echo "$pt" >> "$STAGE/points.txt"
+  prop=(); tf=()
+  [ -n "${DTF:-}" ] && tf+=("\"$(basename "$DTF")\"")
+  for x in $kv; do case "${x%%=*}" in speed_*|atten_*) prop+=("$x") ;; esac; done
+  if [ ${#prop[@]} -gt 0 ]; then
+    PYTHONPATH="$HERE/.." python3 "$HERE/../scripts/write_crv_propagation.py" "$STAGE/textfiles/prop_$pt.txt" \
+      --knob "${prop[@]}" >/dev/null || { echo "ERROR: propagation table for $pt" >&2; exit 1; }
+    tf+=("\"prop_$pt.txt\"")
+  fi
   { echo '#include "digi_crvonly_extracted_v05.fcl"'
-    for x in $kv; do echo "${x%%=*} : ${x#*=}"; done
-    [ -n "${DTF:-}" ] && echo "services.DbService.textFile : [ \"$(basename "$DTF")\" ]"
+    for x in $kv; do case "${x%%=*}" in speed_*|atten_*) ;; *) echo "${x%%=*} : ${x#*=}" ;; esac; done
+    [ ${#prop[@]} -gt 0 ] && echo "services.ProditionsService.crvLightPropagation.useDb : true"
+    [ ${#tf[@]} -gt 0 ] && echo "services.DbService.textFile : [ $(IFS=,; echo "${tf[*]}") ]"
     echo "outputs.Output.fileName : \"dig.owner.VR5$pt.version.sequencer.art\""; } > "$STAGE/fcl/digi_$pt.fcl"
-done
+done || exit 1
 LC_ALL=C grep -l '[^ -~]' "$STAGE"/fcl/*.fcl && { echo "ERROR: non-ASCII character in a staged fcl" >&2; exit 1; }
 sed -n "${FIRST},$((FIRST + NF - 1))p" "$FILELIST" > "$STAGE/filelist.txt"
 [ "$(wc -l < "$STAGE/filelist.txt")" -eq "$NF" ] || { echo "ERROR: filelist too short" >&2; exit 1; }
-[ -n "${DTF:-}" ] && { mkdir -p "$STAGE/textfiles"; cp "$DTF" "$STAGE/textfiles/"; }
+[ -n "${DTF:-}" ] && cp "$DTF" "$STAGE/textfiles/"
+HAS_TF=$(ls "$STAGE/textfiles" | head -1)
 touch "$STAGE/crvfastsim/__init__.py"
 tar -C "$HERE/../crvfastsim" --exclude='__pycache__' --exclude='*.pyc' -cf - objective | tar -C "$STAGE/crvfastsim" -xf -
-tar -C "$STAGE" -cjf "$STAGE.cfg.tar.bz2" fcl filelist.txt points.txt crvfastsim $( [ -n "${DTF:-}" ] && echo textfiles )
+tar -C "$STAGE" -cjf "$STAGE.cfg.tar.bz2" fcl filelist.txt points.txt crvfastsim $( [ -n "$HAS_TF" ] && echo textfiles )
 [ -n "${KEEP_STAGE:-}" ] && { rm -rf "$KEEP_STAGE"; cp -r "$STAGE" "$KEEP_STAGE"; }   # keep the staged config (fhicl-dump check)
 NP=$(wc -l < "$STAGE/points.txt"); NJOBS=$((NP * NF)); $TEST && NJOBS=1
 

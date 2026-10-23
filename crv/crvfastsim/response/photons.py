@@ -10,6 +10,11 @@ Per step and simulated SiPM (stock loop, MakeCrvPhotons::MakePhotons):
      and scintillator-Cerenkov bins; else in a fibre the fibre-Cerenkov bin (beta, theta, phi, r, z).
   4. each photon arrives with the bin probability x (deviation * variationScale + 1) * photonYieldScaleFactor; its time
      is the substep time + fibre-emission decays (decay time 0 in the v6 tables) + a delay drawn from the bin.
+  5. light propagation per bar relative to its table (Offline CRVLightPropagation / DbTable CRVPropagation,
+     MakeCrvPhotons::SetLightPropagation): speed ratio r_v adds d / v_table (1 / r_v - 1) to the arrival time, d the
+     distance to the SiPM end; attenuation-length ratio r_a multiplies the probability by
+     exp(-z (1 / r_a - 1) / L_table), z along the bar from its centre. v_table and L_table are measured from the
+     table (table_propagation).
 Arrivals are drawn as Binomial(n, p) per substep and photon type (the stock code draws n Bernoullis: same law).
 Vectorised over steps x SiPMs x substeps in chunks; no per-step loops.
 """
@@ -22,15 +27,11 @@ from . import lookup
 PRECISION_MM = 0.1
 
 
-TABLE_FIBER_SPEED = 164.0   # mm/ns: effective speed in the v6_0 tables (10 % arrival time vs distance, all three tables)
-
-
 @dataclass
 class SectorConfig:
     table: str
     reflector: int
     yield_per_mev: float
-    fiber_speed: float = None   # mm/ns; None = the table's own (1.4 mm fibre geometry for every v6_0 table)
 
 
 # Offline CRVResponse/fcl/epilog_extracted_v05.fcl (included by Production digitize/Extracted.fcl)
@@ -46,6 +47,10 @@ class ResponseConfig:
     sectors: dict = field(default_factory=lambda: dict(EXTRACTED_V05))
     photon_yield_scale: float = 0.94
     photon_yield_variation_scale: float = 1.0
+    # light propagation relative to the lookup tables, {key: ratio}; key = sector (EX, T1, T2, M1..M8; TAG = all M*) or
+    # module (sector name + module index for sectors with several modules: EX0..EX3, T10, T11, T20, T21); module wins
+    speed_ratio: dict = field(default_factory=dict)
+    atten_ratio: dict = field(default_factory=dict)
 
 
 # pdg -> (mass MeV, charge e); ions 100ZZZAAAI handled in particle_props
@@ -158,6 +163,9 @@ def _substep_photons(L, rows, rng, max_sub=4_000_000):
     E = L.edges
     nb = {k: len(v) - 1 for k, v in E.items()}
     Ts, Tc, Tf = (L.tables[k] for k in lookup.TABLES)
+    mu = rows.get("mu")
+    if mu is not None and not np.any(mu):
+        mu = None
     for a, b in zip(cuts[:-1], cuts[1:]):
         n = nsub[a:b]
         ri = np.repeat(np.arange(a, b), n)
@@ -184,7 +192,10 @@ def _substep_photons(L, rows, rng, max_sub=4_000_000):
             if not m.any():
                 continue
             nn = rows[ncol][ri[m]]
-            pr = np.minimum(T.prob[bins[m]].astype(float) * rows["dev"][ri[m]], 1.0)
+            pr = T.prob[bins[m]].astype(float) * rows["dev"][ri[m]]
+            if mu is not None:
+                pr = pr * np.exp(-mu[ri[m]] * z[m])
+            pr = np.minimum(pr, 1.0)
             narr = rng.binomial(nn, pr)
             if not narr.any():
                 continue
@@ -200,6 +211,71 @@ def _substep_photons(L, rows, rng, max_sub=4_000_000):
     if not out_s:
         return np.zeros(0, np.int64), np.zeros(0, np.int64), np.zeros(0)
     return np.concatenate(out_s), np.concatenate(out_c), np.concatenate(out_t)
+
+
+_TABLE_PROP = {}
+
+
+def table_propagation(L):
+    """(inverse signal speed [ns/mm], attenuation length [mm]) of a table, as MakeCrvPhotons::FindTablePropagation:
+    slope of the 10 % quantile of the scintillation delays vs the distance d to the SiPM end, and -1 / slope of the log
+    of the summed arrival probability vs d (0.2 < d / half length < 1.8)."""
+    key = (L.name, L.half_length)
+    if key in _TABLE_PROP:
+        return _TABLE_PROP[key]
+    E, T = L.edges, L.tables["scint"]
+    nx, ny, nz = len(E["x"]) - 1, len(E["y"]) - 1, len(E["z"]) - 1
+    p = T.prob.astype(np.float64).reshape(nx, ny, nz)
+    ds = T.delay_sum.astype(np.float64).reshape(nx, ny, nz)
+    w = np.where(ds > 0, p / np.where(ds > 0, ds, 1.0), 0.0)
+    h = np.einsum("xyz,xyzj->zj", w, T.delays.astype(np.float64).reshape(nx, ny, nz, -1))
+    d = 0.5 * (E["z"][1:] + E["z"][:-1]) + L.half_length
+    tot = h.sum(1)
+    ok = tot > 0
+    q = np.argmax(np.cumsum(h, 1) >= 0.1 * tot[:, None], axis=1)
+    inv_v = np.polyfit(d[ok], q[ok].astype(float), 1)[0]
+    P = p.sum((0, 1))
+    a = (P > 0) & (d > 0.2 * L.half_length) & (d < 1.8 * L.half_length)
+    sl = np.polyfit(d[a], np.log(P[a]), 1)[0]
+    if not sl < 0:
+        raise ValueError(f"cannot determine the attenuation length of {L.name}")
+    _TABLE_PROP[key] = (float(inv_v), float(-1.0 / sl))
+    return _TABLE_PROP[key]
+
+
+def bar_keys(geom):
+    """Per bar: (sector key, module key); module key = sector name + module index if the sector has several modules."""
+    names = np.array(geom.sector_names, dtype=object)
+    nmod = np.zeros(len(names), np.int64)
+    np.maximum.at(nmod, geom.sector, geom.module + 1)
+    sk = names[geom.sector]
+    mk = np.where(nmod[geom.sector] > 1, sk + geom.module.astype(str).astype(object), sk)
+    return sk, mk
+
+
+def bar_ratios(values, geom):
+    """Per-bar ratio array from {key: ratio} (keys as ResponseConfig.speed_ratio); unlisted bars 1."""
+    out = np.ones(geom.nbars)
+    if not values:
+        return out
+    sk, mk = bar_keys(geom)
+    known = set(sk) | set(mk) | {"TAG"}
+    bad = sorted(set(values) - known)
+    if bad:
+        raise KeyError(f"unknown propagation keys {bad}; known: {sorted(known)}")
+    tag = np.array([str(n).startswith("M") for n in sk])
+    for k, v in values.items():
+        if k == "TAG":
+            out[tag] = v
+    for k, v in values.items():
+        if k != "TAG" and k in set(sk):
+            out[sk == k] = v
+    for k, v in values.items():
+        if k in set(mk) and k not in set(sk):
+            out[mk == k] = v
+    if not np.all(out > 0):
+        raise ValueError("propagation ratios must be positive")
+    return out
 
 
 def step_inputs(steps, pdg, geom):
@@ -225,6 +301,7 @@ def iter_rows(steps, pdg, geom, cfg, tables, deviation, rng):
     names = list(geom.sector_names)
     sec = geom.sector[bar]
     good = np.isfinite(t0) & np.isfinite(t1)
+    r_speed, r_atten = bar_ratios(cfg.speed_ratio, geom)[bar], bar_ratios(cfg.atten_ratio, geom)[bar]
     for tname in sorted({cfg.sectors[n].table for n in names}):
         L = tables[tname]
         for refl in sorted({cfg.sectors[n].reflector for n in names if cfg.sectors[n].table == tname}):
@@ -236,6 +313,9 @@ def iter_rows(steps, pdg, geom, cfg, tables, deviation, rng):
                 raise ValueError(f"reflector {refl} does not match lookup table {tname} ({L.reflector})")
             Y = np.array([cfg.sectors[names[i]].yield_per_mev for i in range(len(names))])[sec[m]]
             idx = np.flatnonzero(m)
+            inv_v, att = table_propagation(L)
+            k = inv_v * (1.0 / r_speed[idx] - 1.0)                  # extra delay per mm to the SiPM end [ns/mm]
+            mu = (1.0 / r_atten[idx] - 1.0) / att                   # extra attenuation, pivot at the bar centre [1/mm]
             sl, el = s_loc[m].copy(), e_loc[m].copy()
             if refl < 0:
                 sl[:, 2], el[:, 2] = -sl[:, 2], -el[:, 2]
@@ -250,15 +330,14 @@ def iter_rows(steps, pdg, geom, cfg, tables, deviation, rng):
                 theta = np.where(dl > 0, np.arccos(np.clip(d[:, 2] / np.where(dl > 0, dl, 1.0), -1, 1)), 0.0)
                 nsub = np.maximum((dl / PRECISION_MM).astype(np.int64), 1)
                 ch_dev = bar[idx] * 4 + s
-                # fibre speed: arrival times + d (1/v - 1/v_table), d = distance to this SiPM's end; in the table frame
-                # (z flipped for sides 1, 3) the readout is at z = -half_length, so d is linear in z: exact through t0/t1
-                vs = np.array([cfg.sectors[names[i]].fiber_speed or TABLE_FIBER_SPEED for i in range(len(names))])[sec[m]]
-                k = 1.0 / vs - 1.0 / TABLE_FIBER_SPEED
+                # speed: in the table frame (z flipped for sides 1, 3) the readout is at z = -half_length, so the delay
+                # k d is linear in z: exact through t0/t1
                 ta = t0[idx] + k * (a[:, 2] + L.half_length)
                 tb = t1[idx] + k * (b[:, 2] + L.half_length)
                 dev = (deviation[ch_dev] * cfg.photon_yield_variation_scale + 1.0) * cfg.photon_yield_scale
                 yield L, {"s": a, "d": d, "t0": ta, "t1": tb, "nsub": nsub, "beta": beta[idx],
-                          "theta": theta, "dev": dev, "step": idx, "chan": bar[idx] * 4 + (s + 1 if refl < 0 else s),
+                          "theta": theta, "dev": dev, "mu": mu, "step": idx,
+                          "chan": bar[idx] * 4 + (s + 1 if refl < 0 else s),
                           "n_scint": _per_substep(Y * edep[idx], nsub, rng),
                           "n_ck_s": _per_substep(cerenkov_per_mm(beta[idx], charge[idx], L.ck_scint) * length[idx],
                                                  nsub, rng),

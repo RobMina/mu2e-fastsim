@@ -50,7 +50,7 @@ stage() {  # stage <name> <fcl> <in> <outflag> <out>
   [ $rc -eq 0 ] && [ -s "$5" ] || { tail -40 "$1.log" >&2; die "$1 failed rc=$rc"; }
 }
 echo "--- step 4: digi ($PT) ---"; stage digi "digi_$PT.fcl" input.art -o dig.art; rm -f input.art
-grep -E "photonYieldScaleFactor|CrossTalkProb|timeConstant|ThermalRate|textFile" "cfg/fcl/digi_$PT.fcl" || true
+grep -E "photonYieldScaleFactor|CrossTalkProb|timeConstant|ThermalRate|textFile|crvLightPropagation" "cfg/fcl/digi_$PT.fcl" || true
 echo "--- step 5: reco ---";       stage reco reco_crvonly_extracted_v05.fcl dig.art -o mcs.art; rm -f dig.art
 echo "--- step 6: ntuple ---";     stage ntuple ntuple_crvonly_v05.fcl mcs.art -T "$N"; rm -f mcs.art
 echo "--- step 7: objective accumulator ---"
