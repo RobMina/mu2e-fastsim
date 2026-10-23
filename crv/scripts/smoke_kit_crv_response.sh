@@ -17,7 +17,8 @@ class Ep:
                 "t": 'T() { ( export CRVFS_LOOKUP_DIR="$L"; A "$@" ); }'}
 body, _ = K.FastsimKit(endpoint=Ep(), state_dir=out + "/kit").render({"task": "crv_response", "seed": 1, "events": n, **kn})
 body = body.replace(" --jax ", " ").replace("module load apptainer >/dev/null 2>&1\n", "")
-body = body.replace("nvidia-smi -L", "true").replace("sys.exit(jax.default_backend() != 'gpu')", "sys.exit(0)")
+body = body.replace("nvidia-smi -L", "true")
+body = "\n".join(l for l in body.split("\n") if "JAX not on the GPU" not in l)   # CPU smoke: no GPU check
 print(body)
 EOF
 cd "$OUT" && M2FS_OUT="$OUT" PYTHONPATH=$CODE/core:$CODE/crv bash job.sh > job.log 2>&1; echo "job rc=$?"
