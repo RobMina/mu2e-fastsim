@@ -24,6 +24,7 @@ TRIM=${TRIM-nvidia-nccl-cu12 nvidia-nvshmem-cu12}   # cuFFT and cuDNN stay: the 
 echo "variant $VARIANT trim [$TRIM]" | tee -a "$STAGE/VERSION"
 sed -e "s#^    \. /opt/mu2e-fastsim#    $STAGE /opt/mu2e-fastsim#" -e "s#@VARIANT@#$VARIANT#g" -e "s#@TRIM@#$TRIM#g" \
   container/mu2efastsim.def > "$STAGE.def"
-apptainer build --fakeroot --force "$OUT" "$STAGE.def"
+# mksquashfs defaults to 25 % of the node's RAM and all node CPUs, not the job's: cap both
+apptainer build --fakeroot --force --mksquashfs-args "-mem ${SQUASHFS_MEM:-4G} -processors ${SQUASHFS_PROCS:-${SLURM_CPUS_PER_TASK:-$(nproc)}}" "$OUT" "$STAGE.def"
 rm -f "$STAGE.def"
 ls -la "$OUT"; apptainer test "$OUT"

@@ -36,3 +36,7 @@ module load apptainer
 JOBS=32 container/build_celeritas.sh /scratch/$USER/mu2efastsim/mu2e-celeritas.sif
 ```
 
+Both build scripts cap `mksquashfs` (the step that packs the `.sif`) at `SQUASHFS_MEM` (default 4G) and
+`SQUASHFS_PROCS` (default the job's CPUs). Its own defaults follow the node's RAM and CPU count, not the job's: on a
+376 GB UVA node it sized its caches at ~96 GB and was killed inside a 32 GB job.
+
