@@ -157,3 +157,14 @@ def test_speed_ratio_through_iter_rows():
         out[r] = np.polyfit(sipm0["s"][:, 2], sipm0["t0"], 1)[0]
     assert abs(out[1.0]) < 1e-12
     assert abs(out[1.25] - inv_v * (1 / 1.25 - 1)) < 1e-12   # extra delay per mm to the SiPM end
+
+
+def test_kit_task_metrics_cover_objective_terms():
+    """crv_response declares one metric per objective term the accumulator can produce (Mu2eBO checks metrics at launch)."""
+    from crvfastsim import kit_task as KT
+    from crvfastsim.objective import crvresponse as R
+    S = R.new_state()
+    terms = set(S["h"]) | {f"oot_rate_{s}" for s in R.SLOTS}
+    assert {f"term_{t}" for t in terms} - {f"term_{t}" for t in KT.NO_TERM} == \
+        {m for m in KT.METRICS if m.startswith("term_")}
+    assert set(chain.KNOBS) <= set(KT.PARAMS) and all(KT.DEFAULTS[k] == "" for k in chain.KNOBS)
