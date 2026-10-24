@@ -25,7 +25,7 @@ SECTOR_TYPES = {1: "EX", 2: "T1", 3: "T2", 4: "M"}
 
 def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax=False, max_events=None, seed=1,
         compare=None, counters=None, reco_cpu=False, emit=None, msc_tail=False, tail_k=None, sliced_msc=False,
-        first_muon_only=False, absorbers=False, **kw):
+        first_muon_only=False, no_absorbers=False, **kw):
     if not (library and calib):
         raise SystemExit("runchain needs --library and --calib")
     from .transport import default_gdml
@@ -37,7 +37,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
     T = {}
     t0 = time.perf_counter()
     world = [p for p in world_mod.load(gdml or default_gdml(), y_min=tr.Y_MSC_PLANE) if p[0] != "G4_POLYSTYRENE"]
-    ab = tr.absorber_slabs(gdml or default_gdml()) if absorbers else None
+    ab = None if no_absorbers else tr.absorber_slabs(gdml or default_gdml())
     lib = tier1b.read_library(library)
     tabs = PH.load_tables(cfg.response)
     if jax:

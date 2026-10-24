@@ -26,7 +26,7 @@ def default_gdml():
 
 
 def run(inputs, outdir, seed=1, stage="A", counters=None, gdml=None, world_mods=None, msc_tail=False, tail_k=None,
-        sliced_msc=False, first_muon_only=False, absorbers=False, **kw):
+        sliced_msc=False, first_muon_only=False, no_absorbers=False, **kw):
     geom = geometry.from_offline_config(geometry.find_counters(counters or DEFAULT_COUNTERS))
     world = None
     if stage == "C":
@@ -37,7 +37,7 @@ def run(inputs, outdir, seed=1, stage="A", counters=None, gdml=None, world_mods=
             world, names = worldmods.apply(world_mods, world, names)
             print(f"# world modification: {world_mods}", flush=True)
         world = [p for p in world if p[0] != "G4_POLYSTYRENE"]
-    ab = tr.absorber_slabs(gdml or default_gdml()) if absorbers else None
+    ab = None if (no_absorbers or stage != "C") else tr.absorber_slabs(gdml or default_gdml())
     for i, f in enumerate(tables.expand(inputs)):
         rng = np.random.default_rng([int(seed), i])
         gen = tables.read(f, "gen")
