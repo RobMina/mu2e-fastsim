@@ -69,6 +69,12 @@ class Source(FnalSource):
         return "md5:" + rel
 
 
+@pytest.fixture(autouse=True)
+def _own_slots(tmp_path, monkeypatch):
+    """Tests never take the operator's real ssh slots (a live campaign holds them)."""
+    monkeypatch.setattr(KU, "CHANNELS", KU._Slots(4, str(tmp_path / "test_slots")))
+
+
 def make(tmp_path):
     site, streamed = Site(), []
 

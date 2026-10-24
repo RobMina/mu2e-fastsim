@@ -200,7 +200,8 @@ class CrvResponseStream:
         q = shlex.quote
         br = (f"for s in core crv; do git -C $C/$s fetch -q origin {q(self.branch)} && "
               f"git -C $C/$s checkout -q FETCH_HEAD; done; " if self.branch else "")
-        self.ep._sh(f"set -e; C={q(self.code)}; R={q(self.code_ref)}; "
+        self.ep._sh(f"set -e; C={q(self.code)}; R={q(self.code_ref)}; mkdir -p $(dirname $C); "
+                    f"exec 9>$C.lock; flock -w 600 9; "        # points of one campaign start together: one update at a time
                     f"if [ -d $C/.git ]; then git -C $C fetch -q origin && git -C $C checkout -q $R && "
                     f"git -C $C reset -q --hard origin/$R; else git clone -q https://github.com/RobMina/mu2e-fastsim.git $C "
                     f"&& git -C $C checkout -q $R; fi; git -C $C submodule update -q --init core crv; {br}"
