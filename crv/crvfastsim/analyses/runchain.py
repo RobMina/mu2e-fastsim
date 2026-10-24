@@ -60,20 +60,44 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
     T["setup_s"] = time.perf_counter() - t0
     stype_name = runconfig.sector_type_names(geom, ccfg) if rc.name != runconfig.DEFAULT else SECTOR_TYPES
     out_cl, n_gen = [], 0
-    for i, f in enumerate(tables.expand(inputs)):
+
+    def host_stage(i, f):
+        """CPU part of file i (read, transport, tier 1b) with its own rng and timers: the same draws whether it runs
+        inline or in the prefetch thread."""
         rng = np.random.default_rng([int(seed), i])
+        t = {}
         gen = tables.read(f, "gen")
         if max_events:
             keep = gen.event.isin(np.sort(gen.event.unique())[:int(max_events)])
             gen = gen[keep].reset_index(drop=True)
-        n_gen += int(gen[tables.KEY].drop_duplicates().shape[0])
+        ngen = int(gen[tables.KEY].drop_duplicates().shape[0])
         a = time.perf_counter()
         st, pa = tr.transport(gen, geom, rng, stage="C", world=world, msc_tail=msc_tail, tail_k=tail_k,
                               sliced_msc=sliced_msc, all_muons=not first_muon_only, absorbers=ab, tagger_bar=tagger)
-        T["transport_s"] = T.get("transport_s", 0.0) + time.perf_counter() - a
+        t["transport_s"] = time.perf_counter() - a
         a = time.perf_counter()
         st, pa, _ = tier1b.sample(st, pa, gen, lib, geom, rng, showers=rc.showers)
-        T["tier1b_s"] = T.get("tier1b_s", 0.0) + time.perf_counter() - a
+        t["tier1b_s"] = time.perf_counter() - a
+        return ngen, st, pa, rng, t
+
+    files = list(tables.expand(inputs))
+    pool = None
+    if kw.get("prefetch") and len(files) > 1:   # file i+1's host stage runs while the device works on file i
+        from concurrent.futures import ThreadPoolExecutor
+        pool = ThreadPoolExecutor(max_workers=1)
+        nxt = pool.submit(host_stage, 0, files[0])
+    for i, f in enumerate(files):
+        if pool is not None:
+            a = time.perf_counter()
+            ngen, st, pa, rng, t = nxt.result()
+            T["host_wait_s"] = T.get("host_wait_s", 0.0) + time.perf_counter() - a
+            if i + 1 < len(files):
+                nxt = pool.submit(host_stage, i + 1, files[i + 1])
+        else:
+            ngen, st, pa, rng, t = host_stage(i, f)
+        n_gen += ngen
+        for k_, v_ in t.items():
+            T[k_] = T.get(k_, 0.0) + v_
         T["steps"] = T.get("steps", 0) + len(st)
         T["events_with_steps"] = T.get("events_with_steps", 0) + int(st[tables.KEY].drop_duplicates().shape[0])
         Q = chain.charges(st, pa, geom, cond, cfg, rng, tabs=tabs, pmap=pmap, timers=T)
@@ -88,6 +112,8 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
             outs, _ = chain.clusters(W, cond, geom, ccfg, cfg, timers=T)
         T["reco_s"] = T.get("reco_s", 0.0) + time.perf_counter() - a
         out_cl += outs
+    if pool is not None:
+        pool.shutdown()
     cl_type = np.concatenate([o["cl_type"] for o in out_cl]) if out_cl else np.zeros(0, int)
     res = {"generated_events": n_gen, "timers": T,
            "run_config": rc.name, "window": list(cfg.window),
