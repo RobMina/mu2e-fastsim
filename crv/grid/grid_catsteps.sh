@@ -4,7 +4,7 @@
 # the metadata), one output per input file, skipping existing outputs. Code: CODE_PNFS (git archive of core + crv).
 #   grid_catsteps.sh OUTDIR       PROCESS selects block PROCESS of LIST_PNFS (lines "<dataset> <pnfs path>"), BLOCK lines
 # Release SimJob MDC2025ay (CVMFS) + CrvFastSim dumper libs/fcl (DUMPER_PNFS); inputs streamed with xrootd.
-OUTDIR="${1:?outdir}"; P="${PROCESS:-0}"; B="${BLOCK:?}"
+OUTDIR="${1:?outdir}"; P=$(( ${PROCESS:-0} + ${BLOCK0:-0} )); B="${BLOCK:?}"
 die() { echo "FATAL[catsteps $P]: $*" >&2; exit 1; }
 echo "=== catsteps PROCESS=$P BLOCK=$B host=$(hostname) $(date -u)"
 source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh || echo "(setupmu2e-art rc=$?)"

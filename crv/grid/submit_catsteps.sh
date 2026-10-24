@@ -2,7 +2,7 @@
 # Submit stage 1 of F-fast from beam frames: CrvStep tables of the Run 1A beam-frame *Cat datasets (the MixBackgroundFrames
 # inputs of CeMLeadingLogMix1BB.MDC2025au), BLOCK files per job (grid_catsteps.sh). Run on a GPVM from a data-area dir.
 #   submit_catsteps.sh --prepare     # file list of the four datasets (on-disk files only) + dumper tarball -> pnfs
-#   submit_catsteps.sh --test        # one job (block 0)       submit_catsteps.sh --cluster   # every block
+#   submit_catsteps.sh --test        # one job (block FIRST_BLOCK, default 0)   submit_catsteps.sh --cluster   # every block
 # env: BLOCK (files per job), BASE. Sizing from a one-job test; see the wiki veto plan.
 BASE=${BASE:-/pnfs/mu2e/scratch/users/ram2aq/crvfs_catsteps_run1a}; IN=$BASE/in; OUT=$BASE/out
 C=/exp/mu2e/app/users/ram2aq/analysis/mu2e-fastsim; HERE=$(cd "$(dirname "$0")" && pwd); MODE="${1:-}"; B=${BLOCK:-40}
@@ -15,9 +15,10 @@ set -u
 if [ "$MODE" = --prepare ]; then
   : > list.txt
   for d in $DATASETS; do
-    mdh print-url -l best -s path dts.mu2e.$d.art > paths_$d.txt
-    mdh query-dcache -o -v dts.mu2e.$d.art 2>/dev/null | awk '$1 ~ /ONLINE/ {print $2}' > online_$d.txt
-    [ -s online_$d.txt ] || basename -a $(cat paths_$d.txt) > online_$d.txt   # query-dcache fails on persistent: all online
+    case $d in EleBeamFlashCat*) LOC=disk;; *) LOC=tape;; esac   # EleBeamFlashCat lives on persistent (the "disk" location)
+    mdh print-url -l $LOC -s path dts.mu2e.$d.art > paths_$d.txt
+    if [ $LOC = tape ]; then mdh query-dcache -o -v dts.mu2e.$d.art 2>/dev/null | awk '$1 ~ /ONLINE/ {print $2}' > online_$d.txt
+    else xargs -n1 basename < paths_$d.txt > online_$d.txt; fi
     grep -F -f online_$d.txt paths_$d.txt | sort | sed "s|^|${d%%.*} |" >> list.txt
     echo "$d: $(wc -l < paths_$d.txt) files, $(wc -l < online_$d.txt) online"
   done
@@ -40,7 +41,7 @@ OUT_TOKEN=$(echo "$OUT" | sed 's|^/pnfs/mu2e|/mu2e|')
 CMD=(jobsub_submit -N "$N" -G mu2e --role=Analysis --expected-lifetime=3h
   --resource-provides=usage_model=DEDICATED,OPPORTUNISTIC --lines='+FERMIHTC_AutoRelease=True'
   --memory=2000MB --disk=4000MB --need-storage-modify="$OUT_TOKEN"
-  -e LIST_PNFS="$IN/list.txt" -e DUMPER_PNFS="$IN/dumper.tgz" -e CODE_PNFS="$IN/code.tgz" -e BLOCK="$B" "file://$HERE/grid_catsteps.sh" "$OUT")
+  -e LIST_PNFS="$IN/list.txt" -e DUMPER_PNFS="$IN/dumper.tgz" -e CODE_PNFS="$IN/code.tgz" -e BLOCK="$B" -e BLOCK0="${FIRST_BLOCK:-0}" "file://$HERE/grid_catsteps.sh" "$OUT")
 echo "${CMD[@]}"
 "${CMD[@]}" 2>&1 | tee /tmp/$USER.submit_catsteps.txt
 grep -qE "submitted to cluster" /tmp/$USER.submit_catsteps.txt || { echo "ERROR: no cluster id: NOTHING SUBMITTED" >&2; exit 1; }
