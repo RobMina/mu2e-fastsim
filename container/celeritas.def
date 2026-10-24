@@ -7,17 +7,16 @@ From: nvidia/cuda:12.6.3-devel-rockylinux9
     org.opencontainers.image.description Celeritas (GPU EM transport) + Geant4 11.3 + VecGeom for the Mu2e elebeam_flash feasibility study
 
 %help
-    Celeritas @CELERITAS@ with CUDA (sm_80, A100), VecGeom (+gdml, CUDA), Geant4 11.3.2 (Mu2e's version), VecGeom 1.2.11, G4VG, covfie,
+    Celeritas @CELERITAS@ with CUDA (sm_80, A100), VecGeom 1.2.11 (+gdml, CUDA), Geant4 11.3.2 (Mu2e's version, with its data sets), G4VG, covfie,
     built with spack 1.2 following Celeritas' own rocky-cuda12 recipe (scripts/docker/dev/rocky-cuda12.yaml). The spack
     builtin repo has Celeritas up to 0.6.3, which needs VecGeom 1.2.x (0.7.0 and VecGeom 2.2 are not packaged there yet).
     Purpose: run Celeritas' standalone Geant4 app celer-g4 on the Mu2e GDML export with the DS field map, as the first
     step of route A in ai-config wiki mu2e/wiki/sim/elebeam-flash-gpu-plan.md. No Mu2e-internal data inside.
       apptainer exec --nv mu2e-celeritas.sif celer-g4 --help
-      apptainer exec --nv mu2e-celeritas.sif ctest --test-dir /opt/celeritas-build -L app   (if the build dir is kept)
+      apptainer exec --nv mu2e-celeritas.sif geant4-config --datasets
 
 %environment
-    export SPACK_ROOT=/opt/spack
-    . /opt/spack-environment/activate.sh 2>/dev/null || true
+    . /opt/view-env.sh
     export G4FORCENUMBEROFTHREADS=1
 
 %post
@@ -61,21 +60,27 @@ spack:
     install_tree:
       root: /opt/software
     build_jobs: @JOBS@
+    build_stage:
+      - /opt/spack-stage
   view: /opt/view
 EOF
     cd /opt/spack-environment
     spack env activate -d .
     spack concretize -f
     spack install --fail-fast
-    spack gc -y
-    spack env activate --sh -d . > /opt/spack-environment/activate.sh
-    rm -rf /root/.spack/cache $SPACK_ROOT/var/spack/cache /tmp/*
-    # Geant4 data sets (EM: G4EMLOW, G4ENSDFSTATE, PhotonEvaporation are what celer-g4 with EM physics needs)
-    . /opt/spack-environment/activate.sh
-    geant4-config --install-datasets >/dev/null 2>&1 || true
+    # runtime environment as plain exports (no spack shell function needed when the image runs)
+    spack env activate --sh -d . | grep -E '^export (PATH|LD_LIBRARY_PATH|CMAKE_PREFIX_PATH|MANPATH|PKG_CONFIG_PATH|G4[A-Z0-9_]*DATA|G4[A-Z_]*)=' > /opt/view-env.sh
+    grep -q '^export PATH=' /opt/view-env.sh || echo 'export PATH=/opt/view/bin:$PATH' >> /opt/view-env.sh
+    grep -q '^export LD_LIBRARY_PATH=' /opt/view-env.sh || echo 'export LD_LIBRARY_PATH=/opt/view/lib:/opt/view/lib64:${LD_LIBRARY_PATH:-}' >> /opt/view-env.sh
+    # Geant4 data-set variables (geant4 +data installs them; geant4.sh sets G4*DATA)
+    G4SH=$(ls /opt/view/bin/geant4.sh 2>/dev/null || true)
+    [ -n "$G4SH" ] && echo ". $G4SH >/dev/null 2>&1" >> /opt/view-env.sh
+    rm -rf /root/.spack/cache $SPACK_ROOT/var/spack/cache /opt/spack-stage   # never /tmp: apptainer binds the host's /tmp during %post
+    cat /opt/view-env.sh
 
 %test
-    . /opt/spack-environment/activate.sh
-    which celer-g4 celer-sim
+    . /opt/view-env.sh
+    which celer-g4 celer-sim geant4-config
     geant4-config --version
+    geant4-config --datasets | head -3
     nvcc --version | tail -1
