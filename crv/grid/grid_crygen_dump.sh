@@ -5,7 +5,8 @@
 set -o pipefail
 OUTDIR="${1:?need OUTDIR}"; INDIR="${INDIR:?}"; SUBRUN0="${SUBRUN0:?}"; DUMPER_PNFS="${DUMPER_PNFS:?}"; OWNER="${OWNER:?}"
 K="${PROCESS:?}"; S=$(printf "001400_%08d" $((SUBRUN0 + K)))
-IN="gen.${OWNER}.CosmicCRYExtractedGen.v1.${S}.art"; OUT="gen.${S}.root"
+CFG="${CFG:-extracted}"; DESC=CosmicCRYExtractedGen; [ "$CFG" = extracted ] || DESC=CosmicCRY${CFG}Gen
+IN="gen.${OWNER}.${DESC}.v1.${S}.art"; OUT="gen.${S}.root"
 echo "=== grid_crygen_dump: $S host $(hostname) $(date -u)"
 source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh || true
 muse setup SimJob MDC2025ay || true

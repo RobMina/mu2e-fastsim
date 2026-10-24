@@ -8,7 +8,8 @@ NEVTS="${NEVTS:?}"; BASESEED="${BASESEED:?}"; SUBRUN0="${SUBRUN0:?}"; FCL_PNFS="
 K="${PROCESS:?}"; SUBRUN=$((SUBRUN0 + K)); SEED=$((BASESEED + K))
 SEQ=$(printf "001400_%08d" "$SUBRUN")
 OWNER="${OWNER:-mu2e}"
-GEN="gen.${OWNER}.CosmicCRYExtractedGen.v1.${SEQ}.art"
+CFG="${CFG:-extracted}"; DESC=CosmicCRYExtractedGen; [ "$CFG" = extracted ] || DESC=CosmicCRY${CFG}Gen
+GEN="gen.${OWNER}.${DESC}.v1.${SEQ}.art"
 echo "=== grid_crygen: shard $K subrun $SUBRUN seed $SEED nevts $NEVTS host $(hostname) $(date -u)"
 
 source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh || true
@@ -19,8 +20,10 @@ which mu2e ifdh || { echo "ERROR: mu2e/ifdh missing"; exit 2; }
 if ifdh ls "$OUTDIR/$GEN" >/dev/null 2>&1; then echo "SKIP: $GEN exists"; exit 0; fi
 
 mkdir -p fcl && ifdh cp "$FCL_PNFS/gen_only_extracted.fcl" fcl/gen_only_extracted.fcl || { echo "ERROR: fcl"; exit 2; }
+[ "$CFG" = extracted ] || ifdh cp "$FCL_PNFS/gen_only_$CFG.fcl" fcl/gen_only_$CFG.fcl || { echo "ERROR: fcl $CFG"; exit 2; }
+[ "$CFG" = run2 ] && { ifdh cp "$FCL_PNFS/geom_cosmic_run2_v10.txt" fcl/geom_cosmic_run2_v10.txt || exit 2; export MU2E_SEARCH_PATH="$PWD/fcl:$MU2E_SEARCH_PATH"; }
 cat > fcl/shard.fcl <<EOF
-#include "gen_only_extracted.fcl"
+#include "gen_only_$CFG.fcl"
 source.firstSubRun : $SUBRUN
 services.SeedService.baseSeed : $SEED
 outputs.GenOutput.fileName : "$GEN"
