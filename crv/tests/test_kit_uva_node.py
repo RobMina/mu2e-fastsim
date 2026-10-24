@@ -17,7 +17,7 @@ pytestmark = pytest.mark.skipif(shutil.which("flock") is None, reason="flock (ut
 def _job(d, jid, extra):
     w = KU.WAIT.replace("@inkey@", "k1").replace("@waits@", "5").replace("/dev/shm", f"{d}/shm")
     head = w[:w.index("INSTATE=")]
-    sh = (f'squeue() {{ for j in $RUNNING; do [ "$5" = "$j" ] && echo $j; done; return 0; }}\n'
+    sh = (f'squeue() {{ for j in $RUNNING; do [ "$3" = "$j" ] && echo $j; done; return 0; }}\n'
           f'USER=t; SLURM_JOB_ID={jid}; M2FS_OUT={d}/out{jid}; mkdir -p $M2FS_OUT; L={d}/L{jid}; mkdir -p $L\n'
           + head + extra)
     return subprocess.run(["bash", "-c", sh], capture_output=True, text=True, env={**os.environ, "RUNNING": "1 2"})
@@ -34,10 +34,9 @@ def test_node_cache_shared_then_deleted_by_last_holder(tmp_path):
     assert r2.returncode == 0 and "shared" in r2.stdout, r2.stderr
     assert cache.exists() and not (cache / "holders" / "2").exists()          # job 1 still holds it
     # job 1 left the queue without releasing (killed): the next job drops its stale holder and, exiting, deletes
-    r3 = subprocess.run(["bash", "-c", "true"])
     env_running = "3"
     w = KU.WAIT.replace("@inkey@", "k1").replace("@waits@", "5").replace("/dev/shm", f"{tmp_path}/shm")
-    sh = (f'squeue() {{ for j in $RUNNING; do [ "$5" = "$j" ] && echo $j; done; return 0; }}\n'
+    sh = (f'squeue() {{ for j in $RUNNING; do [ "$3" = "$j" ] && echo $j; done; return 0; }}\n'
           f'USER=t; SLURM_JOB_ID=3; M2FS_OUT={tmp_path}/out3; mkdir -p $M2FS_OUT; L={tmp_path}/L3; mkdir -p $L\n'
           + w[:w.index("INSTATE=")])
     r3 = subprocess.run(["bash", "-c", sh], capture_output=True, text=True, env={**os.environ, "RUNNING": env_running})
