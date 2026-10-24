@@ -112,6 +112,8 @@ def build_parser():
             sp.add_argument("--seed", type=int, default=1)
             sp.add_argument("--compare", nargs="+", default=None, metavar="ROOT", help="stock CrvRecoTableDumper files")
             sp.add_argument("--reco-cpu", action="store_true", help="with --jax: pulses and coincidences on the JAX CPU backend")
+            sp.add_argument("--fused-response", action="store_true",
+                            help="with --jax: photons -> SiPM charges in one device pass (response.device, as reco-r3)")
             sp.add_argument("--emit", default=None, metavar="JSON", help="per-shard accumulators for runchain-merge")
         if name == "runchain-merge":
             sp.add_argument("--wall", type=float, default=None, help="node job wall time [s] (default: slowest shard)")

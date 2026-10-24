@@ -44,6 +44,8 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
                          "pass the configuration's CRVCalib CSV or --calib nominal")
     cfg = rc.chain_config(jax=bool(jax)) if rc.name != runconfig.DEFAULT or window else chain.ChainConfig(jax=bool(jax))
     tagger = rc.tagger_bar(geom) if rc.name != runconfig.DEFAULT else None
+    if kw.get("fused_response"):
+        cfg = dataclasses.replace(cfg, fused_response=True)
     T = {}
     t0 = time.perf_counter()
     world, ab = tr.load_world(gdml or (rc.gdml_path() if rc.name != runconfig.DEFAULT else default_gdml()),

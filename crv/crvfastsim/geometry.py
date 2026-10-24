@@ -33,7 +33,45 @@ def find_counters(path):
         for cand in (os.path.join(r, path), os.path.join(r, "Offline", rel)):
             if os.path.exists(cand):
                 return cand
+    got = _fetch_public(rel)
+    if got:
+        return got
     raise FileNotFoundError(f"counters file {path} not found under MU2E_SEARCH_PATH or {OFFLINE_ROOTS}")
+
+
+OFFLINE_TAG = "v13_39_00"
+
+
+def _fetch_public(rel):
+    """Sites without a CVMFS mount (UVA, Polaris jobs: the image holds only the extracted counters file): fetch a public
+    Offline geometry text file at OFFLINE_TAG into $CRVFS_OFFLINE_CACHE (default ~/.cache/crvfastsim/offline), from
+    the CVMFS Stratum-1 over HTTP (mu2efastsim.cvmfsget, the route the jobs already use for the tables), else from
+    GitHub; None if it is not a Mu2eG4/geom text file or both fetches fail."""
+    if not (rel.startswith("Mu2eG4/geom/") and rel.endswith(".txt")) or os.environ.get("CRVFS_NO_FETCH"):
+        return None
+    root = os.environ.get("CRVFS_OFFLINE_CACHE", os.path.expanduser("~/.cache/crvfastsim/offline"))
+    dest = os.path.join(root, OFFLINE_TAG, "Offline", rel)
+    if os.path.exists(dest):
+        return dest
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    try:
+        from mu2efastsim import cvmfsget
+        cvmfsget.Repo("mu2e.opensciencegrid.org").fetch(f"/Musings/Offline/{OFFLINE_TAG}/Offline/{rel}", dest)
+        return dest
+    except Exception:   # noqa: BLE001  (any failure: try GitHub)
+        pass
+    import urllib.request
+    url = f"https://raw.githubusercontent.com/Mu2e/Offline/{OFFLINE_TAG}/{rel}"
+    try:
+        with urllib.request.urlopen(url, timeout=60) as r:
+            data = r.read()
+    except OSError:
+        return None
+    tmp = f"{dest}.{os.getpid()}"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, dest)
+    return dest
 
 
 _DECL = re.compile(r"^\s*(string|int|double|bool|vector<\s*(?:string|int|double)\s*>)\s+([\w.]+)\s*=\s*(.*?);", re.S)

@@ -67,6 +67,8 @@ class ChainConfig:
     jax: bool = False                   # JAX twins for photons, SiPM charges and waveforms
     rounds: int = 3                     # pulse-reco kernel rounds (chain_jax)
     unbucketed_synth: bool = False      # JAX waveforms in one call padded to the largest cluster (OOM on real files)
+    fused_response: bool = False        # JAX: photons -> SiPM charges on the device in one pass (response.device, as
+                                        # reco-r3 and the P2 bench; statistically equal to the two-stage twins, V4)
     waveform: object = None             # reco.waveform.WaveformConfig (None: the stock prolog_v12 values)
     background: object = None           # reco.background.BackgroundModel: out-of-time deposits added before clustering
     background_scale: float = 1.0       # multiplies the background model's net rate (knob background_scale)
@@ -144,6 +146,21 @@ def charges(steps, parts, geom, cond, cfg, rng, key=None, tabs=None, pmap=None, 
         pdg = steps.merge(parts[tables.KEY + ["key", "pdg"]].rename(columns={"key": "sp"}), on=tables.KEY + ["sp"],
                           how="left").pdg.fillna(0).to_numpy()
     t0 = _time.perf_counter()
+    if cfg.jax and cfg.fused_response:
+        import jax
+        from .response import device as DV
+        key = key if key is not None else jax.random.PRNGKey(0)
+        rs = DV.response_batched(steps, pdg, geom, cfg.response, cfg.sipm, tabs, cond.deviation, cond.status,
+                                 event_key(steps), rng, key, pmap)
+        if any(bool(r["overflow"]) for r in rs):
+            timers["response_overflow_batches"] = timers.get("response_overflow_batches", 0) + 1
+        Q = DV.to_host_batches(rs) if rs else {k: np.zeros(0) for k in ("chan", "time", "charge", "pe", "photon")}
+        del rs
+        keep = Q["time"] <= cfg.window[1]
+        Q = {k: v[keep] for k, v in Q.items()}
+        timers["response_s"] = timers.get("response_s", 0.0) + _time.perf_counter() - t0
+        timers["charges"] = timers.get("charges", 0) + len(Q["time"])
+        return Q
     if cfg.jax:
         import jax
         from .response import photons_jax, sipm_jax
