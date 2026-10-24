@@ -191,3 +191,24 @@ def test_channel_slots_cap_across_processes(tmp_path):
     for p in ps:
         p.join(10)
     assert peak.value == 2 and all(p.exitcode == 0 for p in ps)
+
+
+def test_stream_retries_a_dropped_file(tmp_path, monkeypatch):
+    """A stream that fails once (ssh rc 255) is retried; the point streams and is not cancelled."""
+    site, ep, kit, streamed = make(tmp_path)
+    monkeypatch.setattr(KU, "RETRY_S", 0.0)
+    real, fails = ep.stream_in, {"n": 0}
+
+    def flaky(handle, node, dest, argv, timeout=3600):
+        if dest.endswith("00001056.root") and fails["n"] == 0:
+            fails["n"] += 1
+            from mu2efastsim.endpoints import EndpointError
+            raise EndpointError("uva: streaming failed (rc 255/255)")
+        return real(handle, node, dest, argv, timeout)
+    monkeypatch.setattr(ep, "stream_in", flaky)
+    kit.submit("rt", {"task": "crv_response", "seed": 1}, [], [])
+    jid = max(site.state)
+    site.state[jid] = "RUNNING"
+    site.files[f"{site.dirs[jid]}/inbox"] = f"udc-x /dev/shm/crvfs_resp_u_r/in need\n"
+    assert kit._delegates["crv_response"].stream_step("rt") == "streamed" and fails["n"] == 1
+    assert site.state[jid] == "RUNNING"

@@ -64,6 +64,7 @@ class _Slots:
 
 CHANNELS = _Slots(int(os.environ.get("FASTSIMKIT_MAX_CHANNELS", 4)),
                   os.environ.get("FASTSIMKIT_CHANNEL_DIR", "~/.mu2efastsim/ssh_slots"))
+RETRIES, RETRY_S = int(os.environ.get("FASTSIMKIT_STREAM_RETRIES", 3)), 20.0   # per file, before the point fails
 WAIT_S = 1800          # input wait: ~530 MB through the kit host at >= 1 MB/s (measured 4-6.6 MB/s for chain_point)
 # runs after the kit's _TABLES block (which defines L, the EXIT trap and the lookup tables in $L): announce the input
 # dir, wait for the kit to stream the inputs in
@@ -264,10 +265,17 @@ class CrvResponseStream:
 
                     def one(item):      # largest first, `streams` at a time; ssh channels capped across points
                         src, dest = item
-                        with CHANNELS:
-                            got = self.ep.stream_in(name, host, f"{tmp}/{dest}", self.source.argv(src))
-                        if got != self.md5(src):
-                            raise EndpointError(f"md5 mismatch for {src}: {got} != {self.md5(src)}")
+                        for attempt in range(RETRIES + 1):   # a dropped ssh master (rc 255) restarts the file
+                            try:
+                                with CHANNELS:
+                                    got = self.ep.stream_in(name, host, f"{tmp}/{dest}", self.source.argv(src))
+                                if got != self.md5(src):
+                                    raise EndpointError(f"md5 mismatch for {src}: {got} != {self.md5(src)}")
+                                return
+                            except EndpointError:
+                                if attempt == RETRIES:
+                                    raise
+                                time.sleep(RETRY_S * (attempt + 1))
                     items = sorted(kit_task.inputs(p).items(), key=lambda kv: -kit_task.SIZE_MB.get(kv[0], 1))
                     with ThreadPoolExecutor(max_workers=self.streams) as ex:
                         for f in [ex.submit(one, it) for it in items]:
