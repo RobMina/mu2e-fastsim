@@ -98,10 +98,7 @@ def fold_steps(st, key_pb, w_pb):
     return st[ok].reset_index(drop=True), int((~ok).sum())
 
 
-def frames(paths, cond, run, jax=False, seed=1, key_pb=None, w_pb=None, max_events=None, timers=None, chunk=1000):
-    """Fast coincidences per event of the given mixed-step files, as an awkward record per event (run, subrun, event,
-    coincs{time, timeStart, timeEnd, PEs, nLayers, sectorType}). Every event of the file's subruns that has a pbtime
-    is a frame, with or without CRV steps (events without steps are frames with no coincidence)."""
+def _setup(run, jax=False):
     resp, fcfg, counters, window = run_config(run)
     cpath = geometry.find_counters(counters)
     geom = geometry.from_offline_config(cpath)
@@ -111,12 +108,47 @@ def frames(paths, cond, run, jax=False, seed=1, key_pb=None, w_pb=None, max_even
     if jax:
         from ..response import photons_jax
         tabs = {k: photons_jax.DeviceTable(v) for k, v in tabs.items()}
-    pmap = SI.photon_map()
-    G = C.sector_geom(geom, ccfg)
+    return dict(geom=geom, cfg=cfg, fcfg=fcfg, tabs=tabs, pmap=SI.photon_map(), G=C.sector_geom(geom, ccfg))
+
+
+def frames_from_steps(st, pa, cond, run, allk, key_pb, w_pb, seed=1, chunk=500, timers=None, setup=None, run_no=None):
+    """Fast coincidences per event for steps already folded into [0, 1695) ns (fold_steps): awkward record per event of
+    allk (every event is a frame, with or without steps); coincidence times back in the reco frame (+ w)."""
+    S = setup or _setup(run)
+    T = timers if timers is not None else {}
+    rng = np.random.default_rng(seed)
+    sk = chain.event_key(st) if len(st) else np.zeros(0, np.int64)
+    ue = np.unique(sk)
+    cls = []
+    for a in range(0, len(ue), chunk):                      # memory: ~1 GB per 1000 mixed events on the CPU path
+        sub = st[np.isin(sk, ue[a:a + chunk])].reset_index(drop=True)
+        pdg = sub.pdg.to_numpy() if "pdg" in sub.columns else None    # compact tables carry pdg per step
+        Q = chain.charges(sub, pa, S["geom"], cond, S["cfg"], rng, tabs=S["tabs"], pmap=S["pmap"], timers=T, pdg=pdg)
+        if not len(Q["time"]):
+            continue
+        D = chain.digis(Q, cond, S["cfg"], rng, timers=T)
+        if not len(D["chan"]):
+            continue
+        cls.append(_clusters(chain.reco_waveforms(D, cond), cond, S["G"], S["fcfg"], T))
+    cl = {k: np.concatenate([c[k] for c in cls]) for k in cls[0]} if cls else \
+        {k: np.zeros(0) for k in ("ev", "time", "timeStart", "timeEnd", "PEs", "nLayers", "sectorType")}
+    o = np.argsort(key_pb)
+    w = w_pb[o][np.clip(np.searchsorted(key_pb[o], cl["ev"]), 0, len(o) - 1)] if len(cl["ev"]) else np.zeros(0)
+    for k in ("time", "timeStart", "timeEnd"):
+        cl[k] = cl[k] + w
+    if run_no is None:
+        run_no = int(st.run.iloc[0]) if len(st) else 0
+    return _as_frames(np.union1d(allk, sk), cl, run_no)
+
+
+def frames(paths, cond, run, jax=False, seed=1, key_pb=None, w_pb=None, max_events=None, timers=None, chunk=1000):
+    """Fast coincidences per event of the given mixed-step files, as an awkward record per event (run, subrun, event,
+    coincs{time, timeStart, timeEnd, PEs, nLayers, sectorType}). Every event of the file's subruns that has a pbtime
+    is a frame, with or without CRV steps (events without steps are frames with no coincidence)."""
+    S = _setup(run, jax)
     T = timers if timers is not None else {}
     out = []
     for i, f in enumerate(tables.expand(paths)):
-        rng = np.random.default_rng([int(seed), i])
         st = tables.read(f, "steps")
         pa = tables.read(f, "particles")
         run_no = int(st.run.iloc[0]) if len(st) else 0
@@ -127,25 +159,8 @@ def frames(paths, cond, run, jax=False, seed=1, key_pb=None, w_pb=None, max_even
         st, lost = fold_steps(st, key_pb, w_pb)
         T["steps_without_pbtime"] = T.get("steps_without_pbtime", 0) + lost
         T["steps"] = T.get("steps", 0) + len(st)
-        sk = chain.event_key(st)
-        ue = np.unique(sk)
-        cls = []
-        for a in range(0, len(ue), chunk):                      # memory: ~1 GB per 1000 mixed events on the CPU path
-            sub = st[np.isin(sk, ue[a:a + chunk])].reset_index(drop=True)
-            Q = chain.charges(sub, pa, geom, cond, cfg, rng, tabs=tabs, pmap=pmap, timers=T)
-            if not len(Q["time"]):
-                continue
-            D = chain.digis(Q, cond, cfg, rng, timers=T)
-            if not len(D["chan"]):
-                continue
-            cls.append(_clusters(chain.reco_waveforms(D, cond), cond, G, fcfg, T))
-        cl = {k: np.concatenate([c[k] for c in cls]) for k in cls[0]} if cls else \
-            {k: np.zeros(0) for k in ("ev", "time", "timeStart", "timeEnd", "PEs", "nLayers", "sectorType")}
-        o = np.argsort(key_pb)
-        w = w_pb[o][np.clip(np.searchsorted(key_pb[o], cl["ev"]), 0, len(o) - 1)]
-        for k in ("time", "timeStart", "timeEnd"):
-            cl[k] = cl[k] + w
-        out.append(_as_frames(np.union1d(allk, sk), cl, run_no))
+        out.append(frames_from_steps(st, pa, cond, run, allk, key_pb, w_pb, seed=[int(seed), i], chunk=chunk,
+                                     timers=T, setup=S, run_no=run_no))
     return ak.concatenate(out) if out else ak.Array([])
 
 

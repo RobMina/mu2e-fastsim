@@ -1,0 +1,10 @@
+# Dump the CrvSteps and SimParticles of a beam-frame "*Cat" dts file (EleBeamFlashCat, MuBeamFlashCat, MuStopPileupCat,
+# NeutralsFlashCat: the MixBackgroundFrames inputs of the Mix1BB/2BB digitisation) to flat tables, every step of every
+# frame. Input to crvfastsim.veto.mixframes (unbiased beam-only frames for deadtime method F; the dig files keep only
+# steps that made a digi). Usage: mu2e -c CrvFastSim/fcl/dump_crvsteps_cat.fcl -s dts.mu2e.<X>Cat.<...>.art -T catsteps.root
+#include "CrvFastSim/fcl/dump_crvsteps.fcl"
+physics.analyzers.dump.crvSteps : "compressDetStepMCs"
+physics.analyzers.dump.simParticles : "compressDetStepMCs"
+physics.analyzers.dump.genParticles : "compressDetStepMCs"
+physics.analyzers.dump.livetime : "none"
+services.TFileService.fileName : "catsteps.root"
