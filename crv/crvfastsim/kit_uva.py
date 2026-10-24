@@ -30,8 +30,40 @@ from mu2efastsim.endpoints.chainpoint import FnalSource
 from . import kit_task
 
 # Each stream is an ssh channel to the FNAL host and one to the endpoint, both on one ControlMaster per host, which sshd
-# caps at MaxSessions (10, see chainpoint): at most FASTSIMKIT_MAX_CHANNELS streams across all points of the kit process.
-CHANNELS = threading.BoundedSemaphore(int(os.environ.get("FASTSIMKIT_MAX_CHANNELS", 6)))
+# caps at MaxSessions (10, see chainpoint): at most FASTSIMKIT_MAX_CHANNELS streams and md5 calls across all points of the
+# kit process (4: q=4 points starting together refused sessions at 6 streams plus md5 calls plus polling, crvpb03/04).
+class _Slots:
+    """Cross-process semaphore: N lock files under FASTSIMKIT_CHANNEL_DIR, one held (flock) per open channel. Every
+    point is its own kit process (one graph.run per point), so an in-process cap cannot bound the ssh sessions."""
+
+    def __init__(self, n, root):
+        self.n, self.root = max(1, n), Path(os.path.expanduser(root))
+        self._local = threading.local()
+
+    def __enter__(self):
+        import fcntl
+        self.root.mkdir(parents=True, exist_ok=True)
+        while True:
+            for i in range(self.n):
+                fh = open(self.root / f"slot{i}", "a")
+                try:
+                    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError:
+                    fh.close()
+                    continue
+                self._local.__dict__.setdefault("held", []).append(fh)
+                return self
+            time.sleep(0.5)
+
+    def __exit__(self, *exc):
+        import fcntl
+        fh = self._local.held.pop()
+        fcntl.flock(fh, fcntl.LOCK_UN)
+        fh.close()
+
+
+CHANNELS = _Slots(int(os.environ.get("FASTSIMKIT_MAX_CHANNELS", 4)),
+                  os.environ.get("FASTSIMKIT_CHANNEL_DIR", "~/.mu2efastsim/ssh_slots"))
 WAIT_S = 1800          # input wait: ~530 MB through the kit host at >= 1 MB/s (measured 4-6.6 MB/s for chain_point)
 # runs after the kit's _TABLES block (which defines L, the EXIT trap and the lookup tables in $L): announce the input
 # dir, wait for the kit to stream the inputs in
@@ -146,9 +178,14 @@ class CrvResponseStream:
         return self._keys[key]
 
     def md5(self, rel) -> str:
-        if rel not in self._md5:
-            self._md5[rel] = self.source.md5(rel)
-        return self._md5[rel]
+        with self._lock:
+            have = self._md5.get(rel)
+        if have is None:
+            with CHANNELS:      # an ssh session on the FNAL host's master, counted against the same cap as the streams
+                have = self.source.md5(rel)
+            with self._lock:
+                self._md5[rel] = have
+        return have
 
     # -- contract ------------------------------------------------------------------------------------------------
     def check(self, name, params) -> Dict[str, Any]:

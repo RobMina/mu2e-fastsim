@@ -166,3 +166,28 @@ def test_static_names_match_the_chain_and_objective():
     assert set(KT.KNOB_PARAMS) == set(chain.KNOBS)
     assert KT._SLOTS == tuple(R.SLOTS)
     assert {n: tuple(s) for n, s in KT._SHAPES.items()} == {n: tuple(R.SLOTS_OF.get(n, R.SLOTS)) for n in R.SHAPES}
+
+
+def test_channel_slots_cap_across_processes(tmp_path):
+    """At most N holders at once, counted across processes (each graph.run point is its own kit process)."""
+    import multiprocessing as mp
+    import time as _t
+    root = str(tmp_path / "slots")
+    peak = mp.Value("i", 0)
+    now = mp.Value("i", 0)
+
+    def hold():
+        with KU._Slots(2, root):
+            with now.get_lock():
+                now.value += 1
+                peak.value = max(peak.value, now.value)
+            _t.sleep(0.3)
+            with now.get_lock():
+                now.value -= 1
+
+    ps = [mp.get_context("fork").Process(target=hold) for _ in range(5)]
+    for p in ps:
+        p.start()
+    for p in ps:
+        p.join(10)
+    assert peak.value == 2 and all(p.exitcode == 0 for p in ps)
