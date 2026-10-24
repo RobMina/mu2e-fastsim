@@ -106,5 +106,7 @@ def test_absorbers_default_off_and_effect(g):
     pmag = lambda s: np.linalg.norm(s[["px0", "py0", "pz0"]].to_numpy(), axis=1)
     above = lambda s: s[s.y0 > ex_bot - 1.0].reset_index(drop=True)
     below = lambda s: s[s.y0 < t1_top + 1.0].reset_index(drop=True)
-    np.testing.assert_allclose(pmag(above(a)), pmag(above(c)))            # nothing changes before the sheet
+    d, _ = TR.transport(gen, g, np.random.default_rng(8), stage="B", absorbers=sheet, absorber_straggling=False)
+    np.testing.assert_allclose(pmag(above(a)), pmag(above(d)))            # mean loss: nothing changes before the sheet
+    assert abs(pmag(above(c)).mean() / pmag(above(a)).mean() - 1) < 0.01   # straggling: other draws, same physics above
     assert len(below(c)) and pmag(below(c)).mean() < pmag(below(a)).mean() - 5.0   # ~14 MeV lost in 32 mm of Al

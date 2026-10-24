@@ -99,13 +99,14 @@ def all_primary_muons(gen):
     return mu
 
 
-def absorber_slabs(gdml_path, prefix="CRSAbsorber"):
-    """The CRV aluminium absorber sheets (CRSAbsorber_<sector>_<module>_<layer gap>, between scintillator layers) as
-    axis-aligned boxes (lo [n, 3], hi [n, 3]) and their material, from the GDML world. They sit below Y_MSC_PLANE, so
-    the stage-C world column (which stops at the plane) never sees them."""
+def absorber_slabs(gdml_path, prefix=("CRSAbsorber", "CRSAluminumSheet")):
+    """The CRV aluminium inside the module stack as axis-aligned boxes (lo [n, 3], hi [n, 3]) and their material, from
+    the GDML world: the absorber sheets between scintillator layers (CRSAbsorber_<sector>_<module>_<gap>, 9.5 mm) and
+    the module skins (CRSAluminumSheet_<sector>_<module>_<0 bottom 12.7 mm | 1 top 3.2 mm>); 44 mm of Al on a vertical
+    path through EX. They sit below Y_MSC_PLANE, so the stage-C world column (which stops at the plane) never sees them."""
     names = []
     pieces = world_mod.load(gdml_path, y_min=0.0, names=names)
-    sel = [(p[2], p[3], p[0]) for n, p in zip(names, pieces) if n.startswith(prefix)]
+    sel = [(p[2], p[3], p[0]) for n, p in zip(names, pieces) if n.startswith(tuple(np.atleast_1d(prefix)))]
     if not sel:
         raise ValueError(f"no {prefix} pieces in {gdml_path}")
     mats = {m for _, _, m in sel}
@@ -115,7 +116,7 @@ def absorber_slabs(gdml_path, prefix="CRSAbsorber"):
 
 
 def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=False, tail_k=None, sliced_msc=False,
-              all_muons=True, absorbers=None):
+              all_muons=True, absorbers=None, absorber_straggling=True):
     """Return (steps, particles) for the primary muons in `gen`.
 
     Stage A: air, no MSC. B: air + MSC to Y_MSC_PLANE. C: GDML world material (world = world.load(...)) + MSC.
@@ -132,7 +133,8 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
     absorbers (opt-in; absorber_slabs(...)): mean (Bethe) energy loss in the CRV aluminium sheets crossed between
     successive bars; a muon whose kinetic energy runs out in a sheet stops there (no later crossings). Without it the
     fast muon sees no material between bars, which delivered 36 % too many soft (< 300 MeV/c at EX) muons to T1, under
-    EX and its absorbers (V1 T1 +1.4 %, 2026-10-23). No MSC in the sheets (mrad-scale).
+    EX and its absorbers (V1 T1 +1.4 %, 2026-10-23). absorber_straggling (default True with absorbers): sample the
+    sheet loss with the Urban fluctuation model instead of the mean, so soft muons range out with G4's spread.
     """
     mu = all_primary_muons(gen) if all_muons else primary_muons(gen)
     mukey = mu.mukey.to_numpy() if all_muons else np.ones(len(mu), np.int64)
@@ -211,7 +213,14 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
         s = np.flatnonzero((rank == k) & alive & alive_after[it])
         if ab_len is not None:   # loss in the absorber sheets before this bar (mean dE/dx at the current |p|)
             pa = np.maximum(pin[s] - carried[it[s]], 1.0)
-            carried[it[s]] += np.where(ab_len[s] > 0, eloss.dedx_restricted(amat, pa, 1e9) * ab_len[s], 0.0)
+            hit = ab_len[s] > 0
+            dl = np.zeros(len(s))
+            if hit.any():
+                if absorber_straggling:   # Urban fluctuations of the full loss (large cut: deltas leave the sheet's muon)
+                    dl[hit] = eloss.sample_loss(rng, amat, pa[hit], ab_len[s][hit], 1e9)
+                else:
+                    dl[hit] = eloss.dedx_restricted(amat, pa[hit], 1e9) * ab_len[s][hit]
+            carried[it[s]] += dl
         p_here = pin[s] - carried[it[s]]
         dead = p_here <= 1.0
         alive[s[dead]] = False
