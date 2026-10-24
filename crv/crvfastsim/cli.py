@@ -67,6 +67,8 @@ def build_parser():
                             help="transport only the first generated muon of each event (before 2026-10-23; default: all)")
             sp.add_argument("--no-absorbers", action="store_true",
                             help="stage C: no energy loss in the CRV aluminium (absorbers, module skins) between bars (before 2026-10-24)")
+            sp.add_argument("--no-below-world", action="store_true",
+                            help="run configurations with below_world: no material between the MSC plane and the bars")
             sp.add_argument("--unbanded-world", action="store_true",
                             help="stage C: world columns piece by piece (before 2026-10-24; the banded grid is the default)")
         if name == "g4cost":
@@ -77,6 +79,8 @@ def build_parser():
         if name == "v1compare":
             sp.add_argument("--compare", nargs="+", default=None, metavar="ROOT",
                             help="G4 reference CrvStep tables (crvsteps.*.root)")
+            sp.add_argument("--run-config", default=None, help="named run configuration: its counters file and one "
+                            "group per sector type (default extracted_v04: EX, T1, T2, M)")
         if name == "tier1b-build":
             sp.add_argument("--gen", nargs="+", default=None, metavar="ROOT", help="gen.*.root of the same shards")
             sp.add_argument("--out", default=None, metavar="ROOT", help="library file to write")
@@ -102,6 +106,8 @@ def build_parser():
                             help="transport only the first generated muon of each event (before 2026-10-23; default: all)")
             sp.add_argument("--no-absorbers", action="store_true",
                             help="stage C: no energy loss in the CRV aluminium (absorbers, module skins) between bars (before 2026-10-24)")
+            sp.add_argument("--no-below-world", action="store_true",
+                            help="run configurations with below_world: no material between the MSC plane and the bars")
             sp.add_argument("--unbanded-world", action="store_true",
                             help="stage C: world columns piece by piece (before 2026-10-24; the banded grid is the default)")
             sp.add_argument("--run-config", default=None, help="named CRV run configuration (crvfastsim.runconfig: "

@@ -24,9 +24,10 @@ import numpy as np
 
 from mu2efastsim import plots
 
-from .. import geometry, tables
+from .. import geometry, runconfig, tables
 
-GROUPS = {"EX": [0], "T1": [1], "T2": [2], "M": list(range(3, 11))}
+EXTRACTED_GROUPS = {"EX": [0], "T1": [1], "T2": [2], "M": list(range(3, 11))}
+GROUPS = dict(EXTRACTED_GROUPS)
 EDGES = {"len": np.linspace(0.0, 120.0, 601), "edep": np.linspace(0.0, 30.0, 601), "dt": np.linspace(-5.0125, 5.0125, 402)}  # 0.025 ns bins centred on 0
 THRESH = {"crossings_per_event_rel": 0.01, "len_mean_rel": 0.005, "len_ratio_band": 0.02,
           "edep_mean_rel": 0.01, "edep_mpv_rel": 0.01, "edep_ratio_band": 0.03, "t0_bias_ns": 0.1,
@@ -187,7 +188,7 @@ def report(S, outdir):
     plots.write_json(outdir, "v1compare_stats.json", summ)
     for col, xl in (("len", "path length per crossing [mm]"), ("edep", "visible energy per crossing [MeV]")):
         fig, axes = plt.subplots(2, len(GROUPS), figsize=(4 * len(GROUPS), 5), sharex="col",
-                                 gridspec_kw={"height_ratios": [3, 1]})
+                                 gridspec_kw={"height_ratios": [3, 1]}, squeeze=False)
         for j, g in enumerate(GROUPS):
             F, R = S["fast"]["groups"][g], S["ref"]["groups"][g]
             plots.ratio_panel(axes[0, j], axes[1, j], EDGES[col], np.asarray(R[f"h_{col}"], float),
@@ -206,7 +207,24 @@ def report(S, outdir):
     return summ
 
 
-def run(inputs, outdir, compare=None, emit=None, merge=False, counters=None, **kw):
+def set_groups(run_config=None):
+    """Sector groups of the comparison: the extracted groups (EX, T1, T2, M) or, for another run configuration, one
+    group per sector type of its counters file (Run 2: R1-R6, L1-L3, T1-T5, E1-E2, U, D1-D4, C1-C2; every sector)."""
+    global GROUPS
+    if not run_config or run_config == runconfig.DEFAULT:
+        GROUPS = dict(EXTRACTED_GROUPS)
+        return
+    rc = runconfig.get(run_config)
+    g, c = rc.geometry(), rc.counters_cfg()
+    names = runconfig.sector_type_names(g, c)
+    st = [int(c[f"crs.sectorType{n}"]) for n in g.sector_names]
+    GROUPS = {names[t]: [i for i, x in enumerate(st) if x == t] for t in sorted(names)}
+
+
+def run(inputs, outdir, compare=None, emit=None, merge=False, counters=None, run_config=None, **kw):
+    set_groups(run_config)
+    if run_config and not counters:
+        counters = runconfig.get(run_config).counters
     S = _new_state()
     if merge:
         for f in tables.expand(inputs):

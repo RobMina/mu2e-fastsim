@@ -48,6 +48,15 @@ def band_edges(y_plane):
     return np.r_[e, y_plane]
 
 
+def near_crv_box(o, d, geom, margin=CRV_FOOTPRINT_MARGIN):
+    """Downward tracks whose straight line enters the CRV's 3D bounding box grown by `margin` (CRVs with side walls:
+    a steep muon can cross the MSC plane far outside the x-z footprint and still reach a wall below it)."""
+    lo = (geom.center - geom.halflen).min(0) - margin
+    hi = (geom.center + geom.halflen).max(0) + margin
+    t_in, t_out = crossings.slab_crossings(o, d, lo[None, :], hi[None, :])
+    return (d[:, 1] < 0) & (t_out[:, 0] > np.maximum(t_in[:, 0], 0.0))
+
+
 def near_crv(o, d, geom, margin=CRV_FOOTPRINT_MARGIN, y_plane=None):
     """Downward tracks whose straight line crosses the MSC plane within `margin` of the bars' x-z footprint."""
     y_plane = Y_MSC_PLANE if y_plane is None else y_plane
@@ -155,6 +164,19 @@ def load_world(gdml_path, banded=True, y_plane=Y_MSC_PLANE):
     return (banded_world(world, band_edges(y_plane)) if banded else world), ab
 
 
+def load_below(gdml_path, geom, y_plane=None, margin=2000.0):
+    """world.PieceSet (grid) of the material below the MSC plane inside the CRV's box (+ margin), bars excluded: the
+    detector, DS, shielding and CRV aluminium a muon crosses before or between the bars of a CRV that wraps the DS
+    (Run 1A/Run 2). Materials without constants (StrawGas, Inconel718, ... ~1 % of the pieces, inside the DS) are
+    treated as concrete by the loss, as in world_loss."""
+    y_plane = msc_plane(geom) if y_plane is None else y_plane
+    lo = (geom.center - geom.halflen).min(0) - margin
+    hi = (geom.center + geom.halflen).max(0) + margin
+    pieces = world_mod.load(gdml_path, y_min=lo[1])
+    keep = [q for q in pieces if q[0] != "G4_POLYSTYRENE" and q[2][1] < y_plane and (q[3] > lo).all() and (q[2] < hi).all()]
+    return world_mod.PieceSet(keep).build_grid(250.0)
+
+
 def banded_world(world, edges=None):
     """core BandedWorld of a stage-C piece list, with each band's materials in first-appearance order (mat_order), the
     order the piece-list path draws its slab losses in, so both give the same steps for a seed."""
@@ -166,7 +188,7 @@ def banded_world(world, edges=None):
 
 
 def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=False, tail_k=None, sliced_msc=False,
-              all_muons=True, absorbers=None, absorber_straggling=True, tagger_bar=None):
+              all_muons=True, absorbers=None, absorber_straggling=True, tagger_bar=None, bar_cut=None, below=None):
     """Return (steps, particles) for the primary muons in `gen`.
 
     Stage A: air, no MSC. B: air + MSC to Y_MSC_PLANE. C: GDML world material (world = world.load(...)) + MSC.
@@ -187,7 +209,10 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
     sheet loss with the Urban fluctuation model instead of the mean, so soft muons range out with G4's spread.
     tagger_bar ([nbars] bool, runconfig.RunConfig.tagger_bar): bars with the 10 mm-cut delta threshold; None = the
     extracted v04 taggers (bars >= 512). The MSC plane and the world bands follow the geometry (msc_plane, band_edges);
-    a BandedWorld carries its own edges.
+    a BandedWorld carries its own edges. bar_cut ([nbars] MeV, RunConfig.bar_cut): the delta production threshold per
+    bar (overrides tagger_bar). below (world.PieceSet of the material below the MSC plane, load_below): straggled
+    loss in it between the plane and the first bar and between successive bars (CRV aluminium included, so use it
+    instead of absorbers); a muon that ranges out there makes no later crossings.
     """
     y_plane = msc_plane(geom)
     edges = world.edges if isinstance(world, core_tr.BandedWorld) else band_edges(y_plane)
@@ -199,7 +224,7 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
     t_off = np.zeros(len(mu))   # path length already travelled before the origin used for the crossings
     p_plane = p0.copy()         # |p| at the MSC plane (stage C: after the world material)
     if stage in ("B", "C"):
-        down = near_crv(o, d, geom, y_plane=y_plane)
+        down = near_crv_box(o, d, geom) if below is not None else near_crv(o, d, geom, y_plane=y_plane)
         xx0 = None
         bxx0 = bh = None
         tail = None
@@ -244,9 +269,12 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
         pin = p_plane[it] - eloss.dedx_restricted(air, p_plane[it], 1e9) * t_in   # world loss already applied
     elif air_loss:
         pin = pin - eloss.dedx_restricted(air, p0[it], 1e9) * (t_in + t_off[it])  # unrestricted: no deltas in air
-    is_tag = (bar >= TAGGER_FIRST_BAR) if tagger_bar is None else np.asarray(tagger_bar, bool)[bar]
-    cut = np.where(is_tag, materials.POLYSTYRENE.cuts_e_MeV["tagger"],
-                   materials.POLYSTYRENE.cuts_e_MeV["crv"])
+    if bar_cut is not None:
+        cut = np.asarray(bar_cut, float)[bar]
+    else:
+        is_tag = (bar >= TAGGER_FIRST_BAR) if tagger_bar is None else np.asarray(tagger_bar, bool)[bar]
+        cut = np.where(is_tag, materials.POLYSTYRENE.cuts_e_MeV["tagger"],
+                       materials.POLYSTYRENE.cuts_e_MeV["crv"])
     loss = np.zeros_like(path)
     alive = pin > 1.0
     # pass k handles each track's k-th bar (bounded by the max bars crossed per track, ~20)
@@ -265,8 +293,27 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
         hi_t = np.minimum(a_out, t_in[:, None])
         ab_len = np.clip(hi_t - lo_t, 0, None).sum(1)
         ab_len[~np.isfinite(ab_len)] = 0.0
+    gap_col = None
+    if below is not None and len(it):   # material between the previous exit (or the plane) and each bar entry
+        g0 = np.where(first, 0.0, np.r_[0.0, t_out[:-1]])
+        seg = np.clip(t_in - g0, 0.0, None)
+        has = np.flatnonzero(seg > 0)
+        gap_col = {m: np.zeros(len(it)) for m in below.mats}
+        for m, v in world_mod.column(below, o[it][has] + d[it][has] * g0[has, None], d[it][has], seg[has]).items():
+            gap_col[m][has] = v
+        gap_col = {m: v for m, v in gap_col.items() if v.any()}
     for k in range(int(rank.max()) + 1 if len(rank) else 0):
         s = np.flatnonzero((rank == k) & alive & alive_after[it])
+        if gap_col:   # straggled loss in every material of the gap before this bar, in fixed material order
+            for m in sorted(gap_col):
+                c = gap_col[m][s]
+                hit = np.flatnonzero(c > 0)
+                if not len(hit):
+                    continue
+                pa = np.maximum(pin[s[hit]] - carried[it[s[hit]]], 1.0)
+                dE = slab_loss(rng, materials.BY_NAME.get(m, materials.CONCRETE_MARS), pa, c[hit])
+                # thick material: carry the momentum drop, not the energy loss (p - dE keeps a stopped muon alive)
+                carried[it[s[hit]]] += pa - core_tr._p_after(pa, dE)
         if ab_len is not None:   # loss in the absorber sheets before this bar (mean dE/dx at the current |p|)
             pa = np.maximum(pin[s] - carried[it[s]], 1.0)
             hit = ab_len[s] > 0

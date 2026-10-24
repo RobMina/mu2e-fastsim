@@ -80,6 +80,10 @@ class RunConfig:
     lib_group: dict = field(default_factory=dict)   # sector -> tier-1b library group (EX, T1, T2, M); {} = census
     tagger_sectors: tuple = ()        # sectors with the tagger delta cut (no CRSmother region cut in the reference)
     showers: bool = True              # tier-1b non-muon showers (absolute extracted bar positions)
+    delta_cut_mev: float = 0.0        # delta production threshold in every non-tagger bar [MeV]; 0 = extracted (87.2 keV,
+                                      # the 0.1 mm CRSmother region cut). Run 1A / Run 2 cosmic jobs: 1 mm everywhere,
+                                      # lowest muon-made delta in the bars 0.361 MeV (G4 test 9112, 19,491 deltas)
+    below_world: bool = False         # trace the world material between the MSC plane and every bar (side sectors)
     geom_text: str = ""               # Offline geometry file of the world the GDML was made from
 
     def counters_path(self):
@@ -116,6 +120,13 @@ class RunConfig:
         from . import chain
         return chain.ChainConfig(response=self.response(), finder=self.finder(), window=self.window, **kw)
 
+    def bar_cut(self, geom):
+        """[nbars] delta production threshold [MeV] for the transport, or None for the extracted default."""
+        if not self.delta_cut_mev:
+            return None
+        from mu2efastsim import materials
+        return np.where(self.tagger_bar(geom), materials.POLYSTYRENE.cuts_e_MeV["tagger"], self.delta_cut_mev)
+
     def tagger_bar(self, geom):
         """[nbars] bool: bars with the tagger (10 mm) delta production cut."""
         names = np.array(geom.sector_names, dtype=object)
@@ -137,6 +148,7 @@ EXTRACTED_V04 = RunConfig(
 RUN1A_V01 = RunConfig(
     "run1a_v01", "Offline/Mu2eG4/geom/crv_counters_run1a_v01.txt", f"{GEOM_DIR}/mu2e_run1a_v01.gdml",
     RUN1A_SECTORS, 0.90, RUN1A_CUTS, False, ONSPILL_WINDOW, lib_group={"T1": "EX", "T2": "EX"}, showers=False,
+    delta_cut_mev=0.361, below_world=True,
     geom_text="Offline/Mu2eG4/geom/geom_run1_a.txt")
 # Run 1B: the CRV and everything above it (building, hatch blocks) are Run 1A's; the relocated tracker and DS2 are inside
 # the CRV and never seen by the transport, so the Run 1A GDML serves (the stock cosmic job does not build the Run 1B
@@ -145,6 +157,7 @@ RUN1B_V01 = dataclasses.replace(RUN1A_V01, name="run1b_v01", geom_text="Offline/
 RUN2_V10 = RunConfig(
     "run2_v10", "Offline/Mu2eG4/geom/crv_counters_v10.txt", f"{GEOM_DIR}/mu2e_run2_v10.gdml",
     RUN2_SECTORS, 0.84, RUN2_CUTS, False, ONSPILL_WINDOW, lib_group={n: "EX" for n in RUN2_SECTORS}, showers=False,
+    delta_cut_mev=0.361, below_world=True,
     geom_text="Offline/Mu2eG4/geom/geom_run2.txt")
 
 REGISTRY = {rc.name: rc for rc in (EXTRACTED_V04, RUN1A_V01, RUN1B_V01, RUN2_V10)}

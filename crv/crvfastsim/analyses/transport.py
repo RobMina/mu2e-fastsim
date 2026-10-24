@@ -33,10 +33,11 @@ def run(inputs, outdir, seed=1, stage="A", counters=None, gdml=None, world_mods=
         rc = dataclasses.replace(rc, counters=counters)
     geom = rc.geometry()
     tagger = rc.tagger_bar(geom) if rc.name != runconfig.DEFAULT else None
+    bar_cut = rc.bar_cut(geom)
     if rc.name != runconfig.DEFAULT and gdml is None:
         gdml = rc.gdml_path()
     world = None
-    ab = None
+    ab = below = None
     if stage == "C" and world_mods:    # geometry sensitivity: named edits of the world (trkfastsim.worldmods)
         names = []
         world = world_mod.load(gdml or default_gdml(), y_min=tr.msc_plane(geom), names=names)
@@ -51,12 +52,15 @@ def run(inputs, outdir, seed=1, stage="A", counters=None, gdml=None, world_mods=
         world, ab = tr.load_world(gdml or default_gdml(), banded=not kw.get("unbanded_world", False),
                                   y_plane=tr.msc_plane(geom))
         ab = None if no_absorbers else ab
+        if rc.below_world and not kw.get("no_below_world"):    # the below-plane world includes the CRV aluminium
+            below, ab = tr.load_below(gdml or default_gdml(), geom), None
     for i, f in enumerate(tables.expand(inputs)):
         rng = np.random.default_rng([int(seed), i])
         gen = tables.read(f, "gen")
         sub = tables.read(f, "subruns")
         steps, parts = tr.transport(gen, geom, rng, stage=stage, world=world, msc_tail=msc_tail, tail_k=tail_k,
-                                    sliced_msc=sliced_msc, all_muons=not first_muon_only, absorbers=ab, tagger_bar=tagger)
+                                    sliced_msc=sliced_msc, all_muons=not first_muon_only, absorbers=ab, tagger_bar=tagger,
+                                    bar_cut=bar_cut, below=below)
         name = os.path.basename(f).replace("gen.", f"fast{stage}.")
         tables.write(os.path.join(outdir, name), steps, parts, gen, sub, as_ttree=True)
         print(f"# {f}: {parts.shape[0]:,} primary muons, {steps[tables.KEY].drop_duplicates().shape[0]:,} with CRV "

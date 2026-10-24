@@ -44,6 +44,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
                          "pass the configuration's CRVCalib CSV or --calib nominal")
     cfg = rc.chain_config(jax=bool(jax)) if rc.name != runconfig.DEFAULT or window else chain.ChainConfig(jax=bool(jax))
     tagger = rc.tagger_bar(geom) if rc.name != runconfig.DEFAULT else None
+    bar_cut = rc.bar_cut(geom)
     if kw.get("fused_response"):
         cfg = dataclasses.replace(cfg, fused_response=True)
     T = {}
@@ -51,6 +52,9 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
     world, ab = tr.load_world(gdml or (rc.gdml_path() if rc.name != runconfig.DEFAULT else default_gdml()),
                               banded=not kw.get("unbanded_world", False), y_plane=tr.msc_plane(geom))
     ab = None if no_absorbers else ab
+    below = None
+    if rc.below_world and not kw.get("no_below_world"):
+        below, ab = tr.load_below(gdml or rc.gdml_path(), geom), None
     lib = tier1b.read_library(library)
     tabs = PH.load_tables(cfg.response)
     if jax:
@@ -73,7 +77,8 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         ngen = int(gen[tables.KEY].drop_duplicates().shape[0])
         a = time.perf_counter()
         st, pa = tr.transport(gen, geom, rng, stage="C", world=world, msc_tail=msc_tail, tail_k=tail_k,
-                              sliced_msc=sliced_msc, all_muons=not first_muon_only, absorbers=ab, tagger_bar=tagger)
+                              sliced_msc=sliced_msc, all_muons=not first_muon_only, absorbers=ab, tagger_bar=tagger,
+                              bar_cut=bar_cut, below=below)
         t["transport_s"] = time.perf_counter() - a
         a = time.perf_counter()
         st, pa, _ = tier1b.sample(st, pa, gen, lib, geom, rng, showers=rc.showers)
