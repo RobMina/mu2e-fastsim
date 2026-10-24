@@ -38,7 +38,8 @@ DEFAULTS = {**{k: "" for k in KNOB_PARAMS}, "period": "P4", "tables": "vr5", "ev
 NO_TERM = ("nlayers_T1", "nlayers_T2", "nlayers_TAG")
 TERMS = tuple(sorted([f"{n}_{s}" for n, sl in _SHAPES.items() for s in sl if f"{n}_{s}" not in NO_TERM]
                      + [f"oot_rate_{s}" for s in _SLOTS]))
-METRICS = ("objective", "objective_sigma", "objective_all", "n_terms", "events_with_steps", "wall_s") + \
+METRICS = ("objective", "objective_sigma", "objective_all", "n_terms", "events_with_steps", "wall_s", "input_wait_s",
+           "inputs_reused") + \
     tuple(f"term_{t}" for t in TERMS)
 VR5_TABLES = ("00000990", "00001023", "00001056", "00001089", "00001122")
 VR5_EVENTS = 112304
@@ -48,6 +49,7 @@ STEPS = tuple(f"prod_as_tables/crvsteps.001400_{q}.root" for q in VR5_TABLES)
 CALIB = "geometry/crvcalib_sim_best_v1_5_run1400.csv"
 DEVIATION = "geometry/crvphoton_sim_best_v1_5_run1400.csv"
 BACKGROUND = "background/fit_v1/bg.npz"
+SIZE_MB = {**{f: 100 for f in STEPS}, BACKGROUND: 58}        # streaming order (largest first); others < 1 MB
 PERIODS = {"P4": ("timecal/corr_P4_v2mod.json", "r3/dataref/dataref_P4.json", ""),
            "P3": ("timecal/corr_P3_v2mod.json", "r3/dataref/dataref_P3.json", "dt_cluster_T2"),
            "raw": ("", "r3/dataref/dataref_3runs.json", "")}

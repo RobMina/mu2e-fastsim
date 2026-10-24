@@ -22,7 +22,7 @@ class Site:
     """Fake UVA: sbatch, squeue/sacct, cat of job files, srun touch, tar of out/."""
 
     def __init__(self):
-        self.next_id, self.state, self.files, self.dirs = 7000, {}, {}, {}
+        self.next_id, self.state, self.files, self.dirs, self.node_files = 7000, {}, {}, {}, set()
 
     def __call__(self, cmd, stdin, timeout):
         s = cmd[-1]
@@ -44,6 +44,11 @@ class Site:
             out = f"{self.state[j]}|0:0\n".encode()
         elif s.startswith("cat "):
             out = self.files.get(s.split()[1].strip("'"), "").encode()
+        elif s.startswith("srun") and "touch" in s:
+            self.node_files.add(s.split("touch ")[1].split()[0].strip("'\""))
+        elif s.startswith("srun") and "test -f" in s:
+            path = s.split("test -f ")[1].split()[0].strip("'\"")
+            out = b"have\n" if path in self.node_files else b""
         elif "tar -cf" in s:
             buf = io.BytesIO()
             with tarfile.open(fileobj=buf, mode="w") as t:
@@ -99,8 +104,9 @@ def test_render_uva_body(tmp_path):
     assert not re.search(r"@[a-z_0-9]+@", body) and res.gpus == 1
     assert "apptainer exec" in body and "/x/m.sif" in body and "/scratch/u/crvcode" in body
     assert 'X="$L/in"' in body and "inbox" in body and "corr_P3_v2mod.json" in body and "dataref_P3.json" in body
+    assert "/dev/shm/crvfs_resp_${USER}_" in body and "in_release" in body
     assert 'KN+=("speed_EX=1.08")' in body and "CRVFS_LOOKUP_DIR=$L" in body
-    assert body.index('mkdir -p "$L/in"') < body.index("inbox") < body.index("crvfastsim reco-r3")
+    assert body.index('ln -sfn "$S/in" "$L/in"') < body.index("inbox") < body.index("crvfastsim reco-r3")
     subprocess.run(["bash", "-n"], input=body.encode(), check=True)
     for bad in ({"task": "crv_response", "seed": 1, "bogus": 1}, {"task": "crv_response", "seed": 1, "speed_EX": "1;rm"},
                 {"task": "crv_response"}):
@@ -116,15 +122,34 @@ def test_point_streams_inputs_and_returns_metrics(tmp_path):
     d = kit._delegates["crv_response"]
     assert d.stream_step("pt") == "waiting"                               # pending: no inbox yet
     site.state[jid] = "RUNNING"
-    site.files[f"{site.dirs[jid]}/inbox"] = f"udc-x /tmp/crvfs_kit_j{jid}_1/in\n"
+    shm = "/dev/shm/crvfs_resp_u_abc/in"
+    site.files[f"{site.dirs[jid]}/inbox"] = f"udc-x {shm} need\n"
     assert d.stream_step("pt") == "streamed"
     want = KT.inputs({"period": "P4", "background": 1})
     assert sorted(r for r, _ in streamed) == sorted(want)
-    assert all(dest.startswith(f"/tmp/crvfs_kit_j{jid}_1/in/") for _, dest in streamed)
+    assert all(dest.startswith(f"{shm}/") for _, dest in streamed)
+    # a second point on the same node (other knobs, same inputs) streams nothing
+    n0 = len(streamed)
+    kit.submit("pt2", {"task": "crv_response", "seed": 2, "speed_EX": 1.05}, [], [])
+    j2 = max(site.state)
+    site.state[j2] = "RUNNING"
+    site.files[f"{site.dirs[j2]}/inbox"] = f"udc-x {shm} have\n"
+    assert d.stream_step("pt2") == "streamed" and len(streamed) == n0
+    assert d._has("pt2", "inputsreused")
     site.state[jid] = "COMPLETED"
     assert kit.status("pt")["state"] == "completed"
     r = kit.results("pt")
     assert r["metrics"]["objective"] == 30.1 and r["metrics"]["input_wait_s"] == 95.0
+    assert r["metrics"]["inputs_reused"] == 0.0
+
+
+def test_input_key_depends_on_inputs_not_knobs(tmp_path):
+    _, _, kit, _ = make(tmp_path)
+    d = kit._delegates["crv_response"]
+    k = d.input_key(KU.validate({"task": "crv_response", "seed": 1}))
+    assert k == d.input_key(KU.validate({"task": "crv_response", "seed": 9, "speed_EX": 1.1}))
+    assert k != d.input_key(KU.validate({"task": "crv_response", "seed": 1, "period": "P3"}))
+    assert k != d.input_key(KU.validate({"task": "crv_response", "seed": 1, "background": 0}))
 
 
 def test_registered_as_delegate():
