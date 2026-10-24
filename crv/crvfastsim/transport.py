@@ -99,8 +99,23 @@ def all_primary_muons(gen):
     return mu
 
 
+def absorber_slabs(gdml_path, prefix="CRSAbsorber"):
+    """The CRV aluminium absorber sheets (CRSAbsorber_<sector>_<module>_<layer gap>, between scintillator layers) as
+    axis-aligned boxes (lo [n, 3], hi [n, 3]) and their material, from the GDML world. They sit below Y_MSC_PLANE, so
+    the stage-C world column (which stops at the plane) never sees them."""
+    names = []
+    pieces = world_mod.load(gdml_path, y_min=0.0, names=names)
+    sel = [(p[2], p[3], p[0]) for n, p in zip(names, pieces) if n.startswith(prefix)]
+    if not sel:
+        raise ValueError(f"no {prefix} pieces in {gdml_path}")
+    mats = {m for _, _, m in sel}
+    if len(mats) != 1:
+        raise ValueError(f"absorbers of several materials: {mats}")
+    return np.array([a for a, _, _ in sel]), np.array([b for _, b, _ in sel]), mats.pop()
+
+
 def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=False, tail_k=None, sliced_msc=False,
-              all_muons=True):
+              all_muons=True, absorbers=None):
     """Return (steps, particles) for the primary muons in `gen`.
 
     Stage A: air, no MSC. B: air + MSC to Y_MSC_PLANE. C: GDML world material (world = world.load(...)) + MSC.
@@ -114,6 +129,10 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
     makes 0.3 % multi-muon events, which carried 2.5 GeV of the 7.3 GeV G4-minus-fast CRV energy on g4ref_v1 11-20).
     Muon i of an event gets SimParticle key i (1 = the first muon, so single-muon events are unchanged); steps point to
     it through `sp`. all_muons=False (CLI --first-muon-only) reproduces the earlier tables.
+    absorbers (opt-in; absorber_slabs(...)): mean (Bethe) energy loss in the CRV aluminium sheets crossed between
+    successive bars; a muon whose kinetic energy runs out in a sheet stops there (no later crossings). Without it the
+    fast muon sees no material between bars, which delivered 36 % too many soft (< 300 MeV/c at EX) muons to T1, under
+    EX and its absorbers (V1 T1 +1.4 %, 2026-10-23). No MSC in the sheets (mrad-scale).
     """
     mu = all_primary_muons(gen) if all_muons else primary_muons(gen)
     mukey = mu.mukey.to_numpy() if all_muons else np.ones(len(mu), np.int64)
@@ -177,8 +196,22 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
     rank = np.arange(len(it)) - np.flatnonzero(first)[np.cumsum(first) - 1]
     carried = np.zeros(len(mu))
     alive_after = np.ones(len(mu), bool)   # False once the muon has stopped in a bar
+    ab_len = None
+    if absorbers is not None:   # absorber path between the previous crossing's exit and this crossing's entry
+        alo, ahi, amat = absorbers
+        amat = materials.BY_NAME.get(amat, amat) if isinstance(amat, str) else amat
+        o_it, d_it = o[it], d[it]
+        a_in, a_out = crossings.slab_crossings(o_it, d_it, alo, ahi)            # [n crossings, n sheets]
+        prev_out = np.where(first, -np.inf, np.r_[0.0, t_out[:-1]])
+        lo_t = np.maximum(a_in, prev_out[:, None])
+        hi_t = np.minimum(a_out, t_in[:, None])
+        ab_len = np.clip(hi_t - lo_t, 0, None).sum(1)
+        ab_len[~np.isfinite(ab_len)] = 0.0
     for k in range(int(rank.max()) + 1 if len(rank) else 0):
         s = np.flatnonzero((rank == k) & alive & alive_after[it])
+        if ab_len is not None:   # loss in the absorber sheets before this bar (mean dE/dx at the current |p|)
+            pa = np.maximum(pin[s] - carried[it[s]], 1.0)
+            carried[it[s]] += np.where(ab_len[s] > 0, eloss.dedx_restricted(amat, pa, 1e9) * ab_len[s], 0.0)
         p_here = pin[s] - carried[it[s]]
         dead = p_here <= 1.0
         alive[s[dead]] = False

@@ -26,7 +26,7 @@ def default_gdml():
 
 
 def run(inputs, outdir, seed=1, stage="A", counters=None, gdml=None, world_mods=None, msc_tail=False, tail_k=None,
-        sliced_msc=False, first_muon_only=False, **kw):
+        sliced_msc=False, first_muon_only=False, absorbers=False, **kw):
     geom = geometry.from_offline_config(geometry.find_counters(counters or DEFAULT_COUNTERS))
     world = None
     if stage == "C":
@@ -37,12 +37,13 @@ def run(inputs, outdir, seed=1, stage="A", counters=None, gdml=None, world_mods=
             world, names = worldmods.apply(world_mods, world, names)
             print(f"# world modification: {world_mods}", flush=True)
         world = [p for p in world if p[0] != "G4_POLYSTYRENE"]
+    ab = tr.absorber_slabs(gdml or default_gdml()) if absorbers else None
     for i, f in enumerate(tables.expand(inputs)):
         rng = np.random.default_rng([int(seed), i])
         gen = tables.read(f, "gen")
         sub = tables.read(f, "subruns")
         steps, parts = tr.transport(gen, geom, rng, stage=stage, world=world, msc_tail=msc_tail, tail_k=tail_k,
-                                    sliced_msc=sliced_msc, all_muons=not first_muon_only)
+                                    sliced_msc=sliced_msc, all_muons=not first_muon_only, absorbers=ab)
         name = os.path.basename(f).replace("gen.", f"fast{stage}.")
         tables.write(os.path.join(outdir, name), steps, parts, gen, sub, as_ttree=True)
         print(f"# {f}: {parts.shape[0]:,} primary muons, {steps[tables.KEY].drop_duplicates().shape[0]:,} with CRV "

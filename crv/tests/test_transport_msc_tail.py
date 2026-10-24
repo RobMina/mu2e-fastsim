@@ -91,3 +91,20 @@ def test_all_muons(g):
     assert len(c) > len(a) and set(c.sp) <= {1, 2}
     ev2 = set(second.event)
     assert set(c[c.sp == 2].event) <= ev2                                 # second-muon steps only where it exists
+
+
+def test_absorbers_default_off_and_effect(g):
+    gen = _gen(g, n=4000, p=400.0)                                         # soft muons, aimed at EX (T1 is under it)
+    a, _ = TR.transport(gen, g, np.random.default_rng(8), stage="B")
+    b, _ = TR.transport(gen, g, np.random.default_rng(8), stage="B", absorbers=None)
+    pd.testing.assert_frame_equal(a, b)                                    # default: no absorbers, unchanged
+    lo, hi = (g.center - g.halflen).min(0), (g.center + g.halflen).max(0)
+    ex_bot = (g.center - g.halflen)[np.isin(g.sector, [0]), 1].min()
+    t1_top = (g.center + g.halflen)[np.isin(g.sector, [1]), 1].max()
+    sheet = (np.array([[lo[0], t1_top + 5.0, lo[2]]]), np.array([[hi[0], ex_bot - 5.0, hi[2]]]), "G4_Al")  # gap EX/T1
+    c, _ = TR.transport(gen, g, np.random.default_rng(8), stage="B", absorbers=sheet)
+    pmag = lambda s: np.linalg.norm(s[["px0", "py0", "pz0"]].to_numpy(), axis=1)
+    above = lambda s: s[s.y0 > ex_bot - 1.0].reset_index(drop=True)
+    below = lambda s: s[s.y0 < t1_top + 1.0].reset_index(drop=True)
+    np.testing.assert_allclose(pmag(above(a)), pmag(above(c)))            # nothing changes before the sheet
+    assert len(below(c)) and pmag(below(c)).mean() < pmag(below(a)).mean() - 5.0   # ~14 MeV lost in 32 mm of Al

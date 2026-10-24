@@ -63,6 +63,8 @@ def build_parser():
             sp.add_argument("--sliced-msc", action="store_true", help="stage C: per-band |p| in the MSC")
             sp.add_argument("--first-muon-only", action="store_true",
                             help="transport only the first generated muon of each event (before 2026-10-23; default: all)")
+            sp.add_argument("--absorbers", action="store_true",
+                            help="stage C: mean energy loss in the CRV aluminium absorber sheets between bars")
         if name == "g4cost":
             sp.add_argument("--digi", required=True, help="the digi job's TimeTracker SQLite (timing_digi.db)")
         if name == "v0check":
@@ -94,6 +96,8 @@ def build_parser():
             sp.add_argument("--sliced-msc", action="store_true", help="stage C: per-band |p| in the MSC")
             sp.add_argument("--first-muon-only", action="store_true",
                             help="transport only the first generated muon of each event (before 2026-10-23; default: all)")
+            sp.add_argument("--absorbers", action="store_true",
+                            help="stage C: mean energy loss in the CRV aluminium absorber sheets between bars")
             sp.add_argument("--jax", action="store_true", help="JAX twins for photons, SiPM charges, waveforms")
             sp.add_argument("--max-events", type=int, default=None, help="first N generated events per file")
             sp.add_argument("--seed", type=int, default=1)
