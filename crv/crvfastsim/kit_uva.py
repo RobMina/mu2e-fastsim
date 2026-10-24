@@ -7,7 +7,8 @@ that tmpfs (``ssh <fnal> cat`` -> ``srun --overlap ... cat >``), checks its md5 
 deletes the tmpfs dir and writes ``out/cleanup.txt``, without which ``results`` refuses. The lookup tables come from the
 CVMFS Stratum-1 inside the job. Code: a checkout of the umbrella on the endpoint (FASTSIMKIT_CRV_CODE at
 FASTSIMKIT_CRV_CODE_REF, submodules at their pins, or FASTSIMKIT_CRV_BRANCH checked out in core and crv) run in the
-image (FASTSIMKIT_SIF). The kit host must reach both the endpoint and the FNAL host by ssh for the point's lifetime.
+image (FASTSIMKIT_SIF). Inputs are cached once per node in /dev/shm (see WAIT), so later points on a node stream nothing. The kit host must
+reach both the endpoint and the FNAL host by ssh for the point's lifetime.
 
 Environment: FASTSIMKIT_FNAL_HOST (default mu2egpvm03), FASTSIMKIT_CRV_DATA (default .../crv_fastsim),
 FASTSIMKIT_CRV_CODE, FASTSIMKIT_CRV_CODE_REF (umbrella ref, default main), FASTSIMKIT_CRV_BRANCH (optional).
@@ -31,11 +32,21 @@ from . import kit_task
 WAIT_S = 1800          # input wait: ~530 MB through the kit host at >= 1 MB/s (measured 4-6.6 MB/s for chain_point)
 # runs after the kit's _TABLES block (which defines L, the EXIT trap and the lookup tables in $L): announce the input
 # dir, wait for the kit to stream the inputs in
-WAIT = r'''mkdir -p "$L/in"
-echo "$(hostname) $L/in" > "$(dirname "$M2FS_OUT")/inbox"     # read by the kit, which then streams the inputs in
-tw=$SECONDS; while [ $((SECONDS-tw)) -lt @waits@ ]; do [ -f "$L/in/ready" ] && break; sleep 3; done
-[ -f "$L/in/ready" ] || { echo "no input arrived within @waits@ s"; exit 3; }
-echo "{\"input_wait_s\": $((SECONDS-tw))}" > "$M2FS_OUT/wait.json"
+# Inputs once per node: /dev/shm/crvfs_resp_<user>_<key> (key = md5 of the point's input set), one holder file per job,
+# deleted by the last holder (flock); holders of jobs that left the queue are dropped first. Knobs do not change the
+# inputs, so every later point of the same period on that node finds them ready and streams nothing.
+WAIT = r'''S=/dev/shm/crvfs_resp_${USER}_@inkey@; LOCK=/dev/shm/crvfs_resp_${USER}.lock; J=${SLURM_JOB_ID:-0}
+in_hold() { ( flock 9; mkdir -p "$S/holders" "$S/in"; chmod 700 "$S"
+  for h in "$S"/holders/*; do [ -e "$h" ] || continue; squeue -h -j "${h##*/}" -o %i 2>/dev/null | grep -q . || rm -f "$h"; done
+  touch "$S/holders/$J" ) 9>"$LOCK"; }
+in_release() { ( flock 9; rm -f "$S/holders/$J"; [ -z "$(ls -A "$S/holders" 2>/dev/null)" ] && { rm -rf "$S"; echo "$(date -Is) $(hostname) deleted node inputs $S" >> "$M2FS_OUT/cleanup.txt"; } ) 9>"$LOCK"; }
+trap 'in_release; rm -rf "$L"; echo "$(date -Is) $(hostname) deleted $L" >> "$M2FS_OUT/cleanup.txt"' EXIT
+in_hold; ln -sfn "$S/in" "$L/in"
+INSTATE=$( [ -f "$S/in/ready" ] && echo have || echo need )
+echo "$(hostname) $S/in $INSTATE" > "$(dirname "$M2FS_OUT")/inbox"     # read by the kit, which streams the inputs if needed
+tw=$SECONDS; while [ $((SECONDS-tw)) -lt @waits@ ]; do [ -f "$S/in/ready" ] && break; sleep 3; done
+[ -f "$S/in/ready" ] || { echo "no input arrived within @waits@ s"; exit 3; }
+echo "{\"input_wait_s\": $((SECONDS-tw)), \"inputs\": \"$INSTATE\"}" > "$M2FS_OUT/wait.json"
 '''
 
 
@@ -80,6 +91,9 @@ class CrvResponseStream:
         self.dir.mkdir(parents=True, exist_ok=True)
         self._threads: Dict[str, threading.Thread] = {}
         self._lock = threading.Lock()
+        self._keys: Dict[tuple, str] = {}
+        self._md5: Dict[str, str] = {}
+        self._node: Dict[str, threading.Lock] = {}      # one input stream per (node, cache) at a time
 
     def _mark(self, name, what, text=""):
         (self.dir / f"{name}.{what}").write_text(text)
@@ -108,13 +122,29 @@ class CrvResponseStream:
         body = kit_task.body(K._COMMON.replace("@runtime_a@", rt["a"]), tables)
         body = body.replace('A python -c "import jax', 'A python -c "import crvfastsim.kit_task, jax', 1)
         subs = {"sif": shlex.quote(self.kit.sif), "fnal_data": "/nonexistent_fnal", "inputs_dir": '"$L/in"',
-                "waits": str(WAIT_S),
+                "waits": str(WAIT_S), "inkey": self.input_key(p),
                 **{f"p_{k}": shlex.quote(K._arg(p[k])) for k in kit_task.PARAMS}}
         for a, b in subs.items():
             body = body.replace(f"@{a}@", b)
         if re.search(r"@[a-z_0-9]+@", body):
             raise ValueError("fastsimkit: crv_response: unfilled placeholder")
         return body, K.TASKS["crv_response"].resources
+
+    def input_key(self, p) -> str:
+        """Node-cache key of a point's inputs: the md5 of their names and md5s (a changed input file is a new cache)."""
+        import hashlib
+        key = tuple(sorted(kit_task.inputs(p).items()))
+        if key not in self._keys:
+            h = hashlib.md5()
+            for rel, dest in key:
+                h.update(f"{rel} {dest} {self.md5(rel)}\n".encode())
+            self._keys[key] = h.hexdigest()[:12]
+        return self._keys[key]
+
+    def md5(self, rel) -> str:
+        if rel not in self._md5:
+            self._md5[rel] = self.source.md5(rel)
+        return self._md5[rel]
 
     # -- contract ------------------------------------------------------------------------------------------------
     def check(self, name, params) -> Dict[str, Any]:
@@ -182,12 +212,18 @@ class CrvResponseStream:
         host, tmp = inbox[0], inbox[1]
         p = self._rec(name)["params"]
         try:
-            for src, dest in kit_task.inputs(p).items():
-                want = self.source.md5(src)
-                got = self.ep.stream_in(name, host, f"{tmp}/{dest}", self.source.argv(src))
-                if got != want:
-                    raise EndpointError(f"md5 mismatch for {src}: {got} != {want}")
-            self.ep.run_on_node(name, host, f"touch {shlex.quote(tmp)}/ready")
+            with self._lock:
+                node_lock = self._node.setdefault(f"{host} {tmp}", threading.Lock())
+            with node_lock:   # a second point on the node waits for the first one's stream, then finds it ready
+                have = self.ep.run_on_node(name, host, f"test -f {shlex.quote(tmp)}/ready && echo have || true").strip()
+                if have == "have":
+                    self._mark(name, "inputsreused", host)
+                else:
+                    for src, dest in kit_task.inputs(p).items():
+                        got = self.ep.stream_in(name, host, f"{tmp}/{dest}", self.source.argv(src))
+                        if got != self.md5(src):
+                            raise EndpointError(f"md5 mismatch for {src}: {got} != {self.md5(src)}")
+                    self.ep.run_on_node(name, host, f"touch {shlex.quote(tmp)}/ready")
         except EndpointError as e:
             self._mark(name, "streamerr", str(e))
             self.ep.cancel(name)
@@ -218,7 +254,9 @@ class CrvResponseStream:
         metrics = {k: float(v) for k, v in json.loads(mpath.read_text()).items()}
         w = out / "wait.json"
         if w.exists():
-            metrics["input_wait_s"] = float(json.loads(w.read_text()).get("input_wait_s", 0))
+            wj = json.loads(w.read_text())
+            metrics["input_wait_s"] = float(wj.get("input_wait_s", 0))
+            metrics["inputs_reused"] = 1.0 if wj.get("inputs") == "have" else 0.0
         rec = self._rec(name)
         return {"metrics": metrics,
                 "files": [{"name": p.name, "uri": p.resolve().as_uri(), "kind": "text"} for p in files

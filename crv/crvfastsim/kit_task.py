@@ -38,7 +38,8 @@ DEFAULTS = {**{k: "" for k in KNOB_PARAMS}, "period": "P4", "tables": "vr5", "ev
 NO_TERM = ("nlayers_T1", "nlayers_T2", "nlayers_TAG")
 TERMS = tuple(sorted([f"{n}_{s}" for n, sl in _SHAPES.items() for s in sl if f"{n}_{s}" not in NO_TERM]
                      + [f"oot_rate_{s}" for s in _SLOTS]))
-METRICS = ("objective", "objective_sigma", "objective_all", "n_terms", "events_with_steps", "wall_s") + \
+METRICS = ("objective", "objective_sigma", "objective_all", "n_terms", "events_with_steps", "wall_s", "input_wait_s",
+           "inputs_reused") + \
     tuple(f"term_{t}" for t in TERMS)
 VR5_TABLES = ("00000990", "00001023", "00001056", "00001089", "00001122")
 VR5_EVENTS = 112304
