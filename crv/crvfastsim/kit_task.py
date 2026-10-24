@@ -49,6 +49,7 @@ STEPS = tuple(f"prod_as_tables/crvsteps.001400_{q}.root" for q in VR5_TABLES)
 CALIB = "geometry/crvcalib_sim_best_v1_5_run1400.csv"
 DEVIATION = "geometry/crvphoton_sim_best_v1_5_run1400.csv"
 BACKGROUND = "background/fit_v1/bg.npz"
+SIZE_MB = {**{f: 100 for f in STEPS}, BACKGROUND: 58}        # streaming order (largest first); others < 1 MB
 PERIODS = {"P4": ("timecal/corr_P4_v2mod.json", "r3/dataref/dataref_P4.json", ""),
            "P3": ("timecal/corr_P3_v2mod.json", "r3/dataref/dataref_P3.json", "dt_cluster_T2"),
            "raw": ("", "r3/dataref/dataref_3runs.json", "")}

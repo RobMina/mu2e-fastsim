@@ -29,6 +29,9 @@ from mu2efastsim.endpoints.chainpoint import FnalSource
 
 from . import kit_task
 
+# Each stream is an ssh channel to the FNAL host and one to the endpoint, both on one ControlMaster per host, which sshd
+# caps at MaxSessions (10, see chainpoint): at most FASTSIMKIT_MAX_CHANNELS streams across all points of the kit process.
+CHANNELS = threading.BoundedSemaphore(int(os.environ.get("FASTSIMKIT_MAX_CHANNELS", 6)))
 WAIT_S = 1800          # input wait: ~530 MB through the kit host at >= 1 MB/s (measured 4-6.6 MB/s for chain_point)
 # runs after the kit's _TABLES block (which defines L, the EXIT trap and the lookup tables in $L): announce the input
 # dir, wait for the kit to stream the inputs in
@@ -94,6 +97,7 @@ class CrvResponseStream:
         self._keys: Dict[tuple, str] = {}
         self._md5: Dict[str, str] = {}
         self._node: Dict[str, threading.Lock] = {}      # one input stream per (node, cache) at a time
+        self.streams = int(os.environ.get("FASTSIMKIT_STREAMS", 3))      # parallel file streams per point
 
     def _mark(self, name, what, text=""):
         (self.dir / f"{name}.{what}").write_text(text)
@@ -219,10 +223,18 @@ class CrvResponseStream:
                 if have == "have":
                     self._mark(name, "inputsreused", host)
                 else:
-                    for src, dest in kit_task.inputs(p).items():
-                        got = self.ep.stream_in(name, host, f"{tmp}/{dest}", self.source.argv(src))
+                    from concurrent.futures import ThreadPoolExecutor
+
+                    def one(item):      # largest first, `streams` at a time; ssh channels capped across points
+                        src, dest = item
+                        with CHANNELS:
+                            got = self.ep.stream_in(name, host, f"{tmp}/{dest}", self.source.argv(src))
                         if got != self.md5(src):
                             raise EndpointError(f"md5 mismatch for {src}: {got} != {self.md5(src)}")
+                    items = sorted(kit_task.inputs(p).items(), key=lambda kv: -kit_task.SIZE_MB.get(kv[0], 1))
+                    with ThreadPoolExecutor(max_workers=self.streams) as ex:
+                        for f in [ex.submit(one, it) for it in items]:
+                            f.result()
                     self.ep.run_on_node(name, host, f"touch {shlex.quote(tmp)}/ready")
         except EndpointError as e:
             self._mark(name, "streamerr", str(e))
