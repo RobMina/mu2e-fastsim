@@ -11,7 +11,7 @@ Glue added here: the SiPM-status mask (stock CrvSiPMChargeGenerator skips status
 the CRVCalib constants of their channel.
 
 Event key: (subrun << 20) | event (fits the reco's int64 event keys); a SiPM label is event key * CHAN_MULT + channel
-(CHAN_MULT 8192: Run 1A has 5,120 channels, the full CRV 22,016 would need 32768).
+(CHAN_MULT 32768: the Run 2 CRV has 21,376 channels; any power of two above the channel count keeps the label order).
 """
 import time as _time
 from dataclasses import dataclass, field
@@ -22,7 +22,7 @@ from . import geometry, tables
 from .response import photons as PH
 from .response import sipm as SI
 
-CHAN_MULT = 8192
+CHAN_MULT = 32768
 PERIOD = 12.5
 
 
@@ -60,6 +60,7 @@ def _dense(ch, v, n, dt):
 @dataclass
 class ChainConfig:
     response: PH.ResponseConfig = field(default_factory=PH.ResponseConfig)
+    finder: object = None               # reco.coinc.FinderConfig of the run configuration (None: extracted v04 cuts)
     sipm: SI.SiPMConfig = field(default_factory=SI.SiPMConfig)
     window: tuple = (0.0, 1e5)          # offspill extracted event window [ns]
     noise: bool = True                  # electronics noise in the waveforms
@@ -237,10 +238,11 @@ def clusters(W, cond, geom, counters_cfg, cfg, timers=None, detail=False, rng=No
     from .reco import coinc as C
     timers = timers if timers is not None else {}
     G = C.sector_geom(geom, counters_cfg)
+    fcfg = cfg.finder if cfg.finder is not None else C.FinderConfig()
     if cfg.jax:
         from .reco import chain_jax
         return chain_jax.run(W, G, cond.status, n_chunks=max(1, min(8, len(np.unique(W["ev"])) // 1000)),
-                             rounds=cfg.rounds, L=12, timers=timers, keep_pulses=detail, with_pos=detail,
+                             rounds=cfg.rounds, L=12, timers=timers, keep_pulses=detail, with_pos=detail, coinc_cfg=fcfg,
                              add_pulses=background_sampler(cfg, rng if rng is not None else np.random.default_rng()))
     from .reco import pulsefit
     t0 = _time.perf_counter()
@@ -269,7 +271,7 @@ def clusters(W, cond, geom, counters_cfg, cfg, timers=None, detail=False, rng=No
     hi = np.r_[lo[1:], len(ev)]
     for e, a, b in zip(ue, lo, hi):
         p = dict(idx=idx[a:b], bar=bar[a:b], sipm=sipm[a:b], time=time[a:b], pe=pe[a:b], seq=seq[a:b])
-        for r in C.find_event(p, G, cond.status, C.FinderConfig()):
+        for r in C.find_event(p, G, cond.status, fcfg):
             cl["cl_event"].append(e)
             for k, src in (("cl_type", "sectortype"), ("cl_pe", "pe"), ("cl_start", "start"), ("cl_end", "end"),
                            ("cl_slope", "slope"), ("cl_avgtime", "avgtime"), ("cl_poscalc", "poscalc")):

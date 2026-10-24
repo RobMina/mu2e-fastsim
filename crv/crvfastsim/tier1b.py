@@ -47,7 +47,10 @@ LIB_TREES = ("libbins", "libxing", "libdesc", "libshower", "libshowersteps", "li
 
 
 def _group_index(geom, bar):
-    g = SECTOR_GROUP[geom.sector[np.asarray(bar, np.int64)]]
+    """Library group (index into GROUPS) per bar: the run configuration's sector -> group map when the geometry carries
+    one (geom.lib_group, set by runconfig.attach), else the extracted v04 sectors (EX, T1, T2, taggers)."""
+    sg = getattr(geom, "lib_group", None)
+    g = (np.asarray(sg, dtype=object) if sg is not None else SECTOR_GROUP)[geom.sector[np.asarray(bar, np.int64)]]
     return np.select([g == x for x in GROUPS], range(len(GROUPS)), -1)
 
 
@@ -84,8 +87,12 @@ def nearest_bar(points, length_axis, geom):
         if not len(cand):
             continue
         t = [k for k in range(3) if k != a]
-        d = ((points[m][:, None, t] - geom.center[cand][None, :, t]) ** 2).sum(axis=2)
-        out[m] = cand[np.argmin(d, axis=1)]
+        idx = np.flatnonzero(m)
+        step = max(1000, int(1.2e7 // max(len(cand), 1)))
+        for i in range(0, len(idx), step):
+            j = idx[i:i + step]
+            d = ((points[j][:, None, t] - geom.center[cand][None, :, t]) ** 2).sum(axis=2)
+            out[j] = cand[np.argmin(d, axis=1)]
     return out
 
 
@@ -98,8 +105,10 @@ def _evkey(df):
         df.event.to_numpy().astype(np.int64)
 
 
-def bar_containing(pos, geom, chunk=20000):
-    """Bar index whose box contains each point (-1 if none)."""
+def bar_containing(pos, geom, chunk=None):
+    """Bar index whose box contains each point (-1 if none; the lowest index if boxes touch). Chunks hold ~1e8
+    point-bar pairs (extracted v04: 20,000 points x 576 bars, the earlier fixed chunk)."""
+    chunk = chunk or max(1000, int(1.2e7 // max(geom.nbars, 1)))
     out = np.full(len(pos), -1, np.int64)
     for i in range(0, len(pos), chunk):
         inside = (np.abs(pos[i:i + chunk, None, :] - geom.center[None]) <= geom.halflen[None]).all(axis=2)
@@ -384,9 +393,10 @@ def _showers_for_gen(gen, lib, rng):
     return st
 
 
-def sample(fast_steps, fast_parts, gen, lib, geom, rng):
+def sample(fast_steps, fast_parts, gen, lib, geom, rng, showers=True):
     """Fast tier-1a tables + tier 1b: (steps, particles, info). Muons keep their keys (1, or 1..n with all_muons);
-    descendants follow them; showers k*1e7+sp."""
+    descendants follow them; showers k*1e7+sp. showers=False: descendants only (run configurations whose bars are not
+    the library's: the showers carry absolute extracted v04 bar positions)."""
     fx = fast_steps.copy()
     desc, n_drop, n_clamp, why = _desc_for_crossings(fx, lib, geom, rng)
     # descendant particles: one per (event, crossing, library particle), keys after the event's muon keys (2.. with one
@@ -401,7 +411,7 @@ def sample(fast_steps, fast_parts, gen, lib, geom, rng):
     desc["sp"] = desc.key
     dparts = pd.DataFrame({k: u[k].to_numpy() for k in KEY})
     dparts["key"], dparts["parent"], dparts["pdg"], dparts["isprim"] = u.key, u.parent, u.pdg, 0
-    sh = _showers_for_gen(gen, lib, rng)
+    sh = _showers_for_gen(gen, lib, rng) if showers else _showers_for_gen(gen.iloc[:0], lib, rng)
     sh["sp"] = (sh.k + 1) * SHOWER_KEY_BASE + sh.sp
     su = sh[KEY + ["sp", "pdg", "isroot", "k", "shid"]].drop_duplicates(KEY + ["sp"])
     # every shower gets its primary as a particle (parent of the others), even when only daughters have steps

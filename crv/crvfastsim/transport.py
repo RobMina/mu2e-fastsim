@@ -31,12 +31,30 @@ Y_MSC_PLANE = 4720.0   # mm: just above the highest bar top (taggers, L3 top at 
 CRV_FOOTPRINT_MARGIN = 1500.0
 
 
-def near_crv(o, d, geom, margin=CRV_FOOTPRINT_MARGIN):
-    """Downward tracks whose straight line crosses y = Y_MSC_PLANE within `margin` of the bars' x-z footprint."""
+def msc_plane(geom):
+    """MSC plane height of a CRV geometry: Y_MSC_PLANE for the extracted CRV (bit-identical), else 0.8 mm above the
+    highest bar top (the extracted plane's margin), rounded up to 1 mm."""
+    top = float((geom.center[:, 1] + geom.halflen[:, 1]).max())
+    if abs(top - 4719.2) < 0.05:
+        return Y_MSC_PLANE
+    return float(np.ceil(top + 0.8))
+
+
+def band_edges(y_plane):
+    """World height bands above the MSC plane: the extracted bands (15.4 m .. 5 m) with the lower edges below the
+    plane dropped and the plane as the last edge (extracted: BAND_EDGES_Y unchanged)."""
+    e = BAND_EDGES_Y[:-1]
+    e = e[e > y_plane + 1.0]
+    return np.r_[e, y_plane]
+
+
+def near_crv(o, d, geom, margin=CRV_FOOTPRINT_MARGIN, y_plane=None):
+    """Downward tracks whose straight line crosses the MSC plane within `margin` of the bars' x-z footprint."""
+    y_plane = Y_MSC_PLANE if y_plane is None else y_plane
     lo = (geom.center - geom.halflen).min(0)
     hi = (geom.center + geom.halflen).max(0)
     down = d[:, 1] < 0
-    L = np.where(down, (o[:, 1] - Y_MSC_PLANE) / -np.where(down, d[:, 1], -1.0), 0.0)
+    L = np.where(down, (o[:, 1] - y_plane) / -np.where(down, d[:, 1], -1.0), 0.0)
     x = o[:, 0] + d[:, 0] * L
     z = o[:, 2] + d[:, 2] * L
     return down & (x > lo[0] - margin) & (x < hi[0] + margin) & (z > lo[2] - margin) & (z < hi[2] + margin)
@@ -45,7 +63,7 @@ def near_crv(o, d, geom, margin=CRV_FOOTPRINT_MARGIN):
 BAND_EDGES_Y = np.array([15400.0, 12000.0, 10000.0, 9000.0, 8000.0, 7000.0, 6000.0, 5500.0, 5000.0, Y_MSC_PLANE])
 
 
-def world_loss(rng, o, d, p, world):
+def world_loss(rng, o, d, p, world, edges=None):
     """Material between o and the MSC plane: (|p| at the plane, total x/X0, survived?, x/X0 per height band,
     path distance from each band's centre to the plane).
 
@@ -53,26 +71,31 @@ def world_loss(rng, o, d, p, world):
     in height (BAND_EDGES_Y) locate where the scattering happens, so the lateral spread at the plane uses the right
     lever arm (concrete 1-3 m above the CRV scatters with a short arm; the air above it with a long one).
     """
-    L = (o[:, 1] - Y_MSC_PLANE) / -d[:, 1]
-    nb = len(BAND_EDGES_Y) - 1
+    edges = BAND_EDGES_Y if edges is None else edges
+    L = (o[:, 1] - edges[-1]) / -d[:, 1]
+    nb = len(edges) - 1
     band_xx0 = np.zeros((len(p), nb))
     band_h = np.zeros((len(p), nb))
     loss = np.zeros(len(p))
     x0_air = eloss.radiation_length_mm(materials.AIR)
     for k in range(nb):
-        y_top, y_bot = BAND_EDGES_Y[k], BAND_EDGES_Y[k + 1]
+        y_top, y_bot = edges[k], edges[k + 1]
         s_top = np.clip((o[:, 1] - y_top) / -d[:, 1], 0, L)
         s_bot = np.clip((o[:, 1] - y_bot) / -d[:, 1], 0, L)
         seg = s_bot - s_top
         if not (seg > 0).any():
             continue
-        band_pieces = [q for q in world if q[3][1] >= y_bot and q[2][1] <= y_top]
+        if isinstance(world, core_tr.BandedWorld):   # pre-banded grid (same columns, vectorised over pieces)
+            band_pieces = world.band(k)
+        else:
+            band_pieces = [q for q in world if q[3][1] >= y_bot and q[2][1] <= y_top]
         act = np.flatnonzero(seg > 0)
-        col = {} if not band_pieces else {
+        col = {} if not len(band_pieces) else {
             k: np.bincount(act, weights=v, minlength=len(p))
             for k, v in world_mod.column(band_pieces, (o + d * s_top[:, None])[act], d[act], seg[act]).items()}
         solid = np.zeros(len(p))
-        for name, c in col.items():
+        order = world.mat_order[k] if hasattr(world, "mat_order") else list(col)   # the piece list's order: same draws
+        for name, c in ((m, col[m]) for m in order if m in col):
             if not c.any():
                 continue
             mat = materials.BY_NAME.get(name, materials.CONCRETE_MARS)
@@ -115,8 +138,35 @@ def absorber_slabs(gdml_path, prefix=("CRSAbsorber", "CRSAluminumSheet")):
     return np.array([a for a, _, _ in sel]), np.array([b for _, b, _ in sel]), mats.pop()
 
 
+def load_world(gdml_path, banded=True, y_plane=Y_MSC_PLANE):
+    """(stage-C world above the MSC plane without the bars, CRV aluminium slabs) from one GDML parse. banded: the world
+    as a core BandedWorld (grid per height band; same columns and steps as the piece list, ~5x faster transport).
+    y_plane: the geometry's MSC plane (msc_plane(geom); the CRV aluminium is read from every height)."""
+    names = []
+    pieces = world_mod.load(gdml_path, y_min=min(0.0, y_plane - 6000.0), names=names)
+    world = [q for q in pieces if q[3][1] >= y_plane and q[0] != "G4_POLYSTYRENE"]
+    sel = [(q[2], q[3], q[0]) for n, q in zip(names, pieces) if n.startswith(("CRSAbsorber", "CRSAluminumSheet"))]
+    ab = None
+    if sel:
+        mats = {m for _, _, m in sel}
+        if len(mats) != 1:
+            raise ValueError(f"absorbers of several materials: {mats}")
+        ab = (np.array([a for a, _, _ in sel]), np.array([b for _, b, _ in sel]), mats.pop())
+    return (banded_world(world, band_edges(y_plane)) if banded else world), ab
+
+
+def banded_world(world, edges=None):
+    """core BandedWorld of a stage-C piece list, with each band's materials in first-appearance order (mat_order), the
+    order the piece-list path draws its slab losses in, so both give the same steps for a seed."""
+    edges = BAND_EDGES_Y if edges is None else np.asarray(edges, float)
+    bw = core_tr.BandedWorld(world, edges)
+    bw.mat_order = [list(dict.fromkeys(q[0] for q in world if q[3][1] >= edges[k + 1] and q[2][1] <= edges[k]))
+                    for k in range(len(edges) - 1)]
+    return bw
+
+
 def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=False, tail_k=None, sliced_msc=False,
-              all_muons=True, absorbers=None, absorber_straggling=True):
+              all_muons=True, absorbers=None, absorber_straggling=True, tagger_bar=None):
     """Return (steps, particles) for the primary muons in `gen`.
 
     Stage A: air, no MSC. B: air + MSC to Y_MSC_PLANE. C: GDML world material (world = world.load(...)) + MSC.
@@ -135,7 +185,12 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
     fast muon sees no material between bars, which delivered 36 % too many soft (< 300 MeV/c at EX) muons to T1, under
     EX and its absorbers (V1 T1 +1.4 %, 2026-10-23). absorber_straggling (default True with absorbers): sample the
     sheet loss with the Urban fluctuation model instead of the mean, so soft muons range out with G4's spread.
+    tagger_bar ([nbars] bool, runconfig.RunConfig.tagger_bar): bars with the 10 mm-cut delta threshold; None = the
+    extracted v04 taggers (bars >= 512). The MSC plane and the world bands follow the geometry (msc_plane, band_edges);
+    a BandedWorld carries its own edges.
     """
+    y_plane = msc_plane(geom)
+    edges = world.edges if isinstance(world, core_tr.BandedWorld) else band_edges(y_plane)
     mu = all_primary_muons(gen) if all_muons else primary_muons(gen)
     mukey = mu.mukey.to_numpy() if all_muons else np.ones(len(mu), np.int64)
     p0 = np.sqrt(mu.px ** 2 + mu.py ** 2 + mu.pz ** 2).to_numpy()
@@ -144,12 +199,12 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
     t_off = np.zeros(len(mu))   # path length already travelled before the origin used for the crossings
     p_plane = p0.copy()         # |p| at the MSC plane (stage C: after the world material)
     if stage in ("B", "C"):
-        down = near_crv(o, d, geom)
+        down = near_crv(o, d, geom, y_plane=y_plane)
         xx0 = None
         bxx0 = bh = None
         tail = None
         if stage == "C" and (msc_tail or sliced_msc):
-            res = core_tr.world_loss(rng, o[down], d[down], p0[down], world, BAND_EDGES_Y, return_band_p=True,
+            res = core_tr.world_loss(rng, o[down], d[down], p0[down], world, edges, return_band_p=True,
                                      return_tail=msc_tail)
             p_plane, xx0, alive_w, bxx0, bh, bp = res[:6]
             tail = dict(band_p=bp if sliced_msc else None, band_chic2=res[6] if msc_tail else None,
@@ -157,13 +212,13 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
             keep_mu = np.ones(len(mu), bool)
             keep_mu[np.flatnonzero(down)[~alive_w]] = False
         elif stage == "C":
-            p_plane, xx0, alive_w, bxx0, bh = world_loss(rng, o[down], d[down], p0[down], world)
+            p_plane, xx0, alive_w, bxx0, bh = world_loss(rng, o[down], d[down], p0[down], world, edges)
             keep_mu = np.ones(len(mu), bool)
             keep_mu[np.flatnonzero(down)[~alive_w]] = False
         o2, d2, L = o.copy(), d.copy(), np.zeros(len(mu))
         p_msc = p0[down] if stage == "B" else np.maximum(np.sqrt(p0[down] * np.maximum(p_plane, 1.0)), 1.0)
         bands = (bxx0, bh) if stage == "C" else (None, None)
-        o2[down], d2[down], L[down] = msc_to_plane(rng, o[down], d[down], p_msc, Y_MSC_PLANE,
+        o2[down], d2[down], L[down] = msc_to_plane(rng, o[down], d[down], p_msc, y_plane,
                                                    eloss.radiation_length_mm(materials.AIR), xx0, *bands,
                                                    **(tail or {}))
         o, d, t_off = o2, d2, L
@@ -189,7 +244,8 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
         pin = p_plane[it] - eloss.dedx_restricted(air, p_plane[it], 1e9) * t_in   # world loss already applied
     elif air_loss:
         pin = pin - eloss.dedx_restricted(air, p0[it], 1e9) * (t_in + t_off[it])  # unrestricted: no deltas in air
-    cut = np.where(bar >= TAGGER_FIRST_BAR, materials.POLYSTYRENE.cuts_e_MeV["tagger"],
+    is_tag = (bar >= TAGGER_FIRST_BAR) if tagger_bar is None else np.asarray(tagger_bar, bool)[bar]
+    cut = np.where(is_tag, materials.POLYSTYRENE.cuts_e_MeV["tagger"],
                    materials.POLYSTYRENE.cuts_e_MeV["crv"])
     loss = np.zeros_like(path)
     alive = pin > 1.0

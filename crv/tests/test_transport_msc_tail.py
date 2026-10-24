@@ -110,3 +110,17 @@ def test_absorbers_default_off_and_effect(g):
     np.testing.assert_allclose(pmag(above(a)), pmag(above(d)))            # mean loss: nothing changes before the sheet
     assert abs(pmag(above(c)).mean() / pmag(above(a)).mean() - 1) < 0.01   # straggling: other draws, same physics above
     assert len(below(c)) and pmag(below(c)).mean() < pmag(below(a)).mean() - 5.0   # ~14 MeV lost in 32 mm of Al
+
+
+def test_banded_world_bit_identical(g):
+    """The banded grid world (transport.banded_world, the default of load_world) gives the piece-list steps bit for
+    bit: same columns, slab losses drawn in the piece list's material order."""
+    gen = _gen(g)
+    st = _slab(6000.0, 6500.0)
+    al = [("G4_Al", st[0][1].copy(), st[0][2].copy(), st[0][3].copy())]
+    al[0][1][2, 3], al[0][1][3, 3] = 6900.0, -6600.0
+    al[0][2][1], al[0][3][1] = 6600.0, 6900.0
+    world = al + st                                                     # Al first: the order a sort would change
+    a, _ = TR.transport(gen, g, np.random.default_rng(1), stage="C", world=world)
+    b, _ = TR.transport(gen, g, np.random.default_rng(1), stage="C", world=TR.banded_world(world))
+    pd.testing.assert_frame_equal(a, b)

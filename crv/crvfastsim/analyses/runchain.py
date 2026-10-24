@@ -14,7 +14,9 @@ import numpy as np
 
 from mu2efastsim import plots, world as world_mod
 
-from .. import chain, geometry, tables, tier1b
+import dataclasses
+
+from .. import chain, geometry, runconfig, tables, tier1b
 from .. import transport as tr
 from ..response import photons as PH
 from ..response import sipm as SI
@@ -25,19 +27,28 @@ SECTOR_TYPES = {1: "EX", 2: "T1", 3: "T2", 4: "M"}
 
 def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax=False, max_events=None, seed=1,
         compare=None, counters=None, reco_cpu=False, emit=None, msc_tail=False, tail_k=None, sliced_msc=False,
-        first_muon_only=False, no_absorbers=False, **kw):
+        first_muon_only=False, no_absorbers=False, run_config=None, window=None, **kw):
     if not (library and calib):
         raise SystemExit("runchain needs --library and --calib")
     from .transport import default_gdml
-    cpath = geometry.find_counters(counters or DEFAULT_COUNTERS)
-    geom = geometry.from_offline_config(cpath)
-    ccfg = geometry.parse_simpleconfig(open(cpath).read())
-    cond = chain.Conditions.from_csv(calib, deviation)
-    cfg = chain.ChainConfig(jax=bool(jax))
+    # cosmic gen tables carry cosmicTimeOffset flat over the 100 us offspill window: other configurations digitise them
+    # offspill unless --window says otherwise (their stock on-spill window would keep ~1 % of the events)
+    rc = runconfig.get(run_config, window if window or not run_config else "offspill")
+    if counters:                       # explicit counters file: that geometry with the run configuration's response
+        rc = dataclasses.replace(rc, counters=counters)
+    geom = rc.geometry()
+    ccfg = rc.counters_cfg()
+    cond = runconfig.nominal_conditions(geom) if calib == "nominal" else chain.Conditions.from_csv(calib, deviation)
+    if len(cond.status) < 4 * geom.nbars:
+        raise SystemExit(f"runchain: conditions cover {len(cond.status)} channels, {rc.name} has {4 * geom.nbars}; "
+                         "pass the configuration's CRVCalib CSV or --calib nominal")
+    cfg = rc.chain_config(jax=bool(jax)) if rc.name != runconfig.DEFAULT or window else chain.ChainConfig(jax=bool(jax))
+    tagger = rc.tagger_bar(geom) if rc.name != runconfig.DEFAULT else None
     T = {}
     t0 = time.perf_counter()
-    world = [p for p in world_mod.load(gdml or default_gdml(), y_min=tr.Y_MSC_PLANE) if p[0] != "G4_POLYSTYRENE"]
-    ab = None if no_absorbers else tr.absorber_slabs(gdml or default_gdml())
+    world, ab = tr.load_world(gdml or (rc.gdml_path() if rc.name != runconfig.DEFAULT else default_gdml()),
+                              banded=not kw.get("unbanded_world", False), y_plane=tr.msc_plane(geom))
+    ab = None if no_absorbers else ab
     lib = tier1b.read_library(library)
     tabs = PH.load_tables(cfg.response)
     if jax:
@@ -45,6 +56,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         tabs = {k: photons_jax.DeviceTable(v) for k, v in tabs.items()}
     pmap = SI.photon_map()
     T["setup_s"] = time.perf_counter() - t0
+    stype_name = runconfig.sector_type_names(geom, ccfg) if rc.name != runconfig.DEFAULT else SECTOR_TYPES
     out_cl, n_gen = [], 0
     for i, f in enumerate(tables.expand(inputs)):
         rng = np.random.default_rng([int(seed), i])
@@ -55,10 +67,10 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         n_gen += int(gen[tables.KEY].drop_duplicates().shape[0])
         a = time.perf_counter()
         st, pa = tr.transport(gen, geom, rng, stage="C", world=world, msc_tail=msc_tail, tail_k=tail_k,
-                              sliced_msc=sliced_msc, all_muons=not first_muon_only, absorbers=ab)
+                              sliced_msc=sliced_msc, all_muons=not first_muon_only, absorbers=ab, tagger_bar=tagger)
         T["transport_s"] = T.get("transport_s", 0.0) + time.perf_counter() - a
         a = time.perf_counter()
-        st, pa, _ = tier1b.sample(st, pa, gen, lib, geom, rng)
+        st, pa, _ = tier1b.sample(st, pa, gen, lib, geom, rng, showers=rc.showers)
         T["tier1b_s"] = T.get("tier1b_s", 0.0) + time.perf_counter() - a
         T["steps"] = T.get("steps", 0) + len(st)
         T["events_with_steps"] = T.get("events_with_steps", 0) + int(st[tables.KEY].drop_duplicates().shape[0])
@@ -76,7 +88,8 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         out_cl += outs
     cl_type = np.concatenate([o["cl_type"] for o in out_cl]) if out_cl else np.zeros(0, int)
     res = {"generated_events": n_gen, "timers": T,
-           "clusters_per_generated": {SECTOR_TYPES.get(int(k), str(k)): float((cl_type == k).sum() / n_gen)
+           "run_config": rc.name, "window": list(cfg.window),
+           "clusters_per_generated": {stype_name.get(int(k), str(k)): float((cl_type == k).sum() / n_gen)
                                       for k in np.unique(cl_type)}}
     nev = max(T.get("events_with_steps", 1), 1)
     res["ms_per_event_with_steps"] = {k[:-2]: 1e3 * v / nev for k, v in T.items() if k.endswith("_s") and k != "setup_s"}
@@ -86,7 +99,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         import awkward as ak
         st_ref = ak.to_numpy(c.sectortype)
         res["compare_generated_events"] = n_gen
-        res["clusters_per_generated_ref"] = {SECTOR_TYPES.get(int(k), str(k)): float((st_ref == k).sum() / n_gen)
+        res["clusters_per_generated_ref"] = {stype_name.get(int(k), str(k)): float((st_ref == k).sum() / n_gen)
                                              for k in np.unique(st_ref)}
     res["wall_s"] = time.perf_counter() - t0
     if jax:
@@ -97,6 +110,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         with open(emit, "w") as fh:
             json.dump({"generated_events": n_gen, "timers": T, "wall_s": res["wall_s"],
                        "cl_type_counts": {int(k): int((cl_type == k).sum()) for k in np.unique(cl_type)},
+                       "run_config": rc.name, "type_names": {int(k): v for k, v in stype_name.items()},
                        "device": res.get("device"), "reco_device": res.get("reco_device"),
                        "inputs": list(tables.expand(inputs))}, fh)
     plots.write_json(outdir, "runchain_stats.json", res)
@@ -121,10 +135,11 @@ def merge(inputs, outdir, wall=None, **kw):
         for k, v in j["timers"].items():
             if isinstance(v, (int, float)):
                 T[k] = T.get(k, 0) + v
+    names = {**SECTOR_TYPES, **{int(k): v for j in J for k, v in j.get("type_names", {}).items()}}
     slowest = max(j["wall_s"] for j in J)
     wall_s = float(wall) if wall else slowest
     res = {"shards": len(J), "generated_events": n_gen, "events_with_steps": acc,
-           "clusters_per_generated": {SECTOR_TYPES.get(k, str(k)): v / max(n_gen, 1) for k, v in sorted(cl.items())},
+           "clusters_per_generated": {names.get(k, str(k)): v / max(n_gen, 1) for k, v in sorted(cl.items())},
            "wall_s": wall_s, "slowest_shard_wall_s": slowest,
            "accepted_events_per_node_hour": 3600.0 * acc / wall_s, "generated_events_per_node_hour": 3600.0 * n_gen / wall_s,
            "stage_s_summed_over_shards": {k: v for k, v in T.items() if k.endswith("_s")},

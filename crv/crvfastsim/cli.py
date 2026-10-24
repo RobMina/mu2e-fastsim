@@ -56,6 +56,8 @@ def build_parser():
                             help="world model (A: air, no MSC; B: air + MSC; C: + GDML world material)")
             sp.add_argument("--gdml", default=None, help="GDML world export for --stage C (geometry/README.md)")
             sp.add_argument("--world-mods", default=None, help="--stage C: named world modification (trkfastsim.worldmods)")
+            sp.add_argument("--run-config", default=None, help="named CRV run configuration (crvfastsim.runconfig): "
+                            "counters, GDML world and the tagger-cut bars; default extracted_v04")
             sp.add_argument("--msc-tail", action="store_true",
                             help="stage C: single-scattering tail above the Gaussian MSC core, per height band")
             sp.add_argument("--tail-k", type=float, default=None,
@@ -65,6 +67,8 @@ def build_parser():
                             help="transport only the first generated muon of each event (before 2026-10-23; default: all)")
             sp.add_argument("--no-absorbers", action="store_true",
                             help="stage C: no energy loss in the CRV aluminium (absorbers, module skins) between bars (before 2026-10-24)")
+            sp.add_argument("--unbanded-world", action="store_true",
+                            help="stage C: world columns piece by piece (before 2026-10-24; the banded grid is the default)")
         if name == "g4cost":
             sp.add_argument("--digi", required=True, help="the digi job's TimeTracker SQLite (timing_digi.db)")
         if name == "v0check":
@@ -98,6 +102,11 @@ def build_parser():
                             help="transport only the first generated muon of each event (before 2026-10-23; default: all)")
             sp.add_argument("--no-absorbers", action="store_true",
                             help="stage C: no energy loss in the CRV aluminium (absorbers, module skins) between bars (before 2026-10-24)")
+            sp.add_argument("--unbanded-world", action="store_true",
+                            help="stage C: world columns piece by piece (before 2026-10-24; the banded grid is the default)")
+            sp.add_argument("--run-config", default=None, help="named CRV run configuration (crvfastsim.runconfig: "
+                            "extracted_v04 default, run1a_v01, run1b_v01, run2_v10): counters, GDML, response, cuts, window")
+            sp.add_argument("--window", default=None, help="digitisation window override: offspill, onspill")
             sp.add_argument("--jax", action="store_true", help="JAX twins for photons, SiPM charges, waveforms")
             sp.add_argument("--max-events", type=int, default=None, help="first N generated events per file")
             sp.add_argument("--seed", type=int, default=1)

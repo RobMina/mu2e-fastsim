@@ -16,7 +16,7 @@ import jax.numpy as jnp
 from . import photons, photons_jax, sipm_jax
 from .sipm import NPIX
 
-CHAN_MULT = 8192   # = chain.CHAN_MULT (chain imports response, not the reverse)
+CHAN_MULT = 32768  # = chain.CHAN_MULT (chain imports response, not the reverse)
 
 
 @jax.jit
