@@ -132,27 +132,43 @@ def run_batch(c, a, b, cond, cfg, geom, ccfg, tabs, pmap, rng, key, T, objective
     return b - a, key
 
 
-def run(steps, calib, deviation=None, target=1_000_000, jax=False, seed=1, batch_events=2000, counters=None,
-        emit=None, objective=False, noise=True, max_passes=1000, time_limit=None, v05=False, knobs=None, background=None,
-        time_shift=None):
+def run(steps, calib=None, deviation=None, target=1_000_000, jax=False, seed=1, batch_events=2000, counters=None,
+        emit=None, objective=False, noise=None, max_passes=1000, time_limit=None, v05=False, knobs=None, background=None,
+        time_shift=None, response_config=None):
     """v05: the crvonly_v05 digitisation settings (one FEB clock phase per event, CRVTime net zero), as reco-vr4eff,
     for comparisons with the v05 EventNtuples."""
+    from .. import response_config as RC
+    effective = RC.apply_knobs(RC.parse(response_config), knobs)
+    if v05:
+        effective['timing'].update(phase_scope='per_event', timeoffset_mode='zero')
+    if noise is not None:
+        effective['noise'] = bool(noise)
+    for name, value in dict(calib=calib, deviation=deviation, counters=counters,
+                            background=background, time_shift=time_shift).items():
+        if value is not None:
+            effective['assets'][name] = str(value)
+    RC.validate(effective)
+    assets = effective['assets']
+    calib, deviation, background, time_shift = (assets[k] for k in ('calib', 'deviation', 'background', 'time_shift'))
+    if not calib:
+        raise ValueError('reco-r3 requires a calibration asset (--calib or config assets.calib)')
     T = {}
     t_all = time.perf_counter()
     t0 = time.perf_counter()
-    cpath = geometry.find_counters(counters or DEFAULT_COUNTERS)
+    cpath = geometry.find_counters(assets['counters'] or DEFAULT_COUNTERS)
     geom = geometry.from_offline_config(cpath)
     ccfg = geometry.parse_simpleconfig(open(cpath).read())
     cond = chain.Conditions.from_csv(calib, deviation)
-    if v05:
-        import dataclasses
-        cond = dataclasses.replace(cond, roc=np.zeros_like(cond.roc), feb=np.zeros_like(cond.feb),
-                                   timeoffset=np.zeros_like(cond.timeoffset))
+    import dataclasses
+    if effective['timing']['phase_scope'] == 'per_event':
+        cond = dataclasses.replace(cond, roc=np.zeros_like(cond.roc), feb=np.zeros_like(cond.feb))
+    if effective['timing']['timeoffset_mode'] == 'zero':
+        cond = dataclasses.replace(cond, timeoffset=np.zeros_like(cond.timeoffset))
     bg = None
     if background:
         from .background import BackgroundModel
         bg = BackgroundModel.load(background)
-    cfg = chain.apply_knobs(chain.ChainConfig(jax=bool(jax), noise=bool(noise), background=bg), knobs)
+    cfg = RC.build(effective, jax=bool(jax), background=bg)
     validate_response(cfg)
     tshift = None
     if time_shift:                                 # timecal JSON: mc_channel_shift, per channel [ns], added in the reco
@@ -160,14 +176,18 @@ def run(steps, calib, deviation=None, target=1_000_000, jax=False, seed=1, batch
         tshift = np.asarray(_json.load(open(time_shift))["mc_channel_shift"], float)
     from ..response import photons as PH
     from ..response import sipm as SI
-    tabs = PH.load_tables(cfg.response)
+    tabs = PH.load_tables(cfg.response, directory=assets['lookup_dir'])
+    pmap = SI.photon_map(assets['photon_map'] or
+                          (os.path.join(assets['lookup_dir'], 'photonMap.root') if assets['lookup_dir'] else None))
+    RC.validate_loaded_assets(effective, tabs, pmap)
     key = None
     if jax:
         import jax as J
         from ..response import photons_jax
         tabs = {k: photons_jax.DeviceTable(v) for k, v in tabs.items()}
         key = J.random.PRNGKey(int(seed))
-    pmap = SI.photon_map()
+    resolved = RC.record(effective)
+    resolved['assets'] = RC.asset_manifest(effective, counters=cpath)
     obj = None
     if objective:
         from ..objective import crvresponse
@@ -211,7 +231,7 @@ def run(steps, calib, deviation=None, target=1_000_000, jax=False, seed=1, batch
            "events_per_s": done / wall if wall else 0.0,
            "warm_events_per_s": (sum(x["events"] for x in warm) / sum(x["wall_s"] for x in warm)) if warm else None,
            "cache_files": [c["path"] for c in cache], "cache_events": int(sum(len(c["events"]) for c in cache)),
-           "timers": T, "jax": bool(jax), "noise": bool(noise), "v05": bool(v05), "knobs": dict(knobs or {}), "background": background, "time_shift": time_shift, "batch_events": batch_events, "seed": seed,
+           "timers": T, "resolved_config": resolved, "jax": bool(jax), "noise": cfg.noise, "v05": bool(v05), "knobs": dict(knobs or {}), "background": background, "time_shift": time_shift, "batch_events": batch_events, "seed": seed,
            "ms_per_event": {k[:-2]: 1e3 * v / max(done, 1) for k, v in T.items()
                             if isinstance(v, float) and k.endswith("_s")}}
     if jax:

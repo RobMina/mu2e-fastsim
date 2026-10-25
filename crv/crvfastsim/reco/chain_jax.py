@@ -57,7 +57,7 @@ def _pulse_collect(outs, W, rows, cfg_np):
 
 
 def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.FinderConfig(), timers=None,
-        keep_pulses=False, with_pos=False, add_pulses=None):
+        keep_pulses=False, with_pos=False, add_pulses=None, pulse_cfg=None):
     """W: waveforms sorted by (ev, channel, time) with pulsefit inputs and ev, bar, sipm; optional "toff" (per-waveform
     DB time offset [ns], added to the pulse times as CrvRecoPulsesFinder does with useTimeOffsetDB; offspill TDC0time
     is 0). Returns per-chunk cluster outputs (list) and timers (pulse_dispatch_s, pulse_collect_s, coinc_async_s,
@@ -69,7 +69,7 @@ def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.Finde
     if not len(W['ev']):
         timers.update(events=0, waveforms=0, wall_s=0.0)
         return [], timers
-    cfg_np = pulsefit.RecoConfig()
+    cfg_np = pulse_cfg if pulse_cfg is not None else pulsefit.RecoConfig()
     cfg = dataclasses.replace(cfg_np, max_pulses=rounds)
     params, tables = CJ.type_params(G, coinc_cfg), CJ.hit_tables(G, status, coinc_cfg)
     ue = np.unique(W["ev"])

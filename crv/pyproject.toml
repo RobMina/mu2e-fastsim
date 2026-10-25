@@ -16,3 +16,6 @@ test = ["pytest"]
 
 [tool.setuptools.packages.find]
 include = ["crvfastsim*"]
+
+[tool.setuptools.package-data]
+crvfastsim = ["configs/*.json"]

@@ -72,6 +72,8 @@ class ChainConfig:
     waveform: object = None             # reco.waveform.WaveformConfig (None: the stock prolog_v12 values)
     background: object = None           # reco.background.BackgroundModel: out-of-time deposits added before clustering
     background_scale: float = 1.0       # multiplies the background model's net rate (knob background_scale)
+    pulse_reco: object = None           # reco.pulsefit.RecoConfig (None: the stock defaults)
+    feb_phase_width: float = PERIOD     # uniform FEB clock-phase width [ns]
 
 
 # light-propagation keys (extracted v04): sectors, TAG = every muon tagger, and modules (photons.bar_keys)
@@ -194,13 +196,15 @@ def charges(steps, parts, geom, cond, cfg, rng, key=None, tabs=None, pmap=None, 
     return Q
 
 
-def tdc0_per_feb(labels, cond, rng):
-    """TDC0 [ns] per SiPM label: one uniform draw in [0, 12.5) per (event, ROC, FEB), as CrvWaveformsGenerator."""
+def tdc0_per_feb(labels, cond, rng, width=PERIOD):
+    """TDC0 [ns] per SiPM label: one uniform draw scaled by width per (event, ROC, FEB)."""
+    if not np.isfinite(width) or not 0 <= width <= PERIOD:
+        raise ValueError(f"FEB phase width must be finite and in [0, {PERIOD}] ns, got {width}")
     ev, ch = labels // CHAN_MULT, labels % CHAN_MULT
     feb = cond.roc[ch] * 1000 + cond.feb[ch]
     k = ev * 1_000_000 + feb
     u, inv = np.unique(k, return_inverse=True)
-    return rng.random(len(u))[inv.ravel()] * PERIOD
+    return rng.random(len(u))[inv.ravel()] * width
 
 
 def digis(Q, cond, cfg, rng, key=None, timers=None):
@@ -208,7 +212,7 @@ def digis(Q, cond, cfg, rng, key=None, timers=None):
     from .reco import waveform as WF
     timers = timers if timers is not None else {}
     labels = np.unique(Q["chan"])
-    tdc0 = tdc0_per_feb(labels, cond, rng)
+    tdc0 = tdc0_per_feb(labels, cond, rng, width=cfg.feb_phase_width)
     lut = lambda lab: tdc0[np.searchsorted(labels, lab)]
     wcfg = cfg.waveform if cfg.waveform is not None else WF.WaveformConfig()
     t0 = _time.perf_counter()
@@ -260,20 +264,19 @@ def clusters(W, cond, geom, counters_cfg, cfg, timers=None, detail=False, rng=No
     numpy: reco.pulsefit.reconstruct then reco.coinc.find_event per event (the validated references; no JAX needed).
     Returns (list of cluster dicts with cl_event, cl_type, cl_pe, ..., timers). detail: each dict also carries cl_pos,
     the member table (mem_cl, mem_idx, mem_event) and its flat pulses under "pulses" (reco.ntview input)."""
-    from .reco import coinc as C
+    from .reco import coinc as C, pulsefit
     timers = timers if timers is not None else {}
     if 'toff' not in W:
         W = {**W, 'toff': cond.timeoffset[W['bar'] * 4 + W['sipm']]}
     G = C.sector_geom(geom, counters_cfg)
     fcfg = cfg.finder if cfg.finder is not None else C.FinderConfig()
+    rcfg = cfg.pulse_reco if cfg.pulse_reco is not None else pulsefit.RecoConfig()
     if cfg.jax:
         from .reco import chain_jax
         return chain_jax.run(W, G, cond.status, n_chunks=max(1, min(8, len(np.unique(W["ev"])) // 1000)),
-                             rounds=cfg.rounds, L=12, timers=timers, keep_pulses=detail, with_pos=detail, coinc_cfg=fcfg,
+                             rounds=cfg.rounds, L=12, timers=timers, keep_pulses=detail, with_pos=detail, coinc_cfg=fcfg, pulse_cfg=rcfg,
                              add_pulses=background_sampler(cfg, rng if rng is not None else np.random.default_rng()))
-    from .reco import pulsefit
     t0 = _time.perf_counter()
-    rcfg = pulsefit.RecoConfig()
     P = pulsefit.reconstruct_full(W["adc"], W["n"], W["start"], W["ped"], W["area"], W["height"], rcfg)
     P = pulsefit.filter_channels(P, W['bar'] * 4 + W['sipm'], cond.status, rcfg)
     if rcfg.use_time_offset_db:  # CrvRecoPulsesFinder adds the DB time offset (offspill: TDC0time = 0)

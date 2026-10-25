@@ -17,6 +17,7 @@ Params
               (the 20 prod_as tables; EAF only)
   events      events with CRV steps to process (default 0 = one pass over the tables)
   background  1 = add the out-of-time background model (background/fit_v1/bg.npz; default), 0 = none
+  response_config  schema-v1 object/inline JSON for fixed response/reco settings; no kit-host file paths or asset overrides
   seed
 Metrics: objective (size-free total of the used terms) and objective_sigma, objective_all (every term), n_terms,
 events_with_steps, wall_s, and term_<name> (chi2ndf scale) for every objective term.
@@ -31,9 +32,10 @@ KNOB_PARAMS = tuple(sorted(("background_scale", "cross_talk", "min_voltage", "pe
 _SLOTS = ("EX", "T1", "T2", "TAG")
 _SHAPES = {"pe_along": _SLOTS, "pe_path": _SLOTS, "asym": ("EX", "T2"), "tdiff": ("EX", "T2"), "tspread": _SLOTS,
            "dt_cluster": ("T1", "T2", "TAG"), "nlayers": _SLOTS, "pe_layer": _SLOTS, "oot_pe": _SLOTS}
-FIXED = ("period", "tables", "events", "background", "seed")
+FIXED = ("period", "tables", "events", "background", "seed", "response_config")
 PARAMS = KNOB_PARAMS + FIXED
-DEFAULTS = {**{k: "" for k in KNOB_PARAMS}, "period": "P4", "tables": "vr5", "events": 0, "background": 1}
+DEFAULTS = {**{k: "" for k in KNOB_PARAMS}, "period": "P4", "tables": "vr5", "events": 0, "background": 1,
+            "response_config": ""}
 # nlayers of T1, T2 and the taggers have one populated bin (in-time clusters always have every layer): no ndf, no term
 NO_TERM = ("nlayers_T1", "nlayers_T2", "nlayers_TAG")
 TERMS = tuple(sorted([f"{n}_{s}" for n, sl in _SHAPES.items() for s in sl if f"{n}_{s}" not in NO_TERM]
@@ -118,7 +120,7 @@ def _knob_lines():
 BODY_TAIL = r'''KA=(); [ ${#KN[@]} -gt 0 ] && KA=(--knob "${KN[@]}")
 echo "period @p_period@ tables @p_tables@ (${#FILES[@]}) events $N background @p_background@ knobs ${KN[*]:-nominal}"
 T python -m crvfastsim reco-r3 "${FILES[@]}" --calib "$CAL" --deviation "$DEVF" --jax --objective --v05 --target "$N" \
-  --seed @p_seed@ "${BG[@]}" "${TSA[@]}" "${KA[@]}" --emit "$M2FS_OUT/r3.json" \
+  --seed @p_seed@ --response-config @p_response_config@ "${BG[@]}" "${TSA[@]}" "${KA[@]}" --emit "$M2FS_OUT/r3.json" \
   > "$M2FS_OUT/r3.txt" 2>&1 || { tail -30 "$M2FS_OUT/r3.txt"; exit 6; }
 tail -2 "$M2FS_OUT/r3.txt"
 A python - "$M2FS_OUT" "$EXCL" "$REF" <<'EOF'

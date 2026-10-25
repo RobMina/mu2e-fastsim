@@ -811,12 +811,11 @@ def cmd_r3(args):
             json.dump(st, open(os.path.join(args.outdir, "r3_response_state.json"), "w"))
         print(json.dumps(out, indent=1))
         return out
-    if not args.calib:
-        raise SystemExit("reco-r3 needs --calib")
     return r3.run(args.inputs, args.calib, deviation=args.deviation, target=args.target, jax=args.jax, seed=args.seed,
-                  batch_events=args.batch_events, emit=args.emit, objective=args.objective, noise=not args.no_noise,
-                  time_limit=args.time_limit, v05=args.v05,
-                  knobs=dict(kv.split("=", 1) for kv in (args.knob or [])), background=args.background, time_shift=args.time_shift)
+                  batch_events=args.batch_events, emit=args.emit, objective=args.objective,
+                  noise=False if args.no_noise else None, time_limit=args.time_limit, v05=args.v05,
+                  knobs=dict(kv.split("=", 1) for kv in (args.knob or [])), background=args.background,
+                  time_shift=args.time_shift, response_config=args.response_config)
 
 
 def cmd_background(args):
@@ -1187,6 +1186,8 @@ def add_reco_args(sp, name):
         sp.add_argument("--batch-events", type=int, default=None, help="events per fast-chain batch (JAX default 250; "
                         "smaller bounds memory)")
     if name == "r3":
+        sp.add_argument("--response-config", default=None, help="schema-v1 response JSON path or inline JSON; "
+                        "explicit CLI settings and existing --knob overrides take precedence")
         sp.add_argument("--calib", default=None, help="CRVCalib CSV (channel map, status, constants)")
         sp.add_argument("--deviation", default=None, help="CRVPhoton yield deviations CSV")
         sp.add_argument("--target", type=int, default=1_000_000, help="events with CRV steps to process (replays the cache)")

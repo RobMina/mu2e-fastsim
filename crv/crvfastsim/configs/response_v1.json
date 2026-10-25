@@ -1,0 +1,348 @@
+{
+  "schema": 1,
+  "scenario": "extracted_v04",
+  "response": {
+    "sectors": {
+      "EX": {
+        "table": "6000_0",
+        "reflector": 0,
+        "yield_per_mev": 39794.0
+      },
+      "T1": {
+        "table": "2370_1",
+        "reflector": -1,
+        "yield_per_mev": 28610.0
+      },
+      "T2": {
+        "table": "3200_0",
+        "reflector": 0,
+        "yield_per_mev": 28610.0
+      },
+      "M1": {
+        "table": "2370_1",
+        "reflector": 1,
+        "yield_per_mev": 28610.0
+      },
+      "M2": {
+        "table": "2370_1",
+        "reflector": 1,
+        "yield_per_mev": 28610.0
+      },
+      "M3": {
+        "table": "2370_1",
+        "reflector": 1,
+        "yield_per_mev": 28610.0
+      },
+      "M4": {
+        "table": "2370_1",
+        "reflector": 1,
+        "yield_per_mev": 28610.0
+      },
+      "M5": {
+        "table": "2370_1",
+        "reflector": 1,
+        "yield_per_mev": 28610.0
+      },
+      "M6": {
+        "table": "2370_1",
+        "reflector": 1,
+        "yield_per_mev": 28610.0
+      },
+      "M7": {
+        "table": "2370_1",
+        "reflector": 1,
+        "yield_per_mev": 28610.0
+      },
+      "M8": {
+        "table": "2370_1",
+        "reflector": 1,
+        "yield_per_mev": 28610.0
+      }
+    },
+    "photon_yield_scale": 0.94,
+    "photon_yield_variation_scale": 1.0,
+    "speed_ratio": {},
+    "atten_ratio": {}
+  },
+  "sipm": {
+    "n_pixels_x": 40,
+    "n_pixels_y": 40,
+    "overvoltage": 3.0,
+    "time_constant": 13.3,
+    "capacitance": 8.84e-14,
+    "p1": 0.607,
+    "p2": 2.7,
+    "cross_talk": 0.04,
+    "thermal_rate": 0.0,
+    "trap0_prob": 0.0,
+    "trap1_prob": 0.0,
+    "trap0_lifetime": 5.0,
+    "trap1_lifetime": 50.0,
+    "inactive": [
+      [
+        18,
+        18
+      ],
+      [
+        18,
+        19
+      ],
+      [
+        18,
+        20
+      ],
+      [
+        18,
+        21
+      ],
+      [
+        19,
+        18
+      ],
+      [
+        19,
+        19
+      ],
+      [
+        19,
+        20
+      ],
+      [
+        19,
+        21
+      ],
+      [
+        20,
+        18
+      ],
+      [
+        20,
+        19
+      ],
+      [
+        20,
+        20
+      ],
+      [
+        20,
+        21
+      ],
+      [
+        21,
+        18
+      ],
+      [
+        21,
+        19
+      ],
+      [
+        21,
+        20
+      ],
+      [
+        21,
+        21
+      ]
+    ]
+  },
+  "waveform": {
+    "single_pe_file": "Offline/CRVResponse/data/singlePEWaveform_v3.txt",
+    "single_pe_precision": 0.5,
+    "single_pe_stretch": 1.047,
+    "single_pe_max_time": 100.0,
+    "single_pe_reference_charge": 2.652e-13,
+    "min_voltage": 0.0275,
+    "noise": 0.0004,
+    "samples_zs": 12,
+    "adc_conversion": 2300.0,
+    "pedestal": 100,
+    "min_adc": 0,
+    "max_adc": 4095
+  },
+  "pulse_reco": {
+    "min_adc_difference": 40.0,
+    "default_beta": 19.0,
+    "min_beta": 5.0,
+    "max_beta": 40.0,
+    "max_time_difference": 15.0,
+    "min_pulse_height_ratio": 0.7,
+    "max_pulse_height_ratio": 1.5,
+    "le_time_factor": 0.985,
+    "samples_before": 4,
+    "samples_after": 3,
+    "pedestal_undershoot_threshold": 6.0,
+    "use_time_offset_db": true,
+    "time_offset_scale": 1.0,
+    "ignore_channels": true,
+    "max_pulses": 8,
+    "lm_iterations": 40,
+    "limit_tolerance": 0.01,
+    "knife_edge_adc": 1.0
+  },
+  "finder": {
+    "fiber_signal_speed": 140.0,
+    "max_time_interval": 20.0,
+    "time_offset": 34.5,
+    "compensate_status_bits": [
+      0,
+      1,
+      2
+    ],
+    "ignore_secondary_pulses": true,
+    "big_cluster_threshold": 50000,
+    "cuts": {
+      "EX": {
+        "pe_threshold": 8,
+        "max_dt_adjacent": 10,
+        "max_dt": 20,
+        "min_slope": -6,
+        "max_slope": 6,
+        "max_slope_diff": 3,
+        "coincidence_layers": 3,
+        "min_cluster_pes": 0,
+        "initial_max_distance": 250,
+        "final_max_distance": 0
+      },
+      "T1": {
+        "pe_threshold": 8,
+        "max_dt_adjacent": 10,
+        "max_dt": 10,
+        "min_slope": -6,
+        "max_slope": 6,
+        "max_slope_diff": 3,
+        "coincidence_layers": 4,
+        "min_cluster_pes": 0,
+        "initial_max_distance": 250,
+        "final_max_distance": 0
+      },
+      "T2": {
+        "pe_threshold": 8,
+        "max_dt_adjacent": 10,
+        "max_dt": 10,
+        "min_slope": -6,
+        "max_slope": 6,
+        "max_slope_diff": 3,
+        "coincidence_layers": 4,
+        "min_cluster_pes": 0,
+        "initial_max_distance": 250,
+        "final_max_distance": 0
+      },
+      "M1": {
+        "pe_threshold": 8,
+        "max_dt_adjacent": 10,
+        "max_dt": 10,
+        "min_slope": -6,
+        "max_slope": 6,
+        "max_slope_diff": 3,
+        "coincidence_layers": 4,
+        "min_cluster_pes": 0,
+        "initial_max_distance": 250,
+        "final_max_distance": 0
+      },
+      "M2": {
+        "pe_threshold": 8,
+        "max_dt_adjacent": 10,
+        "max_dt": 10,
+        "min_slope": -6,
+        "max_slope": 6,
+        "max_slope_diff": 3,
+        "coincidence_layers": 4,
+        "min_cluster_pes": 0,
+        "initial_max_distance": 250,
+        "final_max_distance": 0
+      },
+      "M3": {
+        "pe_threshold": 8,
+        "max_dt_adjacent": 10,
+        "max_dt": 10,
+        "min_slope": -6,
+        "max_slope": 6,
+        "max_slope_diff": 3,
+        "coincidence_layers": 4,
+        "min_cluster_pes": 0,
+        "initial_max_distance": 250,
+        "final_max_distance": 0
+      },
+      "M4": {
+        "pe_threshold": 8,
+        "max_dt_adjacent": 10,
+        "max_dt": 10,
+        "min_slope": -6,
+        "max_slope": 6,
+        "max_slope_diff": 3,
+        "coincidence_layers": 4,
+        "min_cluster_pes": 0,
+        "initial_max_distance": 250,
+        "final_max_distance": 0
+      },
+      "M5": {
+        "pe_threshold": 8,
+        "max_dt_adjacent": 10,
+        "max_dt": 10,
+        "min_slope": -6,
+        "max_slope": 6,
+        "max_slope_diff": 3,
+        "coincidence_layers": 4,
+        "min_cluster_pes": 0,
+        "initial_max_distance": 250,
+        "final_max_distance": 0
+      },
+      "M6": {
+        "pe_threshold": 8,
+        "max_dt_adjacent": 10,
+        "max_dt": 10,
+        "min_slope": -6,
+        "max_slope": 6,
+        "max_slope_diff": 3,
+        "coincidence_layers": 4,
+        "min_cluster_pes": 0,
+        "initial_max_distance": 250,
+        "final_max_distance": 0
+      },
+      "M7": {
+        "pe_threshold": 8,
+        "max_dt_adjacent": 10,
+        "max_dt": 10,
+        "min_slope": -6,
+        "max_slope": 6,
+        "max_slope_diff": 3,
+        "coincidence_layers": 4,
+        "min_cluster_pes": 0,
+        "initial_max_distance": 250,
+        "final_max_distance": 0
+      },
+      "M8": {
+        "pe_threshold": 8,
+        "max_dt_adjacent": 10,
+        "max_dt": 10,
+        "min_slope": -6,
+        "max_slope": 6,
+        "max_slope_diff": 3,
+        "coincidence_layers": 4,
+        "min_cluster_pes": 0,
+        "initial_max_distance": 250,
+        "final_max_distance": 0
+      }
+    }
+  },
+  "timing": {
+    "window": [
+      0.0,
+      100000.0
+    ],
+    "feb_phase_width": 12.5,
+    "phase_scope": "per_feb",
+    "timeoffset_mode": "database"
+  },
+  "noise": true,
+  "background_scale": 1.0,
+  "assets": {
+    "calib": null,
+    "deviation": null,
+    "background": null,
+    "time_shift": null,
+    "counters": null,
+    "photon_map": null,
+    "lookup_dir": null
+  }
+}
