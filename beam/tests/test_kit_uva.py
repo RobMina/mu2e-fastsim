@@ -1,5 +1,7 @@
 """beam_point on a Slurm-over-SSH endpoint against a fake site: delegation, streamed input, md5 check, cleanup gate."""
 import io
+import hashlib
+import shlex
 import json
 import subprocess
 import tarfile
@@ -21,6 +23,10 @@ class Site:
     def __init__(self, cleanup=True):
         self.next_id, self.state, self.files, self.dirs, self.cmds, self.cleanup = 7000, {}, {}, {}, [], cleanup
 
+        self.cache_ok, self.result_manifest = True, None
+        self.manifests = {}
+        self.node_files = set()
+
     def __call__(self, cmd, stdin, timeout):
         s = cmd[-1]
         self.cmds.append(s)
@@ -31,6 +37,8 @@ class Site:
             self.state[j] = "PENDING"
             self.dirs[j] = s.split("cd ")[1].split(" &&")[0].strip("'")
             self.body = stdin.decode()
+            line = next(line for line in self.body.splitlines() if "artifact-manifest.json" in line)
+            self.manifests[self.dirs[j]] = json.loads(shlex.split(line)[2])
             out = f"{j}\n".encode()
         elif s.startswith("squeue"):
             j = s.split("-j ")[1].split()[0]
@@ -40,6 +48,13 @@ class Site:
             out = f"{self.state[j]}|0:0\n".encode()
         elif s.startswith("cat "):
             out = self.files.get(s.split()[1].strip("'"), "").encode()
+        elif s.startswith("srun") and "VERIFIED" in s:
+            out = b"VERIFIED\n" if self.cache_ok else b"MISMATCH\n"
+        elif s.startswith("srun") and "touch" in s:
+            self.node_files.add(s.split("touch ")[1].split()[0].strip("'\""))
+        elif s.startswith("srun") and "test -f" in s:
+            path = s.split("test -f ")[1].split()[0].strip("'\"")
+            out = b"have\n" if path in self.node_files else b""
         elif s.startswith("scancel"):
             self.state[s.split()[1]] = "CANCELLED"
         elif "tar -cf" in s:
@@ -48,6 +63,8 @@ class Site:
                      "out/wait.json": b'{"input_wait_s": 12}', "slurm.out": b"ok\n"}
             if self.cleanup:
                 files["out/cleanup.txt"] = b"deleted\n"
+            manifest = self.result_manifest if self.result_manifest is not None else self.manifests[s.split("cd ")[1].split(" &&")[0].strip("'")]
+            files["out/artifact-manifest.json"] = json.dumps(manifest).encode()
             with tarfile.open(fileobj=buf, mode="w") as t:
                 for name, data in files.items():
                     ti = tarfile.TarInfo(name)
@@ -61,23 +78,30 @@ class Source(kit_uva._Source):
     def __init__(self):
         super().__init__("gpvm", "/exp/beam")
 
+    revision = "original"
+
+    def fingerprint(self, rel):
+        data = (rel + self.revision).encode()
+        return {"md5": hashlib.md5(data).hexdigest(), "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+
     def md5(self, rel):
-        return "md5:" + rel
+        return self.fingerprint(rel)["md5"]
 
 
 def make(tmp_path, cleanup=True, md5_ok=True):
     site = Site(cleanup)
+    source = Source()
     streamed = []
 
     def stream_runner(src, host, remote, timeout):
         path = src[-1].split("cat ", 1)[1].strip("'")
         rel = path.split("/exp/beam/", 1)[1] if path.startswith("/exp/beam/") else path
         streamed.append((rel, remote.split("cat > ")[1].split()[0].strip("'\"")))
-        return ("md5:" + rel if md5_ok else "bad") + " x"
+        return (source.md5(rel) if md5_ok else "bad") + " x"
 
     ep = SlurmSSHEndpoint(runner=site, state_dir=tmp_path / "jobs", workdir="/scratch/u/kit", stream_runner=stream_runner)
     kit = FastsimKit(endpoint=ep, state_dir=tmp_path / "kit", sif="/x/m.sif")
-    kit._delegates["beam_point"] = kit_uva.BeamPointStream(kit, source=Source(), code="/scratch/u/beam", background=False)
+    kit._delegates["beam_point"] = kit_uva.BeamPointStream(kit, source=source, code="/scratch/u/beam", background=False)
     return site, ep, kit, streamed
 
 
@@ -141,3 +165,211 @@ def test_results_refused_without_cleanup(tmp_path):
     site.state[j] = "COMPLETED"
     with pytest.raises(ValueError, match="cleanup record"):
         kit.results("bp3")
+
+
+@pytest.fixture(autouse=True)
+def _artifacts(monkeypatch):
+    """Only remote artifact preparation is mocked; binding/manifests/verification remain production code."""
+    monkeypatch.setattr(kit_uva, "prepare_code", lambda ep, path, ref, **kw: {
+        "path": path + ".snapshots/" + "e" * 32, "umbrella_commit": "a" * 40,
+        "submodules": {m: "b" * 40 for m in kw["modules"]}, "requested_ref": ref,
+        "policy": {"name": "retained-readonly-git-v1", "modules": list(kw["modules"]),
+                   "branch": kw.get("branch", "")}})
+    monkeypatch.setattr(kit_uva, "resolve_image", lambda ep, path: {
+        "path": path, "sha256": "d" * 64, "size": 100, "policy": "verify-before-run-not-snapshot"})
+
+
+def _start(site, ep, name, tmp="/dev/shm/test-inputs"):
+    jid = ep.state.get(name).job_id
+    site.state[jid] = "RUNNING"
+    site.files[f"{site.dirs[jid]}/inbox"] = f"node1 {tmp} need\n"
+    return jid
+
+
+def test_stable_source_path_replacement_changes_manifest(tmp_path):
+    _, _, kit, _ = make(tmp_path)
+    d = kit._delegates["beam_point"]
+    d.submit("first", P)
+    first = d._rec("first")["manifest"]
+    d.source.revision = "replaced bytes at same path"
+    d.submit("second", P)
+    second = d._rec("second")["manifest"]
+    assert first["inputs"]["source"] == second["inputs"]["source"]
+    assert first["input_sha"] != second["input_sha"]
+    assert first["manifest_sha"] != second["manifest_sha"]
+
+
+def test_retry_uses_frozen_body_ref_image_and_inputs(tmp_path, monkeypatch):
+    site, ep, kit, _ = make(tmp_path)
+    d = kit._delegates["beam_point"]
+    d.submit("retry", P)
+    original = d._rec("retry")
+    body = site.body
+    d.code_ref, d.code, kit.sif = "different-ref", "/different/base", "/different/image"
+    d.source.revision = "different bytes"
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("retry must not resolve current artifacts")
+
+    monkeypatch.setattr(d, "ensure_code", forbidden)
+    monkeypatch.setattr(d.source, "fingerprint", forbidden)
+    monkeypatch.setattr(kit_uva, "resolve_image", forbidden)
+    d.submit("retry", P)
+    assert d._rec("retry") == original and site.body == body
+    assert site.next_id == 7001
+
+
+def test_stream_mismatch_cancels_against_original_expectations(tmp_path):
+    site, ep, kit, streamed = make(tmp_path)
+    d = kit._delegates["beam_point"]
+    d.submit("changed", P)
+    d.source.revision = "changed after binding"
+    jid = _start(site, ep, "changed")
+    assert d.stream_step("changed") == "error"
+    assert site.state[jid] == "CANCELLED" and d._has("changed", "streamerr")
+    assert "/dev/shm/test-inputs/ready" not in site.node_files
+
+
+def test_stream_uses_recorded_source_argv_without_remote_resolution(tmp_path, monkeypatch):
+    site, ep, kit, streamed = make(tmp_path)
+    d = kit._delegates["beam_point"]
+    d.submit("pinned", P)
+    entries = d._rec("pinned")["manifest"]["inputs"]["files"]
+    expected = {e["dest"]: e for e in entries}
+    seen = []
+
+    def stream(name, host, dest, argv):
+        e = expected[dest.rsplit("/", 1)[1]]
+        assert argv == e["argv"]
+        seen.append(e["dest"])
+        return e["md5"]
+
+    def forbidden(*args):
+        raise AssertionError("streaming must not resolve a current source")
+
+    monkeypatch.setattr(ep, "stream_in", stream)
+    monkeypatch.setattr(d.source, "fingerprint", forbidden)
+    monkeypatch.setattr(d.source, "md5", forbidden)
+    monkeypatch.setattr(d.source, "argv", forbidden)
+    _start(site, ep, "pinned")
+    assert d.stream_step("pinned") == "streamed"
+    assert sorted(seen) == sorted(expected)
+
+
+def test_corrupt_ready_cache_refused_without_overwrite(tmp_path):
+    site, ep, kit, streamed = make(tmp_path)
+    d = kit._delegates["beam_point"]
+    d.submit("corrupt", P)
+    jid = _start(site, ep, "corrupt")
+    site.node_files.add("/dev/shm/test-inputs/ready")
+    site.cache_ok = False
+    assert d.stream_step("corrupt") == "error"
+    assert not streamed and not d._has("corrupt", "inputsreused")
+    assert site.state[jid] == "CANCELLED"
+    assert "/dev/shm/test-inputs/ready" in site.node_files
+
+
+def test_fresh_cache_requires_full_verification_before_ready(tmp_path):
+    site, ep, kit, streamed = make(tmp_path)
+    d = kit._delegates["beam_point"]
+    d.submit("badsha", P)
+    jid = _start(site, ep, "badsha")
+    site.cache_ok = False
+    assert d.stream_step("badsha") == "error"
+    assert streamed and site.state[jid] == "CANCELLED"
+    assert "/dev/shm/test-inputs/ready" not in site.node_files
+
+
+def test_results_manifest_mismatch_refused(tmp_path):
+    site, ep, kit, _ = make(tmp_path)
+    d = kit._delegates["beam_point"]
+    d.submit("wrong-result", P)
+    site.state[ep.state.get("wrong-result").job_id] = "COMPLETED"
+    site.result_manifest = {"other": "manifest"}
+    with pytest.raises(ValueError, match="manifest"):
+        d.results("wrong-result")
+
+
+def test_legacy_record_retry_refused(tmp_path):
+    _, _, kit, _ = make(tmp_path)
+    d = kit._delegates["beam_point"]
+    (d.dir / "legacy.json").write_text(json.dumps({"params": kit_uva.validate(P), "code_ref": "main"}))
+    with pytest.raises(ValueError, match="legacy"):
+        d.submit("legacy", P)
+
+
+def test_check_never_resolves_source_bytes(tmp_path, monkeypatch):
+    _, _, kit, _ = make(tmp_path)
+    d = kit._delegates["beam_point"]
+
+    def forbidden(*args):
+        raise AssertionError("check must be pure")
+
+    monkeypatch.setattr(d.source, "fingerprint", forbidden)
+    assert d.check("preview", P)["ok"]
+
+
+def test_result_metadata_exposes_bound_manifest(tmp_path):
+    site, ep, kit, _ = make(tmp_path)
+    d = kit._delegates["beam_point"]
+    d.submit("metadata", P)
+    site.state[ep.state.get("metadata").job_id] = "COMPLETED"
+    result = d.results("metadata")
+    manifest = d._rec("metadata")["manifest"]
+    assert result["metadata"]["artifact_manifest"] == manifest
+    assert result["metadata"]["manifest_sha"] == manifest["manifest_sha"]
+
+
+def test_artifact_binding_is_durable_before_dispatch_and_retry(tmp_path, monkeypatch):
+    from mu2efastsim.endpoints import EndpointError
+    site, ep, kit, _ = make(tmp_path)
+    d = kit._delegates["beam_point"]
+    real = ep.submit
+    attempted = []
+
+    def fail(name, body, resources):
+        rec = d._rec(name)
+        assert rec["body"] == body and rec["manifest"]
+        attempted.append(body)
+        raise EndpointError("lost dispatch acknowledgement")
+
+    monkeypatch.setattr(ep, "submit", fail)
+    with pytest.raises(ValueError, match="lost dispatch"):
+        d.submit("interrupted", P)
+    frozen = d._rec("interrupted")
+    d.source.revision, d.code_ref, kit.sif = "replacement", "new-ref", "/new.sif"
+    monkeypatch.setattr(ep, "submit", real)
+    d.submit("interrupted", P)
+    assert d._rec("interrupted") == frozen
+    assert attempted == [frozen["body"]]
+    assert frozen["body"] in site.body
+
+
+@pytest.mark.parametrize("field", ["host", "account", "partition", "workdir", "source_host", "source_root"])
+def test_retry_target_changes_refused(tmp_path, field):
+    _, ep, kit, _ = make(tmp_path)
+    d = kit._delegates["beam_point"]
+    d.submit("target", P)
+    if field.startswith("source_"):
+        setattr(d.source, field.removeprefix("source_"), "changed")
+    else:
+        setattr(ep, field, "changed")
+    with pytest.raises(ValueError, match="target|source"):
+        d.submit("target", P)
+
+
+def test_completed_legacy_results_remain_explicitly_unverified(tmp_path):
+    site, ep, kit, _ = make(tmp_path)
+    params = P
+    task = "beam_point"
+    kit.submit("history", params, [], [])
+    rec = ep.state.get("history")
+    site.state[rec.job_id] = "COMPLETED"
+    delegate = kit._delegates[task]
+    old = delegate._rec("history")
+    (delegate.dir / "history.json").write_text(json.dumps({k: old[k] for k in ("params", "code_ref")}))
+    result = kit.results("history")
+    assert result["metadata"]["artifact_binding"] == "legacy-unverified"
+    assert result["metadata"]["artifact_manifest"] is None
+    with pytest.raises(ValueError, match="legacy"):
+        kit.submit("history", params, [], [])

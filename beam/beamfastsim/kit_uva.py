@@ -6,7 +6,7 @@ through the kit host into that tmpfs (``ssh <fnal> cat`` -> ``srun --overlap ...
 ``ready``; the job's EXIT trap deletes the tmpfs dir and writes ``out/cleanup.txt``, without which ``results`` refuses.
 An absolute FNAL geometry path (a rendered Mu2eBO overlay) is streamed the same way. The public inputs (DS field map,
 Offline geometry tree) are fetched inside the job from the CVMFS Stratum-1 (``beamfastsim.stage``). Code comes from a
-checkout of the umbrella on the endpoint (FASTSIMKIT_BEAM_CODE, FASTSIMKIT_CODE_REF) run in the image (FASTSIMKIT_SIF).
+retained read-only snapshot of the umbrella on the endpoint (FASTSIMKIT_BEAM_CODE, FASTSIMKIT_CODE_REF) run in the image (FASTSIMKIT_SIF).
 The kit host must reach both the endpoint and the FNAL host by ssh for the point's lifetime.
 
 Environment: FASTSIMKIT_FNAL_HOST (default mu2egpvm03), FASTSIMKIT_BEAM_DATA (FNAL dir holding g4ref_full/g4ref.npz),
@@ -15,6 +15,7 @@ FASTSIMKIT_BEAM_CODE, FASTSIMKIT_CODE_REF.
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 import os
 import shlex
 import threading
@@ -24,6 +25,10 @@ from typing import Any, Dict
 
 from mu2efastsim.endpoints import EndpointError, Resources
 from mu2efastsim.endpoints.chainpoint import FnalSource
+from mu2efastsim.endpoints.artifacts import (binding, checked_record, make_manifest, resolve_image,
+                                           resolve_inputs, runtime_prefix, verify_cache, verify_result)
+from mu2efastsim.endpoints.snapshots import prepare_code
+from mu2efastsim.endpoints.submission import submission_lock
 
 G4REF = "g4ref_full/g4ref.npz"
 WAIT_S = 900
@@ -82,7 +87,7 @@ class BeamPointStream:
 
     def _rec(self, name):
         p = self.dir / f"{name}.json"
-        return json.loads(p.read_text()) if p.exists() else None
+        return checked_record(p, allow_legacy=True)
 
     @staticmethod
     def inputs(p) -> Dict[str, str]:
@@ -92,7 +97,7 @@ class BeamPointStream:
             out[p["geom"]] = "geom_overlay.txt"
         return out
 
-    def render(self, p):
+    def render(self, p, manifest=None):
         from mu2efastsim.endpoints.kit import _COMMON, APPTAINER_RUNTIME, admit_resources
         admit_resources(self.ep, RESOURCES)
         if not hasattr(self.ep, "stream_in"):
@@ -106,7 +111,8 @@ class BeamPointStream:
         else:
             stagegeom = geomarg = f'--geom "$CODE/beam/geom/{g}"'
         body = BODY.replace("@common@", _COMMON).replace("@runtime_a@", APPTAINER_RUNTIME["a"])
-        subs = {"sif": shlex.quote(self.kit.sif), "code": shlex.quote(self.code), "waits": str(WAIT_S),
+        subs = {"sif": shlex.quote(manifest["image"]["path"] if manifest else self.kit.sif),
+                "code": shlex.quote(manifest["code"]["path"] if manifest else self.code), "waits": str(WAIT_S),
                 "stagegeom": stagegeom, "geomarg": geomarg, "muons": str(p["muons"]), "seed": str(p["seed"]),
                 "repeat": str(p["repeat"])}
         for a, b in subs.items():
@@ -114,6 +120,11 @@ class BeamPointStream:
         import re
         if re.search(r"@[a-z_]+@", body):
             raise ValueError("fastsimkit: beam_point: unfilled placeholder")
+        if manifest is not None:
+            from mu2efastsim.endpoints.artifacts import consumption_guard
+            body = body.replace('B python -m beamfastsim.stage',
+                                consumption_guard('"$L"', manifest["inputs"]["files"]) + 'B python -m beamfastsim.stage', 1)
+            body = runtime_prefix(manifest) + body
         return body, RESOURCES
 
     # -- contract ------------------------------------------------------------------------------------------------
@@ -125,31 +136,36 @@ class BeamPointStream:
         return {"ok": True, "message": ""}
 
     def ensure_code(self):
-        q = shlex.quote
-        self.ep._sh(f"set -e; C={q(self.code)}; R={q(self.code_ref)}; "
-                    f"if [ -d $C/.git ]; then git -C $C fetch -q origin && git -C $C checkout -q $R && "
-                    f"git -C $C reset -q --hard origin/$R; else git clone -q https://github.com/RobMina/mu2e-fastsim.git $C "
-                    f"&& git -C $C checkout -q $R; fi; git -C $C submodule update -q --init core; "
-                    f"test -d $C/beam/beamfastsim", timeout=900)
+        return prepare_code(self.ep, self.code, self.code_ref, modules=('core',))
 
     def submit(self, name, params) -> Dict[str, Any]:
         p = validate(params)
-        old = self._rec(name)
-        if old is not None and old["params"] != p:
-            raise ValueError(f"fastsimkit: {name!r} was already submitted with different params")
-        body, res = self.render(p)
-        if old is None:
-            self.ensure_code()
-            (self.dir / f"{name}.json").write_text(json.dumps({"params": p, "submitted_at": time.time(),
-                                                               "code": self.code, "code_ref": self.code_ref}))
+        self.render(p)                 # pure admission before any artifact preparation or durable state
+        target = {"endpoint": self.ep.name, "host": getattr(self.ep, "host", ""),
+                  "source_host": self.source.host, "source_root": self.source.root}
+        target.update({k: getattr(self.ep, k) for k in ("account", "partition", "workdir") if hasattr(self.ep, k)})
+
+        def prepare():
+            inputs = resolve_inputs(self.source, self.inputs(p))
+            code = self.ensure_code()
+            image = resolve_image(self.ep, self.kit.sif)
+            manifest = make_manifest("beam_point", code, image, inputs, p)
+            body, res = self.render(p, manifest)
+            return {"params": p, "submitted_at": time.time(), "code": code["path"],
+                    "code_ref": self.code_ref, "manifest": manifest,
+                    "body": body, "resources": asdict(res), "target": target}
+
         try:
-            self.ep.submit(name, body, res)
+            rec = binding(self.dir, name, p, target, prepare)
+            self.ep.submit(name, rec["body"], Resources(**rec["resources"]))
         except EndpointError as e:
-            raise ValueError(str(e))
+            raise ValueError(str(e)) from e
         self.ensure_streaming(name)
         return {"handle": name}
 
     def ensure_streaming(self, name):
+        if "manifest" not in (self._rec(name) or {}):
+            return
         if self._has(name, "streamed") or self._has(name, "streamerr"):
             return
         if not self.background:
@@ -177,15 +193,27 @@ class BeamPointStream:
         if len(inbox) < 2:
             return "waiting"
         host, tmp = inbox[0], inbox[1]
-        p = self._rec(name)["params"]
         try:
-            for src, dest in self.inputs(p).items():
-                want = self.source.md5(src)
-                got = self.ep.stream_in(name, host, f"{tmp}/{dest}", self.source.argv(src))
-                if got != want:
-                    raise EndpointError(f"md5 mismatch for {src}: {got} != {want}")
-            self.ep.run_on_node(name, host, f"touch {shlex.quote(tmp)}/ready")
-        except EndpointError as e:
+            rec = self._rec(name)
+            if not rec or "manifest" not in rec:
+                raise ValueError("legacy streaming record has no artifact manifest")
+            entries = rec["manifest"]["inputs"]["files"]
+            # Also serializes recovery callers that observed the inbox before the streamed marker.
+            with submission_lock(self.dir / ".streams", name):
+                have = self.ep.run_on_node(name, host, f"test -f {shlex.quote(tmp)}/ready && echo have || true").strip()
+                if have == "have":
+                    if not verify_cache(self.ep, name, host, tmp, entries):
+                        raise ValueError("ready input cache does not match the bound manifest; refusing overwrite")
+                    self._mark(name, "inputsreused", host)
+                else:
+                    for entry in entries:
+                        got = self.ep.stream_in(name, host, f"{tmp}/{entry['dest']}", entry["argv"])
+                        if got != entry["md5"]:
+                            raise ValueError(f"md5 mismatch for {entry['src']}: {got} != {entry['md5']}")
+                    if not verify_cache(self.ep, name, host, tmp, entries):
+                        raise ValueError("streamed input cache does not match the bound manifest")
+                    self.ep.run_on_node(name, host, f"touch {shlex.quote(tmp)}/ready")
+        except (EndpointError, ValueError, KeyError) as e:
             self._mark(name, "streamerr", str(e))
             self.ep.cancel(name)
             return "error"
@@ -212,6 +240,11 @@ class BeamPointStream:
         mpath = out / "metrics.json"
         if not mpath.exists():
             raise ValueError(f"fastsimkit: {name!r} wrote no out/metrics.json")
+        rec = self._rec(name)
+        if rec is None:
+            raise ValueError(f"fastsimkit: {name!r} has no task record")
+        if "manifest" in rec:
+            verify_result(out, rec["manifest"])
         metrics = {k: float(v) for k, v in json.loads(mpath.read_text()).items()}
         w = out / "wait.json"
         if w.exists():
@@ -220,7 +253,9 @@ class BeamPointStream:
                 "files": [{"name": p.name, "uri": p.resolve().as_uri(), "kind": "text"} for p in files
                           if p.suffix in (".json", ".txt", ".out", ".log")],
                 "metadata": {"endpoint": self.ep.name, "job_id": s.job_id, "site_state": s.site_state,
-                             "code_ref": self._rec(name)["code_ref"]}}
+                             "artifact_manifest": rec.get("manifest"), "manifest_sha": rec.get("manifest", {}).get("manifest_sha"),
+                             "artifact_binding": "verified" if "manifest" in rec else "legacy-unverified",
+                             "code_ref": rec["code_ref"]}}
 
     def cancel(self, name) -> Dict[str, Any]:
         return {"state": self.ep.cancel(name)}
