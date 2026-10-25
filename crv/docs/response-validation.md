@@ -39,6 +39,19 @@ Held-out inventories also completed: A = subruns 1155/1188 (44,494 step / 49,730
 `heldout_a.json` and `heldout_b.json` carry fixed P4 conditions/background/reference hashes. Nominal/best replicas
 have not yet run; do not interpret the census as a calibration result.
 
+## Saved-output comparisons
+
+`compare-replay --reference OLD/r3.json --candidate NEW/r3.json --out RECEIPT.json` checks completed counts,
+seed, knobs, passes and absence of overflow, then compares the entire response accumulator exactly. It ignores
+wall time/device metadata. It writes a new receipt and fails on mismatch; neither arm is rerun or rescored.
+
+`paired --directory REPLICAS --out REPORT.json` reads the four `a_nominal/a_best/b_nominal/b_best` directories,
+verifies finished counts against their manifests, within-pair input/conditions/reference/code/seed identity,
+independent block seeds and disjoint filenames (the inventory already checks full event identities), and finite
+32-term scores. Reports both paired objective differences and every term difference. Two blocks are a consistency
+check, not a precise variance estimate; no histogram-sigma quadrature or calibrated significance is inferred.
+Missing/inconsistent outputs are errors, not silently omitted replicas.
+
 Run from an isolated committed checkout, with pinned core and CRV, on a free GPVM for CPU or an unoccupied approved
 GPU endpoint. Do not reuse/stop another thread's EAF server blindly. This runner does not submit jobs, build software,
 copy data off-site, update checkouts, or infer runtime from a short test.

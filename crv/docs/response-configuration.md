@@ -74,6 +74,18 @@ This configuration hash is **not** an automatically installed Mu2eBO board hash 
 input-event, reference or container identity. It records what ran. `objective/validation.py` continues to provide
 separate immutable code/input provenance for explicit-list validation. No running replica checkout is modified.
 
+Full-file nominal CPU equivalence was executed on GPVM07 with candidate CRV `0d58650`, core `d629620`, against
+the saved pre-refactor closure (CRV `8d42b1b`, core `a554571`). Same input subrun 990, seed 20261025, one pass,
+22,573 step + 2,603 empty = 25,176 exposure events, 30,145 clusters: **the entire `response_state` is exactly equal**.
+Candidate wall 222.66 s on GPVM07 versus reference 247.84 s on GPVM04 is not a controlled speed comparison.
+Receipt: `$CRVFS_DATA/thread_c_validation_20261025/config_nominal_replay.json`; candidate output
+`config_nominal_cpu/r3.json` records the resolved config and eight asset hashes. Changed-settings physics and GPU
+nominal equivalence remain separate gates; the ongoing held-out replicas keep their pre-refactor checkout frozen.
+
+Local targeted CRV tests: 183 passed, 1 skipped. Isolated GPVM config/wiring/scoring/kit/comparison tests:
+172 passed, 10 JAX-dependent skips; core config/admission tests: 87 passed. Existing multiprocessing tests warn
+about fork/thread interaction but pass. No builds were run.
+
 Tests cover nominal dataclass equality, old knob-map equivalence, default seeded phase identity, waveform/pulse
 backend forwarding including full-length fallback, R3 resolution/serialization, all-sector cuts, strict JSON/types,
 unsupported settings, inactive fields and derived-probability limits. Core admission tests check plain/delegate
