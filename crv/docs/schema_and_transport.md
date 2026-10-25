@@ -76,9 +76,24 @@ material-order contract. These are numerical checks, not renewed V1 certificatio
 baselines must be retained for candidate comparisons.
 
 This correction does not change the unknown-material concrete fallback, within-band material ordering, air-loss
-integration, or the full-column scattering/geometry calculation after range-out. The below-plane CRV air, bar and
-aluminium ledger still mixes energy and momentum decrements and needs a separate correction with continuity tests.
-Timing and range-out endpoint consistency also remain separate validation work.
+integration, or the full-column scattering/geometry calculation after range-out.
+
+## Below-plane energy ledger (2026-10-25)
+
+The CRV bar transport carries earlier bar and passive-material losses as kinetic energy in MeV. For each
+interaction it combines that ledger with the precomputed air energy loss, then converts remaining kinetic energy
+to momentum using the shared floored conversion. Gap slabs and both absorber-loss routes receive this current
+momentum. A stopped lane is excluded from later material sampling and bar crossings; bar loss is capped at the
+available kinetic energy. `p1` uses the same floored conversion.
+
+Synthetic tests check bar-exit/next-entry momentum continuity, summed energy at range-out, air plus bar losses,
+mean and sampled absorber inputs, multiple gap materials with mixed survival, and reduced stage-C plane momentum.
+These establish bookkeeping, not agreement with Geant4. Skipping draws for stopped lanes can change subsequent
+random-number assignments, so saved references are physics comparisons rather than bitwise expectations.
+
+The air column remains the existing cumulative path approximation evaluated at the source/plane momentum, not a
+new gap-only, material-displacing integration. Within-gap material ordering, unknown-material fallback, timing
+and stopped-track endpoint consistency remain separate validation work.
 
 ## 4. Open design choices
 

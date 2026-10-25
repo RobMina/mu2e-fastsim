@@ -6,7 +6,7 @@ scattering). It is the first rung of V1: where it agrees with G4 the CRV-interna
 
 Per primary muon (vectorised over all muons of a file):
   1. crossings of the straight line with the 576 bars (crossings.crossings), ordered by path parameter;
-  2. |p| at each bar entry = |p0| minus the air loss to that point minus the restricted losses in earlier bars;
+  2. |p| at each bar entry from remaining kinetic energy after air, passive-material and earlier bar losses;
   3. per bar: sampled restricted loss (eloss.sample_loss), visible energy with Birks (eloss.birks); start time from
      the path length at the muon's speed.
 Output rows follow the CrvStep-table columns (tables.py) so v1compare reads them unchanged.
@@ -264,11 +264,13 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
     it, bar, t_in, t_out, path = it[order], bar[order], t_in[order], t_out[order], path[order]
     # air loss to each bar entry (Bethe mean; air thickness ~13 m, fluctuations negligible), CRV losses accumulated
     air = materials.AIR
-    pin = p0[it].copy()
+    p_base = p_plane[it] if stage == "C" else p0[it]
+    air_energy = np.zeros_like(path)
     if stage == "C":
-        pin = p_plane[it] - eloss.dedx_restricted(air, p_plane[it], 1e9) * t_in   # world loss already applied
+        air_energy = eloss.dedx_restricted(air, p_base, 1e9) * t_in
     elif air_loss:
-        pin = pin - eloss.dedx_restricted(air, p0[it], 1e9) * (t_in + t_off[it])  # unrestricted: no deltas in air
+        air_energy = eloss.dedx_restricted(air, p_base, 1e9) * (t_in + t_off[it])
+    pin = core_tr._p_after(p_base, air_energy)
     if bar_cut is not None:
         cut = np.asarray(bar_cut, float)[bar]
     else:
@@ -280,8 +282,8 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
     # pass k handles each track's k-th bar (bounded by the max bars crossed per track, ~20)
     first = np.r_[True, it[1:] != it[:-1]]
     rank = np.arange(len(it)) - np.flatnonzero(first)[np.cumsum(first) - 1]
-    carried = np.zeros(len(mu))
-    alive_after = np.ones(len(mu), bool)   # False once the muon has stopped in a bar
+    carried = np.zeros(len(mu))   # kinetic-energy loss [MeV] in earlier bars and passive material
+    alive_after = np.ones(len(mu), bool)   # False once the muon has stopped in a bar or gap
     ab_len = None
     if absorbers is not None:   # absorber path between the previous crossing's exit and this crossing's entry
         alo, ahi, amat = absorbers
@@ -310,13 +312,15 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
                 hit = np.flatnonzero(c > 0)
                 if not len(hit):
                     continue
-                pa = np.maximum(pin[s[hit]] - carried[it[s[hit]]], 1.0)
-                dE = slab_loss(rng, materials.BY_NAME.get(m, materials.CONCRETE_MARS), pa, c[hit])
-                # thick material: carry the momentum drop, not the energy loss (p - dE keeps a stopped muon alive)
-                carried[it[s[hit]]] += pa - core_tr._p_after(pa, dE)
+                q = s[hit]
+                pa = core_tr._p_after(p_base[q], air_energy[q] + carried[it[q]])
+                live = pa > 1.0
+                q, pa = q[live], pa[live]
+                dE = slab_loss(rng, materials.BY_NAME.get(m, materials.CONCRETE_MARS), pa, c[hit][live])
+                carried[it[q]] += dE
         if ab_len is not None:   # loss in the absorber sheets before this bar (mean dE/dx at the current |p|)
-            pa = np.maximum(pin[s] - carried[it[s]], 1.0)
-            hit = ab_len[s] > 0
+            pa = core_tr._p_after(p_base[s], air_energy[s] + carried[it[s]])
+            hit = (ab_len[s] > 0) & (pa > 1.0)
             dl = np.zeros(len(s))
             if hit.any():
                 if absorber_straggling:   # Urban fluctuations of the full loss (large cut: deltas leave the sheet's muon)
@@ -324,9 +328,10 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
                 else:
                     dl[hit] = eloss.dedx_restricted(amat, pa[hit], 1e9) * ab_len[s][hit]
             carried[it[s]] += dl
-        p_here = pin[s] - carried[it[s]]
+        p_here = core_tr._p_after(p_base[s], air_energy[s] + carried[it[s]])
         dead = p_here <= 1.0
         alive[s[dead]] = False
+        alive_after[it[s[dead]]] = False
         s, p_here = s[~dead], p_here[~dead]
         loss[s] = eloss.sample_loss(rng, materials.POLYSTYRENE, p_here, path[s], cut[s])
         tkin = np.sqrt(p_here ** 2 + eloss.MMU ** 2) - eloss.MMU
@@ -357,7 +362,7 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
         steps[f"{c}0"] = pos0[:, j]
         steps[f"{c}1"] = pos1[:, j]
         steps[f"p{c}0"] = d[it, j] * pin
-    steps["p1"] = np.sqrt(np.clip((np.sqrt(pin ** 2 + eloss.MMU ** 2) - loss) ** 2 - eloss.MMU ** 2, 0, None))
+    steps["p1"] = core_tr._p_after(pin, loss)
     steps["len"] = path
     steps["edep"] = vis
     parts = pd.DataFrame({k: mu[k].to_numpy() for k in tables.KEY})
