@@ -7,6 +7,7 @@ GEN=${4:?gen art input}; SEED=${5:?seed}
 CODE=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 AREA=${CRVVAL_AREA:?frozen stock area}; CORE=${M2FS_CORE:?isolated core checkout}
 D=${CRVFS_DATA:?data root}
+if ! declare -F pyenv >/dev/null; then unset MU2E; fi
 source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh >/dev/null 2>&1 || true
 pyenv ana
 export PYTHONPATH="$CODE:$CORE" PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
