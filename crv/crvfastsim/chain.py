@@ -141,6 +141,9 @@ def event_key(df):
 def charges(steps, parts, geom, cond, cfg, rng, key=None, tabs=None, pmap=None, timers=None, pdg=None):
     """CrvSteps (+ particles for pdg, or pdg per step given) -> SiPM charges. Returns dict chan (label), time, charge,
     pe, photon (step row)."""
+    from .response.contract import validate_sipm, validate_window, require_complete
+    validate_sipm(cfg.sipm)
+    validate_window(cfg.window, fused=cfg.jax and cfg.fused_response)
     timers = timers if timers is not None else {}
     if pdg is None:
         pdg = steps.merge(parts[tables.KEY + ["key", "pdg"]].rename(columns={"key": "sp"}), on=tables.KEY + ["sp"],
@@ -152,8 +155,12 @@ def charges(steps, parts, geom, cond, cfg, rng, key=None, tabs=None, pmap=None, 
         key = key if key is not None else jax.random.PRNGKey(0)
         rs = DV.response_batched(steps, pdg, geom, cfg.response, cfg.sipm, tabs, cond.deviation, cond.status,
                                  event_key(steps), rng, key, pmap)
-        if any(bool(r["overflow"]) for r in rs):
+        try:
+            for r in rs:
+                require_complete(r)
+        except RuntimeError:
             timers["response_overflow_batches"] = timers.get("response_overflow_batches", 0) + 1
+            raise
         Q = DV.to_host_batches(rs) if rs else {k: np.zeros(0) for k in ("chan", "time", "charge", "pe", "photon")}
         del rs
         keep = Q["time"] <= cfg.window[1]

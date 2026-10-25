@@ -3,8 +3,8 @@
 Host work happens once, before anything goes to the device: the per-(step, SiPM) rows and their photon numbers
 (photons.iter_rows, cheap numpy) and the SiPM slot table. On the device the photons of every (table, reflector, SiPM)
 block (photons_jax.device_photons) are concatenated, masked by the SiPM status, mapped to SiPM slots and fed to
-sipm_jax.device_sipm. Static buffers come from expected counts; any overflow flag makes the caller redo the event
-batch on the host path. Outputs stay on the device (the waveform stage takes them as they are).
+sipm_jax.device_sipm. Static buffers come from expected counts; residual overflow after SiPM sizing retries raises
+before output is consumed. Outputs stay on the device (the waveform stage takes them as they are).
 """
 from functools import partial
 
@@ -15,6 +15,7 @@ import jax.numpy as jnp
 
 from . import photons, photons_jax, sipm_jax
 from .sipm import NPIX
+from .contract import require_complete, validate_sipm
 
 CHAN_MULT = 32768  # = chain.CHAN_MULT (chain imports response, not the reverse)
 
@@ -51,6 +52,7 @@ def _take_root(root, label, step, n):
 def response(steps, pdg, geom, rcfg, scfg, device_tables, deviation, status, ev_key, rng, key, pmap):
     """steps (DataFrame), pdg [nsteps], ev_key [nsteps] int64 event key per step. Returns a dict of device arrays per
     hit (fired mask, label, time, charge, pe, step) and an overflow flag."""
+    validate_sipm(scfg)
     k_ph, k_si = jax.random.split(key)
     parts = []
     for L, rows in photons.iter_rows(steps, pdg, geom, rcfg, {k: v.L for k, v in device_tables.items()}, deviation, rng):
@@ -74,6 +76,7 @@ def response(steps, pdg, geom, rcfg, scfg, device_tables, deviation, status, ev_
             jnp.asarray(np.cumsum(pmap.ravel()) / pmap.sum()), pmap.shape[1], jnp.asarray(dead),
             q_ct, scfg.overvoltage, scfg.time_constant, scfg.p1, scfg.p2, scfg.capacitance, NB, *Ms, Ntot)
     r = sipm_jax.run_device_sipm(args, scfg)   # same key on the retry, so the result is the larger table's
+    require_complete({'overflow_photons': over, 'overflow_sipm': r['overflow']})
     lab_r, step_r = _take_root(r["root"], label, step, n)
     return {"fired": r["fired"], "label": lab_r, "time": r["time"], "charge": r["charge"], "pe": r["pe"],
             "step": step_r, "overflow": over | r["overflow"], "overflow_photons": over,
@@ -83,6 +86,7 @@ def response(steps, pdg, geom, rcfg, scfg, device_tables, deviation, status, ev_
 
 def to_host(r):
     """Fired hits as host arrays sorted by (label, time), like sipm.simulate's output (chan = label)."""
+    require_complete(r)
     f = np.asarray(r["fired"])
     out = {k: np.asarray(r[k])[f] for k in ("label", "time", "charge", "pe", "step")}
     o = np.lexsort((out["time"], out["label"]))
@@ -146,6 +150,9 @@ def response_batched(steps, pdg, geom, rcfg, scfg, device_tables, deviation, sta
     """response() over batches of whole events (steps sorted by event key). Returns a list of device dicts; keep=False
     waits for each batch and keeps only its overflow flag (timing without holding every batch on the device).
     budget: photons per batch; "auto" sizes it from the device's free memory (photon_budget), None cuts by batch_steps."""
+    validate_sipm(scfg)
+    if not len(ev_key):
+        return []
     o = np.argsort(ev_key, kind="stable")
     steps, pdg, ev_key = steps.iloc[o].reset_index(drop=True), np.asarray(pdg)[o], np.asarray(ev_key)[o]
     est = photon_estimate(steps, geom, rcfg)
@@ -157,6 +164,7 @@ def response_batched(steps, pdg, geom, rcfg, scfg, device_tables, deviation, sta
         key, sub = jax.random.split(key)
         r = response(steps.iloc[a:b].reset_index(drop=True), pdg[a:b], geom, rcfg, scfg, device_tables, deviation,
                      status, ev_key[a:b], rng, sub, pmap)
+        require_complete(r)
         if not keep:
             jax.block_until_ready(r["charge"])
             outs.append({"overflow": r["overflow"]})
@@ -171,6 +179,9 @@ def response_batched(steps, pdg, geom, rcfg, scfg, device_tables, deviation, sta
 
 def to_host_batches(rs):
     """to_host over a list of batch outputs; step ids mapped back to the caller's row order."""
+    if not rs:
+        return {k: np.zeros(0, np.int64 if k in ('chan', 'photon') else float)
+                for k in ('chan', 'photon', 'time', 'charge', 'pe')}
     parts = [to_host(r) for r in rs]
     out = {k: np.concatenate([p[k] for p in parts]) for k in parts[0]}
     out["photon"] = rs[0]["order"][out["photon"]]
