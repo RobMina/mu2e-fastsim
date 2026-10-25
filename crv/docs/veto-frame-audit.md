@@ -155,3 +155,61 @@ DB table; retain the photon-deviation file hash and stock conditions version too
 
 A successful replay contract is not a physics-closure test. A handful of coincidences,
 a single Cat table per species, or a large KS p-value cannot certify a rate/shape model.
+
+## Multiple recorded subsets and paired metrics
+
+`veto.replay_subset` deterministically selects disjoint filename blocks from a given
+inventory. `--exclude prior.json ...` excludes exact basenames in prior subset manifests;
+use it when changing inventories. A completed inventory may be an old partial snapshot:
+check the per-species available counts against the current census before claiming broad
+coverage. Each selected file is read and hashed by the exporter; no directory listing on
+pnfs is needed. Disjoint files do not prove independent underlying showers.
+
+`export_veto_replay_subset.sh LIST OUT EVENTS SEED` stages only the named tables into
+its own `/tmp`, exports the mixture, and removes its staging directory. The bounded
+`run_veto_replay_block.sh AREA NEW_OUT BLOCK [EVENTS=3000]` runs one raw export, fast
+response, and stock response serially in a user-built muse area. Required environment:
+`CRVFS_CODE`, `CRVFS_DATA`, `ANA_PY`, `VETO_CAT_INVENTORY`, `VETO_CAT_PNFS`,
+`VETO_CONDITIONS`, `VETO_PHOTON_DEV`. Optional `VETO_SUBSET_BLOCK` separates the subset
+slice index from response/mix seeds, and comma-separated `VETO_SUBSET_EXCLUDE` supplies
+prior manifests. It preserves muse's search path (needed for Database/connections.txt).
+
+Run post-processing in a **separate ana-only shell**, not muse's Python/LD_LIBRARY_PATH:
+loading pyxrootd under muse can select libstdc++ without the SciPy-required CXXABI.
+`check_veto_replay_blocks.sh BASE CONDITIONS SELECTION REFERENCE block...` checks
+retained outputs and writes a new paired report (`VETO_METRICS_OUT` overrides its path;
+`VETO_REPLAY_EVENTS` defaults to 3000). It never reruns detector response. Paths named
+`stock_retry` are supported for jobs whose initial stock setup failed before events.
+
+`replay_fast --pulses PATH` captures fitted pulses from the **same** response draw via
+an optional sink, without changing the response or random draws. The pulse output and
+relevant runner code hashes are recorded. `veto.replay_metrics` consumes verified
+checks and frame files, computes frame coverage with the frozen selection/card/grid,
+and reports the standard error of the paired coverage difference and the job-block
+error. Both are conditional on the selected-track distribution and sampled libraries;
+neither is an unconditional finite-library uncertainty. Repeated input hashes or mixed
+response variants cannot be pooled as independent frames.
+
+The pulse diagnostic retains the strongest observed pulse per (event, channel), reports
+T1 and T2 separately (Run1A channel boundaries), and compares matched PE/time quantiles
+and PE sums. This is observed-channel matching, not truth-particle matching. Cluster
+sector type alone cannot distinguish Run1A T1 from T2: both use sector type 1.
+
+### Explicit stock shared-LUT yield diagnostic
+
+`replay_fast --stock-shared-table-yields` is **diagnostic only**. Stock
+`CrvPhotonGenerator` in Offline v13_33_00 and v13_39_00 reuses a `MakeCrvPhotons` object
+when lookup-table filename strings match and skips the later sector's
+`SetScintillationYield`. The object thus retains the first sector's yield. The fast
+implementation normally honors each sector's configured yield. Run1A uses one LUT for
+T1 and T2 but different configured yields, so these are distinct response contracts.
+The flag copies the response config and substitutes the first yield per table; it does
+not mutate `RUN_CONFIGS`, change `mixframes`, or change any BO evaluator/default.
+Effective yields and the diagnostic flag are written to the sidecar.
+
+Comparisons with this variant must reuse existing stock outputs and use a distinct
+fast output tag. A change in photon multiplicity also changes subsequent RNG draws;
+identical seeds do not make individual pulse fluctuations identical. Establish the
+sector-level effect and overall deadtime closure on independent inputs before choosing
+between stock compatibility and the intended per-sector physics. Fixing Offline or
+changing production defaults requires separate review; this diagnostic does neither.

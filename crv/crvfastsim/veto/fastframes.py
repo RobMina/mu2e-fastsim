@@ -111,7 +111,8 @@ def _setup(run, jax=False):
     return dict(geom=geom, cfg=cfg, fcfg=fcfg, tabs=tabs, pmap=SI.photon_map(), G=C.sector_geom(geom, ccfg))
 
 
-def frames_from_steps(st, pa, cond, run, allk, key_pb, w_pb, seed=1, chunk=500, timers=None, setup=None, run_no=None):
+def frames_from_steps(st, pa, cond, run, allk, key_pb, w_pb, seed=1, chunk=500, timers=None, setup=None, run_no=None,
+                      pulse_sink=None):
     """Fast coincidences per event for steps already folded into [0, 1695) ns (fold_steps): awkward record per event of
     allk (every event is a frame, with or without steps); coincidence times back in the reco frame (+ w)."""
     S = setup or _setup(run)
@@ -129,7 +130,7 @@ def frames_from_steps(st, pa, cond, run, allk, key_pb, w_pb, seed=1, chunk=500, 
         D = chain.digis(Q, cond, S["cfg"], rng, timers=T)
         if not len(D["chan"]):
             continue
-        cls.append(_clusters(chain.reco_waveforms(D, cond), cond, S["G"], S["fcfg"], T))
+        cls.append(_clusters(chain.reco_waveforms(D, cond), cond, S["G"], S["fcfg"], T, pulse_sink))
     cl = {k: np.concatenate([c[k] for c in cls]) for k in cls[0]} if cls else \
         {k: np.zeros(0) for k in ("ev", "time", "timeStart", "timeEnd", "PEs", "nLayers", "sectorType")}
     o = np.argsort(key_pb)
@@ -164,7 +165,7 @@ def frames(paths, cond, run, jax=False, seed=1, key_pb=None, w_pb=None, max_even
     return ak.concatenate(out) if out else ak.Array([])
 
 
-def _clusters(W, cond, G, fcfg, T):
+def _clusters(W, cond, G, fcfg, T, pulse_sink=None):
     """numpy reference reco (pulsefit + coinc.find_event) with the run configuration's finder settings."""
     from ..reco import pulsefit
     t0 = time.perf_counter()
@@ -177,6 +178,8 @@ def _clusters(W, cond, G, fcfg, T):
     ev, wf = ev[o], wf[o]
     idx = np.arange(len(ev)) - np.searchsorted(ev, ev)
     bar, sipm, tm, pe, seq = W["bar"][wf], W["sipm"][wf], P["time"][o], P["pe"][o], P["seq"][o]
+    if pulse_sink is not None:
+        pulse_sink.append(dict(ev=ev, chan=bar * 4 + sipm, time=tm, pe=pe, seq=seq))
     T["pulses_s"] = T.get("pulses_s", 0.0) + time.perf_counter() - t0
     t0 = time.perf_counter()
     rows = {k: [] for k in ("ev", "time", "timeStart", "timeEnd", "PEs", "nLayers", "sectorType")}
