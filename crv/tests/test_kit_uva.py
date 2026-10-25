@@ -111,7 +111,7 @@ def test_render_uva_body(tmp_path):
     assert "apptainer exec" in body and "/x/m.sif" in body and "/scratch/u/crvcode" in body
     assert 'X="$L/in"' in body and "inbox" in body and "corr_P3_v2mod.json" in body and "dataref_P3.json" in body
     assert "/dev/shm/crvfs_resp_${USER}_" in body and "in_release" in body
-    assert 'KN+=("speed_EX=1.08")' in body and "CRVFS_LOOKUP_DIR=$L" in body
+    assert 'KN+=("speed_EX="1.08)' in body and "CRVFS_LOOKUP_DIR=$L" in body
     assert body.index('ln -sfn "$S/in" "$L/in"') < body.index("inbox") < body.index("crvfastsim reco-r3")
     subprocess.run(["bash", "-n"], input=body.encode(), check=True)
     for bad in ({"task": "crv_response", "seed": 1, "bogus": 1}, {"task": "crv_response", "seed": 1, "speed_EX": "1;rm"},

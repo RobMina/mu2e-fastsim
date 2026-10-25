@@ -88,17 +88,9 @@ echo "{\"input_wait_s\": $((SECONDS-tw)), \"inputs\": \"$INSTATE\"}" > "$M2FS_OU
 
 def validate(params: Dict[str, Any]) -> Dict[str, Any]:
     """The point's params (defaults filled), as the kit's Task check would; raises ValueError."""
-    extra = sorted(set(params) - set(kit_task.PARAMS) - {"task"})
-    if extra or "seed" not in params:
-        raise ValueError(f"fastsimkit: task 'crv_response' takes {list(kit_task.PARAMS)}; extra {extra}"
-                         + ("" if "seed" in params else ", missing ['seed']"))
-    p = {**kit_task.DEFAULTS, **{k: v for k, v in params.items() if k != "task"}}
-    for k in kit_task.KNOB_PARAMS:
-        v = p[k]
-        if v not in ("", None) and (isinstance(v, bool) or not isinstance(v, (int, float, str))
-                                    or not re.fullmatch(r"[0-9.eE+-]+", str(v))):
-            raise ValueError(f"fastsimkit: crv_response {k} must be a number, got {v!r}")
-    kit_task.inputs(p)                       # period / tables checks
+    from mu2efastsim.endpoints.parameters import validate as validate_parameters
+    p = validate_parameters("crv_response", params, kit_task.PARAMS, kit_task.DEFAULTS)
+    kit_task.inputs(p)
     return p
 
 
@@ -144,6 +136,7 @@ class CrvResponseStream:
 
     def render(self, p):
         from mu2efastsim.endpoints import kit as K
+        K.admit_resources(self.ep, K.TASKS["crv_response"].resources)
         if not hasattr(self.ep, "stream_in"):
             raise ValueError(f"fastsimkit: crv_response streams its inputs into the job and needs an endpoint that can "
                              f"(slurm_ssh); {getattr(self.ep, 'name', '?')!r} cannot")

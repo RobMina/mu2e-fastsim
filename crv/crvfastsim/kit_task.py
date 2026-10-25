@@ -112,7 +112,7 @@ BODY_HEAD = ("D=@fnal_data@; X=@inputs_dir@   # X: the inputs (D itself on EAF, 
 
 def _knob_lines():
     """One bash line per knob: append NAME=VALUE to KN when the param is non-empty."""
-    return "".join(f'[ -n @p_{k}@ ] && KN+=("{k}=@p_{k}@")\n' for k in KNOB_PARAMS)
+    return "".join(f'[ -n @p_{k}@ ] && KN+=("{k}="@p_{k}@)\n' for k in KNOB_PARAMS)
 
 
 BODY_TAIL = r'''KA=(); [ ${#KN[@]} -gt 0 ] && KA=(--knob "${KN[@]}")
