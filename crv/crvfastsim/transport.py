@@ -109,15 +109,15 @@ def world_loss(rng, o, d, p, world, edges=None):
                 continue
             mat = materials.BY_NAME.get(name, materials.CONCRETE_MARS)
             hit = np.flatnonzero(c > 0)
-            loss[hit] += slab_loss(rng, mat, p[hit] - loss[hit], c[hit])
+            loss[hit] += slab_loss(rng, mat, core_tr._p_after(p[hit], loss[hit]), c[hit])
             band_xx0[:, k] += c / eloss.radiation_length_mm(mat)
             solid += c
         air = np.clip(seg - solid, 0, None)
-        loss += eloss.dedx_restricted(materials.AIR, np.maximum(p - loss, 1.0), 1e9) * air
+        loss += eloss.dedx_restricted(materials.AIR, np.maximum(core_tr._p_after(p, loss), 1.0), 1e9) * air
         band_xx0[:, k] += air / x0_air
         band_h[:, k] = L - 0.5 * (s_top + s_bot)
     tk = np.sqrt(p ** 2 + eloss.MMU ** 2) - eloss.MMU - loss
-    p_plane = np.sqrt(np.clip((tk + eloss.MMU) ** 2 - eloss.MMU ** 2, 0, None))
+    p_plane = core_tr._p_after(p, loss)
     return p_plane, band_xx0.sum(1), tk > 0.5, band_xx0, band_h
 
 

@@ -62,6 +62,24 @@ same columns, so one comparison harness reads both.
    - V1 needs exactly this: per crossing, path length and visible energy against the G4 primary-muon CrvSteps.
    - Then the muon-descendant energy (delta rays), then tier 1b for the non-muon component.
 
+## World-loss energy ledger (2026-10-25)
+
+The core and default CRV `world_loss` accumulate losses in MeV of kinetic energy. Before each subsequent material
+or air evaluation, they convert the remaining kinetic energy to momentum; subtracting that loss directly from
+momentum is not valid for slow muons. The returned plane momentum uses the same conversion with kinetic energy
+floored at zero. The separate survival threshold remains `T > 0.5 MeV`, so a nonsurvivor may retain a small positive
+momentum when its kinetic energy is between zero and the threshold.
+
+Synthetic regressions cover successive materials, air before/after solids, multiple height bands, range-out,
+large overloss, mixed hit/survival masks, empty inputs, optional scattering outputs, and the CRV banded/list
+material-order contract. These are numerical checks, not renewed V1 certification. Saved pre-change physics
+baselines must be retained for candidate comparisons.
+
+This correction does not change the unknown-material concrete fallback, within-band material ordering, air-loss
+integration, or the full-column scattering/geometry calculation after range-out. The below-plane CRV air, bar and
+aluminium ledger still mixes energy and momentum decrements and needs a separate correction with continuity tests.
+Timing and range-out endpoint consistency also remain separate validation work.
+
 ## 4. Open design choices
 
 - Material classes: concrete (`CONCRETE_MARS`, `ShieldingConcrete`), overburden (`MBOverburden`), air, aluminium,
