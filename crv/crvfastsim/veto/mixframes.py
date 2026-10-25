@@ -70,7 +70,7 @@ class Pool:
         self.stepped = len(self.ids)
 
 
-def mix(pools, n_events, rng, intensity_scale=1.0):
+def mix(pools, n_events, rng, intensity_scale=1.0, *, return_events=False):
     """Mixed CrvSteps for n_events beam-only events: DataFrame in the steps layout (run, subrun, event, ..., pdg)
     with event = 1..n_events, subrun 0, and the per-event window start w = -pbtime."""
     N = draw_intensity(rng, n_events) * intensity_scale
@@ -100,7 +100,13 @@ def mix(pools, n_events, rng, intensity_scale=1.0):
         rows.append(d)
     st = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
     keys = np.arange(1, n_events + 1, dtype=np.int64)          # event key = (subrun 0 << 20) | event
-    return st, keys, -pb, {"mean_frames_per_event": mean_frames, "mean_intensity": float(N.mean())}
+    result = (st, keys, -pb, {"mean_frames_per_event": mean_frames, "mean_intensity": float(N.mean())})
+    if return_events:
+        events = pd.DataFrame({"run": np.full(n_events, 1430, np.uint32),
+                               "subrun": np.zeros(n_events, np.uint32), "event": keys.astype(np.uint32),
+                               "pbtime": pb, "intensity": N})
+        return (*result, events)
+    return result
 
 
 def main(argv=None):
