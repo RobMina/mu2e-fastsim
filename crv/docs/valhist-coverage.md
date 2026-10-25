@@ -172,3 +172,29 @@ zero/signed/nonfinite values, numeric overflow, rate-only and shape-only
 changes, missing keys, strict edge/type mismatches, highest-cycle replacement,
 unsupported profiles/objects, non-count maps, alias collisions/boundaries,
 selection, strict JSON, source-file immutability and refusal of existing output.
+
+## Source-reviewed overrides and event-level rates
+
+`--count-key EXACT_CANONICAL_PATH` explicitly declares a histogram's count semantics, overriding the conservative
+DQM heuristic. Review the source before using it; no regex or automatic promotion is supported. The pilot driver
+`audit_pilot.sh` names only cluster PE, NPc and position histograms filled once per cluster by the frozen
+Offline `CRVDQM/src/CRVRecoDQM.cc` and DQM `DqmCrv_module.cc`. It does not promote rate/MPV maps.
+The summary records every override and any unused names. Profiles remain unsupported even with an override.
+`TNamed` objects (including DQM binning-version records) are compared by name/title; mismatches are coverage gaps.
+`report.tsv` is a compact view of totals, flow and normalized-shape distances; detailed provenance stays in JSON.
+
+`python3 -m valhist.paired_rates REF_DUMP CAND_DUMP --out NEW.json` supplies a separate, limited uncertainty
+calculation where both arms have full event trees. It validates identical sorted run/subrun/event populations,
+rejects duplicates, checks cluster-table totals against the per-event census, and retains zero-activity events.
+For per-event values a and b and ratio R=sum(b)/sum(a), its delta-method standard error is
+`sqrt(N * sample_var(b - R*a)) / sum(a)`. The difference error is `sqrt(N * sample_var(b-a))`.
+These are conditional event-paired errors assuming independent generated events, not uncertainty from the fixed
+secondary library, calibration/model variation or paired histogram shapes. Missing event coverage is an error,
+not an invitation to pad absent reference events as zero. No acceptance threshold or p-value is attached.
+
+Pilot execution: `run_pilot.sh NEW_OUT FASTC LIBRARY GEN_ART SEED` reuses retained transport, writes fresh tables
+and A1/E2E art histograms in the already-built frozen `CRVVAL_AREA`, and dumps event/products without DigiMC so
+completion can be checked. `M2FS_CORE` names an isolated core checkout; `CRVFS_DATA` is the data root. No build,
+reference rewrite or resume-by-file-existence occurs. `pilot.py` captures source/input/conditions/binary hashes;
+completion requires successful art exits and exact full generated-event IDs in the highest persisted tree cycle.
+The initial pilot manifest predates added LUT/template/core-source hashing; retain that qualification in its record.

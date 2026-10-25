@@ -52,6 +52,8 @@ def prepare(out, fastc, library, area, core, gen_art, seed):
     files += sorted((area / 'build').glob('*/DQM/lib/*Crv*so'))
     for package in ('crvfastsim', 'valhist'):
         files += sorted((code / package).rglob('*.py'))
+    files += sorted((core / 'mu2efastsim').rglob('*.py'))
+    files += sorted((code / 'valhist').glob('*.sh'))
     manifest = dict(crv=revision(code), core=revision(core), area=str(area),
                     backing=str((area / 'backing').resolve()), dqm=revision(area / 'DQM'),
                     fastc=str(fastc), library=str(library), seed=seed, gen_art=gen_art,
@@ -60,7 +62,16 @@ def prepare(out, fastc, library, area, core, gen_art, seed):
     data = out.parents[1]
     assets = [data / 'geometry/crvcalib_sim_best_v1_5_run1400.csv',
               data / 'geometry/crvphoton_sim_best_v1_5_run1400.csv']
-    manifest['files'].update({str(p): digest(p) for p in assets})
+    from crvfastsim.reco.waveform import WaveformConfig
+    from crvfastsim.geometry import find_counters
+    from crvfastsim.response.lookup import lookup_dir
+    assets += sorted(Path(lookup_dir()).iterdir())
+    assets += [Path(find_counters(WaveformConfig().single_pe_file))]
+    manifest['files'].update({str(p): digest(p) for p in assets if p.is_file()})
+    manifest['asset_paths'] = [str(p) for p in assets]
+    manifest['asset_paths_missing'] = [str(p) for p in assets if not p.is_file()]
+    if manifest['asset_paths_missing']:
+        raise FileNotFoundError(manifest['asset_paths_missing'])
     out.mkdir(parents=True)
     for d in ('tables', 'logs', 'a1', 'e2e'):
         (out / d).mkdir()

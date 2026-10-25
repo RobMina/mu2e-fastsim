@@ -277,3 +277,18 @@ def test_explicit_reviewed_count_key_and_metadata(tmp_path):
         f[tag] = named('4')
     result = audit(ref, cand, tmp_path / 'audit2')
     assert result['coverage_gaps'][tag] == ['metadata_mismatch']
+
+
+def test_catalogue_detects_missing_from_both_arms(tmp_path):
+    cat = tmp_path / 'catalogue.txt'
+    cat.write_text('# CRVDigiDQM binningVersion=3 variant=extracted\nADC TH1D x=2,0,2\n'
+                   'missing TH1F x=1,0,1\n# CRVStatusDQM binningVersion=2 variant=extracted\n'
+                   'status TH1F x=1,0,1\n# CRVRecoDQM binningVersion=3 variant=extracted\n'
+                   'PE TH1D x=2,0,2\n')
+    keys = ['crvDigiDQM/ADC', 'crvRecoDQM/PE']
+    ref, cand = files(tmp_path, {k: histogram([0, 1, 2, 0]) for k in keys},
+                     {k: histogram([0, 1, 2, 0]) for k in keys})
+    summary = audit(ref, cand, tmp_path / 'audit', catalogue=cat)
+    assert summary['catalogue']['ref']['matched'] == 2
+    assert summary['catalogue']['ref']['issues'] == {'crvDigiDQM/missing': 'missing'}
+    assert summary['catalogue']['cand']['issues'] == {'crvDigiDQM/missing': 'missing'}

@@ -28,3 +28,17 @@ digis + fast reco on G4 steps, `e2e_<tables>` fast steps + fast digis + fast rec
 Run from the umbrella with `PYTHONPATH=crv:core`: `python3 -m valhist.compare ...`, `python3 -m valhist.g4table ...`.
 
 Outputs: `$CRVFS_DATA/valhist/<input>/<arm>/valhist.<subrun>.root` (Mu2e-internal: never committed).
+
+## Thread B coverage and fresh pilots
+
+The legacy `compare merge` drops flow bins and source Sumw2 on write; use original shard files for new coverage
+claims. `python3 -m valhist.coverage REF CAND --outdir NEW` inventories the union, compares TH1/2/3 including flow,
+separates normalization/shape descriptively, and reports missing/unsupported objects and variance gaps explicitly.
+Profiles and general derived-map statistics are not silently treated as counts. `--count-key` is only for exact
+paths whose fill semantics have been checked against source. See `docs/valhist-coverage.md`.
+
+`run_pilot.sh NEW_OUT FASTC LIBRARY GEN_ART SEED` reuses retained transport in a frozen, already-built stock area;
+`pilot.py` records hashes and certifies the complete event population from highest-cycle output trees.
+`audit_pilot.sh` compares original pilot/reference shards. `paired_rates.py` estimates conditional event-paired
+rate errors when both inputs retain all event rows; it rejects mismatched or duplicate event populations.
+The executed shard-11 result and remaining gates are in `docs/thread-b-dqm-pilot.md`. No blanket DQM pass is implied.

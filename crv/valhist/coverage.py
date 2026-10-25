@@ -240,7 +240,60 @@ def _json_safe(value):
     return value
 
 
-def audit(ref, cand, outdir, select=CRV_ONLY, aliases=(), count_keys=()):
+def catalogue_entries(path, clients):
+    """Read a frozen DQMHistSet catalogue, selecting explicitly requested clients only."""
+    entries, current = {}, None
+    names = {'CRVDigiDQM': 'crvDigiDQM', 'CRVRecoDQM': 'crvRecoDQM', 'CRVStatusDQM': 'crvStatusDQM'}
+    for line in Path(path).read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith('#'):
+            match = re.match(r'# (CRV\w+DQM) binningVersion=', line)
+            if match:
+                current = match.group(1)
+            continue
+        if current not in clients:
+            continue
+        fields = line.split()
+        if len(fields) < 3 or not fields[1].startswith(('TH1', 'TH2', 'TH3')):
+            raise ValueError(f'unsupported catalogue line: {line}')
+        axes = []
+        for spec in fields[2:]:
+            label, bounds = spec.split('=')
+            if label not in 'xyz' or len(label) != 1:
+                raise ValueError(f'unknown catalogue axis: {label}')
+            n, lo, hi = bounds.split(',')
+            axes.append(np.linspace(float(lo), float(hi), int(n) + 1))
+        key = names[current] + '/' + fields[0]
+        if key in entries:
+            raise ValueError(f'duplicate catalogue entry: {key}')
+        entries[key] = dict(classname=fields[1], edges=axes)
+    if not entries or any(not any(k.startswith(names[c] + '/') for k in entries) for c in clients):
+        raise ValueError('catalogue missing a requested client')
+    return entries
+
+
+def catalogue_check(root, inventory, expected):
+    issues = {}
+    for key, e in expected.items():
+        items = inventory.get(key, [])
+        if len(items) != 1:
+            issues[key] = 'missing' if not items else 'alias_collision'
+            continue
+        h = root[items[0]['key']]
+        if h.classname != e['classname']:
+            issues[key] = 'class_mismatch'
+        elif len(h.axes) != len(e['edges']) or any(not np.array_equal(a.edges(), b) for a, b in zip(h.axes, e['edges'])):
+            issues[key] = 'binning_mismatch'
+    directories = {k.split('/')[0] for k in expected}
+    extra = [k for k, v in inventory.items() if k.split('/')[0] in directories and k not in expected and
+             any(item['class'].startswith(('TH', 'TProfile')) for item in v)]
+    return dict(expected=len(expected), matched=len(expected) - len(issues), issues=issues, extra_histograms=sorted(extra))
+
+
+def audit(ref, cand, outdir, select=CRV_ONLY, aliases=(), count_keys=(), catalogue=None,
+          catalogue_clients=('CRVDigiDQM', 'CRVRecoDQM')):
     """Audit one original file per arm, writing strict JSON to a new directory."""
     alias_pairs = _aliases(aliases)
     selection = re.compile(select) if select else None
@@ -250,6 +303,11 @@ def audit(ref, cand, outdir, select=CRV_ONLY, aliases=(), count_keys=()):
     with uproot.open(ref) as fr, uproot.open(cand) as fc:
         ir, er = _inventory(fr, selection, alias_pairs)
         ic, ec = _inventory(fc, selection, alias_pairs)
+        booking = None
+        if catalogue:
+            expected = catalogue_entries(catalogue, catalogue_clients)
+            booking = dict(path=str(catalogue), clients=list(catalogue_clients),
+                           ref=catalogue_check(fr, ir, expected), cand=catalogue_check(fc, ic, expected))
         with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
             reports = {key: _compare_pair(fr, fc, key, ir.get(key, []), ic.get(key, []), count_keys)
                        for key in sorted(set(ir) | set(ic))}
@@ -257,6 +315,7 @@ def audit(ref, cand, outdir, select=CRV_ONLY, aliases=(), count_keys=()):
     summary = {
         "schema_version": 1, "ref": str(Path(ref).resolve()), "cand": str(Path(cand).resolve()),
         "select": select, "aliases": list(aliases), "limitations": LIMITATIONS,
+        "catalogue": booking,
         "explicit_count_keys": sorted(count_keys),
         "unused_count_keys": sorted(set(count_keys) - set(reports)),
         "dimensions": dict(Counter(v['ref_data']['dimensions'] for v in reports.values() if 'closure' in v)),
@@ -302,9 +361,10 @@ def main():
     parser.add_argument("--select", default=CRV_ONLY, help="regex on canonical paths; empty string selects all")
     parser.add_argument("--alias", action="append", default=[], help="Validation child prefix OLD=NEW; repeatable")
     parser.add_argument('--count-key', action='append', default=[], help='exact canonical path with source-reviewed count semantics')
+    parser.add_argument('--catalogue', help='frozen DQMHistSet catalogue; default client scope is Digi + Reco')
     args = parser.parse_args()
     try:
-        summary = audit(args.ref, args.cand, args.outdir, args.select, args.alias, args.count_key)
+        summary = audit(args.ref, args.cand, args.outdir, args.select, args.alias, args.count_key, args.catalogue)
     except (ValueError, OSError, re.error) as exc:
         parser.exit(2, str(exc) + "\n")
     print(json.dumps({"union_keys": summary["union_keys"], "statuses": summary["statuses"],
