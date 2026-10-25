@@ -55,31 +55,10 @@ class _Source(FnalSource):
         return rel if rel.startswith("/") else super().path(rel)
 
 
-def _int(params, k):
-    v = params[k]
-    if isinstance(v, bool) or not isinstance(v, (int, float)) or float(v) != int(v):
-        raise ValueError(f"fastsimkit: beam_point {k} must be a whole number, got {v!r}")
-    lo, hi = LIMITS[k]
-    if not lo <= int(v) <= hi:
-        raise ValueError(f"fastsimkit: beam_point {k} must be in [{lo}, {hi}], got {v!r}")
-    return int(v)
-
-
 def validate(params: Dict[str, Any]) -> Dict[str, Any]:
     from . import kit_task
-    missing = [k for k in kit_task.PARAMS if k not in params]
-    extra = sorted(set(params) - set(kit_task.PARAMS) - {"task"})
-    if missing or extra:
-        raise ValueError(f"fastsimkit: task 'beam_point' takes {list(kit_task.PARAMS)}; missing {missing}, extra {extra}")
-    g = params["geom"]
-    if not isinstance(g, str) or not g or any(c in g for c in " \t\n'\";$`\\"):
-        raise ValueError(f"fastsimkit: beam_point geom must be a plain name or path, got {g!r}")
-    if g.startswith("/") and not g.startswith("/exp/mu2e/"):
-        raise ValueError(f"fastsimkit: beam_point geom path must be on FNAL storage (/exp/mu2e/...), got {g!r}")
-    if not g.startswith("/") and g != "nominal" and ("/" in g or not g.endswith(".txt")):
-        raise ValueError(f"fastsimkit: beam_point geom must be 'nominal', a file name under beam/geom, or an "
-                         f"absolute /exp/mu2e path; got {g!r}")
-    return {"geom": g, **{k: _int(params, k) for k in LIMITS}}
+    from mu2efastsim.endpoints.parameters import validate as validate_parameters
+    return validate_parameters("beam_point", params, kit_task.PARAMS)
 
 
 class BeamPointStream:
@@ -114,7 +93,8 @@ class BeamPointStream:
         return out
 
     def render(self, p):
-        from mu2efastsim.endpoints.kit import _COMMON, APPTAINER_RUNTIME
+        from mu2efastsim.endpoints.kit import _COMMON, APPTAINER_RUNTIME, admit_resources
+        admit_resources(self.ep, RESOURCES)
         if not hasattr(self.ep, "stream_in"):
             raise ValueError(f"fastsimkit: beam_point streams its input into the job and needs an endpoint that can "
                              f"(slurm_ssh); {getattr(self.ep, 'name', '?')!r} cannot")
