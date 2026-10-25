@@ -140,6 +140,10 @@ def main():
     inv.add_argument('--exclude', nargs='*', default=[])
     inv.add_argument('--asset', nargs='+', required=True, help='NAME=PATH; calib, deviation, reference, ...')
     inv.add_argument('--out', required=True)
+    stock = sub.add_parser('stock-count')
+    stock.add_argument('--ntuple', required=True)
+    stock.add_argument('--accumulator', required=True)
+    stock.add_argument('--out', required=True)
     ev = sub.add_parser('run')
     ev.add_argument('--manifest', required=True)
     ev.add_argument('--out', required=True)
@@ -148,7 +152,20 @@ def main():
     ev.add_argument('--jax', action='store_true')
     ev.add_argument('--calibration', action='store_true')
     a = p.parse_args()
-    if a.cmd == 'inventory':
+    if a.cmd == 'stock-count':
+        import uproot
+        with uproot.open(a.ntuple) as f:
+            cycles = [k for k in f.keys(recursive=True, cycle=True) if k.split(';')[0] == R.TREE]
+            key = max(cycles, key=lambda k: int(k.rsplit(';', 1)[1]))
+            count = f[key].num_entries
+        expected = json.loads(Path(a.accumulator).read_text())['events']
+        if count != expected:
+            raise ValueError(f'stock entry count {count} != accumulator events {expected}')
+        with open(a.out, 'x') as f:
+            json.dump(dict(ntuple=a.ntuple, tree=key, entries=count, accumulator=a.accumulator,
+                           accumulator_sha256=digest(a.accumulator)), f, indent=2)
+        print(f'{key}: {count} entries; matches saved accumulator')
+    elif a.cmd == 'inventory':
         m = inventory(a.inputs, a.exclude, dict(x.split('=', 1) for x in a.asset), a.out)
         print(json.dumps({k: m[k] for k in ('events', 'events_with_steps')}))
     else:

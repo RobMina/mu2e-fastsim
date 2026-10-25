@@ -28,6 +28,23 @@ def test_manifest_counts_and_bytes(tmp_path, monkeypatch):
         V.inventory([str(p)], [], {}, out)
 
 
+def test_stock_count_uses_highest_cycle(tmp_path, monkeypatch):
+    import uproot
+    root = tmp_path / 'stock.root'
+    with uproot.recreate(root) as f:
+        f['EventNtuple/ntuple'] = {'event': np.arange(2)}
+    with uproot.update(root) as f:
+        f['EventNtuple/ntuple'] = {'event': np.arange(3)}
+    acc = tmp_path / 'acc.json'
+    acc.write_text('{"events": 3}')
+    out = tmp_path / 'count.json'
+    monkeypatch.setattr('sys.argv', ['validation', 'stock-count', '--ntuple', str(root),
+                                    '--accumulator', str(acc), '--out', str(out)])
+    V.main()
+    assert json.loads(out.read_text())['tree'] == 'EventNtuple/ntuple;2'
+    assert json.loads(out.read_text())['entries'] == 3
+
+
 @pytest.mark.parametrize('mode', ['duplicate', 'excluded', 'overlap', 'missinggen', 'run', 'encoding'])
 def test_invalid_input_sets(tmp_path, monkeypatch, mode):
     p, q = tmp_path / 'a.root', tmp_path / 'b.root'
