@@ -72,4 +72,28 @@ thin-plane stop position. No within-foil slowing time is integrated; surviving c
 ordering, grazing paths and the low-energy model remain approximations requiring physics convergence checks.
 A shared seed is not layout-invariant: chunking and compaction affect random draws.
 
+## Bounded numerical convergence pilot
+
+```bash
+PYTHONPATH=core:beam python3 -m beamfastsim.convergence \
+  --g4 "$REF/g4ref.npz" --out "$DATA/convergence_UNIQUE_TAG" --n 2000 --seeds 11 22
+```
+
+This runs four arms sequentially for each saved seed: nominal (5 mm, 3000 steps, 4 loss slices), half-step
+(2.5 mm, 6000 steps: equal maximum path), doubled cap (5 mm, 6000 steps), and 8 slices. `--geom` selects an overlay;
+`--arms` can restrict the list. Put `nominal` first for paired arm differences. `run --max-steps` also exposes the
+numerical cap directly; it is not a BO design variable.
+
+The output directory must be new. Each arm retains an NPZ; `summary.json` counts actual saved muons, fates and foil
+profiles and reports event-cluster standard errors for paired stop-fraction differences and flight-time shifts
+conditional on stopping in both arms. `manifest.json` hashes the input, current beam/core physics code, field files
+and geometry include closure. The fixed input prefix is reused; different seeds are response replicas, not new
+primaries. Same seeds across layouts are not invariant common-random-number streams. No acceptance threshold or
+independent-reference uncertainty is implied. Avoid interpreting conditional timing shifts as G4 stop-time closure.
+
+`--budget-seconds` (default 1200) prevents starting further arms after the budget, but does not interrupt a running
+arm; an incomplete pilot lists unstarted arms. On a GPVM use one CPU affinity and the one-job-per-host rule. All
+passes include their compilation overhead and `repeat=0`: the legacy `muons_per_s_warm` metadata label from `run`
+is **not** a warm-throughput measurement here. Never extrapolate larger-job runtime from this pilot.
+
 Status and validation: wiki `mu2e/wiki/sim/beam-muon-transport-fastsim.md`.
