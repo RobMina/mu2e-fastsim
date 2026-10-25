@@ -62,10 +62,33 @@ def validate_foils(geom, ds):
         raise ValueError("foil thicknesses must not overlap in z")
 
 
-def from_offline(geom_file, offline_root):
+TARGET_OVERLAY_KEYS = frozenset({
+    "stoppingTarget.radii", "stoppingTarget.halfThicknesses", "stoppingTarget.zVars",
+    "stoppingTarget.deltaZ", "stoppingTarget.z0InMu2e", "stoppingTarget.holeRadius",
+    "stoppingTarget.holeRadii", "protonabsorber.distFromTargetEnd",
+})
+
+
+def check_overlay(candidate, baseline):
+    """Reject parsed configuration changes outside the represented target-design subset.
+
+    Compare effective parsed values, including changes in nested includes. This does not validate syntax ignored
+    by SimpleConfig, certify the baseline geometry, or establish physics ranking across the allowed domain.
+    """
+    changed = sorted(k for k in candidate.keys() | baseline.keys()
+                     if k not in candidate or k not in baseline or candidate[k] != baseline[k])
+    unsupported = [k for k in changed if k not in TARGET_OVERLAY_KEYS or k not in candidate]
+    if unsupported:
+        raise ValueError("Unsupported beam geometry changes: " + ", ".join(unsupported))
+    if "stoppingTarget.holeRadius" in changed and "stoppingTarget.holeRadii" in candidate:
+        raise ValueError("stoppingTarget.holeRadius is shadowed by holeRadii")
+    return changed
+
+
+def from_offline(geom_file, offline_root, source_files=None):
     """BeamGeometry from an Offline geometry file (e.g. Offline/Mu2eG4/geom/geom_common.txt) under offline_root."""
     path = geom_file if os.path.isabs(geom_file) else f"{offline_root}/{geom_file}"
-    c = simpleconfig.read(path, offline_root)
+    c = simpleconfig.read(path, offline_root, source_files=source_files)
     axis_x = -c["mu2e.solenoidOffset"]
     rout = np.array(c["stoppingTarget.radii"], float)
     n = len(rout)

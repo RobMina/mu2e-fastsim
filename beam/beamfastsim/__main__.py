@@ -22,9 +22,14 @@ MAPS = os.environ.get("BEAMFS_MAPS", f"{CVMFS}/DataFiles/BFieldMaps/Mau13")
 MAP = os.environ.get("BEAMFS_MAP", "DSMap")
 
 
-def _geom(path=None):
-    from . import geometry
-    return geometry.from_offline(path or GEOM_FILE, OFFLINE_ROOT)
+def _geom(path=None, target_contract=False):
+    from . import geometry, simpleconfig
+    selected = path or GEOM_FILE
+    if target_contract:
+        baseline = os.path.join(OFFLINE_ROOT, "Offline/Mu2eG4/geom/geom_common.txt")
+        candidate = selected if os.path.isabs(selected) else os.path.join(OFFLINE_ROOT, selected)
+        geometry.check_overlay(simpleconfig.read(candidate, OFFLINE_ROOT), simpleconfig.read(baseline, OFFLINE_ROOT))
+    return geometry.from_offline(selected, OFFLINE_ROOT)
 
 
 def cmd_g4table(a):
@@ -36,11 +41,14 @@ def cmd_g4table(a):
 
 def cmd_reference_audit(a):
     from . import reference_audit
-    report = reference_audit.audit(a.nts, table=a.g4, artifacts=a.artifact)
+    report = reference_audit.audit(a.nts, table=a.g4, artifacts=a.artifact,
+                                   geom_file=a.geom, offline_root=a.offline_root, baseline_geom=a.baseline_geom)
     with open(a.out, "w") as stream:
         json.dump(report, stream, indent=2)
     print(json.dumps(report, indent=2))
-    if report["duplicate_primary_ids"] or (a.g4 and not report["table"]["all_raw_columns_match"]):
+    if report["duplicate_primary_ids"] or (a.g4 and (
+            not report["table"]["all_raw_columns_match"] or
+            not report["table"].get("all_derived_columns_match", True))):
         raise SystemExit(1)
 
 
@@ -49,7 +57,7 @@ def cmd_run(a):
     from . import fieldmap, g4ref, transport
     g = g4ref.load(a.g4)
     n = min(a.n or len(g["evt"]), len(g["evt"]))
-    geom = _geom(a.geom)
+    geom = _geom(a.geom, target_contract=True)
     prm = transport.Params(ds=a.ds, msc=not a.no_msc, decay=not a.no_decay, n_slices=a.slices, tcut=a.tcut)
     t0 = time.time()
     fm = fieldmap.to_device(fieldmap.load(f"{MAPS}/{MAP}.header"))
@@ -170,8 +178,11 @@ def main(argv=None):
     s.add_argument("--n", type=int, default=0); s.add_argument("--seed", type=int, default=1)
     s.add_argument("--batch", type=int, default=131072); s.add_argument("--chunk", type=int, default=400)
     s.add_argument("--repeat", type=int, default=0)
-    s = sp.add_parser("reference-audit", help="certify persisted reference coverage and raw table identity")
+    s = sp.add_parser("reference-audit", help="certify persisted reference coverage and table identity")
     s.add_argument("--nts", nargs="+", required=True); s.add_argument("--g4")
+    s.add_argument("--geom", help="opt in to derived-label and current geometry include-closure audit")
+    s.add_argument("--offline-root", default=OFFLINE_ROOT)
+    s.add_argument("--baseline-geom", help="also check allowed target-overlay changes against this config")
     s.add_argument("--artifact", action="append", default=[]); s.add_argument("--out", required=True)
     sp.add_parser("fieldcheck")
     a = ap.parse_args(argv)
