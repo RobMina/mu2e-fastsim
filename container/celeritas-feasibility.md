@@ -1,7 +1,11 @@
 # Celeritas 0.6.3: load probe and flash integration gates
 
-Status (2026-10-25): image packaging confirmed; GPU load/transport untested. No new allocation, build or physics
-run was started. At 16:53 EDT, `squeue -u ram2aq` and `squeue -A ldmxuva` returned no jobs. This is not a lack of
+Status (2026-10-25): image packaging and A100-node CLI loading confirmed; GPU transport untested. Job **21958048**
+completed at 16:58 EDT (4 s elapsed, exit 0), on `udc-an36-19`, A100-SXM4-80GB, driver 595.71.05, Apptainer 1.4.5.
+The probe ran `--help`, `--version` (0.6.3), and `--dump-default` successfully; the latter reports CGS input units.
+Evidence: `/scratch/ram2aq/mu2efastsim/probe/celer_load_21958048/` and `celer-load-21958048.out`; synced to
+`~/mu2e/remote-uva-data/mu2efastsim/probe/`. No build, transport or internal-data transfer occurred.
+At 16:53 EDT, `squeue -u ram2aq` and `squeue -A ldmxuva` returned no jobs. This is not a lack of
 project allocation: `allocations -a ldmxuva` confirms the active award through 2027-06-19, with 9,998,969 SU
 remaining at this check. Image metadata was read from login host `udc-ba37-32c1`, with no Slurm job/step set;
 shared `/scratch` was accessible there without an active compute job. The existing image is
@@ -17,17 +21,19 @@ and Apptainer. It refuses an existing output directory and preserves loader exit
 CLI success does **not** establish GPU kernel execution or Mu2e compatibility. Image size/mtime are recorded, not
 an immutable digest; hash the image before a physics campaign.
 
-Once the script is available on UVA, from a shell in the chosen existing A100 allocation:
+An existing interactive allocation is **not** a prerequisite: submit a short batch job through the approved
+`ldmxuva` queue workflow. Deployed through the UVA mirror as
+`/home/ram2aq/mu2e/fastsim_uva/probe_celeritas_0a1589c.sh` (SHA256
+`a63bae495671d9a3235b12d817d8c80ac84c816c3f3e342e6367cbdd557b8fd2`). The completed job used this command on the login host:
 
 ```bash
-module load apptainer
-srun --ntasks=1 bash /path/to/probe_celeritas.sh \
-  /scratch/ram2aq/mu2efastsim/mu2e-celeritas.sif \
-  /scratch/ram2aq/mu2efastsim/celeritas_probe_UNIQUE_TAG
+sbatch --parsable --job-name=m2fs_celer_load --account=ldmxuva --partition=gpu \
+  --gres=gpu:a100:1 --cpus-per-task=2 --mem=8G --time=00:05:00 \
+  --output=/scratch/ram2aq/mu2efastsim/probe/celer-load-%j.out \
+  --wrap='module load apptainer && srun --ntasks=1 bash /home/ram2aq/mu2e/fastsim_uva/probe_celeritas_0a1589c.sh /scratch/ram2aq/mu2efastsim/mu2e-celeritas.sif /scratch/ram2aq/mu2efastsim/probe/celer_load_${SLURM_JOB_ID}'
 ```
 
-This is not a submission command. Verify the allocation is free of other work first. The script has not yet been
-deployed to UVA. Laptop guard checks (no container or GPU involved):
+Check existing jobs before submitting to avoid duplicates. Laptop guard checks (no container or GPU involved):
 
 ```bash
 bash -n container/probe_celeritas.sh
