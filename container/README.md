@@ -28,7 +28,10 @@ apptainer exec --nv mu2efastsim.sif crvfastsim reco-bench synthetic --stage chai
 A second, separate image for the GPU electromagnetic transport feasibility study of the Mu2eBO `elebeam_flash` stage:
 Celeritas 0.6.3 (CUDA, sm_80), Geant4 11.3.2, VecGeom 1.2.11 (+gdml, CUDA), G4VG and covfie, built with spack on
 `nvidia/cuda:12.6.3-devel-rockylinux9` along the lines of Celeritas' own `scripts/docker/dev/rocky-cuda12.yaml`. It
-provides `celer-g4` (Celeritas' standalone Geant4 application) to run the Mu2e GDML export with the DS field map.
+provides `celer-g4` (Celeritas' standalone Geant4 application) for EM feasibility checks. **The stock 0.6.3
+application only wires uniform/RZ fields, not the Cartesian DSMap**: library Cartesian support alone does not make
+the proposed Mu2e run executable. The saved build also has `~root`; its default `event_hit` scorer cannot write
+ROOT hits. See [the feasibility contract](celeritas-feasibility.md) before preparing transport inputs.
 Built by the user on a UVA node (1-3 h, needs `--fakeroot` and outbound internet):
 
 ```bash
