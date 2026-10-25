@@ -63,6 +63,10 @@ Matching is **by truth-particle identity, never by time or distance** (a Mu2e an
   any path to a bar).
 - `crossings.slab_crossings` is the JAX slab method over N tracks × 576 axis-aligned bars (float64 enabled).
 
+Persisted coverage, event-paired rate errors, individual-sector and low-momentum diagnostics are available through
+`transport-validation`; see [`../docs/transport_validation.md`](../docs/transport_validation.md). It supplements,
+not replaces, the established V1 gates.
+
 ## 5. Validation thresholds (agreed 2026-10-15)
 
 | level | subcommand | thresholds |
