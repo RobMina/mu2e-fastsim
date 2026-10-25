@@ -22,7 +22,7 @@ case @p_geom@ in
   /*) GEOM=@p_geom@ ;;
   *) GEOM="$M2FS_CODE/beam/geom/"@p_geom@ ;;
 esac
-[ -z "$GEOM" ] || [ -r "$GEOM" ] || { echo "missing geometry $GEOM"; exit 3; }
+@geometry_setup@[ -z "$GEOM" ] || [ -r "$GEOM" ] || { echo "missing geometry $GEOM"; exit 3; }
 A python -c "import jax, sys; print(jax.devices()); sys.exit(jax.default_backend() != 'gpu')" || { echo "JAX not on the GPU"; exit 5; }
 ( cd "$M2FS_CODE" && PYTHONPATH="$M2FS_CODE/core:$M2FS_CODE/beam" XLA_PYTHON_CLIENT_PREALLOCATE=false \\
   "$M2FS_VENV/bin/python" -m beamfastsim point --g4 "$G4T" ${GEOM:+--geom "$GEOM"} --n @p_muons@ --seed @p_seed@ \\

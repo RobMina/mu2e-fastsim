@@ -29,6 +29,7 @@ from mu2efastsim.endpoints.artifacts import (binding, checked_record, make_manif
                                            resolve_inputs, runtime_prefix, verify_cache, verify_result)
 from mu2efastsim.endpoints.snapshots import prepare_code
 from mu2efastsim.endpoints.submission import submission_lock
+from mu2efastsim.endpoints import geometry as geometry_artifacts
 
 G4REF = "g4ref_full/g4ref.npz"
 WAIT_S = 900
@@ -97,14 +98,17 @@ class BeamPointStream:
             out[p["geom"]] = "geom_overlay.txt"
         return out
 
-    def render(self, p, manifest=None):
+    def render(self, p, manifest=None, geometry=None):
         from mu2efastsim.endpoints.kit import _COMMON, APPTAINER_RUNTIME, admit_resources
         admit_resources(self.ep, RESOURCES)
         if not hasattr(self.ep, "stream_in"):
             raise ValueError(f"fastsimkit: beam_point streams its input into the job and needs an endpoint that can "
                              f"(slurm_ssh); {getattr(self.ep, 'name', '?')!r} cannot")
         g = p["geom"]
-        if g == "nominal":
+        if geometry is not None:
+            geometry_artifacts.validate_artifact(geometry)
+            stagegeom = geomarg = '--geom "$M2FS_GEOMETRY"'
+        elif g == "nominal":
             stagegeom = geomarg = ""
         elif g.startswith("/"):
             stagegeom = geomarg = '--geom "$L/geom_overlay.txt"'
@@ -120,6 +124,8 @@ class BeamPointStream:
         import re
         if re.search(r"@[a-z_]+@", body):
             raise ValueError("fastsimkit: beam_point: unfilled placeholder")
+        if geometry is not None:
+            body = geometry_artifacts.stage_shell(geometry) + body
         if manifest is not None:
             from mu2efastsim.endpoints.artifacts import consumption_guard
             body = body.replace('B python -m beamfastsim.stage',
@@ -135,12 +141,32 @@ class BeamPointStream:
             return {"ok": False, "message": str(e)}
         return {"ok": True, "message": ""}
 
+    def check_binding(self, name, params, geometry=None):
+        old = self._rec(name)
+        if old is None:
+            return None
+        if "manifest" not in old:
+            raise ValueError("fastsimkit: legacy task has no pinned artifact binding")
+        p = validate(params)
+        target = {"endpoint": self.ep.name, "host": getattr(self.ep, "host", ""),
+                  "source_host": self.source.host, "source_root": self.source.root}
+        target.update({k: getattr(self.ep, k) for k in ("account", "partition", "workdir") if hasattr(self.ep, k)})
+        if p != old["params"] or target != old["target"]:
+            raise ValueError("fastsimkit: different params or target/source from artifact binding")
+        if geometry_artifacts.identity(geometry) != geometry_artifacts.identity(old["manifest"].get("geometry")):
+            raise ValueError("fastsimkit: geometry differs from artifact binding")
+        return old
+
     def ensure_code(self):
         return prepare_code(self.ep, self.code, self.code_ref, modules=('core',))
 
-    def submit(self, name, params) -> Dict[str, Any]:
+    def submit(self, name, params, geometry=None) -> Dict[str, Any]:
         p = validate(params)
-        self.render(p)                 # pure admission before any artifact preparation or durable state
+        if geometry is not None and p["geom"] != "nominal":
+            raise ValueError("fastsimkit: geometry FileRef conflicts with geom selector")
+        old = self.check_binding(name, p, geometry)
+        if old is None:
+            self.render(p, geometry=geometry)
         target = {"endpoint": self.ep.name, "host": getattr(self.ep, "host", ""),
                   "source_host": self.source.host, "source_root": self.source.root}
         target.update({k: getattr(self.ep, k) for k in ("account", "partition", "workdir") if hasattr(self.ep, k)})
@@ -149,14 +175,14 @@ class BeamPointStream:
             inputs = resolve_inputs(self.source, self.inputs(p))
             code = self.ensure_code()
             image = resolve_image(self.ep, self.kit.sif)
-            manifest = make_manifest("beam_point", code, image, inputs, p)
-            body, res = self.render(p, manifest)
+            manifest = make_manifest("beam_point", code, image, inputs, p, geometry=geometry)
+            body, res = self.render(p, manifest, geometry=geometry)
             return {"params": p, "submitted_at": time.time(), "code": code["path"],
                     "code_ref": self.code_ref, "manifest": manifest,
                     "body": body, "resources": asdict(res), "target": target}
 
         try:
-            rec = binding(self.dir, name, p, target, prepare)
+            rec = binding(self.dir, name, p, target, prepare, geometry=geometry)
             self.ep.submit(name, rec["body"], Resources(**rec["resources"]))
         except EndpointError as e:
             raise ValueError(str(e)) from e

@@ -373,3 +373,80 @@ def test_completed_legacy_results_remain_explicitly_unverified(tmp_path):
     assert result["metadata"]["artifact_manifest"] is None
     with pytest.raises(ValueError, match="legacy"):
         kit.submit("history", params, [], [])
+
+
+def geometry_ref(path, gap):
+    data = f'#include "Offline/Mu2eG4/geom/geom_common.txt"\ndouble stoppingTarget.deltaZ = {gap};\n'.encode()
+    path.write_bytes(data)
+    return {"name": "geom", "kind": "geom", "uri": path.resolve().as_uri(),
+            "sha256": hashlib.sha256(data).hexdigest(), "metadata": {
+                "format": "offline_simpleconfig", "schema_version": 1, "renderer": "offline_simpleconfig",
+                "renderer_sha256": "a" * 64}}
+
+
+def test_geometry_fileref_embedded_in_each_uva_binding(tmp_path):
+    site, ep, kit, streams = make(tmp_path)
+    params = {k: v for k, v in P.items() if k != "geom"}
+    refs = [geometry_ref(tmp_path / f"candidate{i}.txt", 25 + 5*i) for i in range(2)]
+    bodies = []
+    for i, ref in enumerate(refs):
+        name = f"geometry{i}"
+        assert kit.check(name, params, [ref], [], ["stop_frac"])["ok"]
+        kit.submit(name, params, [ref], [], ["stop_frac"])
+        rec = kit._delegates["beam_point"]._rec(name)
+        assert rec["manifest"]["geometry"]["reference"]["sha256"] == ref["sha256"]
+        assert len(rec["manifest"]["inputs"]["files"]) == 1
+        assert '--geom "$M2FS_GEOMETRY"' in rec["body"]
+        assert f"stoppingTarget.deltaZ = {25 + 5*i}" in rec["body"]
+        result = subprocess.run(["bash", "-n"], input=rec["body"], text=True, capture_output=True)
+        assert result.returncode == 0, result.stderr
+        bodies.append(rec["body"])
+    assert bodies[0] != bodies[1]
+    (tmp_path / "candidate0.txt").unlink()
+    kit.submit("geometry0", params, [refs[0]], [], ["stop_frac"])
+    assert kit._delegates["beam_point"]._rec("geometry0")["body"] == bodies[0]
+    with pytest.raises(ValueError, match="geometry differs"):
+        kit.submit("geometry0", params, [refs[1]], [], ["stop_frac"])
+    assert len(site.state) == 2 and not streams
+
+
+def test_uva_geometry_result_evidence_and_files_from(tmp_path, monkeypatch):
+    from mu2efastsim.endpoints import geometry as G
+    site, ep, kit, _ = make(tmp_path)
+    params = {k: v for k, v in P.items() if k != "geom"}
+    ref = geometry_ref(tmp_path / "geom.txt", 25)
+    kit.submit("geometry", params, [ref], [], ["stop_frac"])
+    site.state[ep.state.get("geometry").job_id] = "COMPLETED"
+    fetch = ep.fetch
+    artifact = kit._request("geometry")["geometry"]
+    def with_geometry(name, dest):
+        files = fetch(name, dest)
+        out = dest / name / "out"
+        (out / "geometry.txt").write_text(artifact["text"])
+        (out / "geometry-artifact.json").write_text(json.dumps({k:v for k,v in artifact.items() if k != "text"}))
+        return files
+    monkeypatch.setattr(ep, "fetch", with_geometry)
+    result = kit.results("geometry")
+    assert len(result["files"]) == 1 and result["files"][0]["kind"] == "geom"
+    assert result["metadata"]["diagnostic_files"]
+    kit.submit("downstream", params, [], result["files"], ["stop_frac"])
+    assert G.identity(kit._request("downstream")["geometry"]) == G.identity(artifact)
+
+
+def test_uva_geometry_retry_never_renders_current_body(tmp_path, monkeypatch):
+    site, ep, kit, _ = make(tmp_path)
+    params = {k: v for k, v in P.items() if k != "geom"}
+    ref = geometry_ref(tmp_path / "geom.txt", 25)
+    kit.submit("geometry", params, [ref], [], ["stop_frac"])
+    delegate = kit._delegates["beam_point"]
+    body = delegate._rec("geometry")["body"]
+    monkeypatch.setattr(delegate, "render", lambda *a, **kw: pytest.fail("retry must use bound body"))
+    (tmp_path / "geom.txt").unlink()
+    assert kit.check("geometry", params, [ref], [], ["stop_frac"])["ok"]
+    kit.submit("geometry", params, [ref], [], ["stop_frac"])
+    assert delegate._rec("geometry")["body"] == body and len(site.state) == 1
+    delegate.source.root = "/other"
+    check = kit.check("geometry", params, [ref], [], ["stop_frac"])
+    assert not check["ok"] and "target/source" in check["message"]
+    with pytest.raises(ValueError, match="target/source"):
+        kit.submit("geometry", params, [ref], [], ["stop_frac"])
