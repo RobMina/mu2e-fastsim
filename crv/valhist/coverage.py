@@ -64,11 +64,13 @@ def _inventory(root, select, aliases):
     return selected, excluded
 
 
-def _classification(path, title, classname):
+def _classification(path, title, classname, count_keys=()):
     if classname.startswith("TProfile"):
         return "profile", "Profile means/errors require dedicated semantics."
     if not classname.startswith(("TH1", "TH2", "TH3")):
         return "unsupported", "Not a supported histogram family."
+    if path in count_keys:
+        return "count_like", "Explicit source-reviewed count-key override; fill counts are not independent events."
     text = (path + " " + title).lower()
     if any(word in text for word in ("rate", "mpv", "efficien", "occupancy", "fraction", "ratio", "mean", "rms", "sigma", "pedestal", "gain")):
         return "non_count", "Name/title indicates a derived quantity; no count normalization or Poisson model."
@@ -147,7 +149,7 @@ def _weighted(a, b, va, vb):
             "interpretation": "Positive-variance bins only; zero-variance conflicts are explicit. Not chi-square: paired/event covariance unknown."}
 
 
-def _compare_pair(root_ref, root_cand, key, ref, cand):
+def _compare_pair(root_ref, root_cand, key, ref, cand, count_keys=()):
     result = {"ref": ref, "cand": cand, "issues": []}
     if len(ref) > 1 or len(cand) > 1:
         result.update(status="alias_collision", issues=["alias_collision"])
@@ -161,8 +163,16 @@ def _compare_pair(root_ref, root_cand, key, ref, cand):
         result["issues"].append("type_mismatch")
     try:
         hr, hc = root_ref[r["key"]], root_cand[c["key"]]
-        cr, rr = _classification(key, getattr(hr, "title", ""), r["class"])
-        cc, rc = _classification(key, getattr(hc, "title", ""), c["class"])
+        if r['class'] == c['class'] == 'TNamed':
+            result.update(status='metadata_compared', ref_metadata=dict(name=hr.member('fName'), title=hr.member('fTitle')),
+                          cand_metadata=dict(name=hc.member('fName'), title=hc.member('fTitle')))
+            result['metadata_equal'] = result['ref_metadata'] == result['cand_metadata']
+            if not result['metadata_equal']:
+                result['issues'].append('metadata_mismatch')
+                result['status'] = 'metadata_mismatch'
+            return result
+        cr, rr = _classification(key, getattr(hr, "title", ""), r["class"], count_keys)
+        cc, rc = _classification(key, getattr(hc, "title", ""), c["class"], count_keys)
         result["classification"] = {"ref": cr, "cand": cc, "ref_reason": rr, "cand_reason": rc}
         if "profile" in (cr, cc):
             result["issues"].append("unsupported_profile")
@@ -230,7 +240,7 @@ def _json_safe(value):
     return value
 
 
-def audit(ref, cand, outdir, select=CRV_ONLY, aliases=()):
+def audit(ref, cand, outdir, select=CRV_ONLY, aliases=(), count_keys=()):
     """Audit one original file per arm, writing strict JSON to a new directory."""
     alias_pairs = _aliases(aliases)
     selection = re.compile(select) if select else None
@@ -241,12 +251,19 @@ def audit(ref, cand, outdir, select=CRV_ONLY, aliases=()):
         ir, er = _inventory(fr, selection, alias_pairs)
         ic, ec = _inventory(fc, selection, alias_pairs)
         with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
-            reports = {key: _compare_pair(fr, fc, key, ir.get(key, []), ic.get(key, []))
+            reports = {key: _compare_pair(fr, fc, key, ir.get(key, []), ic.get(key, []), count_keys)
                        for key in sorted(set(ir) | set(ic))}
     gaps = {key: item["issues"] for key, item in reports.items() if item["issues"]}
     summary = {
         "schema_version": 1, "ref": str(Path(ref).resolve()), "cand": str(Path(cand).resolve()),
         "select": select, "aliases": list(aliases), "limitations": LIMITATIONS,
+        "explicit_count_keys": sorted(count_keys),
+        "unused_count_keys": sorted(set(count_keys) - set(reports)),
+        "dimensions": dict(Counter(v['ref_data']['dimensions'] for v in reports.values() if 'closure' in v)),
+        "classes_ref": dict(Counter(v['class'] for items in ir.values() for v in items)),
+        "classes_cand": dict(Counter(v['class'] for items in ic.values() for v in items)),
+        "flow_value_differences": [k for k, v in reports.items() if 'bin_differences' in v and
+                                   not v['bin_differences']['flow']['equal']],
         "flow_provenance": "Read directly from supplied source objects; original/unmerged provenance is the caller's responsibility.",
         "selected_ref_objects": sum(map(len, ir.values())), "selected_cand_objects": sum(map(len, ic.values())),
         "excluded_ref_objects": er, "excluded_cand_objects": ec, "union_keys": len(reports),
@@ -261,6 +278,19 @@ def audit(ref, cand, outdir, select=CRV_ONLY, aliases=()):
     outdir.mkdir(parents=True, exist_ok=False)
     for filename, content in (("histograms.json", reports), ("summary.json", summary)):
         (outdir / filename).write_text(json.dumps(_json_safe(content), indent=2, allow_nan=False) + "\n")
+    lines = ['histogram\tclass\tstatus\tref_inclusive\tcand_inclusive\tref_flow\tcand_flow\ttotal_rel\tshape_tv_visible\tshape_tv_inclusive']
+    for key, r in reports.items():
+        if 'closure' not in r:
+            lines.append(f'{key}\t\t{r["status"]}')
+            continue
+        rr, rc = r['ref_data']['regions'], r['cand_data']['regions']
+        fields = [key, r['ref'][0]['class'], r['status'], rr['inclusive']['value_sum'], rc['inclusive']['value_sum'],
+                  rr['flow']['value_sum'], rc['flow']['value_sum'],
+                  r.get('normalization', {}).get('inclusive', {}).get('relative_difference'),
+                  r.get('shape', {}).get('visible', {}).get('total_variation'),
+                  r.get('shape', {}).get('inclusive', {}).get('total_variation')]
+        lines.append('\t'.join('' if v is None else str(v) for v in _json_safe(fields)))
+    (outdir / 'report.tsv').write_text('\n'.join(lines) + '\n')
     return _json_safe(summary)
 
 
@@ -271,9 +301,10 @@ def main():
     parser.add_argument("--outdir", required=True, help="new output directory; existing paths are refused")
     parser.add_argument("--select", default=CRV_ONLY, help="regex on canonical paths; empty string selects all")
     parser.add_argument("--alias", action="append", default=[], help="Validation child prefix OLD=NEW; repeatable")
+    parser.add_argument('--count-key', action='append', default=[], help='exact canonical path with source-reviewed count semantics')
     args = parser.parse_args()
     try:
-        summary = audit(args.ref, args.cand, args.outdir, args.select, args.alias)
+        summary = audit(args.ref, args.cand, args.outdir, args.select, args.alias, args.count_key)
     except (ValueError, OSError, re.error) as exc:
         parser.exit(2, str(exc) + "\n")
     print(json.dumps({"union_keys": summary["union_keys"], "statuses": summary["statuses"],

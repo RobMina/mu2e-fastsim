@@ -251,3 +251,29 @@ def test_alias_does_not_touch_other_directories_or_unrelated_prefixes(tmp_path):
     report = json.loads((tmp_path / "audit" / "histograms.json").read_text())
     assert sorted(report) == sorted(keys)
     assert summary["statuses"] == {"compared": 2}
+
+
+def test_explicit_reviewed_count_key_and_metadata(tmp_path):
+    from uproot.models.TNamed import Model_TNamed
+    from uproot.models.TObject import Model_TObject
+    def named(title):
+        obj = Model_TNamed.empty()
+        obj._deeply_writable = True
+        obj._bases = [Model_TObject.empty()]
+        obj._members = dict(fName='dqmBinningVersion', fTitle=title)
+        return obj
+    key = 'crvRecoDQM/NPc'
+    tag = 'crvRecoDQM/dqmBinningVersion'
+    ref, cand = files(tmp_path, {key: histogram([0, 1, 2, 0]), tag: named('3')},
+                       {key: histogram([0, 2, 1, 0]), tag: named('3')})
+    result = audit(ref, cand, tmp_path / 'audit', count_keys=[key])
+    reports = json.loads((tmp_path / 'audit/histograms.json').read_text())
+    assert reports[key]['shape']['visible']['total_variation'] == pytest.approx(1 / 3)
+    assert reports[tag]['metadata_equal'] is True
+    assert result['classes_ref'] == {'TH1D': 1, 'TNamed': 1}
+    assert result['dimensions'] == {1: 1}
+    assert not result['coverage_gaps']
+    with uproot.update(cand) as f:
+        f[tag] = named('4')
+    result = audit(ref, cand, tmp_path / 'audit2')
+    assert result['coverage_gaps'][tag] == ['metadata_mismatch']
