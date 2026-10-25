@@ -284,7 +284,9 @@ def catalogue_check(root, inventory, expected):
         h = root[items[0]['key']]
         if h.classname != e['classname']:
             issues[key] = 'class_mismatch'
-        elif len(h.axes) != len(e['edges']) or any(not np.array_equal(a.edges(), b) for a, b in zip(h.axes, e['edges'])):
+        elif len(h.axes) != len(e['edges']) or any(
+                a.member('fNbins') != len(b) - 1 or a.member('fXmin') != b[0] or a.member('fXmax') != b[-1] or
+                (len(a.member('fXbins')) and not np.array_equal(a.edges(), b)) for a, b in zip(h.axes, e['edges'])):
             issues[key] = 'binning_mismatch'
     directories = {k.split('/')[0] for k in expected}
     extra = [k for k, v in inventory.items() if k.split('/')[0] in directories and k not in expected and

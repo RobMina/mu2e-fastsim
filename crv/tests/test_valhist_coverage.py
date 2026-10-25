@@ -292,3 +292,17 @@ def test_catalogue_detects_missing_from_both_arms(tmp_path):
     assert summary['catalogue']['ref']['matched'] == 2
     assert summary['catalogue']['ref']['issues'] == {'crvDigiDQM/missing': 'missing'}
     assert summary['catalogue']['cand']['issues'] == {'crvDigiDQM/missing': 'missing'}
+
+
+def test_catalogue_fixed_axis_uses_booking_not_linspace_roundoff(tmp_path):
+    from valhist.coverage import catalogue_check
+    root = tmp_path / 'fixed.root'
+    h = identify.to_TH1x(fName='Z', fTitle='Z', data=np.zeros(155), fEntries=0, fTsumw=0,
+                         fTsumw2=0, fTsumwx=0, fTsumwx2=0, fSumw2=None,
+                         fXaxis=identify.to_TAxis('xaxis', '', 153, 21000, 25000))
+    with uproot.recreate(root) as f:
+        f['crvRecoDQM/Z'] = h
+    with uproot.open(root) as f:
+        expected = {'crvRecoDQM/Z': dict(classname='TH1D', edges=[np.linspace(21000, 25000, 154)])}
+        inv = {'crvRecoDQM/Z': [dict(key='crvRecoDQM/Z;1', **{'class': 'TH1D'})]}
+        assert catalogue_check(f, inv, expected)['matched'] == 1
