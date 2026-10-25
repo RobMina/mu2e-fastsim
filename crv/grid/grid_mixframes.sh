@@ -14,11 +14,16 @@ ifdh cp "${CODE_PNFS:?}" code.tgz && mkdir -p code && tar -xzf code.tgz -C code 
 ifdh cp "${COND_PNFS:?}" crvreco_mcs.root || die "conditions"
 ifdh cp "${CONDPHOTON_PNFS:?}" crvphoton.txt || die "CRVPhoton table"
 cat code/VERSION
+# a random subset of each mixer's tables (seeded): all of them are ~18 GB / ~22 GB in memory; FILES_<Mixer> caps the
+# count per job (default: every table). A job's frames are drawn from its subset, so jobs use different frames.
 mkdir -p tables
 for m in EleBeamFlashCat MuBeamFlashCat MuStopPileupCat NeutralsFlashCat; do
   mkdir -p tables/$m
-  for f in $(ifdh ls "${TABLES_PNFS:?}/$m" 2>/dev/null | grep "\.parquet$"); do ifdh cp "$f" tables/$m/$(basename "$f") >/dev/null || die "table $f"; done
-  echo "$m: $(ls tables/$m | wc -l) tables"
+  ifdh ls "${TABLES_PNFS:?}/$m" 2>/dev/null | grep "\.parquet$" > all_$m.txt
+  cap=$(eval echo "\${FILES_$m:-0}")
+  if [ "$cap" -gt 0 ]; then shuf -n "$cap" --random-source=<(openssl enc -aes-256-ctr -pass pass:"$SEED$m" -nosalt -pbkdf2 </dev/zero 2>/dev/null) all_$m.txt > use_$m.txt; else cp all_$m.txt use_$m.txt; fi
+  while read -r f; do ifdh cp "$f" tables/$m/$(basename "$f") >/dev/null || die "table $f"; done < use_$m.txt
+  echo "$m: $(ls tables/$m | wc -l) of $(wc -l < all_$m.txt) tables, $(du -sh tables/$m | cut -f1)"
 done
 L=$PWD/lookup; mkdir -p $L
 for f in LookupTable_6000_0 photonMap.root; do cp /cvmfs/mu2e.opensciencegrid.org/DataFiles/CRVConditions/v6_0/$f $L/ || die "lookup $f"; done

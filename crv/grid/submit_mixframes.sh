@@ -3,7 +3,8 @@
 # stage-1 tables in $CAT/out. Run on a GPVM from a data-area dir.
 #   submit_mixframes.sh --prepare           # stage code + conditions (Run 1A mcs dump) + CRVPhoton table to pnfs
 #   submit_mixframes.sh --test              # one job          submit_mixframes.sh --cluster -N 20
-# env: EVENTS (per job), SEED0, BASE, CAT (stage-1 base). Sizing from the one-job test.
+# env: EVENTS (per job), SEED0, BASE, CAT (stage-1 base), FILES_<Mixer> (tables per job; default 60 NeutralsFlashCat,
+#      12 MuStopPileupCat, all of the small ones: ~1.4 GB on disk, ~1.7 GB in memory). Sizing from the one-job test.
 BASE=${BASE:-/pnfs/mu2e/scratch/users/ram2aq/crvfs_mixframes_run1a}; IN=$BASE/in; OUT=$BASE/out
 CAT=${CAT:-/pnfs/mu2e/scratch/users/ram2aq/crvfs_catsteps_run1a}
 D=/exp/mu2e/data/users/ram2aq/crv_fastsim; C=/exp/mu2e/app/users/ram2aq/analysis/mu2e-fastsim
@@ -27,9 +28,10 @@ fi
 OUT_TOKEN=$(echo "$OUT" | sed 's|^/pnfs/mu2e|/mu2e|')
 CMD=(jobsub_submit -N "$N" -G mu2e --role=Analysis --expected-lifetime=3h
   --resource-provides=usage_model=DEDICATED,OPPORTUNISTIC --lines='+FERMIHTC_AutoRelease=True'
-  --memory="${MEM:-6000MB}" --disk="${DISK:-8000MB}" --need-storage-modify="$OUT_TOKEN"
+  --memory="${MEM:-7000MB}" --disk="${DISK:-6000MB}" --need-storage-modify="$OUT_TOKEN"
   -e CODE_PNFS="$IN/code.tgz" -e COND_PNFS="$IN/crvreco_mcs.root" -e CONDPHOTON_PNFS="$IN/crvphoton.txt"
-  -e TABLES_PNFS="$CAT/out" -e EVENTS="${EVENTS:-2000}" -e SEED0="${SEED0:-1000}" "file://$HERE/grid_mixframes.sh" "$OUT")
+  -e TABLES_PNFS="$CAT/out" -e FILES_NeutralsFlashCat="${FILES_NeutralsFlashCat:-60}" -e FILES_MuStopPileupCat="${FILES_MuStopPileupCat:-12}"
+  -e EVENTS="${EVENTS:-2000}" -e SEED0="${SEED0:-1000}" "file://$HERE/grid_mixframes.sh" "$OUT")
 echo "${CMD[@]}"
 "${CMD[@]}" 2>&1 | tee /tmp/$USER.submit_mixframes.txt
 grep -qE "submitted to cluster" /tmp/$USER.submit_mixframes.txt || { echo "ERROR: no cluster id: NOTHING SUBMITTED" >&2; exit 1; }
