@@ -102,4 +102,24 @@ arm; an incomplete pilot lists unstarted arms. On a GPVM use one CPU affinity an
 passes include their compilation overhead and `repeat=0`: the legacy `muons_per_s_warm` metadata label from `run`
 is **not** a warm-throughput measurement here. Never extrapolate larger-job runtime from this pilot.
 
+## Finer slicing on a fixed population
+
+```bash
+PYTHONPATH=core:beam python3 -m beamfastsim.slicestudy \
+  --baseline "$DATA/convergence_UNIQUE_TAG" --out "$DATA/slices_NEW_TAG" --seeds 11 22
+```
+
+Requires a whole-event pilot with `input_block.npz`; pass the same `--geom` for moved targets. Reuses the saved
+4/8-slice arms and runs only 16/32 slices. Before any run, verifies the selected-input hash, beam/core physics
+source hashes, geometry include hashes, field hashes, and saved-arm parameters/lengths against the pilot manifest
+and summary. This is not a full binary/environment identity check; reused output hashes are recorded at extension
+time, not retroactive proof of their original write. The new output directory must not exist.
+
+For each seed, all timing differences use the same intersection of tracks stopping in all four arms. Subsets keep
+those stopping in the same foil across all arms separate from those changing foil in any arm. Saved row indices
+allow exact replay. Reports include event-cluster errors for adjacent-slice and 32-minus-4 flight-time, foil-index
+and z differences. These outcome-conditioned populations are **diagnostics**, not production response/correction
+models; the common intersection changes if more arms are added. Seed replicas are correlated through their shared
+inputs. No G4 time closure, acceptance threshold or default-slice change follows from the report.
+
 Status and validation: wiki `mu2e/wiki/sim/beam-muon-transport-fastsim.md`.
