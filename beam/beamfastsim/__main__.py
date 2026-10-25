@@ -34,6 +34,16 @@ def cmd_g4table(a):
     print(f"{len(t['evt'])} DS-stage muons, {np.sum(t['foil'] >= 0)} stopped in a foil -> {a.out}")
 
 
+def cmd_reference_audit(a):
+    from . import reference_audit
+    report = reference_audit.audit(a.nts, table=a.g4, artifacts=a.artifact)
+    with open(a.out, "w") as stream:
+        json.dump(report, stream, indent=2)
+    print(json.dumps(report, indent=2))
+    if report["duplicate_primary_ids"] or (a.g4 and not report["table"]["all_raw_columns_match"]):
+        raise SystemExit(1)
+
+
 def cmd_run(a):
     import jax
     from . import fieldmap, g4ref, transport
@@ -160,10 +170,13 @@ def main(argv=None):
     s.add_argument("--n", type=int, default=0); s.add_argument("--seed", type=int, default=1)
     s.add_argument("--batch", type=int, default=131072); s.add_argument("--chunk", type=int, default=400)
     s.add_argument("--repeat", type=int, default=0)
+    s = sp.add_parser("reference-audit", help="certify persisted reference coverage and raw table identity")
+    s.add_argument("--nts", nargs="+", required=True); s.add_argument("--g4")
+    s.add_argument("--artifact", action="append", default=[]); s.add_argument("--out", required=True)
     sp.add_parser("fieldcheck")
     a = ap.parse_args(argv)
     {"g4table": cmd_g4table, "run": cmd_run, "point": cmd_point, "compare": cmd_compare,
-     "fieldcheck": cmd_fieldcheck}[a.cmd](a)
+     "fieldcheck": cmd_fieldcheck, "reference-audit": cmd_reference_audit}[a.cmd](a)
 
 
 if __name__ == "__main__":

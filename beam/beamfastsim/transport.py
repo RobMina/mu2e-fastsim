@@ -142,8 +142,8 @@ def _build(geom, prm, chunk):
         un = jnp.where(alive[:, None], un, st.u)
         z0, z1 = st.x[:, 2], xn[:, 2]
         # foil crossing: first foil plane between z0 and z1 (spacing >> step, so at most one)
-        lo, hi = jnp.minimum(z0, z1), jnp.maximum(z0, z1)
-        crossed = (fz[None, :] > lo[:, None]) & (fz[None, :] <= hi[:, None])
+        crossed = ((fz[None, :] > z0[:, None]) & (fz[None, :] <= z1[:, None])) | \
+                  ((fz[None, :] < z0[:, None]) & (fz[None, :] >= z1[:, None]))
         k = jnp.argmax(crossed, axis=1).astype(jnp.int32)
         anyc = alive & jnp.any(crossed, axis=1)
         frac = jnp.where(anyc, (fz[k] - z0) / jnp.where(z1 != z0, z1 - z0, 1.0), 0.0)
@@ -202,12 +202,15 @@ def _build(geom, prm, chunk):
 def transport_all(fm, geom, prm, key, st, chunk=200, min_bucket=256):
     """Run to completion in chunks of `chunk` steps, compacting live lanes between chunks (padded to powers of 2
     so only a few shapes compile). Returns the final State (numpy) and the total number of lane-steps executed."""
-    run = make_stepper(fm, geom, prm, chunk=chunk)
+    for name, value in (("chunk", chunk), ("max_steps", prm.max_steps), ("min_bucket", min_bucket)):
+        if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)) or value <= 0:
+            raise ValueError(f"{name} must be a positive integer")
     final = {f: np.array(getattr(st, f)) for f in State._fields}
     idx = np.arange(len(final["p"]))
     cur = st
     done_steps, lane_steps, it = 0, 0, 0
     while len(idx) and done_steps < prm.max_steps:
+        run = make_stepper(fm, geom, prm, chunk=min(chunk, prm.max_steps - done_steps))
         cur, n = run(jax.random.fold_in(key, it), cur)
         n = int(n)
         lane_steps += n * len(idx)
