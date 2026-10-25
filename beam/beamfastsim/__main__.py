@@ -58,7 +58,8 @@ def cmd_run(a):
     g = g4ref.load(a.g4)
     n = min(a.n or len(g["evt"]), len(g["evt"]))
     geom = _geom(a.geom, target_contract=True)
-    prm = transport.Params(ds=a.ds, msc=not a.no_msc, decay=not a.no_decay, n_slices=a.slices, tcut=a.tcut)
+    prm = transport.Params(ds=a.ds, msc=not a.no_msc, decay=not a.no_decay, n_slices=a.slices, tcut=a.tcut,
+                           max_steps=getattr(a, "max_steps", 3000))
     t0 = time.time()
     fm = fieldmap.to_device(fieldmap.load(f"{MAPS}/{MAP}.header"))
     t_load = time.time() - t0
@@ -165,6 +166,7 @@ def main(argv=None):
     s.add_argument("--g4", required=True); s.add_argument("--out", required=True)
     s.add_argument("--n", type=int, default=0); s.add_argument("--seed", type=int, default=1)
     s.add_argument("--ds", type=float, default=5.0); s.add_argument("--batch", type=int, default=20000)
+    s.add_argument("--max-steps", type=int, default=3000, help="numerical path cap, not a design parameter")
     s.add_argument("--slices", type=int, default=4); s.add_argument("--tcut", type=float, default=1.0)
     s.add_argument("--no-msc", action="store_true"); s.add_argument("--no-decay", action="store_true")
     s.add_argument("--chunk", type=int, default=200)
