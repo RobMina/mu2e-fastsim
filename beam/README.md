@@ -46,8 +46,14 @@ labels are not checked; empty-muon events, input-file contents and the historica
 are not certified by this audit. Review the saved job outcome separately; particle rows are not event counts.
 
 `transport_all` enforces an exact positive-integer step cap, including the final partial chunk. Foil crossings own
-the arrival endpoint and exclude departure in either direction. These numerical conventions do not resolve grazing
-paths, multiple planes per step, stop-time interpolation or the low-energy loss-model domain. A shared seed is not
-layout-invariant: chunking and compaction affect random draws.
+the arrival endpoint and exclude departure in either direction. `make_stepper` rejects nonfinite/malformed foil
+arrays, invalid radii/thicknesses, overlapping or unordered foils, and centre spacing smaller than `ds`. Treat the
+geometry arrays as immutable after compilation. This is a stepping precondition, not a full geometry contract:
+unknown overlay keys, materials, tilted foils, supports and simplified absorber coverage still need explicit guards.
+
+For a foil stop, time and proper time use the crossing fraction of the pre-step flight, consistent with the saved
+thin-plane stop position. No within-foil slowing time is integrated; surviving crossings, IPA stops, boundary/decay
+ordering, grazing paths and the low-energy model remain approximations requiring physics convergence checks.
+A shared seed is not layout-invariant: chunking and compaction affect random draws.
 
 Status and validation: wiki `mu2e/wiki/sim/beam-muon-transport-fastsim.md`.

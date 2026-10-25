@@ -39,6 +39,29 @@ class BeamGeometry:
     opa_z1: float
 
 
+def validate_foils(geom, ds):
+    """Check the represented annular-plane arrays and one-plane-per-step precondition.
+
+    This is not an Offline overlay allowlist or a material/absorber coverage certificate. Foil arrays must be
+    treated as immutable after compiling a stepper; tilted foils and support navigation are not represented.
+    """
+    if not np.isscalar(ds) or not np.isfinite(ds) or ds <= 0:
+        raise ValueError("ds must be finite and positive")
+    arrays = [np.asarray(getattr(geom, f)) for f in ("foil_z", "foil_rin", "foil_rout", "foil_ht")]
+    z, rin, rout, ht = arrays
+    if any(a.ndim != 1 or a.size == 0 or not np.all(np.isfinite(a)) for a in arrays):
+        raise ValueError("foil arrays must be nonempty, finite and one-dimensional")
+    if any(a.shape != z.shape for a in arrays):
+        raise ValueError("foil arrays must have equal lengths")
+    if np.any(rin < 0) or np.any(rout <= rin) or np.any(ht <= 0):
+        raise ValueError("foil radii require 0 <= rin < rout and positive half thickness")
+    gap = np.diff(z)
+    if np.any(gap <= 0) or np.any(gap < ds):
+        raise ValueError("foil centres must increase with spacing >= ds (one plane per step)")
+    if np.any(gap <= ht[:-1] + ht[1:]):
+        raise ValueError("foil thicknesses must not overlap in z")
+
+
 def from_offline(geom_file, offline_root):
     """BeamGeometry from an Offline geometry file (e.g. Offline/Mu2eG4/geom/geom_common.txt) under offline_root."""
     path = geom_file if os.path.isabs(geom_file) else f"{offline_root}/{geom_file}"

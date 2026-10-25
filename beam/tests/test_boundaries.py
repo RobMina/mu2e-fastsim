@@ -46,3 +46,22 @@ def test_invalid_chunk_rejected(chunk):
     with pytest.raises(ValueError, match="chunk"):
         transport.transport_all(_uniform_map(), _geom(nfoil=1), prm, jax.random.PRNGKey(1),
                                 _state(prm), chunk=chunk)
+
+
+@pytest.mark.parametrize("ds", [2.0, 5.0])
+@pytest.mark.parametrize("direction", [-1.0, 1.0])
+def test_foil_stop_time_matches_crossing_position(monkeypatch, ds, direction):
+    def stop_at_layer(key, mat, x0, p, u, length, active, n_slices, tcut, msc):
+        return p * ~active, u, active
+
+    monkeypatch.setattr(transport, "_layer", stop_at_layer)
+    prm = transport.Params(ds=ds, max_steps=1, msc=False, decay=False)
+    g = _geom(nfoil=1, z0=5000.0)
+    run = transport.make_stepper(_uniform_map(0.0), g, prm)
+    initial = _state(prm, z=5000.0 - direction, direction=direction)
+    result, _ = run(jax.random.PRNGKey(1), initial)
+    energy = np.sqrt(40.0 ** 2 + transport.eloss.MMU ** 2)
+    assert result.fate[0] == 1
+    assert result.x[0, 2] == 5000.0
+    assert float(result.t[0]) == pytest.approx(energy / (40.0 * transport.C_MM_NS))
+    assert float(result.tau[0]) == pytest.approx(transport.eloss.MMU / (40.0 * transport.C_MM_NS))

@@ -115,6 +115,7 @@ def make_stepper(fm, geom, prm, chunk=None):
     Lanes that are done keep their state; call repeatedly (with compaction, see transport_all) to finish. The field
     map is a traced argument (not a compile-time constant) and the jitted core is cached per (geom, prm, chunk).
     """
+    geometry.validate_foils(geom, prm.ds)
     ck = (id(geom), prm, chunk)
     if ck not in _CACHE:
         _CACHE[ck] = _build(geom, prm, chunk)
@@ -165,9 +166,10 @@ def _build(geom, prm, chunk):
         p2, u2, stop_l = lax.cond(jnp.any(act),
                                   lambda: _layer(kl, mc, x0, st.p, un, length, act, prm.n_slices, prm.tcut, prm.msc),
                                   lambda: (st.p, un, jnp.zeros_like(act)))
-        # time and proper time over the step at the pre-step speed
+        # Thin-plane foil stops use the crossing fraction for both position and pre-step flight time.
         e = jnp.sqrt(st.p ** 2 + eloss.MMU ** 2)
-        dt = jnp.where(alive, h * e / (jnp.maximum(st.p, 1e-3) * C_MM_NS), 0.0)
+        flight = h * jnp.where(stop_l & hit, frac, 1.0)
+        dt = jnp.where(alive, flight * e / (jnp.maximum(st.p, 1e-3) * C_MM_NS), 0.0)
         tau = st.tau + dt * eloss.MMU / e
         # fates, in priority order
         fate = st.fate
