@@ -173,6 +173,16 @@ changes, missing keys, strict edge/type mismatches, highest-cycle replacement,
 unsupported profiles/objects, non-count maps, alias collisions/boundaries,
 selection, strict JSON, source-file immutability and refusal of existing output.
 
+## Independent catalogue coverage
+
+`--catalogue FROZEN.txt` additionally checks the explicit Digi+Reco client inventory written by DQMHistSet,
+including missing-in-both entries, extra histograms, exact ROOT classes and axis bookings. The Status client is
+not implicitly required for MC. Fixed axes compare `nbins/xmin/xmax`, avoiding floating-point edge-generation
+roundoff; variable axes compare edges. No `allclose` tolerance hides booking differences. The frozen catalogue
+uses default ostream precision: if differing endpoints match six-significant-digit serialization, that is
+reported as a precision candidate **without clearing the mismatch**. For the pilot this affects Z_extracted
+(20787.95–24903.05 in both ROOT files, 20788–24903 in text); 84/85 exact bookings, all 85 names/classes present.
+
 ## Source-reviewed overrides and event-level rates
 
 `--count-key EXACT_CANONICAL_PATH` explicitly declares a histogram's count semantics, overriding the conservative

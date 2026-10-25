@@ -275,7 +275,7 @@ def catalogue_entries(path, clients):
 
 
 def catalogue_check(root, inventory, expected):
-    issues = {}
+    issues, precision = {}, {}
     for key, e in expected.items():
         items = inventory.get(key, [])
         if len(items) != 1:
@@ -288,10 +288,19 @@ def catalogue_check(root, inventory, expected):
                 a.member('fNbins') != len(b) - 1 or a.member('fXmin') != b[0] or a.member('fXmax') != b[-1] or
                 (len(a.member('fXbins')) and not np.array_equal(a.edges(), b)) for a, b in zip(h.axes, e['edges'])):
             issues[key] = 'binning_mismatch'
+            rounding = len(h.axes) == len(e['edges']) and all(
+                a.member('fNbins') == len(b) - 1 and not len(a.member('fXbins')) and
+                float(format(a.member('fXmin'), '.6g')) == b[0] and
+                float(format(a.member('fXmax'), '.6g')) == b[-1] for a, b in zip(h.axes, e['edges']))
+            if rounding:
+                precision[key] = dict(reason='matches default ostream six-significant-digit serialization only; exact catalogue closure unverified',
+                                      actual=[[a.member('fXmin'), a.member('fXmax')] for a in h.axes],
+                                      catalogue=[[float(b[0]), float(b[-1])] for b in e['edges']])
     directories = {k.split('/')[0] for k in expected}
     extra = [k for k, v in inventory.items() if k.split('/')[0] in directories and k not in expected and
              any(item['class'].startswith(('TH', 'TProfile')) for item in v)]
-    return dict(expected=len(expected), matched=len(expected) - len(issues), issues=issues, extra_histograms=sorted(extra))
+    return dict(expected=len(expected), matched=len(expected) - len(issues), issues=issues,
+                catalogue_precision_candidates=precision, extra_histograms=sorted(extra))
 
 
 def audit(ref, cand, outdir, select=CRV_ONLY, aliases=(), count_keys=(), catalogue=None,

@@ -47,3 +47,37 @@ def test_verify_keys_entries_and_exit(tmp_path, candidate, rc, completed):
         with pytest.raises(SystemExit):
             verify(tmp_path)
     assert json.loads((tmp_path / 'completion.json').read_text())['completed'] == completed
+
+
+def test_prepare_records_assets_and_refuses_reuse(tmp_path, monkeypatch):
+    from valhist import pilot
+    from crvfastsim import geometry
+    from crvfastsim.response import lookup
+    area, core, data = tmp_path / 'area', tmp_path / 'core', tmp_path / 'data'
+    cat = area / 'backing/Offline/CRVDQM/data/CRVDQM_binning_v3_extracted.txt'
+    cat.parent.mkdir(parents=True)
+    cat.write_text('catalogue')
+    core.mkdir()
+    gen, lib = tmp_path / 'fastC.root', tmp_path / 'lib.root'
+    with uproot.recreate(gen) as f:
+        write_events(f, 'dump/gen', [1, 2])
+    lib.write_bytes(b'library')
+    (data / 'geometry').mkdir(parents=True)
+    for name in ('crvcalib_sim_best_v1_5_run1400.csv', 'crvphoton_sim_best_v1_5_run1400.csv'):
+        (data / 'geometry' / name).write_text('conditions')
+    (data / 'lookup').mkdir()
+    (data / 'lookup/LUT').write_text('lookup')
+    template = data / 'template.txt'
+    template.write_text('template')
+    monkeypatch.setattr(geometry, 'find_counters', lambda p: str(template))
+    monkeypatch.setattr(lookup, 'lookup_dir', lambda: str(data / 'lookup'))
+    monkeypatch.setattr(pilot, 'revision', lambda p: dict(head='synthetic', status=''))
+    out = data / 'valhist/newpilot'
+    pilot.prepare(out, gen, lib, area, core, '/pnfs/known.art', 11)
+    manifest = json.loads((out / 'manifest.json').read_text())
+    assert manifest['generated']['unique_events'] == 2
+    assert manifest['files'][str(template)] == pilot.digest(template)
+    assert not manifest['asset_paths_missing']
+    assert 'mc : false' in (out / 'a1.fcl').read_text()
+    with pytest.raises(FileExistsError):
+        pilot.prepare(out, gen, lib, area, core, '/pnfs/known.art', 11)

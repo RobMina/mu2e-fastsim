@@ -306,3 +306,19 @@ def test_catalogue_fixed_axis_uses_booking_not_linspace_roundoff(tmp_path):
         expected = {'crvRecoDQM/Z': dict(classname='TH1D', edges=[np.linspace(21000, 25000, 154)])}
         inv = {'crvRecoDQM/Z': [dict(key='crvRecoDQM/Z;1', **{'class': 'TH1D'})]}
         assert catalogue_check(f, inv, expected)['matched'] == 1
+
+
+def test_catalogue_precision_is_reported_not_passed(tmp_path):
+    from valhist.coverage import catalogue_check
+    p = tmp_path / 'fixed.root'
+    h = identify.to_TH1x(fName='Z', fTitle='Z', data=np.zeros(102), fEntries=0, fTsumw=0,
+                         fTsumw2=0, fTsumwx=0, fTsumwx2=0, fSumw2=None,
+                         fXaxis=identify.to_TAxis('xaxis', '', 100, 20787.95, 24903.05))
+    with uproot.recreate(p) as f:
+        f['crvRecoDQM/Z'] = h
+    with uproot.open(p) as f:
+        expected = {'crvRecoDQM/Z': dict(classname='TH1D', edges=[np.linspace(20788, 24903, 101)])}
+        inv = {'crvRecoDQM/Z': [dict(key='crvRecoDQM/Z;1', **{'class': 'TH1D'})]}
+        r = catalogue_check(f, inv, expected)
+    assert r['matched'] == 0 and r['issues'] == {'crvRecoDQM/Z': 'binning_mismatch'}
+    assert r['catalogue_precision_candidates']['crvRecoDQM/Z']['actual'] == [[20787.95, 24903.05]]

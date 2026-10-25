@@ -61,8 +61,12 @@ remains untouched. New reports preserve array contents/variance evidence and cla
 | E2E | 133 | 9 | 2 TNamed, equal | 14 step + 8 DigiMC |
 
 No profiles were booked in this selection; profiles are explicitly unsupported by the audit, not silently
-skipped. The histogram union is audited; this is not yet an independent check for a catalogue entry absent from
-**both** files. E2E does not inject steps or DigiMC and its 22 omissions remain declared coverage gaps.
+skipped. An independent frozen catalogue check finds all **85 Digi+Reco names/classes**, no extras, and **84/85 exact
+axis bookings** in A0g and E2E. `Z_extracted` is booked identically in both ROOT files at 20787.95–24903.05 mm,
+where the text catalogue says 20788–24903. Frozen `DQMHistSet::WriteCatalogue` uses default ostream precision;
+six-significant-digit serialization explains the difference. The audit keeps an exact-match gap and records
+this precision candidate instead of weakening the threshold. No Status client is booked (MC has no DAQ status).
+E2E does not inject steps or DigiMC and its 22 omissions remain declared coverage gaps.
 Original source objects do not supply Sumw2 for these compared histograms: no invented independent-Poisson
 variance, calibrated p-value, shape significance or blanket pass is reported.
 
@@ -86,17 +90,17 @@ The known float-position round-trip limitation is reproduced on the frozen A0-du
 histograms including nine TH2s, only the three cluster-X histograms differ, and all common flow bins agree.
 
 Evidence: `coverage_{a1,e2e}_v2`, `coverage_e2e_vs_a1`, `coverage_{a1,e2e}_vs_frozen`, `coverage_floor`,
-`coverage_frozen_roundtrip`, each with `summary.json`, `histograms.json`, `report.tsv`. Initial `coverage_a1/e2e`
+`coverage_frozen_roundtrip`, `catalogue_e2e_v2`, each with `summary.json`, `histograms.json`, `report.tsv`. Initial `coverage_a1/e2e`
 reports are retained historical artifacts from before explicit count overrides and metadata handling.
 
 ## Reproduction and next gates
 
 - Drivers: `valhist/run_pilot.sh`, `valhist/audit_pilot.sh`; contracts and limitations: `docs/valhist-coverage.md`.
-- Local tests: **25 passed** across `test_valhist_{coverage,pilot,paired_rates}.py`, before the final manifest
-  hardening (rerun recorded with publication).
+- Local tests: **53 passed in 4.06 s** across `test_valhist_{coverage,pilot,paired_rates}.py` and
+  `test_chain_reco_contract.py`, including manifest hardening and strict catalogue/precision tests.
 - Extend new candidate arms to the remaining shards using retained Thread A transport and unique tags; never
   rerun A0/A0'/A0g merely to get a fresh timestamp.
-- Add independent catalogue coverage, event/shard-paired shape covariance, uncertainty calibration and
+- Resolve catalogue serialization precision; add event/shard-paired shape covariance, uncertainty calibration and
   finite-library treatment. Current event-paired rate errors do not close the shape-uncertainty programme.
 - Keep derived maps/profile semantics, expected omissions and stock float-round-trip differences explicit.
   This pilot is executed and audited, **not a full DQM pass**.
