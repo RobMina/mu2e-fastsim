@@ -121,7 +121,37 @@ uses no reconstructed-bunch-time smearing; it is not a reproduction of productio
 response derives its bounds from bunch time, but this must still be runtime-checked.
 
 The user must build the existing `crv/art` muse area before this producer is used.
-No C++ compilation, FHiCL runtime validation or stock replay has yet been performed.
+The adapter has been built by the user and exercised in bounded stock replay jobs;
+site-specific evidence and measured physics quantities are recorded in the internal wiki.
 Start with one event, then ten, checking recorded event IDs/pbtime and output entries
 before the full pilot. Use `veto.compareframes --dump` against the stock dumper output
 only after both frame lists are verified complete. The full-Cat deficit remains open.
+
+### Running and checking the stock replay
+
+After the user confirms the build, set up that muse area and run serially:
+
+```bash
+bash "$CRVFS_CODE/scripts/run_veto_stock_replay.sh" "$AREA" "$REPLAY" "$NEW_OUTDIR" 1
+# Repeat with new output directories for ten events and then the complete pilot.
+python3 -m crvfastsim.veto.replay_check --input "$REPLAY" --stock "$NEW_OUTDIR/stock.root" \
+  --events 1 --conditions "$CONDITIONS" --out "$NEW_OUTDIR/check.json"
+# For the complete pilot, add --fast "$FAST_FRAMES" and set --events to the manifest count.
+```
+
+The driver requires the matching `MUSE_WORK_DIR`, new data-area output directory,
+and a positive event count. It records the input table/source hash and backing area.
+It never builds or alters a shared area. Run the checker with the ana Python plus
+`PYTHONPATH=core:crv`, not an arbitrary Python bundled with art.
+
+The checker opens the highest tree cycles, requires the exact requested event prefix
+including empty events, float32 bunch times, onspill/1700 ns window, product-row counts
+consistent with event counters, and equality of the dumped calibration/status/ordinal
+arrays with the fast conditions file. Complete paired comparisons also require the
+fast arm's input and conditions hashes and exact all-event ID list. Empty comparison
+subsets serialize undefined fractions as JSON null using the common JSON writer.
+The recorded calibration comparison does not independently certify the photon-yield
+DB table; retain the photon-deviation file hash and stock conditions version too.
+
+A successful replay contract is not a physics-closure test. A handful of coincidences,
+a single Cat table per species, or a large KS p-value cannot certify a rate/shape model.
