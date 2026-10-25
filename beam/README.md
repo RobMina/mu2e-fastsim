@@ -84,6 +84,12 @@ This runs four arms sequentially for each saved seed: nominal (5 mm, 3000 steps,
 `--arms` can restrict the list. Put `nominal` first for paired arm differences. `run --max-steps` also exposes the
 numerical cap directly; it is not a BO design variable.
 
+`--start ROW --n COUNT` selects a contiguous whole-event block. Requests outside the table or splitting an event
+(including noncontiguous repeated IDs) fail before creating output. The selected input is saved as `input_block.npz`;
+the manifest records its hash, row range, event count and endpoint IDs. `nominal` must be the first arm. Disjoint
+blocks in the same table are not automatically independent upstream source samples, and equal event IDs across
+different G4 resampling jobs do not establish matched primaries.
+
 The output directory must be new. Each arm retains an NPZ; `summary.json` counts actual saved muons, fates and foil
 profiles and reports event-cluster standard errors for paired stop-fraction differences and flight-time shifts
 conditional on stopping in both arms. `manifest.json` hashes the input, current beam/core physics code, field files
