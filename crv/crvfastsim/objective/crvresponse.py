@@ -336,19 +336,36 @@ def shape_term(a, b, n0=N0, rng=None):
             "raw_chi2ndf": c2 / ndf, "entries": float(a.sum()), "entries_ref": float(b.sum())}
 
 
-def objective(S, R, n0=N0, exclude=()):
+def objective(S, R, n0=N0, exclude=(), required=None):
     """Objective of S (candidate, e.g. MC) against R (reference, e.g. data). Returns the size-free total (objective,
     with its statistical sigma), the old raw-chi2 total (objective_raw) and the per-term values. exclude: term names
-    left out of the totals (still reported per term), e.g. a data-quality exclusion; objective_all keeps every term."""
+    left out of the totals (still reported per term), e.g. a data-quality exclusion; objective_all keeps every term.
+    required: frozen term manifest; when supplied, reject missing/nonfinite scored terms and unexpected terms."""
+    excluded = set(exclude)
+    manifest = None if required is None else set(required)
+    if manifest is not None:
+        if excluded - manifest:
+            raise ValueError(f"unknown objective exclusions: {sorted(excluded - manifest)}")
+        if not manifest - excluded:
+            raise ValueError("objective requires at least one non-excluded term")
     terms = {}
     rng = np.random.default_rng(20261022)
     for k in S["h"]:
+        if k not in R["h"]:
+            continue
+        if manifest is not None:
+            a, b = np.asarray(S["h"][k], float), np.asarray(R["h"][k], float)
+            if a.shape != b.shape or not np.all(np.isfinite(a)) or not np.all(np.isfinite(b)) or \
+                    np.any(a < 0) or np.any(b < 0):
+                raise ValueError(f"invalid objective histogram: {k}")
         t = shape_term(S["h"][k], R["h"][k], n0, rng)
         if t is not None:
             terms[k] = t
     for s in SLOTS:
         ns, nr = S["oot_n"][s], R["oot_n"][s]
         es, er = S["exposure_ns"] * 1e-3, R["exposure_ns"] * 1e-3    # per event per us
+        if manifest is not None and (not np.all(np.isfinite([ns, nr, es, er])) or min(ns, nr, es, er) < 0):
+            raise ValueError(f"invalid objective rate inputs: oot_rate_{s}")
         if es > 0 and er > 0 and ns + nr > 0:
             rs, rr = max(ns, 0.5) / es, max(nr, 0.5) / er
             x = float(np.log(rs / rr))
@@ -357,17 +374,27 @@ def objective(S, R, n0=N0, exclude=()):
             sigr = 2.0 * abs(x) / RATE_TOL ** 2 / np.sqrt(max(nr, 0.5))
             terms[f"oot_rate_{s}"] = {"rate": rs, "rate_ref": rr, "chi2ndf": v, "raw_chi2ndf": v, "sigma": float(sig),
                                       "sigma_ref": float(sigr)}
-    if not terms:
-        return {"objective": float("nan"), "n_terms": 0, "terms": terms}
-    used = {k: v for k, v in terms.items() if k not in set(exclude)}
+    if manifest is not None:
+        missing = sorted(manifest - excluded - terms.keys())
+        unexpected = sorted(terms.keys() - manifest)
+        invalid = sorted(k for k, v in terms.items() if k not in excluded and
+                         not all(np.isfinite(v[f]) for f in ("chi2ndf", "raw_chi2ndf", "sigma", "sigma_ref")))
+        if missing or unexpected or invalid:
+            raise ValueError(f"invalid objective terms: missing={missing}, unexpected={unexpected}, nonfinite={invalid}")
+    used = {k: v for k, v in terms.items() if k not in excluded}
     n = len(used)
+    if not n:
+        return {"objective": float("nan"), "sigma": float("nan"), "sigma_ref": float("nan"),
+                "objective_raw": float("nan"), "objective_all": float("nan"), "n0": n0, "n_terms": 0,
+                "excluded": sorted(excluded), "terms": terms}
     tot = float(np.mean([v["chi2ndf"] for v in used.values()]))
     sig = float(np.sqrt(sum(v["sigma"] ** 2 for v in used.values())) / n)
     sigr = float(np.sqrt(sum(v["sigma_ref"] ** 2 for v in used.values())) / n)
     raw = float(np.mean([v["raw_chi2ndf"] for v in used.values()]))
     return {"objective": tot, "sigma": sig, "sigma_ref": sigr, "objective_raw": raw, "n0": n0, "n_terms": n,
-            "excluded": sorted(set(exclude) & set(terms)),
-            "objective_all": float(np.mean([v["chi2ndf"] for v in terms.values()])), "terms": terms}
+            "excluded": sorted(excluded), "required_terms": sorted(manifest) if manifest is not None else None,
+            "objective_all": (float(np.mean([v["chi2ndf"] for v in terms.values()]))
+                              if manifest is None or manifest <= terms.keys() else float("nan")), "terms": terms}
 
 
 def _expand(inputs):

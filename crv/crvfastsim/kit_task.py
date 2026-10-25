@@ -55,6 +55,18 @@ PERIODS = {"P4": ("timecal/corr_P4_v2mod.json", "r3/dataref/dataref_P4.json", ""
            "raw": ("", "r3/dataref/dataref_3runs.json", "")}
 
 
+def score_result(result, reference, exclude=()):
+    """Score only a complete, lossless R3 result against the frozen response-term manifest."""
+    from .objective import crvresponse as R
+    if result["events_with_steps"] != result["target"] or result["target"] <= 0:
+        raise ValueError("crv_response: incomplete event target")
+    if result.get("events_without_steps") is None:
+        raise ValueError("crv_response: missing generated-event exposure")
+    if result["timers"].get("response_overflow_batches", 0):
+        raise ValueError("crv_response: residual response overflow; refusing to score truncated output")
+    return R.objective(result["response_state"], reference, exclude=exclude, required=TERMS)
+
+
 def _base(rel):
     return rel.rsplit("/", 1)[1]
 
@@ -111,17 +123,13 @@ T python -m crvfastsim reco-r3 "${FILES[@]}" --calib "$CAL" --deviation "$DEVF" 
 tail -2 "$M2FS_OUT/r3.txt"
 A python - "$M2FS_OUT" "$EXCL" "$REF" <<'EOF'
 import json, os, sys
-from crvfastsim.kit_task import TERMS
-from crvfastsim.objective import crvresponse as R
+from crvfastsim.kit_task import score_result
 o, excl, ref_path = sys.argv[1], [x for x in sys.argv[2].split(",") if x], sys.argv[3]
 j = json.load(open(os.path.join(o, "r3.json")))
-ob = R.objective(j["response_state"], json.load(open(ref_path)), exclude=excl)
+ob = score_result(j, json.load(open(ref_path)), exclude=excl)
 m = {"objective": ob["objective"], "objective_sigma": ob["sigma"], "objective_all": ob["objective_all"],
      "n_terms": ob["n_terms"], "events_with_steps": j["events_with_steps"], "wall_s": j["wall_s"]}
 m.update({"term_" + k: v["chi2ndf"] for k, v in ob["terms"].items()})
-missing = [t for t in TERMS if "term_" + t not in m]
-if missing:
-    print("terms missing (empty histogram): " + " ".join(missing))
 json.dump({"knobs": j.get("knobs", {}), "reference": os.path.basename(ref_path), "excluded": ob["excluded"],
            "objective": ob}, open(os.path.join(o, "objective.json"), "w"), indent=1)
 json.dump({k: float(v) for k, v in m.items()}, open(os.path.join(o, "metrics.json"), "w"))

@@ -61,8 +61,20 @@ def _bg_without_waveforms(events, cfg, rng, objective, T):
     T["background_pulses_nowf"] = T.get("background_pulses_nowf", 0) + len(B["ev"])
 
 
+def validate_response(cfg):
+    """Refuse response settings outside the extracted R3 implementation's supported envelope."""
+    unsupported = [k for k in ("thermal_rate", "trap0_prob", "trap1_prob") if getattr(cfg.sipm, k) != 0]
+    if unsupported:
+        raise ValueError(f"reco-r3: unsupported SiPM processes: {unsupported}")
+    if tuple(cfg.window) != (0.0, 1e5):
+        raise ValueError("reco-r3: only the extracted (0, 100000) ns window is supported")
+
+
 def run_batch(c, a, b, cond, cfg, geom, ccfg, tabs, pmap, rng, key, T, objective=None, window_ns=1e5, time_shift=None):
     """Events [a, b) of the step-sorted table c through the chain. Returns events processed."""
+    validate_response(cfg)
+    if window_ns != cfg.window[1] - cfg.window[0]:
+        raise ValueError("reco-r3: objective exposure must match the response window")
     lo = np.searchsorted(c["ek"], c["events"][a])
     hi = np.searchsorted(c["ek"], c["events"][b - 1], side="right")
     st, pdg, ek = c["steps"].iloc[lo:hi].reset_index(drop=True), c["pdg"][lo:hi], c["ek"][lo:hi]
@@ -75,6 +87,7 @@ def run_batch(c, a, b, cond, cfg, geom, ccfg, tabs, pmap, rng, key, T, objective
                                  k_r, pmap)
         if any(bool(r["overflow"]) for r in rs):
             T["response_overflow_batches"] = T.get("response_overflow_batches", 0) + 1
+            raise RuntimeError("reco-r3: residual response overflow; refusing truncated output")
         Q = DV.to_host_batches(rs)
         del rs
     else:
@@ -140,6 +153,7 @@ def run(steps, calib, deviation=None, target=1_000_000, jax=False, seed=1, batch
         from .background import BackgroundModel
         bg = BackgroundModel.load(background)
     cfg = chain.apply_knobs(chain.ChainConfig(jax=bool(jax), noise=bool(noise), background=bg), knobs)
+    validate_response(cfg)
     tshift = None
     if time_shift:                                 # timecal JSON: mc_channel_shift, per channel [ns], added in the reco
         import json as _json

@@ -379,6 +379,29 @@ digis 0.30, reco 0.34, objective 0.06. JIT compilation (pass 0) takes ~370 s of 
 run measures compilation, not throughput. The fast chain on GPU still agrees with stock on the same steps (objective
 1.2 against the stock v05 EventNtuple of the same file).
 
+### Response-point scoring contract (2026-10-25)
+
+`kit_task.score_result` now requires the frozen 32-term `kit_task.TERMS` manifest, with P3's explicit
+`dt_cluster_T2` exclusion giving 31 scored terms. Missing, empty/zero-ndf, nonfinite or newly appearing terms reject
+an objective point instead of changing its denominator. Histogram counts must be finite/nonnegative and candidate
+and reference shapes must agree. The manifest and exclusions are persisted in `objective.json`. If an excluded
+term is unavailable, `objective_all` is unavailable rather than an average over a different set; requesting that
+metric downstream still requires it to be finite. The diagnostic `objective(..., required=None)` remains available
+for exploratory partial histograms; it is not the kit scoring route.
+
+Scoring also refuses incomplete event targets, absent generated-event exposure and recorded residual response
+overflow. R3 raises before consuming fused output with residual photon/SiPM overflow (after the existing device
+retry), and rejects nonzero thermal/trap settings and windows other than extracted `(0, 100000)` ns on both R3
+backends. These guards are specific to R3 and its scoring route, not a claim of complete general-chain/backend
+admission validation. Numerical capacities and stock-compatibility switches are not new response knobs.
+
+Synthetic coverage is in `tests/test_response_contract.py`, including the rendered scoring block and injected
+residual overflow before host consumption. Existing complete synthetic scores are unchanged. CPU tests are not a
+GPU physics validation: independently seeded nominal/best points on held-out input shards, covariance-aware
+uncertainty checks and stock closure remain required. In the current Mu2eBO propagation fixture the surrogate
+noise is fixed at **0.7**; `objective_sigma` is only an extra metric, not row-wise GP noise. Do not combine changed
+reco outputs with the old pilot board without establishing measurement compatibility.
+
 ### Size-free objective (2026-10-22)
 
 The objective now lives in this package as `crvfastsim.objective` (`crvline`, `crvresponse`, `bars`; numpy/awkward
