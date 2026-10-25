@@ -63,7 +63,8 @@ def fast_reco(D, cond, geom, ccfg, rcfg=None, fcfg=None):
     gid, mat, n, start, first = pulsefit.concat_waveforms(D["ev"], D["bar"], D["sipm"], D["starttdc"],
                                                           D["adc"].ravel(), lens)
     ch = D["bar"][first] * 4 + D["sipm"][first]
-    P = pulsefit.reconstruct(mat, n, start, cond.pedestal[ch], cond.pulsearea[ch], cond.pulseheight[ch], rcfg)
+    P = pulsefit.reconstruct_full(mat, n, start, cond.pedestal[ch], cond.pulsearea[ch], cond.pulseheight[ch], rcfg)
+    P = pulsefit.filter_channels(P, ch, cond.status, rcfg)
     if rcfg.use_time_offset_db:
         P["time"] = P["time"] + cond.timeoffset[ch][P["wf"]] * rcfg.time_offset_scale
         P["letime"] = P["letime"] + cond.timeoffset[ch][P["wf"]] * rcfg.time_offset_scale

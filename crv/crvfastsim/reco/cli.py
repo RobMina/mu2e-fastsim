@@ -113,7 +113,7 @@ def _run_jax(W, cfg, L=36, batch=65536, rounds=None):
     redo = long_ | flat["window_overflow"] | flat["rounds_exhausted"]
     if redo.any():
         rows = np.flatnonzero(redo)
-        sub = pulsefit.reconstruct(W["mat"][rows], W["n"][rows], W["start"][rows], W["ped"][rows], W["area"][rows],
+        sub = pulsefit.reconstruct_full(W["mat"][rows], W["n"][rows], W["start"][rows], W["ped"][rows], W["area"][rows],
                                    W["height"][rows], cfg_np)
         keep = ~np.isin(flat["wf"], rows)
         flat2 = {k: np.concatenate([flat[k][keep], (rows[sub[k]] if k == "wf" else sub[k])])

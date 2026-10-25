@@ -237,7 +237,8 @@ def reco_waveforms(D, cond):
     gid, mat, n, start, first = pulsefit.concat_waveforms(ev, ch // 4, ch % 4, st, adc.ravel(), lens)
     c0 = ch[first]
     return {"ev": ev[first], "bar": c0 // 4, "sipm": c0 % 4, "chan": c0, "adc": mat, "n": n, "start": start,
-            "ped": cond.pedestal[c0], "area": cond.pulsearea[c0], "height": cond.pulseheight[c0]}
+            "ped": cond.pedestal[c0], "area": cond.pulsearea[c0], "height": cond.pulseheight[c0],
+            "toff": cond.timeoffset[c0]}
 
 
 def background_sampler(cfg, rng):
@@ -254,6 +255,8 @@ def clusters(W, cond, geom, counters_cfg, cfg, timers=None, detail=False, rng=No
     the member table (mem_cl, mem_idx, mem_event) and its flat pulses under "pulses" (reco.ntview input)."""
     from .reco import coinc as C
     timers = timers if timers is not None else {}
+    if 'toff' not in W:
+        W = {**W, 'toff': cond.timeoffset[W['bar'] * 4 + W['sipm']]}
     G = C.sector_geom(geom, counters_cfg)
     fcfg = cfg.finder if cfg.finder is not None else C.FinderConfig()
     if cfg.jax:
@@ -264,9 +267,10 @@ def clusters(W, cond, geom, counters_cfg, cfg, timers=None, detail=False, rng=No
     from .reco import pulsefit
     t0 = _time.perf_counter()
     rcfg = pulsefit.RecoConfig()
-    P = pulsefit.reconstruct(W["adc"], W["n"], W["start"], W["ped"], W["area"], W["height"], rcfg)
+    P = pulsefit.reconstruct_full(W["adc"], W["n"], W["start"], W["ped"], W["area"], W["height"], rcfg)
+    P = pulsefit.filter_channels(P, W['bar'] * 4 + W['sipm'], cond.status, rcfg)
     if rcfg.use_time_offset_db:  # CrvRecoPulsesFinder adds the DB time offset (offspill: TDC0time = 0)
-        toff = W["toff"] if "toff" in W else cond.timeoffset[W["chan"]]   # W["toff"]: DB offset (+ time calibration)
+        toff = W["toff"]   # DB offset plus any explicit time calibration
         P["time"] = P["time"] + toff[P["wf"]] * rcfg.time_offset_scale
     timers["pulses_s"] = timers.get("pulses_s", 0.0) + _time.perf_counter() - t0
     wf = P["wf"]

@@ -3,8 +3,8 @@
 Events are processed in chunks. For chunk k the jitted pulse reco is launched (asynchronously); meanwhile the host
 collects chunk k-1's pulses, builds the coincidence-finder input (find_async: split, pack, launch) and finishes chunk
 k-2 (collects clusters, promotions, numpy fallback). On a GPU the host work of one chunk overlaps the device work of
-the next; on CPU the stages simply run in turn. Waveforms whose fit used all kernel rounds or overflowed its window go
-to the numpy pulse reco (as in reco-vr2jax), so the pulses are those of the validated path.
+the next; on CPU the stages simply run in turn. Waveforms longer than the kernel input, whose fit used all kernel
+rounds or overflowed its window go to full-length numpy pulse reco (as in reco-vr2jax).
 """
 import dataclasses
 import time as _time
@@ -15,7 +15,7 @@ from . import coinc as C
 from . import coinc_jax as CJ
 from . import pulsefit, pulsefit_jax as PJ
 
-PULSE_KEYS = ("found", "pe", "time", "rounds_exhausted", "window_overflow")
+PULSE_KEYS = ("found", "pe", "time", "rounds_exhausted", "window_overflow", "input_truncated")
 
 
 def _pulse_dispatch(W, rows, cfg, batch, L):
@@ -29,6 +29,7 @@ def _pulse_dispatch(W, rows, cfg, batch, L):
                                  jnp.asarray(pad(W["start"], 0)), jnp.asarray(pad(W["ped"].astype(float), 0.0)),
                                  jnp.asarray(pad(W["area"].astype(float), 1.0)),
                                  jnp.asarray(pad(W["height"].astype(float), 1.0)), cfg=cfg)
+        d = {**d, 'input_truncated': pad(W['n'] > L, False)}
         outs.append(({k: d[k] for k in PULSE_KEYS}, n))
     return outs
 
@@ -37,13 +38,13 @@ def _pulse_collect(outs, W, rows, cfg_np):
     """Flat pulses (waveform row, seq, pe, time) in (waveform, seq) order; flagged waveforms redone in numpy."""
     d = {k: np.concatenate([np.asarray(o[k])[:n] for o, n in outs]) for k in PULSE_KEYS}
     wf, seq = np.nonzero(d["found"])
-    redo = d["rounds_exhausted"] | d["window_overflow"]
+    redo = d["rounds_exhausted"] | d["window_overflow"] | d["input_truncated"]
     pe, tm = d["pe"][wf, seq], d["time"][wf, seq]
     nredo = int(redo.sum())
     if nredo:
         rr = np.flatnonzero(redo)
         g = rows[rr]
-        sub = pulsefit.reconstruct(W["adc"][g], W["n"][g], W["start"][g], W["ped"][g].astype(float),
+        sub = pulsefit.reconstruct_full(W["adc"][g], W["n"][g], W["start"][g], W["ped"][g].astype(float),
                                    W["area"][g].astype(float), W["height"][g].astype(float), cfg_np)
         keep = ~redo[wf]
         wf = np.concatenate([wf[keep], rr[sub["wf"]]])
@@ -65,6 +66,9 @@ def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.Finde
     add_pulses: callable(events) -> extra pulses (ev, bar, sipm, pe, time, seq) merged before the coincidence finder
     (reco.background: out-of-time light deposits the MC does not simulate)."""
     timers = timers if timers is not None else {}
+    if not len(W['ev']):
+        timers.update(events=0, waveforms=0, wall_s=0.0)
+        return [], timers
     cfg_np = pulsefit.RecoConfig()
     cfg = dataclasses.replace(cfg_np, max_pulses=rounds)
     params, tables = CJ.type_params(G, coinc_cfg), CJ.hit_tables(G, status, coinc_cfg)
@@ -84,6 +88,9 @@ def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.Finde
         if 0 <= k - 1 < len(chunks):
             t0 = tic()
             wrow, seq, pe, tm, nredo = _pulse_collect(pul.pop(k - 1), W, chunks[k - 1], cfg_np)
+            if cfg_np.ignore_channels:
+                keep = (status[W['bar'][wrow] * 4 + W['sipm'][wrow]] & 0b010) == 0
+                wrow, seq, pe, tm = wrow[keep], seq[keep], pe[keep], tm[keep]
             if "toff" in W and cfg_np.use_time_offset_db:
                 tm = tm + W["toff"][wrow] * cfg_np.time_offset_scale
             timers["pulse_numpy_redo"] = timers.get("pulse_numpy_redo", 0) + nredo

@@ -14,7 +14,7 @@ rounds, never over waveforms. The fit is a fixed-iteration Levenberg-Marquardt i
 coordinates, float64, so interior minima match Minuit2 to its tolerance; the failed-fit flag is the hard part
 (validated by V-R2, docs/fastreco.md).
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -212,6 +212,20 @@ def fit_gumbel(t, y, mask, p0, lo, hi, iterations=40):
 # ---------------------------------------------------------------------------------------------------------------------
 # steps 1-6 for a batch of waveforms
 
+def reconstruct_full(adc, n, start_tdc, pedestal_db, calib_area, calib_height, cfg=RecoConfig()):
+    """Full-length host recovery; advancing fit windows bound the pulse count by the sample count."""
+    return reconstruct(adc, n, start_tdc, pedestal_db, calib_area, calib_height,
+                       replace(cfg, max_pulses=max(cfg.max_pulses, int(np.max(n, initial=0)))))
+
+
+def filter_channels(pulses, channels, status, cfg=RecoConfig()):
+    """Remove bit-1 ignored-channel pulses while retaining original waveform indices and diagnostics."""
+    if not cfg.ignore_channels:
+        return pulses
+    keep = (status[channels[pulses['wf']]] & 0b010) == 0
+    return {k: v if k == 'wf_near_threshold' else v[keep] for k, v in pulses.items()}
+
+
 def reconstruct(adc, n, start_tdc, pedestal_db, calib_area, calib_height, cfg=RecoConfig()):
     """Pulses of a batch of (already concatenated) waveforms.
 
@@ -220,6 +234,12 @@ def reconstruct(adc, n, start_tdc, pedestal_db, calib_area, calib_height, cfg=Re
     in stock order (by waveform, then sequence). Times are relative to TDC 0 (no TDC0time or DB time offset yet).
     """
     W, L = adc.shape
+    if W == 0:
+        out = {k: np.zeros(0) for k in ('pe', 'peph', 'time', 'height', 'beta', 'chi2', 'letime', 'ped',
+                                       'fit_A', 'fit_mu', 'fit_b')}
+        out.update({k: np.zeros(0, np.int64) for k in ('wf', 'seq')})
+        out.update({k: np.zeros(0, bool) for k in ('failed', 'zerondf', 'pedfromdb', 'wf_near_threshold')})
+        return out
     rows = np.arange(W)
     adc = adc.astype(float)
     ped = np.where(pedestal_db - adc[:, 0] > cfg.pedestal_undershoot_threshold, adc[:, 0], pedestal_db)
@@ -279,7 +299,10 @@ def reconstruct(adc, n, start_tdc, pedestal_db, calib_area, calib_height, cfg=Re
         near_thr[k] |= near_threshold_peak(y[k], valid[k], cfg.min_adc_difference, cfg.knife_edge_adc)
         start[k] = fe[k]
         active = found
-    res = {key: (np.concatenate(v) if v else np.zeros(0)) for key, v in out.items()}
+    bool_keys = ('failed', 'zerondf', 'pedfromdb')
+    res = {key: (np.concatenate(v) if v else np.zeros(0, bool if key in bool_keys else
+                                                     np.int64 if key in ('wf', 'seq') else float))
+           for key, v in out.items()}
     order = np.lexsort((res["seq"], res["wf"])) if len(res["wf"]) else np.zeros(0, np.int64)
     res = {key: v[order] for key, v in res.items()}
     res["wf_near_threshold"] = near_thr          # per waveform, not per pulse
