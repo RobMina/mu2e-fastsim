@@ -113,6 +113,27 @@ score. Establish total-vs-ionising and grouping/time semantics, including zero-d
 output `flash_edep`. Keep generated-event and primary-particle denominators separately until the production
 objective contract is resolved; multi-primary events make them different.
 
+## Cartesian/rootless adapter prepared — not built
+
+`celeritas_adapter/` now prepares a hash-pinned v0.6.3 application extension, linking against the existing image's
+libraries without rebuilding them. It adds `field_type: cartmap` with an explicit mm/tesla/GDML-world JSON contract
+and a rootless per-event total-edep/hit JSONL writer (`M2FS_EVENT_OUTPUT`, `sd_type: event_hit`). Zero-hit events
+are recorded after flushing transport; existing files, aborted events, missing collections, kill-offload and
+nonfatal-flush modes are rejected. It does not implement Mu2e ancestry, straw identity, eIon or cuts.
+
+**Version-specific boundary correction:** v0.6.3's covfie host path has float linear interpolation with no clamp
+layer; CUDA uses texture interpolation. The earlier v0.7 clamping observation must not be applied to this image.
+The initial adapter requires the complete GDML world to fit inside the map by one grid cell on every face;
+float-unrepresentable transforms are rejected. This is suitable for synthetic commissioning, not a promise that
+a DS-only map can cover the full Mu2e world. Field-check queries also require the one-cell margin.
+
+**29 Python tests pass**, including asymmetric affine/constant-map interpolation contracts and exact upstream
+source preparation; C++ remains **uncompiled/unvalidated**. Prepared h4 source and synthetic maps are deployed
+through the UVA mirror at `/home/ram2aq/mu2e/fastsim_uva/celer_adapter_h4`; manifest SHA256
+`774e93dc8e2f8aec55b0e76947cb237c72300d5e1d122ccc89ca08b57fe28933`. See
+[`celeritas_adapter/README.md`](celeritas_adapter/README.md) for the exact **user-run build commands** and next
+field/event validation gates. No adapter transport or build was started; no Mu2e data were transferred.
+
 ## Bounded follow-up sequence
 
 1. Load probe completed as a normal batch job (21958048); no prior interactive allocation required.
