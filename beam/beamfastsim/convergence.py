@@ -5,7 +5,6 @@ acceptance threshold is implied. Event-cluster standard errors describe the reus
 """
 import argparse
 import json
-import os
 from pathlib import Path
 from types import SimpleNamespace
 import time
@@ -17,6 +16,23 @@ from .reference_audit import _identity
 
 ARMS = {"nominal": (5.0, 3000, 4), "halfstep": (2.5, 6000, 4),
         "doublecap": (5.0, 6000, 4), "slices8": (5.0, 3000, 8)}
+
+
+def select_block(g, start, count):
+    """Select whole events in a requested row range; reject boundary splits rather than silently overlap."""
+    if start < 0 or count <= 0 or start + count > len(g["evt"]):
+        raise ValueError("Requested block must be nonempty and wholly within the reference")
+    ids = np.column_stack([g[k] for k in ("run", "subrun", "evt")])
+    stop = start + count
+    chosen = np.zeros(len(ids), bool)
+    chosen[start:stop] = True
+    _, inv = np.unique(ids, axis=0, return_inverse=True)
+    if np.intersect1d(inv[chosen], inv[~chosen]).size:
+        raise ValueError("Requested row boundary splits an event; choose a whole-event block")
+    selected = {k: v[start:stop] for k, v in g.items()}
+    return selected, dict(row_start=start, row_stop_exclusive=stop,
+                          events=len(np.unique(inv[chosen])), first_event=ids[start].tolist(),
+                          last_event=ids[stop - 1].tolist())
 
 
 def cluster_mean(values, groups):
@@ -67,28 +83,34 @@ def main(argv=None):
     ap.add_argument("--out", required=True, help="new directory; existing directories are rejected")
     ap.add_argument("--geom")
     ap.add_argument("--n", type=int, default=2000)
+    ap.add_argument("--start", type=int, default=0, help="first reference row; whole-event boundaries required")
     ap.add_argument("--seeds", type=int, nargs="+", default=[1, 2])
     ap.add_argument("--arms", nargs="+", choices=list(ARMS), default=list(ARMS))
     ap.add_argument("--budget-seconds", type=float, default=1200, help="stop launching new arms after this wall time")
     a = ap.parse_args(argv)
     if a.n <= 0 or a.budget_seconds <= 0 or len(set(a.seeds)) != len(a.seeds) or len(set(a.arms)) != len(a.arms):
         ap.error("positive n/budget and unique seeds/arms required")
+    if not a.arms or a.arms[0] != "nominal":
+        ap.error("nominal must be the first arm for paired differences")
+    g, block = select_block(g4ref.load(a.g4), a.start, a.n)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=False)
     started = time.monotonic()
-    g = g4ref.load(a.g4)
-    geom = cli._geom(a.geom, target_contract=True)
+    block_path = out / "input_block.npz"
+    g4ref.save(g, block_path)
+    cli._geom(a.geom, target_contract=True)
     from . import geometry
     sources = []
     geometry.from_offline(a.geom or cli.GEOM_FILE, cli.OFFLINE_ROOT, source_files=sources)
     source_dir = Path(__file__).resolve().parent
     core_dir = Path(__import__("mu2efastsim").__file__).resolve().parent
-    manifest = dict(input=_identity(a.g4), n=min(a.n, len(g["evt"])), seeds=a.seeds, arms=a.arms,
+    manifest = dict(input=_identity(a.g4), selected_input=_identity(block_path), block=block,
+                    n=len(g["evt"]), seeds=a.seeds, arms=a.arms,
                     code=[_identity(p) for p in sorted(source_dir.glob("*.py"))],
                     core_code=[_identity(core_dir / p) for p in ("eloss.py", "eloss_jax.py", "materials.py")],
                     geometry=[_identity(p) for p in sources],
                     field=[_identity(Path(cli.MAPS) / f"{cli.MAP}.{ext}") for ext in ("header", "bin")],
-                    note="Fixed prefix; seeds repeat response only. Same seed is not layout-invariant random coupling.",
+                    note="Fixed whole-event block; seeds repeat response only. Same seed is not layout-invariant random coupling.",
                     budget_seconds=a.budget_seconds)
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
     summary = dict(complete=False, runs={}, unstarted=[], scope="Pilot only; no physics acceptance gate")
@@ -100,7 +122,7 @@ def main(argv=None):
                 summary["unstarted"].append(name)
                 continue
             ds, cap, slices = ARMS[arm]
-            args = SimpleNamespace(g4=a.g4, out=str(out / f"{name}.npz"), geom=a.geom, n=a.n,
+            args = SimpleNamespace(g4=str(block_path), out=str(out / f"{name}.npz"), geom=a.geom, n=a.n,
                                    ds=ds, max_steps=cap, slices=slices, tcut=1.0, no_msc=False, no_decay=False,
                                    seed=seed, batch=a.n, chunk=200, repeat=0)
             cli.cmd_run(args)
