@@ -195,21 +195,89 @@ T1 and T2 separately (Run1A channel boundaries), and compares matched PE/time qu
 and PE sums. This is observed-channel matching, not truth-particle matching. Cluster
 sector type alone cannot distinguish Run1A T1 from T2: both use sector type 1.
 
-### Explicit stock shared-LUT yield diagnostic
+### Yield policy: intended model versus legacy-stock compatibility
 
-`replay_fast --stock-shared-table-yields` is **diagnostic only**. Stock
-`CrvPhotonGenerator` in Offline v13_33_00 and v13_39_00 reuses a `MakeCrvPhotons` object
-when lookup-table filename strings match and skips the later sector's
-`SetScintillationYield`. The object thus retains the first sector's yield. The fast
-implementation normally honors each sector's configured yield. Run1A uses one LUT for
-T1 and T2 but different configured yields, so these are distinct response contracts.
-The flag copies the response config and substitutes the first yield per table; it does
-not mutate `RUN_CONFIGS`, change `mixframes`, or change any BO evaluator/default.
-Effective yields and the diagnostic flag are written to the sidecar.
+The default is **`--yield-policy intended_per_sector_v1`**: honor each sector's
+configured yield. This is the intended configuration, not an independently calibrated
+physical truth. **`--yield-policy legacy_stock_shared_lut_v1`** is the comparison arm
+for affected legacy stock, not a physical correction or a BO parameter. The older
+`--stock-shared-table-yields` flag remains an alias; the two CLI options are exclusive.
+Neither policy changes `RUN_CONFIGS`, `mixframes`, any production default, or stock C4.
 
-Comparisons with this variant must reuse existing stock outputs and use a distinct
-fast output tag. A change in photon multiplicity also changes subsequent RNG draws;
-identical seeds do not make individual pulse fluctuations identical. Establish the
-sector-level effect and overall deadtime closure on independent inputs before choosing
-between stock compatibility and the intended per-sector physics. Fixing Offline or
-changing production defaults requires separate review; this diagnostic does neither.
+Stock `CrvPhotonGenerator` in Offline v13_33_00 and v13_39_00 shares a
+`MakeCrvPhotons` object when the **literal configured LUT filename strings** match,
+and skips the later sector's `SetScintillationYield`. First sector order therefore
+owns the yield. The Run1A profile pins T1 then T2 and their literal FHiCL LUT strings;
+reflector is not part of the alias key. This reproduces yield ownership only, not the
+stock RNG stream or all response behavior. Other releases/configurations need a new
+source/profile review. Offline [PR #1956](https://github.com/Mu2e/Offline/pull/1956)
+already fixes this on main (merged 2026-10-02; v13_40_00 and later): objects are shared
+only if filename **and yield** match. Use intended yields for that fixed-stock contract,
+not this legacy mode. Production-branch backports require a separate decision; do not
+submit a duplicate main fix or silently replace the retained legacy reference.
+
+`veto.replay_policy` copies the response config, rejects unreviewed nominal-profile
+or sector-order changes, and records configured/effective response, yield owner,
+ordered sectors, literal LUT strings and checked stock source/FHiCL hashes. The fast
+sidecar retains the legacy diagnostic flag and effective yields. `replay_check` binds
+the sidecar hash and validated response identity to its successful check. Metrics
+refuse changed sidecars, conditions/photon-deviation/timing/policy differences,
+wrong counts, nonfinite coincidences or out-of-range coverage. Selection/reference
+hashes and grid are saved. Response identity is **not** a complete executable/input
+snapshot: freeze code and asset provenance separately.
+
+For retained sidecars from the recognized historical runner hashes, explicitly pass
+`replay_check --legacy-yield-policy intended_per_sector_v1` (or
+`legacy_stock_shared_lut_v1`). This creates a new bound check, never rewrites the
+sidecar, and records recovery as historical rather than inventing a full code snapshot.
+Missing policy information is not silently treated as intended. Old check reports must
+be regenerated from retained products; no response needs rerunning.
+
+```bash
+bash scripts/check_veto_replay_policies.sh "$BASE" "$NEW_REPORT_DIR" \
+  "$CONDITIONS" "$SELECTION" "$REFERENCE" block0 block1 block2_fullinventory
+```
+
+The driver checks both existing `fast.parquet` and `fast_alias.parquet` arms, reuses
+`stock_retry/stock.root` or `stock/stock.root`, and writes **separate** pooled reports.
+It requires both arms to exist and never starts response, stock, mixing or a build.
+Use an ana-only shell with the edited CRV worktree and core on `PYTHONPATH`.
+
+### Fixed-release comparison driver
+
+`scripts/compare_veto_fixed_stock.sh MODE AREA BASE OUT CONDITIONS SELECTION REFERENCE`
+implements the bounded v13_41_00 comparison. All six path arguments after `MODE`
+must be absolute; `OUT` must be under `/exp/mu2e/data/users/`.
+It fixes `block0`, `block1`, `block2_fullinventory` to 3,000 events each and stock seeds
+9100/9101/9102. This is a release-specific replay utility, not a production campaign
+submitter or an automatic upgrade of existing stock references.
+
+- **`stock` is a separately authorized physics run**, after the user builds the area.
+  Run in that area's p109 muse shell; backing must be CVMFS Offline v13_41_00.
+  `AREA` must contain the frozen `run_veto_stock_replay.sh`, `CrvFastSim` sources,
+  `adapter_source_sha256.txt` and p109 libraries. Completed one-/ten-event controls
+  live under `OUT/control{1,10}` with `stock.root`, stock-driver `provenance.txt` and
+  `replay_check`'s `check.json`. Controls must use `BASE/block0/mixed.root` and the
+  supplied conditions. Their bound hashes/counts and area/backing provenance are
+  checked before launch. All three candidate directories must be absent.
+- **`check` never reruns response.** Use an ana-only shell with the intended frozen
+  `mu2efastsim` core on `PYTHONPATH`; `python3` must have uproot/awkward and the package
+  dependencies. The driver fixes CRV imports to its own repository and hashes those
+  checker sources. It requires retained `BASE/block*/fast.{parquet,json}` with the
+  intended policy; historical sidecars are recovered explicitly, while a modern
+  legacy-stock contract is rejected. The checker-bound policy must also be intended
+  before pooling. Reports must not already exist; a failed partial check is retained
+  for diagnosis rather than silently overwritten or skipped.
+- Both modes require Bash, `jq`, and GNU `sha256sum`; stock also uses `ldd` and `mu2e`.
+  Keep the default muse search paths. Config expansion records the actual `-T` output
+  override. Neither mode builds, mixes inputs, generates fast response or deletes data.
+
+For historical two-policy outputs use `check_veto_replay_policies.sh`, not the older
+`check_veto_replay_blocks.sh`: the latter does not provide explicit legacy-policy
+recovery and may find unbound old checks that the stricter metrics correctly reject.
+
+Always reuse existing stock outputs and choose a distinct candidate tag. The same
+seed does not preserve individual fluctuations after photon multiplicity changes.
+Sector-level removal of the T2 deficit establishes the compatibility mechanism, not
+full-Cat deadtime closure, a physical light-yield measurement, finite-library coverage,
+or photon-time wrapping correctness. Keep the BO objective on stock coincidences.

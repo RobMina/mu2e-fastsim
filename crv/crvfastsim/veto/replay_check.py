@@ -12,6 +12,7 @@ import uproot
 from ..reco import reftables
 from .compareframes import compare, dump_frames
 from .replay import sha256
+from .replay_policy import POLICIES, metadata_identity
 
 
 def check_events(expected, actual, count, window=1700.0):
@@ -42,6 +43,7 @@ def main(argv=None):
     ap.add_argument("--events", required=True, type=int)
     ap.add_argument("--conditions", required=True, help="conditions dump used by fast arm")
     ap.add_argument("--fast", help="full fast replay frames (only for complete stock sample)")
+    ap.add_argument("--legacy-yield-policy", choices=POLICIES, help="explicitly recover recognized historical sidecars without modifying them")
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     out = Path(a.out)
@@ -66,11 +68,16 @@ def main(argv=None):
         raise ValueError(f"conditions differ from fast arm: {differences}")
     result = {"input_sha256": manifest["output_sha256"], "stock": a.stock,
               "stock_sha256": sha256(a.stock), "checker_sha256": sha256(__file__),
-              "events_check": summary, "entries_highest_cycle": entries, "conditions_equal": True}
+              "events_check": summary, "entries_highest_cycle": entries, "conditions_equal": True,
+              "conditions_sha256": sha256(a.conditions), "input_manifest_sha256": sha256(Path(a.input).with_suffix(".json"))}
     if a.fast:
         if a.events != n_expected:
             raise ValueError("paired comparison requires all input events")
-        fast_meta = json.loads(Path(a.fast).with_suffix(".json").read_text())
+        metadata_path = Path(a.fast).with_suffix(".json")
+        fast_meta = json.loads(metadata_path.read_text())
+        identity, digest, recovery = metadata_identity(fast_meta, a.legacy_yield_policy)
+        result.update(fast_metadata_sha256=sha256(metadata_path), response_identity=identity,
+                      response_identity_sha256=digest, legacy_policy_recovery=recovery)
         if fast_meta["input_sha256"] != manifest["output_sha256"]:
             raise ValueError("fast arm used a different replay input")
         if fast_meta["conditions_sha256"] != sha256(a.conditions):

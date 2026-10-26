@@ -13,16 +13,7 @@ import uproot
 from .. import chain
 from . import fastframes as FF
 from .replay import sha256
-
-
-def stock_shared_table_yields(response):
-    """Diagnostic for stock photon-maker aliasing: first sector yield per shared lookup table."""
-    first = {}
-    sectors = {}
-    for name, sector in response.sectors.items():
-        value = first.setdefault(sector.table, sector.yield_per_mev)
-        sectors[name] = dataclasses.replace(sector, yield_per_mev=value)
-    return dataclasses.replace(response, sectors=sectors)
+from .replay_policy import INTENDED, LEGACY_STOCK, POLICIES, TIMING, apply_policy, stock_shared_table_yields
 
 
 def main(argv=None):
@@ -34,8 +25,11 @@ def main(argv=None):
     ap.add_argument("--chunk", type=int, default=100)
     ap.add_argument("--out", required=True)
     ap.add_argument("--pulses", help="optional per-channel pulse parquet from this same response draw")
-    ap.add_argument("--stock-shared-table-yields", action="store_true", help="diagnostic only: reuse the first sector's yield for a shared LUT, as stock photon-maker aliasing does")
+    policies = ap.add_mutually_exclusive_group()
+    policies.add_argument("--yield-policy", choices=POLICIES, default=INTENDED)
+    policies.add_argument("--stock-shared-table-yields", action="store_true", help="legacy alias for --yield-policy legacy_stock_shared_lut_v1; not a physical calibration")
     a = ap.parse_args(argv)
+    policy = LEGACY_STOCK if a.stock_shared_table_yields else a.yield_policy
     path, out = Path(a.input), Path(a.out)
     if out.exists() or out.with_suffix(".json").exists() or (a.pulses and Path(a.pulses).exists()):
         raise ValueError("choose new output paths")
@@ -57,8 +51,8 @@ def main(argv=None):
     timers = {}
     pulse_sink = [] if a.pulses else None
     setup = FF._setup("run1a_v01")
-    if a.stock_shared_table_yields:
-        setup["cfg"] = dataclasses.replace(setup["cfg"], response=stock_shared_table_yields(setup["cfg"].response))
+    response, contract = apply_policy(setup["cfg"].response, policy)
+    setup["cfg"] = dataclasses.replace(setup["cfg"], response=response)
     fr = FF.frames_from_steps(st, pa, cond, "run1a_v01", keys, keys, w, seed=a.seed,
                               chunk=a.chunk, timers=timers, run_no=manifest["run"], pulse_sink=pulse_sink, setup=setup)
     if len(fr) != len(ev):
@@ -74,11 +68,12 @@ def main(argv=None):
     result = {"input_sha256": manifest["output_sha256"], "seed": a.seed, "frames": len(fr),
               "coincs": int(ak.sum(ak.num(fr.coincs.time))), "timers": timers,
               "pulse_file": a.pulses, "pulse_sha256": sha256(a.pulses) if a.pulses else None,
-              "code_sha256": {n: sha256(Path(__file__).with_name(n)) for n in ("replay_fast.py", "fastframes.py")},
-              "chunk": a.chunk, "stock_shared_table_yields_diagnostic": a.stock_shared_table_yields,
+              "code_sha256": {n: sha256(Path(__file__).with_name(n)) for n in ("replay_fast.py", "fastframes.py", "replay_policy.py")},
+              "chunk": a.chunk, "stock_shared_table_yields_diagnostic": policy == LEGACY_STOCK,
+              "response_contract": contract,
               "effective_yields": {k: v.yield_per_mev for k, v in setup["cfg"].response.sectors.items()},
               "conditions_sha256": sha256(a.conditions), "photon_dev_sha256": sha256(a.photon_dev),
-              "timing": "Current fast step folding; pbtime rounded to float32 as in stock event products; no reco smearing."}
+              "timing": TIMING}
     out.with_suffix(".json").write_text(json.dumps(result, indent=2, allow_nan=False))
     print(json.dumps(result, indent=2))
 
