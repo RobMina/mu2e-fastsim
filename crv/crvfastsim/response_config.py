@@ -65,6 +65,7 @@ FIELDS = {
         **fields('ns', 'reconstruction', 'time_offset'),
         'compensate_status_bits': Field('bit index', 'stock_compatibility', kind='array', fixed=True),
         'ignore_secondary_pulses': Field('1', 'stock_compatibility', kind='boolean', fixed=True),
+        'add_opposite_side_pulses': Field('1', 'stock_compatibility', kind='boolean'),
         'big_cluster_threshold': Field('count', 'numerical', kind='integer', fixed=True)},
     'timing': {
         'window': Field('ns', 'scenario', kind='array', fixed=True),

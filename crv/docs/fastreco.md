@@ -1,5 +1,10 @@
 # Fast CRV reconstruction (stage 1): goals, validation, prototype
 
+**Thread B continuation (2026-10-26):** the historical results below do not certify the newer stock backing.
+The missing opposite-side attachment stage is now ported and passes full-finder membership closure on retained
+shards 11–12 (all 5,875 clusters, 1,254 restored links). Numerical X/time properties, GPU validation and downstream
+DQM remain open; see [the candidate port and validation ledger](thread-b-membership-port.md).
+
 Status: **goals and thresholds agreed 2026-10-16.** First comparisons on existing digis done 2026-10-16 (Results).
 As of 2026-10-22: V-R1 to V-R5 pass, and R1, R2, R3, R4 and R5 are met (R3 and V-R5 at the end of Results); R6 is not
 formally assessed. Newest: the out-of-time background model (last section).

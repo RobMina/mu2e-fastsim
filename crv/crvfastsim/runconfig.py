@@ -85,6 +85,7 @@ class RunConfig:
                                       # lowest muon-made delta in the bars 0.361 MeV (G4 test 9112, 19,491 deltas)
     below_world: bool = False         # trace the world material between the MSC plane and every bar (side sectors)
     geom_text: str = ""               # Offline geometry file of the world the GDML was made from
+    add_opposite_side_pulses: bool = True
 
     def counters_path(self):
         from . import geometry
@@ -114,7 +115,8 @@ class RunConfig:
 
     def finder(self):
         return dataclasses.replace(C.FinderConfig(), cuts=dict(self.cuts),
-                                   ignore_secondary_pulses=self.ignore_secondary_pulses)
+                                   ignore_secondary_pulses=self.ignore_secondary_pulses,
+                                   add_opposite_side_pulses=self.add_opposite_side_pulses)
 
     def chain_config(self, **kw):
         from . import chain

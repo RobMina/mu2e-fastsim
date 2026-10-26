@@ -189,6 +189,7 @@
       2
     ],
     "ignore_secondary_pulses": true,
+    "add_opposite_side_pulses": true,
     "big_cluster_threshold": 50000,
     "cuts": {
       "EX": {

@@ -11,14 +11,16 @@ Per event and sector type (EX, T1, T2, taggers):
      dx/dy within [minSlope, maxSlope] and pairwise within maxSlopeDifference; hits of passing combinations are kept,
      with maxDistance widened to the largest gap to a neighbour in a passing combination
   5. findClusters on the coincidence hits of both sides (opposite sides get + 2*halfLength/fiberSpeed)
-  6. clusterProperties: PE sum, PE-weighted position, layers, slope, side PEs/times, hit time and position
+  6. addOppositeSidePulses: attach filtered first pulses on missing opposite counter ends
+  7. clusterProperties: PE sum, PE-weighted position, layers, slope, side PEs/times, hit time and position
 This module is the reference implementation in numpy (loops over events and the few hits per sector; the event loop
 is the parallel axis of the JAX twin). Output: one row per cluster with the pulse indices it contains.
 """
 from dataclasses import dataclass, field
-from itertools import combinations, product
+from itertools import chain, combinations, product
 
 import numpy as np
+import pandas as pd
 
 N_LAYERS = 4
 
@@ -55,6 +57,7 @@ class FinderConfig:
     ignore_secondary_pulses: bool = True
     big_cluster_threshold: int = 50000
     cuts: dict = field(default_factory=lambda: dict(EXTRACTED_V04))
+    add_opposite_side_pulses: bool = True
 
 
 @dataclass
@@ -248,6 +251,34 @@ def _check_coincidence_vec(cluster, cfg, chunk=2_000_000):
     return sorted(out, key=lambda h: h["idx"])
 
 
+def _attach_opposite_side_pulses(clusters, hits, max_dt):
+    """Attach filtered hits using only original members, with stock cluster/candidate tie ordering."""
+    if not clusters or not hits:
+        return
+    columns = ["idx", "bar", "sipm", "side", "t", "seq"]
+    members = pd.DataFrame(chain.from_iterable(clusters), columns=columns)
+    members["cluster"] = np.repeat(np.arange(len(clusters)), [len(cl) for cl in clusters])
+    candidates = pd.DataFrame(hits, columns=columns)
+    candidates["candidate"] = np.arange(len(hits))
+    candidates = candidates.loc[(candidates.seq == 0) & ~candidates.idx.isin(members.idx)]
+    if candidates.empty:
+        return
+    occupied = members[["cluster", "bar", "side"]].drop_duplicates().assign(occupied=True)
+    anchors = members.loc[members.seq == 0, ["cluster", "bar", "side", "t"]].copy()
+    anchors["side"] = 1 - anchors.side
+    pairs = candidates.merge(anchors, on=["bar", "side"], suffixes=("", "_anchor"), sort=False)
+    pairs = pairs.merge(occupied, on=["cluster", "bar", "side"], how="left", sort=False)
+    pairs["dt"] = np.abs(pairs.t - pairs.t_anchor)
+    pairs = pairs.loc[pairs.occupied.isna() & (pairs.dt < max_dt)]
+    # First choose each candidate's nearest cluster; losing candidates are not reassigned.
+    nearest = pairs.sort_values(["candidate", "dt", "cluster"], kind="stable").drop_duplicates("candidate")
+    # Choose one pulse per SiPM, then append in the stock ordered-map key order.
+    chosen = nearest.sort_values(["cluster", "bar", "sipm", "dt", "candidate"], kind="stable")
+    chosen = chosen.drop_duplicates(["cluster", "bar", "sipm"])
+    for cluster, candidate in chosen[["cluster", "candidate"]].itertuples(index=False, name=None):
+        clusters[cluster].append(hits[candidate])
+
+
 def find_event(pulses, G, status, cfg=FinderConfig(), vectorized=False):
     """pulses: dict of arrays for ONE event in collection order (idx, bar, sipm, time, pe, seq). Returns cluster rows.
     vectorized: numpy-broadcast combination check (same result; for the large events the JAX twin hands back)."""
@@ -276,7 +307,8 @@ def find_event(pulses, G, status, cfg=FinderConfig(), vectorized=False):
             pe *= 2.0
         cuts = cfg.cuts[name]
         hits.setdefault(t_type, []).append(dict(idx=int(pulses["idx"][i]), bar=bar, sector=s, layer=int(G.layer[bar]),
-                                               counter=int(G.counter_in_type[bar]), side=side, x=float(G.x[bar]),
+                                               counter=int(G.counter_in_type[bar]), side=side, sipm=sipm,
+                                               seq=int(pulses["seq"][i]), x=float(G.x[bar]),
                                                y=float(G.y[bar]), t=t, pe=pe, cuts=cuts,
                                                maxd=cuts.initial_max_distance))
     out = []
@@ -284,6 +316,7 @@ def find_event(pulses, G, status, cfg=FinderConfig(), vectorized=False):
         H = hits[t_type]
         L = lim[t_type]
         coinc = []
+        filtered = []
         for side in (0, 1):
             filt = []
             for h in H:
@@ -299,10 +332,15 @@ def find_event(pulses, G, status, cfg=FinderConfig(), vectorized=False):
                     adj2 += a["pe"] if d == 1 else 0.0
                 if same + adj1 >= h["cuts"].pe_threshold or same + adj2 >= h["cuts"].pe_threshold:
                     filt.append(h)
+            filtered.extend(filt)
             for cl in _find_clusters(filt, L["max_dt"]):
                 coinc += check(cl, cfg)
         both = L["side0"] and L["side1"]
-        for cl in _find_clusters(coinc, L["max_dt"], both, 2.0 * L["half"] / cfg.fiber_signal_speed):
+        dt_opp = 2.0 * L["half"] / cfg.fiber_signal_speed
+        clusters = _find_clusters(coinc, L["max_dt"], both, dt_opp)
+        if both and cfg.add_opposite_side_pulses:
+            _attach_opposite_side_pulses(clusters, filtered, L["max_dt"] + dt_opp)
+        for cl in clusters:
             row = _properties(t_type, cl, G, L, cfg)
             if row is not None:
                 out.append(row)

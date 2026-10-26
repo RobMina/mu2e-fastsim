@@ -64,6 +64,10 @@ production equivalence, a new acceptance test, or a response-model correction. O
 are reported, not recomputed with stock's float side-PE accumulation. A production port still needs independent
 full-finder CPU/JAX/fallback regression and downstream revalidation with new, separately labeled outputs.
 
+**Continuation:** the [production candidate port and full-finder replay](thread-b-membership-port.md) now pass
+membership closure and `poscalc` on both retained shards. That new result is separate from this attachment-only
+audit; residual numerical properties, GPU validation and downstream DQM remain open.
+
 ## Tests
 
 ```bash
