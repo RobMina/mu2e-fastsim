@@ -226,3 +226,37 @@ def test_saved_response_reuse_and_identity_guard(tmp_path, monkeypatch, mocked_t
     with pytest.raises(ValueError, match='identity differs'):
         ss.main(args)
     assert not (tmp_path / 'bad_identity').exists()
+
+
+def test_split_cli_restricted_charge_binding_and_reuse(tmp_path, monkeypatch, mocked_tables):
+    charge_calls = []
+    scale = [2.]
+    def native(directory, *, material, particle):
+        charge_calls.append(particle)
+        assert material == 'G4_Al'
+        e = np.geomspace(.001, 100., 101)
+        return ({'Range': dict(energy=e, values=scale[0]*e),
+                 'DEDX': dict(energy=e, values=np.full_like(e, 1/scale[0])),
+                 'DEDXnr': dict(energy=e, values=np.ones_like(e))},
+                dict(energy_cuts_MeV={'e-': .7}), [])
+    monkeypatch.setattr(ss.pt, 'load_target', native)
+    def respond(e, u, thickness, tb, **kw):
+        assert kw['loss'] == 'split' and kw['range_kind'] == 'restricted'
+        np.testing.assert_allclose(np.exp(tb.logr), 2*np.exp(tb.loge))
+        return response([sd.TRANSMITTED] * 3, [1.] * 3)
+    monkeypatch.setattr(sd, 'respond', respond)
+    args = cli(tmp_path, '--loss-model', 'split', '--pdg', '-13')
+    original = ss.main(args)
+    assert charge_calls == ['mu+']
+    assert original['transport_binding']['charge'] == 'mu+'
+    assert original['split_mean_audit']['range_interpolation_audit']['max_midpoint_power_relative_difference'] < 1e-12
+    monkeypatch.setattr(sd, 'respond', lambda *a, **kw: pytest.fail('saved response rerun'))
+    args += ['--responses', str(tmp_path / 'output')]
+    args[args.index('--out') + 1] = str(tmp_path / 're_report')
+    report = ss.main(args)
+    assert report['response_generation_provenance'] == original['response_generation_provenance']
+    scale[0] = 2.1
+    args[args.index('--out') + 1] = str(tmp_path / 'bad_range')
+    with pytest.raises(ValueError, match='transport table/material binding'):
+        ss.main(args)
+    assert not (tmp_path / 'bad_range').exists()

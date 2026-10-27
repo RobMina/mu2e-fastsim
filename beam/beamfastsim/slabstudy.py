@@ -6,8 +6,11 @@ Example (from the repository root)::
     --seed 71 --slab-tables /path/to/audited/export --out /path/to/NEW
 
 Tables must exactly match the shipped G4_Al slab NPZ and an audited export.
-CSDA means plus finite-cut Urban fluctuations are a diagnostic hybrid, not a
-restricted-loss or hard-secondary model. The mu+-derived lambda1 is assumed
+Default CSDA means plus finite-cut Urban fluctuations are a diagnostic hybrid,
+not a restricted-loss or hard-secondary model. The opt-in --loss-model split
+instead supplies restricted Range means at the audited electron cut and samples
+independent spin-1/2 compound-Poisson hard transfers. Hard rates freeze at each
+leg entry; no electron transport or discrete muon recoil is included. The mu+-derived lambda1 is assumed
 for both charges. Infinite planes, no field/decay/secondary transport; no G4
 physics parity or full-chain acceptance is claimed. Numerical refinement uses
 common row/replica/seed identities, not Brownian-bridge coupled trajectories.
@@ -30,6 +33,7 @@ Source/input hashes are checked again before marking the study complete.
 source hashes remain in that study, distinct from current reporting sources.
 """
 import argparse
+import hashlib
 from dataclasses import asdict
 import json
 from pathlib import Path
@@ -40,7 +44,7 @@ import numpy as np
 import scipy
 from scipy.stats import beta
 
-from . import g4tables, slabdiffusion as sd, slabendpoints as se, slabrefs
+from . import g4tables, physics_tables as pt, slabdiffusion as sd, slabendpoints as se, slabrefs
 from .foilcampaign import TOLERANCES
 from .foilscan import SCANS
 from .reference_audit import _identity
@@ -216,7 +220,7 @@ def _save(path, arrays):
     return _identity(path)
 
 
-def saved_responses(directory, args, settings):
+def saved_responses(directory, args, settings, transport_binding=None):
     """Reuse immutable responses, retaining historical provenance without rerunning transport."""
     root = Path(directory)
     manifest = root / 'summary.json'
@@ -226,6 +230,8 @@ def saved_responses(directory, args, settings):
     for name in ('cell', 'pdg', 'samples', 'seed'):
         if old['args'][name] != getattr(args, name):
             raise ValueError(f'saved response identity differs: {name}')
+    if args.loss_model == 'split' and old.get('transport_binding') != transport_binding:
+        raise ValueError('saved split response transport table/material binding differs or is absent')
     records = [_identity(manifest)] + old['inputs'] + old['outputs']
     verify(records)
     responses = {}
@@ -242,11 +248,15 @@ def saved_responses(directory, args, settings):
             responses[arm] = sd.Response(*(f[k] for k in sd.Response._fields if k != 'ledger'), ledger)
         if responses[arm].status.shape != (args.samples, 1):
             raise ValueError('saved response population shape differs')
-    return responses, records
+    historical = old.get('response_generation_provenance',
+                         dict(sources=old['sources'], core_sources=old['core_sources'],
+                              inputs=old['inputs'], environment=old['environment'],
+                              transport_binding=old.get('transport_binding')))
+    return responses, records, historical
 
 
 def run(a):
-    from mu2efastsim import eloss, eloss_jax, materials
+    from mu2efastsim import eloss, eloss_jax, eloss_split_jax, materials
     import jax
     import jaxlib
     out = Path(a.out)
@@ -264,14 +274,39 @@ def run(a):
                     'g4tables.py', 'physics_tables.py', 'foilscan.py', 'foilreport.py', 'foilclosure.py',
                     'foilcampaign.py', 'foilcompare.py', 'reference_audit.py', 'slicestudy.py')
     sources = [_identity(Path(__file__).with_name(n)) for n in source_names]
-    core_sources = [_identity(m.__file__) for m in (eloss, eloss_jax, materials)]
+    core_sources = [_identity(m.__file__) for m in (eloss, eloss_jax, eloss_split_jax, materials)]
     table_identity = _identity(g4tables.SLAB)
     check = g4tables.compare(a.slab_tables, g4tables.SLAB, 'G4_Al', require_audited_export=True)
     if not check['all_arrays_equal'] or not check['material_equal']:
         raise ValueError('shipped slab NPZ differs from audited G4_Al export')
     tables = g4tables.load(g4tables.SLAB, expected_material='G4_Al')
     charge = 'mu-' if a.pdg == 13 else 'mu+'
-    tb = sd.make_tables(tables['energy'], tables['csda_range_' + charge], tables['msc_energy'], tables['msc_lambda1'])
+    split_audit = None
+    if a.loss_model == 'split':
+        native, info, _ = pt.load_target(g4tables._directory(a.slab_tables), material='G4_Al', particle=charge)
+        vector = native['Range']
+        tb = sd.make_tables(vector['energy'], vector['values'], tables['msc_energy'], tables['msc_lambda1'])
+        tcut = float(info['energy_cuts_MeV']['e-'])
+        grid = np.geomspace(max(.1, vector['energy'][0]), min(40., vector['energy'][-1]), 201)
+        p = np.sqrt(grid * (grid + 2 * eloss.MMU))
+        hard = np.asarray(eloss_split_jax.hard_mean_per_mm(materials.ALUMINIUM, p, tcut))
+        restricted, inclusive = pt.interpolate(native['DEDX'], grid), pt.interpolate(native['DEDXnr'], grid)
+        midpoint = np.sqrt(vector['energy'][:-1] * vector['energy'][1:])
+        slope = np.diff(np.log(vector['values'])) / np.diff(np.log(vector['energy']))
+        midpoint_range = np.sqrt(vector['values'][:-1] * vector['values'][1:])
+        effective = midpoint / (slope * midpoint_range)
+        native_power = pt.interpolate(native['DEDX'], midpoint)
+        exercised = midpoint <= energy
+        range_check = dict(domain_MeV=[float(vector['energy'][0]), float(energy)],
+                           max_midpoint_power_relative_difference=float(np.max(np.abs(effective[exercised] / native_power[exercised] - 1))),
+                           scope='Derivative of actual log-log range interpolant versus reconstructed DEDX; includes subthreshold domain, not a physics gate')
+        split_audit = dict(range_interpolation_audit=range_check, range_table='Range' , continuous_power='DEDX', charge=charge, tcut_MeV=tcut,
+                           energy_MeV=grid.tolist(), restricted_power_MeV_mm=restricted.tolist(),
+                           inclusive_power_MeV_mm=inclusive.tolist(), analytic_hard_mean_MeV_mm=hard.tolist(),
+                           max_total_mean_relative_difference=float(np.max(np.abs((restricted + hard) / inclusive - 1))),
+                           scope='Restricted native range plus analytic spin-1/2 hard spectrum; moment diagnostic, not G4 scheduling/recoil parity')
+    else:
+        tb = sd.make_tables(tables['energy'], tables['csda_range_' + charge], tables['msc_energy'], tables['msc_lambda1'])
     # Match the kernel's exp(log(node)) domain exactly, including roundoff.
     lower = float(np.exp(max(np.asarray(tb.loge)[0], np.asarray(tb.lam_loge)[0])))
     upper = float(np.exp(min(np.asarray(tb.loge)[-1], np.asarray(tb.lam_loge)[-1])))
@@ -279,7 +314,10 @@ def run(a):
     tcut = float(check['fresh']['couples'][charge]['energy_cuts_MeV']['e-'])
     settings = arm_settings(a.arms, floor, a.lower_floor, lower, upper, max_step=a.max_step,
                             angular_fraction=a.angular_fraction, energy_fraction=a.energy_fraction,
-                            max_steps=a.max_steps, loss='sample', tcut=tcut)
+                            max_steps=a.max_steps, loss='split' if a.loss_model == 'split' else 'sample', tcut=tcut)
+    if a.loss_model == 'split':
+        for kw in settings.values():
+            kw['range_kind'] = 'restricted'
     if not (np.isfinite(tcut) and tcut > 0 and 0 < a.energy_fraction < 1 and a.max_steps >= 0
             and np.isfinite(a.max_step) and a.max_step > 0 and np.isfinite(a.angular_fraction) and a.angular_fraction > 0
             and energy <= upper):
@@ -291,9 +329,15 @@ def run(a):
         refs, records = slabrefs.load_references(a.campaign, a.cell, a.pdg, thickness, energy, cosine)
         inputs.extend(records)
         reference_reports = {mode: reference_summary(g, energy, cosine, thickness) for mode, g in refs.items()}
-    reused = {}
+    binding_arrays = {name: hashlib.sha256(np.asarray(value, dtype='<f8').tobytes()).hexdigest()
+                      for name, value in zip(sd.Tables._fields, tb)}
+    transport_binding = dict(loss_model=a.loss_model, charge=charge, material=asdict(materials.ALUMINIUM),
+                             tcut_MeV=tcut, table_arrays_sha256=binding_arrays,
+                             exported_files={name: record['sha256'] for name, record in provenance['files'].items()})
+    transport_binding = json.loads(json.dumps(transport_binding, allow_nan=False))
+    reused, generation = {}, None
     if a.responses:
-        reused, records = saved_responses(a.responses, a, settings)
+        reused, records, generation = saved_responses(a.responses, a, settings, transport_binding)
         inputs.extend(records)
     verify(sources + core_sources + inputs)
     out.mkdir(parents=True, exist_ok=False)
@@ -302,14 +346,19 @@ def run(a):
     row_ids, replica_ids = np.array([0], np.uint32), np.arange(a.samples, dtype=np.uint32)
     identities = dict(row_ids=row_ids, replica_ids=replica_ids, seed=np.array(a.seed, np.uint32))
     outputs = [_save(out / 'inputs.npz', dict(energy=entry, direction=direction, thickness=np.array(thickness), **identities))]
-    report = dict(schema_version=2, complete=False, scope=SCOPE, args=vars(a), threshold_MeV=THRESHOLD,
+    report = dict(schema_version=3, complete=False, scope=SCOPE, args=vars(a), threshold_MeV=THRESHOLD,
+                  transport_binding=transport_binding,
+                  reference_configuration_qualification='UNVERIFIED: byte/cell/census audit only; material/cut/process signatures not compared; diagnostic gates are not qualified closure',
                   tolerances=TOLERANCES,
                   sample_identity='row_id=0, replica_id=0..samples-1; same seed/identities in every arm; batch-independent kernel',
                   sources=sources, core_sources=core_sources, inputs=inputs, outputs=outputs,
-                  table_check=check, table_domain_MeV=[lower, upper], material=asdict(materials.ALUMINIUM),
+                  table_check=check, split_mean_audit=split_audit, table_domain_MeV=[lower, upper], material=asdict(materials.ALUMINIUM),
                   environment=dict(python=platform.python_version(), numpy=np.__version__, scipy=scipy.__version__, jax=jax.__version__,
                                    jaxlib=jaxlib.__version__, backend=jax.default_backend(), x64=bool(jax.config.jax_enable_x64)),
                   g4=reference_reports, arms={}, paired={})
+    report['response_generation_provenance'] = generation or dict(
+        sources=sources, core_sources=core_sources, inputs=list(inputs), environment=report['environment'],
+        transport_binding=transport_binding)
     def checkpoint():
         (out / 'summary.json').write_text(json.dumps(report, indent=2, allow_nan=False) + '\n')
     checkpoint()
@@ -356,6 +405,8 @@ def main(argv=None):
     ap.add_argument('--slab-tables', required=True, help='audited G4_Al export root or tables/')
     ap.add_argument('--campaign', nargs='+', help='optional existing foilscan/foilcampaign references (read-only)')
     ap.add_argument('--responses', help='existing completed slabstudy to re-report; never rerun its response kernel')
+    ap.add_argument('--loss-model', choices=['hybrid', 'split'], default='hybrid',
+                    help='hybrid preserves the historical diagnostic; split uses restricted Range plus explicit hard loss')
     ap.add_argument('--batch', type=int, default=256)
     ap.add_argument('--max-step', type=float, default=.01, help='mm')
     ap.add_argument('--angular-fraction', type=float, default=.02)
