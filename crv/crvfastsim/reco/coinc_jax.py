@@ -49,7 +49,8 @@ K_MAX_4LAYER = 32   # the 4-layer combination tensor is [2, K, K, K, K]: cap K t
 
 CUT_COLS = ("pe_threshold", "max_dt_adjacent", "max_dt", "min_slope", "max_slope", "max_slope_diff",
             "coincidence_layers", "min_cluster_pes", "initial_max_distance", "final_max_distance")
-TP_COLS = ("max_dt", "p0", "p1", "both", "fiber_signal_speed", "max_time_interval", "time_offset")
+TP_COLS = ("max_dt", "p0", "p1", "both", "fiber_signal_speed", "max_time_interval", "time_offset",
+           "add_opposite_side_pulses")
 
 
 class TypeParams:
@@ -79,7 +80,7 @@ def type_params(G, cfg=C.FinderConfig()):
         assert set(nl) <= {2, 3, 4}
         ns = tuple(n for n, need in ((2, min(nl) == 2), (3, min(nl) <= 3 <= max(nl)), (4, max(nl) == 4)) if need)
         tp = np.array([L["max_dt"], L["p0"], L["p1"], float(L["side0"] and L["side1"]), cfg.fiber_signal_speed,
-                       cfg.max_time_interval, cfg.time_offset], np.float64)
+                       cfg.max_time_interval, cfg.time_offset, float(cfg.add_opposite_side_pulses)], np.float64)
         out[t] = TypeParams(lds.pop(), ns, tp, cuts)
     return out
 
@@ -134,6 +135,8 @@ def pack(ev, idx, bar, sipm, time, pe, seq, G, tables, t_type, H=H_DEFAULT, cfg=
     out = dict(valid=dense(np.ones(len(sel), bool), False, bool),
                idx=dense(idx[sel], -1, np.int64),
                side=dense(sipm[sel] % 2, 0, np.int64),
+               bar=dense(b, -1, np.int64), sipm=dense(sipm[sel], -1, np.int64),
+               first=dense(seq[sel] == 0, False, bool),
                layer=dense(G.layer[b], 0, np.int64),
                counter=dense(G.counter_in_type[b], 0, np.int64),
                x=dense(G.x[b]), y=dense(G.y[b]),
@@ -190,13 +193,47 @@ def _labels(A, valid):
     return jnp.where(valid, jnp.argmax(R, axis=-1), -1)
 
 
+def _attach_opposite(lab, kept, filt, comp, idx, bar, sipm, first, t, enabled, window):
+    """Snapshot attachment; O(G H²) storage, with stock seed-order and candidate-order ties."""
+    H = lab.shape[1]
+    ordinal = jnp.arange(H)
+    side = sipm % 2
+    members = kept[:, None, :] & (lab[:, None, :] == ordinal[None, :, None])
+    same_bar = bar[:, :, None] == bar[:, None, :]
+    same_side = side[:, :, None] == side[:, None, :]
+    occupied = jnp.matmul((same_bar & same_side).astype(jnp.float32),
+                          jnp.swapaxes(members.astype(jnp.float32), 1, 2)) > 0
+    anchor_occupied = jnp.take_along_axis(occupied, jnp.maximum(lab, 0)[:, None, :], axis=2)
+    eligible = (enabled & filt & ~kept & first)[:, :, None] & (kept & first)[:, None, :]
+    eligible &= same_bar & ~same_side & ~anchor_occupied
+    dt = jnp.abs(t[:, :, None] - t[:, None, :])
+    eligible &= dt < window
+    distance = jnp.where(eligible, dt, jnp.inf)
+    best_dt = jnp.min(distance, -1)
+    # Stock seeds follow side, initial component seed, then pulse Ptr order.
+    order = jnp.lexsort((idx, comp, side), axis=-1)
+    rank = jnp.argsort(order, axis=-1)
+    root_rank = jnp.min(jnp.where(members, rank[:, None, :], H), -1)
+    anchor_rank = jnp.take_along_axis(root_rank, jnp.maximum(lab, 0), axis=1)
+    tied = eligible & (distance == best_dt[:, :, None])
+    choice = jnp.argmin(jnp.where(tied, anchor_rank[:, None, :], H), -1)
+    chosen_lab = jnp.take_along_axis(lab, choice, axis=1)
+    candidate = jnp.isfinite(best_dt)
+    same_slot = (same_bar & (sipm[:, :, None] == sipm[:, None, :]) &
+                 (chosen_lab[:, :, None] == chosen_lab[:, None, :]))
+    better = (best_dt[:, None, :] < best_dt[:, :, None]) | (
+        (best_dt[:, None, :] == best_dt[:, :, None]) & (ordinal[None, None, :] < ordinal[None, :, None]))
+    selected = candidate & ~jnp.any(same_slot & candidate[:, None, :] & better, -1)
+    return jnp.where(selected, chosen_lab, lab), kept | selected
+
+
 @partial(jax.jit, static_argnames=("ld", "ns", "uniform", "K"))
-def find_dense(valid, idx, side, layer, counter, x, y, t, pe, pos, cut, tp, cu, ld, ns, uniform, K=K_DEFAULT):
+def find_dense(valid, idx, side, bar, sipm, first, layer, counter, x, y, t, pe, pos, cut, tp, cu, ld, ns, uniform, K=K_DEFAULT):
     """One sector type, [G, H] hits -> per-hit cluster label (root hit, -1 = no cluster) and per-root properties.
     cut [G, H, len(CUT_COLS)]: each hit's sector cuts; cu [len(CUT_COLS)]: the shared cuts when `uniform`;
     tp [len(TP_COLS)]: type-level settings. Static: ld (length axis), ns (combination sizes that can be needed),
     uniform (one set of cuts for the whole type: scalar path, same result), K (slots per side and layer)."""
-    max_dt, p0, p1, both, v, mti, toff = (tp[i] for i in range(len(TP_COLS)))
+    max_dt, p0, p1, both, v, mti, toff, attach = (tp[i] for i in range(len(TP_COLS)))
     both = both > 0.5
     src = cu if uniform else cut
     (thr, dt_adj, cmax_dt, lo_h, hi_h, msd_h, ncl_h, minpe_h, maxd0_h, maxdf_h) = (src[..., i] for i in range(len(CUT_COLS)))
@@ -302,6 +339,8 @@ def find_dense(valid, idx, side, layer, counter, x, y, t, pe, pos, cut, tp, cu, 
     md = jnp.maximum(maxd[:, :, None], maxd[:, None, :])
     A2 = kk & (((dx <= md) & (dtt < mt)) | I)
     lab = _labels(A2, kept)
+    lab, kept = _attach_opposite(lab, kept, filt, comp, idx, bar, sipm, first, t,
+                                 both & (attach > 0.5), max_dt + 2.0 * (p1 - p0) / 2.0 / v)
     # clusterProperties per root
     M = (lab[:, None, :] == jnp.arange(H)[None, :, None]) & kept[:, None, :]
     Mf = M.astype(jnp.float64)
@@ -356,7 +395,7 @@ def _dispatch_tier(arr, P, K, batch):
         n = len(sl["valid"])
         if n < batch:   # one static shape per tier
             sl = {k: np.concatenate([v, np.zeros((batch - n,) + v.shape[1:], v.dtype)]) for k, v in sl.items()}
-        d = find_dense(*[jnp.asarray(sl[k]) for k in ("valid", "idx", "side", "layer", "counter", "x", "y", "t",
+        d = find_dense(*[jnp.asarray(sl[k]) for k in ("valid", "idx", "side", "bar", "sipm", "first", "layer", "counter", "x", "y", "t",
                                                       "pe", "pos", "cut")], jnp.asarray(P.tp), jnp.asarray(P.cu), ld=P.ld, ns=P.ns,
                        uniform=P.uniform, K=K)
         outs.append(({k: d[k] for k in POS_KEYS}, n))

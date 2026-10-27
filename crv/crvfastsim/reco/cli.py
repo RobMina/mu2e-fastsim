@@ -242,6 +242,82 @@ def _bench_coinc(args):
             "timers_best": tms[best], "events_per_s": ne / times[best], "us_per_event": 1e6 * times[best] / ne}
 
 
+def _bench_reco(args):
+    """Per-stage throughput on the digis and pulses of reference tables (same events as the stock job): pulses
+    (numpy full fit; JAX kernel + numpy redo) on the stock digis, coincidences (numpy per event; JAX) on the stock
+    pulses, and the pipelined JAX chain (pulses -> coincidences). Best of --repeat, first call reported separately.
+    Rates per art event of the tables (crvdump/events rows, including events without CRV hits)."""
+    import dataclasses
+    import jax
+    from . import chain_jax, coinc as C, coinc_jax as CJ
+    cfg = pulsefit.RecoConfig()
+    W = _prepare(args.inputs, args.max_events, cfg)
+    n_art = len(reftables.read(args.inputs, "events", ["event"]))
+    status = reftables.calib(args.inputs)["status"]
+    G = _coinc_geom()
+    P = _ref_pulses_sorted(args.inputs)
+    pcols = [P[k] for k in ("ev", "idx", "bar", "sipm", "time", "pe", "seq")]
+    ue, lo = np.unique(P["ev"], return_index=True)
+    hi = np.r_[lo[1:], len(P["ev"])]
+    W2 = dict(ev=W["ev"], adc=W["mat"], n=W["n"], start=W["start"], ped=W["ped"], area=W["area"], height=W["height"],
+              bar=W["chan"] // NCHAN_PER_BAR, sipm=W["chan"] % NCHAN_PER_BAR, toff=W["toff"])
+    rounds, L = args.rounds or 3, args.length
+    jcfg = dataclasses.replace(cfg, max_pulses=rounds)
+    rows = np.arange(len(W2["ev"]))
+
+    def np_pulses():
+        return pulsefit.reconstruct_full(W["mat"], W["n"], W["start"], W["ped"], W["area"], W["height"], cfg)
+
+    def jax_pulses():
+        return chain_jax._pulse_collect(chain_jax._pulse_dispatch(W2, rows, jcfg, args.batch, L), W2, rows, cfg)
+
+    def np_coinc():
+        n = 0
+        for a, b in zip(lo, hi):
+            n += len(C.find_event({k: P[k][a:b] for k in ("idx", "bar", "sipm", "time", "pe", "seq")}, G, status))
+        return n
+
+    def jax_coinc():
+        return CJ.find(*pcols, G, status)
+
+    def jax_chain():
+        return chain_jax.run(W2, G, status, n_chunks=args.chunks, rounds=rounds, batch=args.batch, L=L)
+
+    out = {"backend": jax.default_backend(), "device": str(jax.devices()[0]), "art_events": int(n_art),
+           "events_with_waveforms": int(len(np.unique(W["ev"]))), "waveforms": int(len(W["ev"])),
+           "stock_pulses": int(len(P["ev"])), "rounds": rounds, "length": L, "batch": args.batch, "chunks": args.chunks,
+           "add_opposite_side_pulses": C.FinderConfig().add_opposite_side_pulses, "stages": {}}
+    stages = {"pulses_numpy": np_pulses, "pulses_jax": jax_pulses, "coinc_numpy": np_coinc, "coinc_jax": jax_coinc,
+              "chain_jax": jax_chain}
+    for name in (args.bench_stages.split(",") if args.bench_stages else stages):
+        f = stages[name]
+        t0 = time.perf_counter()
+        r = f()   # host results: every stage returns numpy arrays
+        first = time.perf_counter() - t0
+        times = []
+        for _ in range(args.repeat):
+            t0 = time.perf_counter()
+            r = f()
+            times.append(time.perf_counter() - t0)
+        best = min(times)
+        st = {"first_call_s": first, "pass_s": times, "best_s": best, "events_per_s": n_art / best,
+              "us_per_event": 1e6 * best / max(n_art, 1)}
+        if name == "coinc_numpy":
+            st["clusters"] = int(r)
+        elif name == "coinc_jax":
+            st["clusters"], st["fallback_events"] = int(len(r["cl_event"])), int(len(r["fallback_events"]))
+        elif name == "chain_jax":
+            st["clusters"] = int(sum(len(o["cl_event"]) for o in r[0]))
+            st["timers"] = r[1]
+        elif name == "pulses_numpy":
+            st["pulses"] = int(len(r["wf"]))
+        elif name == "pulses_jax":
+            st["pulses"], st["numpy_redo_waveforms"] = int(len(r[0])), int(r[4])
+        out["stages"][name] = st
+        print(name, json.dumps({k: v for k, v in st.items() if k != "timers"}), flush=True)
+    return out
+
+
 def _bench_chain(args):
     """Pulses -> coincidences in one pipelined pass (chain_jax) on synthetic waveforms that make coincidences."""
     import jax
@@ -279,6 +355,8 @@ def cmd_bench(args):
         return _report(args, "bench_coinc", _bench_coinc(args))
     if getattr(args, "stage", "pulses") == "chain":
         return _report(args, "bench_chain", _bench_chain(args))
+    if getattr(args, "stage", "pulses") == "reco":
+        return _report(args, "bench_reco", _bench_reco(args))
     from . import pulsefit_jax as PJ
     cfg = pulsefit.RecoConfig()
     if args.inputs == ["synthetic"]:
@@ -1069,6 +1147,8 @@ def cmd_vr3(args):
     corder = np.argsort(cev, kind="stable")
     clo, chi = np.searchsorted(cev[corder], evs), np.searchsorted(cev[corder], evs, side="right")
     cpul, cst = c.pulses, ak.to_numpy(c.sectortype)
+    if getattr(args, "both", False):
+        return _vr3_both(args, G, status, c, cev, evs, cols, order, lo, hi)
     if getattr(args, "jax", False):
         return _vr3_jax(args, G, status, c, cev, evs)
     cnum = {k: ak.to_numpy(c[k]) for k in ("pe", "start", "end", "slope", "avgtime")}
@@ -1100,6 +1180,85 @@ def cmd_vr3(args):
            "examples": bad, "wall_s": dt, "us_per_event": 1e6 * dt / max(len(evs), 1)}
     out["pass"] = out["identical_cluster_lists"]
     _report(args, "vr3", out)
+
+
+VR3_PROPS = ("pe", "start", "end", "slope", "avgtime", "poscalc", "x", "y", "z")
+
+
+def _vr3_table(ev, st, members, props):
+    """Cluster table keyed by (event, sectortype, sorted member pulse indices) -> property vector (VR3_PROPS)."""
+    out, dup = {}, 0
+    for e, t, m, p in zip(ev, st, members, props):
+        k = (int(e), int(t), tuple(sorted(int(i) for i in m)))
+        dup += k in out
+        out[k] = p
+    return out, dup
+
+
+def _vr3_diff(A, B):
+    """Membership identity of two cluster tables (all sectors and per sector) and property deltas of the matched ones."""
+    def one(a, b):
+        ka, kb = set(a), set(b)
+        both = sorted(ka & kb)
+        la = {(k[0], k[1], i) for k in ka for i in k[2]}
+        lb = {(k[0], k[1], i) for k in kb for i in k[2]}
+        pa = np.array([a[k] for k in both], float).reshape(-1, len(VR3_PROPS))
+        pb = np.array([b[k] for k in both], float).reshape(-1, len(VR3_PROPS))
+        d = np.abs(pb - pa)
+        return {"ref": len(ka), "cand": len(kb), "identical": len(both), "only_ref": len(ka - kb), "only_cand": len(kb - ka),
+                "events_differing": len({k[0] for k in ka ^ kb}), "links_ref": len(la), "links_cand": len(lb),
+                "links_only_ref": len(la - lb), "links_only_cand": len(lb - la),
+                "identical_lists": ka == kb,
+                "max_abs_diff": {q: (float(d[:, j].max()) if len(d) else None) for j, q in enumerate(VR3_PROPS)},
+                "bitwise_equal": {q: int((pa[:, j] == pb[:, j]).sum()) for j, q in enumerate(VR3_PROPS)}}
+    res = one(A, B)
+    res["sectors"] = {str(t): one({k: v for k, v in A.items() if k[1] == t}, {k: v for k, v in B.items() if k[1] == t})
+                      for t in sorted({k[1] for k in A} | {k[1] for k in B})}
+    return res
+
+
+def _vr3_both(args, G, status, c, cev, evs, cols, order, lo, hi):
+    """V-R3 for both finders on the same stock pulses: numpy and JAX each vs stock, and JAX vs numpy (properties too)."""
+    import dataclasses
+    from . import coinc as C, coinc_jax as CJ
+    cfg = dataclasses.replace(C.FinderConfig(), add_opposite_side_pulses=not args.no_opposite_side)
+    cm = np.isin(cev, evs)
+    stock, dup_s = _vr3_table(cev[cm], ak.to_numpy(c.sectortype)[cm], ak.to_list(c.pulses[cm]),
+                              np.stack([ak.to_numpy(c[q][cm]).astype(float) for q in VR3_PROPS], 1))
+    t0 = time.perf_counter()
+    ne, nt, nm, npr = [], [], [], []
+    for k, e in enumerate(evs):
+        sel = order[lo[k]:hi[k]]
+        for r in C.find_event({kk: v[sel] for kk, v in cols.items()}, G, status, cfg):
+            ne.append(e)
+            nt.append(r["sectortype"])
+            nm.append(r["pulses"])
+            npr.append([r["pe"], r["start"], r["end"], r["slope"], r["avgtime"], float(r["poscalc"]), *np.asarray(r["pos"], float)])
+    t_np = time.perf_counter() - t0
+    fast_np, dup_n = _vr3_table(ne, nt, nm, npr)
+    P = _ref_pulses_sorted(args.inputs)
+    m = np.isin(P["ev"], evs)
+    pcols = [P[k][m] for k in ("ev", "idx", "bar", "sipm", "time", "pe", "seq")]
+    CJ.finish(CJ.find_async(*pcols, G, status, cfg, with_pos=True))   # compile
+    tm = {}
+    t0 = time.perf_counter()
+    out = CJ.finish(CJ.find_async(*pcols, G, status, cfg, with_pos=True, timers=tm))
+    t_jax = time.perf_counter() - t0
+    o = np.lexsort((out["mem_idx"], out["mem_cl"]))
+    cl, mi = out["mem_cl"][o].astype(np.int64), out["mem_idx"][o].astype(np.int64)
+    ucl, first = np.unique(cl, return_index=True)
+    groups = dict(zip(ucl.tolist(), np.split(mi, first[1:])))
+    jp = np.column_stack([out["cl_" + q].astype(float) for q in VR3_PROPS[:6]] + [out["cl_pos"].reshape(-1, 3)])
+    fast_jax, dup_j = _vr3_table(out["cl_event"], out["cl_type"], [groups.get(i, ()) for i in range(len(jp))], jp)
+    import jax
+    res = {"inputs": list(args.inputs), "events": int(len(evs)), "add_opposite_side_pulses": cfg.add_opposite_side_pulses,
+           "jax_backend": jax.default_backend(), "jax_device": str(jax.devices()[0]), "duplicate_keys":
+           {"stock": dup_s, "numpy": dup_n, "jax": dup_j}, "numpy_vs_stock": _vr3_diff(stock, fast_np),
+           "jax_vs_stock": _vr3_diff(stock, fast_jax), "jax_vs_numpy": _vr3_diff(fast_np, fast_jax),
+           "jax_fallback_events": int(len(out["fallback_events"])), "numpy_wall_s": t_np, "jax_wall_s": t_jax,
+           "jax_timers": tm}
+    res["pass"] = bool(res["numpy_vs_stock"]["identical_lists"] and res["jax_vs_stock"]["identical_lists"])
+    _report(args, "vr3", res)
 
 
 def _vr3_jax(args, G, status, c, cev, evs):
@@ -1153,9 +1312,12 @@ def add_reco_args(sp, name):
     if name == "bench":
         sp.add_argument("--repeat", type=int, default=3)
         sp.add_argument("--chunks", type=int, default=8, help="chain stage: event chunks in the pipeline")
-        sp.add_argument("--stage", default="pulses", choices=["pulses", "waveforms", "coinc", "chain"],
+        sp.add_argument("--stage", default="pulses", choices=["pulses", "waveforms", "coinc", "chain", "reco"],
                         help="pulses: jitted pulse reco; waveforms: jitted waveform synthesis (synthetic charges); "
-                        "coinc: JAX coincidence finder (synthetic tracks+noise, or reference pulses)")
+                        "coinc: JAX coincidence finder (synthetic tracks+noise, or reference pulses); reco: per-stage "
+                        "numpy and JAX pulses/coincidences and the JAX chain on reference tables (stock digis, pulses)")
+        sp.add_argument("--bench-stages", default=None,
+                        help="--stage reco: comma list of pulses_numpy,pulses_jax,coinc_numpy,coinc_jax,chain_jax")
     if name == "vr1":
         sp.add_argument("--window-end", type=float, default=1e5, help="digitisation window end [ns] (offspill 1e5)")
         sp.add_argument("--jax", action="store_true", help="use the JAX waveform synthesis (waveform_jax)")
@@ -1167,6 +1329,10 @@ def add_reco_args(sp, name):
         sp.add_argument("--min-digis", type=int, default=200, help="--noise: channels with fewer digis are not tested")
     if name == "vr3":
         sp.add_argument("--jax", action="store_true", help="use the JAX coincidence finder (coinc_jax)")
+        sp.add_argument("--both", action="store_true", help="numpy and JAX finders on the same pulses: each vs stock "
+                        "and JAX vs numpy, membership per sector and cluster properties")
+        sp.add_argument("--no-opposite-side", action="store_true",
+                        help="--both: finder with add_opposite_side_pulses off (control)")
     if name == "inspect":
         sp.add_argument("--keys", required=True, help="a vr2/vr2stock stats JSON (its unmatched_*_keys)")
     if name == "direct":

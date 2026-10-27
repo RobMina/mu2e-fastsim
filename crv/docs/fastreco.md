@@ -1,5 +1,12 @@
 # Fast CRV reconstruction (stage 1): goals, validation, prototype
 
+**Thread B continuation (2026-10-26):** the historical results below do not certify the newer stock backing.
+The missing opposite-side attachment stage is now ported and passes full-finder membership closure on retained
+shards 11–12 (all 5,875 clusters, 1,254 restored links), V-R3 identity on 118,146 clusters of 40 shards (numpy and
+JAX, CPU and GPU) and the downstream DQM (the low-PE excess is gone). Against post-#2048 stock the fast reco is
+slower on one CPU core and 1.3x (pipelined chain) on one A100 on a 5 k-event sample. Numerical X/time properties remain
+open; see [the candidate port and validation ledger](thread-b-membership-port.md).
+
 Status: **goals and thresholds agreed 2026-10-16.** First comparisons on existing digis done 2026-10-16 (Results).
 As of 2026-10-22: V-R1 to V-R5 pass, and R1, R2, R3, R4 and R5 are met (R3 and V-R5 at the end of Results); R6 is not
 formally assessed. Newest: the out-of-time background model (last section).

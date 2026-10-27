@@ -353,13 +353,32 @@ def create(attribution, out):
     return result
 
 
+def create_pairs(pairs, out):
+    """Unbound compare_pair over explicit (reference, candidate) dumps; exclusively create NEW.json."""
+    out = Path(out).absolute()
+    if out.exists() or out.is_symlink():
+        raise FileExistsError(out)
+    results = [dict(ref=str(Path(ref).resolve()), cand=str(Path(cand).resolve()), **compare_pair(ref, cand))
+               for ref, cand in pairs]
+    result = dict(schema_version=1, diagnostic='explicit dump pairs (a1 = reference, hybrid = candidate)',
+                  pairs=results, input_sha256={str(Path(p).resolve()): digest(p) for pair in pairs for p in pair})
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open('x') as stream:
+        json.dump(result, stream, indent=2, allow_nan=False)
+        stream.write('\n')
+    return result
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--attribution', required=True)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument('--attribution')
+    group.add_argument('--pair', nargs=2, action='append', metavar=('REF', 'CAND'),
+                       help='compare two CrvRecoTableDumper-layout dumps directly (repeatable; no attribution binding)')
     parser.add_argument('--out', required=True)
     args = parser.parse_args(argv)
     try:
-        create(args.attribution, args.out)
+        create(args.attribution, args.out) if args.attribution else create_pairs(args.pair, args.out)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         parser.error(str(exc))
     print(f'Completed read-only reconstruction detail: {args.out}')

@@ -17,6 +17,7 @@ Pulses use the numpy reference fit (reco.pulsefit, V-R2), which carries chi2, LE
 use the numpy coincidence finder (reco.coinc, V-R3) on those pulses, so the file is self-consistent.
 """
 import argparse
+import dataclasses
 import os
 
 import awkward as ak
@@ -184,7 +185,9 @@ def main():
     ap.add_argument("--no-noise", action="store_true")
     ap.add_argument("--run", type=int, default=1400)
     ap.add_argument("--counters", default=None)
+    ap.add_argument("--no-opposite-side", action="store_true", help="finder without addOppositeSidePulses (control)")
     a = ap.parse_args()
+    fcfg = dataclasses.replace(C.FinderConfig(), add_opposite_side_pulses=not a.no_opposite_side)
     cpath = geometry.find_counters(a.counters or V2.DEFAULT_COUNTERS)
     geom = geometry.from_offline_config(cpath)
     ccfg = geometry.parse_simpleconfig(open(cpath).read())
@@ -193,7 +196,7 @@ def main():
     if a.stage == "reco":
         D = stock_digis(a.inp)
         run = D.pop("run")
-        pulses, cl = fast_reco(D, cond, geom, ccfg)
+        pulses, cl = fast_reco(D, cond, geom, ccfg, fcfg=fcfg)
         with uproot.open(a.inp) as f:
             e = f["crvdump/events"].arrays(["subrun", "event"], library="np")
         events = (e["subrun"].astype(np.int64) << 20) | e["event"].astype(np.int64)
@@ -216,7 +219,7 @@ def main():
         D = fast_digis(steps, parts, geom, cond, cfg, rng, key, tabs, pmap)
         pulses = cl = None
         if a.stage == "chain":
-            pulses, cl = fast_reco(D, cond, geom, ccfg)
+            pulses, cl = fast_reco(D, cond, geom, ccfg, fcfg=fcfg)
         write(a.out, run, D, pulses, cl, chain.event_key(steps))
     print(f"wrote {a.out}")
 
