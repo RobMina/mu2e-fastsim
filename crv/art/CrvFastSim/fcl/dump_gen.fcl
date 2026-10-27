@@ -1,4 +1,6 @@
 # Gen-only variant for the gen.* stream (every generated event): GenParticles and CosmicLivetime, no steps.
 #include "CrvFastSim/fcl/dump_crvsteps.fcl"
 physics.analyzers.dump.writeSteps : false
+physics.analyzers.dump.genParticles : "cosmicTimeOffset"
+physics.analyzers.dump.fullGeneratorStream : true
 services.TFileService.fileName : "gen.root"

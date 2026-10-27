@@ -144,6 +144,16 @@ def build_parser():
         if name == "tier1b-apply":
             sp.add_argument("--library", default=None, metavar="ROOT", help="library from tier1b-build")
             sp.add_argument("--seed", type=int, default=1, help="base seed; file i uses (seed, 1000+i)")
+            sp.add_argument("--crossing-context", action="store_true",
+                            help="draw descendants within the crossing's layer/upstream context (library with ctx)")
+            sp.add_argument("--contain-steps", action="store_true",
+                            help="move same-bar descendant endpoints that leave the bar inside it")
+            sp.add_argument("--point-placement", action="store_true",
+                            help="other-bar descendants with a missing or other-axis target bar: bar at their position")
+            sp.add_argument("--mirror-offsets", action="store_true",
+                            help="reflect other-bar descendant offsets where library and fast muons lean opposite ways")
+            sp.add_argument("--translate-offsets", action="store_true",
+                            help="other-bar descendants to the bar at fast entry + library offset from the entry")
         if name == "secondaries":
             sp.add_argument("--gen", nargs="+", default=None, metavar="ROOT", help="gen.*.root tables (CRY rates per pdg)")
         if name == "v2origin":

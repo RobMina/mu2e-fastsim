@@ -17,6 +17,11 @@ cd $CRVFS_CODE/art && source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh &&
 
 Run: `mu2e -c CrvFastSim/fcl/dump_crvsteps.fcl -s dts....art` (and `dump_gen.fcl` on the gen stream).
 
+Schema v2 validates pointer ProductIDs/keys and adds an event census. Donor dumps select compressed generators;
+`dump_gen.fcl` explicitly keeps the complete `cosmicTimeOffset` stream for exposure. Old donor tables require a
+new dump before building libraries; old libraries remain available for baseline comparisons. Build/validation
+procedure: [`../docs/generator-association-repair.md`](../docs/generator-association-repair.md).
+
 ## CrvRecoTableDumper (fast CRV reco reference)
 
 | module | role |

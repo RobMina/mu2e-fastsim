@@ -255,8 +255,28 @@ def test_projection_matches_real_build_one_without_transport(tmp_path):
     steps = pd.concat([steps, mu[P.KEY].assign(sp=1)], ignore_index=True)
     steps = steps.assign(bar=0, t0=1., t1=2., x0=0., y0=0., z0=0., x1=1., y1=0., z1=0.,
                          px0=100., py0=0., pz0=0., p1=90., len=1., edep=1.)
-    core_tables.write(str(path), dict(gen=g, particles=parts, steps=steps), as_ttree=True)
-    geom = SimpleNamespace(sector=np.array([0]), center=np.zeros((1, 3)), local_to_world=np.array([[0, 1, 2]]))
+    # This real-builder fixture is a corrected schema-v2 donor. The historical
+    # diagnostic fixtures above deliberately remain legacy provenance examples.
+    for frame in (g, parts, steps):
+        frame["event"] -= 2 ** 40
+        for column in P.KEY:
+            frame[column] = frame[column].astype(np.uint32)
+    g["gen_product_id"] = np.uint32(101)
+    parts["sim_product_id"] = np.uint32(202)
+    parts["parent_product_id"] = np.where(parts.parent >= 0, 202, 0).astype(np.uint32)
+    parts["gen_product_id"] = np.where(parts.genidx >= 0, 101, 0).astype(np.uint32)
+    steps["sp_product_id"] = np.uint32(202)
+    events = g[P.KEY].drop_duplicates().copy()
+    for name, frame in (("gen", g), ("particles", parts), ("steps", steps)):
+        counts = frame.groupby(P.KEY).size().rename("n_" + name).reset_index()
+        events = events.merge(counts, on=P.KEY, how="left")
+        events["n_" + name] = events["n_" + name].fillna(0).astype(np.int64)
+    events = events.assign(schema_version=np.uint32(2), associations_checked=np.uint32(1),
+                           full_generator_stream=np.uint32(0), gen_product_id=np.uint32(101),
+                           sim_product_id=np.uint32(202))
+    core_tables.write(str(path), dict(events=events, gen=g, particles=parts, steps=steps), as_ttree=True)
+    geom = SimpleNamespace(sector=np.array([0]), center=np.zeros((1, 3)), local_to_world=np.array([[0, 1, 2]]),
+                           module=np.array([0]), layer=np.array([0]), nbars=1)
     libbins = pd.DataFrame(dict(kind=[0, 1], group=[0, 0], edge=[50., 0.5]))
     actual, _ = tier1b._build_one([str(path)], geom, libbins)
     reconstructed, _ = P.donor_showers(path)

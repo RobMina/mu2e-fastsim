@@ -16,6 +16,9 @@ status: the umbrella README; fast reco goals and results: `docs/fastreco.md`.
 | `docs/plan.md` | scope, measured baseline, agreed performance goals and validation thresholds, architecture, schedule |
 | `docs/fastreco.md` | fast reconstruction: goals R1-R6, thresholds V-R1..V-R5, results (V-R4, V-R5, R3, the out-of-time background model) |
 | `docs/response-configuration.md` | schema-v1 JSON response/reco configuration, units/support policy, CLI/kit overrides and resolved asset provenance |
+| `docs/step-layer-closure.md` | opt-in tier-1b placement, held-out shower-source diagnostic, remaining closure and identity limits |
+| `docs/generator-association-repair.md` | strict donor association schema, completed production repair and held-out physics validation |
+| `docs/corrected-shower-uncertainty.md` | exact shower sampler moments, donor-file uncertainty, corrected source contrast and exposure census |
 | `docs/schema_and_transport.md` | CrvStep-table design notes and the muon-transport design |
 | `crvfastsim/` | the Python package and CLI (`python3 -m crvfastsim`); **reference: `crvfastsim/README.md`** |
 | `tests/` | pytest unit tests (from the umbrella root: `PYTHONPATH=core:crv python3 -m pytest -q crv/tests`) |

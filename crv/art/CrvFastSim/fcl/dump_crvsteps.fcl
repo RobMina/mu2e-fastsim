@@ -8,7 +8,7 @@ services : {
   GlobalConstantsService : { inputFile : "Offline/GlobalConstantsService/data/globalConstants_01.txt" }
 }
 physics : {
-  analyzers : { dump : { module_type : CrvStepTableDumper } }
+  analyzers : { dump : { module_type : CrvStepTableDumper genParticles : "compressDetStepMCs" } }
   e1 : [ dump ]
   end_paths : [ e1 ]
 }

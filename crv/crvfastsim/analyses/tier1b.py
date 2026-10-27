@@ -30,16 +30,19 @@ def build(inputs, outdir, gen=None, out=None, generated=None, counters=None, **k
     print(info)
 
 
-def apply(inputs, outdir, library=None, seed=1, counters=None, **kw):
+def apply(inputs, outdir, library=None, seed=1, counters=None, crossing_context=False, contain_steps=False,
+          point_placement=False, mirror_offsets=False, translate_offsets=False, **kw):
     if not library:
         raise SystemExit("tier1b-apply needs --library")
+    opts = {"context": crossing_context, "contain": contain_steps, "point": point_placement, "mirror": mirror_offsets,
+            "translate": translate_offsets}
     geom = _geom(counters)
     lib = tier1b.read_library(library)
     for i, f in enumerate(tables.expand(inputs)):
         rng = np.random.default_rng([int(seed), 1_000 + i])
         st, pa, gen = tables.read(f, "steps"), tables.read(f, "particles"), tables.read(f, "gen")
         sub = tables.read(f, "subruns")
-        steps, parts, info = tier1b.sample(st, pa, gen, lib, geom, rng)
+        steps, parts, info = tier1b.sample(st, pa, gen, lib, geom, rng, **opts)
         name = os.path.basename(f).replace("fastC.", "fast1b.").replace("fastB.", "fast1b.").replace("fastA.", "fast1b.")
         tables.write(os.path.join(outdir, name), steps, parts, gen, sub, as_ttree=True)
         print(f"# {f}: {info}", flush=True)
