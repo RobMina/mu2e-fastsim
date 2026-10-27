@@ -185,6 +185,8 @@ def build_parser():
                             help="generated events behind the inputs: rates per generated event")
             sp.add_argument("--compare-generated", type=int, default=None,
                             help="generated events behind the reference (default: --generated)")
+    sub.add_parser("e2e-bench", help="provenance-checked cached-CRY to pulses/coincidences benchmark",
+                   add_help=False)
     sub.add_parser("transport-validation", help="persisted-table audit and event-paired sector diagnostics",
                    add_help=False)
     sub.add_parser("transport-paths", help="saved-table identity-matched path geometry diagnostics",
@@ -197,6 +199,9 @@ def build_parser():
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] == "e2e-bench":
+        from .analyses import e2e_bench
+        return e2e_bench.main(argv[1:])
     if argv and argv[0] == "transport-validation":
         from .analyses import transport_validation
         return transport_validation.main(argv[1:])
