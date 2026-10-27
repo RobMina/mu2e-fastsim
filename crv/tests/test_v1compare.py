@@ -20,6 +20,8 @@ def _state(scale_fast):
     S = V._new_state()
     V._fill_arm(S["ref"], _xing(200_000, 1.0, 1), 200_000)
     V._fill_arm(S["fast"], _xing(200_000, scale_fast, 2), 200_000)
+    S["matched"]["EX"] = 200_000
+    S["dt"]["EX"][len(S["dt"]["EX"]) // 2] = 200_000
     return S
 
 

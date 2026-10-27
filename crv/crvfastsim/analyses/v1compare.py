@@ -18,6 +18,7 @@ Per-crossing statistics come from the histograms (mean from sums, MPV from the e
 """
 import json
 import os
+import warnings
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -98,21 +99,26 @@ def _merge_into(tot, d):
         tot["dt"][g] = (np.asarray(tot["dt"][g]) + np.asarray(d["dt"][g])).tolist()
 
 
-def _hist_mpv(h, edges, lo_q=0.15, hi_q=0.70):
-    """MPV and its statistical error from a Moyal (Landau approximation) fit to the histogram core.
+def _valid_hist(h):
+    return bool(np.all(np.isfinite(h)) and np.all(h >= 0) and np.isfinite(h.sum()) and h.sum() > 0)
 
-    Fit range: from the lo_q to the hi_q quantile of the histogram (the peak and its rising and falling edges,
-    excluding the long high tail). Weighted least squares on counts, Poisson errors. Returns (mpv, err).
-    A peak-finder (argmax, or argmax after smoothing) moved by +-4 % on the 16 k tagger crossings with the smoothing
-    window (2026-10-16), so it cannot test a 1 % threshold there; the fit uses the whole core.
-    """
-    from scipy.optimize import curve_fit
+
+def _hist_mpv(h, edges, lo_q=0.15, hi_q=0.70):
+    """Fit the unchanged Moyal core; reject unsupported fits before applying the 2-sigma allowance."""
+    from scipy.optimize import OptimizeWarning, curve_fit
     h = np.asarray(h, float)
     c = 0.5 * (edges[:-1] + edges[1:])
-    if h.sum() < 100:
-        return float("nan"), float("nan")
+    result = {"valid": False, "reason": None, "mpv": None, "error": None, "nbins_fit": 0}
+    if not _valid_hist(h) or h.sum() < 100:
+        return dict(result, reason="invalid_or_insufficient_histogram")
     cdf = np.cumsum(h) / h.sum()
     sel = (cdf >= lo_q) & (cdf <= hi_q) & (h > 0)
+    result["nbins_fit"] = int(sel.sum())
+    if sel.sum() < 4:
+        return dict(result, reason="insufficient_fit_bins")
+    lo, hi = float(c[sel][0]), float(c[sel][-1])
+    width = hi - lo
+    result["range"] = [lo, hi]
 
     def moyal(x, a, mu, sig):
         z = (x - mu) / sig
@@ -121,65 +127,118 @@ def _hist_mpv(h, edges, lo_q=0.15, hi_q=0.70):
     k = int(np.argmax(np.where(sel, h, 0)))
     p0 = (h[k] / np.exp(-0.5), c[k], 0.15 * c[k])
     try:
-        par, cov = curve_fit(moyal, c[sel], h[sel], p0=p0, sigma=np.sqrt(h[sel]), absolute_sigma=True, maxfev=5000)
-        return float(par[1]), float(np.sqrt(cov[1, 1]))
-    except (RuntimeError, ValueError):
-        return float("nan"), float("nan")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", OptimizeWarning)
+            with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+                par, cov = curve_fit(moyal, c[sel], h[sel], p0=p0, sigma=np.sqrt(h[sel]),
+                                     absolute_sigma=True, maxfev=5000)
+    except (RuntimeError, ValueError, TypeError, OptimizeWarning):
+        return dict(result, reason="fit_failed")
+    result["parameters"] = np.asarray(par).tolist()
+    if not np.all(np.isfinite(par)) or par[0] <= 0 or par[2] <= 0 or par[1] <= 0 or not lo <= par[1] <= hi:
+        return dict(result, reason="unphysical_or_out_of_core_fit")
+    if not np.all(np.isfinite(cov)) or not np.allclose(cov, cov.T) or np.any(np.linalg.eigvalsh(cov) <= 0):
+        return dict(result, reason="invalid_covariance")
+    error = float(np.sqrt(cov[1, 1]))
+    scale_error = float(np.sqrt(cov[2, 2]))
+    result.update(mpv=float(par[1]), error=error, scale_error=scale_error)
+    if par[2] > width or error > width or scale_error > width:
+        return dict(result, reason="unidentified_core_fit")
+    return dict(result, valid=True)
 
 
 def _hist_ratio_band(hf, hr, edges, q=(0.05, 0.95), min_ref=400):
     """Binned-ratio check on fixed-edge histograms, rebinned to 20 bins over the reference's q-range."""
     hf, hr = np.asarray(hf, float), np.asarray(hr, float)
-    cdf = np.cumsum(hr) / max(hr.sum(), 1)
+    result = {"max_abs_dev": None, "max_abs_dev_minus_2sigma": None, "chi2_ndf": None,
+              "nbins_used": 0, "valid": False, "reason": None}
+    if not _valid_hist(hf) or not _valid_hist(hr):
+        return dict(result, reason="invalid_or_empty_histogram")
+    cdf = np.cumsum(hr) / hr.sum()
     lo_i, hi_i = int(np.searchsorted(cdf, q[0])), int(np.searchsorted(cdf, q[1])) + 1
     groups = np.array_split(np.arange(lo_i, min(hi_i, len(hr))), 20)
     rf = np.array([hf[g].sum() for g in groups if len(g)])
     rr = np.array([hr[g].sum() for g in groups if len(g)])
     ok = rr >= min_ref
+    result.update(nbins_used=int(ok.sum()), range=[float(edges[lo_i]), float(edges[min(hi_i, len(hr))])])
     if not ok.any():
-        return {"max_abs_dev": None, "max_abs_dev_minus_2sigma": None, "chi2_ndf": None, "nbins_used": 0}
+        return dict(result, reason="no_populated_comparison_bins")
+    if np.any(rf[ok] == 0):
+        return dict(result, reason="empty_candidate_comparison_bin")
     r = (rf[ok] / hf.sum()) / (rr[ok] / hr.sum())
-    err = r * np.sqrt(1 / np.maximum(rf[ok], 1) + 1 / rr[ok])
-    return {"max_abs_dev": float(np.abs(r - 1).max()),
-            "max_abs_dev_minus_2sigma": float(np.maximum(np.abs(r - 1) - 2 * err, 0).max()),
-            "chi2_ndf": float(np.sum(((r - 1) / err) ** 2) / ok.sum()),
-            "nbins_used": int(ok.sum()), "range": [float(edges[lo_i]), float(edges[min(hi_i, len(hr))])]}
+    err = r * np.sqrt(1 / rf[ok] + 1 / rr[ok])
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        chi2 = float(np.sum(((r - 1) / err) ** 2) / ok.sum())
+    if not np.isfinite(chi2):
+        return dict(result, reason="nonfinite_ratio_statistic")
+    return dict(result, valid=True, chi2_ndf=chi2, max_abs_dev=float(np.abs(r - 1).max()),
+                max_abs_dev_minus_2sigma=float(np.maximum(np.abs(r - 1) - 2 * err, 0).max()))
+
+
+def _within(value, limit):
+    return bool(value is not None and np.isfinite(value) and abs(value) <= limit)
 
 
 def summarise(S):
-    out = {"events_union": S["ref"]["events"], "thresholds": THRESH, "groups": {}}
-    ok_all = True
+    events = S["ref"]["events"]
+    events_valid = bool(np.isfinite(events) and events > 0 and S["fast"]["events"] == events)
+    out = {"events_union": events, "events_valid": events_valid, "thresholds": THRESH, "groups": {}}
     for g in GROUPS:
         F, R = S["fast"]["groups"][g], S["ref"]["groups"][g]
-        if R["n"] == 0:
-            continue
-        res = {"n_ref": R["n"], "n_fast": F["n"], "crossings_per_event_rel": F["n"] / R["n"] - 1}
+        populated = F["n"] > 0 and R["n"] > 0
+        res = {"n_ref": R["n"], "n_fast": F["n"],
+               "crossings_per_event_rel": F["n"] / R["n"] - 1 if R["n"] > 0 else float("nan")}
+        reasons = {}
+        if not events_valid:
+            reasons["events"] = "invalid_event_universe"
+        if not populated:
+            reasons["population"] = "empty_required_group_arm"
         for col in ("len", "edep"):
-            res[f"{col}_mean_rel"] = (F[f"{col}_sum"] / max(F["n"], 1)) / (R[f"{col}_sum"] / R["n"]) - 1
-            res[f"{col}_ratio"] = _hist_ratio_band(F[f"h_{col}"], R[f"h_{col}"], EDGES[col])
-        (mr, er), (mf, ef) = _hist_mpv(R["h_edep"], EDGES["edep"]), _hist_mpv(F["h_edep"], EDGES["edep"])
-        res["edep_mpv_ref"], res["edep_mpv_ref_err"] = mr, er
-        res["edep_mpv_fast"], res["edep_mpv_fast_err"] = mf, ef
-        res["edep_mpv_rel"] = mf / mr - 1
-        res["edep_mpv_rel_err"] = abs(mf / mr) * np.hypot(er / mr, ef / mf)
+            res[f"{col}_mean_rel"] = ((F[f"{col}_sum"] / F["n"]) / (R[f"{col}_sum"] / R["n"]) - 1
+                                       if populated and R[f"{col}_sum"] > 0 else float("nan"))
+            shape = _hist_ratio_band(F[f"h_{col}"], R[f"h_{col}"], EDGES[col])
+            res[f"{col}_ratio"] = shape
+            if not shape["valid"]:
+                reasons[f"{col}_ratio"] = shape["reason"]
+        fits = {arm: _hist_mpv(A["h_edep"], EDGES["edep"]) for arm, A in (("ref", R), ("fast", F))}
+        res["edep_mpv_fits"] = fits
+        for arm, fit in fits.items():
+            res[f"edep_mpv_{arm}"] = fit["mpv"]
+            res[f"edep_mpv_{arm}_err"] = fit["error"]
+            if not fit["valid"]:
+                reasons[f"edep_mpv_{arm}"] = fit["reason"]
+        mpv_valid = all(fit["valid"] for fit in fits.values())
+        res["edep_mpv_rel"], res["edep_mpv_rel_err"] = float("nan"), float("nan")
+        if mpv_valid:
+            mr, er = fits["ref"]["mpv"], fits["ref"]["error"]
+            mf, ef = fits["fast"]["mpv"], fits["fast"]["error"]
+            res["edep_mpv_rel"] = mf / mr - 1
+            res["edep_mpv_rel_err"] = abs(mf / mr) * np.hypot(er / mr, ef / mf)
         hdt = np.asarray(S["dt"][g], float)
         c = 0.5 * (EDGES["dt"][:-1] + EDGES["dt"][1:])
-        res["matched_frac_of_ref"] = S["matched"][g] / R["n"]
-        res["t0_bias_ns"] = float(c[np.searchsorted(np.cumsum(hdt), hdt.sum() / 2)]) if hdt.sum() else None
+        matched = S["matched"][g]
+        time_valid = bool(_valid_hist(hdt) and np.isfinite(matched) and matched == int(matched)
+                          and 0 < hdt.sum() <= matched <= min(F["n"], R["n"]))
+        res["matched_frac_of_ref"] = matched / R["n"] if R["n"] > 0 else None
+        res["matched"], res["matched_in_time_range"] = matched, float(hdt.sum())
+        res["t0_bias_ns"] = float(c[np.searchsorted(np.cumsum(hdt), hdt.sum() / 2)]) if time_valid else None
+        if not time_valid:
+            reasons["t0_bias"] = "missing_or_invalid_matched_time_histogram"
         checks = {
-            "crossings": abs(res["crossings_per_event_rel"]) <= THRESH["crossings_per_event_rel"],
-            "len_mean": abs(res["len_mean_rel"]) <= THRESH["len_mean_rel"],
-            "len_ratio": (res["len_ratio"]["chi2_ndf"] or 0) <= THRESH["ratio_chi2_ndf"],
-            "edep_mean": abs(res["edep_mean_rel"]) <= THRESH["edep_mean_rel"],
-            "edep_mpv": max(abs(res["edep_mpv_rel"]) - 2 * res["edep_mpv_rel_err"], 0) <= THRESH["edep_mpv_rel"],
-            "edep_ratio": (res["edep_ratio"]["chi2_ndf"] or 0) <= THRESH["ratio_chi2_ndf"],
-            "t0_bias": res["t0_bias_ns"] is None or abs(res["t0_bias_ns"]) <= THRESH["t0_bias_ns"],
+            "events": events_valid,
+            "population": bool(populated),
+            "crossings": _within(res["crossings_per_event_rel"], THRESH["crossings_per_event_rel"]),
+            "len_mean": _within(res["len_mean_rel"], THRESH["len_mean_rel"]),
+            "len_ratio": res["len_ratio"]["valid"] and _within(res["len_ratio"]["chi2_ndf"], THRESH["ratio_chi2_ndf"]),
+            "edep_mean": _within(res["edep_mean_rel"], THRESH["edep_mean_rel"]),
+            "edep_mpv": mpv_valid and _within(max(abs(res["edep_mpv_rel"]) - 2 * res["edep_mpv_rel_err"], 0), THRESH["edep_mpv_rel"]),
+            "edep_ratio": res["edep_ratio"]["valid"] and _within(res["edep_ratio"]["chi2_ndf"], THRESH["ratio_chi2_ndf"]),
+            "t0_bias": time_valid and _within(res["t0_bias_ns"], THRESH["t0_bias_ns"]),
         }
-        res["checks"] = checks
+        res["checks"], res["invalid_reasons"] = checks, reasons
         res["pass"] = all(checks.values())
-        ok_all &= res["pass"]
         out["groups"][g] = res
-    out["pass"] = bool(ok_all)
+    out["pass"] = bool(events_valid and out["groups"] and all(r["pass"] for r in out["groups"].values()))
     return out
 
 

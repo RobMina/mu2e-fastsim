@@ -65,7 +65,12 @@ Matching is **by truth-particle identity, never by time or distance** (a Mu2e an
 
 Persisted coverage, event-paired rate errors, individual-sector and low-momentum diagnostics are available through
 `transport-validation`; see [`../docs/transport_validation.md`](../docs/transport_validation.md). It supplements,
-not replaces, the established V1 gates.
+not replaces, the established V1 gates. V1 requires valid fit and populated shape evidence; unsupported checks fail
+with explicit reasons. Completed comparisons/merges exit 1 on FAIL after writing results; `--emit` is accumulation
+only. Numerical physics tolerances are unchanged; the linked document defines the evidence-validity guards.
+`transport-validation` includes event-paired crossing-mean and energy/path errors and matched/unmatched diagnostics.
+`transport-paths` decomposes saved matched lengths into entry-ray chords and G4 path excess, retaining all sectors,
+clean/nonstopping populations and explicitly truth-conditioned incidence/momentum strata. Neither retunes transport.
 
 ## 5. Validation thresholds (agreed 2026-10-15)
 
