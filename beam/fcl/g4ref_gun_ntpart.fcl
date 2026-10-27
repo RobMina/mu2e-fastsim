@@ -1,0 +1,15 @@
+# G4 reference for the beam fast sim from a particle list: the DS stage of g4ref_mubeam_ntpart.fcl (same geometry,
+# field, physics and per-muon tree), with the MuBeamCat resampler replaced by EventGenerator fromG4BLFile.
+# One muon per event, read from beamgun_particles.txt in Mu2e coordinates (beamfastsim gunfile writes it, optionally
+# with the charge flipped for a mu+ reference on the same starts). The job sets fromG4BLFile.particlesToSkip.
+#include "g4ref_mubeam_ntpart.fcl"
+physics.producers.generate : {
+  module_type : EventGenerator
+  inputfile : "beamgun.txt"
+  allowReplacement : true
+  messageOnReplacement : false
+}
+physics.producers.g4run.inputs : { primaryType : "GenParticles" primaryTag : "generate" }
+physics.producers.g4run.SDConfig.preSimulatedHits : [ ]
+physics.targetStopPath : [ genCounter, generate, g4run, g4consistentFilter ]
+physics.trigger_paths : [ targetStopPath ]

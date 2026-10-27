@@ -1,0 +1,39 @@
+# Single-foil loss diagnostic using published study geometry and analyzers; no art output.
+#include "Offline/fcl/minimalMessageService.fcl"
+#include "Offline/fcl/standardProducers.fcl"
+#include "Offline/fcl/standardServices.fcl"
+process_name: foilclosure
+source: { module_type: EmptyEvent maxEvents: 10 firstRun: 1 firstSubRun: 1 }
+services: {
+  @table::Services.SimAndReco
+  TFileService: { fileName: "foil.root" }
+  GeometryService: { @table::Services.SimAndReco.GeometryService
+    inputFile: "foil_geom.txt"
+    simulatedDetector: { tool_type: "ConstructEnvBox" }
+  }
+}
+physics: {
+  producers: {
+    generate: { module_type: EventGenerator inputfile: "foil_gun.txt" allowReplacement: true messageOnReplacement: false }
+    g4run: @local::g4run
+  }
+  analyzers: {
+    readback: { module_type: Mu2eG4StudyReadBack generatorModuleLabel: generate g4ModuleLabel: g4run
+                physVolInfoInput: g4run minimumEnergy: 0.0 maxPrint: 0 diagLevel: 0 }
+  }
+  p1: [generate, g4run]
+  e1: [readback]
+  trigger_paths: [p1]
+  end_paths: [e1]
+}
+physics.producers.g4run.physics.physicsListName: "ShieldingM"
+physics.producers.g4run.physics.minRangeCut: 0.01
+physics.producers.g4run.physics.protonProductionCut: 0.0
+physics.producers.g4run.SDConfig: { enableSD: [] TimeVD: { times: [] } }
+physics.producers.g4run.Mu2eG4SteppingOnlyCut: { type: constant value: false write: "stepper" }
+physics.producers.g4run.Mu2eG4StackingOnlyCut: {}
+physics.producers.g4run.Mu2eG4CommonCut: {}
+physics.producers.g4run.TrajectoryControl.produce: false
+services.SeedService.baseSeed: 20261026
+services.SeedService.maxUniqueEngines: 20
+services.scheduler.wantSummary: true

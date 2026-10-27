@@ -149,8 +149,8 @@ def capture_transport(fm, geom, prm, key, state, chunk=200, min_bucket=256):
     rk4, layer, stepper = transport._rk4, transport._layer, transport.make_stepper
     sample = transport.eloss_jax._sample
 
-    def observed_sample(key, mat, p, length, tcut, mass):
-        loss = sample(key, mat, p, length, tcut, mass)
+    def observed_sample(key, mat, p, length, tcut, mass, **kw):
+        loss = sample(key, mat, p, length, tcut, mass, **kw)
         jax.debug.callback(capture.sample, p, loss, ordered=True)
         return loss
 
@@ -159,8 +159,8 @@ def capture_transport(fm, geom, prm, key, state, chunk=200, min_bucket=256):
         jax.debug.callback(capture.flight, args[1], xn, ordered=True)
         return xn, un
 
-    def observed_layer(key, mat, x0, p, u, length, active, slices, tcut, msc):
-        result = layer(key, mat, x0, p, u, length, active, slices, tcut, msc)
+    def observed_layer(key, mat, x0, p, u, length, active, prm, *tables):
+        result = layer(key, mat, x0, p, u, length, active, prm, *tables)
         jax.debug.callback(capture.layer, key, mat.I, p, u, length, active, result[0], ordered=True)
         return result
 
