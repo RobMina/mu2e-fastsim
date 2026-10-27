@@ -165,6 +165,8 @@ def build_parser():
                             help="generated events behind the reference (default: --generated)")
     sub.add_parser("transport-validation", help="persisted-table audit and event-paired sector diagnostics",
                    add_help=False)
+    sub.add_parser("transport-paths", help="saved-table identity-matched path geometry diagnostics",
+                   add_help=False)
     for name in reco_cli.RECO_CMDS:
         sp = sub.add_parser(f"reco-{name}", help=f"fast CRV reco: {name} (reco/cli.py)")
         reco_cli.add_reco_args(sp, name)
@@ -176,6 +178,9 @@ def main(argv=None):
     if argv and argv[0] == "transport-validation":
         from .analyses import transport_validation
         return transport_validation.main(argv[1:])
+    if argv and argv[0] == "transport-paths":
+        from .analyses import transport_paths
+        return transport_paths.main(argv[1:])
     args = build_parser().parse_args(argv)
     if args.cmd.startswith("reco-"):
         return reco_cli.run_reco(args.cmd[len("reco-"):], args)
@@ -183,7 +188,9 @@ def main(argv=None):
     cmd = kw.pop("cmd")
     inputs = kw.pop("inputs")
     outdir = kw.pop("outdir") or f"plots/{cmd}"
-    ANALYSES[cmd][0](inputs, outdir, **kw)
+    result = ANALYSES[cmd][0](inputs, outdir, **kw)
+    if cmd == "v1compare" and (kw.get("merge") or not kw.get("emit")) and not result["pass"]:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
