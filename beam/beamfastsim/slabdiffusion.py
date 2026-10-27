@@ -6,7 +6,7 @@ The direction diffuses in *true path* s with generator Delta_S2/(2 lambda1(T)).
 Each interior polygon vertex uses two independent tangent Gaussian components
 of variance h/lambda1(T), followed by the spherical exponential map. There is
 no effective-path inversion, Highland kick, field, decay, lateral foil edge,
-or explicit hard secondary. This is a weak, finite-step diffusion model, not
+or secondary transport. The opt-in split mode samples hard energy debits. This is a weak, finite-step diffusion model, not
 Geant4's condensed-history angular distribution or single-scattering tail.
 
 A leg first drifts along the current direction, with requested length
@@ -36,6 +36,14 @@ exit is retained verbatim, without a 0.1 MeV threshold. Cap/numerical endpoints
 are unresolved and retain their residual energy. No endpoint is called a
 physical stop by this module.
 
+The opt-in loss='split' requires range_kind='restricted' and a range table
+integrated from restricted stopping power at exactly tcut. Independent compound
+Poisson hard transfers are sampled at each leg's entry momentum; the continuous
+mean never includes their mean. There is no discrete recoil or electron transport.
+Soft debit is applied first, hard debit second, with separate requested/applied
+ledgers and no promotion of raw-zero endpoints to physical stops. Frozen-rate
+step refinement remains required. No hard scheduling or G4 angular parity is claimed.
+
 Inclusive CSDA means with a finite-cut Urban sampler are a diagnostic hybrid:
 its width/branches still use entry momentum, actual length and tcut. It does
 not consistently resolve restricted vs inclusive loss or delta-ray/hard-loss
@@ -58,7 +66,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from mu2efastsim import eloss, eloss_jax
+from mu2efastsim import eloss, eloss_jax, eloss_split_jax
 
 
 ACTIVE = 0
@@ -180,7 +188,7 @@ def _run(energy, direction, thickness, rows, replicas, seed, tb, mc, cfg):
     status = jnp.where(_at_floor(energy, cfg.floor), UNRESOLVED_FLOOR, ACTIVE).astype(jnp.int32)
     zero = jnp.zeros(n, jnp.float64)
     # ledger columns: mean, requested, applied, clipped, angular_time, face, floor
-    ledger = jnp.zeros((n, 7), jnp.float64).at[:, 6].set(_at_floor(energy, cfg.floor))
+    ledger = jnp.zeros((n, 14 if cfg.loss == "split" else 7), jnp.float64).at[:, 6].set(_at_floor(energy, cfg.floor))
     state = (jnp.int32(0), energy, direction, pos, zero, status, jnp.zeros(n, jnp.int32), ledger)
     rf = _range(tb, cfg.floor)
 
@@ -213,7 +221,18 @@ def _run(energy, direction, thickness, rows, replicas, seed, tb, mc, cfg):
         mean = jnp.maximum(safe_t - _energy(tb, jnp.maximum(r - dl, rf)), 0.)
         mean = jnp.where(active & ~bad, mean, 0.)
         step_keys = jax.vmap(lambda k: jax.random.fold_in(k, i))(keys)
-        if cfg.loss == "sample":
+        if cfg.loss == "split":
+            loss_keys = jax.vmap(lambda k: jax.random.fold_in(k, 1))(step_keys)
+            hard_keys = jax.vmap(lambda k: jax.random.fold_in(k, 2))(step_keys)
+            p = jnp.sqrt(safe_t * (safe_t + 2 * eloss.MMU))
+            split = jax.vmap(lambda sk, hk, pp, ll, mm: eloss_split_jax.sample_loss_split(
+                sk, hk, mc, pp, ll, cfg.tcut, restricted_mean=mm))(loss_keys, hard_keys, p, dl, mean)
+            hard_mean = eloss_split_jax.hard_mean_per_mm(mc, p, cfg.tcut) * dl
+            soft_mean = mean
+            mean = mean + hard_mean
+            requested = split.soft_requested + split.hard_requested
+            bad = bad | (active & ((split.soft_requested < 0) | (split.hard_requested < 0)))
+        elif cfg.loss == "sample":
             loss_keys = jax.vmap(lambda k: jax.random.fold_in(k, 1))(step_keys)
             p = jnp.sqrt(safe_t * (safe_t + 2 * eloss.MMU))
             requested = jax.vmap(lambda k, pp, ll, mm: eloss_jax.sample_loss(
@@ -254,6 +273,14 @@ def _run(energy, direction, thickness, rows, replicas, seed, tb, mc, cfg):
             u = jnp.where(continuing[:, None], rotated, u)
         add = jnp.stack((mean, requested, applied, requested - applied, q,
                          hit.astype(jnp.float64), floor_hit.astype(jnp.float64)), axis=1)
+        if cfg.loss == "split":
+            soft = jnp.where(valid, split.soft_requested, 0.)
+            hard = jnp.where(valid, split.hard_requested, 0.)
+            soft_applied = jnp.minimum(soft, jnp.maximum(t, 0.))
+            hard_applied = jnp.minimum(hard, jnp.maximum(t - soft_applied, 0.))
+            extra = jnp.stack((soft, hard, jnp.where(valid, split.hard_count, 0), soft_applied,
+                               hard_applied, jnp.where(valid, soft_mean, 0.), jnp.where(valid, hard_mean, 0.)), axis=1)
+            add = jnp.concatenate((add, extra), axis=1)
         return (i + 1, jnp.where(active, tout, t), u, jnp.where(valid[:, None], nxt, x),
                 path + dl, jnp.where(active, new_status, status), steps + valid.astype(jnp.int32), ledger + add)
 
@@ -271,7 +298,7 @@ def _integer(value, name, minimum=0, maximum=2**32 - 1):
 def respond(energy, direction, thickness, tables, *, material=None, tcut=1.0,
             replicas=1, seed=1, batch=256, row_ids=None, replica_offset=0,
             max_step=0.01, angular_fraction=0.02, energy_fraction=0.05,
-            max_steps=10000, floor=None, scatter=True, loss="sample"):
+            max_steps=10000, floor=None, scatter=True, loss="sample", range_kind="inclusive"):
     """Transport explicit entries through 0<=z<=thickness; return :class:`Response`.
 
     energy: (n,) MeV; direction: (n,3) finite unit vectors. Each starts at
@@ -284,6 +311,9 @@ def respond(energy, direction, thickness, tables, *, material=None, tcut=1.0,
 
     loss: 'sample' requires an explicit Material/MatConsts; 'mean' integrates
     the supplied range deterministically; 'none' freezes energy for diagnostics.
+    loss='split' requires the caller assertion range_kind='restricted' and explicit material.
+    The bare Tables API cannot verify its cut/material; the study runner binds audited inputs.
+    energy_fraction limits soft mean only in split mode, not total stochastic debit.
     row_ids: unique uint32-compatible identities (default arange(n)); replicas
     are indexed from replica_offset. batch only partitions host execution into
     chunks of at most 256 entries, padded to the same executable with 256 payload and 8 inactive guard lanes; this
@@ -297,8 +327,10 @@ def respond(energy, direction, thickness, tables, *, material=None, tcut=1.0,
     replica_offset = _integer(replica_offset, "replica_offset")
     _integer(replica_offset + replicas - 1, "last replica id")
     max_steps = _integer(max_steps, "max_steps", maximum=2**31 - 1)
-    if not isinstance(scatter, (bool, np.bool_)) or loss not in ("sample", "mean", "none"):
-        raise ValueError("scatter must be boolean; loss must be sample, mean, or none")
+    if not isinstance(scatter, (bool, np.bool_)) or loss not in ("sample", "split", "mean", "none"):
+        raise ValueError("scatter must be boolean; loss must be sample, split, mean, or none")
+    if range_kind not in ("inclusive", "restricted") or (loss == "split" and range_kind != "restricted"):
+        raise ValueError("split loss requires an explicitly declared restricted range at the same cut")
     for name, value in (("max_step", max_step), ("angular_fraction", angular_fraction),
                         ("energy_fraction", energy_fraction), ("tcut", tcut)):
         if np.ndim(value) != 0 or not np.isfinite(value) or value <= 0:
@@ -350,7 +382,7 @@ def respond(energy, direction, thickness, tables, *, material=None, tcut=1.0,
         raise ValueError("row_ids must be unique uint32-compatible integers of shape (n,)")
     rows = rows.astype(np.uint32)
     mc = eloss_jax.MatConsts(*(0. for _ in eloss_jax.MatConsts._fields))
-    if loss == "sample":
+    if loss in ("sample", "split"):
         if material is None:
             raise ValueError("sample loss requires an explicit material")
         mc = eloss_jax.consts(material)
@@ -362,7 +394,7 @@ def respond(energy, direction, thickness, tables, *, material=None, tcut=1.0,
                     float(floor), upper, bool(scatter), loss, float(tcut))
     count = n * replicas
     arrays = [np.empty(count), np.empty(count, np.int32), np.empty(count), np.empty((count, 3)),
-              np.empty((count, 3)), np.empty(count, np.int32), np.empty((count, 7))]
+              np.empty((count, 3)), np.empty(count, np.int32), np.empty((count, 14 if loss == "split" else 7))]
     for start in range(0, count, min(batch, _KERNEL_WIDTH)):
         flat = np.arange(start, min(start + min(batch, _KERNEL_WIDTH), count))
         index, rep = flat % n, flat // n + replica_offset
@@ -381,6 +413,9 @@ def respond(energy, direction, thickness, tables, *, material=None, tcut=1.0,
     e, st, path, x, u, steps, accum = arrays
     ledger = {name: accum[:, i].reshape(shape) for i, name in enumerate(
         ("mean_loss", "requested_loss", "applied_loss", "clipped_loss", "angular_time"))}
+    if loss == "split":
+        ledger.update({name: accum[:, i + 7].reshape(shape) for i, name in enumerate(
+            ("soft_requested", "hard_requested", "hard_count", "soft_applied", "hard_applied", "soft_mean", "hard_mean"))})
     ledger.update(face_reached=accum[:, 5].reshape(shape).astype(bool),
                   floor_reached=accum[:, 6].reshape(shape).astype(bool),
                   rawzero=(st == RAWZERO).reshape(shape), cap=(st == UNRESOLVED_CAP).reshape(shape),

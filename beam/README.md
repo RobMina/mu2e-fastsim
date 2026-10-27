@@ -519,3 +519,57 @@ A consistent restricted-soft/explicit-hard loss treatment, independently validat
 and boundary validation, and real production boundary/displacement integration are separate requirements.
 `chaincompare` retains exploratory first-prefix/row-level statistics; use `pilotaudit` for the saved whole-event
 pilot instead. No acceptance claim should be based on its exploratory metrics.
+
+### Restricted-soft / explicit-hard slab diagnostic (opt-in)
+
+`slabstudy --loss-model split` selects the audited charge-specific **restricted
+Range**, at the export's electron production cut, instead of inclusive CSDARange.
+It passes each range-integrated soft mean to the Urban sampler and independently
+samples analytic spin-1/2 compound-Poisson transfers above the cut. The companion
+core module `mu2efastsim.eloss_split_jax` is required. Existing slab `hybrid` and
+all production transport defaults are unchanged.
+
+```bash
+PYTHONPATH=/path/to/core:beam JAX_PLATFORMS=cpu python3 -m beamfastsim.slabstudy \
+  --cell moved_5 --pdg 13 --samples 5000 --seed 91 \
+  --arms no_scatter diffuse refined --loss-model split --max-steps 20000 \
+  --slab-tables "$SLAB_EXPORT" --campaign "$SAVED_MATRIX" --out "$DATA/split_NEW"
+python3 -m beamfastsim.slabgate --study "$DATA/split_NEW" --out "$DATA/gates_NEW.json"
+```
+
+The hard spectrum is frozen at leg-entry momentum. `energy_fraction` bounds the
+**soft mean**, not the full stochastic debit; step refinement remains necessary.
+There is no discrete recoil, electron transport, deposition, or new angular model.
+Soft and hard requested/applied energies and requested hard counts are saved
+separately; soft is debited first. Hard counts include transfers discarded by
+kinetic clipping. Floor/cap histories retain positive residuals and stay unresolved;
+RAWZERO is an algorithmic clamp, never physical stopping.
+
+The inherited Bohr fluctuation branch has not been validated as a restricted
+variance when `cut < Tmax`. Split sampling **fails closed with a nonfinite soft
+request** in that overlapping-hard branch (mean >= 10*cut and Tmax <= 2*cut), and
+the slab records an unresolved numerical endpoint without applying either debit.
+No-hard branches and legacy sampling are unchanged. Urban plus the hard spectrum
+remains a model requiring independent distribution gates, not exact G4 parity.
+
+The runner records restricted-range hashes, material, charge, cut and actual table
+arrays. Split response reuse rejects absent or different transport bindings, and
+historical response-generation provenance stays separate from current reporting.
+A mean audit checks restricted power plus analytic hard power against inclusive
+power over 0.1–40 MeV. A second audit compares the derivative of the actual log-log
+range interpolant with reconstructed restricted power down to the table floor.
+These are diagnostics, not calibrated tolerances. The bare `respond` API's
+`range_kind='restricted'` is a caller assertion; an unannotated table alone cannot
+verify its material/cut contract.
+
+`slabgate` verifies saved input/output hashes without requiring historical source
+files to remain unchanged. It selects the finest *available labelled* loss
+reference for `no_scatter`, and full-scattering reference for other arms; it never
+silently calls stock full converged or uses full-minus-loss as closure. It retains
+all-entry threshold-transform intervals, unresolved counts and actual reference
+labels. There is no global-pass or physical-stop flag. Reference byte/cell/census
+checks do not yet compare material/cut/process signatures semantically; reports
+mark that qualification **UNVERIFIED**. Slab mu+ does not certify target-material
+mu+, and charge equivalence of the shared mu+-derived scattering table is still
+unverified. A small CDF point estimate is not equivalence: the independent
+reference size must permit its uncertainty band to fit inside the tolerance.
