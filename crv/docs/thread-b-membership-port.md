@@ -134,13 +134,73 @@ Use a fresh output; the command refuses existing files. Run only after checking 
 and normal environment setup. The retained result binds the exact candidate source bytes at execution, not just
 its base commit. Do not waive any old hash checks after editing a frozen checkout.
 
+## Merge validation on main (2026-10-26/27)
+
+The port applied cleanly to `main` `1041b86` (no conflicts). Full suite with the port: 811 passed / 3 skipped on the
+laptop, 814 passed on a GPVM; the one failure in both, `test_oneapi_batch.py::
+test_chain_digis_bucketed_default_equals_unbucketed` (a monkeypatched helper without the `width` keyword), fails
+identically on `main` without the port.
+
+**V-R3 with attachment on** (`crvfastsim reco-vr3 --both`: numpy and JAX finders on the stock pulses of each dump,
+one GPVM core, JAX CPU):
+
+| Sample | Events | Stock clusters / member links | numpy = stock | JAX = stock | JAX vs numpy |
+|---|---:|---:|---|---|---|
+| Thread B A1 dumps, shards 1-20 | 44,390 | 58,981 / 948,836 | identical | identical | identical |
+| G4 reference stock dumps (A0), shards 1-20 | 44,509 | 59,165 / 956,091 | identical | identical | identical |
+| new stock dump for the timing (shards 11-12, other seed) | 4,440 | 5,894 / 95,378 | identical | identical | identical |
+| control, attachment off, A1 shards 11-12 | 4,404 | 5,875 / 93,972 | 186 clusters, 1,254 links missing | same | identical |
+
+"Identical" is the exact (event, sector type, member set) list in every sector type. No JAX event needed the numpy
+fallback. Properties, numpy vs stock over the 118,146 enabled clusters of the first two rows: PE 7e-4, start/end
+exact, slope 2.4e-7, average time 0.018 ns, X up to 2.4 mm, Y/Z 1e-3 mm. `poscalc` differs for one cluster (EX): its
+two-sided timing position falls 0.2 mm inside the counter end with the fast double-precision side times, and just
+outside with stock's float side times, so stock falls back to the PE-weighted centre (X differs by 3,000 mm). The
+same cluster has the same membership with attachment off; it is the property-arithmetic item of the next gates,
+not an attachment effect. JAX vs numpy: PE exact, average time 4e-11 ns, slope 6e-10, X 5e-9 mm.
+
+**GPU (one A100-SXM4-80GB, JAX 0.11.2):** V-R3 on A1 shards 11-12 passes with the JAX finder on the GPU (5,875
+clusters identical to stock and to numpy; properties within 3.4e-10 slope, 3e-11 ns, 3e-9 mm of numpy), the same as
+the JAX CPU control in the same job.
+
+**Downstream DQM** (fast reco tables re-made with attachment on and off, injected into the stock Validation and
+CRV DQM modules, compared with the deck rules: first-bin cut, k rule for time histograms, exact per-bin
+event-clustered variance for position histograms):
+
+| Comparison | flags before | flags with attachment | clusters below the reference's 1 % PEc quantile (420 PE), ref / before / after |
+|---|---:|---:|---|
+| A3 (fast reco on stock digis) vs A0, shards 11-20 | 0 / 147 | 0 / 133 | 356 / 723 / **356** |
+| A4 (fast digis + fast reco on G4 steps) vs A0 | 2 / 147 | **0 / 133** | 356 / 726 / 339 |
+| E2E vs A1, shards 1-20 | 8 / 133 | **0 / 133** | 668 / 1,457 / 639 |
+| E2E vs A0g | 25 / 133 | 17 / 133 | 643 / 1,457 / 639 |
+
+With attachment on, A3's cluster PE, NPc and Y histograms equal A0's bin for bin. Attachment off reproduces the old
+tables exactly. The low-PE excess is gone. The 17 E2E-vs-A0g flags left are digi and pulse occupancy (ADC, BarId,
+SiPM) and cluster Y, upstream of the coincidence finder.
+
+**Throughput against post-#2048 stock** (same 4,982 art events; one GPVM core of an AMD EPYC VM; stock: Offline CI
+build containing `813ec61e0`, TimeTracker means; fast: `reco-bench --stage reco` on the stock digis/pulses, best of
+3 (CPU) or 5 (GPU), compilation excluded; events/s per art event):
+
+| Stage | stock, 1 core | fast numpy, 1 core | fast JAX, 1 core | fast JAX, one A100 |
+|---|---:|---:|---:|---:|
+| pulses | 2,238 | 521 (0.23x) | 240 (0.11x) | 22,461 (10.0x) |
+| coincidences | 24,598 | 271 (0.011x) | 191 (0.008x) | 17,587 (0.71x) |
+| pulses + coincidences | 2,051 | 178 (0.087x, serial sum) | 25 (pipelined, 8 chunks); 106 (1 chunk) | 2,623 (1.28x, pipelined, 8 chunks) |
+
+On one CPU core the fast reco is 11-80x slower than the post-#2048 stock modules; the JAX kernels' GPU-sized
+padded batches dominate on CPU. On the A100 the pipelined chain on this 5 k-event sample is bound by per-chunk
+dispatch (coincidence dispatch 0.86 s, kernels 0.25 s of 1.9 s); the standalone stages add up to about 9,900
+events/s (4.8x stock). Earlier speed-ups in `fastreco.md` are against pre-#2048 stock and larger samples.
+
 ## Next gates
 
 1. Isolate the remaining X/average-time differences with a separately labeled stock property-arithmetic control,
    including sequential float side-PE accumulation and cluster traversal order. Preserve this membership-only
    result as the baseline; do not replace it or tune tolerances to absorb the discrepancy.
-2. Validate the candidate on an actual GPU, then produce new full same-digi and downstream A1/E2E DQM outputs
-   under distinct tags. No twenty-shard response replay or refreshed campaign acceptance is claimed here.
+2. ~~Validate the candidate on an actual GPU, then produce new full same-digi and downstream A1/E2E DQM outputs
+   under distinct tags.~~ Done (merge validation above). No twenty-shard response replay or refreshed campaign
+   acceptance is claimed here.
 3. Independently repair complete donor/GenParticle collection identity before rebuilding a separately versioned
    library. All nine denominator-support holes were populated by misassociated donor energies; this coincidence
    repair does not unblock generator-denominator uncertainty propagation.
