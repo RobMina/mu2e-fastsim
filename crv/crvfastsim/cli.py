@@ -69,6 +69,12 @@ def build_parser():
                             help="stage C: no energy loss in the CRV aluminium (absorbers, module skins) between bars (before 2026-10-24)")
             sp.add_argument("--no-below-world", action="store_true",
                             help="run configurations with below_world: no material between the MSC plane and the bars")
+            sp.add_argument("--below-msc", action="store_true",
+                            help="run configurations with below_world: multiple scattering below the MSC plane, bar to "
+                                 "bar (transport.scattered_crossings; default straight lines)")
+            sp.add_argument("--below-margin", type=float, default=None, metavar="MM",
+                            help="run configurations with below_world: read the below-plane material inside the CRV box "
+                                 "grown by MM (default: the configuration's below_margin)")
             sp.add_argument("--unbanded-world", action="store_true",
                             help="stage C: world columns piece by piece (before 2026-10-24; the banded grid is the default)")
         if name == "g4cost":
@@ -108,6 +114,12 @@ def build_parser():
                             help="stage C: no energy loss in the CRV aluminium (absorbers, module skins) between bars (before 2026-10-24)")
             sp.add_argument("--no-below-world", action="store_true",
                             help="run configurations with below_world: no material between the MSC plane and the bars")
+            sp.add_argument("--below-msc", action="store_true",
+                            help="run configurations with below_world: multiple scattering below the MSC plane, bar to "
+                                 "bar (transport.scattered_crossings; default straight lines)")
+            sp.add_argument("--below-margin", type=float, default=None, metavar="MM",
+                            help="run configurations with below_world: read the below-plane material inside the CRV box "
+                                 "grown by MM (default: the configuration's below_margin)")
             sp.add_argument("--unbanded-world", action="store_true",
                             help="stage C: world columns piece by piece (before 2026-10-24; the banded grid is the default)")
             sp.add_argument("--run-config", default=None, help="named CRV run configuration (crvfastsim.runconfig: "

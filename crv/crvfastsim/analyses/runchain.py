@@ -54,7 +54,8 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
     ab = None if no_absorbers else ab
     below = None
     if rc.below_world and not kw.get("no_below_world"):
-        below, ab = tr.load_below(gdml or rc.gdml_path(), geom), None
+        from .transport import _below_kw
+        below, ab = tr.load_below(gdml or rc.gdml_path(), geom, **_below_kw(rc, kw)), None
     lib = tier1b.read_library(library)
     tabs = PH.load_tables(cfg.response)
     if jax:
@@ -78,7 +79,8 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         a = time.perf_counter()
         st, pa = tr.transport(gen, geom, rng, stage="C", world=world, msc_tail=msc_tail, tail_k=tail_k,
                               sliced_msc=sliced_msc, all_muons=not first_muon_only, absorbers=ab, tagger_bar=tagger,
-                              bar_cut=bar_cut, below=below)
+                              bar_cut=bar_cut, below=below,
+                              below_msc=below is not None and (rc.below_msc or bool(kw.get("below_msc"))))
         t["transport_s"] = time.perf_counter() - a
         a = time.perf_counter()
         st, pa, _ = tier1b.sample(st, pa, gen, lib, geom, rng, showers=rc.showers)

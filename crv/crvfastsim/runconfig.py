@@ -84,6 +84,10 @@ class RunConfig:
                                       # the 0.1 mm CRSmother region cut). Run 1A / Run 2 cosmic jobs: 1 mm everywhere,
                                       # lowest muon-made delta in the bars 0.361 MeV (G4 test 9112, 19,491 deltas)
     below_world: bool = False         # trace the world material between the MSC plane and every bar (side sectors)
+    below_margin: float = 2000.0      # mm: below_world material is read inside the CRV box grown by this; Run 2: the
+                                      # hall dirt and walls that shield the side walls from near-horizontal muons
+    below_msc: bool = False           # with below_world: multiple scattering below the plane, bar to bar
+                                      # (transport.scattered_crossings; opt-in, worse V1 than straight lines)
     geom_text: str = ""               # Offline geometry file of the world the GDML was made from
     add_opposite_side_pulses: bool = True
 
@@ -159,7 +163,7 @@ RUN1B_V01 = dataclasses.replace(RUN1A_V01, name="run1b_v01", geom_text="Offline/
 RUN2_V10 = RunConfig(
     "run2_v10", "Offline/Mu2eG4/geom/crv_counters_v10.txt", f"{GEOM_DIR}/mu2e_run2_v10.gdml",
     RUN2_SECTORS, 0.84, RUN2_CUTS, False, ONSPILL_WINDOW, lib_group={n: "EX" for n in RUN2_SECTORS}, showers=False,
-    delta_cut_mev=0.361, below_world=True,
+    delta_cut_mev=0.361, below_world=True, below_margin=20000.0,
     geom_text="Offline/Mu2eG4/geom/geom_run2.txt")
 
 REGISTRY = {rc.name: rc for rc in (EXTRACTED_V04, RUN1A_V01, RUN1B_V01, RUN2_V10)}

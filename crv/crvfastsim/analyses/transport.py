@@ -26,6 +26,12 @@ def default_gdml():
     return os.path.join(data, GDML_NAME)
 
 
+def _below_kw(rc, kw):
+    """load_below keywords: the run configuration's margin unless --below-margin overrides it."""
+    m = kw.get("below_margin")
+    return {"margin": float(m if m is not None else rc.below_margin)}
+
+
 def run(inputs, outdir, seed=1, stage="A", counters=None, gdml=None, world_mods=None, msc_tail=False, tail_k=None,
         sliced_msc=False, first_muon_only=False, no_absorbers=False, run_config=None, **kw):
     rc = runconfig.get(run_config)
@@ -53,14 +59,15 @@ def run(inputs, outdir, seed=1, stage="A", counters=None, gdml=None, world_mods=
                                   y_plane=tr.msc_plane(geom))
         ab = None if no_absorbers else ab
         if rc.below_world and not kw.get("no_below_world"):    # the below-plane world includes the CRV aluminium
-            below, ab = tr.load_below(gdml or default_gdml(), geom), None
+            below, ab = tr.load_below(gdml or default_gdml(), geom, **_below_kw(rc, kw)), None
     for i, f in enumerate(tables.expand(inputs)):
         rng = np.random.default_rng([int(seed), i])
         gen = tables.read(f, "gen")
         sub = tables.read(f, "subruns")
         steps, parts = tr.transport(gen, geom, rng, stage=stage, world=world, msc_tail=msc_tail, tail_k=tail_k,
                                     sliced_msc=sliced_msc, all_muons=not first_muon_only, absorbers=ab, tagger_bar=tagger,
-                                    bar_cut=bar_cut, below=below)
+                                    bar_cut=bar_cut, below=below,
+                                    below_msc=below is not None and (rc.below_msc or bool(kw.get("below_msc"))))
         name = os.path.basename(f).replace("gen.", f"fast{stage}.")
         tables.write(os.path.join(outdir, name), steps, parts, gen, sub, as_ttree=True)
         print(f"# {f}: {parts.shape[0]:,} primary muons, {steps[tables.KEY].drop_duplicates().shape[0]:,} with CRV "
