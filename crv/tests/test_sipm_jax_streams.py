@@ -38,10 +38,11 @@ def _run(sj, cfg, args, L, SL, LL):
 
 def test_split_equals_single_table():
     sj, cfg, args = _inputs()
-    ref = _run(sj, cfg, args, 4096, 1, 1)          # every stream fits the short table
-    assert int(ref["n_long_streams"]) == 0 and not bool(ref["overflow"])
     spl = _run(sj, cfg, args, 8, 256, 4096)        # long streams in their own table
     assert int(spl["n_long_streams"]) > 0 and int(spl["max_long_stream"]) > 16 and not bool(spl["overflow"])
+    L = 1 << (int(spl["max_long_stream"]) - 1).bit_length()   # the short table [hits, L] sized to the longest stream
+    ref = _run(sj, cfg, args, L, 1, 1)             # every stream fits the short table
+    assert int(ref["n_long_streams"]) == 0 and not bool(ref["overflow"])
     for k in ("fired", "charge", "pe", "time", "root"):
         assert np.array_equal(np.asarray(ref[k]), np.asarray(spl[k])), k
 

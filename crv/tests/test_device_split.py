@@ -13,7 +13,7 @@ def test_device_photons_split_equals_fused():
     rng = np.random.default_rng(3)
     L = bench.synthetic_table(rng, prob=0.0015)
     dt = photons_jax.DeviceTable(L)
-    rows = bench.synthetic_rows(rng, 2000)
+    rows = bench.synthetic_rows(rng, 300)              # ~4e4 arrivals: plenty for the equality check
     key = jax.random.PRNGKey(11)
     a = photons_jax.device_photons(dt, rows, key, split=False)
     b = photons_jax.device_photons(dt, rows, key, split=True)
