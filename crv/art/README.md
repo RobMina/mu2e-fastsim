@@ -17,14 +17,15 @@ cd $CRVFS_CODE/art && source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh &&
 
 Run: `mu2e -c CrvFastSim/fcl/dump_crvsteps.fcl -s dts....art` (and `dump_gen.fcl` on the gen stream).
 
-The new, **unbuilt** `CrvStepTableDumper` census addition writes `events` with one
-`(run, subrun, event, ngen, nsteps)` row per analyzed event, including empty generator
-and step collections. With `writeSteps=false`, it still writes the census and uses
-`nsteps=-1` (unknown/not extracted, not zero). The opt-in [Cat v2 contract](../docs/veto-cat-v2.md)
-requires a successful full-source extraction and explicit source/extraction provenance;
-legacy converter/mixer behavior is unchanged. This edit has only synthetic Python
-tests, no compiled-art validation. The user must run the full build above on
-**mu2ebuild02** and confirm it before an art smoke test; no new build dependencies.
+Schema v2 validates pointer ProductIDs/keys and adds an event census. Donor dumps select compressed generators;
+`dump_gen.fcl` explicitly keeps the complete `cosmicTimeOffset` stream for exposure. Old donor tables require a
+new dump before building libraries; old libraries remain available for baseline comparisons. Build/validation
+procedure: [`../docs/generator-association-repair.md`](../docs/generator-association-repair.md).
+The `events` census tree also keeps the v1 branches `ngen` and `nsteps` (`nsteps=-1` with `writeSteps=false`:
+not extracted, not zero) that the opt-in [Cat v2 contract](../docs/veto-cat-v2.md) reads; that contract requires a
+successful full-source extraction and explicit source/extraction provenance, and legacy converter/mixer behaviour is
+unchanged. **The merged module (schema v2 + census v1 branches) has not been compiled:** the user builds it on
+mu2ebuild02 and runs an art smoke test before use.
 
 ## CrvRecoTableDumper (fast CRV reco reference)
 

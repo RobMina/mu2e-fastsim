@@ -18,6 +18,31 @@ Two parts, both resampled from G4 CrvStep tables (CrvStepTableDumper) of trainin
    the length. With no bar of the same length axis there (module gap, sector edge, a bar along another axis) the
    step goes to the nearest such bar in the transverse plane (nearest_bar); a step shifted past a bar end is moved
    back inside (fit_inside). Dropping both cases (first versions) lost ~44 % of other-bar steps.
+   Opt-in refinements (sample(context, contain, point); defaults off reproduce the earlier sampling bit for bit):
+   - context: the descendants seen in a bar depend on what the muon crossed just before it (delta rays from the
+     layers, absorbers and skins above build up with depth; a module stacked under another sector receives that
+     sector's deltas), and the other-bar offsets of a library crossing point to the layers that exist around it.
+     Libraries store crossing_context per crossing (layer rank in its module, and whether the muon crossed another
+     module within UPSTREAM_MM before it); a fast crossing draws from the library crossings of the same (bin,
+     context), falling back to the bin alone when that cell holds fewer than MIN_CTX_CROSSINGS. Pooling every layer
+     flattens G4's depth build-up and puts other-bar offsets of deeper crossings (pointing up) on top-layer fast
+     crossings, which have no bar there: nearest_bar piles them into the top layer, most at the module edges.
+   - contain: a same-bar step whose midpoint is inside but whose rotated endpoints leave the bar is moved inside
+     (fit_inside); without it ~0.2 % of fast steps start > 1 mm outside their bar.
+   - point: an other-bar step whose target bar is missing or runs along another axis (a step in a stacked sector
+     of the other orientation, e.g. EX above T1, T2 above EX, M above T2) goes to the bar containing its library
+     position relative to the fast crossing, shifted with the entry along the crossing's bar; nearest_bar (same
+     axis as the crossing) remains the fallback. Without it such steps move into the crossing's own sector.
+   - mirror: other-bar offsets are not rotated (they keep the bar structure), so a library crossing whose muon leans
+     the other way across (along) the bar than the fast muon puts its neighbour-bar steps on the wrong side: G4's
+     other-bar steps lie off the library muon's path, and pasted unreflected they land on the fast muon's path (in
+     bars it crosses). The offsets (bar-centre offset, in-bar position, momentum, and along the bar the offset from
+     the entry) are reflected across the crossing bar's width and length planes where the signs differ.
+   - translate: the bar-structure placement keeps the library's bar offset but not where the muon entered its bar
+     across the width; the layers of a module are staggered by ~0.8 bar widths, so whether the bar at that offset in
+     the next layer is one the fast muon crosses depends on the entry position. With translate an other-bar step goes
+     to the bar containing (fast entry + its unrotated library offset from the library entry), as the G4 step sat
+     relative to its muon; the bar-structure placement is the fallback when that point is in no bar.
 2. Non-muon primaries (e, gamma, n, p, pi from CRY). A library shower is every CrvStep whose primary is that particle,
    with absolute positions and times relative to the primary's generation time. Sampling: each non-muon CRY primary of
    the event (gen table) reaches the CRV with the library probability of its (pdg, kinetic-energy) bin, and then gets a
@@ -26,12 +51,14 @@ Two parts, both resampled from G4 CrvStep tables (CrvStepTableDumper) of trainin
 
 Descendant and shower particles are flattened to depth 1 (parent = the primary). Vectorised; no per-event loops.
 """
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
 from mu2efastsim import tables as core_tables
 
-from . import tables
+from . import genassoc, tables
 from .analyses.census import SECTOR_GROUP, classify
 
 KEY = tables.KEY
@@ -42,6 +69,9 @@ P_QUANTILES = (0.25, 0.5, 0.75)
 L_QUANTILES = (0.05, 0.15, 1 / 3, 2 / 3, 0.9, 0.97)  # finer in both tails: corner clips (small pulses) and long crossings
 N_PBINS, N_LBINS = len(P_QUANTILES) + 1, len(L_QUANTILES) + 1
 SHOWER_KEY_BASE = 10_000_000
+UPSTREAM_MM = 300.0      # crossing context: another module crossed within this distance before the entry
+N_CTX = 8                # context codes: layer rank (0 = top, clipped to 3) x 2 + upstream flag
+MIN_CTX_CROSSINGS = 20   # fewer library crossings in a (bin, context) cell: draw from the bin
 STEP_COLS = ["x0", "y0", "z0", "x1", "y1", "z1"]
 LIB_TREES = ("libbins", "libxing", "libdesc", "libshower", "libshowersteps", "libgen")
 
@@ -63,6 +93,36 @@ def _bin(libbins, group, p, length):
         le = libbins.edge[(libbins.kind == 1) & (libbins.group == gi)].to_numpy()
         out[m] = (gi * N_PBINS + np.searchsorted(pe, p[m])) * N_LBINS + np.searchsorted(le, length[m])
     return out
+
+
+def layer_rank(geom):
+    """Per bar, the rank of its layer within its module along the thickness axis: 0 = top (largest coordinate)."""
+    ta = geom.local_to_world[:, 0]
+    df = pd.DataFrame({"s": geom.sector, "m": geom.module, "l": geom.layer,
+                       "t": geom.center[np.arange(geom.nbars), ta]})
+    lp = df.groupby(["s", "m", "l"]).t.transform("mean")
+    return lp.groupby([df.s, df.m]).rank(method="dense", ascending=False).to_numpy().astype(np.int64) - 1
+
+
+def crossing_context(x, geom):
+    """Context code per primary-muon crossing (rows of x: KEY, sp = muon key, bar, t0, x0, y0, z0 = entry):
+    min(layer rank, 3) * 2 + 1 if the same muon entered a bar of another module earlier, within UPSTREAM_MM of this
+    entry (a sector or module stacked above). Vectorised over all crossing pairs of each muon."""
+    n = len(x)
+    bar = x.bar.to_numpy().astype(np.int64)
+    lay = np.minimum(layer_rank(geom)[bar], 3)
+    if n == 0:
+        return lay
+    mod = (geom.sector.astype(np.int64) * 1000 + geom.module)[bar]
+    mu = x.groupby(KEY + ["sp"], sort=False).ngroup().to_numpy()
+    d = pd.DataFrame({"i": np.arange(n), "mu": mu, "t": x.t0.to_numpy(), "mod": mod,
+                      "x": x.x0.to_numpy(), "y": x.y0.to_numpy(), "z": x.z0.to_numpy()})
+    pr = d.merge(d, on="mu", suffixes=("", "_p"))
+    pr = pr[(pr.t_p < pr.t) & (pr.mod_p != pr["mod"])]
+    dist = np.sqrt((pr.x - pr.x_p) ** 2 + (pr.y - pr.y_p) ** 2 + (pr.z - pr.z_p) ** 2)
+    up = np.zeros(n, np.int64)
+    up[np.unique(pr.i.to_numpy()[dist.to_numpy() < UPSTREAM_MM])] = 1
+    return lay * 2 + up
 
 
 INSET_MM = 0.1
@@ -134,7 +194,7 @@ def _crossings(mu):
     """Primary-muon crossings with their first step's entry point, direction and |p|; summed edep and path."""
     mu = mu.sort_values(KEY + ["bar", "t0"], kind="stable")
     g = mu.groupby(KEY + ["bar"], sort=False)
-    x = g.first()[["t0", "x0", "y0", "z0", "px0", "py0", "pz0"]]
+    x = g.first()[["sp", "t0", "x0", "y0", "z0", "px0", "py0", "pz0"]]
     x["len"] = g.len.sum()
     x["edep"] = g.edep.sum()
     x = x.reset_index()
@@ -169,13 +229,20 @@ def build(step_paths, gen_paths, geom, generated=None):
     files'; the reach probability uses the showers of all files over the scaled gen-table counts.
     """
     step_paths = list(step_paths)
+    gen_paths = list(gen_paths)
+    # Check each physical donor before binning; bootstrap repetitions retain their weight.
+    validated = {str(Path(f).resolve()): None for f in step_paths}
+    for f in validated:
+        validated[f] = genassoc.validate_donor(f)
+    generator_streams = [genassoc.validate_generator_stream(f)
+                         for f in dict.fromkeys(str(Path(p).resolve()) for p in gen_paths)]
     libbins = _bin_edges(step_paths, geom)
     parts_out = {k: [] for k in ("libxing", "libdesc", "libshower", "libshowersteps")}
     info = {"crossings": 0, "desc_steps": 0, "desc_steps_unattached": 0, "showers": 0, "shower_steps": 0,
             "max_shower_sp": 0}
     xoff = soff = 0
     for f in step_paths:
-        lib, inf = _build_one([f], geom, libbins)
+        lib, inf = _build_one([f], geom, libbins, _already_validated=validated)
         lib["libxing"]["xid"] += xoff
         lib["libdesc"]["xid"] += xoff
         lib["libshower"]["shid"] += soff
@@ -191,13 +258,17 @@ def build(step_paths, gen_paths, geom, generated=None):
     lib["libgen"], info["generated_nonmu"] = _reach(lib["libshower"], gen_paths, generated)
     info["generated_scaled_to"] = generated
     info["files"] = len(step_paths)
+    info["generator_associations"] = list(validated.values())
+    info["generator_streams"] = generator_streams
     return lib, info
 
 
 def _reach(libshower, gen_paths, generated):
     """Generated non-muon primaries per (pdg, KE bin) and the library showers of each: the reach probability."""
     g = tables.read_many(gen_paths, "gen", KEY + ["pdg", "e"])
-    n_gen_tables = int(g[KEY].drop_duplicates().shape[0])
+    n_gen_tables = len(pd.concat([genassoc.generator_event_keys(p) for p in gen_paths], ignore_index=True).drop_duplicates())
+    if n_gen_tables == 0:
+        raise ValueError("generator denominator has no events")
     g = g[g.pdg.abs() != tables.PRIMARY_MUON_PDG]
     g["apdg"] = g.pdg.abs()
     g["kebin"] = _ke_bin((g.e - g.apdg.map(MASS).fillna(0.0)).to_numpy())
@@ -209,7 +280,7 @@ def _reach(libshower, gen_paths, generated):
     return lg.astype({"apdg": np.int64, "kebin": np.int64, "ngen": np.int64, "nshower": np.int64}), int(len(g))
 
 
-def _build_one(step_paths, geom, libbins):
+def _build_one(step_paths, geom, libbins, *, _already_validated=None):
     """Library trees {name: DataFrame} of the given G4 CrvStep tables with the given bin edges (libgen not included).
 
 
@@ -218,6 +289,12 @@ def _build_one(step_paths, geom, libbins):
     those shards (production dts have no gen stream; dh.gencount per file): the gen-table counts are scaled by
     generated / (generated events in gen_paths), i.e. the same CRY configuration is assumed.
     """
+    step_paths = list(step_paths)
+    validated = {} if _already_validated is None else dict(_already_validated)
+    donor_keys = list(dict.fromkeys(str(Path(f).resolve()) for f in step_paths))
+    for f in donor_keys:
+        if f not in validated:
+            validated[f] = genassoc.validate_donor(f)
     steps = tables.read_many(step_paths, "steps")
     parts = tables.read_many(step_paths, "particles", KEY + ["key", "parent", "pdg", "isprim", "genidx"])
     s = classify(steps, parts, geom.sector)
@@ -254,7 +331,8 @@ def _build_one(step_paths, geom, libbins):
         "dcx": dc[:, 0], "dcy": dc[:, 1], "dcz": dc[:, 2], "entrylen": entry_len,
         **{f"l{c}{e}": (d[f"{c}{e}"].to_numpy() - geom.center[db][:, j]) for j, c in enumerate("xyz") for e in "01"}})
     lib["libxing"] = pd.DataFrame({"xid": x.xid, "bin": x.bin.astype(np.int64),
-                                   "ux": x.px0 / x.p, "uy": x.py0 / x.p, "uz": x.pz0 / x.p})
+                                   "ux": x.px0 / x.p, "uy": x.py0 / x.p, "uz": x.pz0 / x.p,
+                                   "ctx": crossing_context(x, geom).astype(np.int64)})
     n_unattached = int(len(s[s.cls == "mu_descendant"]) - len(d))
     # 2. non-muon showers, keyed by primary
     gen = tables.read_many(step_paths, "gen", KEY + ["idx", "pdg", "e", "t"])
@@ -279,7 +357,8 @@ def _build_one(step_paths, geom, libbins):
         "dt0": (nm.t0 - nm.t).to_numpy(), "dt1": (nm.t1 - nm.t).to_numpy(),
         **{c: nm[c].to_numpy().astype(float) for c in STEP_COLS + ["px0", "py0", "pz0", "p1", "len", "edep"]}})
     info = {"crossings": len(x), "desc_steps": len(d), "desc_steps_unattached": n_unattached,
-            "showers": len(sh), "shower_steps": len(nm), "max_shower_sp": int(nm.sp.max()) if len(nm) else 0}
+            "showers": len(sh), "shower_steps": len(nm), "max_shower_sp": int(nm.sp.max()) if len(nm) else 0,
+            "generator_associations": [validated[f] for f in donor_keys]}
     return lib, info
 
 
@@ -292,13 +371,32 @@ def read_library(path):
 
 
 # ----------------------------------------------------------------------------------------------------------- sample
-def _desc_for_crossings(fx, lib, geom, rng):
-    """Descendant steps for the fast crossings fx (one row per crossing). Returns (steps, n_dropped)."""
+def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=False, mirror=False,
+                        translate=False):
+    """Descendant steps for the fast crossings fx (one row per crossing). Returns (steps, n_dropped, n_clamped, why).
+    Opt-in (all off reproduces the earlier sampling bit for bit): context = draw within the crossing-context cell
+    (library with a ctx column); contain = same-bar endpoints into the bar; point = other-bar steps whose target bar
+    is missing or along another axis go to the bar containing their library position relative to the fast crossing;
+    mirror = other-bar offsets reflected across the crossing bar's width (length) plane where the library and fast muons
+    point opposite ways along that axis; translate = other-bar steps go to the bar containing their library offset from
+    the muon entry (unrotated) added to the fast entry, the bar-structure placement remaining the fallback."""
     p = np.sqrt(fx.px0 ** 2 + fx.py0 ** 2 + fx.pz0 ** 2).to_numpy()
     b = _bin(lib["libbins"], _group_index(geom, fx.bar), p, fx.len.to_numpy())
-    lx = lib["libxing"].sort_values("bin", kind="stable")
-    lbin = lx.bin.to_numpy()
-    lo, hi = np.searchsorted(lbin, b, "left"), np.searchsorted(lbin, b, "right")
+    lx = lib["libxing"]
+    if context and "ctx" not in lx.columns:
+        raise ValueError("crossing context needs a library built with the ctx column (tier1b-build after this change)")
+    if context:   # draw within the crossing's (bin, context) cell, else within its bin
+        lx = lx.sort_values(["bin", "ctx"], kind="stable")
+        code = b * N_CTX + crossing_context(fx, geom)
+        lcode = lx.bin.to_numpy() * N_CTX + lx.ctx.to_numpy()
+        lo, hi = np.searchsorted(lcode, code, "left"), np.searchsorted(lcode, code, "right")
+        few = (hi - lo) < MIN_CTX_CROSSINGS
+        lbin = lx.bin.to_numpy()
+        lo[few], hi[few] = np.searchsorted(lbin, b[few], "left"), np.searchsorted(lbin, b[few], "right")
+    else:
+        lx = lx.sort_values("bin", kind="stable")
+        lbin = lx.bin.to_numpy()
+        lo, hi = np.searchsorted(lbin, b, "left"), np.searchsorted(lbin, b, "right")
     assert np.all(hi > lo), "empty library bin"
     pick = lx.xid.to_numpy()[lo + (rng.random(len(b)) * (hi - lo)).astype(np.int64)]
     ld = lib["libdesc"].sort_values("xid", kind="stable")
@@ -320,28 +418,69 @@ def _desc_for_crossings(fx, lib, geom, rng):
     other = ~same
     why = {"other": int(other.sum()), "no_bar": 0, "axis": 0, "off_end": 0}
     if other.any():
-        target = geom.center[xbar[other]] + dd.loc[:, ["dcx", "dcy", "dcz"]].to_numpy()[other]
-        tb = bar_containing(target, geom)
+        dc = dd.loc[:, ["dcx", "dcy", "dcz"]].to_numpy()[other]
+        l0 = dd.loc[:, ["lx0", "ly0", "lz0"]].to_numpy()[other]
+        l1 = dd.loc[:, ["lx1", "ly1", "lz1"]].to_numpy()[other]
+        elen = dd.entrylen.to_numpy()[other].copy()
+        mo = dd.loc[:, ["px0", "py0", "pz0"]].to_numpy()[other]
+        d0 = dd.loc[:, ["dx0", "dy0", "dz0"]].to_numpy()[other]
+        d1 = dd.loc[:, ["dx1", "dy1", "dz1"]].to_numpy()[other]
         xa = geom.local_to_world[xbar[other], 2]
+        if mirror:   # reflect across the crossing bar's width / length plane where the muons point opposite ways
+            rr = np.arange(len(xa))
+            for ax, length in ((geom.local_to_world[xbar[other], 1], False), (xa, True)):
+                flip = np.flatnonzero(lu[other][rr, ax] * fu[other][rr, ax] < 0)
+                fa = ax[flip]
+                for arr in (dc, l0, l1, mo, d0, d1):
+                    arr[flip, fa] *= -1
+                if length:   # offset from the entry along the bar, dc + l - entrylen, changes sign
+                    elen[flip] *= -1
+            why["mirror_w"] = int((lu[other][rr, geom.local_to_world[xbar[other], 1]] *
+                                   fu[other][rr, geom.local_to_world[xbar[other], 1]] < 0).sum())
+        target = geom.center[xbar[other]] + dc
+        tb = bar_containing(target, geom)
         why["no_bar"] = int((tb < 0).sum())
         bad = (tb < 0) | (geom.local_to_world[np.maximum(tb, 0), 2] != xa)
         why["axis"] = int(bad.sum() - why["no_bar"])
+        pt = np.zeros(len(tb), bool)
+        Q0, Q1 = np.zeros_like(l0), np.zeros_like(l1)
+        if translate:   # library offset from the muon entry, unrotated, from the fast entry: bar containing it
+            t0_, t1_ = entry[other] + d0, entry[other] + d1
+            tt = bar_containing(0.5 * (t0_ + t1_), geom)
+            use = tt >= 0
+            pt[use], tb[use], bad[use] = True, tt[use], False
+            Q0[use], Q1[use] = t0_[use], t1_[use]
+            why["translate"] = int(use.sum())
+        if point and bad.any():   # library position relative to the fast crossing (shifted along its bar), any axis
+            ib = np.flatnonzero(bad)
+            rb = np.arange(len(ib))
+            sx = (entry[other][ib] - geom.center[xbar[other][ib]])[rb, xa[ib]] - elen[ib]
+            q0, q1 = target[ib] + l0[ib], target[ib] + l1[ib]
+            q0[rb, xa[ib]] += sx
+            q1[rb, xa[ib]] += sx
+            pb = bar_containing(0.5 * (q0 + q1), geom)
+            hit = pb >= 0
+            pt[ib[hit]], tb[ib[hit]], bad[ib[hit]] = True, pb[hit], False
+            Q0[ib[hit]], Q1[ib[hit]] = q0[hit], q1[hit]
+            why["point"] = int(hit.sum())
         tb[bad] = nearest_bar(target[bad], xa[bad], geom)
         ok = tb >= 0
         tbs = np.where(ok, tb, 0)
         la = geom.local_to_world[tbs, 2]
         rows_o = np.arange(ok.size)
-        shift = (entry[other] - geom.center[xbar[other]])[rows_o, la] - dd.entrylen.to_numpy()[other]
-        o0 = geom.center[tbs] + dd.loc[:, ["lx0", "ly0", "lz0"]].to_numpy()[other]
-        o1 = geom.center[tbs] + dd.loc[:, ["lx1", "ly1", "lz1"]].to_numpy()[other]
+        shift = (entry[other] - geom.center[xbar[other]])[rows_o, la] - elen
+        o0 = geom.center[tbs] + l0
+        o1 = geom.center[tbs] + l1
         o0[rows_o, la] += shift
         o1[rows_o, la] += shift
+        if pt.any():
+            o0[pt], o1[pt] = Q0[pt], Q1[pt]
         lo_, hi_ = geom.center[tbs] - geom.halflen[tbs], geom.center[tbs] + geom.halflen[tbs]
         inside = (0.5 * (o0 + o1) >= lo_).all(1) & (0.5 * (o0 + o1) <= hi_).all(1)
         why["off_end"] = int((ok & ~inside).sum())  # moved back inside by fit_inside, not dropped
         r0[other], r1[other] = fit_inside(o0, o1, lo_, hi_)
         bar[other] = np.where(ok, tb, -1)
-        mom[other] = dd.loc[:, ["px0", "py0", "pz0"]].to_numpy()[other]
+        mom[other] = mo
     clamp = same & (bar != xbar)
     if clamp.any():
         xc = xbar[clamp]
@@ -356,6 +495,15 @@ def _desc_for_crossings(fx, lib, geom, rng):
             r[clamp] = c + loc
         r0[clamp], r1[clamp] = fit_inside(r0[clamp], r1[clamp], c - h, c + h)
         bar[clamp] = xbar[clamp]
+    # a same-bar step whose midpoint is inside but whose rotated endpoints leave the bar: endpoints into the bar
+    # (G4 steps never extend outside their volume; ~0.2 % of fast steps started > 1 mm outside their bar)
+    sb = same & (bar == xbar) if contain else np.zeros(len(bar), bool)
+    if sb.any():
+        c, h = geom.center[xbar[sb]], geom.halflen[xbar[sb]]
+        out_ = ((np.abs(r0[sb] - c) > h) | (np.abs(r1[sb] - c) > h)).any(axis=1)
+        if out_.any():
+            idx = np.flatnonzero(sb)[out_]
+            r0[idx], r1[idx] = fit_inside(r0[idx], r1[idx], c[out_] - h[out_], c[out_] + h[out_])
     keep = bar >= 0
     out = pd.DataFrame({k: fx[k].to_numpy()[ix][keep] for k in KEY})
     out["bar"] = bar[keep]
@@ -393,12 +541,13 @@ def _showers_for_gen(gen, lib, rng):
     return st
 
 
-def sample(fast_steps, fast_parts, gen, lib, geom, rng, showers=True):
+def sample(fast_steps, fast_parts, gen, lib, geom, rng, showers=True, context=False, contain=False, point=False,
+           mirror=False, translate=False):
     """Fast tier-1a tables + tier 1b: (steps, particles, info). Muons keep their keys (1, or 1..n with all_muons);
     descendants follow them; showers k*1e7+sp. showers=False: descendants only (run configurations whose bars are not
     the library's: the showers carry absolute extracted v04 bar positions)."""
     fx = fast_steps.copy()
-    desc, n_drop, n_clamp, why = _desc_for_crossings(fx, lib, geom, rng)
+    desc, n_drop, n_clamp, why = _desc_for_crossings(fx, lib, geom, rng, context, contain, point, mirror, translate)
     # descendant particles: one per (event, crossing, library particle), keys after the event's muon keys (2.. with one
     # muon), parent = the muon of the crossing (tier-1a `sp`)
     nmu = fast_parts.groupby(KEY, sort=False).key.max().rename("kmax").reset_index() if len(fast_parts) else None
