@@ -5,6 +5,10 @@ files of the stock chain on the same shards) it reports clusters per generated e
     runchain gen.<shard>.root [...] --library lib.root --calib crvcalib.csv [--deviation crvphoton.csv] [--jax]
              [--reco-cpu] [--max-events N] [--compare ref.<shard>.root ...] [--emit shard.json] --outdir DIR
     runchain-merge shard*.json --outdir DIR      (node totals: events, clusters per sector type, rates)
+
+Named conditions manifests are supported only by ordinary, non-prepared runs. They are mutually exclusive
+with calib/deviation. Prepared contexts and benchmark callbacks reject manifests before any setup: their
+existing CSV signatures, sealing and benchmark asset inventories do not cover manifest bundles.
 """
 import json
 import os
@@ -19,7 +23,8 @@ import dataclasses
 from pathlib import Path
 from types import MappingProxyType
 
-from .. import chain, geometry, runconfig, tables, tier1b
+from .. import chain, geometry, readout, runconfig, tables, tier1b
+from ..timewindow import resolve_runchain_window, validate_runchain_merge
 from .. import transport as tr
 from ..response import photons as PH
 from ..response import sipm as SI
@@ -28,19 +33,22 @@ DEFAULT_COUNTERS = "Offline/Mu2eG4/geom/crv_counters_extracted_v04.txt"
 SECTOR_TYPES = {1: "EX", 2: "T1", 3: "T2", 4: "M"}
 
 
-def _resolve(library, calib, deviation, gdml, jax, counters, run_config, window, fused_response=False):
+def _resolve(library, calib, deviation, gdml, jax, counters, run_config, window, fused_response=False,
+             conditions_manifest=None):
     """Resolve setup arguments without loading large assets or drawing random numbers."""
-    if not (library and calib):
-        raise SystemExit("runchain needs --library and --calib")
+    if conditions_manifest is not None and (calib is not None or deviation is not None):
+        raise SystemExit("--conditions-manifest cannot be combined with --calib or --deviation")
+    if not library or not (calib or conditions_manifest):
+        raise SystemExit("runchain needs --library and either --calib or --conditions-manifest")
     from .transport import default_gdml
-    rc = runconfig.get(run_config, window if window or not run_config else "offspill")
+    rc, time_window = resolve_runchain_window(run_config, window)
     if counters:
         rc = dataclasses.replace(rc, counters=counters)
     cfg = rc.chain_config(jax=bool(jax)) if rc.name != runconfig.DEFAULT or window else chain.ChainConfig(jax=bool(jax))
     if fused_response:
         cfg = dataclasses.replace(cfg, fused_response=True)
     gdml_path = gdml or (rc.gdml_path() if rc.name != runconfig.DEFAULT else default_gdml())
-    return rc, cfg, gdml_path
+    return rc, cfg, gdml_path, time_window
 
 
 def _signature(rc, cfg, gdml, library, calib, deviation, no_absorbers, unbanded_world, no_below_world,
@@ -84,13 +92,17 @@ class PreparedContext:
 
 def prepare(library=None, calib=None, deviation=None, gdml=None, jax=False, counters=None, no_absorbers=False,
             run_config=None, window=None, benchmark=None, fused_response=False, unbanded_world=False,
-            no_below_world=False, below_margin=None):
-    """Load and seal reusable setup; callers audit before/after each sequential invocation."""
+            no_below_world=False, below_margin=None, conditions_manifest=None, geometry_readout=False):
+    """Load and seal reusable CSV setup; named manifests and physical masks are not supported by reuse/benchmark."""
+    if geometry_readout:
+        raise ValueError("geometry readout is not supported with prepared contexts or benchmarks")
+    if conditions_manifest is not None:
+        raise ValueError("conditions manifests are not supported with prepared contexts or benchmarks")
     if fused_response:
         raise ValueError("prepared context does not support memory-dependent fused response batching")
     from .context_audit import freeze_arrays, content_fingerprint
     from ..reco import waveform as WF
-    rc, cfg, gdml_path = _resolve(library, calib, deviation, gdml, jax, counters, run_config, window, fused_response)
+    rc, cfg, gdml_path, _ = _resolve(library, calib, deviation, gdml, jax, counters, run_config, window, fused_response)
     rc, cfg = copy.deepcopy((rc, cfg))
     sig = _signature(rc, cfg, gdml_path, library, calib, deviation, no_absorbers, unbanded_world, no_below_world,
                      below_margin)
@@ -126,11 +138,17 @@ def prepare(library=None, calib=None, deviation=None, gdml=None, jax=False, coun
 
 
 def _load_setup(rc, cfg, gdml_path, explicit_gdml, library, calib, deviation, jax,
-                no_absorbers, unbanded_world, no_below_world, below_margin=None):
+                no_absorbers, unbanded_world, no_below_world, below_margin=None,
+                conditions_manifest=None, configured_rc=None):
     geometry_start = time.perf_counter()
     geom = rc.geometry()
     ccfg = rc.counters_cfg()
-    cond = runconfig.nominal_conditions(geom) if calib == "nominal" else chain.Conditions.from_csv(calib, deviation)
+    conditions_metadata = {"status": "unverified_legacy", "calib": calib, "deviation": deviation}
+    if conditions_manifest is not None:
+        from ..named_conditions import load_conditions
+        cond, conditions_metadata = load_conditions(conditions_manifest, configured_rc, geom)
+    else:
+        cond = runconfig.nominal_conditions(geom) if calib == "nominal" else chain.Conditions.from_csv(calib, deviation)
     if len(cond.status) < 4 * geom.nbars:
         raise SystemExit(f"runchain: conditions cover {len(cond.status)} channels, {rc.name} has {4 * geom.nbars}; "
                          "pass the configuration's CRVCalib CSV or --calib nominal")
@@ -154,22 +172,40 @@ def _load_setup(rc, cfg, gdml_path, explicit_gdml, library, calib, deviation, ja
     timers["setup_s"] = time.perf_counter() - a
     stype_name = runconfig.sector_type_names(geom, ccfg) if rc.name != runconfig.DEFAULT else SECTOR_TYPES
     return dict(rc=rc, cfg=cfg, geom=geom, ccfg=ccfg, cond=cond, tagger=tagger, bar_cut=bar_cut,
-                world=world, ab=ab, below=below, lib=lib, tabs=tabs, pmap=pmap, stype_name=stype_name), timers
+                world=world, ab=ab, below=below, lib=lib, tabs=tabs, pmap=pmap, stype_name=stype_name,
+                conditions_metadata=conditions_metadata), timers
 
 
 def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax=False, max_events=None, seed=1,
         compare=None, counters=None, reco_cpu=False, emit=None, msc_tail=False, tail_k=None, sliced_msc=False,
-        first_muon_only=False, no_absorbers=False, run_config=None, window=None, benchmark=None, prepared=None, **kw):
+        first_muon_only=False, no_absorbers=False, run_config=None, window=None, benchmark=None, prepared=None,
+        conditions_manifest=None, geometry_readout=False, **kw):
+    if geometry_readout:
+        if prepared is not None or benchmark is not None:
+            raise ValueError("geometry readout is not supported with prepared contexts or benchmarks")
+        name = run_config if isinstance(run_config, str) else getattr(run_config, "name", None)
+        if name not in ("run1a_v01", "run2_v10") or conditions_manifest is None or counters is not None:
+            raise ValueError("geometry readout requires Run1A/Run2 --run-config and --conditions-manifest; no counters override")
+    if conditions_manifest is not None and (prepared is not None or benchmark is not None):
+        raise ValueError("conditions manifests are not supported with prepared contexts or benchmarks")
+    from .transport import _scatter_in_kw
     bench_start = time.perf_counter() if benchmark is not None else None
-    rc, cfg, gdml_path = _resolve(library, calib, deviation, gdml, jax, counters, run_config, window,
-                                  kw.get("fused_response", False))
+    rc, cfg, gdml_path, time_window = _resolve(library, calib, deviation, gdml, jax, counters, run_config, window,
+                                               kw.get("fused_response", False), conditions_manifest)
+    for warning in time_window["warnings"]:
+        print(f"# time window: {warning}", flush=True)
     if benchmark is not None:
         benchmark.setup(rc, cfg, gdml_path, library, calib, deviation)
     t0 = time.perf_counter()
     if prepared is None:
+        manifest_kw = {}
+        if conditions_manifest is not None:
+            # Validate the stock snapshot against its configured window, not the cosmic crop.
+            configured_rc = dataclasses.replace(rc, window=tuple(time_window["configured_window_ns"]))
+            manifest_kw = dict(conditions_manifest=conditions_manifest, configured_rc=configured_rc)
         payload, T = _load_setup(rc, cfg, gdml_path, gdml, library, calib, deviation, jax, no_absorbers,
                                 kw.get("unbanded_world", False), kw.get("no_below_world", False),
-                                kw.get("below_margin"))
+                                kw.get("below_margin"), **manifest_kw)
         if benchmark is None:
             T.pop("geometry_conditions_config_s")
     else:
@@ -184,9 +220,16 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         T = {"setup_s": 0.0, "geometry_conditions_config_s": 0.0, "context_reused": True,
              "context_audit_s": time.perf_counter() - a}
     rc, cfg, geom, ccfg, cond = (payload[k] for k in ("rc", "cfg", "geom", "ccfg", "cond"))
+    readout_metadata = {}
+    if geometry_readout:
+        cond, evidence = readout.apply(cond, geom, ccfg)
+        readout_metadata["geometry_readout"] = evidence
     tagger, bar_cut, world, ab, below = (payload[k] for k in ("tagger", "bar_cut", "world", "ab", "below"))
     lib, tabs, pmap, stype_name = (payload[k] for k in ("lib", "tabs", "pmap", "stype_name"))
+    conditions_metadata = payload.get("conditions_metadata",
+                                      {"status": "unverified_legacy", "calib": calib, "deviation": deviation})
     out_cl, n_gen = [], 0
+    transport_diagnostics = {}
 
     def host_stage(i, f):
         """CPU part of file i (read, transport, tier 1b) with its own rng and timers: the same draws whether it runs
@@ -204,10 +247,14 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         keys = gen[tables.KEY].drop_duplicates().to_numpy() if benchmark is not None else None
         ngen = int(gen[tables.KEY].drop_duplicates().shape[0])
         a = time.perf_counter()
+        diagnostics = {}
         st, pa = tr.transport(gen, geom, rng, stage="C", world=world, msc_tail=msc_tail, tail_k=tail_k,
                               sliced_msc=sliced_msc, all_muons=not first_muon_only, absorbers=ab, tagger_bar=tagger,
                               bar_cut=bar_cut, below=below,
-                              below_msc=below is not None and (rc.below_msc or bool(kw.get("below_msc"))))
+                              below_msc=below is not None and (rc.below_msc or bool(kw.get("below_msc"))),
+                              **_scatter_in_kw(kw, diagnostics))
+        if diagnostics:
+            transport_diagnostics[str(i)] = {"input": str(f), **diagnostics}
         t["transport_s"] = time.perf_counter() - a
         a = time.perf_counter()
         st, pa, _ = tier1b.sample(st, pa, gen, lib, geom, rng, showers=rc.showers)
@@ -269,8 +316,8 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         prepared.audit()
         T["context_audit_s"] += time.perf_counter() - a
     cl_type = np.concatenate([o["cl_type"] for o in out_cl]) if out_cl else np.zeros(0, int)
-    res = {"generated_events": n_gen, "timers": T,
-           "run_config": rc.name, "window": list(cfg.window),
+    res = {"generated_events": n_gen, "timers": T, "conditions": conditions_metadata, **readout_metadata,
+           "run_config": rc.name, "window": list(cfg.window), "time_window": time_window,
            "clusters_per_generated": {stype_name.get(int(k), str(k)): float((cl_type == k).sum() / n_gen)
                                       for k in np.unique(cl_type)}}
     nev = max(T.get("events_with_steps", 1), 1)
@@ -283,6 +330,8 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         res["compare_generated_events"] = n_gen
         res["clusters_per_generated_ref"] = {stype_name.get(int(k), str(k)): float((st_ref == k).sum() / n_gen)
                                              for k in np.unique(st_ref)}
+    if transport_diagnostics:
+        res["scatter_in_diagnostics"] = transport_diagnostics
     res["wall_s"] = time.perf_counter() - t0
     if jax:
         import jax as _jax
@@ -291,8 +340,11 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
     if emit:   # per-shard accumulators for a merge (node jobs: one process per tile)
         with open(emit, "w") as fh:
             json.dump({"generated_events": n_gen, "timers": T, "wall_s": res["wall_s"],
+                       "conditions": conditions_metadata, "scatter_in_diagnostics": transport_diagnostics,
+                       **readout_metadata,
                        "cl_type_counts": {int(k): int((cl_type == k).sum()) for k in np.unique(cl_type)},
-                       "run_config": rc.name, "type_names": {int(k): v for k, v in stype_name.items()},
+                       "run_config": rc.name, "window": list(cfg.window), "time_window": time_window,
+                       "type_names": {int(k): v for k, v in stype_name.items()},
                        "device": res.get("device"), "reco_device": res.get("reco_device"),
                        "inputs": list(tables.expand(inputs))}, fh)
     if benchmark is not None:
@@ -312,6 +364,12 @@ def merge(inputs, outdir, wall=None, **kw):
     generated event per sector type, accepted events per node-hour from the job wall time (--wall, seconds) or, if not
     given, from the slowest shard."""
     J = [json.load(open(f)) for f in tables.expand(inputs)]
+    time_metadata = validate_runchain_merge(J)
+    time_metadata.update(readout.validate_merge(J))
+    if any(j.get("conditions") != J[0].get("conditions") for j in J[1:]):
+        raise ValueError("runchain merge: incompatible conditions provenance")
+    if J[0].get("conditions") is not None:
+        time_metadata["conditions"] = J[0]["conditions"]
     n_gen = sum(j["generated_events"] for j in J)
     acc = sum(j["timers"].get("events_with_steps", 0) for j in J)
     cl = {}
@@ -334,6 +392,7 @@ def merge(inputs, outdir, wall=None, **kw):
            "ms_per_event_with_steps_per_process": {k[:-2]: 1e3 * v / max(acc, 1) for k, v in T.items()
                                                    if k.endswith("_s") and k != "setup_s"},
            "devices": sorted({str(j.get("device")) for j in J}), "reco_devices": sorted({str(j.get("reco_device")) for j in J})}
+    res.update(time_metadata)
     plots.write_json(outdir, "runchain_merge_stats.json", res)
     print(json.dumps(res, indent=1))
     return res

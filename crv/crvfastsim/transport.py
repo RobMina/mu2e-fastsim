@@ -331,9 +331,173 @@ def scattered_crossings(rng, o, d, p_base, x_above, geom, below, cut, max_iter=1
     return tuple(v[order] for v in out)
 
 
+def scatter_in_crossings(rng, o, d, p_base, x_above, geom, below, cut, *, step_mm=50.0,
+                         envelope_mm=1500.0, max_steps=20000, diagnostics=None):
+    """Experimental finite-domain, angular-endpoint marcher; no initial bar is required.
+
+    Every straight segment ends at a bar boundary, domain exit, or step_mm. Only its actually traversed
+    material is charged, then an angular kick is applied and ALL bar intersections are recomputed. No lateral
+    endpoint jump can skip a bar. This first-order angular diffusion needs step/envelope convergence studies;
+    unlike scattered_crossings it does not reproduce the finite-slab displacement covariance in one step.
+    Returns the legacy eight crossing arrays plus actual end position, end momentum, end distance and summed
+    segment Birks energy. Multiple segments/visits are reduced to one ledger row per (track, bar).
+    """
+    from mu2efastsim.transport import highland_var_increment
+    _validate_scatter_in(step_mm, envelope_mm, max_steps, diagnostics)
+    n = len(o)
+    pos, dirn = np.array(o, float), np.array(d, float)
+    momentum, xcum = np.array(p_base, float), np.array(x_above, float)
+    if (pos.shape != (n, 3) or dirn.shape != (n, 3) or momentum.shape != (n,)
+            or xcum.shape != (n,) or not np.isfinite(pos).all() or not np.isfinite(dirn).all()
+            or not np.isfinite(momentum).all() or not np.isfinite(xcum).all()
+            or (momentum < 0).any() or (xcum < 0).any()
+            or not np.allclose(np.linalg.norm(dirn, axis=1), 1., rtol=1e-10, atol=1e-12)):
+        raise ValueError("scatter_in_crossings: finite positions, unit directions and nonnegative p/x0 required")
+    cut = np.asarray(cut, float)
+    if cut.shape != (geom.nbars,) or not np.isfinite(cut).all() or (cut <= 0).any():
+        raise ValueError("scatter_in_crossings: one finite positive cut per bar required")
+    # The domain includes the approach from each admitted plane point to the detector. Per-track bounds avoid
+    # dependence on other tracks in the batch. A track leaving it is absorbed, not silently allowed to return.
+    lo = np.minimum((geom.center - geom.halflen).min(0) - envelope_mm, pos - envelope_mm)
+    hi = np.maximum((geom.center + geom.halflen).max(0) + envelope_mm, pos + envelope_mm)
+    hi[:, 1] = np.maximum(msc_plane(geom), pos[:, 1])  # never propagate back through the above-plane world
+    dist, counts = np.zeros(n), np.zeros(n, np.int64)
+    initial_miss = np.zeros(n, bool)
+    active = np.flatnonzero(momentum > 1.0)
+    rows = []
+    stats = dict(step_mm=float(step_mm), envelope_mm=float(envelope_mm), max_steps=int(max_steps),
+                 tracks_started=len(active), escaped=0, stopped=0, segments=0, bar_segments=0,
+                 iterations=0, max_segments_per_track=0, max_path_mm=0., max_segment_mm=0.,
+                 max_segment_xx0=0., max_scatter_sigma_rad=0.,
+                 recovered_initial_misses=0, cap_hit=False, complete=False)
+    if diagnostics is not None:
+        diagnostics.update(stats)
+    mats = {m: materials.BY_NAME.get(m, materials.CONCRETE_MARS) for m in below.mats}
+    x0 = {m: eloss.radiation_length_mm(mat) for m, mat in mats.items()}
+    x0_poly = eloss.radiation_length_mm(materials.POLYSTYRENE)
+    for iteration in range(max_steps):  # vectorized across ALL active tracks, never a per-track loop
+        if not len(active):
+            break
+        # Distance to first outward domain face. Origins on the top face moving down are admitted.
+        a = active
+        inv = 1. / np.where(dirn[a] == 0., 1e-300, dirn[a])
+        exit_dist = np.maximum((lo[a] - pos[a]) * inv, (hi[a] - pos[a]) * inv).min(1)
+        inside_domain = ((pos[a] >= lo[a] - 1e-9) & (pos[a] <= hi[a] + 1e-9)).all(1)
+        go = inside_domain & (exit_dist > 1e-9)
+        stats["escaped"] += int((~go).sum())
+        a, exit_dist = a[go], exit_dist[go]
+        active = a
+        if not len(a):
+            break
+        k, bar, tin, tout = _next_crossing(pos[a], dirn[a], geom, np.full(len(a), -1))
+        if iteration == 0:
+            initial_miss[a] = True
+            initial_miss[a[k]] = False
+        ibar = np.full(len(a), -1, np.int64)
+        seg = np.minimum(step_mm, exit_dist)
+        in_bar = tin <= 1e-9
+        ibar[k[in_bar]] = bar[in_bar]
+        seg[k] = np.minimum(seg[k], np.where(in_bar, tout, tin))
+        b = np.flatnonzero(ibar >= 0)
+        g = np.flatnonzero(ibar < 0)
+        pin = momentum[a].copy()
+        loss, xx = np.zeros(len(a)), np.zeros(len(a))
+        # Passive solids replace air; bars are excluded from below (load_below contract).
+        col = below.column(pos[a[g]], dirn[a[g]], seg[g]) if len(below) and len(g) else {}
+        solid = np.zeros(len(g))
+        for m in sorted(col):
+            ln = col[m]
+            hit = np.flatnonzero((ln > 0) & (core_tr._p_after(pin[g], loss[g]) > 1.))
+            q = g[hit]
+            loss[q] += slab_loss(rng, mats[m], core_tr._p_after(pin[q], loss[q]), ln[hit])
+            xx[g] += ln / x0[m]
+            solid += ln
+        loss[g] += eloss.dedx_restricted(materials.AIR, np.maximum(pin[g], 1.), 1e9) * np.maximum(seg[g] - solid, 0.)
+        if len(b):
+            loss[b] = eloss.sample_loss(rng, materials.POLYSTYRENE, pin[b], seg[b], cut[ibar[b]])
+            xx[b] = seg[b] / x0_poly
+        if not np.isfinite(loss).all() or (loss < 0).any():
+            raise RuntimeError("scatter_in_crossings: invalid sampled energy loss")
+        tk = np.sqrt(pin ** 2 + eloss.MMU ** 2) - eloss.MMU
+        stops = loss >= tk
+        # Uniform-within-segment range estimate. Stop once, cap the deposited energy, never restart.
+        fraction = np.ones(len(a))
+        fraction[stops] = tk[stops] / np.maximum(loss[stops], 1e-300)
+        seg *= fraction
+        xx *= fraction
+        loss = np.minimum(loss, tk)
+        pout = core_tr._p_after(pin, loss)
+        end = pos[a] + dirn[a] * seg[:, None]
+        if len(b):
+            rows.append((a[b], ibar[b], pos[a[b]].copy(), dirn[a[b]].copy(), pin[b], seg[b], loss[b],
+                         dist[a[b]].copy(), end[b], pout[b], dist[a[b]] + seg[b],
+                         eloss.birks(materials.POLYSTYRENE, loss[b], seg[b])))
+        pos[a], momentum[a] = end, pout
+        dist[a] += seg
+        counts[a] += 1
+        stats["segments"] += len(a)
+        stats["bar_segments"] += len(b)
+        stats["iterations"] = iteration + 1
+        stats["max_segment_mm"] = max(stats["max_segment_mm"], float(seg.max(initial=0.)))
+        stats["max_segment_xx0"] = max(stats["max_segment_xx0"], float(xx.max(initial=0.)))
+        live = (~stops) & (pout > 1.)
+        stats["stopped"] += int((~live).sum())
+        # A boundary exit is absorbing even if an endpoint kick would turn it back inward.
+        escaped = live & (seg >= exit_dist - 1e-9)
+        stats["escaped"] += int(escaped.sum())
+        live &= ~escaped
+        sc = np.flatnonzero(live & (xx > 0))
+        q = a[sc]
+        if len(sc):
+            var = highland_var_increment(np.sqrt(pin[sc] * pout[sc]), xcum[q], xcum[q] + xx[sc])
+            sigma = np.sqrt(np.maximum(var, 0.))
+            stats["max_scatter_sigma_rad"] = max(stats["max_scatter_sigma_rad"], float(sigma.max(initial=0.)))
+            dth = rng.standard_normal((len(sc), 2)) * sigma[:, None]
+            pos[q], dirn[q] = _kick(pos[q], dirn[q], dth, np.zeros_like(dth))
+        xcum[a] += xx
+        active = a[live]
+    stats["max_segments_per_track"] = int(counts.max(initial=0))
+    stats["max_path_mm"] = float(dist.max(initial=0.))
+    stats["cap_hit"] = bool(len(active))
+    stats["complete"] = not len(active)
+    if rows:
+        stats["recovered_initial_misses"] = int(initial_miss[np.unique(np.concatenate([r[0] for r in rows]))].sum())
+    if diagnostics is not None:
+        diagnostics.update(stats)
+    if len(active):
+        raise RuntimeError(f"scatter_in_crossings: {len(active)} active tracks at cap {max_steps}; no partial result")
+    if not rows:
+        z = np.zeros(0)
+        return (z.astype(np.int64), z.astype(np.int64), np.zeros((0, 3)), np.zeros((0, 3)),
+                z, z, z, z, np.zeros((0, 3)), z, z, z)
+    data = [np.concatenate([r[j] for r in rows]) for j in range(12)]
+    # Preserve first entry and last exit, with a single energy/path ledger even after a genuine re-entry.
+    _, first, group = np.unique(np.stack(data[:2], axis=1), axis=0, return_index=True, return_inverse=True)
+    last = np.zeros(len(first), np.int64)
+    np.maximum.at(last, group, np.arange(len(group)))
+    out = [v[first] for v in data]
+    for j in (5, 6, 11):
+        out[j] = np.bincount(group, weights=data[j], minlength=len(first))
+    for j in (8, 9, 10):
+        out[j] = data[j][last]
+    order = np.lexsort((out[7], out[0]))
+    return tuple(v[order] for v in out)
+
+
+def _validate_scatter_in(step_mm, envelope_mm, max_steps, diagnostics):
+    for name, v in (("scatter_in_step_mm", step_mm), ("scatter_in_envelope_mm", envelope_mm)):
+        if not np.isscalar(v) or isinstance(v, (str, bool, np.bool_)) or not np.isfinite(v) or v <= 0:
+            raise ValueError(f"{name} must be finite and positive")
+    if isinstance(max_steps, (bool, np.bool_)) or not isinstance(max_steps, (int, np.integer)) or max_steps < 1:
+        raise ValueError("scatter_in_max_steps must be a positive integer")
+    if diagnostics is not None and not isinstance(diagnostics, dict):
+        raise ValueError("scatter_in_diagnostics must be a dict or None")
+
+
 def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=False, tail_k=None, sliced_msc=False,
               all_muons=True, absorbers=None, absorber_straggling=True, tagger_bar=None, bar_cut=None, below=None,
-              below_msc=False):
+              below_msc=False, below_scatter_in=False, scatter_in_step_mm=50.0,
+              scatter_in_envelope_mm=1500.0, scatter_in_max_steps=20000, scatter_in_diagnostics=None):
     """Return (steps, particles) for the primary muons in `gen`.
 
     Stage A: air, no MSC. B: air + MSC to Y_MSC_PLANE. C: GDML world material (world = world.load(...)) + MSC.
@@ -363,13 +527,25 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
     wraps the DS (Run 1A, Run 2) is reached through metres of material below the plane, and the side walls take muons
     at grazing incidence, where the path in a bar follows the direction. Opt-in: material is only scattered in before a
     bar the current line enters, so muons can scatter out of the CRV but never into it.
+    below_scatter_in (experimental, default False) additionally requires stage C, below and below_msc=True.
+    It replaces that algorithm with scatter_in_crossings: bounded steps independent of an initial bar hit.
+    scatter_in_step_mm=50, scatter_in_envelope_mm=1500 and scatter_in_max_steps=20000 control the approximation;
+    an active track at the cap raises instead of returning partial tables. scatter_in_diagnostics may be a dict
+    populated with admission, termination and step statistics for convergence scans. See docs/below-scatter-in.md.
     """
+    if below_scatter_in:
+        if stage != "C" or below is None or not below_msc:
+            raise ValueError("below_scatter_in requires stage C, below, and below_msc=True")
+        _validate_scatter_in(scatter_in_step_mm, scatter_in_envelope_mm, scatter_in_max_steps,
+                             scatter_in_diagnostics)
     y_plane = msc_plane(geom)
     edges = world.edges if isinstance(world, core_tr.BandedWorld) else band_edges(y_plane)
     mu = all_primary_muons(gen) if all_muons else primary_muons(gen)
     mukey = mu.mukey.to_numpy() if all_muons else np.ones(len(mu), np.int64)
     p0 = np.sqrt(mu.px ** 2 + mu.py ** 2 + mu.pz ** 2).to_numpy()
     o = mu[["x", "y", "z"]].to_numpy()
+    if below_scatter_in and (not np.isfinite(o).all() or not np.isfinite(p0).all() or (p0 <= 0).any()):
+        raise ValueError("below_scatter_in requires finite origins and nonzero finite generated momentum")
     d = mu[["px", "py", "pz"]].to_numpy() / p0[:, None]
     t_off = np.zeros(len(mu))   # path length already travelled before the origin used for the crossings
     p_plane = p0.copy()         # |p| at the MSC plane (stage C: after the world material)
@@ -377,7 +553,11 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
     if below_msc and below is not None and stage != "C":
         raise ValueError("below_msc needs stage C (the below-plane world starts at the MSC plane)")
     if stage in ("B", "C"):
-        down = near_crv_box(o, d, geom) if below is not None else near_crv(o, d, geom, y_plane=y_plane)
+        if below_scatter_in:
+            # Never admit a wider below-plane population without processing its above-plane world too.
+            down = near_crv_box(o, d, geom, margin=max(CRV_FOOTPRINT_MARGIN, scatter_in_envelope_mm))
+        else:
+            down = near_crv_box(o, d, geom) if below is not None else near_crv(o, d, geom, y_plane=y_plane)
         bxx0 = bh = None
         tail = None
         if stage == "C" and (msc_tail or sliced_msc):
@@ -418,12 +598,24 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
         lo_all, hi_all = (geom.center - geom.halflen).min(0), (geom.center + geom.halflen).max(0)
         b_in, b_out = crossings.slab_crossings(o, d, lo_all[None, :], hi_all[None, :])
         near = np.flatnonzero((b_out[:, 0] > np.maximum(b_in[:, 0], 0.0)) & (p_base_mu > 1.0))
-        it, bar, pos0, dirs, pin, path, loss, dist = scattered_crossings(
-            rng, o[near], d[near], p_base_mu[near], x_above[near], geom, below, cut_bar)
+        if below_scatter_in:
+            near = np.flatnonzero(down & near_crv_box(o, d, geom, margin=scatter_in_envelope_mm) & (p_base_mu > 1.0))
+            if scatter_in_diagnostics is not None:
+                scatter_in_diagnostics.update(generated_muons=len(mu), above_processed=int(down.sum()), admitted=len(near))
+            result = scatter_in_crossings(rng, o[near], d[near], p_base_mu[near], x_above[near], geom, below, cut_bar,
+                                         step_mm=scatter_in_step_mm, envelope_mm=scatter_in_envelope_mm,
+                                         max_steps=scatter_in_max_steps, diagnostics=scatter_in_diagnostics)
+            it, bar, pos0, dirs, pin, path, loss, dist, pos1, scatter_p1, scatter_dist1, scatter_vis = result
+        else:
+            it, bar, pos0, dirs, pin, path, loss, dist = scattered_crossings(
+                rng, o[near], d[near], p_base_mu[near], x_above[near], geom, below, cut_bar)
         it = near[it]
         keep = loss > 0
         it, bar, pos0, dirs, pin, path, loss, dist = (v[keep] for v in (it, bar, pos0, dirs, pin, path, loss, dist))
-        pos1 = pos0 + dirs * path[:, None]
+        if below_scatter_in:
+            pos1, scatter_p1, scatter_dist1, scatter_vis = (v[keep] for v in (pos1, scatter_p1, scatter_dist1, scatter_vis))
+        else:
+            pos1 = pos0 + dirs * path[:, None]
     else:
         # only tracks whose line enters the CRV bounding box can cross a bar (exact superset: one slab test per track)
         lo_all, hi_all = (geom.center - geom.halflen).min(0), (geom.center + geom.halflen).max(0)
@@ -524,7 +716,7 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
         dirs = d[it]
         pos0 = o[it] + d[it] * t_in[:, None]
         pos1 = o[it] + d[it] * t_out[:, None]
-    vis = eloss.birks(materials.POLYSTYRENE, loss, path)
+    vis = scatter_vis if below_scatter_in else eloss.birks(materials.POLYSTYRENE, loss, path)
     e0 = np.sqrt(p0[it] ** 2 + eloss.MMU ** 2)
     beta = p0[it] / e0
     t0 = mu.t.to_numpy()[it] + (dist + t_off[it]) / (beta * C_MM_PER_NS)
@@ -533,12 +725,12 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
     steps["bar"] = bar
     steps["sp"] = mukey[it]
     steps["t0"] = t0
-    steps["t1"] = t0 + path / (beta * C_MM_PER_NS)
+    steps["t1"] = t0 + ((scatter_dist1 - dist) if below_scatter_in else path) / (beta * C_MM_PER_NS)
     for j, c in enumerate("xyz"):
         steps[f"{c}0"] = pos0[:, j]
         steps[f"{c}1"] = pos1[:, j]
         steps[f"p{c}0"] = dirs[:, j] * pin
-    steps["p1"] = core_tr._p_after(pin, loss)
+    steps["p1"] = scatter_p1 if below_scatter_in else core_tr._p_after(pin, loss)
     steps["len"] = path
     steps["edep"] = vis
     parts = pd.DataFrame({k: mu[k].to_numpy() for k in tables.KEY})

@@ -7,6 +7,7 @@ subrun live time). Output: one fast-sim table file per input, same layout, same 
     transport gen.001400_00000001.root [...] --outdir DIR [--seed N] [--stage A]
 """
 import dataclasses
+import json
 import os
 
 import numpy as np
@@ -30,6 +31,14 @@ def _below_kw(rc, kw):
     """load_below keywords: the run configuration's margin unless --below-margin overrides it."""
     m = kw.get("below_margin")
     return {"margin": float(m if m is not None else rc.below_margin)}
+
+
+def _scatter_in_kw(kw, diagnostics):
+    if not kw.get("below_scatter_in"):
+        return {}
+    return dict(below_scatter_in=True, scatter_in_step_mm=kw.get("scatter_in_step_mm", 50.0),
+                scatter_in_envelope_mm=kw.get("scatter_in_envelope_mm", 1500.0),
+                scatter_in_max_steps=kw.get("scatter_in_max_steps", 20000), scatter_in_diagnostics=diagnostics)
 
 
 def run(inputs, outdir, seed=1, stage="A", counters=None, gdml=None, world_mods=None, msc_tail=False, tail_k=None,
@@ -64,11 +73,17 @@ def run(inputs, outdir, seed=1, stage="A", counters=None, gdml=None, world_mods=
         rng = np.random.default_rng([int(seed), i])
         gen = tables.read(f, "gen")
         sub = tables.read(f, "subruns")
+        diagnostics = {}
         steps, parts = tr.transport(gen, geom, rng, stage=stage, world=world, msc_tail=msc_tail, tail_k=tail_k,
                                     sliced_msc=sliced_msc, all_muons=not first_muon_only, absorbers=ab, tagger_bar=tagger,
                                     bar_cut=bar_cut, below=below,
-                                    below_msc=below is not None and (rc.below_msc or bool(kw.get("below_msc"))))
+                                    below_msc=below is not None and (rc.below_msc or bool(kw.get("below_msc"))),
+                                    **_scatter_in_kw(kw, diagnostics))
         name = os.path.basename(f).replace("gen.", f"fast{stage}.")
         tables.write(os.path.join(outdir, name), steps, parts, gen, sub, as_ttree=True)
+        if diagnostics:
+            with open(os.path.join(outdir, name + ".scatter_in.json"), "w") as fh:
+                json.dump({"run_config": rc.name, "input": str(f), "seed": int(seed),
+                           "input_index": i, "diagnostics": diagnostics}, fh, indent=2)
         print(f"# {f}: {parts.shape[0]:,} primary muons, {steps[tables.KEY].drop_duplicates().shape[0]:,} with CRV "
               f"crossings, {len(steps):,} crossings", flush=True)

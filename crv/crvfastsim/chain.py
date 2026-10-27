@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from . import geometry, tables
+from . import geometry, readout, tables
 from .response import photons as PH
 from .response import sipm as SI
 
@@ -37,6 +37,7 @@ class Conditions:
     roc: np.ndarray
     feb: np.ndarray
     deviation: np.ndarray
+    readout_mask: np.ndarray | None = None
 
     @staticmethod
     def from_csv(calib_csv, photon_csv=None):
@@ -146,6 +147,7 @@ def charges(steps, parts, geom, cond, cfg, rng, key=None, tabs=None, pmap=None, 
     validate_sipm(cfg.sipm)
     validate_window(cfg.window, fused=cfg.jax and cfg.fused_response)
     timers = timers if timers is not None else {}
+    status = readout.effective_status(cond)
     if pdg is None:
         pdg = steps.merge(parts[tables.KEY + ["key", "pdg"]].rename(columns={"key": "sp"}), on=tables.KEY + ["sp"],
                           how="left").pdg.fillna(0).to_numpy()
@@ -154,7 +156,7 @@ def charges(steps, parts, geom, cond, cfg, rng, key=None, tabs=None, pmap=None, 
         import jax
         from .response import device as DV
         key = key if key is not None else jax.random.PRNGKey(0)
-        rs = DV.response_batched(steps, pdg, geom, cfg.response, cfg.sipm, tabs, cond.deviation, cond.status,
+        rs = DV.response_batched(steps, pdg, geom, cfg.response, cfg.sipm, tabs, cond.deviation, status,
                                  event_key(steps), rng, key, pmap)
         try:
             for r in rs:
@@ -178,8 +180,8 @@ def charges(steps, parts, geom, cond, cfg, rng, key=None, tabs=None, pmap=None, 
     else:
         s, c, t = PH.make_photons(steps, pdg, geom, cfg.response, tabs, cond.deviation, rng)
     timers["photons_s"] = timers.get("photons_s", 0.0) + _time.perf_counter() - t0
-    # stock SiPM stage: no charges on channels flagged not connected (bit 0) or no data (bit 2)
-    keep = ((cond.status[c] & 0b101) == 0)
+    # Stock SiPM stage: skip physically absent sensors and status bits 0 (not connected) or 2 (no data).
+    keep = ((status[c] & 0b101) == 0)
     s, c, t = s[keep], c[keep], t[keep]
     if len(c) and int(c.max()) >= CHAN_MULT:
         raise ValueError(f"channel {int(c.max())} >= CHAN_MULT {CHAN_MULT}: SiPM labels would overlap the next event")

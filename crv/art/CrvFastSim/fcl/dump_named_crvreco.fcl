@@ -1,0 +1,33 @@
+# CRV-only cosmic response reference; a named wrapper supplies geometry and explicit conditions.
+#include "Offline/fcl/minimalMessageService.fcl"
+#include "Offline/fcl/standardServices.fcl"
+#include "Offline/CRVResponse/fcl/prolog_v12.fcl"
+#include "Offline/CRVReco/fcl/prolog_v12.fcl"
+process_name : namedcrvref
+source : { module_type : RootInput }
+services : @local::Services.SimAndReco
+services.TFileService.fileName : "named_crvreco.root"
+services.SeedService.baseSeed : 27101
+services.DbService.purpose : Sim_best
+services.DbService.version : v1_5
+services.DbService.verbose : 2
+services.ProditionsService.crvOrdinal.verbose : 1
+services.ProditionsService.crvCalib.verbose : 1
+services.ProditionsService.crvStatus.verbose : 1
+services.ProditionsService.crvPhotonYield.verbose : 1
+physics : {
+  producers : {
+    @table::CrvDAQPackage.producers
+    @table::CrvRecoPackage.producers
+    EWMProducer : { @table::CommonMC.DigiProducers.EWMProducer SpillType : 0 }
+  }
+  analyzers : { crvdump : { module_type : CrvRecoTableDumper mc : true } }
+  p1 : [ EWMProducer, @sequence::CrvDAQPackage.CrvDAQSequence, @sequence::CrvRecoPackage.CrvRecoSequence ]
+  e1 : [ crvdump ]
+  trigger_paths : [ p1 ]
+  end_paths : [ e1 ]
+}
+physics.producers.CrvPhotons.crvStepModuleLabels : [ "compressDetStepMCs" ]
+physics.producers.CrvPhotons.crvStepProcessNames : [ "" ]
+physics.producers.CrvSiPMCharges.ThermalRate : 0
+outputs : {}

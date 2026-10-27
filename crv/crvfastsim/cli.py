@@ -77,6 +77,12 @@ def build_parser():
                                  "grown by MM (default: the configuration's below_margin)")
             sp.add_argument("--unbanded-world", action="store_true",
                             help="stage C: world columns piece by piece (before 2026-10-24; the banded grid is the default)")
+        if name in ("transport", "runchain"):
+            sp.add_argument("--below-scatter-in", action="store_true",
+                            help="experimental bounded below-plane marcher; requires --below-msc and stage C")
+            sp.add_argument("--scatter-in-step-mm", type=float, default=50.0)
+            sp.add_argument("--scatter-in-envelope-mm", type=float, default=1500.0)
+            sp.add_argument("--scatter-in-max-steps", type=int, default=20000)
         if name == "g4cost":
             sp.add_argument("--digi", required=True, help="the digi job's TimeTracker SQLite (timing_digi.db)")
         if name == "v0check":
@@ -100,6 +106,9 @@ def build_parser():
             sp.add_argument("--seed", type=int, default=1)
         if name == "runchain":
             sp.add_argument("--library", default=None, metavar="ROOT", help="tier-1b library")
+            sp.add_argument("--conditions-manifest", default=None, help="validated named-condition bundle manifest")
+            sp.add_argument("--geometry-readout", action="store_true",
+                            help="opt-in physical SiPM mask; requires a Run1A/Run2 conditions manifest")
             sp.add_argument("--calib", default=None, metavar="CSV", help="CRVCalib + channel map CSV")
             sp.add_argument("--deviation", default=None, metavar="CSV", help="CRVPhoton deviations")
             sp.add_argument("--gdml", default=None, help="GDML world for stage C transport")
@@ -175,6 +184,9 @@ def build_parser():
             sp.add_argument("--generated", type=int, default=None, help="generated events behind the inputs")
             sp.add_argument("--compare-generated", type=int, default=None, help="generated events behind the reference")
         if name == "v2compare":
+            sp.add_argument("--run-config", default=None, help="named geometry and all-sector V2 groups")
+            sp.add_argument("--candidate-receipt", help="prospective fasttable receipt; conditional integrity audit only")
+            sp.add_argument("--conditions-manifest", help="strict bundle for candidate receipt revalidation")
             sp.add_argument("--compare", nargs="+", default=None, metavar="ROOT",
                             help="reference arm CrvRecoTableDumper files")
             sp.add_argument("--steps", nargs="+", default=None, metavar="ROOT",
