@@ -1,6 +1,6 @@
 """crvfastsim.veto -- tier C4 of the veto-optimisation framework: a supplied veto rule applied to selected tracks and
-CRV coincidences, giving the veto inefficiency (cosmics) or the deadtime (signal + beam). Plan:
-ai-config wiki sim/crv-fast-veto-optimisation.md (decisions E3, E4, E11: the card is an input, never chosen here).
+CRV coincidences, giving the veto inefficiency (cosmics) or the deadtime (signal + beam).
+The card is an input, never chosen here.
 
     card      VetoCard: the rule (time window around the track, coincidence time gate, PE / layer / sector cuts);
               from_mu2e_cosmic_ana(cutset) reads S. Grant's YAML cut sets, from_dict for anything else

@@ -2,7 +2,7 @@
 
 `python3 -m crvfastsim.veto.frameaudit` audits existing mixed-frame outputs. It does not
 run detector response, alter cards or selections, or change the `veto_c4` objective.
-Physics results and site-specific paths belong in the internal veto wiki, not this repository.
+Physics results and site-specific paths are not kept in this repository.
 
 ## Usage
 
@@ -122,7 +122,7 @@ response derives its bounds from bunch time, but this must still be runtime-chec
 
 The user must build the existing `crv/art` muse area before this producer is used.
 The adapter has been built by the user and exercised in bounded stock replay jobs;
-site-specific evidence and measured physics quantities are recorded in the internal wiki.
+site-specific evidence and measured physics quantities are kept outside this repository.
 Start with one event, then ten, checking recorded event IDs/pbtime and output entries
 before the full pilot. Use `veto.compareframes --dump` against the stock dumper output
 only after both frame lists are verified complete. The full-Cat deficit remains open.

@@ -1,4 +1,4 @@
-# Arm A0 of the stock-equivalent validation (wiki sim/crv-fastsim-dqm-validation): stock CRV-only extracted
+# Arm A0 of the stock-equivalent validation: stock CRV-only extracted
 # digitisation + stock CRV reco on a G4 dts file, then the stock histogram makers: Offline Validation (level 2),
 # CRVDQM DqmCrvDigi/DqmCrvReco (configuration extracted, binning v3) and the legacy nightly DqmCrv. No art output.
 # Needs the crvval area (Offline main + DQM#48 + CrvFastSim). The floor arm A0' only changes the seed.

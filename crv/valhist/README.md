@@ -1,6 +1,6 @@
 # valhist: stock-equivalent validation and DQM histograms for the CRV fastsim/fastreco
 
-Plan and results: wiki `mu2e/wiki/sim/crv-fastsim-dqm-validation.md`. Histograms come from the stock Offline
+Histograms come from the stock Offline
 `Validation` module (CRV classes), the CRVDQM `DqmCrvDigi`/`DqmCrvReco` clients (configuration `extracted`, binning v3)
 and the legacy `DqmCrv`, run unchanged in the `crvval` muse area.
 

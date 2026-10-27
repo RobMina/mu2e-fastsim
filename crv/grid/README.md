@@ -48,5 +48,5 @@ GPVM check (20,000 events, mu2egpvm03): 42 s CPU (2.1 ms per generated event), V
 Test job `30476047.0@jobsub04` (2026-10-22, before the subrun change): 1,000,000 generated, 15.565 s live, CPU 1,856 s,
 wall 39:43, VmHWM 1.93 GB. It used subrun 1001, which the tracker's `gen_as_v1` already uses (different seed, so a
 different sample, but the same run/subrun/event keys): its output was renamed `...crygen_test_subrun1001...` and is not
-part of `crygen_v1`. Register every new sample in the ai-config wiki `environment/datasets-samples-and-provenance.md`
-before submitting.
+part of `crygen_v1`. Record every new sample (name, subruns, seeds) before submitting, so run/subrun/event keys never
+collide.

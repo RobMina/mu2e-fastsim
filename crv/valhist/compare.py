@@ -1,4 +1,4 @@
-"""Merge and compare stock-equivalent validation/DQM histogram files (wiki sim/crv-fastsim-dqm-validation).
+"""Merge and compare stock-equivalent validation/DQM histogram files.
 
 usage:
   python -m valhist.compare merge OUT.root 'DIR/valhist.*.root' [more globs ...] [--alias A=B ...]

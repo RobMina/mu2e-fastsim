@@ -1,6 +1,5 @@
 """The fast CRV chain without art or files: CRY primaries -> transport -> tier 1b -> photons -> SiPM charges ->
-waveforms/digis -> pulses -> coincidence clusters (interface notes: wiki sim/crv-fastsim-project, "Sim-to-reco
-interface").
+waveforms/digis -> pulses -> coincidence clusters.
 
 Stages and the modules that own them:
   transport.transport (tier 1a muons), tier1b.sample (library secondaries + non-muon showers),

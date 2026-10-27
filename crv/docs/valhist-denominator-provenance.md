@@ -139,7 +139,7 @@ The output parent must already exist and `OUT` must be new. If the retained repo
 or new generator production. It does need **every original donor/generator/nominal file** named by the sealed
 plan for hash checks, the selected donors' `dump/{particles,gen,steps}`, every external `dump/gen`, base ROOT/JSON,
 plan JSON plus checksum sidecars, and the unchanged geometry/source paths. Production-data content cannot be
-recovered from the locally synced wiki. Missing files or source drift are blocking conditions, not reasons to
+recovered from notes or summaries. Missing files or source drift are blocking conditions, not reasons to
 redirect dependencies to current physics.
 
 Optional `--evidence FILE ...` hashes producer/configuration review snapshots before/after. Useful candidates:
