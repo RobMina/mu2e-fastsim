@@ -24,8 +24,10 @@ procedure: [`../docs/generator-association-repair.md`](../docs/generator-associa
 The `events` census tree also keeps the v1 branches `ngen` and `nsteps` (`nsteps=-1` with `writeSteps=false`:
 not extracted, not zero) that the opt-in [Cat v2 contract](../docs/veto-cat-v2.md) reads; that contract requires a
 successful full-source extraction and explicit source/extraction provenance, and legacy converter/mixer behaviour is
-unchanged. **The merged module (schema v2 + census v1 branches) has not been compiled:** the user builds it on
-mu2ebuild02 and runs an art smoke test before use.
+unchanged. The merged module (schema v2 + census v1 branches) is built and smoke-tested at `40d9339`: on 100 events
+of one reference shard, `dump_gen.fcl` writes `nsteps = -1` and `ngen = n_gen` in every event and `dump_crvsteps.fcl`
+writes `nsteps = n_steps`; every pre-existing branch is identical to the earlier schema-v2 and v1 dumps of the same
+events, and a wrong donor generator tag still stops at the ProductID check (exit 1, no payload rows).
 
 ## CrvRecoTableDumper (fast CRV reco reference)
 
