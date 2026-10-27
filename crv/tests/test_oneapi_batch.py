@@ -64,7 +64,7 @@ def test_chain_digis_bucketed_default_equals_unbucketed():
     QC = {"chan": labels, "time": Q["time"], "charge": Q["charge"]}
     cond = SimpleNamespace()
     orig = chain.tdc0_per_feb
-    chain.tdc0_per_feb = lambda lab, cond, rng: (np.arange(len(lab)) % 12).astype(np.float64)
+    chain.tdc0_per_feb = lambda lab, cond, rng, width=12.5: (np.arange(len(lab)) % 12).astype(np.float64)
     try:
         a = chain.digis(QC, cond, chain.ChainConfig(jax=True, noise=False), np.random.default_rng(1))
         b = chain.digis(QC, cond, chain.ChainConfig(jax=True, noise=False, unbucketed_synth=True), np.random.default_rng(1))
