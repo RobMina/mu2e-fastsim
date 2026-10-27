@@ -41,7 +41,11 @@ def load_cache(paths, timers):
             ngen = len(np.unique(chain.event_key(g)))
         except Exception:
             ngen = None
-        out.append(dict(path=p, steps=st, pdg=pdg, ek=ek, events=np.unique(ek), ngen=ngen))
+        events, first = np.unique(ek, return_index=True)
+        event_keys = st[tables.KEY].to_numpy(dtype=np.int64)[first]
+        gen_keys = g.drop_duplicates(tables.KEY).to_numpy(dtype=np.int64) if ngen is not None else None
+        out.append(dict(path=p, steps=st, pdg=pdg, ek=ek, events=events, ngen=ngen,
+                        event_keys=event_keys, gen_keys=gen_keys))
     timers["io_s"] = timers.get("io_s", 0.0) + time.perf_counter() - t0
     return out
 
@@ -68,6 +72,17 @@ def validate_response(cfg):
         raise ValueError(f"reco-r3: unsupported SiPM processes: {unsupported}")
     if tuple(cfg.window) != (0.0, 1e5):
         raise ValueError("reco-r3: only the extracted (0, 100000) ns window is supported")
+
+
+def _capture_empty(capture, event_keys, source_index):
+    """Capture no-cluster exposure without changing the background-only objective path."""
+    import awkward as ak
+    from ..objective import crvline
+    counts = np.zeros(len(event_keys), dtype=np.int64)
+    c = ak.zip({k: ak.unflatten(np.empty((0, 4)) if k.endswith('[4]') else np.empty(0, np.int64), counts)
+                for k in crvline.COINC_BR}, depth_limit=1)
+    p = ak.zip({k: ak.unflatten(np.empty(0, np.int64), counts) for k in crvline.PULSE_BR}, depth_limit=1)
+    capture.add(c, p, crvline.fit_arrays(c, p), event_keys, source_index=source_index)
 
 
 def run_batch(c, a, b, cond, cfg, geom, ccfg, tabs, pmap, rng, key, T, objective=None, window_ns=1e5, time_shift=None):
@@ -99,6 +114,8 @@ def run_batch(c, a, b, cond, cfg, geom, ccfg, tabs, pmap, rng, key, T, objective
         if objective is not None:
             objective["mod"].add_empty_events(objective["state"], b - a, window_ns)
             _bg_without_waveforms(c["events"][a:b], cfg, rng, objective, T)
+            if objective.get("joint") is not None:
+                _capture_empty(objective["joint"], c["event_keys"][a:b], objective["source_index"])
         return b - a, key
     t0 = time.perf_counter()
     D = chain.digis(Q, cond, cfg, rng, key=k_w)
@@ -107,6 +124,8 @@ def run_batch(c, a, b, cond, cfg, geom, ccfg, tabs, pmap, rng, key, T, objective
         if objective is not None:
             objective["mod"].add_empty_events(objective["state"], b - a, window_ns)
             _bg_without_waveforms(c["events"][a:b], cfg, rng, objective, T)
+            if objective.get("joint") is not None:
+                _capture_empty(objective["joint"], c["event_keys"][a:b], objective["source_index"])
         return b - a, key
     t0 = time.perf_counter()
     W = chain.reco_waveforms(D, cond)
@@ -126,7 +145,9 @@ def run_batch(c, a, b, cond, cfg, geom, ccfg, tabs, pmap, rng, key, T, objective
         cc, pp, _ = ntview.build(outs, geom, events=c["events"][a:b])
         _add(T, "view_s", t0)
         t0 = time.perf_counter()
-        objective["mod"].accumulate_arrays(cc, pp, objective["state"], window_ns)
+        measured = objective["mod"].accumulate_arrays(cc, pp, objective["state"], window_ns)
+        if objective.get("joint") is not None:
+            objective["joint"].add(cc, pp, measured, c["event_keys"][a:b], source_index=objective["source_index"])
         _bg_without_waveforms(np.setdiff1d(c["events"][a:b], W["ev"]), cfg, rng, objective, T)
         _add(T, "objective_s", t0)
     return b - a, key
@@ -134,10 +155,12 @@ def run_batch(c, a, b, cond, cfg, geom, ccfg, tabs, pmap, rng, key, T, objective
 
 def run(steps, calib=None, deviation=None, target=1_000_000, jax=False, seed=1, batch_events=2000, counters=None,
         emit=None, objective=False, noise=None, max_passes=1000, time_limit=None, v05=False, knobs=None, background=None,
-        time_shift=None, response_config=None):
+        time_shift=None, response_config=None, joint_capture=None):
     """v05: the crvonly_v05 digitisation settings (one FEB clock phase per event, CRVTime net zero), as reco-vr4eff,
     for comparisons with the v05 EventNtuples."""
     from .. import response_config as RC
+    if joint_capture is not None and (not objective or max_passes != 1):
+        raise ValueError('joint capture requires objective=True and exactly one pass')
     effective = RC.apply_knobs(RC.parse(response_config), knobs)
     if v05:
         effective['timing'].update(phase_scope='per_event', timeoffset_mode='zero')
@@ -194,12 +217,18 @@ def run(steps, calib=None, deviation=None, target=1_000_000, jax=False, seed=1, 
         obj = {"mod": crvresponse, "state": crvresponse.new_state()}
     _add(T, "setup_s", t0)
     cache = load_cache(steps, T)
+    if joint_capture is not None:
+        if target != sum(len(c['events']) for c in cache) or any(c['gen_keys'] is None for c in cache):
+            raise ValueError('joint capture requires full one-pass inputs with generated-event identities')
+        obj['joint'] = joint_capture
     per_cache = [0] * len(cache)
     per_pass, done, p = [], 0, 0
     while done < target and p < max_passes:
         tp = time.perf_counter()
         n_pass = 0
         for i, c in enumerate(cache):
+            if joint_capture is not None:
+                obj['source_index'] = i
             rng = np.random.default_rng([int(seed), p, i])
             ne = len(c["events"])
             for a in range(0, ne, batch_events):
@@ -225,6 +254,16 @@ def run(steps, calib=None, deviation=None, target=1_000_000, jax=False, seed=1, 
             obj["mod"].add_empty_events(obj["state"], empty, cfg.window[1] - cfg.window[0])
             _bg_without_waveforms(-1 - np.arange(empty, dtype=np.int64), cfg, np.random.default_rng([int(seed), 99]),
                                   obj, T)
+    if joint_capture is not None:
+        if done != target:
+            raise ValueError('joint capture stopped before complete exposure')
+        for i, c in enumerate(cache):
+            dtype = np.dtype([(k, '<i8') for k in tables.KEY])
+            gen = np.ascontiguousarray(c['gen_keys']).view(dtype).reshape(-1)
+            used = np.ascontiguousarray(c['event_keys']).view(dtype).reshape(-1)
+            absent = np.setdiff1d(gen, used).view('<i8').reshape(-1, 3)
+            if len(absent):
+                _capture_empty(joint_capture, absent, i)
     wall = time.perf_counter() - t_all
     warm = [x for x in per_pass[1:] if x["events"]]
     res = {"events_with_steps": done, "events_without_steps": empty, "target": target, "wall_s": wall, "passes": per_pass,

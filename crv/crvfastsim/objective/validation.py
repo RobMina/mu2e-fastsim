@@ -58,7 +58,7 @@ def inventory(paths, excluded, assets, out):
 
 
 def verify(manifest):
-    for row in manifest['inputs'] + list(manifest['assets'].values()):
+    for row in manifest['inputs'] + manifest.get('excluded', []) + list(manifest['assets'].values()):
         if digest(row['path']) != row['sha256']:
             raise ValueError(f"input bytes changed: {row['path']}")
 
@@ -85,15 +85,80 @@ def runtime_assets():
                                                    'LookupTable_3200_0', 'photonMap.root')}}
 
 
-def run(manifest_path, out, seed, knobs, jax=False, calibration=False):
+def diagnostic_revision(package):
+    """Unpublished worktree identity, including ignored/untracked package source bytes.
+
+    Keep revision() separate: accepting a snapshot is never evidence of a clean,
+    committed checkout. Git status is deliberately repository-wide.
+    """
+    import importlib.util
+    package_root = Path(importlib.util.find_spec(package).origin).resolve().parent
+    root = package_root.parent
+    def git(*args):
+        return subprocess.check_output(['git', '-C', str(root), *args], text=True).rstrip('\n')
+    sha = git('rev-parse', 'HEAD')
+    status = git('status', '--porcelain=v1', '--untracked-files=all')
+    paths = {p for p in package_root.rglob('*') if p.is_file() and p.suffix in ('.py', '.json')}
+    # Include repository source and support files without traversing unrelated data trees.
+    listed = git('ls-files', '-z', '--cached', '--others', '--exclude-standard').split('\0')
+    paths.update(root / name for name in listed if name and
+                 Path(name).suffix in ('.py', '.json') and (root / name).is_file())
+    support_suffixes = {'.py', '.json', '.md', '.rst', '.sh', '.toml', '.cfg', '.yaml', '.yml'}
+    for directory in ('scripts', 'tests', 'docs'):
+        paths.update(p for p in (root / directory).rglob('*') if p.is_file() and p.suffix in support_suffixes)
+    paths.update(p for p in root.iterdir() if p.is_file() and p.suffix in support_suffixes)
+    sources = {str(p.relative_to(root)): digest(p) for p in sorted(paths)}
+    source_sha = hashlib.sha256(json.dumps(sources, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    if sha != git('rev-parse', 'HEAD') or status != git('status', '--porcelain=v1', '--untracked-files=all'):
+        raise ValueError(f'code changed while taking diagnostic snapshot: {root}')
+    return dict(path=str(root), sha=sha, status=status, sources=sources, source_sha256=source_sha,
+                mode='diagnostic-worktree', published=False)
+
+
+def _resolve_response_config(source, knobs):
+    from .. import response_config as RC
+    requested = None
+    if source is not None and not isinstance(source, dict) and str(source) != '' and \
+            not str(source).lstrip().startswith('{'):
+        path = Path(source).resolve()
+        data = path.read_bytes()
+        requested = dict(path=str(path), sha256=hashlib.sha256(data).hexdigest())
+        source = RC.loads(data.decode())
+    effective = RC.apply_knobs(RC.parse(source), knobs)
+    nominal = RC.defaults()
+    if effective['assets'] != nominal['assets'] or \
+            effective['waveform']['single_pe_file'] != nominal['waveform']['single_pe_file']:
+        raise ValueError('validation response config cannot override manifest or runtime assets')
+    # Record the required v05 precedence so this hash agrees with R3's effective configuration.
+    effective['timing'].update(phase_scope='per_event', timeoffset_mode='zero')
+    return effective, requested
+
+
+def run(manifest_path, out, seed, knobs, jax=False, calibration=False,
+        response_config=None, joint_capture=False, diagnostic_code=False):
+    if joint_capture and not diagnostic_code:
+        raise ValueError('joint capture requires diagnostic_code=True')
+    packages = ('crvfastsim', 'mu2efastsim')
+    # Snapshot before parsing the shipped preset or importing the physics runner.
+    code = {p: diagnostic_revision(p) for p in packages} if diagnostic_code else None
+    effective, requested = _resolve_response_config(response_config, knobs)
+    from .. import response_config as RC
     from ..reco import r3
     from ..kit_task import score_result
-    manifest = json.loads(Path(manifest_path).read_text())
+    manifest_bytes = Path(manifest_path).read_bytes()
+    manifest_sha = hashlib.sha256(manifest_bytes).hexdigest()
+    manifest = json.loads(manifest_bytes)
     verify(manifest)
-    code = {p: revision(p) for p in ('crvfastsim', 'mu2efastsim')}
+    if code is None:
+        code = {p: revision(p) for p in packages}
     assets = {k: v['path'] for k, v in manifest['assets'].items()}
+    if not {'calib', 'deviation', 'reference'} <= assets.keys():
+        raise ValueError('validation requires calib, deviation and reference assets')
     if calibration and not {'background', 'time_shift', 'reference'} <= assets.keys():
         raise ValueError('calibration requires background, time_shift and reference assets')
+    for key in ('calib', 'deviation', 'background', 'time_shift'):
+        effective['assets'][key] = assets.get(key) if calibration or key in ('calib', 'deviation') else None
+    RC.validate(effective)
     dest = Path(out)
     dest.mkdir(parents=True, exist_ok=False)
     runtime = {k: dict(path=str(Path(v).resolve()), sha256=digest(v)) for k, v in runtime_assets().items()}
@@ -102,33 +167,76 @@ def run(manifest_path, out, seed, knobs, jax=False, calibration=False):
     versions = {p: importlib.metadata.version(p) for p in ('numpy', 'awkward', 'uproot')}
     if jax:
         versions.update({p: importlib.metadata.version(p) for p in ('jax', 'jaxlib')})
-    provenance = dict(manifest=manifest, manifest_sha256=digest(manifest_path), code=code, seed=seed,
+    config_record = dict(RC.record(effective), canonical=RC.canonical(effective), requested_file=requested)
+    provenance = dict(manifest=manifest, manifest_sha256=manifest_sha, code=code, seed=seed,
                       runtime_assets=runtime, python=platform.python_version(), versions=versions,
-                      knobs=knobs, jax=jax, calibration=calibration)
-    (dest / 'provenance.json').write_text(json.dumps(provenance, indent=2))
-    result = r3.run([x['path'] for x in manifest['inputs']], assets['calib'], assets['deviation'],
-                    target=manifest['events_with_steps'], max_passes=1, seed=seed, jax=jax, v05=True,
-                    objective=True, knobs=knobs, background=assets.get('background') if calibration else None,
-                    time_shift=assets.get('time_shift') if calibration else None,
-                    emit=str(dest / 'r3.json'))
-    if result['events_with_steps'] != manifest['events_with_steps'] or \
-            result['response_state']['events'] != manifest['events']:
-        raise ValueError('finished R3 counts differ from certified one-pass input counts')
-    if len(result['passes']) != 1 or result['timers'].get('response_overflow_batches', 0):
-        raise ValueError('validation requires one complete pass without overflow')
-    verify(manifest)
-    if any(digest(v['path']) != v['sha256'] for v in runtime.values()):
-        raise ValueError('runtime assets changed during validation')
-    if code != {p: revision(p) for p in code}:
-        raise ValueError('code changed during validation')
-    ref = json.loads(Path(assets['reference']).read_text())
-    if calibration:
-        score = score_result(result, ref)
-    else:
-        if ref['events'] != manifest['events']:
-            raise ValueError('stock reference exposure differs from input census')
-        score = R.objective(result['response_state'], ref)
-    R.write_json(str(dest), 'comparison.json', score)
+                      knobs=knobs, jax=jax, calibration=calibration, response_config=config_record,
+                      diagnostic_code=bool(diagnostic_code), joint_capture=bool(joint_capture),
+                      code_policy='unpublished-diagnostic-snapshot' if diagnostic_code else 'clean-revision',
+                      status='running')
+    receipt = dest / 'provenance.json'
+    receipt.write_text(json.dumps(provenance, indent=2))
+    completed = False
+    try:
+        collector = None
+        if joint_capture:
+            from .joint import JointCapture
+            collector = JointCapture()
+        result = r3.run([x['path'] for x in manifest['inputs']], assets['calib'], assets['deviation'],
+                        target=manifest['events_with_steps'], max_passes=1, seed=seed, jax=jax, v05=True,
+                        objective=True, knobs=knobs, background=assets.get('background') if calibration else None,
+                        time_shift=assets.get('time_shift') if calibration else None,
+                        response_config=effective, joint_capture=collector, emit=str(dest / 'r3.json'))
+        if result['events_with_steps'] != manifest['events_with_steps'] or \
+                result['response_state']['events'] != manifest['events']:
+            raise ValueError('finished R3 counts differ from certified one-pass input counts')
+        if len(result['passes']) != 1 or result['timers'].get('response_overflow_batches', 0):
+            raise ValueError('validation requires one complete pass without overflow')
+        ref = json.loads(Path(assets['reference']).read_text())
+        if calibration:
+            score = score_result(result, ref)
+        else:
+            if ref['events'] != manifest['events']:
+                raise ValueError('stock reference exposure differs from input census')
+            score = R.objective(result['response_state'], ref)
+        R.write_json(str(dest), 'comparison.json', score)
+        if collector is not None:
+            summary = collector.write(dest / 'joint.npz')
+            with (dest / 'joint.json').open('x') as f:
+                json.dump(summary, f, indent=2, allow_nan=False)
+            provenance['joint_files'] = {name: dict(path=str((dest / name).resolve()), sha256=digest(dest / name))
+                                         for name in ('joint.npz', 'joint.json')}
+        completed = True
+    except Exception as exc:
+        provenance['execution_error'] = f'{type(exc).__name__}: {exc}'
+        raise
+    finally:
+        # Verify after scoring/output and preserve integrity evidence on execution failures.
+        errors = []
+        try:
+            verify(manifest)
+            if digest(manifest_path) != manifest_sha:
+                raise ValueError('manifest changed during validation')
+            if requested and digest(requested['path']) != requested['sha256']:
+                raise ValueError('response config file changed during validation')
+            if any(digest(v['path']) != v['sha256'] for v in runtime.values()):
+                raise ValueError('runtime assets changed during validation')
+        except Exception as exc:
+            errors.append(str(exc))
+        after = {}
+        for package in packages:
+            try:
+                after[package] = diagnostic_revision(package) if diagnostic_code else revision(package)
+            except Exception as exc:
+                errors.append(f'{package}: {exc}')
+        provenance['code_after'] = after
+        if code != after:
+            errors.append('code changed during validation')
+        provenance['integrity_errors'] = errors
+        provenance['status'] = 'complete' if completed and not errors else 'failed'
+        receipt.write_text(json.dumps(provenance, indent=2))
+        if errors:
+            raise ValueError('; '.join(errors))
     return result
 
 
@@ -192,11 +300,22 @@ def compare_replay(reference, candidate, out):
 
 
 def _validate_point(result, score, provenance):
+    _require(provenance.get('status', 'complete') == 'complete', 'validation execution is not complete')
+    _require(not provenance.get('diagnostic_code', False) and
+             provenance.get('code_policy', 'clean-revision') == 'clean-revision',
+             'paired requires clean revisions, not unpublished diagnostic code')
+    return _validate_measurement(result, score, provenance)
+
+
+def _validate_measurement(result, score, provenance):
+    """Census and score contract; callers separately enforce their source-code admission policy."""
     from ..kit_task import TERMS
+    _require(provenance.get('status', 'complete') == 'complete', 'validation execution is not complete')
     counts = _result_counts(result)
     exposure = _finite(result['response_state']['exposure_ns'], 'response exposure_ns')
     _require(exposure > 0, 'response exposure_ns must be positive')
-    window = result.get('resolved_config', {}).get('timing', {}).get('window')
+    resolved = result.get('resolved_config', {})
+    window = resolved.get('values', resolved).get('timing', {}).get('window')
     if window is not None:
         _require(len(window) == 2 and window[1] > window[0], 'invalid response window')
         _require(exposure == counts['events'] * (window[1] - window[0]),
@@ -327,6 +446,9 @@ def main():
     ev.add_argument('--knob', nargs='*', default=[])
     ev.add_argument('--jax', action='store_true')
     ev.add_argument('--calibration', action='store_true')
+    ev.add_argument('--response-config', metavar='PATH_OR_JSON')
+    ev.add_argument('--joint-capture', action='store_true')
+    ev.add_argument('--diagnostic-code', action='store_true')
     a = p.parse_args()
     if a.cmd in ('compare-replay', 'paired'):
         try:
@@ -355,7 +477,8 @@ def main():
         print(json.dumps({k: m[k] for k in ('events', 'events_with_steps')}))
     else:
         run(a.manifest, a.out, a.seed, {k: float(v) for k, v in (x.split('=', 1) for x in a.knob)},
-            a.jax, a.calibration)
+            a.jax, a.calibration, response_config=a.response_config,
+            joint_capture=a.joint_capture, diagnostic_code=a.diagnostic_code)
 
 
 if __name__ == '__main__':
