@@ -87,6 +87,19 @@ python3 -m pytest -q -p no:cacheprovider crv/tests      # a few JAX tests skip w
 python3 -m pytest -q -p no:cacheprovider beam/tests     # needs JAX (the beam stage has no numpy fallback)
 ```
 
+**Which tests to run.** A change rarely needs every suite. From a stage's directory, `python3 -m mu2efastsim.testselect`
+lists the test files that import, directly or transitively, a module changed since the merge base with `origin/main`
+(`--also ../core` counts core changes too; `--why` gives the reason per file). `--run --isolate` runs them one pytest
+process per file, so peak memory is that of the heaviest file (at most about 1.7 GB in core, crv and tracker on a
+laptop) instead of the whole suite (about 3 GB for `crv/tests` in one process). Large-sample statistical validations are marked `@pytest.mark.slow` and skipped
+unless `--runslow` is given; run them when the code they validate changes (`--run --isolate -- --runslow`).
+
+```bash
+cd crv && python3 -m mu2efastsim.testselect --also ../core --why                  # what a branch affects
+python3 -m mu2efastsim.testselect --also ../core --run --isolate -- -q            # run it, one file per process
+python3 -m pytest -q -p no:cacheprovider tests --runslow                          # everything, slow checks included
+```
+
 Outputs go to `$M2FS_DATA` (your `/exp/mu2e/data/users/$USER`, 150 GiB quota), never into the clone. Run one job per
 GPVM. The inputs (GDML export, G4 reference tables) are Mu2e-internal and not in the repositories; the stage READMEs
 say where readable copies are and how they are produced.
