@@ -10,7 +10,7 @@ and the legacy `DqmCrv`, run unchanged in the `crvval` muse area.
 | `run_stock_g4ref.sh` | arms A0 / A0' (floor, other digitisation seed) on `g4ref_v1` shards, one GPVM, serially |
 | `run_faststeps_g4ref.sh` | arm A1 (fast step tables via `CrvStepsFromTable`, gen stream) or A0g (G4 steps injected the same way: `TABLEDIR valhist/g4ref_v1/g4all_tables`, prefix `g4all`) |
 | `g4table.py` | G4 CrvStep tables retyped to the fast-table column types (all steps kept) for A0g |
-| `compare.py` | `merge` shard files (with `--alias` to line up product directories) and `compare` two arms: chi2/ndf, KS, totals, mean shift, pulls; floor-calibrated flags; `report.tsv`, `summary.json`, overlay PDF |
+| `compare.py` | `merge` shard files (flow kept; `--alias` to line up product directories) and `compare` two arms: chi2/ndf, KS, totals, mean shift, pulls, under/overflow fractions; floor-calibrated flags; `report.tsv`, `summary.json`, overlay PDF |
 | `../art/CrvFastSim/fcl/valhist_stock.fcl` | stock CRV digitisation + reco + the three histogram sets on a G4 dts file |
 | `../art/CrvFastSim/fcl/valhist_faststeps.fcl` | the same with `CrvStepsFromTable` steps, on the gen stream |
 | `fasttables.py` | fast chain -> CrvRecoTableDumper-layout tables: `digis` (A2), `reco` on stock digis (A3), `chain` (A4 on G4 steps, E2E on fast steps); numpy pulse fit (chi2, LE, height, beta) and coincidence finder |
@@ -31,8 +31,10 @@ Outputs: `$CRVFS_DATA/valhist/<input>/<arm>/valhist.<subrun>.root` (Mu2e-interna
 
 ## Thread B coverage and fresh pilots
 
-The legacy `compare merge` drops flow bins and source Sumw2 on write; use original shard files for new coverage
-claims. `python3 -m valhist.coverage REF CAND --outdir NEW` inventories the union, compares TH1/2/3 including flow,
+`compare merge` keeps flow bins, ROOT statistics, titles, histogram class and (when every source has it) Sumw2;
+`compare compare` reports under/overflow per arm and lists histograms with every entry outside the booked range
+(status `all_flow`, e.g. Validation step `posy`/`posz` and cluster `Y`/`Z` on the extracted CRV). Files merged
+before this change have lost flow and Sumw2: use original shard files for coverage claims on them. `python3 -m valhist.coverage REF CAND --outdir NEW` inventories the union, compares TH1/2/3 including flow,
 separates normalization/shape descriptively, and reports missing/unsupported objects and variance gaps explicitly.
 Profiles and general derived-map statistics are not silently treated as counts. `--count-key` is only for exact
 paths whose fill semantics have been checked against source. See `docs/valhist-coverage.md`.

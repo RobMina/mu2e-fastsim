@@ -5,8 +5,8 @@ usage:
   python -m valhist.compare compare REF.root CAND.root OUTDIR [--floor FLOOR_REF.root FLOOR_CAND.root] [--drop-zero]
          [--label-ref A0 --label-cand A1] [--pdf]
 
-merge: sums every TH1/TH2 over the shard files (same booking in every file) and writes one file with the directory
-names canonicalised (--alias renames a top-level Validation subdirectory prefix, e.g. CrvSteps_fastCrvSteps=CrvSteps_g4,
+merge: sums every TH1/TH2 over the shard files (same booking in every file), under/overflow, ROOT statistics, titles,
+class and Sumw2 (when every source has it) included, and writes one file with the directory names canonicalised (--alias renames a top-level Validation subdirectory prefix, e.g. CrvSteps_fastCrvSteps=CrvSteps_g4,
 so arms whose products come from different modules line up).
 compare: per 1D histogram present in both files, with both arms on the same generated events (no scaling): chi2/ndf of
 the two-sample test sum (n1-n2)^2/(n1+n2) over bins with n1+n2 > 0, the binned KS distance of the normalised CDFs, the
@@ -14,7 +14,9 @@ relative difference of the totals and of the means, and max |pull|. --drop-zero 
 multiplicity histograms (arms on different event sets: G4 dts vs gen stream). --floor gives a second pair (e.g. A0'
 vs A0) whose statistics set the per-histogram reference: a histogram is flagged when its chi2/ndf exceeds
 max(2, 3 x floor). --select (regex, default the CRV sets: the three DQM sets and Validation/Crv*) limits the
-histograms. Writes summary.json, report.tsv and, with --pdf, overlays with a ratio panel.
+histograms. The statistics use the booked bins only; the under/overflow contents and their fraction of all entries are
+reported per arm, and a histogram whose entries are all outside the booked range gets status all_flow (listed in
+summary.json, not flagged). Writes summary.json, report.tsv and, with --pdf, overlays with a ratio panel.
 """
 import argparse
 import glob
@@ -33,7 +35,34 @@ def _hists(f):
     return {k.rsplit(";", 1)[0]: c for k, c in f.classnames().items() if c.startswith(("TH1", "TH2", "TProfile"))}
 
 
+_STATS = {1: ("fEntries", "fTsumw", "fTsumw2", "fTsumwx", "fTsumwx2"),
+          2: ("fEntries", "fTsumw", "fTsumw2", "fTsumwx", "fTsumwx2", "fTsumwy", "fTsumwy2", "fTsumwxy")}
+_DTYPE = {"C": np.int8, "S": np.int16, "I": np.int32, "F": np.float32, "D": np.float64}
+
+
+def _sumw2(h, v):
+    w = np.asarray(h.member("fSumw2"), dtype=float)
+    return w.reshape(v.shape, order="F") if w.size == v.size else None
+
+
+def _writable(c, edges, title, axes, v, stats, w2):
+    """TH1x/TH2x with the summed flow-inclusive contents, ROOT statistics and (when every source had it) Sumw2."""
+    from uproot.writing import identify
+    ax = []
+    for i, (e, (name, atitle)) in enumerate(zip(edges, axes)):
+        uniform = np.allclose(e, np.linspace(e[0], e[-1], len(e)))
+        ax.append(identify.to_TAxis(name, atitle, len(e) - 1, float(e[0]), float(e[-1]),
+                                    np.array([], ">f8") if uniform else np.asarray(e, ">f8")))
+    data = v.ravel(order="F").astype(_DTYPE.get(c[-1], np.float64))
+    kw = dict(fName=None, fTitle=title, data=data, fSumw2=None if w2 is None else w2.ravel(order="F"),
+              fXaxis=ax[0], **dict(zip(_STATS[len(edges)], stats)))
+    if len(edges) == 2:
+        return identify.to_TH2x(fYaxis=ax[1], **kw)
+    return identify.to_TH1x(**kw)
+
+
 def merge(out, patterns, aliases=()):
+    """Sum every TH1/TH2 over the files, keeping under/overflow, ROOT statistics, titles, class and Sumw2."""
     files = sorted({p for pat in patterns for p in glob.glob(pat)})
     if not files:
         raise SystemExit(f"no files match {patterns}")
@@ -41,30 +70,48 @@ def merge(out, patterns, aliases=()):
     for p in files:
         with uproot.open(p) as f:
             for k, c in _hists(f).items():
-                if c.startswith("TProfile"):
+                if c.startswith(("TProfile", "TH3")):
                     continue
                 h = f[k]
-                v = h.values(flow=True)
+                v = h.values(flow=True).astype(float)
+                nd = len(h.axes)
+                st = np.array([float(h.member(m)) for m in _STATS[nd]])
+                w2 = _sumw2(h, v)
                 if k in acc:
-                    acc[k] += v
+                    a = acc[k]
+                    if a[0].shape != v.shape:
+                        raise SystemExit(f"{k}: booking differs in {p}")
+                    a[0] += v
+                    a[1] += st
+                    a[2] = None if (a[2] is None or w2 is None) else a[2] + w2
                 else:
-                    acc[k] = v.astype(float).copy()
-                    meta[k] = (c, [a.edges() for a in h.axes], h.title)
+                    acc[k] = [v.copy(), st, w2]
+                    meta[k] = (c, [a.edges() for a in h.axes], h.title,
+                               [(a.member("fName"), a.member("fTitle")) for a in h.axes])
     amap = [a.split("=", 1) for a in aliases]
+    nflow = 0
     with uproot.recreate(out) as f:
-        for k, v in acc.items():
+        for k, (v, st, w2) in acc.items():
             name = k
             for a, b in amap:
                 name = re.sub(rf"(^|/){re.escape(a)}(/|$)", rf"\g<1>{b}\g<2>", name)
-            c, edges, title = meta[k]
+            c, edges, title, axes = meta[k]
             inner = v[tuple(slice(1, -1) for _ in edges)]
-            f[name] = (inner, *edges) if len(edges) == 2 else (inner, edges[0])
-    print(f"merged {len(files)} files, {len(acc)} histograms -> {out}")
+            nflow += bool(v.sum() - inner.sum())
+            f[name] = _writable(c, edges, title, axes, v, st, w2)
+    print(f"merged {len(files)} files, {len(acc)} histograms ({nflow} with under/overflow entries) -> {out}")
 
 
 def _read1d(f, k):
     h = f[k]
     return h.values(flow=False).astype(float), h.axis(0).edges()
+
+
+def flow(f, k):
+    """Under- and overflow contents of a 1D histogram and their fraction of all its entries (flow included)."""
+    v = f[k].values(flow=True).astype(float)
+    tot = float(v.sum())
+    return {"under": float(v[0]), "over": float(v[-1]), "frac": float((v[0] + v[-1]) / tot) if tot > 0 else 0.0}
 
 
 def stats(n1, n2, edges, drop_zero=False):
@@ -106,7 +153,12 @@ def compare(ref, cand, outdir, floor=None, drop_zero=False, labels=("ref", "cand
         if len(e1) != len(e2) or not np.allclose(e1, e2):
             res[k] = {"status": "binning_differs"}
             continue
-        res[k] = stats(n1, n2, e1, drop_zero and bool(MULT.search(k)))
+        r = res[k] = stats(n1, n2, e1, drop_zero and bool(MULT.search(k)))
+        for side, ff in (("ref", fr), ("cand", fc)):
+            w = flow(ff, k)
+            r.update({f"under_{side}": w["under"], f"over_{side}": w["over"], f"flow_frac_{side}": w["frac"]})
+        if r["status"] == "both_empty" and r["flow_frac_ref"] + r["flow_frac_cand"] > 0:
+            r["status"] = "all_flow"
     fl = {}
     if floor:
         ff0, ff1 = uproot.open(floor[0]), uproot.open(floor[1])
@@ -125,8 +177,10 @@ def compare(ref, cand, outdir, floor=None, drop_zero=False, labels=("ref", "cand
     sets = {}
     for k, r in res.items():
         top = k.split("/")[0]
-        s = sets.setdefault(top, {"compared": 0, "ok": 0, "flagged": 0, "both_empty": 0, "one_empty": 0, "binning_differs": 0})
+        s = sets.setdefault(top, {"compared": 0, "ok": 0, "flagged": 0, "both_empty": 0, "one_empty": 0, "all_flow": 0,
+                                  "binning_differs": 0, "with_flow": 0})
         s["compared"] += 1
+        s["with_flow"] += bool(r.get("flow_frac_ref") or r.get("flow_frac_cand"))
         st = r.get("status")
         if st == "ok":
             s["ok"] += 1
@@ -135,10 +189,13 @@ def compare(ref, cand, outdir, floor=None, drop_zero=False, labels=("ref", "cand
         s["flagged"] += bool(r.get("flag"))
     summary = {"ref": str(ref), "cand": str(cand), "labels": labels, "floor": floor, "drop_zero": drop_zero,
                "only_ref": sorted(set(hr) - set(hc)), "only_cand": sorted(set(hc) - set(hr)), "sets": sets,
-               "flagged": sorted(k for k, r in res.items() if r.get("flag"))}
+               "flagged": sorted(k for k, r in res.items() if r.get("flag")),
+               "all_flow": sorted(k for k, r in res.items() if r.get("status") == "all_flow"),
+               "flow_fractions": {k: [r["flow_frac_ref"], r["flow_frac_cand"]] for k, r in sorted(res.items())
+                                  if r.get("flow_frac_ref") or r.get("flow_frac_cand")}}
     (outdir / "summary.json").write_text(json.dumps(summary, indent=1))
     cols = ["status", "n_ref", "n_cand", "chi2ndf", "floor_chi2ndf", "ks", "total_rel", "mean_shift_rel_width",
-            "max_abs_pull", "flag"]
+            "max_abs_pull", "flag", "under_ref", "over_ref", "flow_frac_ref", "under_cand", "over_cand", "flow_frac_cand"]
     with open(outdir / "report.tsv", "w") as fh:
         fh.write("histogram\t" + "\t".join(cols) + "\n")
         for k, r in res.items():
@@ -148,6 +205,8 @@ def compare(ref, cand, outdir, floor=None, drop_zero=False, labels=("ref", "cand
         _plots(fr, fc, res, outdir / "overlays.pdf", labels)
     print(json.dumps(sets, indent=1))
     print(f"flagged {len(summary['flagged'])}: {summary['flagged'][:20]}")
+    if summary["all_flow"]:
+        print(f"all entries outside the booked range {len(summary['all_flow'])}: {summary['all_flow'][:20]}")
     return summary
 
 
