@@ -1,0 +1,3 @@
+# Generator-only census retains every event with nsteps=-1.
+#include "CrvFastSim/fcl/dump_crvsteps_cat.fcl"
+physics.analyzers.dump.writeSteps : false

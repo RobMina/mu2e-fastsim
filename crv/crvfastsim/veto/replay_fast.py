@@ -13,6 +13,7 @@ import uproot
 from .. import chain
 from . import fastframes as FF
 from .replay import sha256
+from .exposure import require_legacy_response
 from .replay_policy import INTENDED, LEGACY_STOCK, POLICIES, TIMING, apply_policy, stock_shared_table_yields
 
 
@@ -34,6 +35,7 @@ def main(argv=None):
     if out.exists() or out.with_suffix(".json").exists() or (a.pulses and Path(a.pulses).exists()):
         raise ValueError("choose new output paths")
     manifest = json.loads(path.with_suffix(".json").read_text())
+    require_legacy_response(manifest)
     if manifest["output_sha256"] != sha256(path):
         raise ValueError("replay input hash mismatch")
     with uproot.open(path) as f:
