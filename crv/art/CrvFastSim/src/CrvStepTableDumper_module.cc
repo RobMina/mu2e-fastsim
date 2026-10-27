@@ -35,9 +35,12 @@ class CrvStepTableDumper : public art::EDAnalyzer {
 
  private:
   Config conf_;
-  TTree *steps_{nullptr}, *parts_{nullptr}, *gens_{nullptr}, *subruns_{nullptr};
+  TTree *steps_{nullptr}, *parts_{nullptr}, *gens_{nullptr}, *subruns_{nullptr}, *events_{nullptr};
   // shared event id
   unsigned run_{0}, subrun_{0}, event_{0};
+  // All-event census; nsteps=-1 means step extraction was disabled.
+  unsigned long long ngen_{0};
+  long long nsteps_{-1};
   // CrvStep row
   int bar_{0}, sp_{0}, nstep_{0};
   float edep_{0}, x0_{0}, y0_{0}, z0_{0}, x1_{0}, y1_{0}, z1_{0}, px0_{0}, py0_{0}, pz0_{0}, p1_{0}, len_{0};
@@ -63,6 +66,10 @@ void CrvStepTableDumper::beginJob() {
     t->Branch("subrun", &subrun_);
     t->Branch("event", &event_);
   };
+  events_ = tfs->make<TTree>("events", "All analyzed events, including empty collections");
+  ids(events_);
+  events_->Branch("ngen", &ngen_);
+  events_->Branch("nsteps", &nsteps_);
   gens_ = tfs->make<TTree>("gen", "GenParticles (every event)");
   ids(gens_);
   for (auto [n, v] : std::vector<std::pair<const char*, int*>>{{"idx", &gidx_}, {"pdg", &gpdg_}, {"genid", &ggen_}})
@@ -108,6 +115,8 @@ void CrvStepTableDumper::analyze(const art::Event& event) {
   subrun_ = event.subRun();
   event_ = event.event();
   auto gh = event.getValidHandle<GenParticleCollection>(conf_.genParticles());
+  ngen_ = gh->size();
+  nsteps_ = -1;
   for (size_t i = 0; i < gh->size(); ++i) {
     auto const& g = gh->at(i);
     gidx_ = i;
@@ -123,9 +132,13 @@ void CrvStepTableDumper::analyze(const art::Event& event) {
     gt_ = g.time();
     gens_->Fill();
   }
-  if (!conf_.writeSteps()) return;
+  if (!conf_.writeSteps()) {
+    events_->Fill();
+    return;
+  }
   auto sh = event.getValidHandle<CrvStepCollection>(conf_.crvSteps());
   nstep_ = sh->size();
+  nsteps_ = sh->size();
   for (auto const& s : *sh) {
     bar_ = s.barIndex().asInt();
     sp_ = s.simParticle().isNonnull() ? int(s.simParticle().key()) : -1;
@@ -172,6 +185,7 @@ void CrvStepTableDumper::analyze(const art::Event& event) {
     et_ = p.endGlobalTime();
     parts_->Fill();
   }
+  events_->Fill();
 }
 
 void CrvStepTableDumper::endSubRun(const art::SubRun& subrun) {

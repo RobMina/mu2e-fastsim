@@ -12,6 +12,7 @@ import uproot
 from ..reco import reftables
 from .compareframes import compare, dump_frames
 from .replay import sha256
+from .exposure import require_legacy_response
 from .replay_policy import POLICIES, metadata_identity
 
 
@@ -50,6 +51,7 @@ def main(argv=None):
     if out.exists():
         raise ValueError("report already exists")
     manifest = json.loads(Path(a.input).with_suffix(".json").read_text())
+    require_legacy_response(manifest)
     if sha256(a.input) != manifest["output_sha256"]:
         raise ValueError("input hash mismatch")
     with uproot.open(a.input) as f:

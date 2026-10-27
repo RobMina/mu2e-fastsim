@@ -132,7 +132,7 @@ def test_runner_writes_explicit_contract_without_response_mutation(tmp_path, mon
     path = tmp_path / "mixed.root"
     events = pd.DataFrame({"run": [1430], "subrun": [0], "event": [1], "pbtime": [-204.46], "intensity": [1.]})
     write_replay(path, replay_tables(pd.DataFrame(), events))
-    path.with_suffix(".json").write_text(json.dumps({"output_sha256": sha256(path), "events": 1, "run": 1430}))
+    path.with_suffix(".json").write_text(json.dumps({"schema": "crv-mixed-replay-v1", "output_sha256": sha256(path), "events": 1, "run": 1430}))
     conditions, photon = tmp_path / "conditions", tmp_path / "photon"
     conditions.write_text("conditions fixture")
     photon.write_text("photon fixture")

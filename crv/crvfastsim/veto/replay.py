@@ -19,11 +19,14 @@ import uproot
 
 from .catsteps import F32, read_meta
 from .mixframes import MIXERS, PBI, PBTIMES, Pool, mix
+from .exposure import CE_CONDITIONED, LEGACY, MODES, ExposureContract, llrint_pbi
 
 IDS = {k: np.uint32 for k in ("run", "subrun", "event")}
 STEP_TYPES = IDS | {k: np.int64 for k in ("bar", "sp")} | {k: np.float64 for k in (*F32, "t0", "t1")}
 PART_TYPES = IDS | {k: np.int64 for k in ("key", "parent", "isprim")} | {"pdg": np.int32}
 EVENT_TYPES = IDS | {"pbtime": np.float64, "intensity": np.float64}
+CE_EVENT_TYPES = EVENT_TYPES | {"intensity_raw": np.float64, "intensity_rounded": np.int64} | {
+    f"n_frames_{name}": np.int64 for name in MIXERS}
 
 
 def sha256(path):
@@ -32,9 +35,13 @@ def sha256(path):
         return hashlib.file_digest(f, "sha256").hexdigest()
 
 
-def replay_tables(steps, events):
+def replay_tables(steps, events, *, exposure_mode=LEGACY):
     """Type and validate raw steps, remapping particle IDs densely within each event."""
-    ev = events[list(EVENT_TYPES)].copy()
+    ExposureContract(mode=exposure_mode)
+    types = CE_EVENT_TYPES if exposure_mode == CE_CONDITIONED else EVENT_TYPES
+    if not set(types).issubset(events.columns):
+        raise ValueError("missing required exposure event columns")
+    ev = events[list(types)].copy()
     if not len(ev) or not np.isfinite(ev.to_numpy()).all():
         raise ValueError("events must be nonempty and finite")
     if ev.duplicated(list(IDS)).any() or np.any(ev.intensity < 0):
@@ -44,7 +51,17 @@ def replay_tables(steps, events):
             raise ValueError(f"invalid event ID: {k}")
     if np.any(ev.event >= 1 << 20) or ev.run.nunique() != 1:
         raise ValueError("fast replay requires one run and event IDs below 2**20")
-    ev = ev.astype(EVENT_TYPES)
+    if exposure_mode == CE_CONDITIONED:
+        if np.any(ev.intensity_raw <= 0) or np.any(ev.intensity_raw >= PBI['cut_max']) or not np.isin(ev.pbtime, PBTIMES).all():
+            raise ValueError("CE event exposure is outside the pinned PBI/bunch-time support")
+        rounded = llrint_pbi(ev.intensity_raw.to_numpy())
+        if not np.array_equal(ev.intensity_rounded, rounded) or not np.array_equal(ev.intensity, rounded.astype(np.float64)):
+            raise ValueError("PBI raw, rounded and Poisson intensity disagree")
+        for k in CE_EVENT_TYPES.keys() - EVENT_TYPES.keys() - {"intensity_raw"}:
+            values = ev[k].to_numpy()
+            if np.any(values < 0) or np.any(values >= float(2**63)) or np.any(values != np.floor(values)):
+                raise ValueError(f"invalid integer exposure column: {k}")
+    ev = ev.astype(types)
     if not len(steps):
         return {"steps": pd.DataFrame({k: pd.Series(dtype=v) for k, v in STEP_TYPES.items()}),
                 "particles": pd.DataFrame({k: pd.Series(dtype=v) for k, v in PART_TYPES.items()}), "events": ev}
@@ -85,9 +102,11 @@ def write_replay(path, trees):
         return {name: f[f"dump/{name}"].num_entries for name in trees}
 
 
-def export(tables, events, seed, out):
+def export(tables, events, seed, out, *, exposure_mode=LEGACY):
     """Mix a recorded set of source tables once and save raw steps plus event conditions."""
-    if events <= 0 or events >= 1 << 20:
+    contract = ExposureContract(mode=exposure_mode)
+    conditioned = exposure_mode == CE_CONDITIONED
+    if isinstance(events, (bool, np.bool_)) or not isinstance(events, (int, np.integer)) or events <= 0 or events >= 1 << 20:
         raise ValueError("events must be in [1, 2**20)")
     output = Path(out)
     sidecar = output.with_suffix(".json")
@@ -95,14 +114,25 @@ def export(tables, events, seed, out):
         raise ValueError("choose a new .root path with no existing ROOT or JSON output")
     sources, pools = {}, {}
     for name in MIXERS:
-        files = sorted((Path(tables) / name).glob("*.parquet"))
+        files = sorted(p for p in (Path(tables) / name).glob("*.parquet") if not p.name.endswith(".events.parquet"))
         if not files:
             raise ValueError(f"missing Cat pool: {name}")
         sources[name] = [{"path": str(p.resolve()), "bytes": p.stat().st_size,
                           "sha256": sha256(p), "metadata": read_meta(p)} for p in files]
         if any(s["metadata"]["dataset"] != name for s in sources[name]):
             raise ValueError(f"wrong dataset in pool: {name}")
-        pool = Pool(files)
+        if conditioned:
+            if any(s["metadata"].get("schema") != "crv-cat-v2" for s in sources[name]):
+                raise ValueError("CE replay export requires crv-cat-v2 all-event census and provenance; legacy pools are diagnostic-only")
+            from .catsteps_v2 import PoolV2
+            pool = PoolV2(files)
+            if pool.dataset != name:
+                raise ValueError(f"wrong v2 dataset in pool: {name}")
+            for recorded, validated in zip(sources[name], pool.manifest):
+                if recorded["sha256"] != validated["file_sha256"] or recorded["metadata"] != validated["metadata"]:
+                    raise ValueError(f"v2 source changed between manifest and validation: {name}")
+        else:
+            pool = Pool(files)
         if pool.frames <= 0 or pool.stepped > pool.frames:
             raise ValueError(f"invalid frame denominator: {name}")
         if pool.stepped != sum(s["metadata"]["stepped_frames"] for s in sources[name]):
@@ -112,8 +142,8 @@ def export(tables, events, seed, out):
         if len(pool.steps) and (np.any(pool.steps.sp < 0) or np.any(pool.steps.sp >= 100000)):
             raise ValueError(f"particle keys exceed mixer's frame stride: {name}")
         pools[name] = pool
-    st, _, _, info, ev = mix(pools, events, np.random.default_rng(seed), return_events=True)
-    trees = replay_tables(st, ev)
+    st, _, _, info, ev = mix(pools, events, np.random.default_rng(seed), return_events=True, exposure_mode=exposure_mode)
+    trees = replay_tables(st, ev, exposure_mode=exposure_mode)
     output.parent.mkdir(parents=True, exist_ok=True)
     counts = write_replay(output, trees)
     source_dir = Path(__file__).parent
@@ -123,9 +153,19 @@ def export(tables, events, seed, out):
                 "sources": sources, "output_sha256": sha256(output),
                 "nan_time_steps": {k: int(trees["steps"][k].isna().sum()) for k in ("t0", "t1")},
                 "time_policy": "NaN step times are preserved and counted; stock CrvPhotonGenerator and fast photon rows skip them. Infinite times are rejected.",
-                "code_sha256": {n: sha256(source_dir / n) for n in ("replay.py", "mixframes.py", "catsteps.py")},
+                "code_sha256": {n: sha256(source_dir / n) for n in ("replay.py", "mixframes.py", "catsteps.py", "exposure.py")},
                 "versions": {"numpy": np.__version__, "pandas": pd.__version__, "uproot": uproot.__version__},
                 "scope": "Response diagnostic only; particle ancestry is synthetic, all table particles have parent=-1/isprim=1. Cat-library and mixer fidelity are not certified. Intensity is the floating draw used for Poisson mixing."}
+    if conditioned:
+        manifest["schema"] = "crv-mixed-replay-v2"
+        manifest["exposure_contract"] = contract.record()
+        manifest["event_exposure_columns"] = {k: np.dtype(v).name for k, v in CE_EVENT_TYPES.items()}
+        manifest["library_contract"] = {"schema": "crv-cat-v2", "validator": "catsteps_v2.PoolV2",
+                                        "certification": "Structural census/provenance validation only; no physics certification."}
+        manifest["code_sha256"].update({n: sha256(source_dir / n) for n in ("exposure.py", "catsteps_v2.py")})
+        manifest["scope"] = "CE-conditioned exposure with rounded PBI before Poisson mixing. Response diagnostic only; particle ancestry is synthetic. Census/provenance validation does not certify library completeness, production efficiencies, response, or selected-track factorisation. No scalar F correction is applied."
+    else:
+        manifest["scope"] += " Exposure mode: legacy_unconditional_v1, not CE-conditioned."
     with sidecar.open("x") as f:
         json.dump(manifest, f, indent=2, allow_nan=False)
     return manifest
@@ -137,8 +177,10 @@ def main(argv=None):
     ap.add_argument("--events", required=True, type=int)
     ap.add_argument("--seed", type=int, default=20261025)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--exposure-mode", choices=MODES, default=LEGACY,
+                    help="legacy default; CE-conditioned export requires validated crv-cat-v2 pools")
     a = ap.parse_args(argv)
-    result = export(a.tables, a.events, a.seed, a.out)
+    result = export(a.tables, a.events, a.seed, a.out, exposure_mode=a.exposure_mode)
     print(json.dumps({k: result[k] for k in ("schema", "seed", "entries", "output_sha256")}, indent=2))
 
 
