@@ -15,6 +15,7 @@ status: the umbrella README; fast reco goals and results: `docs/fastreco.md`.
 |---|---|
 | `docs/plan.md` | scope, measured baseline, agreed performance goals and validation thresholds, architecture, schedule |
 | `docs/fastreco.md` | fast reconstruction: goals R1-R6, thresholds V-R1..V-R5, results (V-R4, V-R5, R3, the out-of-time background model) |
+| `docs/agent13-workflow.md` | experimental staged full-chain benchmarking, exact output contracts and opt-in dispatch optimization |
 | `docs/response-configuration.md` | schema-v1 JSON response/reco configuration, units/support policy, CLI/kit overrides and resolved asset provenance |
 | `docs/schema_and_transport.md` | CrvStep-table design notes and the muon-transport design |
 | `crvfastsim/` | the Python package and CLI (`python3 -m crvfastsim`); **reference: `crvfastsim/README.md`** |

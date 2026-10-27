@@ -10,6 +10,7 @@ sector type (cuts are static per type). Equivalences used to get fixed shapes:
 Groups with more than H hits, or a (side, layer) with more than K filtered hits, are flagged and redone by coinc.py.
 """
 import functools
+import os
 from functools import partial
 from itertools import combinations
 
@@ -386,15 +387,42 @@ OUT_KEYS = ("label", "root", "pe", "start", "end", "slope", "avgtime", "poscalc"
 POS_KEYS = OUT_KEYS + ("pos",)   # with_pos: cluster positions too (transferred only when asked for)
 
 
-def _dispatch_tier(arr, P, K, batch):
+def _compact_dispatch():
+    """Experimental host dispatch only; unset/any value other than '1' keeps the baseline."""
+    return os.environ.get("CRVFASTSIM_COMPACT_DISPATCH") == "1"
+
+
+class _DispatchOutputs(list):
+    """Keep the dispatch mode with pending outputs, even if the environment changes before collection."""
+    def __init__(self, compact=None):
+        super().__init__()
+        self.compact = _compact_dispatch() if compact is None else compact
+
+
+def _row_capacity(n, batch, compact):
+    """Bound partial row padding by the caller/backend cap; never change hit/slot capacities."""
+    return min(batch, 1 << (max(1, int(n)) - 1).bit_length()) if compact else batch
+
+
+def _real_rows_to_host(outs, keys):
+    """Slice the leading *row* axis on device, then transfer all requested output leaves together.
+
+    Labels are hit-column roots, not flattened padded-row indices; do not compact the hit axis.
+    Pulse outputs likewise retain every pulse slot and every per-row recovery flag.
+    """
+    return jax.device_get([{k: d[k][:n] for k in keys} for d, n in outs])
+
+
+def _dispatch_tier(arr, P, K, batch, compact=None):
     """Launch the jitted kernel on fixed-shape batches without waiting (JAX async dispatch)."""
     Ng = len(arr["valid"])
-    outs = []
+    outs = _DispatchOutputs(compact)
     for a in range(0, Ng, batch):
         sl = {k: v[a:a + batch] for k, v in arr.items()}
         n = len(sl["valid"])
-        if n < batch:   # one static shape per tier
-            sl = {k: np.concatenate([v, np.zeros((batch - n,) + v.shape[1:], v.dtype)]) for k, v in sl.items()}
+        capacity = _row_capacity(n, batch, outs.compact)
+        if n < capacity:   # baseline: fixed tier batch; opt-in: bounded power-of-two tail
+            sl = {k: np.concatenate([v, np.zeros((capacity - n,) + v.shape[1:], v.dtype)]) for k, v in sl.items()}
         d = find_dense(*[jnp.asarray(sl[k]) for k in ("valid", "idx", "side", "bar", "sipm", "first", "layer", "counter", "x", "y", "t",
                                                       "pe", "pos", "cut")], jnp.asarray(P.tp), jnp.asarray(P.cu), ld=P.ld, ns=P.ns,
                        uniform=P.uniform, K=K)
@@ -403,12 +431,15 @@ def _dispatch_tier(arr, P, K, batch):
 
 
 def _collect_tier(outs, keys=OUT_KEYS):
+    if getattr(outs, "compact", False):
+        host = _real_rows_to_host(outs, keys)
+        return {k: np.concatenate([d[k] for d in host]) for k in keys}
     host = [({k: np.asarray(d[k]) for k in keys}, n) for d, n in outs]
     return {k: np.concatenate([d[k][:n] for d, n in host]) for k in keys}
 
 
-def _run_tier(arr, P, K, batch, keys=OUT_KEYS):
-    return _collect_tier(_dispatch_tier(arr, P, K, batch), keys)
+def _run_tier(arr, P, K, batch, keys=OUT_KEYS, compact=None):
+    return _collect_tier(_dispatch_tier(arr, P, K, batch, compact), keys)
 
 
 def _kfor(P, K):
@@ -452,9 +483,11 @@ def find_async(ev, idx, bar, sipm, time, pe, seq, G, status, cfg=C.FinderConfig(
                split_min=SPLIT_MIN, timers=None, params=None, tables=None, with_pos=False):
     """Host preparation and kernel launch for all sector types and first-choice tiers; returns a handle for finish().
     The GPU starts on the first type while the host prepares the next. with_pos: finish() also returns cl_pos [n, 3]
-    (Mu2e frame, length axis from the timing when cl_poscalc)."""
+    (Mu2e frame, length axis from the timing when cl_poscalc). CRVFASTSIM_COMPACT_DISPATCH=1 opts into
+    bounded row padding and real-row-only grouped host transfer; H/K and recovery are unchanged."""
     import time as _time
     tiers = backend_tiers(tiers)
+    compact = _compact_dispatch()
     timers = timers if timers is not None else {}
     params = params or type_params(G, cfg)
     tables = tables or hit_tables(G, status, cfg)
@@ -473,12 +506,12 @@ def find_async(ev, idx, bar, sipm, time, pe, seq, G, status, cfg=C.FinderConfig(
             arr, tg, _ = pack(*gcols, G, tables, tt, H, cfg, events=gev[todo])
             timers["pack_s"] = timers.get("pack_s", 0.0) + _time.perf_counter() - t0
             t0 = _time.perf_counter()
-            jobs.append(dict(tt=tt, P=P, ti=ti, arr=arr, tg=tg, outs=_dispatch_tier(arr, P, _kfor(P, K), batch)))
+            jobs.append(dict(tt=tt, P=P, ti=ti, arr=arr, tg=tg, outs=_dispatch_tier(arr, P, _kfor(P, K), batch, compact)))
             timers["dispatch_s"] = timers.get("dispatch_s", 0.0) + _time.perf_counter() - t0
             timers[f"groups_H{H}"] = timers.get(f"groups_H{H}", 0) + len(tg)
         jobs.append(dict(tt=tt, meta=True, gcols=gcols, gev_of=gr["gev_of"], gev=gev, tier=tier))
     return dict(jobs=jobs, cols=(ev, idx, bar, sipm, time, pe, seq), G=G, status=status, cfg=cfg, tiers=tiers,
-                tables=tables, timers=timers, with_pos=with_pos)
+                tables=tables, timers=timers, with_pos=with_pos, compact=compact)
 
 
 def finish(h, fallback=True):
@@ -523,7 +556,7 @@ def finish(h, fallback=True):
             while len(ov) and ti < len(tiers):
                 H, K, batch = tiers[ti]
                 arr, tg, _ = pack(*meta["gcols"], G, tables, tt, H, cfg, events=ov)
-                d = _run_tier(arr, P, _kfor(P, K), batch, keys)
+                d = _run_tier(arr, P, _kfor(P, K), batch, keys, h.get("compact", False))
                 timers[f"promoted_H{H}"] = timers.get(f"promoted_H{H}", 0) + len(tg)
                 ov = take(d, arr, tg, tt, to_ev)
                 ti += 1
