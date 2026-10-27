@@ -283,5 +283,3 @@ unconditional comparisons. Neither flat counts nor matching exit means certify s
 Before a transport A/B: validate hard/continuous distribution widths and range-endpoint behaviour, include mu+
 separately, and declare stop-rate, first-foil, exit-energy and timing tolerances. Reuse transport baselines and keep
 numerical same-law and physics G4-law candidates separate. This prototype is not a default-slice recommendation.
-
-Status and validation: wiki `mu2e/wiki/sim/beam-muon-transport-fastsim.md`.

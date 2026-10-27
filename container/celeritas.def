@@ -11,7 +11,7 @@ From: nvidia/cuda:12.6.3-devel-rockylinux9
     built with spack 1.2 following Celeritas' own rocky-cuda12 recipe (scripts/docker/dev/rocky-cuda12.yaml). The spack
     builtin repo has Celeritas up to 0.6.3, which needs VecGeom 1.2.x (0.7.0 and VecGeom 2.2 are not packaged there yet).
     Purpose: run Celeritas' standalone Geant4 app celer-g4 on the Mu2e GDML export with the DS field map, as the first
-    step of route A in ai-config wiki mu2e/wiki/sim/elebeam-flash-gpu-plan.md. No Mu2e-internal data inside.
+    step of route A of the electron-beam flash GPU study. No Mu2e-internal data inside.
       apptainer exec --nv mu2e-celeritas.sif celer-g4 --help
       apptainer exec --nv mu2e-celeritas.sif geant4-config --datasets
 
