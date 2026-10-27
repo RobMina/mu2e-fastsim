@@ -5,6 +5,7 @@
   python3 -m beamfastsim point --g4 g4ref.npz --out DIR [--geom F] [--n N] [--repeat R]   (fastsimkit beam_point)
   python3 -m beamfastsim compare --g4 g4ref.npz --fast fast.npz --out DIR
   python3 -m beamfastsim fieldcheck            (field map lookups vs the text map at sampled grid points)
+  python3 -m beamfastsim gunfile --g4 g4ref.npz --out particles.txt [--charge keep|plus|minus]
 
 Inputs from CVMFS: Offline of the reference release (OFFLINE_ROOT, default MDC2025ac's v10_47_00) and the Mau13 maps.
 """
@@ -39,6 +40,13 @@ def cmd_g4table(a):
     print(f"{len(t['evt'])} DS-stage muons, {np.sum(t['foil'] >= 0)} stopped in a foil -> {a.out}")
 
 
+def cmd_gunfile(a):
+    from . import g4ref
+    g = g4ref.load(a.g4)
+    n = g4ref.write_gunfile(g, a.out, None if a.charge == "keep" else (1 if a.charge == "plus" else -1))
+    print(f"{n} muons -> {a.out} (charge {a.charge})")
+
+
 def cmd_reference_audit(a):
     from . import reference_audit
     report = reference_audit.audit(a.nts, table=a.g4, artifacts=a.artifact,
@@ -58,8 +66,11 @@ def cmd_run(a):
     g = g4ref.load(a.g4)
     n = min(a.n or len(g["evt"]), len(g["evt"]))
     geom = _geom(a.geom, target_contract=True)
-    prm = transport.Params(ds=a.ds, msc=not a.no_msc, decay=not a.no_decay, n_slices=a.slices, tcut=a.tcut,
-                           max_steps=getattr(a, "max_steps", 3000))
+    over = {k: v for k, v in (("mean", getattr(a, "mean", None)), ("law", getattr(a, "law", None)),
+                              ("msc_path", getattr(a, "msc_path", None))) if v is not None}
+    prm = transport.params(getattr(a, "physics", transport.DEFAULT_PHYSICS), ds=a.ds, msc=not a.no_msc,
+                           decay=not a.no_decay, n_slices=a.slices, tcut=a.tcut,
+                           max_steps=getattr(a, "max_steps", 3000), **over)
     t0 = time.time()
     fm = fieldmap.to_device(fieldmap.load(f"{MAPS}/{MAP}.header"))
     t_load = time.time() - t0
@@ -157,6 +168,16 @@ def cmd_fieldcheck(a):
           f"{np.linalg.norm(np.asarray(fieldmap.field(fieldmap.to_device(fm), jnp.asarray([[-3904., 0., 5871.]])))):.4f} T")
 
 
+def _physics_args(s):
+    from .presets import DEFAULT_PHYSICS, PHYSICS
+    s.add_argument("--physics", choices=sorted(PHYSICS), default=DEFAULT_PHYSICS,
+                   help="layer physics preset (transport.PHYSICS); the options below override single fields")
+    s.add_argument("--mean", choices=["local", "range"], default=None)
+    s.add_argument("--law", choices=["fast", "g4"], default=None)
+    s.add_argument("--msc-path", dest="msc_path", action="store_true", default=None)
+    s.add_argument("--no-msc-path", dest="msc_path", action="store_false")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="beamfastsim")
     sp = ap.add_subparsers(dest="cmd", required=True)
@@ -172,6 +193,7 @@ def main(argv=None):
     s.add_argument("--chunk", type=int, default=200)
     s.add_argument("--repeat", type=int, default=0, help="warm passes for the throughput figure")
     s.add_argument("--geom", default=None, help="geometry file (absolute, or relative to the Offline root)")
+    _physics_args(s)
     s = sp.add_parser("compare")
     s.add_argument("--g4", required=True); s.add_argument("--fast", required=True); s.add_argument("--out", required=True)
     s.add_argument("--geom", default=None)
@@ -180,16 +202,21 @@ def main(argv=None):
     s.add_argument("--n", type=int, default=0); s.add_argument("--seed", type=int, default=1)
     s.add_argument("--batch", type=int, default=131072); s.add_argument("--chunk", type=int, default=400)
     s.add_argument("--repeat", type=int, default=0)
+    _physics_args(s)
     s = sp.add_parser("reference-audit", help="certify persisted reference coverage and table identity")
     s.add_argument("--nts", nargs="+", required=True); s.add_argument("--g4")
     s.add_argument("--geom", help="opt in to derived-label and current geometry include-closure audit")
     s.add_argument("--offline-root", default=OFFLINE_ROOT)
     s.add_argument("--baseline-geom", help="also check allowed target-overlay changes against this config")
     s.add_argument("--artifact", action="append", default=[]); s.add_argument("--out", required=True)
+    s = sp.add_parser("gunfile", help="particle list of the reference starts for fcl/g4ref_gun_ntpart.fcl")
+    s.add_argument("--g4", required=True); s.add_argument("--out", required=True)
+    s.add_argument("--charge", choices=["keep", "plus", "minus"], default="keep")
     sp.add_parser("fieldcheck")
     a = ap.parse_args(argv)
     {"g4table": cmd_g4table, "run": cmd_run, "point": cmd_point, "compare": cmd_compare,
-     "fieldcheck": cmd_fieldcheck, "reference-audit": cmd_reference_audit}[a.cmd](a)
+     "fieldcheck": cmd_fieldcheck, "reference-audit": cmd_reference_audit,
+     "gunfile": cmd_gunfile}[a.cmd](a)
 
 
 if __name__ == "__main__":

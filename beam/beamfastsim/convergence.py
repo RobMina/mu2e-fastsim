@@ -14,8 +14,15 @@ import numpy as np
 from . import g4ref
 from .reference_audit import _identity
 
-ARMS = {"nominal": (5.0, 3000, 4), "halfstep": (2.5, 6000, 4),
-        "doublecap": (5.0, 6000, 4), "slices8": (5.0, 3000, 8)}
+# arm: (step mm, step cap, slices, layer-physics overrides of transport.params). Numerical arms keep the legacy law
+# (local mean, fast Bethe); range_fast changes only the integration (same-law range mean); range_g4 also the law
+# (release tables, CSDA range from zero); g4 adds the msc true-path correction (the "g4" preset).
+ARMS = {"nominal": (5.0, 3000, 4, {}), "halfstep": (2.5, 6000, 4, {}),
+        "doublecap": (5.0, 6000, 4, {}), "slices8": (5.0, 3000, 8, {}), "slices32": (5.0, 3000, 32, {}),
+        "range_fast": (5.0, 3000, 4, dict(mean="range", law="fast", msc_path=False)),
+        "range_fast_s32": (5.0, 3000, 32, dict(mean="range", law="fast", msc_path=False)),
+        "range_g4": (5.0, 3000, 4, dict(physics="g4", msc_path=False)),
+        "g4": (5.0, 3000, 4, dict(physics="g4"))}
 
 
 def select_block(g, start, count):
@@ -64,6 +71,12 @@ def summarize(g, f, baseline=None):
                   fates={str(int(k)): int(v) for k, v in zip(*np.unique(f["fate"], return_counts=True))},
                   foil_profile=np.bincount(f["foil"][stop], minlength=int(g["foil"].max()) + 1).tolist(),
                   stop_flight_ns_mean=float(np.mean(f["t"][stop] - g["time"][:n][stop])) if stop.any() else None)
+    gfirst = np.asarray(g["foil"][:n]) == 0
+    result["first_foil_minus_g4"] = cluster_mean(first.astype(float) - gfirst, ids)
+    result["first_foil_counts"] = dict(fast=int(first.sum()), g4=int(gfirst.sum()), both=int((first & gfirst).sum()))
+    for label, sel in (() if "q" not in g else (("mu_minus", np.asarray(g["q"][:n]) < 0), ("mu_plus", np.asarray(g["q"][:n]) > 0))):
+        result[label] = dict(muons=int(sel.sum()), stops_fast=int((stop & sel).sum()), stops_g4=int((gs & sel).sum()),
+                             first_foil_fast=int((first & sel).sum()), first_foil_g4=int((gfirst & sel).sum()))
     if baseline is not None:
         if len(baseline["fate"]) != n:
             raise ValueError("Comparison arms must have identical prefix lengths")
@@ -85,8 +98,9 @@ def main(argv=None):
     ap.add_argument("--n", type=int, default=2000)
     ap.add_argument("--start", type=int, default=0, help="first reference row; whole-event boundaries required")
     ap.add_argument("--seeds", type=int, nargs="+", default=[1, 2])
-    ap.add_argument("--arms", nargs="+", choices=list(ARMS), default=list(ARMS))
+    ap.add_argument("--arms", nargs="+", choices=list(ARMS), default=["nominal", "halfstep", "doublecap", "slices8"])
     ap.add_argument("--budget-seconds", type=float, default=1200, help="stop launching new arms after this wall time")
+    ap.add_argument("--batch", type=int, default=0, help="lanes per transport batch (default: the whole block)")
     a = ap.parse_args(argv)
     if a.n <= 0 or a.budget_seconds <= 0 or len(set(a.seeds)) != len(a.seeds) or len(set(a.arms)) != len(a.arms):
         ap.error("positive n/budget and unique seeds/arms required")
@@ -121,10 +135,10 @@ def main(argv=None):
             if time.monotonic() - started >= a.budget_seconds:
                 summary["unstarted"].append(name)
                 continue
-            ds, cap, slices = ARMS[arm]
+            ds, cap, slices, over = ARMS[arm]
             args = SimpleNamespace(g4=str(block_path), out=str(out / f"{name}.npz"), geom=a.geom, n=a.n,
                                    ds=ds, max_steps=cap, slices=slices, tcut=1.0, no_msc=False, no_decay=False,
-                                   seed=seed, batch=a.n, chunk=200, repeat=0)
+                                   seed=seed, batch=a.batch or a.n, chunk=200, repeat=0, **over)
             cli.cmd_run(args)
             f = g4ref.load(args.out)
             if arm == "nominal":

@@ -22,7 +22,8 @@ from jax import lax
 
 from mu2efastsim import eloss, eloss_jax
 
-from . import fieldmap, geometry
+from . import fieldmap, geometry, layerphys
+from .presets import DEFAULT_PHYSICS, PHYSICS
 
 jax.config.update("jax_enable_x64", True)
 
@@ -43,6 +44,15 @@ class Params(NamedTuple):
     r_wall: float = 950.0       # DS inner cryostat radius [mm]
     msc: bool = True
     decay: bool = True
+    mean: str = "local"         # "local": dE/dx(p) * slice (legacy); "range": range-integrated slice mean
+    law: str = "fast"           # stopping power: "fast" Bethe formula or "g4" release tables (Al; range mode only)
+    msc_path: bool = False      # msc true-path correction of the layer path (range mode, tables with lambda1)
+    table: str = "target"       # g4 law tables: "target" StoppingTarget_Al, "slab" G4_Al (single-foil closure)
+
+
+def params(physics=DEFAULT_PHYSICS, **kw):
+    """Params with a named layer-physics preset (PHYSICS) and explicit overrides."""
+    return Params(**{**PHYSICS[physics], **kw})
 
 
 class State(NamedTuple):
@@ -79,24 +89,31 @@ def _orthonormal(u):
     return e1, jnp.cross(u, e1)
 
 
-def _layer(key, mat_c, x0_mm, p, u, length, active, n_slices, tcut, msc):
+def _layer(key, mat_c, x0_mm, p, u, length, active, prm, tbs=None, kind=None):
     """Energy loss in slices and one Highland kick for lanes crossing a layer of `length` mm; returns (p, u, stopped)."""
     kl, km = jax.random.split(key)
-    dl = length / n_slices
-    pk = p
-    for s in range(n_slices):
-        loss = eloss_jax._sample(jax.random.fold_in(kl, s), mat_c, pk, dl, tcut, jnp.asarray(eloss.MMU))
-        tk = jnp.sqrt(pk * pk + eloss.MMU ** 2) - eloss.MMU - loss
-        tk = jnp.maximum(tk, 0.0)
-        pk = jnp.sqrt(tk * (tk + 2 * eloss.MMU))
-    tk_out = jnp.sqrt(pk * pk + eloss.MMU ** 2) - eloss.MMU
+    if prm.mean == "range":
+        t0 = layerphys.kinetic(p)
+        if prm.msc and prm.msc_path:
+            length = layerphys.true_path(tbs, kind, t0, length)
+        tk_out = layerphys.slices(kl, tbs, kind, mat_c, p, length, prm.n_slices, prm.tcut, jax.random.fold_in)
+        pk = layerphys.momentum(tk_out)
+    else:
+        dl = length / prm.n_slices
+        pk = p
+        for s in range(prm.n_slices):
+            loss = eloss_jax._sample(jax.random.fold_in(kl, s), mat_c, pk, dl, prm.tcut, jnp.asarray(eloss.MMU))
+            tk = jnp.sqrt(pk * pk + eloss.MMU ** 2) - eloss.MMU - loss
+            tk = jnp.maximum(tk, 0.0)
+            pk = jnp.sqrt(tk * (tk + 2 * eloss.MMU))
+        tk_out = jnp.sqrt(pk * pk + eloss.MMU ** 2) - eloss.MMU
     stopped = active & (tk_out < T_STOP)
     p_new = jnp.where(active, pk, p)
-    if msc:
+    if prm.msc:
         pm = jnp.sqrt(jnp.maximum(p * p_new, 1.0))            # geometric mean momentum over the layer
         e = jnp.sqrt(pm * pm + eloss.MMU ** 2)
         beta = pm / e
-        xx = jnp.maximum(length / x0_mm, 1e-12)
+        xx = jnp.maximum(jnp.minimum(length, 1e6) / x0_mm, 1e-12)
         th0 = 13.6 / (beta * pm) * jnp.sqrt(xx) * (1 + 0.038 * jnp.log(xx / beta ** 2))
         g = jax.random.normal(km, (p.shape[0], 2), jnp.float64) * th0[:, None]
         e1, e2 = _orthonormal(u)
@@ -104,6 +121,19 @@ def _layer(key, mat_c, x0_mm, p, u, length, active, n_slices, tcut, msc):
         un = un / jnp.linalg.norm(un, axis=1, keepdims=True)
         u = jnp.where((active & ~stopped)[:, None], un, u)
     return p_new, u, stopped
+
+
+def layer_tables(prm):
+    """Per-kind range tables (0 Al mu-, 1 Al mu+, 2 IPA polyethylene) for range mode, else None."""
+    if prm.mean == "local":
+        return None
+    if prm.mean != "range" or prm.law not in ("fast", "g4"):
+        raise ValueError(f"unknown layer physics mean={prm.mean!r} law={prm.law!r}")
+    pe = layerphys.fast_tables(geometry.IPA_PE, prm.tcut)
+    if prm.law == "g4":
+        return (layerphys.g4_tables("mu-", prm.table), layerphys.g4_tables("mu+", prm.table), pe)
+    al = layerphys.fast_tables(geometry.STOPPING_TARGET_AL, prm.tcut)
+    return (al, al, pe)
 
 
 _CACHE = {}
@@ -132,6 +162,7 @@ def _build(geom, prm, chunk):
     frin, frout, fht = jnp.asarray(geom.foil_rin), jnp.asarray(geom.foil_rout), jnp.asarray(geom.foil_ht)
     h = prm.ds
     nmax = chunk or prm.max_steps
+    tbs = layer_tables(prm)
 
     def step(carry):
         fm, key, st, i = carry
@@ -163,8 +194,9 @@ def _build(geom, prm, chunk):
         x0 = jnp.where(ipa, x0_pe, x0_al)
         length = jnp.where(ipa, geom.ipa_t / jnp.maximum(ur, 0.02), 2 * fht[k] / uz)
         act = hit | ipa
+        kind = jnp.where(ipa, 2, jnp.where(st.q > 0, 1, 0))
         p2, u2, stop_l = lax.cond(jnp.any(act),
-                                  lambda: _layer(kl, mc, x0, st.p, un, length, act, prm.n_slices, prm.tcut, prm.msc),
+                                  lambda: _layer(kl, mc, x0, st.p, un, length, act, prm, tbs, kind),
                                   lambda: (st.p, un, jnp.zeros_like(act)))
         # Thin-plane foil stops use the crossing fraction for both position and pre-step flight time.
         e = jnp.sqrt(st.p ** 2 + eloss.MMU ** 2)
