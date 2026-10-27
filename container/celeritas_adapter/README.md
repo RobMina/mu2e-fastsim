@@ -1,4 +1,13 @@
-# Celeritas 0.6.3 Cartesian-field and rootless-event adapter (unbuilt)
+# Celeritas 0.6.3 Cartesian-field and rootless-event adapter
+
+**October 27 follow-up:** the existing user-built h5 adapter and h6 probe have been exercised; see
+[control sensitivity, thin-surface results and remaining Mu2e gates](n5-results.md). The preparation/build
+sections below describe the original h4 handoff, not a request to rebuild. Use the repaired h5 library prefix
+for runtime; the original image's Cartesian device kernel must not be reused unpatched.
+
+**h7 navigation source preparation:** [new probe and user build instructions](navigation_probe/README.md)
+add direct host/device geometry crossing records without deposit filtering. This is a separate target linking
+h5; it is not yet compiled or validated and does not change the existing adapter.
 
 This is a bounded application extension, not a new shower model or a Mu2e flash evaluator. It prepares a patched
 copy of the **v0.6.3 celer-g4 application** and links it against the existing image's installed libraries. The
