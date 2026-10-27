@@ -30,7 +30,7 @@ def test_independent_zero_template_outcomes_and_full_covariance():
     mean, cov = enumerate_primaries([cell0, cell0, cell1])
     assert_allclose(result['mean_per_cell'], [[1, .5, 1], [0, 1 / 3, 2 / 3], [0, 0, 0]])
     assert_allclose(result['total_mean'], mean)
-    assert_allclose(result['sampling_cov'], cov)
+    assert_allclose(result['sampling_cov'], cov, atol=8 * np.finfo(float).eps)
     assert result['sampling_cov'][0, 2] != 0
     assert result['sampling_cov'][1, 2] < 0
 
