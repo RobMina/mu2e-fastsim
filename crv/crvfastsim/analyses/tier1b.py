@@ -3,6 +3,7 @@
     tier1b-build crvsteps.<train>.root [...] --gen gen.<train>.root [...] --out lib.root
     tier1b-apply fastC.*.root --library lib.root --outdir DIR [--seed N]   (writes fast1b.<shard>.root)
         [--crossing-context --contain-steps --point-placement --topology-sidecar SIDE.npz]   (opt-in placement)
+        [--template-sidecar TEMPLATES.npz --unvisited-layers --near-miss]   (opt-in templates)
 
 Build on training shards and apply to others (the library never sees the events it is compared with). The fast
 tables carry their gen tree, which supplies the non-muon CRY primaries.
@@ -54,16 +55,40 @@ def read_topology_sidecar(path, library=None):
     return part("crossings_"), part("visits_")
 
 
+TEMPLATE_PARTS = ("xing", "uv", "nmt", "nms", "nmc")
+
+
+def read_template_sidecar(path, library=None):
+    """Frames of a template sidecar (valhist.descendant_templates sidecar) and its metadata under 'meta': per library
+    crossing its entry, |p| and last flag, the unvisited-layer rows, the near-miss templates and the census. With
+    library, require the library it was made for."""
+    meta = json.loads(open(str(path) + ".json").read())
+    if _sha256(path) != meta["sidecar_sha256"]:
+        raise ValueError("template sidecar changed since it was written")
+    if library is not None and _sha256(library) != meta["library_sha256"]:
+        raise ValueError("template sidecar was made for another library")
+    z = np.load(path)
+    part = lambda pre: pd.DataFrame({k[len(pre):]: z[k] for k in z.files if k.startswith(pre)})
+    return {**{k: part(k + "_") for k in TEMPLATE_PARTS}, "meta": meta}
+
+
 def apply(inputs, outdir, library=None, seed=1, counters=None, crossing_context=False, contain_steps=False,
-          point_placement=False, mirror_offsets=False, translate_offsets=False, topology_sidecar=None, **kw):
+          point_placement=False, mirror_offsets=False, translate_offsets=False, topology_sidecar=None,
+          template_sidecar=None, unvisited_layers=False, near_miss=False, **kw):
     if not library:
         raise SystemExit("tier1b-apply needs --library")
+    if (unvisited_layers or near_miss) and not template_sidecar:
+        raise SystemExit("--unvisited-layers / --near-miss need --template-sidecar")
     opts = {"context": crossing_context, "contain": contain_steps, "point": point_placement, "mirror": mirror_offsets,
             "translate": translate_offsets, "topology": bool(topology_sidecar)}
+    if unvisited_layers or near_miss:
+        opts.update(unvisited=bool(unvisited_layers), nearmiss=bool(near_miss))
     geom = _geom(counters)
     lib = tier1b.read_library(library)
     if topology_sidecar:
         lib = tier1b.attach_topology(lib, *read_topology_sidecar(topology_sidecar, library), geom)
+    if template_sidecar:
+        lib = tier1b.attach_templates(lib, read_template_sidecar(template_sidecar, library), geom)
     for i, f in enumerate(tables.expand(inputs)):
         rng = np.random.default_rng([int(seed), 1_000 + i])
         st, pa, gen = tables.read(f, "steps"), tables.read(f, "particles"), tables.read(f, "gen")

@@ -51,6 +51,20 @@ Two parts, both resampled from G4 CrvStep tables (CrvStepTableDumper) of trainin
      visit and offset around the receiving muon, so never into a bar that muon crosses there. Needs the per-crossing
      bar, muon and visit of the library (attach_topology; a sidecar rebuilt from the library's donors). Rows whose
      plane the library muon never visited, or whose visit or bar the receiving muon lacks, keep the other placements.
+   Opt-in position-conditioned templates (sample(unvisited, nearmiss); a template sidecar, attach_templates):
+   - unvisited: an other-bar descendant in a layer plane its own library muon never visits (mostly the decay electron
+     of a muon that stops after its last crossing, and deltas into a sector stacked beside or below the crossing) is
+     placed by where the crossing is, not by its offsets: the main draw leaves these rows out, and each fast crossing
+     draws a second library crossing from its position cell (layer plane, width-rank and along-bar cell of the entry,
+     the groups its muon crosses, last crossing of its muon or not, |p| class; coarser cells when a cell holds fewer
+     than MIN_UV_CROSSINGS) and
+     takes that crossing's unvisited rows, translated by the entry difference when the translated step lies in a bar
+     of the same layer plane that the receiving muon does not visit, else at their library position.
+   - nearmiss: a primary muon with no CRV crossing in its event deposits nothing in tier 1a; G4 muons that pass beside
+     the CRV or stop above it do (decay electrons, deltas). Each such fast muon reaches the CRV with the probability
+     of its cell (kinetic energy, the library group whose box its straight generated line comes closest to, and that
+     distance), templates of the cell over the no-crossing muons of a generator census in the cell, and then gets a
+     random template of the cell at its absolute positions, times relative to the muon's generation time.
 2. Non-muon primaries (e, gamma, n, p, pi from CRY). A library shower is every CrvStep whose primary is that particle,
    with absolute positions and times relative to the primary's generation time. Sampling: each non-muon CRY primary of
    the event (gen table) reaches the CRV with the library probability of its (pdg, kinetic-energy) bin, and then gets a
@@ -557,7 +571,7 @@ def _topology_targets(fx, dd, ix, fu, geom):
 
 
 def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=False, mirror=False,
-                        translate=False, topology=False, trace=None):
+                        translate=False, topology=False, trace=None, drop_unvisited=False):
     """Descendant steps for the fast crossings fx (one row per crossing). Returns (steps, n_dropped, n_clamped, why).
     Opt-in (all off reproduces the earlier sampling bit for bit): context = draw within the crossing-context cell
     (library with a ctx column); contain = same-bar endpoints into the bar; point = other-bar steps whose target bar
@@ -567,7 +581,9 @@ def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=
     the muon entry (unrotated) added to the fast entry, the bar-structure placement remaining the fallback;
     topology = other-bar steps keep their library layer topology around the receiving muon's own sector-layer visits
     (library with the desc_topology columns, attach_topology), the other placements remaining the fallback.
-    An optional trace dict records pre-placement donor labels and final bars without consuming random draws."""
+    An optional trace dict records pre-placement donor labels and final bars without consuming random draws.
+    drop_unvisited leaves out the rows in layer planes the library muon never visits (library with the uv column,
+    attach_templates); sample(unvisited=True) places those rows by position instead. No random draw changes."""
     p = np.sqrt(fx.px0 ** 2 + fx.py0 ** 2 + fx.pz0 ** 2).to_numpy()
     b = _bin(lib["libbins"], _group_index(geom, fx.bar), p, fx.len.to_numpy())
     lx = lib["libxing"]
@@ -595,6 +611,11 @@ def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=
     cnt = z - a
     ix = np.repeat(np.arange(len(fx)), cnt)                        # fast crossing of each new step
     rows = np.repeat(a - np.r_[0, np.cumsum(cnt)[:-1]], cnt) + np.arange(cnt.sum())
+    if drop_unvisited:
+        if "uv" not in ld.columns:
+            raise ValueError("unvisited-layer templates need the uv column (attach_templates with a template sidecar)")
+        keep_row = ~ld.uv.to_numpy()[rows]
+        ix, rows = ix[keep_row], rows[keep_row]
     dd = ld.iloc[rows]
     lu = lib["libxing"].set_index("xid").loc[pick[ix], ["ux", "uy", "uz"]].to_numpy()
     fu = _unit(fx[["px0", "py0", "pz0"]].to_numpy())[ix]
@@ -658,6 +679,11 @@ def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=
             pt[hit], tb[hit], bad[hit] = True, tq[hit], False
             Q0[hit], Q1[hit] = q0[hit], q1[hit]
             why["topology"] = int(hit.sum())
+            if trace is not None:
+                th = np.zeros(len(dd), bool)
+                th[np.flatnonzero(other)[hit]] = True
+                trace["topology_hit"] = th
+                trace["source_tvis"] = dd.tvis.to_numpy().copy()
         tb[bad] = nearest_bar(target[bad], xa[bad], geom)
         ok = tb >= 0
         tbs = np.where(ok, tb, 0)
@@ -703,6 +729,8 @@ def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=
     if trace is not None:
         trace.update(xi=ix.copy(), xid=pick[ix].copy(), source_samebar=same.copy(),
                      source_edep=dd.edep.to_numpy().copy(), target_bar=bar.copy(), kept=keep.copy())
+        if "uv" in dd.columns:
+            trace["source_uv"] = dd.uv.to_numpy().copy()
     out = pd.DataFrame({k: fx[k].to_numpy()[ix][keep] for k in KEY})
     out["bar"] = bar[keep]
     out["lsp"] = dd.sp.to_numpy()[keep]
@@ -739,27 +767,316 @@ def _showers_for_gen(gen, lib, rng):
     return st
 
 
+# ------------------------------------------------------------------------------- opt-in position-conditioned templates
+UV_P_EDGES = np.array([150.0, 300.0, 1500.0])   # crossing |p| classes [MeV/c]: the lowest holds the muons that stop
+UV_W_BARS = (8, 16)                              # width-rank size of the fine and the coarse position cell
+UV_A_MM = (400.0, 800.0)                         # along-bar size [mm] of the fine and the coarse position cell
+N_UV_LEVELS = 5                                  # fine cell, coarse cell, layer plane (each with the visit mask),
+#                                                  layer plane, library group
+MIN_UV_CROSSINGS = 20                            # fewer library crossings in a cell: the next coarser level
+NM_KE_EDGES = np.array([300.0, 1000.0, 3000.0, 10000.0])   # near-miss muon kinetic energy classes [MeV]
+NM_D_EDGES = np.array([100.0, 300.0, 1000.0, 3000.0])      # closest-approach distance classes [mm], after "enters"
+NM_GOLDEN_ITER = 60
+UV_STEP_COLS = ["x0", "y0", "z0", "x1", "y1", "z1"]
+
+
+def last_crossing(x):
+    """Per crossing (rows of x: KEY, sp, t0), whether it is the last crossing in time of its muon."""
+    if not len(x):
+        return np.zeros(0, bool)
+    by = KEY + (["sp"] if "sp" in x.columns else [])
+    return (x.t0 == x.groupby(by, sort=False).t0.transform("max")).to_numpy()
+
+
+def visit_mask(x, geom):
+    """Per crossing (rows of x: KEY, sp, bar), the library groups its muon crosses anywhere, as a bit mask."""
+    if not len(x):
+        return np.zeros(0, np.int64)
+    by = KEY + (["sp"] if "sp" in x.columns else [])
+    return group_mask(x.groupby(by, sort=False).ngroup().to_numpy(), x.bar.to_numpy(), geom)
+
+
+def group_mask(mu, bar, geom):
+    """Bit mask of the library groups of the bars sharing each muon id mu (one bit per group)."""
+    bit = np.left_shift(1, np.maximum(_group_index(geom, np.asarray(bar, np.int64)), 0)).astype(np.int64)
+    d = pd.DataFrame({"mu": np.asarray(mu, np.int64), "bit": bit})
+    m = d.drop_duplicates().groupby("mu").bit.sum()
+    return m.reindex(d.mu.to_numpy()).to_numpy().astype(np.int64)
+
+
+def uv_cells(bar, entry, p, last, mask, geom):
+    """Position cell codes of crossings for the unvisited-layer templates, finest first (columns = N_UV_LEVELS levels):
+    (layer plane, width rank // UV_W_BARS, along-bar entry // UV_A_MM) at two sizes and the layer plane, each with the
+    groups the muon crosses (visit_mask: a T2 deposit is unvisited only for a muon that misses T2), then the layer
+    plane and the library group without it; every level with the last-crossing flag and the |p| class (UV_P_EDGES)."""
+    bar = np.asarray(bar, np.int64)
+    mask = np.asarray(mask, np.int64)
+    lid, widx = layer_slots(geom)
+    la = geom.local_to_world[bar, 2]
+    along = np.asarray(entry, float)[np.arange(len(bar)), la]
+    pc = np.searchsorted(UV_P_EDGES, np.asarray(p, float), "right")
+    tail = np.asarray(last, np.int64) * (len(UV_P_EDGES) + 1) + pc
+    nt = 2 * (len(UV_P_EDGES) + 1)
+    out = np.zeros((len(bar), N_UV_LEVELS), np.int64)
+    for j, (wb, am) in enumerate(zip(UV_W_BARS, UV_A_MM)):
+        cell = (lid[bar] * 1000 + widx[bar] // wb) * 100_000 + np.floor(along / am).astype(np.int64) + 50_000
+        out[:, j] = (cell * 16 + mask) * nt + tail
+    out[:, 2] = (lid[bar] * 16 + mask) * nt + tail
+    out[:, 3] = lid[bar] * nt + tail
+    out[:, 4] = (_group_index(geom, bar) + 1) * nt + tail
+    return out
+
+
+def group_boxes(geom):
+    """Axis-aligned box (lo [4, 3], hi [4, 3]) of every library group's bars."""
+    g = _group_index(geom, np.arange(geom.nbars))
+    lo, hi = geom.center - geom.halflen, geom.center + geom.halflen
+    return (np.array([lo[g == i].min(0) for i in range(len(GROUPS))]),
+            np.array([hi[g == i].max(0) for i in range(len(GROUPS))]))
+
+
+def closest_approach(pos, u, geom):
+    """For each straight ray pos + t u (t >= 0): the library group whose box it comes closest to, that distance (0 when
+    it enters the box) and t there. Ties at 0 go to the box entered first. Exact slab test for entering; golden-section
+    search of the convex distance otherwise (t between the box corners' projections)."""
+    pos, u = np.asarray(pos, float), _unit(np.asarray(u, float))
+    lo, hi = group_boxes(geom)
+    n, ng = len(pos), len(GROUPS)
+    dist, tbest = np.zeros((n, ng)), np.zeros((n, ng))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        for gi in range(ng):
+            t1, t2 = (lo[gi] - pos) / u, (hi[gi] - pos) / u
+            par = u == 0
+            inside_slab = (pos >= lo[gi]) & (pos <= hi[gi])
+            tn = np.where(par, np.where(inside_slab, -np.inf, np.inf), np.minimum(t1, t2)).max(1)
+            tf = np.where(par, np.where(inside_slab, np.inf, -np.inf), np.maximum(t1, t2)).min(1)
+            enters = (tn <= tf) & (tf >= 0)
+            corners = np.array([[a, b, c] for a in (lo[gi, 0], hi[gi, 0]) for b in (lo[gi, 1], hi[gi, 1])
+                                for c in (lo[gi, 2], hi[gi, 2])])
+            proj = np.einsum("nkj,nj->nk", corners[None, :, :] - pos[:, None, :], u)
+            a, b = np.maximum(proj.min(1), 0.0), np.maximum(proj.max(1), 0.0)
+            f = lambda t: np.linalg.norm(np.maximum(np.maximum(lo[gi] - (pos + t[:, None] * u), 0.0),
+                                                    (pos + t[:, None] * u) - hi[gi]), axis=1)
+            r = (np.sqrt(5.0) - 1) / 2
+            c, d = b - r * (b - a), a + r * (b - a)
+            fc, fd = f(c), f(d)
+            for _ in range(NM_GOLDEN_ITER):
+                left = fc < fd
+                b = np.where(left, d, b)
+                a = np.where(left, a, c)
+                c_new, d_new = b - r * (b - a), a + r * (b - a)
+                fc, fd = np.where(left, f(c_new), fd), np.where(left, fc, f(d_new))
+                # keep the reused end point exact: the surviving interior point becomes the new d (left) or c (right)
+                c, d = np.where(left, c_new, d), np.where(left, c, d_new)
+            tm = 0.5 * (a + b)
+            dist[:, gi] = np.where(enters, 0.0, f(tm))
+            tbest[:, gi] = np.where(enters, np.maximum(tn, 0.0), tm)
+    key = np.where(dist == 0, tbest, np.inf)
+    first = np.argmin(key, axis=1)
+    g = np.where((dist == 0).any(1), first, np.argmin(dist, axis=1))
+    r = np.arange(n)
+    return g, dist[r, g], tbest[r, g]
+
+
+NM_KE_GROUPS = (0,)   # groups whose near-miss cells are split by kinetic energy (EX); the others are too sparse
+
+
+def nearmiss_cell(ke, group, dist):
+    """Near-miss cell code: (group, distance class: 0 enters the box, then NM_D_EDGES, kinetic-energy class; the
+    kinetic-energy class only for NM_KE_GROUPS: near misses of the other groups are rare in a 500k-event census)."""
+    group = np.asarray(group, np.int64)
+    db = np.where(np.asarray(dist) <= 0, 0, 1 + np.searchsorted(NM_D_EDGES, dist, "right"))
+    kb = np.where(np.isin(group, NM_KE_GROUPS), np.searchsorted(NM_KE_EDGES, ke, "right"), 0)
+    return (group * 10 + db) * 10 + kb
+
+
+def muon_rays(gen):
+    """Every generated muon (the tier-1a order: event, gen index; key = 1, 2, ... within the event) with its ray."""
+    mu = gen[gen.pdg.abs() == tables.PRIMARY_MUON_PDG]
+    order = [c for c in KEY + ["idx"] if c in mu.columns]
+    mu = mu.sort_values(order, kind="stable").reset_index(drop=True)
+    mu["mukey"] = mu.groupby(KEY, sort=False).cumcount().to_numpy() + 1
+    mu["ke"] = mu.e.to_numpy() - MASS[13]
+    return mu
+
+
+def attach_templates(lib, side, geom):
+    """Add the opt-in template components to lib (in memory) from a template sidecar (dict of frames + meta, see
+    valhist.descendant_templates): the uv column of libdesc, the unvisited-layer rows at absolute positions (uvdesc),
+    the library crossings' position cells (uvxing), the near-miss templates and their reach table. The library trees
+    themselves are not changed."""
+    lx = lib["libxing"]
+    xs = side["xing"].sort_values("xid", kind="stable").reset_index(drop=True)
+    if not np.array_equal(xs.xid.to_numpy(), lx.xid.to_numpy()):
+        raise ValueError("template sidecar crossings do not match the library crossings")
+    ld = lib["libdesc"].drop(columns=[c for c in ("uv",) if c in lib["libdesc"].columns])
+    uvr = side["uv"].row.to_numpy().astype(np.int64)
+    if len(uvr) and (uvr.max() >= len(ld) or (ld.samebar.to_numpy()[uvr] != 0).any()):
+        raise ValueError("template sidecar unvisited rows are not other-bar library rows")
+    flag = np.zeros(len(ld), bool)
+    flag[uvr] = True
+    lib = dict(lib)
+    lib["libdesc"] = ld.assign(uv=flag)
+    d = ld.iloc[uvr]
+    ub = side["uv"].bar.to_numpy().astype(np.int64)
+    uvd = pd.DataFrame({"xid": d.xid.to_numpy(), "sp": d.sp.to_numpy(), "pdg": d.pdg.to_numpy(), "bar": ub,
+                        "dt0": d.dt0.to_numpy(), "dt1": d.dt1.to_numpy()})
+    for j, c in enumerate("xyz"):
+        for e in "01":
+            uvd[f"{c}{e}"] = geom.center[ub, j] + d[f"l{c}{e}"].to_numpy()
+    for c in ("px0", "py0", "pz0", "p1", "len", "edep"):
+        uvd[c] = d[c].to_numpy()
+    lib["uvdesc"] = uvd.sort_values("xid", kind="stable").reset_index(drop=True)
+    mask = group_mask(xs.mu.to_numpy(), xs.bar.to_numpy(), geom)
+    entry = xs[["ex", "ey", "ez"]].to_numpy()
+    cells = uv_cells(xs.bar.to_numpy(), entry, xs.p.to_numpy(), xs.last.to_numpy().astype(bool), mask, geom)
+    lib["uvxing"] = {"entry": entry, "levels": [(np.sort(cells[:, j], kind="stable"),
+                                                 np.argsort(cells[:, j], kind="stable")) for j in range(N_UV_LEVELS)]}
+    t = side["nmt"]
+    tc = nearmiss_cell(t.ke.to_numpy(), t.group.to_numpy(), t.dist.to_numpy())
+    lib["nmtmpl"] = pd.DataFrame({"tid": t.tid.to_numpy().astype(np.int64), "cell": tc}).sort_values(
+        ["cell", "tid"], kind="stable").reset_index(drop=True)
+    lib["nmsteps"] = side["nms"].sort_values(["tid"], kind="stable").reset_index(drop=True)
+    c = side["nmc"]
+    cc = nearmiss_cell(c.ke.to_numpy(), c.group.to_numpy(), c.dist.to_numpy())
+    scale = float(side["meta"]["generated"]) / float(side["meta"]["census_events"])
+    den = pd.Series(cc).value_counts().rename("ncensus")
+    num = pd.Series(tc).value_counts().rename("ntemp")
+    r = pd.concat([den, num], axis=1).fillna(0).rename_axis("cell").reset_index()
+    r["nden"] = r.ncensus * scale
+    r["prob"] = np.where(r.nden > 0, np.minimum(r.ntemp / np.maximum(r.nden, 1e-300), 1.0), 0.0)
+    lib["nmreach"] = r.astype({"cell": np.int64}).sort_values("cell").reset_index(drop=True)
+    return lib
+
+
+def _unvisited_for_crossings(fx, lib, geom, rng):
+    """Unvisited-layer rows for the fast crossings fx, drawn from the library crossings of each crossing's position
+    cell (uv_cells, the finest level with >= MIN_UV_CROSSINGS library crossings, else the coarsest non-empty one).
+    One uniform draw per crossing. Returns (steps with xi = fast crossing, lsp = library particle; info)."""
+    n = len(fx)
+    entry = fx[["x0", "y0", "z0"]].to_numpy()
+    p = np.sqrt(fx.px0 ** 2 + fx.py0 ** 2 + fx.pz0 ** 2).to_numpy()
+    cells = uv_cells(fx.bar.to_numpy(), entry, p, last_crossing(fx), visit_mask(fx, geom), geom)
+    u = rng.random(n)
+    lo, hi = np.zeros(n, np.int64), np.zeros(n, np.int64)
+    lev = np.full(n, -1, np.int64)
+    pickx = np.full(n, -1, np.int64)
+    for j, (codes, order) in reversed(list(enumerate(lib["uvxing"]["levels"]))):
+        a, b = np.searchsorted(codes, cells[:, j], "left"), np.searchsorted(codes, cells[:, j], "right")
+        use = ((b - a) >= MIN_UV_CROSSINGS) | ((lev < 0) & (b > a))
+        lo[use], hi[use], lev[use] = a[use], b[use], j
+        sel = lev == j
+        pickx[sel] = order[lo[sel] + (u[sel] * (hi[sel] - lo[sel])).astype(np.int64)]
+    uvd = lib["uvdesc"]
+    ux = uvd.xid.to_numpy()
+    a, z = np.searchsorted(ux, pickx, "left"), np.searchsorted(ux, pickx, "right")
+    cnt = np.where(pickx >= 0, z - a, 0)
+    ix = np.repeat(np.arange(n), cnt)
+    rows = np.repeat(a - np.r_[0, np.cumsum(cnt)[:-1]], cnt) + np.arange(cnt.sum())
+    d = uvd.iloc[rows]
+    lid, _ = layer_slots(geom)
+    a0, a1 = d[["x0", "y0", "z0"]].to_numpy(), d[["x1", "y1", "z1"]].to_numpy()
+    shift = entry[ix] - lib["uvxing"]["entry"][pickx[ix]]
+    q0, q1 = a0 + shift, a1 + shift
+    tb = bar_containing(0.5 * (q0 + q1), geom)
+    lb = d.bar.to_numpy()
+    mu, _, visits = muon_visits(fx, geom)
+    vkey = np.unique(visits.mu.to_numpy().astype(np.int64) * 1_000_000 + visits.lid.to_numpy().astype(np.int64))
+    tbs = np.maximum(tb, 0)
+    ok = (tb >= 0) & (lid[tbs] == lid[lb]) & ~np.isin(mu[ix].astype(np.int64) * 1_000_000 + lid[tbs], vkey)
+    bar = np.where(ok, tb, lb)
+    r0, r1 = np.where(ok[:, None], q0, a0), np.where(ok[:, None], q1, a1)
+    c, h = geom.center[bar], geom.halflen[bar]
+    r0, r1 = fit_inside(r0, r1, c - h, c + h)
+    out = pd.DataFrame({k: fx[k].to_numpy()[ix] for k in KEY})
+    out["bar"], out["lsp"], out["xi"], out["pdg"] = bar, d.sp.to_numpy(), ix, d.pdg.to_numpy()
+    t0 = fx.t0.to_numpy()[ix]
+    out["t0"], out["t1"] = t0 + d.dt0.to_numpy(), t0 + d.dt1.to_numpy()
+    for j, cc in enumerate("xyz"):
+        out[f"{cc}0"], out[f"{cc}1"], out[f"p{cc}0"] = r0[:, j], r1[:, j], d[f"p{cc}0"].to_numpy()
+    for cc in ("p1", "len", "edep"):
+        out[cc] = d[cc].to_numpy()
+    info = {"steps": len(out), "translated": int(ok.sum()),
+            "level": np.bincount(lev[lev >= 0], minlength=N_UV_LEVELS).tolist(), "no_cell": int((lev < 0).sum())}
+    return out, info
+
+
+def _nearmiss_for_gen(fast_steps, gen, lib, geom, rng):
+    """Near-miss templates for the generated muons of events without a fast crossing (fast_steps: tier-1a). Each muon
+    reaches the CRV with its cell's probability (lib['nmreach']) and takes a uniform template of that cell. Returns
+    (steps with mukey = the muon's key, xi = the muon's row, lsp = template particle; info)."""
+    mu = muon_rays(gen)
+    crossed = pd.MultiIndex.from_frame(fast_steps[KEY].drop_duplicates().astype(np.int64))
+    cand = mu[~pd.MultiIndex.from_frame(mu[KEY].astype(np.int64)).isin(crossed)].reset_index(drop=True)
+    g, dist, _ = closest_approach(cand[["x", "y", "z"]].to_numpy(), cand[["px", "py", "pz"]].to_numpy(), geom)
+    cell = nearmiss_cell(cand.ke.to_numpy(), g, dist)
+    r = lib["nmreach"]
+    prob = np.zeros(len(cand))
+    if len(r):
+        i = np.minimum(np.searchsorted(r.cell.to_numpy(), cell), len(r) - 1)
+        hit = r.cell.to_numpy()[i] == cell
+        prob[hit] = r.prob.to_numpy()[i][hit]
+    reach = rng.random(len(cand)) < prob
+    sel = np.flatnonzero(reach)
+    t = lib["nmtmpl"]
+    tcell = t.cell.to_numpy()
+    lo, hi = np.searchsorted(tcell, cell[sel], "left"), np.searchsorted(tcell, cell[sel], "right")
+    if (hi <= lo).any():
+        raise ValueError("near-miss cell with a reach probability but no template")
+    tid = t.tid.to_numpy()[lo + (rng.random(len(sel)) * (hi - lo)).astype(np.int64)]
+    ns = lib["nmsteps"]
+    nt = ns.tid.to_numpy()
+    a, z = np.searchsorted(nt, tid, "left"), np.searchsorted(nt, tid, "right")
+    cnt = z - a
+    im = np.repeat(sel, cnt)
+    rows = np.repeat(a - np.r_[0, np.cumsum(cnt)[:-1]], cnt) + np.arange(cnt.sum())
+    d = ns.iloc[rows]
+    out = pd.DataFrame({k: cand[k].to_numpy()[im] for k in KEY})
+    out["bar"] = d.bar.to_numpy().astype(np.int64)
+    out["lsp"], out["xi"], out["pdg"] = d.sp.to_numpy(), im, d.pdg.to_numpy()
+    out["mukey"] = cand.mukey.to_numpy()[im]
+    t0 = cand.t.to_numpy()[im]
+    out["t0"], out["t1"] = t0 + d.dt0.to_numpy(), t0 + d.dt1.to_numpy()
+    for c in UV_STEP_COLS + ["px0", "py0", "pz0", "p1", "len", "edep"]:
+        out[c] = d[c].to_numpy()
+    info = {"candidates": len(cand), "reached": int(len(sel)), "steps": len(out),
+            "expected_reached": float(prob.sum())}
+    return out, info
+
+
 def sample(fast_steps, fast_parts, gen, lib, geom, rng, showers=True, context=False, contain=False, point=False,
-           mirror=False, translate=False, topology=False):
+           mirror=False, translate=False, topology=False, unvisited=False, nearmiss=False):
     """Fast tier-1a tables + tier 1b: (steps, particles, info). Muons keep their keys (1, or 1..n with all_muons);
     descendants follow them; showers k*1e7+sp. showers=False: descendants only (run configurations whose bars are not
-    the library's: the showers carry absolute extracted v04 bar positions)."""
+    the library's: the showers carry absolute extracted v04 bar positions). unvisited / nearmiss (opt-in, a library
+    with attach_templates): their random draws come after the showers', so every other component is unchanged."""
     fx = fast_steps.copy()
     desc, n_drop, n_clamp, why = _desc_for_crossings(fx, lib, geom, rng, context, contain, point, mirror, translate,
-                                                     topology)
+                                                     topology, drop_unvisited=unvisited)
+    sh = _showers_for_gen(gen, lib, rng) if showers else _showers_for_gen(gen.iloc[:0], lib, rng)
+    sp_of = fx.sp.to_numpy() if "sp" in fx.columns else np.ones(len(fx), np.int64)
+    desc["src"], desc["parent"] = 0, sp_of[desc.xi.to_numpy()]
+    extra, tinfo = [desc], {}
+    if unvisited:
+        uvd, tinfo["unvisited"] = _unvisited_for_crossings(fx, lib, geom, rng)
+        extra.append(uvd.assign(src=1, parent=sp_of[uvd.xi.to_numpy()]))
+    if nearmiss:
+        nmd, tinfo["nearmiss"] = _nearmiss_for_gen(fast_steps, gen, lib, geom, rng)
+        extra.append(nmd.drop(columns="mukey").assign(src=2, parent=nmd.mukey.to_numpy()))
+    if len(extra) > 1:
+        desc = pd.concat(extra, ignore_index=True)
     # descendant particles: one per (event, crossing, library particle), keys after the event's muon keys (2.. with one
-    # muon), parent = the muon of the crossing (tier-1a `sp`)
+    # muon), parent = the muon of the crossing (tier-1a `sp`); template rows (src 1, 2) come after the event's others
     nmu = fast_parts.groupby(KEY, sort=False).key.max().rename("kmax").reset_index() if len(fast_parts) else None
-    u = desc[KEY + ["xi", "lsp", "pdg"]].drop_duplicates(KEY + ["xi", "lsp"]).reset_index(drop=True)
+    pk = KEY + ["xi", "src", "lsp"]
+    u = desc[pk + ["pdg", "parent"]].drop_duplicates(pk).reset_index(drop=True)
     base = (u[KEY].merge(nmu, on=KEY, how="left").kmax.fillna(1).to_numpy().astype(np.int64) if nmu is not None
             else np.ones(len(u), np.int64))
     u["key"] = u.groupby(KEY).cumcount().to_numpy() + 1 + base
-    u["parent"] = fx.sp.to_numpy()[u.xi.to_numpy()] if "sp" in fx.columns else 1
-    desc = desc.merge(u[KEY + ["xi", "lsp", "key"]], on=KEY + ["xi", "lsp"])
+    desc = desc.merge(u[pk + ["key"]], on=pk)
     desc["sp"] = desc.key
     dparts = pd.DataFrame({k: u[k].to_numpy() for k in KEY})
     dparts["key"], dparts["parent"], dparts["pdg"], dparts["isprim"] = u.key, u.parent, u.pdg, 0
-    sh = _showers_for_gen(gen, lib, rng) if showers else _showers_for_gen(gen.iloc[:0], lib, rng)
     sh["sp"] = (sh.k + 1) * SHOWER_KEY_BASE + sh.sp
     su = sh[KEY + ["sp", "pdg", "isroot", "k", "shid"]].drop_duplicates(KEY + ["sp"])
     # every shower gets its primary as a particle (parent of the others), even when only daughters have steps
@@ -793,4 +1110,6 @@ def sample(fast_steps, fast_parts, gen, lib, geom, rng, showers=True, context=Fa
     steps = steps.sort_values(KEY + ["t0"], kind="stable").reset_index(drop=True)
     info = {"desc_steps": len(desc), "desc_dropped": n_drop, "desc_clamped": n_clamp, "other_bar": why,
             "showers": int(len(roots)), "shower_steps": len(sh), "nonmu_primaries": int(len(gsign))}
+    if tinfo:
+        info["templates"] = tinfo
     return steps, parts, info

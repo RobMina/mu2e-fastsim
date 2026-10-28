@@ -8,6 +8,7 @@ The reference is the G4 CrvStep table of the same generated events (its refill e
     python -m valhist.placement_closure run --library LIB.root [--sidecar SIDE.npz] \
         --transport 'DIR/fastC.{s}.root' --reference 'DIR/crvsteps.{s}.root' --shards 21-220 \
         --arm default= --arm ccp=context,contain,point --arm topo=context,contain,point,topology \
+        [--templates TEMPLATES.npz --arm tmpl=context,contain,point,topology,unvisited,nearmiss] \
         --reseed topo --out NEW.json
     python -m valhist.placement_closure report RUN.json [RUN2.json ...]
 
@@ -29,7 +30,7 @@ from . import descendant_topology as D
 from . import stephist as H
 from . import steplayers as S
 
-OPTIONS = ("context", "contain", "point", "mirror", "translate", "topology")
+OPTIONS = ("context", "contain", "point", "mirror", "translate", "topology", "unvisited", "nearmiss")
 RESEED = 7
 REPORT_KEYS = list(H.TARGET) + ["SMom2", "posx"] + [f"{g}/{v}" for g in S.POS_GROUPS for v in ("y", "z")]
 
@@ -47,7 +48,7 @@ def parse_arm(spec):
 
 
 def run(library, transport, reference, shard_list, arms, out, sidecar=None, reseed=(), write=None, retained=None,
-        counters=None):
+        counters=None, templates=None):
     out = Path(out)
     if out.exists():
         raise FileExistsError(out)
@@ -63,6 +64,12 @@ def run(library, transport, reference, shard_list, arms, out, sidecar=None, rese
         hashes[str(sidecar)] = A.digest(sidecar)
     if any(o["topology"] for _, o in arms) and not sidecar:
         raise ValueError("topology arms need --sidecar")
+    if templates:
+        from . import descendant_templates as DT
+        lib = T.attach_templates(lib, DT.read_sidecar(templates, library), geom)
+        hashes[str(templates)] = A.digest(templates)
+    if any(o.get("unvisited") or o.get("nearmiss") for _, o in arms) and not templates:
+        raise ValueError("unvisited / nearmiss arms need --templates")
     edges = S.booking_edges()
     runs = [(name, opts, opts.get("seed_tag", 0)) for name, opts in arms]
     runs += [(f"{name}~reseed", opts, RESEED) for name, opts in arms if name in reseed]
@@ -113,13 +120,16 @@ def run(library, transport, reference, shard_list, arms, out, sidecar=None, rese
                 why[name][key] = why[name].get(key, 0) + int(val)
             rec["arms"][name] = {"steps": len(steps), "desc_steps": info["desc_steps"], "desc_dropped": info["desc_dropped"],
                                  "showers": info["showers"], "shower_steps": info["shower_steps"]}
+            if "templates" in info:
+                rec["arms"][name]["templates"] = info["templates"]
             if name.endswith("~reseed"):
                 H.add_paired(floor[base], H.paired(idx[base], ic, edges))
         rec["seconds"] = time.monotonic() - t0
         records.append(rec)
         print(json.dumps({"shard": k, "seconds": round(rec["seconds"], 2), "g4": len(rs),
                           **{n: a["steps"] for n, a in rec["arms"].items()}}), flush=True)
-    result = {"schema": 1, "library": str(library), "sidecar": sidecar, "arms": {n: o for n, o in arms},
+    result = {"schema": 1, "library": str(library), "sidecar": sidecar, "templates": templates,
+              "arms": {n: o for n, o in arms},
               "reseed": list(reseed), "seed_rule": "[shard,1000]; reseed [shard,1000,7]", "shards": shard_list,
               "hashes": hashes, "records": records, "placement": why,
               "hists": {n: H.to_json(h) for n, h in hist.items()},
@@ -287,6 +297,7 @@ def main():
     for name in ("library", "transport", "reference", "out"):
         r.add_argument("--" + name, required=True)
     r.add_argument("--sidecar")
+    r.add_argument("--templates", help="template sidecar (valhist.descendant_templates) for unvisited / nearmiss arms")
     r.add_argument("--shards", required=True)
     r.add_argument("--arm", action="append", required=True, metavar="NAME=OPT,OPT")
     r.add_argument("--reseed", action="append", default=[], metavar="ARM")
@@ -306,7 +317,8 @@ def main():
         if set(a.reseed) - {n for n, _ in arms}:
             raise SystemExit("--reseed names an unknown arm")
         run(a.library, a.transport, a.reference, S.shards(a.shards), arms, a.out, a.sidecar, a.reseed,
-            dict(x.split("=", 1) for x in a.write), dict(x.split("=", 1) for x in a.retained), a.counters)
+            dict(x.split("=", 1) for x in a.write), dict(x.split("=", 1) for x in a.retained), a.counters,
+            a.templates)
     else:
         sm = summary(a.runs)
         print_summary(sm)
