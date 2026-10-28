@@ -175,6 +175,9 @@ def build_parser():
                             help="reflect other-bar descendant offsets where library and fast muons lean opposite ways")
             sp.add_argument("--translate-offsets", action="store_true",
                             help="other-bar descendants to the bar at fast entry + library offset from the entry")
+            sp.add_argument("--topology-sidecar", default=None, metavar="NPZ",
+                            help="other-bar descendants keep their library layer topology around the receiving muon's "
+                                 "visits (sidecar from valhist.descendant_topology sidecar for this library)")
         if name == "secondaries":
             sp.add_argument("--gen", nargs="+", default=None, metavar="ROOT", help="gen.*.root tables (CRY rates per pdg)")
         if name == "v2origin":

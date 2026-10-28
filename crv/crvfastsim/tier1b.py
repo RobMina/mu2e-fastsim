@@ -43,6 +43,14 @@ Two parts, both resampled from G4 CrvStep tables (CrvStepTableDumper) of trainin
      the next layer is one the fast muon crosses depends on the entry position. With translate an other-bar step goes
      to the bar containing (fast entry + its unrotated library offset from the library entry), as the G4 step sat
      relative to its muon; the bar-structure placement is the fallback when that point is in no bar.
+   - topology: an other-bar step keeps its layer topology relative to its own library muon. A muon's crossings in time
+     order form visits of layer planes (consecutive crossings of one plane: the modules of a sector, and the side-by-
+     side M sectors, share each plane). desc_topology stores, per other-bar row, the visit of its plane relative to the
+     anchor crossing's, its bar's width-rank offset beyond the bars crossed in that visit (signed by the muon's lean
+     along the width), and its in-bar and along-bar offsets from that visit's entry; the fast step goes to the same
+     visit and offset around the receiving muon, so never into a bar that muon crosses there. Needs the per-crossing
+     bar, muon and visit of the library (attach_topology; a sidecar rebuilt from the library's donors). Rows whose
+     plane the library muon never visited, or whose visit or bar the receiving muon lacks, keep the other placements.
 2. Non-muon primaries (e, gamma, n, p, pi from CRY). A library shower is every CrvStep whose primary is that particle,
    with absolute positions and times relative to the primary's generation time. Sampling: each non-muon CRY primary of
    the event (gen table) reaches the CRV with the library probability of its (pdg, kinetic-energy) bin, and then gets a
@@ -123,6 +131,149 @@ def crossing_context(x, geom):
     up = np.zeros(n, np.int64)
     up[np.unique(pr.i.to_numpy()[dist.to_numpy() < UPSTREAM_MM])] = 1
     return lay * 2 + up
+
+
+TOPO_NONE = -128   # no layer topology: the descendant's sector layer is not one its library muon visited
+TOPO_COLS = ("tvis", "tside", "tt0", "tt1", "tw0", "tw1", "tl0", "tl1")
+
+
+def layer_slots(geom):
+    """Per bar: its layer-plane id (library group * 100 + layer: the modules of a sector, and the side-by-side M
+    sectors, share each layer plane; sector * 100 + layer outside the groups) and its rank along the width axis
+    within that layer plane."""
+    g = _group_index(geom, np.arange(geom.nbars))
+    lid = np.where(g >= 0, 1000 + g, geom.sector.astype(np.int64)) * 100 + geom.layer.astype(np.int64)
+    w = geom.center[np.arange(geom.nbars), geom.local_to_world[:, 1]]
+    widx = pd.Series(w).groupby(lid).rank(method="dense").to_numpy().astype(np.int64) - 1
+    return lid, widx
+
+
+def _slot_lookup(geom):
+    lid, widx = layer_slots(geom)
+    code = lid * 10_000 + widx
+    order = np.argsort(code, kind="stable")
+    return code[order], order
+
+
+def slot_bar(geom, lid, widx):
+    """Bar at (sector layer, width rank), -1 where that layer has no such bar."""
+    code, order = _slot_lookup(geom)
+    want = np.asarray(lid, np.int64) * 10_000 + np.asarray(widx, np.int64)
+    i = np.minimum(np.searchsorted(code, want), len(code) - 1)
+    w = np.asarray(widx, np.int64)
+    ok = (code[i] == want) & (w >= 0) & (w < 10_000)
+    return np.where(ok, order[i], -1)
+
+
+def muon_visits(x, geom):
+    """Sector-layer visits of each primary muon (rows of x: KEY, sp = muon key, bar, t0, x0, y0, z0 = entry): its
+    crossings ordered in time, consecutive crossings of one sector layer forming one visit. Returns (mu, vis) per
+    crossing (muon id in x, visit index along that muon) and the visits (mu, vis, lid, wmin, wmax: width ranks of the
+    bars crossed in it, ex, ey, ez: entry of its first crossing), sorted by (mu, vis)."""
+    n = len(x)
+    cols = ["mu", "vis", "lid", "wmin", "wmax", "ex", "ey", "ez"]
+    if n == 0:
+        return np.zeros(0, np.int64), np.zeros(0, np.int64), pd.DataFrame({c: np.zeros(0) for c in cols})
+    lid, widx = layer_slots(geom)
+    bar = x.bar.to_numpy().astype(np.int64)
+    mu = x.groupby(KEY + ["sp"], sort=False).ngroup().to_numpy().astype(np.int64)
+    order = np.lexsort((x.t0.to_numpy(), mu))
+    m_s, l_s = mu[order], lid[bar[order]]
+    first_mu = np.r_[True, m_s[1:] != m_s[:-1]]
+    new = first_mu | np.r_[True, l_s[1:] != l_s[:-1]]
+    vg = np.cumsum(new) - 1
+    vis_s = vg - np.maximum.accumulate(np.where(first_mu, vg, 0))
+    vis = np.empty(n, np.int64)
+    vis[order] = vis_s
+    e = x[["x0", "y0", "z0"]].to_numpy()[order]
+    v = pd.DataFrame({"g": vg, "mu": m_s, "vis": vis_s, "lid": l_s, "w": widx[bar[order]],
+                      "ex": e[:, 0], "ey": e[:, 1], "ez": e[:, 2]})
+    a = v.groupby("g", sort=True).agg(mu=("mu", "first"), vis=("vis", "first"), lid=("lid", "first"),
+                                      wmin=("w", "min"), wmax=("w", "max"), ex=("ex", "first"), ey=("ey", "first"),
+                                      ez=("ez", "first")).reset_index(drop=True)
+    return mu, vis, a[cols]
+
+
+def _visit_of(visits, mu, vis):
+    """Row of visits holding (mu, vis), -1 if none (visits sorted by mu, vis)."""
+    key = visits.mu.to_numpy().astype(np.int64) * 100_000 + visits.vis.to_numpy().astype(np.int64)
+    want = np.asarray(mu, np.int64) * 100_000 + np.asarray(vis, np.int64)
+    if not len(key):
+        return np.full(len(want), -1, np.int64)
+    i = np.minimum(np.searchsorted(key, want), len(key) - 1)
+    return np.where((key[i] == want) & (np.asarray(vis) >= 0), i, -1)
+
+
+def _lean(u, axis):
+    """Sign of each direction's component along its axis (+1 when zero)."""
+    s = np.sign(u[np.arange(len(axis)), axis])
+    return np.where(s == 0, 1.0, s)
+
+
+def desc_topology(ld, lx, visits, geom):
+    """Layer topology of each other-bar library descendant relative to the visits of its own library muon (lx: xid,
+    bar, mu, vis, ux, uy, uz per library crossing, xid = row; visits from muon_visits on the library crossings).
+    tvis: visit index of the descendant's sector layer minus the anchor crossing's; tside: its bar's width-rank offset
+    beyond the bars crossed in that visit times the muon's lean along the width axis; tt/tw: in-bar thickness and width
+    coordinates (width times the lean); tl: along-bar offset from the visit entry times the muon's lean along the bar.
+    TOPO_NONE (tvis) for same-bar rows and where the sector layer was not visited. Returns a frame aligned with ld."""
+    out = pd.DataFrame({c: np.zeros(len(ld)) for c in TOPO_COLS})
+    out["tvis"] = TOPO_NONE
+    other = np.flatnonzero(ld.samebar.to_numpy() == 0)
+    if not len(other):
+        return out
+    xid = ld.xid.to_numpy()[other]
+    xb = lx.bar.to_numpy().astype(np.int64)[xid]
+    tgt = geom.center[xb] + ld[["dcx", "dcy", "dcz"]].to_numpy()[other]
+    db = bar_containing(tgt, geom)
+    if (db < 0).any() or not np.allclose(tgt, geom.center[np.maximum(db, 0)], rtol=0, atol=1e-6):
+        raise ValueError("library other-bar offset is not an exact bar centre offset")
+    lid, widx = layer_slots(geom)
+    mu, va = lx.mu.to_numpy()[xid], lx.vis.to_numpy()[xid]
+    key = visits.mu.to_numpy().astype(np.int64) * 10_000 + visits.lid.to_numpy()
+    order = np.lexsort((visits.vis.to_numpy(), key))
+    ks = key[order]
+    want = mu.astype(np.int64) * 10_000 + lid[db]
+    lo, hi = np.searchsorted(ks, want, "left"), np.searchsorted(ks, want, "right")
+    found = hi > lo
+    a, b = order[np.minimum(lo, len(order) - 1)], order[np.maximum(hi - 1, 0)]
+    vv = visits.vis.to_numpy()
+    pick = np.where(np.abs(vv[b] - va) < np.abs(vv[a] - va), b, a)   # the visit nearest the anchor
+    w = widx[db]
+    wmin, wmax = visits.wmin.to_numpy()[pick], visits.wmax.to_numpy()[pick]
+    k = np.where(w > wmax, w - wmax, np.where(w < wmin, w - wmin, 0))
+    ok = found & (k != 0)
+    ax = geom.local_to_world[db]
+    r = np.arange(len(db))
+    u = lx[["ux", "uy", "uz"]].to_numpy()[xid]
+    sw, sl = _lean(u, ax[:, 1]), _lean(u, ax[:, 2])
+    e = visits[["ex", "ey", "ez"]].to_numpy()[pick]
+    rows = other[ok]
+    out.loc[rows, "tvis"] = (vv[pick] - va)[ok]
+    out.loc[rows, "tside"] = (k * sw)[ok]
+    for end in "01":
+        loc = ld[[f"lx{end}", "ly" + end, "lz" + end]].to_numpy()[other]
+        out.loc[rows, "tt" + end] = loc[r, ax[:, 0]][ok]
+        out.loc[rows, "tw" + end] = (loc[r, ax[:, 1]] * sw)[ok]
+        out.loc[rows, "tl" + end] = ((geom.center[db][r, ax[:, 2]] + loc[r, ax[:, 2]] - e[r, ax[:, 2]]) * sl)[ok]
+    out["tvis"] = out.tvis.astype(np.int64)
+    return out
+
+
+def attach_topology(lib, crossings, visits, geom):
+    """Add the desc_topology columns to lib['libdesc'] (in memory) from per-library-crossing (xid, bar, mu, vis) and the
+    library muons' visits (a topology sidecar); the library trees themselves are not changed."""
+    lx = lib["libxing"].drop(columns=[c for c in ("bar", "mu", "vis") if c in lib["libxing"].columns])
+    c = crossings.sort_values("xid", kind="stable")
+    if not np.array_equal(c.xid.to_numpy(), lx.xid.to_numpy()) or not np.array_equal(lx.xid, np.arange(len(lx))):
+        raise ValueError("topology sidecar crossings do not match the library crossings")
+    lx = lx.assign(bar=c.bar.to_numpy(), mu=c.mu.to_numpy(), vis=c.vis.to_numpy())
+    vs = visits.sort_values(["mu", "vis"], kind="stable").reset_index(drop=True)
+    topo = desc_topology(lib["libdesc"], lx, vs, geom)
+    ld = lib["libdesc"].drop(columns=[c for c in TOPO_COLS if c in lib["libdesc"].columns])
+    lib = dict(lib)
+    lib["libdesc"] = pd.concat([ld.reset_index(drop=True), topo], axis=1)
+    return lib
 
 
 INSET_MM = 0.1
@@ -371,21 +522,59 @@ def read_library(path):
 
 
 # ----------------------------------------------------------------------------------------------------------- sample
+def _topology_targets(fx, dd, ix, fu, geom):
+    """Target bars and endpoints of other-bar library rows dd (desc_topology columns) placed by their layer topology
+    on the fast crossings ix: the visit tvis after the anchor's along the receiving muon, the bar tside ranks beyond
+    the bars it crosses there (lean-signed), in-bar thickness/width and the along-bar offset from that visit's entry.
+    Rows without topology, or whose visit or bar does not exist for the receiving muon, are not hit."""
+    n = len(dd)
+    q0, q1 = np.zeros((n, 3)), np.zeros((n, 3))
+    tv = dd.tvis.to_numpy().astype(np.int64)
+    mu, vis, visits = muon_visits(fx, geom)
+    has = tv != TOPO_NONE
+    row = np.full(n, -1, np.int64)
+    if has.any():
+        row[has] = _visit_of(visits, mu[ix[has]], vis[ix[has]] + tv[has])
+    hit = row >= 0
+    vr = np.maximum(row, 0)
+    lid = visits.lid.to_numpy().astype(np.int64)[vr]
+    wmin, wmax = visits.wmin.to_numpy().astype(np.int64)[vr], visits.wmax.to_numpy().astype(np.int64)[vr]
+    ref = slot_bar(geom, lid, wmin)                     # a bar of that layer: its axes
+    ax = geom.local_to_world[np.maximum(ref, 0)]
+    sw, sl = _lean(fu, ax[:, 1]), _lean(fu, ax[:, 2])
+    k = np.rint(dd.tside.to_numpy() * sw).astype(np.int64)
+    tb = slot_bar(geom, lid, np.where(k > 0, wmax + k, wmin + k))
+    hit &= (tb >= 0) & (ref >= 0)
+    tbs = np.maximum(tb, 0)
+    r = np.arange(n)
+    e = visits[["ex", "ey", "ez"]].to_numpy()[vr]
+    for q, end in ((q0, "0"), (q1, "1")):
+        q[:] = geom.center[tbs]
+        q[r, ax[:, 0]] += dd["tt" + end].to_numpy()
+        q[r, ax[:, 1]] += dd["tw" + end].to_numpy() * sw
+        q[r, ax[:, 2]] = e[r, ax[:, 2]] + dd["tl" + end].to_numpy() * sl
+    return hit, tb, q0, q1
+
+
 def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=False, mirror=False,
-                        translate=False, trace=None):
+                        translate=False, topology=False, trace=None):
     """Descendant steps for the fast crossings fx (one row per crossing). Returns (steps, n_dropped, n_clamped, why).
     Opt-in (all off reproduces the earlier sampling bit for bit): context = draw within the crossing-context cell
     (library with a ctx column); contain = same-bar endpoints into the bar; point = other-bar steps whose target bar
     is missing or along another axis go to the bar containing their library position relative to the fast crossing;
     mirror = other-bar offsets reflected across the crossing bar's width (length) plane where the library and fast muons
     point opposite ways along that axis; translate = other-bar steps go to the bar containing their library offset from
-    the muon entry (unrotated) added to the fast entry, the bar-structure placement remaining the fallback.
+    the muon entry (unrotated) added to the fast entry, the bar-structure placement remaining the fallback;
+    topology = other-bar steps keep their library layer topology around the receiving muon's own sector-layer visits
+    (library with the desc_topology columns, attach_topology), the other placements remaining the fallback.
     An optional trace dict records pre-placement donor labels and final bars without consuming random draws."""
     p = np.sqrt(fx.px0 ** 2 + fx.py0 ** 2 + fx.pz0 ** 2).to_numpy()
     b = _bin(lib["libbins"], _group_index(geom, fx.bar), p, fx.len.to_numpy())
     lx = lib["libxing"]
     if context and "ctx" not in lx.columns:
         raise ValueError("crossing context needs a library built with the ctx column (tier1b-build after this change)")
+    if topology and "tvis" not in lib["libdesc"].columns:
+        raise ValueError("topology placement needs the desc_topology columns (attach_topology with a sidecar)")
     if context:   # draw within the crossing's (bin, context) cell, else within its bin
         lx = lx.sort_values(["bin", "ctx"], kind="stable")
         code = b * N_CTX + crossing_context(fx, geom)
@@ -464,6 +653,11 @@ def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=
             pt[ib[hit]], tb[ib[hit]], bad[ib[hit]] = True, pb[hit], False
             Q0[ib[hit]], Q1[ib[hit]] = q0[hit], q1[hit]
             why["point"] = int(hit.sum())
+        if topology:   # the library layer topology around the receiving muon's own visits (sector layer, side, along)
+            hit, tq, q0, q1 = _topology_targets(fx, dd.iloc[np.flatnonzero(other)], ix[other], fu[other], geom)
+            pt[hit], tb[hit], bad[hit] = True, tq[hit], False
+            Q0[hit], Q1[hit] = q0[hit], q1[hit]
+            why["topology"] = int(hit.sum())
         tb[bad] = nearest_bar(target[bad], xa[bad], geom)
         ok = tb >= 0
         tbs = np.where(ok, tb, 0)
@@ -546,12 +740,13 @@ def _showers_for_gen(gen, lib, rng):
 
 
 def sample(fast_steps, fast_parts, gen, lib, geom, rng, showers=True, context=False, contain=False, point=False,
-           mirror=False, translate=False):
+           mirror=False, translate=False, topology=False):
     """Fast tier-1a tables + tier 1b: (steps, particles, info). Muons keep their keys (1, or 1..n with all_muons);
     descendants follow them; showers k*1e7+sp. showers=False: descendants only (run configurations whose bars are not
     the library's: the showers carry absolute extracted v04 bar positions)."""
     fx = fast_steps.copy()
-    desc, n_drop, n_clamp, why = _desc_for_crossings(fx, lib, geom, rng, context, contain, point, mirror, translate)
+    desc, n_drop, n_clamp, why = _desc_for_crossings(fx, lib, geom, rng, context, contain, point, mirror, translate,
+                                                     topology)
     # descendant particles: one per (event, crossing, library particle), keys after the event's muon keys (2.. with one
     # muon), parent = the muon of the crossing (tier-1a `sp`)
     nmu = fast_parts.groupby(KEY, sort=False).key.max().rename("kmax").reset_index() if len(fast_parts) else None
