@@ -372,14 +372,15 @@ def read_library(path):
 
 # ----------------------------------------------------------------------------------------------------------- sample
 def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=False, mirror=False,
-                        translate=False):
+                        translate=False, trace=None):
     """Descendant steps for the fast crossings fx (one row per crossing). Returns (steps, n_dropped, n_clamped, why).
     Opt-in (all off reproduces the earlier sampling bit for bit): context = draw within the crossing-context cell
     (library with a ctx column); contain = same-bar endpoints into the bar; point = other-bar steps whose target bar
     is missing or along another axis go to the bar containing their library position relative to the fast crossing;
     mirror = other-bar offsets reflected across the crossing bar's width (length) plane where the library and fast muons
     point opposite ways along that axis; translate = other-bar steps go to the bar containing their library offset from
-    the muon entry (unrotated) added to the fast entry, the bar-structure placement remaining the fallback."""
+    the muon entry (unrotated) added to the fast entry, the bar-structure placement remaining the fallback.
+    An optional trace dict records pre-placement donor labels and final bars without consuming random draws."""
     p = np.sqrt(fx.px0 ** 2 + fx.py0 ** 2 + fx.pz0 ** 2).to_numpy()
     b = _bin(lib["libbins"], _group_index(geom, fx.bar), p, fx.len.to_numpy())
     lx = lib["libxing"]
@@ -505,6 +506,9 @@ def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=
             idx = np.flatnonzero(sb)[out_]
             r0[idx], r1[idx] = fit_inside(r0[idx], r1[idx], c[out_] - h[out_], c[out_] + h[out_])
     keep = bar >= 0
+    if trace is not None:
+        trace.update(xi=ix.copy(), xid=pick[ix].copy(), source_samebar=same.copy(),
+                     source_edep=dd.edep.to_numpy().copy(), target_bar=bar.copy(), kept=keep.copy())
     out = pd.DataFrame({k: fx[k].to_numpy()[ix][keep] for k in KEY})
     out["bar"] = bar[keep]
     out["lsp"] = dd.sp.to_numpy()[keep]

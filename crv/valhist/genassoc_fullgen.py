@@ -113,16 +113,17 @@ def original_inputs(paths):
     return rows, bound
 
 
-def compare_payload(old, new):
+def compare_payload(old, new, expected_events=None):
     """Compare every original column/row, preserving order and exact values (no tolerance)."""
+    expected_events = GENERATED_PER_FILE if expected_events is None else variants._positive_int(expected_events, "expected events")
     validation = genassoc.validate_generator_stream(str(new))
     if validation["schema_version"] != 2:
         raise ValueError("fullgen audit requires schema-v2 event census")
     # NumPy reads string branches without the optional awkward-pandas adapter.
     with uproot.open(new) as root:
         census = pd.DataFrame(root["dump/events"].arrays(library="np"))
-    if len(census) != GENERATED_PER_FILE:
-        raise ValueError(f"fullgen event count must be {GENERATED_PER_FILE}, got {len(census)}")
+    if len(census) != expected_events:
+        raise ValueError(f"fullgen event count must be {expected_events}, got {len(census)}")
     if "gen_tag" not in census or not census.gen_tag.eq("cosmicTimeOffset").all():
         raise ValueError("fullgen configured generator tag mismatch")
     comparisons = {}

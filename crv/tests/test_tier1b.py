@@ -185,6 +185,23 @@ def test_context_draw_and_fallback(geom, monkeypatch):
     assert got == {-1.0, -3.0}
 
 
+@pytest.mark.parametrize("context", [False, True])
+def test_descendant_trace_is_rng_and_payload_inert(geom, context):
+    bar = 10
+    fs, _ = _down(geom, bar)
+    lib = _ctx_lib(geom, bar, (0, 1))
+    a_rng, b_rng = np.random.default_rng(17), np.random.default_rng(17)
+    a = T._desc_for_crossings(fs, lib, geom, a_rng, context=context, contain=True, point=True)
+    trace = {}
+    b = T._desc_for_crossings(fs, lib, geom, b_rng, context=context, contain=True, point=True, trace=trace)
+    pd.testing.assert_frame_equal(a[0], b[0], check_exact=True)
+    assert a[1:] == b[1:]
+    np.testing.assert_array_equal(a_rng.random(20), b_rng.random(20))
+    np.testing.assert_array_equal(trace["target_bar"][trace["kept"]], b[0].bar)
+    np.testing.assert_array_equal(trace["source_edep"][trace["kept"]], b[0].edep)
+    assert trace["source_samebar"].all()
+
+
 def test_default_ignores_ctx_column(geom):
     """Options off: a library with the ctx column samples exactly as the same library without it."""
     bar = int(np.flatnonzero(T.layer_rank(geom) == 0)[0])
