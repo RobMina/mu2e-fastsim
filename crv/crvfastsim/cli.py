@@ -175,6 +175,17 @@ def build_parser():
                             help="reflect other-bar descendant offsets where library and fast muons lean opposite ways")
             sp.add_argument("--translate-offsets", action="store_true",
                             help="other-bar descendants to the bar at fast entry + library offset from the entry")
+            sp.add_argument("--topology-sidecar", default=None, metavar="NPZ",
+                            help="other-bar descendants keep their library layer topology around the receiving muon's "
+                                 "visits (sidecar from valhist.descendant_topology sidecar for this library)")
+            sp.add_argument("--template-sidecar", default=None, metavar="NPZ",
+                            help="position-conditioned template components for this library "
+                                 "(valhist.descendant_templates sidecar); turn them on with the next two flags")
+            sp.add_argument("--unvisited-layers", action="store_true",
+                            help="descendants in layer planes the library muon never visits: drawn by the crossing's "
+                                 "position cell instead of with its offsets")
+            sp.add_argument("--near-miss", action="store_true",
+                            help="near-miss templates for generated muons of events with no fast crossing")
         if name == "secondaries":
             sp.add_argument("--gen", nargs="+", default=None, metavar="ROOT", help="gen.*.root tables (CRY rates per pdg)")
         if name == "v2origin":
