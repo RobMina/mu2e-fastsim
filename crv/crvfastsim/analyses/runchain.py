@@ -3,12 +3,13 @@ digis -> pulses -> clusters (crvfastsim/chain.py), with the cost of every stage.
 files of the stock chain on the same shards) it reports clusters per generated event per sector type, fast vs stock.
 
     runchain gen.<shard>.root [...] --calib crvcalib.csv [--deviation crvphoton.csv] [--jax]
-             [--tier1b strict_v2|legacy [--tier1b-dir DIR] | --library lib.root]
+             [--tier1b strict_v3|strict_v2|legacy [--tier1b-dir DIR] | --library lib.root]
              [--reco-cpu] [--max-events N] [--compare ref.<shard>.root ...] [--emit shard.json] --outdir DIR
     runchain-merge shard*.json --outdir DIR      (node totals: events, clusters per sector type, rates)
 
-Tier 1b (crvfastsim.tier1b_assets): default asset set strict_v2 for extracted_v04 (strict library, crossing context,
-containment, point and topology placement, templates); --tier1b legacy is the tier1b_v7 library without placement (the
+Tier 1b (crvfastsim.tier1b_assets): default asset set strict_v3 for extracted_v04 (strict library, crossing context,
+containment, point and topology placement, v3 templates, chord placement); --tier1b strict_v2 is the same without
+chord placement and with the v2 templates (the default 2026-10-28 to 29); --tier1b legacy is the tier1b_v7 library without placement (the
 default before 2026-10-28) and the only set of the named run configurations; --library is a custom library sampled
 without placement options.
 

@@ -2,6 +2,9 @@
 
 ## Decision
 
+**2026-10-29: `chord` is part of the default asset set `strict_v3`** ([tier1b-default.md](tier1b-default.md));
+`follow` stays opt-in. The text below is the record of the opt-in merge.
+
 Two new **opt-in** options on top of the templates arm (`descendant-template-closure.md`), with a new template
 sidecar (v3) that adds the library crossings' chords and a census eleven times larger:
 

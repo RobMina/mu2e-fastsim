@@ -65,7 +65,8 @@ Two parts, both resampled from G4 CrvStep tables (CrvStepTableDumper) of trainin
      of its cell (kinetic energy, the library group whose box its straight generated line comes closest to, and that
      distance), templates of the cell over the no-crossing muons of a generator census in the cell, and then gets a
      random template of the cell at its absolute positions, times relative to the muon's generation time.
-   Opt-in same-bar options (sample(chord, follow); a template sidecar with the library chords, attach_templates):
+   Same-bar options (sample(chord, follow); a template sidecar with the library chords, attach_templates; the default
+   asset set strict_v3 turns chord on, follow stays opt-in):
    - chord: a same-bar step is placed at its distance along the library muon's direction from the entry by default, so
      when the library chord within the bin is shorter (longer) than the fast one the steps crowd toward the entry
      face (overshoot the exit and fall back to their library position across the bar). With chord the component

@@ -1,13 +1,17 @@
-# Tier-1b default: the strict library with placement and templates
+# Tier-1b default: the strict library with placement, templates and chord placement
 
-From 2026-10-28 the tier-1b step sampling of the **extracted** CRV configuration (`extracted_v04`) defaults to the
-asset set `strict_v2`. The previous default stays available as the asset set `legacy`. The sets are defined in
+From 2026-10-29 the tier-1b step sampling of the **extracted** CRV configuration (`extracted_v04`) defaults to the
+asset set `strict_v3`: the strict library with placement and the v3 templates, plus chord placement of the same-bar
+descendant steps ([descendant-samebar-closure.md](descendant-samebar-closure.md)). From 2026-10-28 to 2026-10-29 the
+default was `strict_v2` (v2 templates, no chord placement), which stays available by name. The default before
+2026-10-28 stays available as the asset set `legacy`. The sets are defined in
 `crvfastsim/tier1b_assets.py`. `crvfastsim/tier1b.py` itself has no default library: the callers pick a set and pass
 its options down.
 
 | Set | Library | Sidecars | `tier1b.sample` options | Run configurations |
 |---|---|---|---|---|
-| `strict_v2` (default) | `tier1b_strict_v2/library.root`, sha256 `ebb015a7...7c7` (20 association-certified donors, [generator-association-repair.md](generator-association-repair.md)) | `topology_sidecar_strict_v2_v2.npz` ([descendant-placement-closure.md](descendant-placement-closure.md)), `templates_v2.npz` ([descendant-template-closure.md](descendant-template-closure.md)), each with its `.json` | `context`, `contain`, `point`, `topology`, `unvisited`, `nearmiss` | `extracted_v04` only |
+| `strict_v3` (default) | the `strict_v2` library and topology sidecar | `templates_v3.npz` (library chords; near-miss census g4ref_v1 1-10 + odd g4ref_v2 21-219), with its `.json` | the `strict_v2` options and `chord` | `extracted_v04` only |
+| `strict_v2` | `tier1b_strict_v2/library.root`, sha256 `ebb015a7...7c7` (20 association-certified donors, [generator-association-repair.md](generator-association-repair.md)) | `topology_sidecar_strict_v2_v2.npz` ([descendant-placement-closure.md](descendant-placement-closure.md)), `templates_v2.npz` ([descendant-template-closure.md](descendant-template-closure.md)), each with its `.json` | `context`, `contain`, `point`, `topology`, `unvisited`, `nearmiss` | `extracted_v04` only |
 | `legacy` | `tier1b_v7/lib_prod_as_20files.root` | none | none | all (the only set of `run1a_v01`, `run1b_v01`, `run2_v10`) |
 
 Paths are relative to `$CRVFS_DATA`. `--tier1b-dir DIR` points at a copy of the set's files, as the endpoints use.
@@ -16,11 +20,14 @@ Paths are relative to `$CRVFS_DATA`. `--tier1b-dir DIR` points at a copy of the 
 
 | Caller | Default | Legacy | Custom library |
 |---|---|---|---|
-| `tier1b-apply` | `strict_v2` | `--tier1b legacy` | `--library LIB` (placement only with the explicit flags `--crossing-context` ... `--near-miss`) |
-| `runchain`, `e2e-bench` | the run configuration's set (`strict_v2` for extracted, `legacy` for the named ones) | `--tier1b legacy` | `--library LIB` (no placement) |
-| core `chain_point` | parameter `tier1b` 0 = the configuration's set | `tier1b` 1 | - |
-| core kit `chain`, `regression` (EAF, in place) | `strict_v2` | - | - |
-| core `uva/chain_array_uva.sh`, `chain_node_uva.sh`, `aurora/chain_node_aurora.sh` | `T1B=strict_v2` | `T1B=legacy` | - |
+| `tier1b-apply` | `strict_v3` | `--tier1b legacy` | `--library LIB` (placement only with the explicit flags `--crossing-context` ... `--near-miss`) |
+| `runchain`, `e2e-bench` | the run configuration's set (`strict_v3` for extracted, `legacy` for the named ones) | `--tier1b legacy` | `--library LIB` (no placement) |
+| core `chain_point` | parameter `tier1b` 0 = the configuration's set (`tier1b` 2 = `strict_v2`) | `tier1b` 1 | - |
+| core kit `chain`, `regression` (EAF, in place) | `strict_v3` | - | - |
+| core `uva/chain_array_uva.sh`, `chain_node_uva.sh`, `aurora/chain_node_aurora.sh` | `T1B=strict_v3` (`T1B=strict_v2`) | `T1B=legacy` | - |
+
+Any `strict_v*` set name is selected with `--tier1b NAME`. `chain_point` records with `tier1b` 0 written on
+2026-10-28 or 29 ran `strict_v2`.
 
 `--tier1b` and `--library` cannot be combined. The legacy set and an explicit `--library tier1b_v7/...` call
 `tier1b.sample` exactly as before, so they reproduce the earlier default output bit for bit (evidence below). Scripts
@@ -28,7 +35,7 @@ under `scripts/` that pass `--library .../lib_prod_as_20files.root` keep reprodu
 
 **Named run configurations have no library of their own.** `run1a_v01`, `run1b_v01` and `run2_v10` keep the legacy
 set: their sectors are mapped onto the extracted library groups (`runconfig.lib_group`) and their non-muon showers
-are off. `--tier1b strict_v2` with a named configuration is refused. The topology and template sidecars describe the
+are off. `--tier1b strict_v3` or `strict_v2` with a named configuration is refused. The topology and template sidecars describe the
 extracted v04 layer structure and the strict library's crossings, so they do not carry over to other geometries.
 
 ## Provenance and hashing
@@ -43,10 +50,18 @@ extracted v04 layer structure and the strict library's crossings, so they do not
 - `runchain` JSON (stats and `--emit`) records `tier1b` (set, paths, options, pinned hash). `runchain-merge` refuses
   shards that ran different sets. Shards of one set staged in different directories are compatible.
 - Endpoints stream the whole set into the node-shared library directory (`chain_point`) or the job tmpfs (UVA,
-  Aurora). Each file is md5- and sha256-checked against the pinned manifest. The node cache key of `strict_v2` is a
-  digest of all five file hashes; `legacy` keeps its earlier key (the library hash).
+  Aurora). Each file is md5- and sha256-checked against the pinned manifest. The node cache key of a `strict_v*` set is
+  a digest of all five file hashes; `legacy` keeps its earlier key (the library hash).
 
-## Evidence for the switch
+## Evidence for chord placement (2026-10-29)
+
+Held-out step closure on even g4ref_v2 shards 22-220 (5 M generated events, none used by the census), templates
+(v2) -> chord, deck chi2/ndf vs G4: all/y 3.23 -> 1.73, T1/y 4.53 -> 1.60, T2/y 5.42 -> 2.84; z, NStep, lE and the
+step yields are unchanged within their errors. Descendant steps only: all/y 7.73 -> 4.56, T1/y 13.3 -> 6.3. The
+`follow` option (chain draw along the library muon) is not part of the default: it lowers NStep (4.67 -> 3.03) but
+raises y and lE. See [descendant-samebar-closure.md](descendant-samebar-closure.md).
+
+## Evidence for the strict_v2 switch (2026-10-28)
 
 Held-out step closure on g4ref_v2 shards 21-220 (10 M generated events), topology placement -> templates, deck
 chi2/ndf: bar 41.5 -> 20.3, EX y/z 6.80/6.95 -> 2.91/4.10, M y 4.60 -> 1.46. Descendant yields are within 3.2 % of G4

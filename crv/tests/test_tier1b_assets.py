@@ -11,15 +11,19 @@ from crvfastsim.analyses import tier1b as A
 from test_e2e_bench import pipeline  # noqa: F401  (fixture)
 
 STRICT = dict(context=True, contain=True, point=True, topology=True, unvisited=True, nearmiss=True)
+DEFAULT = dict(STRICT, chord=True)                       # strict_v3: strict_v2 + v3 templates + chord placement
 
 
 def test_default_per_run_configuration():
     s = T.resolve(data="/D")
-    assert s.name == "strict_v2" and s.options == STRICT
+    assert s.name == "strict_v3" and s.options == DEFAULT
     assert s.library == "/D/tier1b_strict_v2/library.root"
     assert s.paths() == ["/D/tier1b_strict_v2/library.root", "/D/tier1b_strict_v2/topology_sidecar_strict_v2_v2.npz",
                          "/D/tier1b_strict_v2/topology_sidecar_strict_v2_v2.npz.json",
-                         "/D/tier1b_strict_v2/templates_v2.npz", "/D/tier1b_strict_v2/templates_v2.npz.json"]
+                         "/D/tier1b_strict_v2/templates_v3.npz", "/D/tier1b_strict_v2/templates_v3.npz.json"]
+    old = T.resolve("strict_v2", data="/D")
+    assert old.options == STRICT and old.templates == "/D/tier1b_strict_v2/templates_v2.npz"
+    assert old.library == s.library and old.library_sha256 == s.library_sha256 and old.topology == s.topology
     for rc in ("run1a_v01", "run1b_v01", "run2_v10"):        # no library of their own: legacy only
         assert T.resolve(run_config=rc, data="/D").name == "legacy"
         with pytest.raises(ValueError, match="no library for run configuration"):
@@ -35,7 +39,7 @@ def test_custom_library_and_refusals(monkeypatch):
     with pytest.raises(ValueError, match="not both"):
         T.resolve("legacy", library="lib.root")
     with pytest.raises(ValueError, match="unknown tier-1b set"):
-        T.resolve("strict_v3", data="/D")
+        T.resolve("strict_v4", data="/D")
     monkeypatch.delenv("CRVFS_DATA", raising=False)
     with pytest.raises(ValueError, match="CRVFS_DATA"):
         T.resolve()
@@ -101,8 +105,10 @@ def test_runchain_passes_the_set_options(pipeline, monkeypatch, tmp_path):  # no
     monkeypatch.setenv("CRVFS_DATA", str(tmp_path))
     base = dict(inputs=[str(tmp_path / "gen.root")], calib="nominal", gdml="world")
     res = R.run(outdir=str(tmp_path / "d"), **base)
-    assert seen[-1] == {"showers": True, **STRICT} and loaded[-1].name == "strict_v2"
-    assert res["tier1b"]["set"] == "strict_v2" and res["tier1b"]["options"] == STRICT
+    assert seen[-1] == {"showers": True, **DEFAULT} and loaded[-1].name == "strict_v3"
+    assert res["tier1b"]["set"] == "strict_v3" and res["tier1b"]["options"] == DEFAULT
+    res = R.run(outdir=str(tmp_path / "v2"), tier1b_set="strict_v2", **base)
+    assert seen[-1] == {"showers": True, **STRICT} and res["tier1b"]["set"] == "strict_v2"
     res = R.run(outdir=str(tmp_path / "l"), tier1b_set="legacy", **base)
     assert seen[-1] == {"showers": True} and res["tier1b"]["set"] == "legacy"
     R.run(outdir=str(tmp_path / "c"), library="custom.root", **base)
@@ -115,7 +121,8 @@ def test_prepared_signature_binds_the_set(tmp_path):
     rc, cfg = R.runconfig.get(), R.chain.ChainConfig()
     sig = lambda spec: R._signature(rc, cfg, "world", spec, "nominal", None, False, False, False)
     strict, legacy = T.resolve(data=str(tmp_path)), T.resolve("legacy", data=str(tmp_path))
-    assert sig(strict) != sig(legacy) and sig(strict)["tier1b"]["options"] == STRICT
+    assert sig(strict) != sig(legacy) and sig(strict)["tier1b"]["options"] == DEFAULT
+    assert sig(strict) != sig(T.resolve("strict_v2", data=str(tmp_path)))
     assert sig(legacy)["paths"] == [str(Path("world").resolve()), str(Path(legacy.library).resolve()), "nominal", None]
 
 
@@ -148,7 +155,7 @@ def test_tier1b_apply_default_legacy_and_custom(tmp_path, monkeypatch):
     monkeypatch.setattr(A.tier1b_assets, "load", lambda spec, geom: loaded.append(spec) or {})
     monkeypatch.setenv("CRVFS_DATA", str(tmp_path))
     A.apply(["fastC.x.root"], str(tmp_path))
-    assert seen[-1] == STRICT and loaded[-1].name == "strict_v2"
+    assert seen[-1] == DEFAULT and loaded[-1].name == "strict_v3"
     A.apply(["fastC.x.root"], str(tmp_path), tier1b_set="legacy")
     assert seen[-1] == {} and loaded[-1].name == "legacy"
     A.apply(["fastC.x.root"], str(tmp_path), library="lib.root")

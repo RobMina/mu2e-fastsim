@@ -328,7 +328,7 @@ def test_setup_hashes_the_tier1b_sidecars(tmp_path, monkeypatch):
     B.Recorder(tmp_path, 1, provenance).setup(R.runconfig.get(), R.chain.ChainConfig(), str(tmp_path / "gdml"), spec,
                                               str(tmp_path / "calib"), None)
     assert set(spec.paths()) <= set(provenance["assets_sha256"]) and len(spec.paths()) == 5
-    assert provenance["effective_tier1b"]["name"] == "strict_v2" and provenance["effective_tier1b"]["options"]["nearmiss"]
+    assert provenance["effective_tier1b"]["name"] == "strict_v3" and provenance["effective_tier1b"]["options"]["chord"]
     Path(spec.templates).write_text("changed")
     with pytest.raises(ValueError, match="asset provenance changed"):
         B.Recorder(tmp_path, 1, provenance).setup(R.runconfig.get(), R.chain.ChainConfig(), str(tmp_path / "gdml"),

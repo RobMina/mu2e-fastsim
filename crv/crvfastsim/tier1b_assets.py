@@ -3,14 +3,17 @@
 The callers (tier1b-apply, runchain, e2e-bench, the endpoint kits) pick one set by name; crvfastsim.tier1b itself has
 no default library. docs/tier1b-default.md has the provenance and the evidence behind the default.
 
-  strict_v2  default for extracted_v04: association-certified library (20 donors) with crossing context, endpoint
-             containment, point placement, topology placement and the never-visited-layer / near-miss templates.
+  strict_v3  default for extracted_v04: strict_v2 with the v3 template sidecar (library chords, the larger near-miss
+             census) and chord placement of the same-bar descendant steps.
+  strict_v2  association-certified library (20 donors) with crossing context, endpoint containment, point
+             placement, topology placement and the never-visited-layer / near-miss templates (the default
+             2026-10-28 to 2026-10-29).
   legacy     the tier1b_v7 production library with no placement options (the default before 2026-10-28), and the
              only set for the named run configurations (run1a_v01, run1b_v01, run2_v10): no library has been built
              on their geometry, so they map their sectors onto this extracted library's groups (runconfig.lib_group).
 
     spec = resolve(run_config="extracted_v04")            # the configuration's default set under $CRVFS_DATA
-    spec = resolve("legacy"); spec = resolve("strict_v2", directory="/dev/shm/x")   # files staged elsewhere
+    spec = resolve("legacy"); spec = resolve("strict_v3", directory="/dev/shm/x")   # files staged elsewhere
     spec = resolve(library="lib.root")                     # a custom library, no placement options
     lib = load(spec, geom); tier1b.sample(..., lib, geom, rng, **spec.options)
 """
@@ -21,7 +24,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT = "strict_v2"
+DEFAULT = "strict_v3"
 LEGACY = "legacy"
 EXTRACTED = "extracted_v04"
 
@@ -42,11 +45,16 @@ class AssetSet:
         return [self.library] + side
 
 
+_STRICT = dict(context=True, contain=True, point=True, topology=True, unvisited=True, nearmiss=True)
+_STRICT_LIB = "ebb015a76d56edcf96c5bc533daa96729e3851ee3e59185abf0be5fd469257c7"
+
 SETS = {
+    "strict_v3": AssetSet(
+        "tier1b_strict_v2", "library.root", "topology_sidecar_strict_v2_v2.npz", "templates_v3.npz", _STRICT_LIB,
+        dict(_STRICT, chord=True)),
     "strict_v2": AssetSet(
         "tier1b_strict_v2", "library.root", "topology_sidecar_strict_v2_v2.npz", "templates_v2.npz",
-        "ebb015a76d56edcf96c5bc533daa96729e3851ee3e59185abf0be5fd469257c7",
-        dict(context=True, contain=True, point=True, topology=True, unvisited=True, nearmiss=True)),
+        _STRICT_LIB, dict(_STRICT)),
     "legacy": AssetSet("tier1b_v7", "lib_prod_as_20files.root",
                        run_configs=(EXTRACTED, "run1a_v01", "run1b_v01", "run2_v10")),
 }
@@ -73,7 +81,7 @@ class Tier1bSpec:
 
 
 def default_for(run_config=None):
-    """The default set of a run configuration: strict_v2 for extracted_v04, legacy for the named ones."""
+    """The default set of a run configuration: strict_v3 for extracted_v04, legacy for the named ones."""
     return DEFAULT if (run_config or EXTRACTED) == EXTRACTED else LEGACY
 
 

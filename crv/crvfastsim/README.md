@@ -113,9 +113,10 @@ resampled from G4 CrvStep tables of **training** shards and checked on others.
   (pdg, kinetic-energy) bin and then gets a recorded G4 shower of that bin (absolute positions; bar indices of the
   library event, so a geometry move does not move them).
 - *Default asset set* (`tier1b_assets.py`, [docs/tier1b-default.md](../docs/tier1b-default.md)): for extracted_v04 the
-  callers (`tier1b-apply`, `runchain`, `e2e-bench`, the endpoint kits) use `strict_v2`: the association-certified
+  callers (`tier1b-apply`, `runchain`, `e2e-bench`, the endpoint kits) use `strict_v3`: the association-certified
   library with crossing context, endpoint containment, point and topology placement, never-visited-layer and near-miss
-  templates. `--tier1b legacy` is the `tier1b_v7` library without placement (the default before 2026-10-28), and the
+  templates from the v3 sidecar, and chord placement of the same-bar descendant steps. `--tier1b strict_v2` is the
+  same without chord placement, with the v2 templates (the default 2026-10-28 to 29). `--tier1b legacy` is the `tier1b_v7` library without placement (the default before 2026-10-28), and the
   only set of the named run configurations, which have no library of their own.
 - *Build*: `tier1b-build crvsteps.*.root --gen gen.*.root --out lib.root`, one file at a time (a 5-file production
   build peaks at 5.2 GB). Production dts (`art/dump_prod_as.sh`) have no gen stream: pass `--generated N`
@@ -157,7 +158,7 @@ Outputs are a stats JSON (`plots.write_json`: NaN → null) plus figures.
 | `v2compare` | V2: two CrvRecoTableDumper arms (`--compare` = reference); `--steps`/`--compare-steps` add the layer-efficiency diagnostic; `--generated N` for rates per generated event. Batchable | `v2compare_stats.json`, `v2compare_pe.png` |
 | `secondaries` | tier-1b design input: G4 steps beyond the primary muon (descendants by process, birth place and bar; non-muon primaries by pdg and energy) | `secondaries_stats.json`, `secondaries_extra.png` |
 | `tier1b-build` | tier-1b library from G4 CrvStep tables (`--gen`, `--out`, `--generated`) | `lib.root` + `lib.json` |
-| `tier1b-apply` | add library descendants and showers to fast tables (default set `strict_v2`; `--tier1b legacy`, `--tier1b-dir`, or a custom `--library` with placement flags; `--seed`) | `fast1b.*.root` |
+| `tier1b-apply` | add library descendants and showers to fast tables (default set `strict_v3`; `--tier1b strict_v2`, `--tier1b legacy`, `--tier1b-dir`, or a custom `--library` with placement flags; `--seed`) | `fast1b.*.root` |
 | `tier1b-check` | V3 step-level closure per group vs G4 tables of the same shards (`--compare`) | `tier1b_check.json` |
 | `runchain` | the whole fast chain on CRY gen tables (tier 1b: the configuration's set, `--tier1b legacy` or a custom `--library`; `--calib` CRVCalib + channel-map CSV, `--deviation`, `--jax`, `--max-events`, `--compare` stock reco tables): clusters per generated event per sector type, cost per stage | `runchain_stats.json` |
 | `v4sipm` | V4 SiPM-charge stage vs stock `MakeCrvSiPMCharges` on the same photons (`--deviation`, `--max-steps`, `--jax`, `--no-stock`) | `v4sipm_stats.json` |
