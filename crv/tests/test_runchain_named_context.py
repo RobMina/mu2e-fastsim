@@ -19,7 +19,8 @@ def ordinary(state, **kw):
 @pytest.mark.parametrize("name", [None, *R.runconfig.names()])
 @pytest.mark.parametrize("window", [None, "offspill", "onspill", (-10, 900)])
 def test_resolver_preserves_default_physics_and_contract(name, window):
-    rc, cfg, gdml, contract = R._resolve("lib", "nominal", None, "world", False, None, name, window)
+    rc, cfg, gdml, contract, spec = R._resolve("lib", "nominal", None, "world", False, None, name, window)
+    assert spec.name is None and spec.library == "lib" and spec.options == {}     # custom library: no placement
     old = R.runconfig.get(name, window if window or not name else "offspill")
     old_cfg = old.chain_config(jax=False) if old.name != R.runconfig.DEFAULT or window else R.chain.ChainConfig(jax=False)
     assert dataclasses.asdict(cfg) == dataclasses.asdict(old_cfg)

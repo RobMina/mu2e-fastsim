@@ -9,6 +9,7 @@ import argparse
 import sys
 
 from .analyses import census, crossingpos, runchain, g4cost, g4muon, pulsematch, secondaries, tier1b, transport, v0check, v1compare, v2compare, v2origin, v4photons, v4sipm
+from . import tier1b_assets as T1B
 from .reco import cli as reco_cli
 
 ANALYSES = {
@@ -104,8 +105,16 @@ def build_parser():
             sp.add_argument("--jax", action="store_true", help="fast arm = JAX twin (response/photons_jax.py)")
             sp.add_argument("--no-stock", action="store_true", help="reference = numpy port (no Offline needed)")
             sp.add_argument("--seed", type=int, default=1)
+        if name in ("runchain", "tier1b-apply"):
+            sp.add_argument("--tier1b", dest="tier1b_set", default=None, choices=sorted(T1B.SETS),
+                            help=f"tier-1b asset set (library, placement sidecars and options; crvfastsim.tier1b_assets). "
+                                 f"Default: {T1B.DEFAULT} for extracted_v04; the named run configurations have only "
+                                 f"{T1B.LEGACY} (tier1b_v7 library, no placement: the default before 2026-10-28)")
+            sp.add_argument("--tier1b-dir", default=None, metavar="DIR",
+                            help="directory with the set's files (default $CRVFS_DATA/<set directory>)")
         if name == "runchain":
-            sp.add_argument("--library", default=None, metavar="ROOT", help="tier-1b library")
+            sp.add_argument("--library", default=None, metavar="ROOT",
+                            help="custom tier-1b library, sampled without placement options (instead of --tier1b)")
             sp.add_argument("--conditions-manifest", default=None, help="validated named-condition bundle manifest")
             sp.add_argument("--geometry-readout", action="store_true",
                             help="opt-in physical SiPM mask; requires a Run1A/Run2 conditions manifest")
@@ -163,7 +172,8 @@ def build_parser():
         if name == "tier1b-check":
             sp.add_argument("--compare", nargs="+", default=None, metavar="ROOT", help="G4 CrvStep tables, same shards")
         if name == "tier1b-apply":
-            sp.add_argument("--library", default=None, metavar="ROOT", help="library from tier1b-build")
+            sp.add_argument("--library", default=None, metavar="ROOT",
+                            help="custom library from tier1b-build (instead of --tier1b); placement only as flagged:")
             sp.add_argument("--seed", type=int, default=1, help="base seed; file i uses (seed, 1000+i)")
             sp.add_argument("--crossing-context", action="store_true",
                             help="draw descendants within the crossing's layer/upstream context (library with ctx)")

@@ -303,12 +303,36 @@ def test_setup_hashes_all_resolved_assets(tmp_path, monkeypatch):
                               sectors={"test": R.PH.SectorConfig("test", 0, 1.)}))
     provenance = {}
     recorder = B.Recorder(tmp_path, 1, provenance)
-    args = (rc, cfg, str(paths["gdml"]), str(paths["library"]), str(paths["calib"]), str(paths["deviation"]))
+    spec = R.tier1b_assets.Tier1bSpec(None, str(paths["library"]))
+    args = (rc, cfg, str(paths["gdml"]), spec, str(paths["calib"]), str(paths["deviation"]))
     recorder.setup(*args)
     assert set(provenance["assets_sha256"]) == {str(p) for p in paths.values()}
     paths["calib"].write_text("changed")
     with pytest.raises(ValueError, match="asset provenance changed"):
         recorder.setup(*args)
+
+
+def test_setup_hashes_the_tier1b_sidecars(tmp_path, monkeypatch):
+    from crvfastsim.response import lookup
+    monkeypatch.setattr(lookup, "lookup_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(B.geometry, "find_counters", lambda path: str(tmp_path / "template"))
+    monkeypatch.setattr(R.runconfig.RunConfig, "counters_path", lambda self: str(tmp_path / "counters"))
+    spec = R.tier1b_assets.resolve(directory=tmp_path / "set")
+    (tmp_path / "set").mkdir()
+    for f in ["template", "counters", "gdml", "calib", "photonMap.root"] + [f"LookupTable_{s.table}" for s in
+                                                                           R.PH.ResponseConfig().sectors.values()]:
+        (tmp_path / f).write_text(f)
+    for f in spec.paths():
+        Path(f).write_text(Path(f).name)
+    provenance = {}
+    B.Recorder(tmp_path, 1, provenance).setup(R.runconfig.get(), R.chain.ChainConfig(), str(tmp_path / "gdml"), spec,
+                                              str(tmp_path / "calib"), None)
+    assert set(spec.paths()) <= set(provenance["assets_sha256"]) and len(spec.paths()) == 5
+    assert provenance["effective_tier1b"]["name"] == "strict_v2" and provenance["effective_tier1b"]["options"]["nearmiss"]
+    Path(spec.templates).write_text("changed")
+    with pytest.raises(ValueError, match="asset provenance changed"):
+        B.Recorder(tmp_path, 1, provenance).setup(R.runconfig.get(), R.chain.ChainConfig(), str(tmp_path / "gdml"),
+                                                  spec, str(tmp_path / "calib"), None)
 
 
 def test_prefetch_multiple_inputs_repeats_and_order(pipeline, tmp_path, monkeypatch):
