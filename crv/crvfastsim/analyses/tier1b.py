@@ -4,6 +4,7 @@
     tier1b-apply fastC.*.root --library lib.root --outdir DIR [--seed N]   (writes fast1b.<shard>.root)
         [--crossing-context --contain-steps --point-placement --topology-sidecar SIDE.npz]   (opt-in placement)
         [--template-sidecar TEMPLATES.npz --unvisited-layers --near-miss]   (opt-in templates)
+        [--chord-placement --follow-muon]   (opt-in same-bar placement and chain draw; template sidecar v3)
 
 Build on training shards and apply to others (the library never sees the events it is compared with). The fast
 tables carry their gen tree, which supplies the non-muon CRY primaries.
@@ -74,7 +75,8 @@ def read_template_sidecar(path, library=None):
 
 def apply(inputs, outdir, library=None, seed=1, counters=None, crossing_context=False, contain_steps=False,
           point_placement=False, mirror_offsets=False, translate_offsets=False, topology_sidecar=None,
-          template_sidecar=None, unvisited_layers=False, near_miss=False, **kw):
+          template_sidecar=None, unvisited_layers=False, near_miss=False, chord_placement=False, follow_muon=False,
+          **kw):
     if not library:
         raise SystemExit("tier1b-apply needs --library")
     if (unvisited_layers or near_miss) and not template_sidecar:
@@ -83,6 +85,10 @@ def apply(inputs, outdir, library=None, seed=1, counters=None, crossing_context=
             "translate": translate_offsets, "topology": bool(topology_sidecar)}
     if unvisited_layers or near_miss:
         opts.update(unvisited=bool(unvisited_layers), nearmiss=bool(near_miss))
+    if (chord_placement or follow_muon) and not template_sidecar:
+        raise SystemExit("--chord-placement / --follow-muon need --template-sidecar (with library chords)")
+    if chord_placement or follow_muon:
+        opts.update(chord=bool(chord_placement), follow=bool(follow_muon))
     geom = _geom(counters)
     lib = tier1b.read_library(library)
     if topology_sidecar:

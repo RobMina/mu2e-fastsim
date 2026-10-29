@@ -10,12 +10,15 @@ Built from the library's own donor tables plus a generator census; the library i
 - Near-miss templates: the muon-descendant steps of donor events with no primary-muon crossing (the steps the library
   build leaves unattached), one template per primary muon, with its generated kinetic energy and the straight-line
   closest approach of its generated ray to the library groups (tier1b.closest_approach).
+- Library chords (sidecar v3, for the opt-in chord placement and follow draw): per library crossing its exit point,
+  path length and the next crossing in time of its muon.
 - Near-miss census: every generated muon of the census events with no G4 primary-muon crossing (G4 CrvStep tables and
   the full gen streams of the same shards), with the same cell variables; the reach denominator, scaled by the
   library's generated exposure over the census events (as the shower denominator).
 
     python -m valhist.descendant_templates sidecar --manifest LIBRARY.json \
-        --census-steps 'DIR/crvsteps.{s}.root' --census-gen 'DIR/gen.{s}.root' --census-shards 1-10 --out NEW.npz
+        --census-steps 'DIR/crvsteps.{s}.root' --census-gen 'DIR/gen.{s}.root' --census-shards 1-10 \
+        [--census-steps 'DIR2/crvsteps.{s}.root' --census-gen 'DIR2/gen.{s}.root' --census-shards 21,23] --out NEW.npz
     python -m valhist.descendant_templates cells SIDE.npz --library LIBRARY.root   (reach table and cell occupancy)
 """
 import argparse
@@ -41,7 +44,14 @@ def donor_pass(path, geom):
     parts = tables.read(path, "particles", PART_COLS)
     gen = tables.read(path, "gen", KEY + ["idx", "pdg", "x", "y", "z", "px", "py", "pz", "e", "t"])
     s = classify(steps, parts, geom.sector)
-    x = T._crossings(s.loc[s.cls.eq("mu_primary")])
+    mus = s.loc[s.cls.eq("mu_primary")]
+    x = T._crossings(mus)
+    # exit point of each crossing (last step end, the order of _crossings) for the opt-in chord placement
+    ex = mus.sort_values(KEY + ["bar", "t0"], kind="stable").groupby(KEY + ["bar"], sort=False)[["x1", "y1", "z1"]].last()
+    ex = ex.reset_index()
+    if not (ex[KEY + ["bar"]].to_numpy() == x[KEY + ["bar"]].to_numpy()).all():
+        raise ValueError(f"{path}: crossing exits out of the crossing order")
+    x["qx"], x["qy"], x["qz"] = ex.x1.to_numpy(), ex.y1.to_numpy(), ex.z1.to_numpy()
     mu, vis, visits = T.muon_visits(x, geom)
     crossed = pd.MultiIndex.from_frame(x[KEY].drop_duplicates().astype(np.int64))
     d = s.loc[s.cls.eq("mu_descendant")]
@@ -67,6 +77,16 @@ def donor_pass(path, geom):
     agg = nms.groupby("tloc").agg(nsteps=("edep", "size"), edep=("edep", "sum"))
     nmt = m[KEY + ["prim_key", "tloc", "group", "dist", "ke"]].join(agg, on="tloc")
     return x, mu, vis, visits, nmt, nms
+
+
+def next_crossing(mu, t0, offset=0):
+    """Per crossing, the id (offset + row) of the next crossing in time of the same muon, -1 for its last."""
+    n = len(mu)
+    order = np.lexsort((np.arange(n), t0, mu))
+    nxt = np.full(n, -1, np.int64)
+    same = mu[order][1:] == mu[order][:-1]
+    nxt[order[:-1][same]] = order[1:][same] + offset
+    return nxt
 
 
 def census_pass(steps_path, gen_path, geom):
@@ -110,7 +130,9 @@ def sidecar(manifest, census_steps, census_gen, census_shards, out, counters=Non
         xs.append(pd.DataFrame({"xid": np.arange(offset, offset + len(x)), "bar": x.bar.to_numpy().astype(np.int64),
                                 "ex": x.x0.to_numpy(), "ey": x.y0.to_numpy(), "ez": x.z0.to_numpy(),
                                 "p": x.p.to_numpy(), "last": T.last_crossing(x).astype(np.int64),
-                                "mu": mu.astype(np.int64) + muoff}))
+                                "mu": mu.astype(np.int64) + muoff, "qx": x.qx.to_numpy(), "qy": x.qy.to_numpy(),
+                                "qz": x.qz.to_numpy(), "len": x.len.to_numpy(),
+                                "nxt": next_crossing(mu, x.t0.to_numpy(), offset)}))
         cross.append(mu + muoff)
         visits.append(v.assign(mu=v.mu.to_numpy().astype(np.int64) + muoff))
         nmts.append(nmt.assign(tid=nmt.tloc + toff))
@@ -150,8 +172,16 @@ def sidecar(manifest, census_steps, census_gen, census_shards, out, counters=Non
                  .agg(["size", "sum"]).reset_index())
     # near-miss census
     cens, cev, cmu, crec = [], 0, 0, []
-    for k in census_shards:
-        sp, gp = (p.format(s=S.shard(k), k=k) for p in (census_steps, census_gen))
+    if isinstance(census_steps, str):
+        census_steps, census_gen, census_shards = [census_steps], [census_gen], [census_shards]
+    if not (len(census_steps) == len(census_gen) == len(census_shards)):
+        raise ValueError("census steps, gen and shards must be given the same number of times")
+    sources = [(st, ge, k) for st, ge, ks in zip(census_steps, census_gen, census_shards) for k in ks]
+    paths = [st.format(s=S.shard(k), k=k) for st, _, k in sources]
+    if len(set(paths)) != len(paths):
+        raise ValueError("repeated census table")
+    for cs, cg, k in sources:
+        sp, gp = (p.format(s=S.shard(k), k=k) for p in (cs, cg))
         c, ev, nm = census_pass(sp, gp, geom)
         cens.append(c)
         cev += ev
@@ -224,9 +254,11 @@ def main():
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("sidecar")
     s.add_argument("--manifest", required=True, help="library JSON (its inputs are the donor tables)")
-    s.add_argument("--census-steps", required=True, help="G4 CrvStep tables of the census shards ({s} pattern)")
-    s.add_argument("--census-gen", required=True, help="full gen streams of the same shards ({s} pattern)")
-    s.add_argument("--census-shards", required=True)
+    s.add_argument("--census-steps", required=True, action="append",
+                   help="G4 CrvStep tables of the census shards ({s} pattern); repeat with --census-gen and "
+                        "--census-shards for several table sets")
+    s.add_argument("--census-gen", required=True, action="append", help="full gen streams of the same shards")
+    s.add_argument("--census-shards", required=True, action="append", help="e.g. 1-10 or 21,23,25 (S.shards)")
     s.add_argument("--out", required=True, help="new .npz")
     s.add_argument("--counters")
     c = sub.add_parser("cells")
@@ -235,7 +267,7 @@ def main():
     c.add_argument("--counters")
     a = p.parse_args()
     if a.cmd == "sidecar":
-        sidecar(a.manifest, a.census_steps, a.census_gen, S.shards(a.census_shards), a.out, a.counters)
+        sidecar(a.manifest, a.census_steps, a.census_gen, [S.shards(x) for x in a.census_shards], a.out, a.counters)
     else:
         cells(a.sidecar, a.library, a.counters)
 

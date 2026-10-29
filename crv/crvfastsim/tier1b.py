@@ -65,6 +65,16 @@ Two parts, both resampled from G4 CrvStep tables (CrvStepTableDumper) of trainin
      of its cell (kinetic energy, the library group whose box its straight generated line comes closest to, and that
      distance), templates of the cell over the no-crossing muons of a generator census in the cell, and then gets a
      random template of the cell at its absolute positions, times relative to the muon's generation time.
+   Opt-in same-bar options (sample(chord, follow); a template sidecar with the library chords, attach_templates):
+   - chord: a same-bar step is placed at its distance along the library muon's direction from the entry by default, so
+     when the library chord within the bin is shorter (longer) than the fast one the steps crowd toward the entry
+     face (overshoot the exit and fall back to their library position across the bar). With chord the component
+     along the library chord keeps its fraction of the chord (outside it, its distance from the nearer end) on the
+     fast chord, and the rest is rotated chord to chord.
+   - follow: G4 own-bar counts of one muon's crossings are correlated (the EM-cascade products of a hard delta reach
+     the next bars the muon crosses), while independent draws per crossing are not. In time order along each fast
+     muon, a crossing takes the next crossing of the previous pick's library muon when that crossing lies in its own
+     draw cell, else its own uniform draw (the same random numbers in both cases).
 2. Non-muon primaries (e, gamma, n, p, pi from CRY). A library shower is every CrvStep whose primary is that particle,
    with absolute positions and times relative to the primary's generation time. Sampling: each non-muon CRY primary of
    the event (gen table) reaches the CRV with the library probability of its (pdg, kinetic-energy) bin, and then gets a
@@ -570,8 +580,49 @@ def _topology_targets(fx, dd, ix, fu, geom):
     return hit, tb, q0, q1
 
 
+def _chord_map(d0, d1, mom, cl, cf, ok):
+    """Same-bar offsets d0/d1 (from the library entry) and momenta moved from the library crossing's chord cl (entry to
+    exit) onto the fast one cf, for rows ok: the component along the chord keeps its fraction of the chord inside it and
+    its distance from the nearer end outside; the perpendicular part, the step vector and the momentum are rotated
+    from chord to chord. Returns (offset of the start, offset of the end, momentum) from the fast entry."""
+    ll, lf = np.linalg.norm(cl, axis=1), np.linalg.norm(cf, axis=1)
+    ok = ok & (ll > 1e-6) & (lf > 1e-6)
+    ul, uf = cl / np.maximum(ll, 1e-12)[:, None], cf / np.maximum(lf, 1e-12)[:, None]
+    a = (d0 * ul).sum(1)
+    perp = d0 - a[:, None] * ul
+    an = np.where(a < 0, a, np.where(a > ll, lf + a - ll, a * lf / np.maximum(ll, 1e-12)))
+    s0 = an[:, None] * uf + rotate(perp, ul, uf)
+    s1 = s0 + rotate(d1 - d0, ul, uf)
+    return ok, s0, s1, rotate(mom, ul, uf)
+
+
+def _follow_picks(fx, lx_xid, lo, hi, pick, nxt, pos):
+    """Chain draw: in time order along each fast muon, a crossing takes the next library crossing (in time) of the
+    library muon of the previous crossing's pick when that crossing lies in its own draw cell [lo, hi) of the sorted
+    library crossings (pos = position of each xid there); otherwise it keeps its own uniform pick. Returns the picks
+    and how many crossings followed."""
+    pick = pick.copy()
+    n = len(fx)
+    if n == 0:
+        return pick, 0
+    mu = fx.groupby(KEY + (["sp"] if "sp" in fx.columns else []), sort=False).ngroup().to_numpy()
+    order = np.lexsort((fx.t0.to_numpy(), mu))
+    first = np.r_[True, mu[order][1:] != mu[order][:-1]]
+    rank = np.arange(n) - np.maximum.accumulate(np.where(first, np.arange(n), 0))
+    followed = 0
+    for k in range(1, int(rank.max()) + 1 if n else 0):
+        cur = order[rank == k]
+        prev = order[np.flatnonzero(rank == k) - 1]
+        cand = nxt[pick[prev]]
+        p = np.where(cand >= 0, pos[np.maximum(cand, 0)], -1)
+        ok = (cand >= 0) & (p >= lo[cur]) & (p < hi[cur])
+        pick[cur[ok]] = cand[ok]
+        followed += int(ok.sum())
+    return pick, followed
+
+
 def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=False, mirror=False,
-                        translate=False, topology=False, trace=None, drop_unvisited=False):
+                        translate=False, topology=False, trace=None, drop_unvisited=False, chord=False, follow=False):
     """Descendant steps for the fast crossings fx (one row per crossing). Returns (steps, n_dropped, n_clamped, why).
     Opt-in (all off reproduces the earlier sampling bit for bit): context = draw within the crossing-context cell
     (library with a ctx column); contain = same-bar endpoints into the bar; point = other-bar steps whose target bar
@@ -583,7 +634,11 @@ def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=
     (library with the desc_topology columns, attach_topology), the other placements remaining the fallback.
     An optional trace dict records pre-placement donor labels and final bars without consuming random draws.
     drop_unvisited leaves out the rows in layer planes the library muon never visits (library with the uv column,
-    attach_templates); sample(unvisited=True) places those rows by position instead. No random draw changes."""
+    attach_templates); sample(unvisited=True) places those rows by position instead. No random draw changes.
+    chord (library chords from a template sidecar with them, attach_templates): same-bar rows are placed along the
+    fast crossing's chord at their fraction of the library chord (_chord_map) instead of at their distance along the
+    library muon's direction. follow (template sidecar with the next crossing of each library crossing): chain draw
+    along each fast muon (_follow_picks). Both consume no other random numbers."""
     p = np.sqrt(fx.px0 ** 2 + fx.py0 ** 2 + fx.pz0 ** 2).to_numpy()
     b = _bin(lib["libbins"], _group_index(geom, fx.bar), p, fx.len.to_numpy())
     lx = lib["libxing"]
@@ -605,6 +660,14 @@ def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=
         lo, hi = np.searchsorted(lbin, b, "left"), np.searchsorted(lbin, b, "right")
     assert np.all(hi > lo), "empty library bin"
     pick = lx.xid.to_numpy()[lo + (rng.random(len(b)) * (hi - lo)).astype(np.int64)]
+    if (chord or follow) and "xgeo" not in lib:
+        raise ValueError("chord / follow need a template sidecar with the library chords (attach_templates)")
+    if follow:
+        if "nxt" not in lib["xgeo"]:
+            raise ValueError("follow needs a template sidecar with the next crossing of each library crossing")
+        pos = np.empty(len(lx), np.int64)
+        pos[lx.xid.to_numpy()] = np.arange(len(lx))
+        pick, nfollow = _follow_picks(fx, lx.xid.to_numpy(), lo, hi, pick, lib["xgeo"]["nxt"], pos)
     ld = lib["libdesc"].sort_values("xid", kind="stable")
     lxid = ld.xid.to_numpy()
     a, z = np.searchsorted(lxid, pick, "left"), np.searchsorted(lxid, pick, "right")
@@ -623,11 +686,24 @@ def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=
     r0 = entry + rotate(dd[["dx0", "dy0", "dz0"]].to_numpy(), lu, fu)
     r1 = entry + rotate(dd[["dx1", "dy1", "dz1"]].to_numpy(), lu, fu)
     mom = rotate(dd[["px0", "py0", "pz0"]].to_numpy(), lu, fu)
+    same = dd.samebar.to_numpy() == 1
+    nchord = 0
+    if chord:   # same-bar rows along the fast chord at their fraction of the library chord
+        g = lib["xgeo"]
+        cl = (g["exit"] - g["entry"])[pick[ix]]
+        cf = (fx[["x1", "y1", "z1"]].to_numpy() - fx[["x0", "y0", "z0"]].to_numpy())[ix]
+        ok, s0, s1, mo = _chord_map(dd[["dx0", "dy0", "dz0"]].to_numpy(), dd[["dx1", "dy1", "dz1"]].to_numpy(),
+                                    dd[["px0", "py0", "pz0"]].to_numpy(), cl, cf, same)
+        r0[ok], r1[ok], mom[ok] = entry[ok] + s0[ok], entry[ok] + s1[ok], mo[ok]
+        nchord = int(ok.sum())
     bar = bar_containing(0.5 * (r0 + r1), geom)
     xbar = fx.bar.to_numpy()[ix]
-    same = dd.samebar.to_numpy() == 1
     other = ~same
     why = {"other": int(other.sum()), "no_bar": 0, "axis": 0, "off_end": 0}
+    if chord:
+        why["chord"] = nchord
+    if follow:
+        why["follow"] = nfollow
     if other.any():
         dc = dd.loc[:, ["dcx", "dcy", "dcz"]].to_numpy()[other]
         l0 = dd.loc[:, ["lx0", "ly0", "lz0"]].to_numpy()[other]
@@ -930,6 +1006,10 @@ def attach_templates(lib, side, geom):
     mask = group_mask(xs.mu.to_numpy(), xs.bar.to_numpy(), geom)
     entry = xs[["ex", "ey", "ez"]].to_numpy()
     cells = uv_cells(xs.bar.to_numpy(), entry, xs.p.to_numpy(), xs.last.to_numpy().astype(bool), mask, geom)
+    if {"qx", "qy", "qz"} <= set(xs.columns):   # template sidecar v3: library chords and next crossings (chord, follow)
+        lib["xgeo"] = {"entry": entry, "exit": xs[["qx", "qy", "qz"]].to_numpy()}
+        if "nxt" in xs.columns:
+            lib["xgeo"]["nxt"] = xs.nxt.to_numpy().astype(np.int64)
     lib["uvxing"] = {"entry": entry, "levels": [(np.sort(cells[:, j], kind="stable"),
                                                  np.argsort(cells[:, j], kind="stable")) for j in range(N_UV_LEVELS)]}
     t = side["nmt"]
@@ -1045,14 +1125,16 @@ def _nearmiss_for_gen(fast_steps, gen, lib, geom, rng):
 
 
 def sample(fast_steps, fast_parts, gen, lib, geom, rng, showers=True, context=False, contain=False, point=False,
-           mirror=False, translate=False, topology=False, unvisited=False, nearmiss=False):
+           mirror=False, translate=False, topology=False, unvisited=False, nearmiss=False, chord=False, follow=False):
     """Fast tier-1a tables + tier 1b: (steps, particles, info). Muons keep their keys (1, or 1..n with all_muons);
     descendants follow them; showers k*1e7+sp. showers=False: descendants only (run configurations whose bars are not
     the library's: the showers carry absolute extracted v04 bar positions). unvisited / nearmiss (opt-in, a library
-    with attach_templates): their random draws come after the showers', so every other component is unchanged."""
+    with attach_templates): their random draws come after the showers', so every other component is unchanged.
+    chord / follow (opt-in, a template sidecar with library chords): same-bar placement along the chord and the chain
+    draw of the main descendant draw (_desc_for_crossings); no random number changes."""
     fx = fast_steps.copy()
     desc, n_drop, n_clamp, why = _desc_for_crossings(fx, lib, geom, rng, context, contain, point, mirror, translate,
-                                                     topology, drop_unvisited=unvisited)
+                                                     topology, drop_unvisited=unvisited, chord=chord, follow=follow)
     sh = _showers_for_gen(gen, lib, rng) if showers else _showers_for_gen(gen.iloc[:0], lib, rng)
     sp_of = fx.sp.to_numpy() if "sp" in fx.columns else np.ones(len(fx), np.int64)
     desc["src"], desc["parent"] = 0, sp_of[desc.xi.to_numpy()]

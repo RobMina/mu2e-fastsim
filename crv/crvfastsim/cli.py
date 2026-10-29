@@ -186,6 +186,12 @@ def build_parser():
                                  "position cell instead of with its offsets")
             sp.add_argument("--near-miss", action="store_true",
                             help="near-miss templates for generated muons of events with no fast crossing")
+            sp.add_argument("--chord-placement", action="store_true",
+                            help="same-bar descendants along the fast chord at their fraction of the library chord "
+                                 "(template sidecar with library chords)")
+            sp.add_argument("--follow-muon", action="store_true",
+                            help="a muon's next crossing takes its library muon's next crossing when that lies in its "
+                                 "draw cell (template sidecar with library chords)")
         if name == "secondaries":
             sp.add_argument("--gen", nargs="+", default=None, metavar="ROOT", help="gen.*.root tables (CRY rates per pdg)")
         if name == "v2origin":
