@@ -31,6 +31,7 @@ class CrvStepTableDumper : public art::EDAnalyzer {
     fhicl::Atom<art::InputTag> livetime{fhicl::Name("livetime"), art::InputTag("generate")};
     fhicl::Atom<bool> writeSteps{fhicl::Name("writeSteps"), true};
     fhicl::Atom<bool> fullGeneratorStream{fhicl::Name("fullGeneratorStream"), false};
+    fhicl::Atom<std::string> associationPolicy{fhicl::Name("associationPolicy"), "retained_primary"};
   };
   using Parameters = art::EDAnalyzer::Table<Config>;
   explicit CrvStepTableDumper(const Parameters& conf);
@@ -44,7 +45,7 @@ class CrvStepTableDumper : public art::EDAnalyzer {
   unsigned schemaVersion_{2}, checked_{0}, fullGen_{0}, genProduct_{0}, simProduct_{0};
   unsigned particleGenProduct_{0}, parentProduct_{0}, stepProduct_{0};
   long long nGen_{0}, nParticles_{0}, nSteps_{0};
-  std::string genTag_, simTag_, stepTag_;
+  std::string genTag_, simTag_, stepTag_, associationPolicy_;
   void validate(const art::Event&, const GenParticleCollection&, art::ProductID,
                 const SimParticleCollection&, art::ProductID, const CrvStepCollection&) const;
   // shared event id
@@ -71,6 +72,12 @@ class CrvStepTableDumper : public art::EDAnalyzer {
 CrvStepTableDumper::CrvStepTableDumper(const Parameters& conf) : art::EDAnalyzer(conf), conf_(conf()) {
   if (conf_.writeSteps() && conf_.fullGeneratorStream())
     throw cet::exception("CrvStepTableDumper") << "fullGeneratorStream requires writeSteps:false\n";
+  associationPolicy_ = conf_.associationPolicy();
+  if (associationPolicy_ != "retained_primary" && associationPolicy_ != "staged_cat")
+    throw cet::exception("CrvStepTableDumper") << "unknown associationPolicy " << associationPolicy_ << '\n';
+  if (associationPolicy_ == "staged_cat" && (!conf_.writeSteps() || conf_.fullGeneratorStream()))
+    throw cet::exception("CrvStepTableDumper") << "staged_cat requires step extraction, not a full generator stream\n";
+  if (associationPolicy_ == "staged_cat") schemaVersion_ = 3;
   fullGen_ = conf_.fullGeneratorStream();
   genTag_ = conf_.genParticles().encode();
   simTag_ = conf_.simParticles().encode();
@@ -90,6 +97,7 @@ void CrvStepTableDumper::beginJob() {
            {"schema_version", &schemaVersion_}, {"associations_checked", &checked_},
            {"full_generator_stream", &fullGen_}, {"gen_product_id", &genProduct_}, {"sim_product_id", &simProduct_}})
     events_->Branch(n, v);
+  events_->Branch("association_policy", &associationPolicy_);
   events_->Branch("ngen", &ngen_);     // census v1 (veto exposure tools)
   events_->Branch("nsteps", &nsteps_);
   events_->Branch("n_gen", &nGen_);
@@ -167,7 +175,8 @@ void CrvStepTableDumper::validate(const art::Event& event, const GenParticleColl
           << " references GenParticle " << gp << "; selected " << conf_.genParticles().encode()
           << " ProductID " << gid << " size " << gen.size() << '\n';
     auto const& g = gen.at(gp.key());
-    if (gp->pdgId() != g.pdgId() || (p.isPrimary() && p.pdgId() != g.pdgId()))
+    if (gp->pdgId() != g.pdgId() ||
+        (associationPolicy_ == "retained_primary" && p.isPrimary() && p.pdgId() != g.pdgId()))
       throw cet::exception("CrvStepTableDumper") << event.id() << " SimParticle " << k.asUint()
           << " primary/gen signed PDG mismatch for " << gp << '\n';
     if (!std::isfinite(g.momentum().e()) || !std::isfinite(g.time()))

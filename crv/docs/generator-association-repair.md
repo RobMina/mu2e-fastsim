@@ -45,7 +45,10 @@ The changed dumper validates **before filling any event payload**:
   only; a compressed descendant can legitimately inherit an ancestor's generator pointer.
 - Referenced generator energy/time must be finite; key/count narrowing to the legacy int fields is guarded.
 
-There is no non-strict switch. Failed jobs can leave partial files; only successful completion plus the Python
+The default `retained_primary` policy has no non-strict switch. An explicit staged-Cat policy has a separate
+schema and preserves pointer validation without assuming stage-primary/generator PDG equality; see
+[`veto-cat-primary-policy.md`](veto-cat-primary-policy.md). Schema-3 staged-Cat output is rejected by the
+retained-primary cosmic donor gate. Failed jobs can leave partial files; only successful completion plus the Python
 census guard authorizes use.
 
 Schema v2 adds:

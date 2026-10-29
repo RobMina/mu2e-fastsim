@@ -184,17 +184,19 @@ separate provenance/weighting decision, not an automatic override. Disjoint name
 and distinct hashes do not establish independent underlying showers. This version
 has no duplicate-acceptance policy.
 
-Future replay may explicitly choose this pool interface, but no existing driver
-selects it automatically. New identity/denominator contracts must be retained in
-that replay's provenance; this preparation alone is not a rate or response closure
-result and does not authorize changing production defaults.
+The opt-in CE replay exporter explicitly selects this pool interface; see
+`veto-exposure.md`. Legacy replay and response defaults do not select it.
+Identity/denominator contracts must remain in replay provenance; structural
+validation alone is not rate or response closure and does not authorize promotion.
 
 ## Build and validation status
 
-The C++ census edit is **unbuilt**. No art extraction, remote execution, grid work
-or detector-response test was performed for this change. Existing libraries do
-not establish that the new events tree exists. There are no new C++ dependencies,
-so no SConscript/CMake changes are required.
+The event census and explicit staged-Cat policy have been user-built and checked
+on bounded real sources, including full-source census/Parquet round trips and
+legacy packed-key collision cases. See `veto-cat-primary-policy.md` for the distinct
+association schemas, strict default policy and runtime validation gates. This does
+not certify all library sources, empty-generator coverage in nature, selected-CE
+exposure, or detector response. There are no new C++ dependencies.
 
 The user must run the full build on **mu2ebuild02**, in the intended `art/` muse
 satellite area, then confirm completion before any art smoke extraction:

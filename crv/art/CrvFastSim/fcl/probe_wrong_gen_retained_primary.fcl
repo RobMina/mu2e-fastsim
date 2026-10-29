@@ -1,0 +1,3 @@
+# Negative control: a different generator collection must fail the ProductID guard.
+#include "CrvFastSim/fcl/dump_crvsteps_genassoc.fcl"
+physics.analyzers.dump.genParticles : "cosmicTimeOffset"

@@ -97,7 +97,14 @@ def test_cpp_fcl_schema_contract_and_early_validation():
     analyze = cc.split("void CrvStepTableDumper::analyze", 1)[1]
     assert analyze.index("validate(event") < analyze.index("gens_->Fill()")
     assert "gp.id() != gid" in cc and "gp.key() >= gen.size()" in cc
-    assert "p.isPrimary() && p.pdgId() != g.pdgId()" in cc
+    assert 'associationPolicy_ == "retained_primary" && p.isPrimary() && p.pdgId() != g.pdgId()' in cc
+    assert 'fhicl::Name("associationPolicy"), "retained_primary"' in cc
+    assert 'associationPolicy_ != "retained_primary" && associationPolicy_ != "staged_cat"' in cc
+    assert 'if (associationPolicy_ == "staged_cat") schemaVersion_ = 3;' in cc
+    assert 'events_->Branch("association_policy", &associationPolicy_)' in cc
+    assert 'gp->pdgId() != g.pdgId() ||' in cc
+    cat = (root / "art/CrvFastSim/fcl/dump_crvsteps_cat.fcl").read_text()
+    assert 'associationPolicy : "staged_cat"' in cat
     fcl = (root / "art/CrvFastSim/fcl/dump_gen.fcl").read_text()
     assert 'genParticles : "cosmicTimeOffset"' in fcl
     assert "fullGeneratorStream : true" in fcl and "writeSteps : false" in fcl
