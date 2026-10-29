@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .. import chain, geometry, tables
+from .. import chain, geometry, tables, tier1b_assets
 from . import runchain
 
 BOUNDARY = "cached CRY gen tables -> transport -> tier1b -> response -> digis -> pulses + coincidences"
@@ -223,10 +223,10 @@ class Recorder:
         self.setup_hash_s = 0.0
         self.reuse_assets = reuse_assets
 
-    def setup(self, rc, cfg, gdml, library, calib, deviation):
+    def setup(self, rc, cfg, gdml, tier1b, calib, deviation):
         from ..reco.waveform import WaveformConfig
         from ..response import lookup
-        assets = [gdml, library, rc.counters_path(), geometry.find_counters((cfg.waveform or WaveformConfig()).single_pe_file),
+        assets = [gdml, *tier1b.paths(), rc.counters_path(), geometry.find_counters((cfg.waveform or WaveformConfig()).single_pe_file),
                   str(Path(lookup.lookup_dir()) / "photonMap.root")]
         assets += [str(Path(lookup.lookup_dir()) / f"LookupTable_{name}") for name in sorted({s.table for s in cfg.response.sectors.values()})]
         assets += [p for p in (calib, deviation) if p and p != "nominal"]
@@ -240,7 +240,7 @@ class Recorder:
             if "assets_sha256" in self.provenance and resolved != self.provenance["assets_sha256"]:
                 raise ValueError("asset provenance changed across repeats")
             self.provenance["assets_sha256"] = resolved
-        for field, value in (("effective_run_config", rc), ("effective_chain_config", cfg)):
+        for field, value in (("effective_run_config", rc), ("effective_chain_config", cfg), ("effective_tier1b", tier1b)):
             current = dataclasses.asdict(value)
             if field in self.provenance and current != self.provenance[field]:
                 raise ValueError("effective configuration changed across repeats")
@@ -315,11 +315,11 @@ def run(inputs, outdir=None, repeat=2, seed=1, reuse_context=False, **kwargs):
     kwargs.pop("emit", None)
     allowed = {"library", "calib", "deviation", "gdml", "jax", "max_events", "counters", "reco_cpu", "msc_tail",
                "tail_k", "sliced_msc", "first_muon_only", "no_absorbers", "run_config", "window", "fused_response",
-               "prefetch", "unbanded_world", "no_below_world"}
+               "prefetch", "unbanded_world", "no_below_world", "tier1b_set", "tier1b_dir"}
     if set(kwargs) - allowed:
         raise ValueError(f"unsupported benchmark options: {sorted(set(kwargs) - allowed)}")
-    if not kwargs.get("library") or not kwargs.get("calib"):
-        raise ValueError("e2e-bench requires --library and --calib")
+    if not kwargs.get("calib"):
+        raise ValueError("e2e-bench requires --calib")
     if reuse_context and kwargs.get("fused_response"):
         raise ValueError("prepared context does not support memory-dependent fused response batching")
     files = [str(Path(p).resolve()) for p in tables.expand(inputs)]
@@ -337,7 +337,7 @@ def run(inputs, outdir=None, repeat=2, seed=1, reuse_context=False, **kwargs):
     provenance = {"input_sha256": {p: sha256(p) for p in files},
                   "source_sha256": {p: sha256(p) for p in source_paths()},
                   "argument_asset_paths": {k: str(Path(kwargs[k]).resolve()) for k in
-                                           ("library", "calib", "deviation", "gdml", "counters")
+                                           ("library", "tier1b_dir", "calib", "deviation", "gdml", "counters")
                                            if kwargs.get(k) and kwargs[k] != "nominal"}}
     provenance_preflight_s = time.perf_counter() - a
     destination.mkdir(parents=True, exist_ok=False)
@@ -354,7 +354,7 @@ def run(inputs, outdir=None, repeat=2, seed=1, reuse_context=False, **kwargs):
             options = {k: v for k, v in kwargs.items() if k in
                        {"library", "calib", "deviation", "gdml", "jax", "counters", "no_absorbers",
                         "run_config", "window", "fused_response", "unbanded_world", "no_below_world",
-                        "below_margin"}}
+                        "below_margin", "tier1b_set", "tier1b_dir"}}
             setup_recorder = Recorder(destination, seed, provenance)
             a = time.perf_counter()
             prepared = runchain.prepare(benchmark=setup_recorder, **options)
@@ -428,9 +428,10 @@ def main(argv=None):
     p.add_argument("--repeat", type=int, default=2, help="total passes, cold first then same-process warm")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--reuse-context", action="store_true", help="opt-in measured one-time preparation with audited context reuse")
-    for name in ("library", "calib"):
-        p.add_argument("--" + name, required=True)
-    for name in ("deviation", "gdml", "counters", "run-config", "window", "emit"):
+    p.add_argument("--calib", required=True)
+    p.add_argument("--tier1b", dest="tier1b_set", choices=sorted(tier1b_assets.SETS),
+                   help="tier-1b asset set (default: the run configuration's; crvfastsim.tier1b_assets)")
+    for name in ("library", "tier1b-dir", "deviation", "gdml", "counters", "run-config", "window", "emit"):
         p.add_argument("--" + name)
     p.add_argument("--compare", nargs="+")
     p.add_argument("--max-events", type=int)

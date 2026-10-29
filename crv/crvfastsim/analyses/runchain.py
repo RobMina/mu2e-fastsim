@@ -2,9 +2,15 @@
 digis -> pulses -> clusters (crvfastsim/chain.py), with the cost of every stage. With --compare (CrvRecoTableDumper
 files of the stock chain on the same shards) it reports clusters per generated event per sector type, fast vs stock.
 
-    runchain gen.<shard>.root [...] --library lib.root --calib crvcalib.csv [--deviation crvphoton.csv] [--jax]
+    runchain gen.<shard>.root [...] --calib crvcalib.csv [--deviation crvphoton.csv] [--jax]
+             [--tier1b strict_v2|legacy [--tier1b-dir DIR] | --library lib.root]
              [--reco-cpu] [--max-events N] [--compare ref.<shard>.root ...] [--emit shard.json] --outdir DIR
     runchain-merge shard*.json --outdir DIR      (node totals: events, clusters per sector type, rates)
+
+Tier 1b (crvfastsim.tier1b_assets): default asset set strict_v2 for extracted_v04 (strict library, crossing context,
+containment, point and topology placement, templates); --tier1b legacy is the tier1b_v7 library without placement (the
+default before 2026-10-28) and the only set of the named run configurations; --library is a custom library sampled
+without placement options.
 
 Named conditions manifests are supported only by ordinary, non-prepared runs. They are mutually exclusive
 with calib/deviation. Prepared contexts and benchmark callbacks reject manifests before any setup: their
@@ -23,7 +29,7 @@ import dataclasses
 from pathlib import Path
 from types import MappingProxyType
 
-from .. import chain, geometry, readout, runconfig, tables, tier1b
+from .. import chain, geometry, readout, runconfig, tables, tier1b, tier1b_assets
 from ..timewindow import resolve_runchain_window, validate_runchain_merge
 from .. import transport as tr
 from ..response import photons as PH
@@ -34,12 +40,12 @@ SECTOR_TYPES = {1: "EX", 2: "T1", 3: "T2", 4: "M"}
 
 
 def _resolve(library, calib, deviation, gdml, jax, counters, run_config, window, fused_response=False,
-             conditions_manifest=None):
+             conditions_manifest=None, tier1b_set=None, tier1b_dir=None):
     """Resolve setup arguments without loading large assets or drawing random numbers."""
     if conditions_manifest is not None and (calib is not None or deviation is not None):
         raise SystemExit("--conditions-manifest cannot be combined with --calib or --deviation")
-    if not library or not (calib or conditions_manifest):
-        raise SystemExit("runchain needs --library and either --calib or --conditions-manifest")
+    if not (calib or conditions_manifest):
+        raise SystemExit("runchain needs either --calib or --conditions-manifest")
     from .transport import default_gdml
     rc, time_window = resolve_runchain_window(run_config, window)
     if counters:
@@ -48,14 +54,19 @@ def _resolve(library, calib, deviation, gdml, jax, counters, run_config, window,
     if fused_response:
         cfg = dataclasses.replace(cfg, fused_response=True)
     gdml_path = gdml or (rc.gdml_path() if rc.name != runconfig.DEFAULT else default_gdml())
-    return rc, cfg, gdml_path, time_window
+    try:
+        spec = tier1b_assets.resolve(tier1b_set, library, tier1b_dir, rc.name)
+    except ValueError as e:
+        raise SystemExit(f"runchain: {e}")
+    return rc, cfg, gdml_path, time_window, spec
 
 
-def _signature(rc, cfg, gdml, library, calib, deviation, no_absorbers, unbanded_world, no_below_world,
+def _signature(rc, cfg, gdml, spec, calib, deviation, no_absorbers, unbanded_world, no_below_world,
                below_margin=None):
     canonical = lambda p: str(Path(p).resolve()) if p and p != "nominal" else p
     return {"run_config": dataclasses.asdict(rc), "chain_config": dataclasses.asdict(cfg),
-            "paths": [canonical(p) for p in (gdml, library, calib, deviation)],
+            "paths": [canonical(p) for p in (gdml, *spec.paths(), calib, deviation)],
+            "tier1b": {"set": spec.name, "options": dict(spec.options), "library_sha256": spec.library_sha256},
             "no_absorbers": bool(no_absorbers), "unbanded_world": bool(unbanded_world),
             "no_below_world": bool(no_below_world),
             "below_margin": None if below_margin is None else float(below_margin),
@@ -92,7 +103,8 @@ class PreparedContext:
 
 def prepare(library=None, calib=None, deviation=None, gdml=None, jax=False, counters=None, no_absorbers=False,
             run_config=None, window=None, benchmark=None, fused_response=False, unbanded_world=False,
-            no_below_world=False, below_margin=None, conditions_manifest=None, geometry_readout=False):
+            no_below_world=False, below_margin=None, conditions_manifest=None, geometry_readout=False,
+            tier1b_set=None, tier1b_dir=None):
     """Load and seal reusable CSV setup; named manifests and physical masks are not supported by reuse/benchmark."""
     if geometry_readout:
         raise ValueError("geometry readout is not supported with prepared contexts or benchmarks")
@@ -102,13 +114,14 @@ def prepare(library=None, calib=None, deviation=None, gdml=None, jax=False, coun
         raise ValueError("prepared context does not support memory-dependent fused response batching")
     from .context_audit import freeze_arrays, content_fingerprint
     from ..reco import waveform as WF
-    rc, cfg, gdml_path, _ = _resolve(library, calib, deviation, gdml, jax, counters, run_config, window, fused_response)
+    rc, cfg, gdml_path, _, spec = _resolve(library, calib, deviation, gdml, jax, counters, run_config, window,
+                                           fused_response, tier1b_set=tier1b_set, tier1b_dir=tier1b_dir)
     rc, cfg = copy.deepcopy((rc, cfg))
-    sig = _signature(rc, cfg, gdml_path, library, calib, deviation, no_absorbers, unbanded_world, no_below_world,
+    sig = _signature(rc, cfg, gdml_path, spec, calib, deviation, no_absorbers, unbanded_world, no_below_world,
                      below_margin)
     if benchmark is not None:
-        benchmark.setup(rc, cfg, gdml_path, library, calib, deviation)
-    payload, timers = _load_setup(rc, cfg, gdml_path, gdml, library, calib, deviation, jax,
+        benchmark.setup(rc, cfg, gdml_path, spec, calib, deviation)
+    payload, timers = _load_setup(rc, cfg, gdml_path, gdml, spec, calib, deviation, jax,
                                   no_absorbers, unbanded_world, no_below_world, below_margin)
     a = time.perf_counter()
     if hasattr(payload["world"], "pieces"):
@@ -137,7 +150,7 @@ def prepare(library=None, calib=None, deviation=None, gdml=None, jax=False, coun
     return PreparedContext(sig, MappingProxyType(payload), propagation, template, template_args, fingerprint, device, timers)
 
 
-def _load_setup(rc, cfg, gdml_path, explicit_gdml, library, calib, deviation, jax,
+def _load_setup(rc, cfg, gdml_path, explicit_gdml, spec, calib, deviation, jax,
                 no_absorbers, unbanded_world, no_below_world, below_margin=None,
                 conditions_manifest=None, configured_rc=None):
     geometry_start = time.perf_counter()
@@ -163,7 +176,7 @@ def _load_setup(rc, cfg, gdml_path, explicit_gdml, library, calib, deviation, ja
         from .transport import _below_kw
         below, ab = tr.load_below(explicit_gdml or rc.gdml_path(), geom,
                                   **_below_kw(rc, {"below_margin": below_margin})), None
-    lib = tier1b.read_library(library)
+    lib = tier1b_assets.load(spec, geom)   # inside setup_s (no own timer: every *_s key counts as a stage)
     tabs = PH.load_tables(cfg.response)
     if jax:
         from ..response import photons_jax
@@ -179,7 +192,7 @@ def _load_setup(rc, cfg, gdml_path, explicit_gdml, library, calib, deviation, ja
 def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax=False, max_events=None, seed=1,
         compare=None, counters=None, reco_cpu=False, emit=None, msc_tail=False, tail_k=None, sliced_msc=False,
         first_muon_only=False, no_absorbers=False, run_config=None, window=None, benchmark=None, prepared=None,
-        conditions_manifest=None, geometry_readout=False, **kw):
+        conditions_manifest=None, geometry_readout=False, tier1b_set=None, tier1b_dir=None, **kw):
     if geometry_readout:
         if prepared is not None or benchmark is not None:
             raise ValueError("geometry readout is not supported with prepared contexts or benchmarks")
@@ -190,12 +203,13 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         raise ValueError("conditions manifests are not supported with prepared contexts or benchmarks")
     from .transport import _scatter_in_kw
     bench_start = time.perf_counter() if benchmark is not None else None
-    rc, cfg, gdml_path, time_window = _resolve(library, calib, deviation, gdml, jax, counters, run_config, window,
-                                               kw.get("fused_response", False), conditions_manifest)
+    rc, cfg, gdml_path, time_window, spec = _resolve(library, calib, deviation, gdml, jax, counters, run_config, window,
+                                                     kw.get("fused_response", False), conditions_manifest,
+                                                     tier1b_set, tier1b_dir)
     for warning in time_window["warnings"]:
         print(f"# time window: {warning}", flush=True)
     if benchmark is not None:
-        benchmark.setup(rc, cfg, gdml_path, library, calib, deviation)
+        benchmark.setup(rc, cfg, gdml_path, spec, calib, deviation)
     t0 = time.perf_counter()
     if prepared is None:
         manifest_kw = {}
@@ -203,13 +217,13 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
             # Validate the stock snapshot against its configured window, not the cosmic crop.
             configured_rc = dataclasses.replace(rc, window=tuple(time_window["configured_window_ns"]))
             manifest_kw = dict(conditions_manifest=conditions_manifest, configured_rc=configured_rc)
-        payload, T = _load_setup(rc, cfg, gdml_path, gdml, library, calib, deviation, jax, no_absorbers,
+        payload, T = _load_setup(rc, cfg, gdml_path, gdml, spec, calib, deviation, jax, no_absorbers,
                                 kw.get("unbanded_world", False), kw.get("no_below_world", False),
                                 kw.get("below_margin"), **manifest_kw)
         if benchmark is None:
             T.pop("geometry_conditions_config_s")
     else:
-        signature = _signature(rc, cfg, gdml_path, library, calib, deviation, no_absorbers,
+        signature = _signature(rc, cfg, gdml_path, spec, calib, deviation, no_absorbers,
                                kw.get("unbanded_world", False), kw.get("no_below_world", False),
                                kw.get("below_margin"))
         if signature != prepared.signature:
@@ -257,7 +271,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
             transport_diagnostics[str(i)] = {"input": str(f), **diagnostics}
         t["transport_s"] = time.perf_counter() - a
         a = time.perf_counter()
-        st, pa, _ = tier1b.sample(st, pa, gen, lib, geom, rng, showers=rc.showers)
+        st, pa, _ = tier1b.sample(st, pa, gen, lib, geom, rng, showers=rc.showers, **spec.options)
         t["tier1b_s"] = time.perf_counter() - a
         return ngen, st, pa, rng, t, keys
 
@@ -317,6 +331,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         T["context_audit_s"] += time.perf_counter() - a
     cl_type = np.concatenate([o["cl_type"] for o in out_cl]) if out_cl else np.zeros(0, int)
     res = {"generated_events": n_gen, "timers": T, "conditions": conditions_metadata, **readout_metadata,
+           "tier1b": spec.describe(),
            "run_config": rc.name, "window": list(cfg.window), "time_window": time_window,
            "clusters_per_generated": {stype_name.get(int(k), str(k)): float((cl_type == k).sum() / n_gen)
                                       for k in np.unique(cl_type)}}
@@ -341,6 +356,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         with open(emit, "w") as fh:
             json.dump({"generated_events": n_gen, "timers": T, "wall_s": res["wall_s"],
                        "conditions": conditions_metadata, "scatter_in_diagnostics": transport_diagnostics,
+                       "tier1b": spec.describe(),
                        **readout_metadata,
                        "cl_type_counts": {int(k): int((cl_type == k).sum()) for k in np.unique(cl_type)},
                        "run_config": rc.name, "window": list(cfg.window), "time_window": time_window,
@@ -370,6 +386,11 @@ def merge(inputs, outdir, wall=None, **kw):
         raise ValueError("runchain merge: incompatible conditions provenance")
     if J[0].get("conditions") is not None:
         time_metadata["conditions"] = J[0]["conditions"]
+    t1b = lambda j: {k: (j.get("tier1b") or {}).get(k) for k in ("set", "options", "library_sha256")}
+    if any(t1b(j) != t1b(J[0]) for j in J[1:]):
+        raise ValueError("runchain merge: shards ran different tier-1b asset sets")
+    if J[0].get("tier1b") is not None:
+        time_metadata["tier1b"] = t1b(J[0])
     n_gen = sum(j["generated_events"] for j in J)
     acc = sum(j["timers"].get("events_with_steps", 0) for j in J)
     cl = {}

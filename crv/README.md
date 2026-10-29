@@ -17,6 +17,7 @@ status: the umbrella README; fast reco goals and results: `docs/fastreco.md`.
 | `docs/fastreco.md` | fast reconstruction: goals R1-R6, thresholds V-R1..V-R5, results (V-R4, V-R5, R3, the out-of-time background model) |
 | `docs/agent13-workflow.md` | experimental staged full-chain benchmarking, exact output contracts and opt-in dispatch optimization |
 | `docs/response-configuration.md` | schema-v1 JSON response/reco configuration, units/support policy, CLI/kit overrides and resolved asset provenance |
+| `docs/tier1b-default.md` | the tier-1b default asset set (`strict_v2`) and the `legacy` option: files, options, named-configuration caveat, equivalence |
 | `docs/step-layer-closure.md` | opt-in tier-1b placement, held-out shower-source diagnostic, remaining closure and identity limits |
 | `docs/tier1b-descendant-audit.md` | descendant expectation/migration, factorial DQM controls, independent shower closure and candidate-bank support |
 | `docs/generator-association-repair.md` | strict donor association schema, completed production repair and held-out physics validation |
