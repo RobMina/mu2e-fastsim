@@ -193,7 +193,29 @@ def _load_setup(rc, cfg, gdml_path, explicit_gdml, spec, calib, deviation, jax,
 def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax=False, max_events=None, seed=1,
         compare=None, counters=None, reco_cpu=False, emit=None, msc_tail=False, tail_k=None, sliced_msc=False,
         first_muon_only=False, no_absorbers=False, run_config=None, window=None, benchmark=None, prepared=None,
-        conditions_manifest=None, geometry_readout=False, tier1b_set=None, tier1b_dir=None, **kw):
+        conditions_manifest=None, geometry_readout=False, tier1b_set=None, tier1b_dir=None,
+        gen="table", gen_events=None, gen_seed=None, gen_subrun=1, **kw):
+    native = gen in ("native", "device")
+    generator_backend = gen
+    if gen not in ("table", "native", "device"):
+        raise ValueError("gen must be table, native or device")
+    if native:
+        if list(inputs) != ["native"]:
+            raise ValueError("--gen native requires exactly one placeholder input: native")
+        if not isinstance(gen_events, int) or isinstance(gen_events, bool) or not 0 < gen_events < 2**20:
+            raise ValueError("--gen native needs --gen-events in [1,2**20-1] for packed event keys")
+        if not isinstance(gen_subrun, int) or isinstance(gen_subrun, bool) or not 0 <= gen_subrun < 2**28:
+            raise ValueError("native gen-subrun must be in [0,2**28-1] for packed int64 channel labels")
+        effective_gen_seed = seed if gen_seed is None else gen_seed
+        if not isinstance(effective_gen_seed, int) or isinstance(effective_gen_seed, bool) or not 0 <= effective_gen_seed < 2**64:
+            raise ValueError("native gen-seed must be uint64")
+        if max_events or prepared is not None or benchmark is not None or kw.get("prefetch") or compare:
+            raise ValueError("native generation does not support max-events/prepared/benchmark/prefetch/paired compare")
+        if run_config not in (None, "extracted_v04"):
+            raise ValueError("native CRY is currently configured only for extracted_v04")
+    elif gen_events is not None or gen_seed is not None:
+        raise ValueError("gen-events/gen-seed require --gen native")
+    native_receipt = None
     if geometry_readout:
         if prepared is not None or benchmark is not None:
             raise ValueError("geometry readout is not supported with prepared contexts or benchmarks")
@@ -252,7 +274,20 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         rng = np.random.default_rng([int(seed), i])
         t = {}
         a = time.perf_counter() if benchmark is not None else None
-        gen = tables.read(f, "gen")
+        nonlocal native_receipt
+        if native:
+            from mu2efastsim.cosmic_cry import CosmicConfig, CosmicSource
+            if generator_backend == "device":
+                from mu2efastsim.cry_device import DeviceCosmicSource
+                Source = DeviceCosmicSource
+            else:
+                Source = CosmicSource
+            started = time.perf_counter()
+            with Source(CosmicConfig.extracted(gdml_path), seed=seed if gen_seed is None else gen_seed) as source:
+                gen, _, native_receipt = source.generate(gen_events, subrun=gen_subrun)
+            t["generation_s"] = time.perf_counter() - started
+        else:
+            gen = tables.read(f, "gen")
         if benchmark is not None:
             t["input_io_s"] = time.perf_counter() - a
             benchmark.check_input(i, f, gen)
@@ -336,6 +371,12 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
            "run_config": rc.name, "window": list(cfg.window), "time_window": time_window,
            "clusters_per_generated": {stype_name.get(int(k), str(k)): float((cl_type == k).sum() / n_gen)
                                       for k in np.unique(cl_type)}}
+    if native_receipt is not None:
+        live = native_receipt["live_seconds"]
+        res["native_generator"] = native_receipt
+        res["live_seconds"] = live
+        res["clusters_per_live_second"] = {stype_name.get(int(k), str(k)): float((cl_type == k).sum() / live)
+                                            for k in np.unique(cl_type)}
     nev = max(T.get("events_with_steps", 1), 1)
     res["ms_per_event_with_steps"] = {k[:-2]: 1e3 * v / nev for k, v in T.items() if k.endswith("_s") and k != "setup_s"}
     if compare:
@@ -357,6 +398,8 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         with open(emit, "w") as fh:
             json.dump({"generated_events": n_gen, "timers": T, "wall_s": res["wall_s"],
                        "conditions": conditions_metadata, "scatter_in_diagnostics": transport_diagnostics,
+                       **({"native_generator": native_receipt, "live_seconds": native_receipt["live_seconds"]}
+                          if native_receipt is not None else {}),
                        "tier1b": spec.describe(),
                        **readout_metadata,
                        "cl_type_counts": {int(k): int((cl_type == k).sum()) for k in np.unique(cl_type)},
@@ -382,6 +425,8 @@ def merge(inputs, outdir, wall=None, **kw):
     given, from the slowest shard."""
     J = [json.load(open(f)) for f in tables.expand(inputs)]
     time_metadata = validate_runchain_merge(J)
+    from mu2efastsim.cry_receipts import merge_receipts
+    generator_metadata = merge_receipts(J)
     time_metadata.update(readout.validate_merge(J))
     if any(j.get("conditions") != J[0].get("conditions") for j in J[1:]):
         raise ValueError("runchain merge: incompatible conditions provenance")
@@ -415,6 +460,10 @@ def merge(inputs, outdir, wall=None, **kw):
                                                    if k.endswith("_s") and k != "setup_s"},
            "devices": sorted({str(j.get("device")) for j in J}), "reco_devices": sorted({str(j.get("reco_device")) for j in J})}
     res.update(time_metadata)
+    res.update(generator_metadata)
+    if generator_metadata:
+        live = generator_metadata["live_seconds"]
+        res["clusters_per_live_second"] = {names.get(k, str(k)): v / live for k, v in sorted(cl.items())}
     plots.write_json(outdir, "runchain_merge_stats.json", res)
     print(json.dumps(res, indent=1))
     return res

@@ -36,6 +36,16 @@ Python conventions follow `crvextrap` (`RobMina/mu2e_track_crv_mcresponse`): one
 shared definitions in one module, vectorised hot paths, `--emit`/`--merge` batching, stats JSON beside the figures,
 no loose one-off scripts.
 
+## Native CRY (opt-in)
+
+`runchain native --gen native --gen-events N` can generate extracted primaries
+in-process with the CRY-enabled container and current core wrapper. It removes
+the gen-table dependency only; other chain inputs remain required. See
+[native CRY](docs/native-cry.md) for setup, emitted/merged exposure receipts,
+core's extracted-only `chain_point gen_set=4`, and validation limits.
+`--gen device` / core `chain_point gen_set=5` select JAX on-device generation.
+Table-driven defaults are unchanged.
+
 ## License and data
 
 Apache-2.0 (`LICENSE`, `NOTICE`), as Mu2e Offline. The repository holds code, configuration and the agreed plan only:

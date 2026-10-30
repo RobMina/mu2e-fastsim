@@ -113,6 +113,11 @@ def build_parser():
             sp.add_argument("--tier1b-dir", default=None, metavar="DIR",
                             help="directory with the set's files (default $CRVFS_DATA/<set directory>)")
         if name == "runchain":
+            sp.add_argument("--gen", choices=("table", "native", "device"), default="table",
+                            help="generator backend; native CPU/device JAX take placeholder input 'native'")
+            sp.add_argument("--gen-events", type=int, default=None, help="accepted native CRY events (required with --gen native)")
+            sp.add_argument("--gen-seed", type=int, default=None, help="native CRY seed (default --seed; independent chain RNG)")
+            sp.add_argument("--gen-subrun", type=int, default=1, help="native event subrun (default 1)")
             sp.add_argument("--library", default=None, metavar="ROOT",
                             help="custom tier-1b library, sampled without placement options (instead of --tier1b)")
             sp.add_argument("--conditions-manifest", default=None, help="validated named-condition bundle manifest")
