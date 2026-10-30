@@ -3,8 +3,11 @@
 The callers (tier1b-apply, runchain, e2e-bench, the endpoint kits) pick one set by name; crvfastsim.tier1b itself has
 no default library. docs/tier1b-default.md has the provenance and the evidence behind the default.
 
-  strict_v3  default for extracted_v04: strict_v2 with the v3 template sidecar (library chords, the larger near-miss
-             census) and chord placement of the same-bar descendant steps.
+  strict_v4  default for extracted_v04: strict_v3 with whole-muon draws of hard library muons (summed descendant
+             energy above 30 MeV, keyed by momentum class and the group and layer of each crossing; tier1b.attach_hard),
+             which restores the correlation of a muon's descendants across its crossings.
+  strict_v3  strict_v2 with the v3 template sidecar (library chords, the larger near-miss census) and chord placement of
+             the same-bar descendant steps (the default 2026-10-29 to 2026-10-30).
   strict_v2  association-certified library (20 donors) with crossing context, endpoint containment, point
              placement, topology placement and the never-visited-layer / near-miss templates (the default
              2026-10-28 to 2026-10-29).
@@ -13,7 +16,7 @@ no default library. docs/tier1b-default.md has the provenance and the evidence b
              on their geometry, so they map their sectors onto this extracted library's groups (runconfig.lib_group).
 
     spec = resolve(run_config="extracted_v04")            # the configuration's default set under $CRVFS_DATA
-    spec = resolve("legacy"); spec = resolve("strict_v3", directory="/dev/shm/x")   # files staged elsewhere
+    spec = resolve("legacy"); spec = resolve("strict_v4", directory="/dev/shm/x")   # files staged elsewhere
     spec = resolve(library="lib.root")                     # a custom library, no placement options
     lib = load(spec, geom); tier1b.sample(..., lib, geom, rng, **spec.options)
 """
@@ -24,7 +27,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT = "strict_v3"
+DEFAULT = "strict_v4"
 LEGACY = "legacy"
 EXTRACTED = "extracted_v04"
 
@@ -49,6 +52,9 @@ _STRICT = dict(context=True, contain=True, point=True, topology=True, unvisited=
 _STRICT_LIB = "ebb015a76d56edcf96c5bc533daa96729e3851ee3e59185abf0be5fd469257c7"
 
 SETS = {
+    "strict_v4": AssetSet(
+        "tier1b_strict_v2", "library.root", "topology_sidecar_strict_v2_v2.npz", "templates_v3.npz", _STRICT_LIB,
+        dict(_STRICT, chord=True, hard=True)),
     "strict_v3": AssetSet(
         "tier1b_strict_v2", "library.root", "topology_sidecar_strict_v2_v2.npz", "templates_v3.npz", _STRICT_LIB,
         dict(_STRICT, chord=True)),
@@ -81,7 +87,7 @@ class Tier1bSpec:
 
 
 def default_for(run_config=None):
-    """The default set of a run configuration: strict_v3 for extracted_v04, legacy for the named ones."""
+    """The default set of a run configuration: strict_v4 for extracted_v04, legacy for the named ones."""
     return DEFAULT if (run_config or EXTRACTED) == EXTRACTED else LEGACY
 
 
@@ -133,4 +139,6 @@ def load(spec, geom):
         lib = tier1b.attach_topology(lib, *read_topology_sidecar(spec.topology, library_sha256=digest), geom)
     if spec.templates:
         lib = tier1b.attach_templates(lib, read_template_sidecar(spec.templates, library_sha256=digest), geom)
+    if spec.options.get("hard"):
+        lib = tier1b.attach_hard(lib, geom)
     return lib

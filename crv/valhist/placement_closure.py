@@ -31,7 +31,8 @@ from . import descendant_topology as D
 from . import stephist as H
 from . import steplayers as S
 
-OPTIONS = ("context", "contain", "point", "mirror", "translate", "topology", "unvisited", "nearmiss", "chord", "follow")
+OPTIONS = ("context", "contain", "point", "mirror", "translate", "topology", "unvisited", "nearmiss", "chord", "follow",
+           "hard")
 RESEED = 7
 REPORT_KEYS = list(H.TARGET) + ["SMom2", "posx"] + [f"{g}/{v}" for g in S.POS_GROUPS for v in ("y", "z")]
 
@@ -69,9 +70,11 @@ def run(library, transport, reference, shard_list, arms, out, sidecar=None, rese
         from . import descendant_templates as DT
         lib = T.attach_templates(lib, DT.read_sidecar(templates, library), geom)
         hashes[str(templates)] = A.digest(templates)
-    if any(o.get("unvisited") or o.get("nearmiss") or o.get("chord") or o.get("follow") for _, o in arms) \
-            and not templates:
-        raise ValueError("unvisited / nearmiss / chord / follow arms need --templates")
+    if any(o.get("unvisited") or o.get("nearmiss") or o.get("chord") or o.get("follow") or o.get("hard")
+           for _, o in arms) and not templates:
+        raise ValueError("unvisited / nearmiss / chord / follow / hard arms need --templates")
+    if any(o.get("hard") for _, o in arms):
+        lib = T.attach_hard(lib, geom)
     edges = S.booking_edges()
     runs = [(name, opts, opts.get("seed_tag", 0)) for name, opts in arms]
     runs += [(f"{name}~reseed", opts, RESEED) for name, opts in arms if name in reseed]

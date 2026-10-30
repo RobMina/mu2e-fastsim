@@ -494,11 +494,51 @@ def _validate_scatter_in(step_mm, envelope_mm, max_steps, diagnostics):
         raise ValueError("scatter_in_diagnostics must be a dict or None")
 
 
+# range_out (default for extracted_v04, runconfig.range_out): the muon's kinetic energy near the end of its range
+SUBSTEP_FRACTION = 0.1   # mean loss over the bar above this fraction of the kinetic energy: sub-step the bar
+SUBSTEP_N = 10
+_RANGE_TABLES = {}
+RANGE_STRAGGLE = 0.033   # muon range straggling sigma_R / R (Bohr: ~1.1 % for protons x sqrt(m_p / m_mu))
+RANGE_NEAR = 0.3         # mean loss above this fraction of the kinetic energy: straggle the range, not the energy
+
+
+def _range_loss(mat, p, length, g=None):
+    """Mean kinetic-energy loss [MeV] over `length` [mm] from the CSDA range of the full mean dE/dx: T(R(T) - length),
+    the whole kinetic energy when the muon ranges out inside. With g (standard normals) the range is straggled,
+    R (1 + RANGE_STRAGGLE g)."""
+    key = getattr(mat, "name", id(mat))
+    if key not in _RANGE_TABLES:
+        # Bethe is not valid below ~1 MeV (it turns negative near 1 MeV/c): start at 15 MeV/c, with the residual
+        # range there T0 / (2 dE/dx(T0)) (dE/dx keeps rising below), and R linear to 0 at T = 0
+        pg = np.geomspace(15.0, 1e6, 4000)
+        tg = np.sqrt(pg ** 2 + eloss.MMU ** 2) - eloss.MMU
+        inv = 1.0 / eloss.dedx_restricted(mat, pg, 1e9)
+        rg = 0.5 * tg[0] * inv[0] + np.r_[0.0, np.cumsum(0.5 * (inv[1:] + inv[:-1]) * np.diff(tg))]
+        _RANGE_TABLES[key] = (np.r_[0.0, tg], np.r_[0.0, rg])
+    tg, rg = _RANGE_TABLES[key]
+    tin = np.sqrt(np.asarray(p, float) ** 2 + eloss.MMU ** 2) - eloss.MMU
+    r0 = np.interp(tin, tg, rg)
+    if g is not None:
+        r0 = r0 * np.maximum(1 + RANGE_STRAGGLE * g, 0.0)
+    rout = r0 - np.asarray(length, float)
+    return tin - np.where(rout > 0, np.interp(rout, rg, tg), 0.0)
+
+
+def _delta_energy(rng, p, length, cut):
+    """Summed kinetic energy [MeV] of the delta electrons above each crossing's cut (sampled, per cut value)."""
+    out = np.zeros(len(p))
+    for c in np.unique(cut):
+        m = np.flatnonzero(cut == c)
+        di, dT = eloss.sample_deltas(rng, materials.POLYSTYRENE, p[m], length[m], c)
+        out[m] = np.bincount(di, weights=dT, minlength=len(m))
+    return out
+
+
 def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=False, tail_k=None, sliced_msc=False,
               all_muons=True, absorbers=None, absorber_straggling=True, tagger_bar=None, bar_cut=None, below=None,
               below_msc=False, below_scatter_in=False, scatter_in_step_mm=50.0,
               scatter_in_envelope_mm=1500.0, scatter_in_max_steps=20000, scatter_in_diagnostics=None,
-              transport_backend="numpy"):
+              transport_backend="numpy", range_out=False):
     """Return (steps, particles) for the primary muons in `gen`.
 
     Stage A: air, no MSC. B: air + MSC to Y_MSC_PLANE. C: GDML world material (world = world.load(...)) + MSC.
@@ -533,8 +573,17 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
     scatter_in_step_mm=50, scatter_in_envelope_mm=1500 and scatter_in_max_steps=20000 control the approximation;
     an active track at the cap raises instead of returning partial tables. scatter_in_diagnostics may be a dict
     populated with admission, termination and step statistics for convergence scans. See docs/below-scatter-in.md.
+    range_out (stage C bar loop; the extracted_v04 default through runconfig.range_out, off for the named
+    configurations): the muon's kinetic energy also loses the deltas above the bar's cut (their deposits come from tier
+    1b; the visible deposit is unchanged), a bar whose mean loss exceeds SUBSTEP_FRACTION of T is lost in SUBSTEP_N
+    sub-steps at the running momentum, and the absorber loss follows the CSDA range table (T(R(T) - L), the range
+    straggled by RANGE_STRAGGLE when the mean loss exceeds RANGE_NEAR of T). Three own random streams; without it no
+    draw changes. See docs/transport-range-out.md.
     """
     if transport_backend == "jax":
+        if range_out:
+            raise ValueError("JAX transport implements the bar loss without range_out; pass range_out=False "
+                             "(--legacy-transport)")
         from .transport_jax import transport as device_transport
         if msc_tail or sliced_msc or below is not None or below_msc or below_scatter_in:
             raise ValueError("JAX transport supports the straight-line default only; no tail/sliced/below variants")
@@ -593,6 +642,7 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
             pp = p0.copy()
             pp[down] = p_plane
             p_plane = np.where(keep_mu, pp, 0.0)
+    klost = None   # kinetic energy taken by deltas above the cut (bar loop with range_out)
     if below_msc and below is not None:   # bar to bar, with scattering in the below-plane material and the bars
         if absorbers is not None:
             raise ValueError("below_msc: the below-plane world already holds the CRV aluminium; pass no absorbers")
@@ -680,6 +730,12 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
             for m, v in world_mod.column(below, o[it][has] + d[it][has] * g0[has, None], d[it][has], seg[has]).items():
                 gap_col[m][has] = v
             gap_col = {m: v for m, v in gap_col.items() if v.any()}
+        # range_out, own random streams (spawned in this order; without range_out no draw changes): sub-stepped
+        # range-out in the bars, the kinetic energy that deltas above the cut take from the muon (their deposits come
+        # from tier 1b), and the straggled range in the absorbers
+        sub_rng, delta_rng, range_rng = ([np.random.default_rng(rng.bit_generator.seed_seq.spawn(1)[0]) for _ in range(3)]
+                                         if range_out else (None, None, None))
+        klost = np.zeros_like(path)   # kinetic energy carried off by those deltas, per crossing
         for k in range(int(rank.max()) + 1 if len(rank) else 0):
             s = np.flatnonzero((rank == k) & alive & alive_after[it])
             if gap_col:   # straggled loss in every material of the gap before this bar, in fixed material order
@@ -703,6 +759,17 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
                         dl[hit] = eloss.sample_loss(rng, amat, pa[hit], ab_len[s][hit], 1e9)
                     else:
                         dl[hit] = eloss.dedx_restricted(amat, pa[hit], 1e9) * ab_len[s][hit]
+                    if range_out:   # mean loss from the range table (dE/dx rises along the sheet), same fluctuation
+                        naive = eloss.dedx_restricted(amat, pa[hit], 1e9) * ab_len[s][hit]
+                        rl = _range_loss(amat, pa[hit], ab_len[s][hit])
+                        tin = np.sqrt(pa[hit] ** 2 + eloss.MMU ** 2) - eloss.MMU
+                        dl[hit] *= rl / np.maximum(naive, 1e-300)
+                        # near the end of the range: straggle the range, so few muons leave with a few MeV
+                        near = np.flatnonzero(rl > RANGE_NEAR * tin)
+                        if len(near):
+                            g = range_rng.standard_normal(len(near))
+                            h = np.flatnonzero(hit)[near]
+                            dl[h] = _range_loss(amat, pa[h], ab_len[s][h], g)
                 carried[it[s]] += dl
             p_here = core_tr._p_after(p_base[s], air_energy[s] + carried[it[s]])
             dead = p_here <= 1.0
@@ -711,17 +778,53 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
             s, p_here = s[~dead], p_here[~dead]
             loss[s] = eloss.sample_loss(rng, materials.POLYSTYRENE, p_here, path[s], cut[s])
             tkin = np.sqrt(p_here ** 2 + eloss.MMU ** 2) - eloss.MMU
-            stops = loss[s] >= tkin
+            dk = np.zeros(len(s))
+            if range_out:
+                dk = _delta_energy(delta_rng, p_here, path[s], cut[s])
+            stops = loss[s] + dk >= tkin
+            sub_stop = np.zeros(len(s), bool)
+            if range_out:   # near the end of the range: the bar's loss in sub-steps at the running momentum
+                near = np.flatnonzero(eloss.dedx_restricted(materials.POLYSTYRENE, p_here, 1e9) * path[s]
+                                      > SUBSTEP_FRACTION * tkin)
+                if len(near):
+                    q = s[near]
+                    ds = path[q] / SUBSTEP_N
+                    tot, plen = np.zeros(len(q)), path[q].copy()
+                    dep = np.zeros(len(q))   # deposited part of tot (tot also holds the delta kinetic energy)
+                    done = np.zeros(len(q), bool)
+                    for _j in range(SUBSTEP_N):
+                        go = np.flatnonzero(~done)
+                        if not len(go):
+                            break
+                        pc = np.maximum(core_tr._p_after(p_here[near][go], tot[go]), 1.0)
+                        dl = eloss.sample_loss(sub_rng, materials.POLYSTYRENE, pc, ds[go], cut[q][go])
+                        kd = dl.copy()
+                        kd += _delta_energy(delta_rng, pc, ds[go], cut[q][go])
+                        rest = tkin[near][go] - tot[go]
+                        out_ = kd >= rest
+                        frac = np.where(out_, rest / np.maximum(kd, 1e-300), 1.0)
+                        tot[go] += np.minimum(kd, rest)
+                        dep[go] += dl * frac
+                        plen[go[out_]] = (_j + frac[out_]) * ds[go[out_]]
+                        done[go[out_]] = True
+                    loss[q] = dep
+                    dk[near] = tot - dep
+                    stops[near] = done
+                    sub_stop[near] = done
+                    path[q] = np.where(done, plen, path[q])
             if stops.any():   # the muon ranges out in this bar: deposit its kinetic energy over its residual range
-                k = s[stops]
-                loss[k] = tkin[stops]
-                path[k] = np.minimum(path[k], tkin[stops] / eloss.dedx_restricted(materials.POLYSTYRENE, p_here[stops],
-                                                                                  1e9))
-                alive_after[it[k]] = False
+                w = stops & ~sub_stop
+                k = s[w]
+                share = loss[k] / np.maximum(loss[k] + dk[w], 1e-300)   # deposited share; the rest leaves as deltas
+                dk[w] = tkin[w] * (1 - share)
+                loss[k] = tkin[w] * share
+                path[k] = np.minimum(path[k], tkin[w] / eloss.dedx_restricted(materials.POLYSTYRENE, p_here[w], 1e9))
+                alive_after[it[s[stops]]] = False
             pin[s] = p_here
-            carried[it[s]] += loss[s]   # one bar per track per pass, so no duplicate indices
+            klost[s] = dk
+            carried[it[s]] += loss[s] + dk   # one bar per track per pass, so no duplicate indices
         keep = alive & (loss > 0)
-        it, bar, t_in, t_out, path, loss, pin = (a[keep] for a in (it, bar, t_in, t_out, path, loss, pin))
+        it, bar, t_in, t_out, path, loss, pin, klost = (a[keep] for a in (it, bar, t_in, t_out, path, loss, pin, klost))
         dist = t_in
         dirs = d[it]
         pos0 = o[it] + d[it] * t_in[:, None]
@@ -740,7 +843,7 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
         steps[f"{c}0"] = pos0[:, j]
         steps[f"{c}1"] = pos1[:, j]
         steps[f"p{c}0"] = dirs[:, j] * pin
-    steps["p1"] = scatter_p1 if below_scatter_in else core_tr._p_after(pin, loss)
+    steps["p1"] = scatter_p1 if below_scatter_in else core_tr._p_after(pin, loss if klost is None else loss + klost)
     steps["len"] = path
     steps["edep"] = vis
     parts = pd.DataFrame({k: mu[k].to_numpy() for k in tables.KEY})

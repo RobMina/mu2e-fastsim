@@ -3,7 +3,7 @@ waveforms/digis -> pulses -> coincidence clusters.
 
 Stages and the modules that own them:
   transport.transport (tier 1a muons), tier1b.sample (library secondaries + non-muon showers; the library, sidecars and
-  options of the asset set chosen in tier1b_assets, default strict_v3 for extracted_v04, legacy for named configurations),
+  options of the asset set chosen in tier1b_assets, default strict_v4 for extracted_v04, legacy for named configurations),
   response.photons[_jax] (photons at the SiPMs), response.sipm[_jax] (SiPM charges),
   reco.waveform[_jax] (waveforms -> 12-sample digis), reco.pulsefit + reco.chain_jax (pulses, coincidences).
 Glue added here: the SiPM-status mask (stock CrvSiPMChargeGenerator skips status bits 0 and 2), one TDC0 per

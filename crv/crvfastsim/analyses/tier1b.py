@@ -1,8 +1,8 @@
 """tier1b-build / tier1b-apply -- the G4 library of muon descendants and non-muon primaries (crvfastsim/tier1b.py).
 
     tier1b-build crvsteps.<train>.root [...] --gen gen.<train>.root [...] --out lib.root
-    tier1b-apply fastC.*.root --outdir DIR [--seed N]   (writes fast1b.<shard>.root; default set strict_v3)
-    tier1b-apply fastC.*.root --tier1b legacy|strict_v2|strict_v3 [--tier1b-dir DIR] --outdir DIR   (a named asset set)
+    tier1b-apply fastC.*.root --outdir DIR [--seed N]   (writes fast1b.<shard>.root; default set strict_v4)
+    tier1b-apply fastC.*.root --tier1b legacy|strict_v2|strict_v3|strict_v4 [--tier1b-dir DIR] --outdir DIR   (a named asset set)
     tier1b-apply fastC.*.root --library lib.root --outdir DIR   (a custom library, no placement unless flagged:)
         [--crossing-context --contain-steps --point-placement --topology-sidecar SIDE.npz]
         [--template-sidecar TEMPLATES.npz --unvisited-layers --near-miss]
@@ -84,7 +84,7 @@ def apply(inputs, outdir, library=None, seed=1, counters=None, crossing_context=
           point_placement=False, mirror_offsets=False, translate_offsets=False, topology_sidecar=None,
           template_sidecar=None, unvisited_layers=False, near_miss=False, chord_placement=False, follow_muon=False,
           tier1b_set=None, tier1b_dir=None, **kw):
-    """Without --library: the asset set --tier1b (default strict_v3, tier1b_assets) with its own placement options.
+    """Without --library: the asset set --tier1b (default strict_v4, tier1b_assets) with its own placement options.
     With --library: that library and only the placement flags given (no flag: no placement, the legacy sampling)."""
     given = dict(crossing_context=crossing_context, contain_steps=contain_steps, point_placement=point_placement,
                  mirror_offsets=mirror_offsets, translate_offsets=translate_offsets, topology_sidecar=topology_sidecar,

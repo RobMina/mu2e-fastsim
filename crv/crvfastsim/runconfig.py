@@ -88,6 +88,9 @@ class RunConfig:
                                       # hall dirt and walls that shield the side walls from near-horizontal muons
     below_msc: bool = False           # with below_world: multiple scattering below the plane, bar to bar
                                       # (transport.scattered_crossings; opt-in, worse V1 than straight lines)
+    range_out: bool = False           # stage C: muon kinetic energy near the end of its range (transport range_out:
+                                      # delta kinetic loss, sub-stepped bar range-out, absorber range table); the
+                                      # extracted_v04 default since 2026-10-30, --legacy-transport turns it off
     geom_text: str = ""               # Offline geometry file of the world the GDML was made from
     add_opposite_side_pulses: bool = True
 
@@ -146,7 +149,7 @@ class RunConfig:
 EXTRACTED_V04 = RunConfig(
     "extracted_v04", "Offline/Mu2eG4/geom/crv_counters_extracted_v04.txt", f"{GEOM_DIR}/mu2e_extracted_v04.gdml",
     dict(PH.EXTRACTED_V05), 0.94, dict(C.EXTRACTED_V04), True, OFFSPILL_WINDOW,
-    tagger_sectors=tuple(f"M{i}" for i in range(1, 9)),
+    tagger_sectors=tuple(f"M{i}" for i in range(1, 9)), range_out=True,
     geom_text="Offline/Mu2eG4/geom/geom_common_extracted_v04.txt")
 
 # every non-tagger sector of Run 1A / Run 2 is a CRV module with 0.1 mm-cut-like descendants: library group EX (6 m

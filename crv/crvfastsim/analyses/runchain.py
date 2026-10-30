@@ -3,12 +3,13 @@ digis -> pulses -> clusters (crvfastsim/chain.py), with the cost of every stage.
 files of the stock chain on the same shards) it reports clusters per generated event per sector type, fast vs stock.
 
     runchain gen.<shard>.root [...] --calib crvcalib.csv [--deviation crvphoton.csv] [--jax]
-             [--tier1b strict_v3|strict_v2|legacy [--tier1b-dir DIR] | --library lib.root]
+             [--tier1b strict_v4|strict_v3|strict_v2|legacy [--tier1b-dir DIR] | --library lib.root]
              [--reco-cpu] [--max-events N] [--compare ref.<shard>.root ...] [--emit shard.json] --outdir DIR
     runchain-merge shard*.json --outdir DIR      (node totals: events, clusters per sector type, rates)
 
-Tier 1b (crvfastsim.tier1b_assets): default asset set strict_v3 for extracted_v04 (strict library, crossing context,
-containment, point and topology placement, v3 templates, chord placement); --tier1b strict_v2 is the same without
+Tier 1b (crvfastsim.tier1b_assets): default asset set strict_v4 for extracted_v04 (strict library, crossing context,
+containment, point and topology placement, v3 templates, chord placement, hard-muon draws); --tier1b strict_v3 is the
+same without the hard-muon draws (the default 2026-10-29 to 30); --tier1b strict_v2 is strict_v3 without
 chord placement and with the v2 templates (the default 2026-10-28 to 29); --tier1b legacy is the tier1b_v7 library without placement (the
 default before 2026-10-28) and the only set of the named run configurations; --library is a custom library sampled
 without placement options.
@@ -268,7 +269,10 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
     out_cl, n_gen = [], 0
     transport_diagnostics = {}
     device_transport = None
+    range_out = rc.range_out and not kw.get("legacy_transport")
     if kw.get("transport_backend", "numpy") == "jax":
+        if range_out:
+            raise ValueError("JAX transport implements the bar loss without range_out; add --legacy-transport")
         from ..transport_jax import DeviceTransport, transport as run_device_transport
         if msc_tail or sliced_msc or below is not None or kw.get("below_msc") or kw.get("below_scatter_in"):
             raise ValueError("JAX transport supports the straight-line default only")
@@ -316,7 +320,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         else:
             st, pa = tr.transport(gen, geom, rng, stage="C", world=world, msc_tail=msc_tail, tail_k=tail_k,
                                   sliced_msc=sliced_msc, all_muons=not first_muon_only, absorbers=ab, tagger_bar=tagger,
-                                  bar_cut=bar_cut, below=below,
+                                  bar_cut=bar_cut, below=below, range_out=range_out,
                                   below_msc=below is not None and (rc.below_msc or bool(kw.get("below_msc"))),
                                   **_scatter_in_kw(kw, diagnostics))
         if diagnostics:
@@ -384,7 +388,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
     cl_type = np.concatenate([o["cl_type"] for o in out_cl]) if out_cl else np.zeros(0, int)
     res = {"generated_events": n_gen, "timers": T, "conditions": conditions_metadata, **readout_metadata,
            "tier1b": spec.describe(),
-           **({"transport_backend": "jax"} if device_transport is not None else {}),
+           **({"transport_backend": "jax"} if device_transport is not None else {}), "range_out": bool(range_out),
            "run_config": rc.name, "window": list(cfg.window), "time_window": time_window,
            "clusters_per_generated": {stype_name.get(int(k), str(k)): float((cl_type == k).sum() / n_gen)
                                       for k in np.unique(cl_type)}}

@@ -315,7 +315,7 @@ def run(inputs, outdir=None, repeat=2, seed=1, reuse_context=False, **kwargs):
     kwargs.pop("emit", None)
     allowed = {"library", "calib", "deviation", "gdml", "jax", "max_events", "counters", "reco_cpu", "msc_tail",
                "tail_k", "sliced_msc", "first_muon_only", "no_absorbers", "run_config", "window", "fused_response",
-               "prefetch", "unbanded_world", "no_below_world", "tier1b_set", "tier1b_dir", "transport_backend"}
+               "prefetch", "unbanded_world", "no_below_world", "tier1b_set", "tier1b_dir", "transport_backend", "legacy_transport"}
     if set(kwargs) - allowed:
         raise ValueError(f"unsupported benchmark options: {sorted(set(kwargs) - allowed)}")
     if not kwargs.get("calib"):
@@ -441,7 +441,7 @@ def main(argv=None):
     p.add_argument("--transport-backend", choices=["numpy", "jax"], default="numpy")
     p.add_argument("--tail-k", type=float)
     for name in ("jax", "reco-cpu", "msc-tail", "sliced-msc", "first-muon-only", "no-absorbers",
-                 "no-below-world", "unbanded-world", "prefetch", "fused-response"):
+                 "no-below-world", "unbanded-world", "prefetch", "fused-response", "legacy-transport"):
         p.add_argument("--" + name, action="store_true")
     args = vars(p.parse_args(argv))
     try:

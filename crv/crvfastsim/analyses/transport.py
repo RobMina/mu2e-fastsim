@@ -69,6 +69,7 @@ def run(inputs, outdir, seed=1, stage="A", counters=None, gdml=None, world_mods=
         ab = None if no_absorbers else ab
         if rc.below_world and not kw.get("no_below_world"):    # the below-plane world includes the CRV aluminium
             below, ab = tr.load_below(gdml or default_gdml(), geom, **_below_kw(rc, kw)), None
+    range_out = stage == "C" and rc.range_out and not kw.get("legacy_transport")
     for i, f in enumerate(tables.expand(inputs)):
         rng = np.random.default_rng([int(seed), i])
         gen = tables.read(f, "gen")
@@ -77,6 +78,7 @@ def run(inputs, outdir, seed=1, stage="A", counters=None, gdml=None, world_mods=
         steps, parts = tr.transport(gen, geom, rng, stage=stage, world=world, msc_tail=msc_tail, tail_k=tail_k,
                                     sliced_msc=sliced_msc, all_muons=not first_muon_only, absorbers=ab, tagger_bar=tagger,
                                     bar_cut=bar_cut, below=below, transport_backend=kw.get("transport_backend", "numpy"),
+                                    range_out=range_out,
                                     below_msc=below is not None and (rc.below_msc or bool(kw.get("below_msc"))),
                                     **_scatter_in_kw(kw, diagnostics))
         name = os.path.basename(f).replace("gen.", f"fast{stage}.")

@@ -11,12 +11,15 @@ from crvfastsim.analyses import tier1b as A
 from test_e2e_bench import pipeline  # noqa: F401  (fixture)
 
 STRICT = dict(context=True, contain=True, point=True, topology=True, unvisited=True, nearmiss=True)
-DEFAULT = dict(STRICT, chord=True)                       # strict_v3: strict_v2 + v3 templates + chord placement
+V3 = dict(STRICT, chord=True)                            # strict_v3: strict_v2 + v3 templates + chord placement
+DEFAULT = dict(V3, hard=True)                            # strict_v4: strict_v3 + hard-muon draws
 
 
 def test_default_per_run_configuration():
     s = T.resolve(data="/D")
-    assert s.name == "strict_v3" and s.options == DEFAULT
+    assert s.name == "strict_v4" and s.options == DEFAULT
+    v3 = T.resolve("strict_v3", data="/D")
+    assert v3.options == V3 and v3.paths() == s.paths() and v3.library_sha256 == s.library_sha256
     assert s.library == "/D/tier1b_strict_v2/library.root"
     assert s.paths() == ["/D/tier1b_strict_v2/library.root", "/D/tier1b_strict_v2/topology_sidecar_strict_v2_v2.npz",
                          "/D/tier1b_strict_v2/topology_sidecar_strict_v2_v2.npz.json",
@@ -39,7 +42,7 @@ def test_custom_library_and_refusals(monkeypatch):
     with pytest.raises(ValueError, match="not both"):
         T.resolve("legacy", library="lib.root")
     with pytest.raises(ValueError, match="unknown tier-1b set"):
-        T.resolve("strict_v4", data="/D")
+        T.resolve("strict_v9", data="/D")
     monkeypatch.delenv("CRVFS_DATA", raising=False)
     with pytest.raises(ValueError, match="CRVFS_DATA"):
         T.resolve()
@@ -60,6 +63,7 @@ def _fake_set(tmp_path, monkeypatch, library=b"library bytes"):
     monkeypatch.setattr("crvfastsim.tier1b.read_library", lambda p: calls.append(("read", p)) or {"lib": p})
     monkeypatch.setattr("crvfastsim.tier1b.attach_topology", lambda lib, c, v, g: calls.append(("topology", c, v)) or {**lib, "t": 1})
     monkeypatch.setattr("crvfastsim.tier1b.attach_templates", lambda lib, side, g: calls.append(("templates", side)) or {**lib, "u": 1})
+    monkeypatch.setattr("crvfastsim.tier1b.attach_hard", lambda lib, g: calls.append(("hard",)) or {**lib, "h": 1})
     monkeypatch.setattr(A, "read_topology_sidecar", lambda p, library=None, library_sha256=None: (p, library_sha256))
     monkeypatch.setattr(A, "read_template_sidecar", lambda p, library=None, library_sha256=None: (p, library_sha256))
     return spec, calls
@@ -70,8 +74,8 @@ def test_load_order_and_library_pin(tmp_path, monkeypatch):
     pinned = T.sha256(spec.library)
     spec = T.Tier1bSpec(spec.name, spec.library, spec.topology, spec.templates, pinned, spec.options)
     lib = T.load(spec, geom=None)
-    assert lib == {"lib": spec.library, "t": 1, "u": 1}
-    assert [c[0] for c in calls] == ["read", "topology", "templates"]          # tier1b-apply's order
+    assert lib == {"lib": spec.library, "t": 1, "u": 1, "h": 1}
+    assert [c[0] for c in calls] == ["read", "topology", "templates", "hard"]  # tier1b-apply's order, hard muons last
     assert calls[1][1:] == (spec.topology, pinned) and calls[2][1] == (spec.templates, pinned)
     bad = T.Tier1bSpec(spec.name, spec.library, spec.topology, spec.templates, "0" * 64, spec.options)
     with pytest.raises(ValueError, match="not the pinned library"):
@@ -105,8 +109,10 @@ def test_runchain_passes_the_set_options(pipeline, monkeypatch, tmp_path):  # no
     monkeypatch.setenv("CRVFS_DATA", str(tmp_path))
     base = dict(inputs=[str(tmp_path / "gen.root")], calib="nominal", gdml="world")
     res = R.run(outdir=str(tmp_path / "d"), **base)
-    assert seen[-1] == {"showers": True, **DEFAULT} and loaded[-1].name == "strict_v3"
-    assert res["tier1b"]["set"] == "strict_v3" and res["tier1b"]["options"] == DEFAULT
+    assert seen[-1] == {"showers": True, **DEFAULT} and loaded[-1].name == "strict_v4"
+    assert res["tier1b"]["set"] == "strict_v4" and res["tier1b"]["options"] == DEFAULT
+    res = R.run(outdir=str(tmp_path / "v3"), tier1b_set="strict_v3", **base)
+    assert seen[-1] == {"showers": True, **V3} and res["tier1b"]["set"] == "strict_v3"
     res = R.run(outdir=str(tmp_path / "v2"), tier1b_set="strict_v2", **base)
     assert seen[-1] == {"showers": True, **STRICT} and res["tier1b"]["set"] == "strict_v2"
     res = R.run(outdir=str(tmp_path / "l"), tier1b_set="legacy", **base)
@@ -155,7 +161,7 @@ def test_tier1b_apply_default_legacy_and_custom(tmp_path, monkeypatch):
     monkeypatch.setattr(A.tier1b_assets, "load", lambda spec, geom: loaded.append(spec) or {})
     monkeypatch.setenv("CRVFS_DATA", str(tmp_path))
     A.apply(["fastC.x.root"], str(tmp_path))
-    assert seen[-1] == DEFAULT and loaded[-1].name == "strict_v3"
+    assert seen[-1] == DEFAULT and loaded[-1].name == "strict_v4"
     A.apply(["fastC.x.root"], str(tmp_path), tier1b_set="legacy")
     assert seen[-1] == {} and loaded[-1].name == "legacy"
     A.apply(["fastC.x.root"], str(tmp_path), library="lib.root")
