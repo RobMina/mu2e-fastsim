@@ -170,6 +170,14 @@ Outputs are a stats JSON (`plots.write_json`: NaN → null) plus figures.
 **Batch + merge** (same contract as crvextrap §7): workers `--emit batch_NN.json` on a slice of files (one job per
 GPVM), then `--merge "batches/*.json"` locally. Merged counts are sums, so the merge equals a single pass.
 
+## Opt-in device transport
+
+`transport`, `runchain` and `e2e-bench` accept `--transport-backend jax` (NumPy remains the default).
+The straight-line stages A/C numeric batches run on the selected JAX device; tier 1b still runs on the host.
+Unsupported tail/sliced/below-plane variants and unknown materials raise rather than silently changing the model.
+This path is experimental, not a speed default. See [`docs/device-transport.md`](../docs/device-transport.md)
+for the physics, bounded-shape, RNG, overflow and validation contracts.
+
 ## 7. Vectorisation contract
 
 No Python loops over events, steps or particles; loops over files, sector groups and fixed small sets only. Shared

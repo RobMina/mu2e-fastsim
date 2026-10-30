@@ -497,7 +497,8 @@ def _validate_scatter_in(step_mm, envelope_mm, max_steps, diagnostics):
 def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=False, tail_k=None, sliced_msc=False,
               all_muons=True, absorbers=None, absorber_straggling=True, tagger_bar=None, bar_cut=None, below=None,
               below_msc=False, below_scatter_in=False, scatter_in_step_mm=50.0,
-              scatter_in_envelope_mm=1500.0, scatter_in_max_steps=20000, scatter_in_diagnostics=None):
+              scatter_in_envelope_mm=1500.0, scatter_in_max_steps=20000, scatter_in_diagnostics=None,
+              transport_backend="numpy"):
     """Return (steps, particles) for the primary muons in `gen`.
 
     Stage A: air, no MSC. B: air + MSC to Y_MSC_PLANE. C: GDML world material (world = world.load(...)) + MSC.
@@ -533,6 +534,15 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
     an active track at the cap raises instead of returning partial tables. scatter_in_diagnostics may be a dict
     populated with admission, termination and step statistics for convergence scans. See docs/below-scatter-in.md.
     """
+    if transport_backend == "jax":
+        from .transport_jax import transport as device_transport
+        if msc_tail or sliced_msc or below is not None or below_msc or below_scatter_in:
+            raise ValueError("JAX transport supports the straight-line default only; no tail/sliced/below variants")
+        return device_transport(gen, geom, rng, air_loss=air_loss, stage=stage, world=world,
+                                all_muons=all_muons, absorbers=absorbers, absorber_straggling=absorber_straggling,
+                                tagger_bar=tagger_bar, bar_cut=bar_cut)
+    if transport_backend != "numpy":
+        raise ValueError(f"unknown transport backend: {transport_backend}")
     if below_scatter_in:
         if stage != "C" or below is None or not below_msc:
             raise ValueError("below_scatter_in requires stage C, below, and below_msc=True")
