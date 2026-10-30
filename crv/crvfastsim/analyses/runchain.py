@@ -195,7 +195,8 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         compare=None, counters=None, reco_cpu=False, emit=None, msc_tail=False, tail_k=None, sliced_msc=False,
         first_muon_only=False, no_absorbers=False, run_config=None, window=None, benchmark=None, prepared=None,
         conditions_manifest=None, geometry_readout=False, tier1b_set=None, tier1b_dir=None,
-        transport_context=None, gen="table", gen_events=None, gen_seed=None, gen_subrun=1, **kw):
+        transport_context=None, tier1b_context=None, tier1b_backend="numpy",
+        gen="table", gen_events=None, gen_seed=None, gen_subrun=1, **kw):
     native = gen in ("native", "device")
     generator_backend = gen
     if gen not in ("table", "native", "device"):
@@ -271,19 +272,37 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
     device_transport = None
     range_out = rc.range_out and not kw.get("legacy_transport")
     if kw.get("transport_backend", "numpy") == "jax":
-        if range_out:
-            raise ValueError("JAX transport implements the bar loss without range_out; add --legacy-transport")
         from ..transport_jax import DeviceTransport, transport as run_device_transport
         if msc_tail or sliced_msc or below is not None or kw.get("below_msc") or kw.get("below_scatter_in"):
             raise ValueError("JAX transport supports the straight-line default only")
         if transport_context is not None and prepared is None:
             raise ValueError("device transport reuse requires an audited prepared chain context")
         cached = transport_context.get("device") if transport_context is not None else None
-        if cached is not None and (cached.geom is not geom or cached.stage != "C"):
+        if cached is not None and (cached.geom is not geom or cached.stage != "C" or cached.range_out != bool(range_out)):
             raise ValueError("cached device transport does not match prepared geometry")
-        device_transport = cached or DeviceTransport(geom, world, ab, tagger, bar_cut)
+        device_transport = cached or DeviceTransport(geom, world, ab, tagger, bar_cut, range_out=range_out)
         if transport_context is not None:
             transport_context["device"] = device_transport
+
+    device_tier1b = None
+    if tier1b_backend not in ("numpy", "jax"):
+        raise ValueError(f"unknown tier1b backend {tier1b_backend!r}")
+    if tier1b_backend == "jax":
+        from ..tier1b_jax import DeviceRandom, DeviceTier1b
+        if spec.name not in ("strict_v3", "strict_v4") or rc.name != runconfig.DEFAULT:
+            raise ValueError("device tier1b currently supports extracted strict_v3/strict_v4 only")
+        if kw.get("prefetch"):
+            raise ValueError("device tier1b prefetch is not certified")
+        if tier1b_context is not None and prepared is None:
+            raise ValueError("device tier1b reuse requires an audited prepared context")
+        cached = tier1b_context.get("device") if tier1b_context is not None else None
+        if cached is not None and (cached.geom is not geom or cached.lib is not lib):
+            raise ValueError("cached device tier1b does not match prepared assets")
+        a = time.perf_counter()
+        device_tier1b = cached or DeviceTier1b(lib, geom)
+        T["tier1b_preparation_s"] = time.perf_counter() - a
+        if tier1b_context is not None:
+            tier1b_context["device"] = device_tier1b
 
     def host_stage(i, f):
         """CPU part of file i (read, transport, tier 1b) with its own rng and timers: the same draws whether it runs
@@ -327,7 +346,11 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
             transport_diagnostics[str(i)] = {"input": str(f), **diagnostics}
         t["transport_s"] = time.perf_counter() - a
         a = time.perf_counter()
-        st, pa, _ = tier1b.sample(st, pa, gen, lib, geom, rng, showers=rc.showers, **spec.options)
+        if device_tier1b is None:
+            st, pa, _ = tier1b.sample(st, pa, gen, lib, geom, rng, showers=rc.showers, **spec.options)
+        else:
+            device_rng = DeviceRandom(int(rng.integers(0, 2**32, dtype=np.uint32)))
+            st, pa, _ = device_tier1b.sample(st, pa, gen, device_rng, showers=rc.showers, **spec.options)
         t["tier1b_s"] = time.perf_counter() - a
         return ngen, st, pa, rng, t, keys
 
@@ -389,6 +412,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
     res = {"generated_events": n_gen, "timers": T, "conditions": conditions_metadata, **readout_metadata,
            "tier1b": spec.describe(),
            **({"transport_backend": "jax"} if device_transport is not None else {}), "range_out": bool(range_out),
+           **({"tier1b_backend": "jax"} if device_tier1b is not None else {}),
            "run_config": rc.name, "window": list(cfg.window), "time_window": time_window,
            "clusters_per_generated": {stype_name.get(int(k), str(k)): float((cl_type == k).sum() / n_gen)
                                       for k in np.unique(cl_type)}}

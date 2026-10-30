@@ -1,7 +1,7 @@
 """Opt-in JAX twin of the extracted straight-line CRV transport.
 
-Physics follows transport.py, including its single entry-momentum bar-loss draw,
-range-out rule, unsliced MSC momentum and generated-beta clock. RNG streams differ.
+Physics follows transport.py: legacy or explicit range_out kinetic/substep/CSDA
+rules, unsliced MSC momentum and generated-beta clock. RNG streams differ.
 World preparation and table assembly are host operations; numeric batches remain
 on the selected JAX device until the host tier-1b boundary.
 """
@@ -117,12 +117,14 @@ def scatter(key, o, d, p, y_plane, xx0, bh):
 class DeviceTransport:
     """Prepared immutable geometry/world constants; reuse for warm passes."""
     def __init__(self, geom, world=None, absorbers=None, tagger_bar=None, bar_cut=None,
-                 stage="C", air_loss=True, absorber_straggling=True, batch_size=4096, capacity=64):
+                 stage="C", air_loss=True, absorber_straggling=True, batch_size=4096, capacity=64, range_out=False):
         if stage not in ("A", "C"):
             raise ValueError("JAX transport supports stages A and C only")
         if batch_size < 1 or capacity < 1:
             raise ValueError("batch_size and capacity must be positive")
-        self.geom, self.stage = geom, stage
+        self.geom, self.stage, self.range_out = geom, stage, bool(range_out)
+        if self.range_out and stage != "C":
+            raise ValueError("device range_out supports stage C only")
         self.batch_size, self.capacity = batch_size, capacity
         self.y = nt.msc_plane(geom)
         self.lo, self.hi = (jnp.asarray(a) for a in (geom.center - geom.halflen, geom.center + geom.halflen))
@@ -146,7 +148,14 @@ class DeviceTransport:
             alo, ahi, mat = absorbers
             mat = materials.BY_NAME[mat] if isinstance(mat, str) else mat
             self.absorbers = (jnp.asarray(alo), jnp.asarray(ahi), ej.consts(mat))
-        self.bar_kernel = self._make_bar_kernel(air_loss, absorber_straggling)
+        self.range_knots = None
+        if self.range_out:
+            from . import range_out_jax as ro
+            if absorbers is not None:
+                self.range_knots = ro.table(mat)
+            self.bar_kernel = ro.make_kernel(self, air_loss, absorber_straggling)
+        else:
+            self.bar_kernel = self._make_bar_kernel(air_loss, absorber_straggling)
         self.batch_kernel = jax.jit(self.batch)
 
     def world(self, key, o, d, p, active):
@@ -240,7 +249,7 @@ class DeviceTransport:
 
 def transport(gen, geom, rng, *, stage="C", world=None, absorbers=None, tagger_bar=None, bar_cut=None,
               air_loss=True, all_muons=True, absorber_straggling=True, prepared=None, timers=None,
-              batch_size=4096, capacity=64, **unsupported):
+              batch_size=4096, capacity=64, range_out=None, **unsupported):
     """Return ordinary CrvStep/particle frames at the host tier-1b boundary.
 
     Optional NumPy physics variants are rejected, never silently approximated.
@@ -250,9 +259,10 @@ def transport(gen, geom, rng, *, stage="C", world=None, absorbers=None, tagger_b
     if bad:
         raise ValueError(f"JAX transport does not support: {bad}")
     a = time.perf_counter()
+    effective_range = prepared.range_out if range_out is None and prepared is not None else bool(range_out)
     dev = prepared or DeviceTransport(geom, world, absorbers, tagger_bar, bar_cut, stage, air_loss,
-                                      absorber_straggling, batch_size, capacity)
-    if dev.geom is not geom or dev.stage != stage:
+                                      absorber_straggling, batch_size, capacity, range_out=effective_range)
+    if dev.geom is not geom or dev.stage != stage or dev.range_out != effective_range:
         raise ValueError("prepared transport does not match the geometry/stage")
     mu = nt.all_primary_muons(gen) if all_muons else tables.primary_muons(gen)
     mukey = mu.mukey.to_numpy() if all_muons else np.ones(len(mu), np.int64)

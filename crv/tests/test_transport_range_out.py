@@ -70,7 +70,11 @@ def test_off_by_default_and_extracted_default_on():
     assert not any(runconfig.get(n).range_out for n in ("run1a_v01", "run1b_v01", "run2_v10"))
 
 
-def test_jax_backend_refuses_range_out():
-    with pytest.raises(ValueError, match="legacy-transport"):
-        T.transport(_gen([1000.]), _geometry(), np.random.default_rng(1), stage="C", world=[],
-                    transport_backend="jax", range_out=True)
+def test_jax_backend_forwards_range_out(monkeypatch):
+    pytest.importorskip("jax")
+    from crvfastsim import transport_jax
+    calls = []
+    monkeypatch.setattr(transport_jax, "transport", lambda *args, **kw: calls.append(kw) or (None, None))
+    T.transport(_gen([1000.]), _geometry(), np.random.default_rng(1), stage="C", world=[],
+                transport_backend="jax", range_out=True)
+    assert calls[0]["range_out"] is True

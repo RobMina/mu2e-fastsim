@@ -67,10 +67,12 @@ def run(args):
     out.mkdir(parents=True, exist_ok=False)
     geom = geometry.from_offline_config(args.counters)
     world, ab = nt.load_world(args.gdml)
-    dev = jt.DeviceTransport(geom, world, ab, batch_size=args.batch_size)
+    dev = jt.DeviceTransport(geom, world, ab, batch_size=args.batch_size, range_out=args.range_out)
     edges = {"y": sl.Y_EDGES, "z": sl.Z_EDGES}
     sh._GEOM.update(geom=geom, grp=sl.bar_table(geom).grp.to_numpy())
-    result = dict(devices=[str(d) for d in jax.devices()], batch_size=args.batch_size, shards={},
+    code_paths = [Path(nt.__file__), Path(jt.__file__), Path(jt.__file__).with_name("range_out_jax.py")]
+    hashes = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in code_paths}
+    result = dict(devices=[str(d) for d in jax.devices()], batch_size=args.batch_size, range_out=args.range_out, hashes=hashes, shards={},
                   timing_note="Synchronized wall times; cold includes compilation; warm reuses prepared geometry.")
     ah, bh, ph = {}, {}, {}
     jax_stock, numpy_stock, port = v1._new_state(), v1._new_state(), v1._new_state()
@@ -83,12 +85,12 @@ def run(args):
         if args.reuse_baseline:
             sn, pn = staged, tables.read(str(Path(args.reference)/f"fastC.{suffix}"), "particles")
         else:
-            sn, pn = nt.transport(gen, geom, np.random.default_rng([shard, 0]), stage="C", world=world, absorbers=ab)
+            sn, pn = nt.transport(gen, geom, np.random.default_rng([shard, 0]), stage="C", world=world, absorbers=ab, range_out=args.range_out)
         numpy_s = None if args.reuse_baseline else time.perf_counter()-a
         numpy_times = [] if args.reuse_baseline else [numpy_s]
         for _ in range(0 if args.reuse_baseline else args.numpy_repeat-1):
             a = time.perf_counter()
-            nt.transport(gen, geom, np.random.default_rng([shard, 0]), stage="C", world=world, absorbers=ab)
+            nt.transport(gen, geom, np.random.default_rng([shard, 0]), stage="C", world=world, absorbers=ab, range_out=args.range_out)
             numpy_times.append(time.perf_counter()-a)
         receipt = baseline_receipt(sn, staged)
         # The staged table is the baseline once the reproduction receipt has been recorded.
@@ -112,7 +114,13 @@ def run(args):
         row = dict(generated_events=len(events), primary_muons=len(pn), numpy_steps=len(sn), jax_steps=len(sj),
                    baseline_receipt=receipt, deterministic=deterministic_check(nt.all_primary_muons(gen), geom),
                    numpy_s=numpy_s, numpy_times_s=numpy_times, trials=trials, histograms=comparison,
-                   repeat_fingerprints=fingerprints, repeat_exact=True, baseline_reused=args.reuse_baseline)
+                   repeat_fingerprints=fingerprints, repeat_exact=True, baseline_reused=args.reuse_baseline,
+                   range_out=args.range_out,
+                   stops={name: dict(count=int((frame.p1 < 1.).sum()),
+                          entry_ke_quantiles=(np.quantile(np.sqrt(np.sum(frame.loc[frame.p1 < 1., ["px0", "py0", "pz0"]].to_numpy()**2, axis=1) + nt.eloss.MMU**2) - nt.eloss.MMU,
+                                                        [.1, .5, .9]).tolist() if (frame.p1 < 1.).any() else []),
+                          path_quantiles=(frame.loc[frame.p1 < 1., "len"].quantile([.1, .5, .9]).tolist() if (frame.p1 < 1.).any() else []))
+                          for name, frame in (("numpy", sn), ("jax", sj))})
         if args.paired_jax_reference:
             previous = tables.read(str(Path(args.paired_jax_reference)/f"fastC_jax.{suffix}"), "steps")
             row["paired_jax_receipt"] = baseline_receipt(sj, previous)
@@ -166,6 +174,7 @@ def main():
     p.add_argument("--no-candidate-tables", action="store_true", help="retain summary only after all comparisons; delete only candidate tables written by this run")
     p.add_argument("--reuse-baseline", action="store_true", help="reuse staged baseline after an independent reproduction receipt; no NumPy timing claim")
     p.add_argument("--batch-size", type=int, default=4096)
+    p.add_argument("--range-out", action="store_true")
     run(p.parse_args())
 
 

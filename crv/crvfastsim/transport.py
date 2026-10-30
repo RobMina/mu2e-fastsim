@@ -581,15 +581,12 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
     draw changes. See docs/transport-range-out.md.
     """
     if transport_backend == "jax":
-        if range_out:
-            raise ValueError("JAX transport implements the bar loss without range_out; pass range_out=False "
-                             "(--legacy-transport)")
         from .transport_jax import transport as device_transport
         if msc_tail or sliced_msc or below is not None or below_msc or below_scatter_in:
             raise ValueError("JAX transport supports the straight-line default only; no tail/sliced/below variants")
         return device_transport(gen, geom, rng, air_loss=air_loss, stage=stage, world=world,
                                 all_muons=all_muons, absorbers=absorbers, absorber_straggling=absorber_straggling,
-                                tagger_bar=tagger_bar, bar_cut=bar_cut)
+                                tagger_bar=tagger_bar, bar_cut=bar_cut, range_out=range_out)
     if transport_backend != "numpy":
         raise ValueError(f"unknown transport backend: {transport_backend}")
     if below_scatter_in:

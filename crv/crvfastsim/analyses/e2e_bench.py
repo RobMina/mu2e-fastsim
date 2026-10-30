@@ -315,7 +315,7 @@ def run(inputs, outdir=None, repeat=2, seed=1, reuse_context=False, **kwargs):
     kwargs.pop("emit", None)
     allowed = {"library", "calib", "deviation", "gdml", "jax", "max_events", "counters", "reco_cpu", "msc_tail",
                "tail_k", "sliced_msc", "first_muon_only", "no_absorbers", "run_config", "window", "fused_response",
-               "prefetch", "unbanded_world", "no_below_world", "tier1b_set", "tier1b_dir", "transport_backend", "legacy_transport"}
+               "prefetch", "unbanded_world", "no_below_world", "tier1b_set", "tier1b_dir", "transport_backend", "legacy_transport", "tier1b_backend"}
     if set(kwargs) - allowed:
         raise ValueError(f"unsupported benchmark options: {sorted(set(kwargs) - allowed)}")
     if not kwargs.get("calib"):
@@ -366,6 +366,7 @@ def run(inputs, outdir=None, repeat=2, seed=1, reuse_context=False, **kwargs):
                                        "one-time preparation measured separately; immutable assets hashed at preparation and final verification")
             report["cold_definition"] = "first runchain execution after measured context preparation; no execution warmup or cache flush"
         transport_context = {} if reuse_context and kwargs.get("transport_backend") == "jax" else None
+        tier1b_context = {} if reuse_context and kwargs.get("tier1b_backend") == "jax" else None
         passes_start = time.perf_counter()
         for index in range(repeat):
             folder = destination / f"pass_{index:03d}"
@@ -373,6 +374,8 @@ def run(inputs, outdir=None, repeat=2, seed=1, reuse_context=False, **kwargs):
             recorder = Recorder(folder, seed, provenance, reuse_assets=reuse_context)
             a = time.perf_counter()
             device_kw = {"transport_context": transport_context} if transport_context is not None else {}
+            if tier1b_context is not None:
+                device_kw["tier1b_context"] = tier1b_context
             result = runchain.run(files, str(folder), seed=seed, benchmark=recorder, prepared=prepared,
                                   **device_kw, **kwargs)
             elapsed = time.perf_counter() - a
@@ -439,6 +442,7 @@ def main(argv=None):
     p.add_argument("--compare", nargs="+")
     p.add_argument("--max-events", type=int)
     p.add_argument("--transport-backend", choices=["numpy", "jax"], default="numpy")
+    p.add_argument("--tier1b-backend", choices=["numpy", "jax"], default="numpy")
     p.add_argument("--tail-k", type=float)
     for name in ("jax", "reco-cpu", "msc-tail", "sliced-msc", "first-muon-only", "no-absorbers",
                  "no-below-world", "unbanded-world", "prefetch", "fused-response", "legacy-transport"):

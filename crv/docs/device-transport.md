@@ -48,6 +48,9 @@ stream, not the target law. Empty/zero-length and padded lanes must not influenc
 loss ledgers or overflow. Full primary truth identities, including multiple muons
 in an event, are retained.
 
+For the new extracted range_out model, see [device-new-default.md](device-new-default.md).
+The legacy certificate and measurements below do not certify that model.
+
 Numeric batches stay on device through world loss, scattering, crossings and bar
 loss. At the tier-1b boundary they are materialised into ordinary pandas CrvStep
 and particle tables with the unchanged schema. Tier-1b stays on the host and the

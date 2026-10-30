@@ -78,9 +78,12 @@ def build_parser():
                                  "grown by MM (default: the configuration's below_margin)")
             sp.add_argument("--unbanded-world", action="store_true",
                             help="stage C: world columns piece by piece (before 2026-10-24; the banded grid is the default)")
+        if name in ("tier1b-apply", "runchain"):
+            sp.add_argument("--tier1b-backend", choices=["numpy", "jax"], default="numpy",
+                            help="experimental strict_v3/strict_v4 device sampler; NumPy remains the default")
         if name in ("transport", "runchain"):
             sp.add_argument("--transport-backend", choices=["numpy", "jax"], default="numpy",
-                            help="opt-in device transport (straight-line stages A/C; tier 1b remains on host)")
+                            help="opt-in device transport (straight-line stages A/C, including extracted range_out)")
             sp.add_argument("--legacy-transport", action="store_true",
                             help="stage C without range_out (one bar loss at the entry momentum, restricted loss only, "
                                  "mean absorber dE/dx; the extracted_v04 default before 2026-10-30)")
@@ -264,6 +267,9 @@ def main(argv=None):
     cmd = kw.pop("cmd")
     inputs = kw.pop("inputs")
     outdir = kw.pop("outdir") or f"plots/{cmd}"
+    if cmd == "tier1b-apply" and kw.pop("tier1b_backend", "numpy") == "jax":
+        from .analyses import tier1b_device
+        return tier1b_device.apply(inputs, outdir, **kw)
     result = ANALYSES[cmd][0](inputs, outdir, **kw)
     if cmd == "v1compare" and (kw.get("merge") or not kw.get("emit")) and not result["pass"]:
         raise SystemExit(1)
