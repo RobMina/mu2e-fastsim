@@ -1,4 +1,9 @@
-# Larger Run2 reference: proposal only
+# Larger Run2 reference: historical proposal, on hold
+
+**Superseded recommendation:** do not commission this 19M extension before evaluating the existing Run2 v10
+production sample. See [production reuse](run2-production-reuse.md) and the updated [sizing note](run2-reference-sizing.md).
+The statistical design below does not establish that new G4 is needed. The one test job (2026-10-29) failed
+before Geant4; no retry, pilots or remainder are planned pending a reuse/coverage decision.
 
 No submission or staging is performed by this proposal. Reuse the completed 1M generated-event reference and
 current straight 20 m material-margin baseline. The experimental scatter-in path has failed 50k probes at two
@@ -34,7 +39,7 @@ count certification, successful copy-out and queue/output dedup. Do not reuse an
 submission. Keep source hashes and staged FCL identical to the retained reference. Current worker seeds must be
 checked against all prior campaigns, not just filenames. Reuse existing reference outputs; never overwrite them.
 
-The established submit-script invocation for the first test, **only after explicit authorization**, is:
+The submit-script invocation for the first test is:
 
 ```bash
 bash "$CRVFS_CODE/grid/submit_ref_sim.sh" --test --config run2 --nevts 50000 \
@@ -48,13 +53,13 @@ The first-two-pilot/remainder invocations need separately audited disjoint range
 
 ## Storage and admission
 
-Keep art outputs on pnfs scratch, read directly for dumping, and process the table stream in bounded batches.
-The retained Run2 50k dump directory occupies about 32 MiB locally, so 19M more tables would be of order 12 GiB
-if the output distribution and compression remain comparable. This is a storage planning estimate, not measured
-new output. Art sizes and worker disk margin require fresh pilot measurement. Reserve at least 16 GiB for derived
-tables plus a separately sized allowance for stock response/DQM if those are requested. The data quota was about
-133.6 GiB used of 150 GiB during this study: do not launch a full copy-in under that headroom, and never delete
-other outputs without user approval. Sequential batch validation or a different approved storage location is required.
+**Grid production writes art and logs directly to pnfs scratch; exp quota is not a production blocker.** Read art
+directly for dumping and process the table stream in bounded batches on UVA, retaining derived products on pnfs or
+UVA rather than bulk copying into exp. The retained Run2 50k dump is about 32 MiB, so 19M additional derived tables
+would be of order 12 GiB (16 GiB conservative allowance), not a reservation in exp. Art bytes and worker disk margin
+need pilot measurement. Both scratch locations are purgeable; archival retention is a separate decision.
+The opt-in [prepared grid extension](run2-grid-extension.md) provides frozen payloads, direct-pnfs completion
+receipts, live duplicate checks and a pilot gate without changing this historical submitter.
 
 Still required before launch: user go-ahead; current queue and supported pnfs inventory; staged input/source hashes;
 source/extraction generation counts; token write scope; pilot output/disk/memory checks; explicit final retention plan.

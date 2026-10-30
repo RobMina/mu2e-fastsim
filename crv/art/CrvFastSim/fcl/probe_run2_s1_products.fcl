@@ -1,0 +1,4 @@
+# One-event product inventory; use dump_run2_s1.fcl without this verbose output for full extraction.
+#include "dump_run2_s1.fcl"
+outputs : { productList : { module_type : DataProductDump wantResolvedOnly : true } }
+physics.inspect : [ dump, exposure, productList ]
