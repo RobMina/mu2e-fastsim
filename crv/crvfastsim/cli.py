@@ -79,6 +79,8 @@ def build_parser():
             sp.add_argument("--unbanded-world", action="store_true",
                             help="stage C: world columns piece by piece (before 2026-10-24; the banded grid is the default)")
         if name in ("transport", "runchain"):
+            sp.add_argument("--transport-backend", choices=["numpy", "jax"], default="numpy",
+                            help="opt-in device transport (straight-line stages A/C; tier 1b remains on host)")
             sp.add_argument("--below-scatter-in", action="store_true",
                             help="experimental bounded below-plane marcher; requires --below-msc and stage C")
             sp.add_argument("--scatter-in-step-mm", type=float, default=50.0)

@@ -76,7 +76,7 @@ def run(inputs, outdir, seed=1, stage="A", counters=None, gdml=None, world_mods=
         diagnostics = {}
         steps, parts = tr.transport(gen, geom, rng, stage=stage, world=world, msc_tail=msc_tail, tail_k=tail_k,
                                     sliced_msc=sliced_msc, all_muons=not first_muon_only, absorbers=ab, tagger_bar=tagger,
-                                    bar_cut=bar_cut, below=below,
+                                    bar_cut=bar_cut, below=below, transport_backend=kw.get("transport_backend", "numpy"),
                                     below_msc=below is not None and (rc.below_msc or bool(kw.get("below_msc"))),
                                     **_scatter_in_kw(kw, diagnostics))
         name = os.path.basename(f).replace("gen.", f"fast{stage}.")

@@ -193,7 +193,8 @@ def _load_setup(rc, cfg, gdml_path, explicit_gdml, spec, calib, deviation, jax,
 def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax=False, max_events=None, seed=1,
         compare=None, counters=None, reco_cpu=False, emit=None, msc_tail=False, tail_k=None, sliced_msc=False,
         first_muon_only=False, no_absorbers=False, run_config=None, window=None, benchmark=None, prepared=None,
-        conditions_manifest=None, geometry_readout=False, tier1b_set=None, tier1b_dir=None, **kw):
+        conditions_manifest=None, geometry_readout=False, tier1b_set=None, tier1b_dir=None,
+        transport_context=None, **kw):
     if geometry_readout:
         if prepared is not None or benchmark is not None:
             raise ValueError("geometry readout is not supported with prepared contexts or benchmarks")
@@ -245,6 +246,19 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
                                       {"status": "unverified_legacy", "calib": calib, "deviation": deviation})
     out_cl, n_gen = [], 0
     transport_diagnostics = {}
+    device_transport = None
+    if kw.get("transport_backend", "numpy") == "jax":
+        from ..transport_jax import DeviceTransport, transport as run_device_transport
+        if msc_tail or sliced_msc or below is not None or kw.get("below_msc") or kw.get("below_scatter_in"):
+            raise ValueError("JAX transport supports the straight-line default only")
+        if transport_context is not None and prepared is None:
+            raise ValueError("device transport reuse requires an audited prepared chain context")
+        cached = transport_context.get("device") if transport_context is not None else None
+        if cached is not None and (cached.geom is not geom or cached.stage != "C"):
+            raise ValueError("cached device transport does not match prepared geometry")
+        device_transport = cached or DeviceTransport(geom, world, ab, tagger, bar_cut)
+        if transport_context is not None:
+            transport_context["device"] = device_transport
 
     def host_stage(i, f):
         """CPU part of file i (read, transport, tier 1b) with its own rng and timers: the same draws whether it runs
@@ -263,11 +277,14 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         ngen = int(gen[tables.KEY].drop_duplicates().shape[0])
         a = time.perf_counter()
         diagnostics = {}
-        st, pa = tr.transport(gen, geom, rng, stage="C", world=world, msc_tail=msc_tail, tail_k=tail_k,
-                              sliced_msc=sliced_msc, all_muons=not first_muon_only, absorbers=ab, tagger_bar=tagger,
-                              bar_cut=bar_cut, below=below,
-                              below_msc=below is not None and (rc.below_msc or bool(kw.get("below_msc"))),
-                              **_scatter_in_kw(kw, diagnostics))
+        if device_transport is not None:
+            st, pa = run_device_transport(gen, geom, rng, prepared=device_transport, all_muons=not first_muon_only)
+        else:
+            st, pa = tr.transport(gen, geom, rng, stage="C", world=world, msc_tail=msc_tail, tail_k=tail_k,
+                                  sliced_msc=sliced_msc, all_muons=not first_muon_only, absorbers=ab, tagger_bar=tagger,
+                                  bar_cut=bar_cut, below=below,
+                                  below_msc=below is not None and (rc.below_msc or bool(kw.get("below_msc"))),
+                                  **_scatter_in_kw(kw, diagnostics))
         if diagnostics:
             transport_diagnostics[str(i)] = {"input": str(f), **diagnostics}
         t["transport_s"] = time.perf_counter() - a
@@ -333,6 +350,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
     cl_type = np.concatenate([o["cl_type"] for o in out_cl]) if out_cl else np.zeros(0, int)
     res = {"generated_events": n_gen, "timers": T, "conditions": conditions_metadata, **readout_metadata,
            "tier1b": spec.describe(),
+           **({"transport_backend": "jax"} if device_transport is not None else {}),
            "run_config": rc.name, "window": list(cfg.window), "time_window": time_window,
            "clusters_per_generated": {stype_name.get(int(k), str(k)): float((cl_type == k).sum() / n_gen)
                                       for k in np.unique(cl_type)}}

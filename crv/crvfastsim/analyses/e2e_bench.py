@@ -315,7 +315,7 @@ def run(inputs, outdir=None, repeat=2, seed=1, reuse_context=False, **kwargs):
     kwargs.pop("emit", None)
     allowed = {"library", "calib", "deviation", "gdml", "jax", "max_events", "counters", "reco_cpu", "msc_tail",
                "tail_k", "sliced_msc", "first_muon_only", "no_absorbers", "run_config", "window", "fused_response",
-               "prefetch", "unbanded_world", "no_below_world", "tier1b_set", "tier1b_dir"}
+               "prefetch", "unbanded_world", "no_below_world", "tier1b_set", "tier1b_dir", "transport_backend"}
     if set(kwargs) - allowed:
         raise ValueError(f"unsupported benchmark options: {sorted(set(kwargs) - allowed)}")
     if not kwargs.get("calib"):
@@ -365,13 +365,16 @@ def run(inputs, outdir=None, repeat=2, seed=1, reuse_context=False, **kwargs):
             report["timing_policy"] = ("pass elapsed includes input IO, pre/post context audit, detail validation/output and stats; "
                                        "one-time preparation measured separately; immutable assets hashed at preparation and final verification")
             report["cold_definition"] = "first runchain execution after measured context preparation; no execution warmup or cache flush"
+        transport_context = {} if reuse_context and kwargs.get("transport_backend") == "jax" else None
         passes_start = time.perf_counter()
         for index in range(repeat):
             folder = destination / f"pass_{index:03d}"
             folder.mkdir()
             recorder = Recorder(folder, seed, provenance, reuse_assets=reuse_context)
             a = time.perf_counter()
-            result = runchain.run(files, str(folder), seed=seed, benchmark=recorder, prepared=prepared, **kwargs)
+            device_kw = {"transport_context": transport_context} if transport_context is not None else {}
+            result = runchain.run(files, str(folder), seed=seed, benchmark=recorder, prepared=prepared,
+                                  **device_kw, **kwargs)
             elapsed = time.perf_counter() - a
             if kwargs.get("jax"):
                 _, actual_device = accelerator(True)
@@ -435,6 +438,7 @@ def main(argv=None):
         p.add_argument("--" + name)
     p.add_argument("--compare", nargs="+")
     p.add_argument("--max-events", type=int)
+    p.add_argument("--transport-backend", choices=["numpy", "jax"], default="numpy")
     p.add_argument("--tail-k", type=float)
     for name in ("jax", "reco-cpu", "msc-tail", "sliced-msc", "first-muon-only", "no-absorbers",
                  "no-below-world", "unbanded-world", "prefetch", "fused-response"):
