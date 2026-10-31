@@ -6,6 +6,7 @@ import re
 import shlex
 
 from . import genassoc_campaign as C, genassoc_fullgen as F, generator_bank_capture as B
+from . import sources
 
 CLUSTER = 87215765
 
@@ -28,7 +29,7 @@ def history(records):
     seen, result = set(), []
     for r in records:
         proc = r["ProcId"]
-        if r["ClusterId"] != CLUSTER or r["Owner"] != "ram2aq" or proc in seen or not 0 <= proc < 100:
+        if r["ClusterId"] != CLUSTER or r["Owner"] != sources.owner() or proc in seen or not 0 <= proc < 100:
             raise ValueError("wrong/duplicate scheduler identity")
         seen.add(proc)
         env = dict(word.split("=", 1) for word in shlex.split(r["Environment"]))
@@ -40,7 +41,7 @@ def history(records):
         if status == 3:
             if (not re.fullmatch(r"\s*SYSTEM_PERIODIC_HOLD\s+Run Time/limit 1085[23]/1\.080000000000000E\+04",
                                 r.get("LastHoldReason", ""))
-                    or r.get("RemoveReason") != "via condor_rm (by user ram2aq)" or r.get("NumJobStarts") != 1):
+                    or r.get("RemoveReason") != f"via condor_rm (by user {sources.owner()})" or r.get("NumJobStarts") != 1):
                 raise ValueError("removed job lacks expected hold/start/removal evidence")
         elif status != 4 or r.get("ExitCode") != 0:
             raise ValueError("unexpected scheduler completion")

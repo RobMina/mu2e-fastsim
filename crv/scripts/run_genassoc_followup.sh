@@ -16,4 +16,4 @@ python3 -m valhist.genassoc_report library-invariants "$ROOT/plan.json" --out "$
 python3 -m valhist.stepclosure shower-audit "$ROOT/library/library.json" --out "$ROOT/library/association_audit.json"
 bash scripts/validate_genassoc.sh "$ROOT" 11-20
 python3 -m valhist.genassoc_report closure "$ROOT" \
-  --baseline /exp/mu2e/data/users/ram2aq/crv_step_layers_20261026/takeover --out "$ROOT/closure_summary.json"
+  --baseline "${STEP_LAYERS_OUT:?set STEP_LAYERS_OUT to the step-layer study directory}/takeover" --out "$ROOT/closure_summary.json"

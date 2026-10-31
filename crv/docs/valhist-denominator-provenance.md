@@ -117,14 +117,13 @@ The canonical development physics has changed independently of the accepted Thre
 checks, or copy this driver into the frozen checkout. Execute the canonical new file directly while cwd and
 PYTHONPATH select the original uncertainty checkout and frozen core. Absolute imports intentionally support this.
 
-On a free GPVM, after the parent checks host state and sync availability (not executed by this subagent):
+On a free GPVM, after checking host state and that the code is in place:
 
 ```bash
 source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh && pyenv ana
-A=/exp/mu2e/app/users/ram2aq/analysis
-DRIVER="$A/mu2e-fastsim/crv/valhist/denominator_provenance.py"
-FROZEN="$A/crv-thread-b-uncertainty-20261025"
-CORE="$A/core-thread-b-dqm-20261025"
+DRIVER=/path/to/mu2e-fastsim/crv/valhist/denominator_provenance.py
+FROZEN=/path/to/frozen/uncertainty/crv
+CORE=/path/to/frozen/core
 # CRVFS_DATA must be the same data root as the retained Thread B audit.
 LIBRARY_JSON=$(jq -r '.base.json.path' \
   "$CRVFS_DATA/valhist/thread_b_denominator_audit_20261025.json")
@@ -177,9 +176,9 @@ support gate.
 ## Synthetic tests
 
 ```bash
-cd /Users/rmina/mu2e/remote/analysis/mu2e-fastsim/crv
+cd /path/to/mu2e-fastsim/crv
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.:../core \
-  /Users/rmina/mu2e/.venv/bin/python3 -m pytest -p no:cacheprovider -q \
+  python3 -m pytest -p no:cacheprovider -q \
   tests/test_valhist_denominator_provenance.py tests/test_valhist_denominator_audit.py \
   tests/test_valhist_denominator_variants.py tests/test_valhist_library_variants.py
 ```

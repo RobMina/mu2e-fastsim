@@ -311,19 +311,28 @@ def same(a, b):
 
 
 # --------------------------------------------------------------------------------------------- step positions
-BOOKING = "/exp/mu2e/data/users/ram2aq/crv_fastsim/valhist/g4ref_v1/a0/valhist.001400_00000001.root"
+BOOKING = "valhist/g4ref_v1/a0/valhist.001400_00000001.root"   # under the CRV data root (CRVFS_DATA)
+
+
+def booking():
+    """Default booking file: <CRVFS_DATA>/BOOKING."""
+    from mu2efastsim import site
+    return site.require("CRVFS_DATA").rstrip("/") + "/" + BOOKING
 POS_GROUPS = ("all", "EX", "T1", "T2", "M")
 SECTOR_TYPE = {1: "EX", 2: "T1", 3: "T2", 4: "M"}   # CrvCoincidenceCluster sector type of the extracted sectors
 FLAG = 2.0                                            # chi2/ndf flag without a floor (deck rule)
 
 
-def booking_edges(path=BOOKING):
-    """crvRecoDQM Y/Z_extracted bin edges of a frozen A0 shard (falls back to the v3 constants)."""
+def booking_edges(path=None):
+    """crvRecoDQM Y/Z_extracted bin edges of a frozen A0 shard (falls back to the v3 constants when the file, or the
+    CRVFS_DATA that locates the default one, is unavailable)."""
+    from mu2efastsim import site
     try:
+        path = booking() if path is None else path
         import uproot
         with uproot.open(path) as f:
             return {v: f[f"crvRecoDQM/{v.upper()}_extracted"].axis().edges() for v in ("y", "z")}
-    except (OSError, KeyError, ImportError):
+    except (OSError, KeyError, ImportError, site.SiteConfigError):
         return {"y": Y_EDGES, "z": Z_EDGES}
 
 
@@ -349,9 +358,10 @@ def posstat(n1, w1, n2, w2):
             "rel": t2 / t1 - 1 if t1 else None, "flow_ref": float(n1[0] + n1[-1]), "flow_cand": float(n2[0] + n2[-1])}
 
 
-def posyz(arms, shard_list, out, booking=BOOKING):
+def posyz(arms, shard_list, out, booking=None):
     """Step start y/z per sector group with the CRVDQM extracted binning, for arms [(name, pattern), ...]; every arm
     is compared with the first (fsdeck.crv_yz statistic: float32 positions, exact clustered variance, flag > 2)."""
+    booking = booking or globals()["booking"]()
     edges = booking_edges(booking)
     _, bt = _geom()
     grp = bt.grp.to_numpy()
@@ -484,7 +494,7 @@ def main():
     p.add_argument("--arm", action="append", required=True, metavar="NAME=PATTERN",
                    help="step tables of one arm, {s} = subrun, {k} = shard; the first arm is the reference")
     p.add_argument("--shards", default="1-20")
-    p.add_argument("--booking", default=BOOKING, help="ROOT file with crvRecoDQM/{Y,Z}_extracted (bin edges)")
+    p.add_argument("--booking", default=None, help="ROOT file with crvRecoDQM/{Y,Z}_extracted (bin edges); default <CRVFS_DATA>/" + BOOKING)
     p.add_argument("--out", required=True)
     p = sub.add_parser("clusters")
     p.add_argument("json", nargs="+", help="response JSON(s)")

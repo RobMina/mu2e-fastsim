@@ -1,5 +1,18 @@
 # mu2e-crv-fastsim
 
+## Collaborator first run
+
+Clone the umbrella with its pinned submodules and follow its
+[collaborator quickstart](https://github.com/RobMina/mu2e-fastsim/blob/main/setup/README.md#crv-one-manifest-selected-shard-cpu-reference).
+It gives explicit `runchain` and `e2e-bench` one-shard commands, separate read-only
+inputs from outputs, and verifies SHA256 before use. No shared input release is
+bundled or currently promised. The default remains extracted `strict_v4` on
+`range_out`; native CRY and device paths are opt-in. The legacy library required
+by named configurations is not available. Site, user and storage paths are never
+built in: set them from `site.env.example` (tools stop and name a missing variable).
+Data directories named in docs are relative to those configured roots and record
+provenance, not portable download locations.
+
 Stage 1 of the umbrella repository [`mu2e-fastsim`](https://github.com/RobMina/mu2e-fastsim) (submodule `crv/`). The
 detector-independent code (energy loss, materials, world, generic crossings/transport/tables, statistics, plots, key
 matching and the ALCF IRI job tools) lives in [`mu2e-fastsim-core`](https://github.com/RobMina/mu2e-fastsim-core)
@@ -15,7 +28,7 @@ status: the umbrella README; fast reco goals and results: `docs/fastreco.md`.
 |---|---|
 | `docs/plan.md` | scope, measured baseline, agreed performance goals and validation thresholds, architecture, schedule |
 | `docs/fastreco.md` | fast reconstruction: goals R1-R6, thresholds V-R1..V-R5, results (V-R4, V-R5, R3, the out-of-time background model) |
-| `docs/agent13-workflow.md` | experimental staged full-chain benchmarking, exact output contracts and opt-in dispatch optimization |
+| `docs/staged-benchmark-workflow.md` | experimental staged full-chain benchmarking, exact output contracts and opt-in dispatch optimization |
 | `docs/response-configuration.md` | schema-v1 JSON response/reco configuration, units/support policy, CLI/kit overrides and resolved asset provenance |
 | `docs/transport-range-out.md` | the stage-C muon range-out default (`range_out`, `--legacy-transport`): deltas above the cut, bar sub-steps, absorber range table, evidence |
 | `docs/tier1b-default.md` | the tier-1b default asset set (`strict_v4`), `strict_v3`, `strict_v2` and the `legacy` option: files, options, named-configuration caveat, equivalence |

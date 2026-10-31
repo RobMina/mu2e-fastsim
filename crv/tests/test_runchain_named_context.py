@@ -1,4 +1,4 @@
-"""Synthetic R1 integration with agent13 setup/reuse; no detector or physics closure claims."""
+"""Synthetic R1 integration with prepared-context setup/reuse; no detector or physics closure claims."""
 import copy
 import dataclasses
 import json

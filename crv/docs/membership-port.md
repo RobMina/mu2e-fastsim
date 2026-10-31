@@ -120,14 +120,14 @@ tests. Its log is `$CRVFS_DATA/valhist/thread_b_membership_regression_20261026.l
 GPU backend/performance validation is still pending.
 
 ```bash
-cd /exp/mu2e/app/users/ram2aq/analysis/crv-thread-b-membership-20261026
+cd /path/to/crv
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.:../core-thread-b-dqm-20261025 \
   JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
-  taskset -c 0 /exp/mu2e/data/users/ram2aq/crv_fastsim/venv_eaf/bin/python3 \
+  taskset -c 0 "$EAF_PYTHON" \
   -m valhist.membership_replay \
-  --attribution /exp/mu2e/data/users/ram2aq/crv_fastsim/valhist/thread_b_reco_attribution_20261025 \
-  --out /exp/mu2e/data/users/ram2aq/crv_fastsim/valhist/NEW_membership_replay.json \
-  --backend cpu --core /exp/mu2e/app/users/ram2aq/analysis/core-thread-b-dqm-20261025
+  --attribution $CRVFS_DATA/valhist/thread_b_reco_attribution_20261025 \
+  --out $CRVFS_DATA/valhist/NEW_membership_replay.json \
+  --backend cpu --core /path/to/frozen/core
 ```
 
 Use a fresh output; the command refuses existing files. Run only after checking host availability, source sync,

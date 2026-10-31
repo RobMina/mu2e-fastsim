@@ -6,7 +6,7 @@ OUT=${2:?new replay ROOT}
 EVENTS=${3:?events}
 SEED=${4:?mix seed}
 [ ! -e "$OUT" ] && [ ! -e "${OUT%.root}.json" ] || { echo "output already exists"; exit 2; }
-WORK=$(mktemp -d /tmp/crv-replay-subset.XXXXXXXX)
+WORK=$(mktemp -d -t crv-replay-subset.XXXXXXXX)
 trap 'rm -rf "$WORK"' EXIT
 while read -r species src; do
   mkdir -p "$WORK/$species"

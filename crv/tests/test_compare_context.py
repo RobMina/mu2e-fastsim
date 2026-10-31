@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-P = Path(__file__).resolve().parents[1] / "scripts" / "agent13_compare_context.py"
+P = Path(__file__).resolve().parents[1] / "scripts" / "compare_context.py"
 spec = importlib.util.spec_from_file_location("context_compare", P)
 M = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(M)

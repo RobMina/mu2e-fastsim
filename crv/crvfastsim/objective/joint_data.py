@@ -30,7 +30,7 @@ KEY_ENCODING = "ordered run,subrun,event rows; little-endian signed int64; C ord
 
 
 def digest(path):
-    """Stream actual bytes, without stat/resolve (important for known /pnfs paths)."""
+    """Stream actual bytes, without stat/resolve (important for known dCache paths)."""
     h = hashlib.sha256()
     with open(path, "rb") as stream:
         for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
@@ -158,7 +158,7 @@ def capture_data(inputs, out, *, chunk=25000, entry_stop=None, window_ns=400000.
         file_keys = []
         file_key_hash = hashlib.sha256()
         ranges = []
-        # Passing the already-open stream avoids path discovery/stat on /pnfs.
+        # Passing the already-open stream avoids path discovery/stat on dCache.
         with open(path, "rb") as stream, uproot.open(stream) as root:
             tree, cycle = _highest_tree(root)
             branches = discover_event_branches(tree)

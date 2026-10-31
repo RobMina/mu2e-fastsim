@@ -29,9 +29,10 @@ def _require(condition, message):
 
 
 def _local_path(path):
-    # Reject pnfs before any filesystem lookup, and do not follow symlinks into it.
+    # Reject dCache before any filesystem lookup, and do not follow symlinks into it.
+    from .. import dcache   # lazily: the module itself imports no site configuration
     path = Path("/" + os.path.abspath(os.fspath(path)).lstrip("/"))
-    _require(Path("/pnfs") not in (path, *path.parents), "pnfs paths are forbidden; use local dumps")
+    _require(Path(dcache.mount()) not in (path, *path.parents), "pnfs paths are forbidden; use local dumps")
     for component in reversed((path, *path.parents)):
         _require(not component.is_symlink(), f"symlink paths are not allowed: {component}")
     return path

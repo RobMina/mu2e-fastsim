@@ -10,7 +10,7 @@
 # Env    : NFILES (dts files per point), NEVTS (default -1). PROCESS -> point PROCESS / NFILES, file PROCESS % NFILES.
 #
 # No set -e / set -u before the mu2e setup (both kill the job silently). Every failure names itself.
-OUTBASE="${1:?need OUTBASE on /pnfs}"
+OUTBASE="${1:?need OUTBASE on dCache}"
 NFILES="${NFILES:?}"; NEVTS="${NEVTS:--1}"; P="${PROCESS:-0}"
 die() { echo "FATAL[vr5 PROCESS $P]: $*" >&2; exit 1; }
 echo "=== grid_vr5_stock: PROCESS=$P NFILES=$NFILES NEVTS=$NEVTS host=$(hostname) $(date -u) ==="

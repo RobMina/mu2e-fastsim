@@ -21,7 +21,8 @@ done
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WRAPPER="$HERE/grid_ref_sim.sh"; chmod +x "$WRAPPER"
 FCL_PNFS="$OUTDIR/fcl"
-OUTDIR_TOKEN="$(echo "$OUTDIR" | sed 's|^/pnfs/mu2e|/mu2e|')"
+DCACHE="${CRVFS_DCACHE:?set CRVFS_DCACHE to the dCache mount point (see site.env.example)}"
+OUTDIR_TOKEN="${OUTDIR#"$DCACHE"}"
 
 ifdh mkdir_p "$FCL_PNFS" 2>/dev/null || true
 for f in ref_sim_extracted.fcl ref_sim_$CFG.fcl $( [ "$CFG" = run2 ] && echo geom_cosmic_run2_v10.txt ); do
@@ -34,6 +35,6 @@ jobsub_submit -N "$NJOBS" -G mu2e --role=Analysis --expected-lifetime=4h \
   --resource-provides=usage_model=DEDICATED,OPPORTUNISTIC \
   --lines='+FERMIHTC_AutoRelease=True' --memory=3000MB --disk=4000MB \
   --need-storage-modify="$OUTDIR_TOKEN" \
-  -e NEVTS="$NEVTS" -e BASESEED="$BASESEED" -e FIRST_SUBRUN="$FIRST_SUBRUN" -e TAG="$TAG" -e CFG="$CFG" -e FCL_PNFS="$FCL_PNFS" -e MUSING=MDC2025ay -e OWNER="${CRVFS_OWNER:-$USER}" \
+  -e NEVTS="$NEVTS" -e BASESEED="$BASESEED" -e FIRST_SUBRUN="$FIRST_SUBRUN" -e TAG="$TAG" -e CFG="$CFG" -e FCL_PNFS="$FCL_PNFS" -e MUSING=MDC2025ay -e OWNER="${CRVFS_OWNER:?source site.env}" \
   "file://$WRAPPER" "$OUTDIR"
-echo "Monitor: jobsub_q -G mu2e --user $USER"
+echo "Monitor: jobsub_q -G mu2e --user ${CRVFS_OWNER}"

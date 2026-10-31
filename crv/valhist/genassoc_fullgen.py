@@ -3,7 +3,7 @@
 Run in the production plan's isolated MUSE area using its Python environment::
 
     python3 -m valhist.genassoc_fullgen PRODUCTION_PLAN \\
-        --historical-source /exp/.../takeover/lib_shower_g4train.json --outdir NEWDIR
+        --historical-source DATA/.../takeover/lib_shower_g4train.json --outdir NEWDIR
 
 No build, pnfs discovery/stat/hash, retry, overwrite, or denominator publication is
 performed. Only art opens the twenty exact historical gen input paths. A failed
@@ -25,10 +25,12 @@ import uproot
 from crvfastsim import genassoc, tables
 from valhist import genassoc_campaign as campaign, genassoc_smoke as smoke
 from valhist import library_variants as variants
+from valhist import sources
 
 GENERATED_PER_FILE = 50_000
-ART_TEMPLATE = ("/pnfs/mu2e/scratch/users/ram2aq/crv_fastsim/g4ref_v1/"
-                "gen.ram2aq.CosmicCRYExtractedRef.v0.{sequence}.art")
+def art_template():
+    """Historical g4ref_v1 gen-stream art path (CRVFS_PNFS, CRVFS_OWNER), field {sequence}."""
+    return sources.g4ref_art("gen")
 POLICY = "Audit only: new fullgen outputs are NOT replacements for the denominator bank."
 
 
@@ -87,7 +89,7 @@ def original_inputs(paths):
     for index, old in enumerate(paths, 1):
         sequence = f"001400_{index:08d}"
         log = Path(old).parent / "logs" / f"dumpgen.{sequence}.log"
-        art = ART_TEMPLATE.format(sequence=sequence)
+        art = art_template().format(sequence=sequence)
         row = {"sequence": sequence, "oldpath": old, "art": art}
         if index == 1 and not os.path.lexists(log):
             row["source_evidence"] = None

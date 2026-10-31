@@ -21,7 +21,19 @@ import re
 import stat
 import tarfile
 
-ARCHIVE = Path('/pnfs/mu2e/persistent/datasets/phy-etc/cnf/mu2e/NeutralsFlashCat/MDC2025ad/tar/ad/f4/cnf.mu2e.NeutralsFlashCat.MDC2025ad.0.tar')
+# Dataset archive, relative to the experiment's dCache area (CRVFS_DCACHE); ARCHIVE overrides it when set.
+ARCHIVE_IN_AREA = 'persistent/datasets/phy-etc/cnf/mu2e/NeutralsFlashCat/MDC2025ad/tar/ad/f4/cnf.mu2e.NeutralsFlashCat.MDC2025ad.0.tar'
+ARCHIVE = None
+
+
+def archive():
+    """The pinned archive: ARCHIVE, else <CRVFS_DCACHE>/mu2e/ARCHIVE_IN_AREA (standard library only, like this module)."""
+    if ARCHIVE is not None:
+        return Path(ARCHIVE)
+    mount = os.environ.get('CRVFS_DCACHE')
+    if not mount:
+        raise RuntimeError('set CRVFS_DCACHE to the dCache mount point (see site.env.example)')
+    return Path(mount.rstrip('/')) / 'mu2e' / ARCHIVE_IN_AREA
 ARCHIVE_SHA256 = 'c17855fe607c8233b160e1158767bee5b4f9c80241da1196201297c80b3651fb'
 PROVENANCE_SHA256 = '3ffe019bf7f72ee20cc14a136df9a11a5ccca157c282bf095b8ea4483f3c35e1'
 ARCHIVE_BYTES, JOBPARS_BYTES = 18068743, 360000549
@@ -556,12 +568,13 @@ def run(root, contract, out, *, expected_contract_sha256, expected_archive_sha25
     provenance = small_json(small_bytes(pp, SMALL_JSON_CAP, expected_provenance_sha256))
     saved, bindings = saved_metadata(root, provenance)
     bindings.update({pp: expected_provenance_sha256, contract: expected_contract_sha256, code: source_sha})
-    before = file_hash(ARCHIVE, ARCHIVE_BYTES, archive=True, exact=ARCHIVE_BYTES)
+    archive_path = archive()
+    before = file_hash(archive_path, ARCHIVE_BYTES, archive=True, exact=ARCHIVE_BYTES)
     require(before == expected_archive_sha256, 'archive before SHA256 mismatch')
     try:
-        scanned = scan_archive(ARCHIVE, spec)
+        scanned = scan_archive(archive_path, spec)
     finally:
-        after = file_hash(ARCHIVE, ARCHIVE_BYTES, archive=True, exact=ARCHIVE_BYTES)
+        after = file_hash(archive_path, ARCHIVE_BYTES, archive=True, exact=ARCHIVE_BYTES)
         require(after == before, 'archive changed after streaming')
     require(scanned['archive_read_sha256'] == before, 'streamed compressed bytes differ from pin')
     rows = compare(scanned['jobpars']['blocks'], saved)
@@ -572,7 +585,7 @@ def run(root, contract, out, *, expected_contract_sha256, expected_archive_sha25
             'not_established': 'Actual worker job-index/recovery mapping, deployed tool version or execution.'},
         contract=spec, contract_sha256=expected_contract_sha256,
         source_sha256=source_sha, source_snapshot=source.decode('utf-8'),
-        inputs={str(p): digest for p, digest in bindings.items()}, archive_path=str(ARCHIVE),
+        inputs={str(p): digest for p, digest in bindings.items()}, archive_path=str(archive_path),
         archive_before_sha256=before, archive_after_sha256=after, **scanned,
         comparisons=rows, mismatch_indices=[r['index'] for r in rows if not r['matches']],
         all_blocks_match=all(r['matches'] for r in rows),

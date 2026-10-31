@@ -11,7 +11,7 @@ import sys
 
 # Import the sibling comparator without importing the physics packages.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import agent13_compare_context as compare_context
+import compare_context
 
 
 RUNS = (

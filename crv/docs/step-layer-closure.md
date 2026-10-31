@@ -155,7 +155,7 @@ No unrelated test failure is hidden as a physics pass.
 
 ## Reproduction and retained evidence
 
-Data root: `/exp/mu2e/data/users/ram2aq/crv_step_layers_20261026/`.
+Data root: `$M2FS_DATA/crv_step_layers_20261026/`.
 
 - Saved placement products: `fast1b_ctx`, `fast1b_ccp`, `fast1b_ccpm`, `fast1b_all5`; each completed arm's
   `breakdown.json` / `posyz.json`, and `resp_{a1,ctx,ccp}_vs_a0g.s01-20.json`.

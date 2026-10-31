@@ -135,7 +135,7 @@ Use the existing Python environment with CRV and compatible core on `PYTHONPATH`
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 \
-PYTHONPATH=/tmp/r1-core-a357606:$PWD CRVFS_NO_FETCH=1 \
+PYTHONPATH=/path/to/core:$PWD CRVFS_NO_FETCH=1 \
 $PYTHON -m pytest -p no:cacheprovider -q \
   tests/test_named_conditions.py
 ```

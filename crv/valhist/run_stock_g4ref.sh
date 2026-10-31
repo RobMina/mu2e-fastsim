@@ -3,7 +3,7 @@
 # one GPVM. usage: run_stock_g4ref.sh FIRST LAST [ARM a0|a0p] [DUMP 0|1]   needs site.env; area $CRVVAL_AREA (default
 # crvval). DUMP=1 also writes the stock products as tables (crvdump/ in the same file) for the round trip and fast reco.
 source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh >/dev/null 2>&1 || true
-AREA=${CRVVAL_AREA:-/exp/mu2e/app/users/ram2aq/crvval}
+AREA=${CRVVAL_AREA:?set CRVVAL_AREA to your built validation area}
 cd "$AREA" && muse setup >/dev/null 2>&1 || true
 set -u
 [ "$MUSE_WORK_DIR" = "$AREA" ] || { echo "wrong MUSE_WORK_DIR=$MUSE_WORK_DIR"; exit 2; }

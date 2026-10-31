@@ -4,7 +4,7 @@ set -euo pipefail
 : "${CRV_DEVICE_ROOT:?}" "${CRV_DEVICE_INPUTS:?}" "${FASTSIM_IMAGE:?}"
 CODE=${CRV_DEVICE_CODE:-$CRV_DEVICE_ROOT/code}
 module load apptainer
-L=$(mktemp -d /tmp/crv_device_transport.XXXXXX)
+L=$(mktemp -d -t crv_device_transport.XXXXXX)
 trap 'rm -rf -- "$L"' EXIT
 export CRV_DEVICE_OPTICS=$L CRV_DEVICE_OPTICS_BIND="-B $L" CRV_DEVICE_NV=--nv
 F() {

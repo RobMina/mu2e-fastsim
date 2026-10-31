@@ -1,6 +1,6 @@
 #!/bin/bash
 # Dump production dts.mu2e.CosmicCRYExtracted.MDC2025as files to flat tables with CrvStepTableDumper (tier-1b library).
-# usage: dump_prod_as.sh FILELIST FIRST LAST   (lines FIRST..LAST of FILELIST, one /pnfs dts path per line); needs site.env
+# usage: dump_prod_as.sh FILELIST FIRST LAST   (lines FIRST..LAST of FILELIST, one dCache dts path per line); needs site.env
 # One GPVM, serially (~15 s per 25 k-event file); output $CRVFS_DATA/prod_as_tables/crvsteps.<seq>.root (~100 MB each).
 source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh >/dev/null 2>&1 || true
 cd "${CRVFS_CODE:?source site.env}/art" && muse setup >/dev/null 2>&1 || true

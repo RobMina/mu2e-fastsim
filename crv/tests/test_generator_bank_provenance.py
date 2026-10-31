@@ -8,6 +8,8 @@ import pytest
 
 from valhist import generator_bank_provenance as P
 
+pytestmark = pytest.mark.usefixtures("dcache_site")
+
 
 def fhicl(value):
     if isinstance(value, dict):
@@ -42,7 +44,7 @@ def config(role):
 
 
 def dump(primary):
-    return "Processing file: /pnfs/mu2e/" + primary["outputs"]["GenOutput"]["fileName"] + "\n# Read SQLiteDB from input file\nPrimary: " + fhicl(primary) + "\n"
+    return "Processing file: /dcache-test/mu2e/" + primary["outputs"]["GenOutput"]["fileName"] + "\n# Read SQLiteDB from input file\nPrimary: " + fhicl(primary) + "\n"
 
 
 def log(primary, role):

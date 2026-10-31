@@ -247,7 +247,7 @@ Use an ana-only shell with the edited CRV worktree and core on `PYTHONPATH`.
 
 `scripts/compare_veto_fixed_stock.sh MODE AREA BASE OUT CONDITIONS SELECTION REFERENCE`
 implements the bounded v13_41_00 comparison. All six path arguments after `MODE`
-must be absolute; `OUT` must be under `/exp/mu2e/data/users/`.
+must be absolute; `OUT` must be under `$M2FS_DATA`.
 It fixes `block0`, `block1`, `block2_fullinventory` to 3,000 events each and stock seeds
 9100/9101/9102. This is a release-specific replay utility, not a production campaign
 submitter or an automatic upgrade of existing stock references.

@@ -75,7 +75,7 @@ def test_excluded_prior_subset_manifest(tmp_path):
     inventory = tmp_path / "inventory.txt"
     inventory.write_text("\n".join(names))
     first, second = tmp_path / "first.txt", tmp_path / "second.txt"
-    base = [str(inventory), "--pnfs", "/pnfs/example", "--per-species", "2", "--block", "0"]
+    base = [str(inventory), "--pnfs", "/dcache-test/example", "--per-species", "2", "--block", "0"]
     main(base + ["--out", str(first)])
     main(base + ["--out", str(second), "--exclude", str(first.with_suffix(".json"))])
     a = json.loads(first.with_suffix(".json").read_text())["selected"]

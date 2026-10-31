@@ -53,7 +53,7 @@ def test_unsupported_table_cell(value):
     assert S.format_number(value) == "unsupported"
 
 
-def test_reference_fingerprints_checked_before_use(tmp_path):
+def test_reference_fingerprints_checked_before_use(tmp_path, monkeypatch):
     import json
     from crvfastsim.analyses import transport_validation as TV
     campaign = tmp_path / "thread_a_named1M_20261026"
@@ -61,6 +61,7 @@ def test_reference_fingerprints_checked_before_use(tmp_path):
     path = tmp_path / "gen.root"
     path.write_bytes(b"reference")
     record = TV.fingerprint(path)
+    monkeypatch.setattr(S, "PREFIX", "/recorded/crv_fastsim/")
     record["path"] = S.PREFIX + "gen.root"
     manifest = {"shards": [{"config": "run2", "subrun": 101, "counts": {"accepted_events": 1},
                             "artifacts": {"gen": record, "crvsteps": record}}]}

@@ -17,7 +17,7 @@ printf '# The successful 50k pilots measured 54:34 (Run1A) and 68:52 (Run2); no 
 for cfg in run1a run2; do
   if [ "$cfg" = run1a ]; then BASE=20264100; else BASE=20265100; fi
   OUT=$P/g4ref_${cfg}_v1
-  SCOPE=${OUT/#\/pnfs\/mu2e/\/mu2e}
+  SCOPE=${OUT#"${CRVFS_DCACHE:?set CRVFS_DCACHE to the dCache mount point (see site.env.example)}"}
   printf '\n# %s: subruns %s..%s, seeds %s..%s\n' "$cfg" "$FIRST" "$((FIRST+NJOBS-1))" "$((BASE+FIRST-1))" "$((BASE+FIRST+NJOBS-2))"
   printf 'jobsub_submit -N %s -G mu2e --role=Analysis --expected-lifetime=4h \\\n' "$NJOBS"
   printf '  --resource-provides=usage_model=DEDICATED,OPPORTUNISTIC \\\n'

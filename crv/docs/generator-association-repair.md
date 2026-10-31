@@ -1,5 +1,9 @@
 # Generator association repaired; held-out shower/position closure remains open
 
+> Paths in this record identify the original campaign, not a published input
+> service or guaranteed readable copies. Use the umbrella collaborator setup
+> with a publisher-approved checksum manifest; do not symlink private areas.
+
 **Follow-up:** [corrected-shower-uncertainty.md](corrected-shower-uncertainty.md) separates the repaired library's
 exact sampler expectation, finite donor statistics and corrected reference-source variation. The held-out total
 step deficit is 0.85% at the production expectation versus 2.38% in the retained draw; T1 position and nonmuon
@@ -30,7 +34,7 @@ float SimParticle energy versus double GenParticle energy. This establishes the 
 observed mismatches, **not closure of the nonmuon shower-yield discrepancy**. The legacy probe does not persist
 ProductIDs, so final products must be re-dumped using the strict schema below.
 
-Evidence: `/exp/mu2e/data/users/ram2aq/crv_genassoc_20261027/probe/`, files
+Evidence: `$M2FS_DATA/crv_genassoc_20261027/probe/`, files
 `crvsteps.001400_00000990.root`, `dump.001400_00000990.log`, `comparison.json`, `comparison.log`.
 Probe binary SHA256 `1f924c9cfb2629f8106a6d4743516239344debe12468a3df8330470eae33679a`;
 source SHA256 `4f6216079bfe1d99405bb09bc20625a7b0da50f23d9b4ca8ca53027af5daf644`.
@@ -90,7 +94,7 @@ Existing `SConscript` already lists canvas and cetlib_except; no library depende
 Run on **mu2ebuild02**, then report that the build completed:
 
 ```bash
-cd /exp/mu2e/app/users/ram2aq/analysis/crv_wt/layers/art
+cd /path/to/crv/art
 source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh
 setup muse
 muse setup
@@ -135,7 +139,7 @@ syntax and diff checks pass. This is a selected suite, not a new claim about the
 
 ## Campaign sequence
 
-Plan: `/exp/mu2e/data/users/ram2aq/crv_genassoc_20261027/strict_v2/plan.json`.
+Plan: `$M2FS_DATA/crv_genassoc_20261027/strict_v2/plan.json`.
 It names all 20 original production art paths recovered from successful dump logs, the old table hashes,
 **500,000 generated events per file / 10,000,000 total exposure**, and the unchanged full-gen denominator bank.
 There was no dCache directory scan. Final outputs have new paths; legacy tables/libraries/baselines are preserved.
@@ -231,7 +235,7 @@ muon-descendant model; do not tune rates to absorb either residual.
 
 ### Evidence and verification
 
-Under `/exp/mu2e/data/users/ram2aq/crv_genassoc_20261027/strict_v2/`:
+Under `$M2FS_DATA/crv_genassoc_20261027/strict_v2/`:
 
 - `donor_summary.json`, `comparisons/*.json`, `logs/dump.*.done.json`: exact donor comparison, strict validation,
   immutable hashes and actual loader evidence.
@@ -242,8 +246,8 @@ Under `/exp/mu2e/data/users/ram2aq/crv_genassoc_20261027/strict_v2/`:
   `ccp/breakdown.json`, `breakdown.txt`, `clusters.txt`: held-out checks and response.
 - `closure_summary.json`: old/corrected physics comparison; `logs/followup.exit` is **0**.
 
-Local selected suite: **215 passed**; shell syntax and `git diff --check` pass. All edits remain unstaged in the
-layers worktree. No commit, push, default promotion, C++ rebuild or grid job was performed by the agent.
+Local selected suite: **215 passed**; shell syntax and `git diff --check` pass. No default promotion, C++ rebuild
+or grid job was part of this change.
 
 ## Acceptance and limits
 

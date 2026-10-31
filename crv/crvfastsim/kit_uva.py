@@ -10,10 +10,14 @@ FASTSIMKIT_CRV_CODE_REF, submodules at their pins, or FASTSIMKIT_CRV_BRANCH chec
 image (FASTSIMKIT_SIF). Inputs are cached once per node in /dev/shm (see WAIT), so later points on a node stream nothing. The kit host must
 reach both the endpoint and the FNAL host by ssh for the point's lifetime.
 
-Environment: FASTSIMKIT_FNAL_HOST (default mu2egpvm03), FASTSIMKIT_CRV_DATA (default .../crv_fastsim),
-FASTSIMKIT_CRV_CODE, FASTSIMKIT_CRV_CODE_REF (umbrella ref, default main), FASTSIMKIT_CRV_BRANCH (optional).
+Environment (see site.env.example): FASTSIMKIT_FNAL_HOST (required: the FNAL host the inputs stream from),
+FASTSIMKIT_CRV_DATA (default mu2efastsim.site.crv_data()), FASTSIMKIT_CRV_CODE (default
+<FASTSIMKIT_SCRATCH>/crv_response_code_kit), FASTSIMKIT_CRV_CODE_REF (umbrella ref, default main),
+FASTSIMKIT_CRV_BRANCH (optional). A missing required variable raises mu2efastsim.site.SiteConfigError.
 """
 from __future__ import annotations
+
+from mu2efastsim import site
 
 import json
 from dataclasses import asdict
@@ -114,9 +118,9 @@ class Delegate:
 class CrvResponseStream:
     def __init__(self, kit, source=None, code=None, background=True, poll_s=10.0):
         self.kit, self.ep = kit, kit.ep
-        self.source = source or FnalSource(os.environ.get("FASTSIMKIT_FNAL_HOST", "mu2egpvm03"),
-                                           os.environ.get("FASTSIMKIT_CRV_DATA", "/exp/mu2e/data/users/ram2aq/crv_fastsim"))
-        self.code = code or os.environ.get("FASTSIMKIT_CRV_CODE", "/scratch/ram2aq/mu2efastsim/crv_response_code_kit")
+        self.source = source or FnalSource(site.require("FASTSIMKIT_FNAL_HOST"),
+                                           site.setting("FASTSIMKIT_CRV_DATA") or site.crv_data())
+        self.code = code or site.setting("FASTSIMKIT_CRV_CODE") or site.scratch() + "/crv_response_code_kit"
         self.code_ref = os.environ.get("FASTSIMKIT_CRV_CODE_REF", "main")
         self.branch = os.environ.get("FASTSIMKIT_CRV_BRANCH", "")
         self.background, self.poll_s = background, poll_s

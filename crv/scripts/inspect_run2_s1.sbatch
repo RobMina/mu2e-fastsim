@@ -29,7 +29,7 @@ printf '%s  %s\n' "$PRODUCTION_SHA256" "$PRODUCTION_INPUT" | sha256sum -c -
 OUT="$REUSE_ROOT/scope_${SLURM_JOB_ID}"
 mkdir "$OUT"
 OUT=$(readlink -f "$OUT")
-LOCAL=$(mktemp -d /tmp/s4-scope.XXXXXXXX)
+LOCAL=$(mktemp -d -t run2-scope.XXXXXXXX)
 trap 'rm -rf "$LOCAL"' EXIT
 cp -a "$CVMFSEXEC_DIST" "$LOCAL/cvmfsexec"
 CE="$LOCAL/cvmfsexec"

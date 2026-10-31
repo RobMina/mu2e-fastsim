@@ -5,7 +5,7 @@
 #   tables $CRVFS_DATA/TABLEDIR/PREFIX.<subrun>.root; outputs $CRVFS_DATA/valhist/g4ref_v1/TAG/valhist.<subrun>.root
 #   SRC: art input, the G4 dts (default, G4-step arms) or the gen stream (fast-step arms)
 source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh >/dev/null 2>&1 || true
-AREA=${CRVVAL_AREA:-/exp/mu2e/app/users/ram2aq/crvval}
+AREA=${CRVVAL_AREA:?set CRVVAL_AREA to your built validation area}
 cd "$AREA" && muse setup >/dev/null 2>&1 || true
 set -u
 [ "$MUSE_WORK_DIR" = "$AREA" ] || { echo "wrong MUSE_WORK_DIR=$MUSE_WORK_DIR"; exit 2; }

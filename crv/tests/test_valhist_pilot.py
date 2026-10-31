@@ -73,11 +73,11 @@ def test_prepare_records_assets_and_refuses_reuse(tmp_path, monkeypatch):
     monkeypatch.setattr(lookup, 'lookup_dir', lambda: str(data / 'lookup'))
     monkeypatch.setattr(pilot, 'revision', lambda p: dict(head='synthetic', status=''))
     out = data / 'valhist/newpilot'
-    pilot.prepare(out, gen, lib, area, core, '/pnfs/known.art', 11)
+    pilot.prepare(out, gen, lib, area, core, '/data/known.art', 11)
     manifest = json.loads((out / 'manifest.json').read_text())
     assert manifest['generated']['unique_events'] == 2
     assert manifest['files'][str(template)] == pilot.digest(template)
     assert not manifest['asset_paths_missing']
     assert 'mc : false' in (out / 'a1.fcl').read_text()
     with pytest.raises(FileExistsError):
-        pilot.prepare(out, gen, lib, area, core, '/pnfs/known.art', 11)
+        pilot.prepare(out, gen, lib, area, core, '/data/known.art', 11)

@@ -115,7 +115,7 @@ def test_malformed_and_schema_fail_closed(mutate):
         A.scan_jobpars(io.BytesIO(payload), len(payload), spec(), indices=(1, 3), block_size=2)
 
 
-@pytest.mark.parametrize('files', [names(7), names(9), [], ['/pnfs/' + names(1)[0]] * 8, [False] * 8])
+@pytest.mark.parametrize('files', [names(7), names(9), [], ['/mnt/pnfs/' + names(1)[0]] * 8, [False] * 8])
 def test_filename_count_shape_and_path_fail(files):
     payload = document(files=files)
     with pytest.raises(ValueError):

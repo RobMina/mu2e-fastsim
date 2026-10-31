@@ -13,6 +13,8 @@ import uproot
 
 from crvfastsim.analyses import reference_certification as C
 
+pytestmark = pytest.mark.usefixtures("dcache_site")
+
 
 N = 5
 FIRST = 102
@@ -326,7 +328,7 @@ def test_cli_failure_nonzero_and_no_report(campaign, tmp_path):
     assert not output.exists()
 
 
-@pytest.mark.parametrize("base", ["/pnfs/never/read", "//pnfs/never/read"])
+@pytest.mark.parametrize("base", ["/dcache-test/never/read", "//dcache-test/never/read"])
 def test_pnfs_rejected_before_metadata_lookup(tmp_path, monkeypatch, base):
     def forbidden(*args, **kwargs):
         raise AssertionError("must not inspect pnfs metadata")
@@ -386,5 +388,5 @@ def test_dumper_must_pass_every_input_event(campaign, tmp_path, capsys):
 def test_symlink_artifact_rejected_without_following(campaign, tmp_path, capsys):
     path = _path(campaign, "worker")
     path.unlink()
-    path.symlink_to("/pnfs/never/read")
+    path.symlink_to("/dcache-test/never/read")
     _fails(campaign, tmp_path / "report.json", capsys, "symlink paths are not allowed")

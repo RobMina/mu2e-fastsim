@@ -27,6 +27,8 @@ from pathlib import Path
 import re
 import sys
 
+from crvfastsim import dcache
+
 
 class ProvenanceError(ValueError):
     """Missing, ambiguous, unsupported, or contradictory evidence."""
@@ -150,8 +152,8 @@ def extract_primary(text):
     lines = text.splitlines()
     if lines and re.fullmatch(r"=+", lines[0]):
         lines = lines[1:]
-    require(bool(lines) and re.fullmatch(r"Processing file: /pnfs/\S+", lines[0]) is not None,
-            "missing config_dumper Processing file: /pnfs/... banner")
+    require(bool(lines) and re.fullmatch(r"Processing file: " + re.escape(dcache.mount()) + r"/\S+", lines[0]) is not None,
+            "missing config_dumper Processing file: <dCache path> banner")
     index = 1
     while index < len(lines) and not lines[index].strip():
         index += 1
@@ -389,7 +391,8 @@ def compare(crygen_config, crygen_log, g4ref_config, g4ref_log):
     for role in ("crygen", "g4ref"):
         primary[role] = extract_primary(_text(data[role + "_config"]))
         configs[role] = check_config(primary[role], role)
-        processing = re.findall(r"(?m)^Processing file: (/pnfs/\S+)$", _text(data[role + "_config"]))
+        processing = re.findall(r"(?m)^Processing file: (" + re.escape(dcache.mount()) + r"/\S+)$",
+                                _text(data[role + "_config"]))
         require(len(processing) == 1 and Path(processing[0]).name == configs[role]["filename"],
                 role + " processing path differs from configured output identity")
         configs[role]["processing_path"] = processing[0]

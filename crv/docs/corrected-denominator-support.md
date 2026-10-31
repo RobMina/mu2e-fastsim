@@ -65,8 +65,8 @@ report/summary and multi-shard ensemble tools are integrated with current main. 
 `library_variants`, `denominator_variants`, and `denominator_audit` already matched the preserved versions and
 were not overwritten. The original frozen worktrees, sealed plans and output files remain untouched.
 
-The historical replay wrappers and `library_campaign` intentionally name frozen physics/build areas and original
-campaign paths. They are **not a corrected-library production campaign** and were not executed by this port.
+The historical replay wrappers and the library-extension scheduler named frozen physics/build areas and original
+campaign paths; they are not kept in the repository. They were **not a corrected-library production campaign**.
 Current `tier1b.build` requires strict donor identities; no legacy bypass was added to make historical donor
 builds run against current code. Historical reports can still be read with their recorded source identities;
 new campaigns need new compatible plans and strict donors.

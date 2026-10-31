@@ -12,7 +12,7 @@ From the `mu2e-fastsim` umbrella:
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=core:crv \
   ~/mu2e/.venv/bin/python3 -B -m valhist.coverage \
   /data/reference/valhist.001.root /data/candidate/valhist.001.root \
-  --outdir /tmp/coverage-001-new \
+  --outdir NEW_COVERAGE_DIR \
   --alias CrvDigis_fastCrvDigis=CrvDigis_Sim
 ```
 

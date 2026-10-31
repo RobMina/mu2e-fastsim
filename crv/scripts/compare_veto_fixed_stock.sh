@@ -15,7 +15,7 @@ BACKING=/cvmfs/mu2e.opensciencegrid.org/Musings/Offline/v13_41_00
 for path in "$AREA" "$BASE" "$OUT" "$CONDITIONS" "$SELECTION" "$REFERENCE"; do
   case "$path" in /*) ;; *) echo "absolute path required: $path"; exit 2;; esac
 done
-case "$OUT" in /exp/mu2e/data/users/*) ;; *) echo "output must be in the data area"; exit 2;; esac
+case "$OUT" in "${M2FS_DATA:?set M2FS_DATA to the writable data area (see site.env.example)}"/*) ;; *) echo "output must be in the data area"; exit 2;; esac
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
 if [ "$MODE" = stock ]; then
   [ "${MUSE_WORK_DIR:-}" = "$AREA" ] || { echo "wrong MUSE_WORK_DIR"; exit 2; }

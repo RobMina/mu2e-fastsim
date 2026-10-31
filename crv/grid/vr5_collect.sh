@@ -1,6 +1,6 @@
 #!/bin/bash
 # vr5_collect.sh OUTDIR [DATAREF] -- V-R5: collect both arms' objective accumulators on the GPVM and score every point.
-#   stock: ifdh cp /pnfs/.../vr5/{vr5_v1,vr5_v1ws}/emit/<point>/*.json; nominal = crvfastsim.objective on the crvonly_v05
+#   stock: ifdh cp $VR5_BASE/{vr5_v1,vr5_v1ws}/emit/<point>/*.json; nominal = crvfastsim.objective on the crvonly_v05
 #          production ntuples of the same five files (identical code and FHiCL) unless already emitted by the grid test
 #   fast:  OUTDIR/fast_raw/<pbsjob>/{knobs.txt,r3.gpu<N>.json}, copied from the Eagle outdirs beforehand (the GPVM cannot
 #          reach ALCF: from the laptop, ssh polaris "tar -C <outdir> -cf - ." | ssh <gpvm> "tar -C .../fast_raw/<job> -xf -");
@@ -10,9 +10,9 @@
 # Output: OUTDIR/{stock,fast}/<point>.json (merged accumulator) and OUTDIR/scores.json + scores.txt (objective vs DATAREF
 # per point per arm). Run on a GPVM after `source setupmu2e-art.sh && pyenv ana` with PYTHONPATH=<mu2e-fastsim>/crv.
 set -u
-OUT=${1:?outdir}; REF=${2:-/exp/mu2e/data/users/ram2aq/crv_fastsim/r3/dataref/dataref_3runs.json}
-RUNS=${VR5_RUNS:-vr5_v1 vr5_v1ws}                   # stock runs under /pnfs/.../vr5/ to collect (e.g. fiberprop_v1)
-P=/pnfs/mu2e/scratch/users/$USER/vr5; V05=/pnfs/mu2e/scratch/users/$USER/crvonly_mc/crvonly_v05/nts
+OUT=${1:?outdir}; REF=${2:-${CRVFS_DATA:?source site.env}/r3/dataref/dataref_3runs.json}
+RUNS=${VR5_RUNS:-vr5_v1 vr5_v1ws}                   # stock runs under $VR5_BASE to collect (e.g. fiberprop_v1)
+P=${VR5_BASE:?set VR5_BASE to the dCache scratch directory of the V-R5 runs}; V05=${CRVONLY_V05_NTS:?set CRVONLY_V05_NTS to the crvonly_v05 ntuple directory}
 SEQS="00000990 00001023 00001056 00001089 00001122"
 mkdir -p "$OUT/stock_emit" "$OUT/stock" "$OUT/fast"
 for run in $RUNS; do
@@ -26,7 +26,7 @@ done
 mkdir -p "$OUT/stock_emit/nominal"
 for q in $SEQS; do
   J="$OUT/stock_emit/nominal/001400_$q.json"; [ -s "$J" ] && continue
-  T=$(mktemp -d /tmp/${USER}_vr5n_XXXX)
+  T=$(mktemp -d -t vr5n_XXXX)
   ifdh cp "$V05/nts.crvonly05.001400_$q.root" "$T/n.root" >/dev/null 2>&1 && python3 -m crvfastsim.objective "$T/n.root" --emit "$J" >/dev/null
   rm -rf "$T"
 done

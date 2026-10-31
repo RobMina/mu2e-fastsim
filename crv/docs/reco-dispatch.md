@@ -69,15 +69,15 @@ oneAPI devices separately; the local test checks policy, not the oneAPI compiler
 
 ## Executed local regressions
 
-Environment: `/Users/rmina/mu2e/.venv/bin/python3`, Python 3.14.5, JAX 0.11.2 CPU. Imports were verified to resolve
+Environment: the local analysis `python3`, Python 3.14.5, JAX 0.11.2 CPU. Imports were verified to resolve
 to the owned `core_e2e_gpu13` and `e2e_gpu13` clones. No remote calls, installs, builds, or git writes were used.
 
 ```bash
-cd /Users/rmina/mu2e/remote/analysis/crv_wt/e2e_gpu13
+cd /path/to/crv
 PYTHONDONTWRITEBYTECODE=1 \
-PYTHONPATH=/Users/rmina/mu2e/remote/analysis/crv_wt/core_e2e_gpu13:$PWD \
+PYTHONPATH=/path/to/core:$PWD \
 JAX_PLATFORMS=cpu CRVFASTSIM_COMPACT_DISPATCH=1 \
-/Users/rmina/mu2e/.venv/bin/python3 -m pytest -q -p no:cacheprovider \
+python3 -m pytest -q -p no:cacheprovider \
   tests/test_reco_dispatch.py tests/test_coinc_attachment_jax.py \
   tests/test_chain_reco_contract.py tests/test_reco_jax.py tests/test_chain.py \
   tests/test_background.py tests/test_runconfig.py

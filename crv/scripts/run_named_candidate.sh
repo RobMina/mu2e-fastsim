@@ -19,7 +19,7 @@ case "$CFG" in run1a) RC=run1a_v01 ;; run2) RC=run2_v10 ;; *) exit 2 ;; esac
 CODE=$(cd "$(dirname "$0")/.." && pwd)
 CORE=${CORE:?path of the mu2efastsim core checkout}
 V1CODE=${V1CODE:-$CODE}
-GDML=${GDML:-/exp/mu2e/data/users/ram2aq/crv_fastsim/geometry/mu2e_${RC}.gdml}
+GDML=${GDML:-${CRVFS_DATA:?set GDML or CRVFS_DATA}/geometry/mu2e_${RC}.gdml}
 export PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
 mkdir -p "$OUT"
 SHA=$(command -v sha256sum || echo "shasum -a 256")

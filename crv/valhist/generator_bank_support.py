@@ -19,7 +19,7 @@ sys.dont_write_bytecode = True
 import numpy as np
 import pandas as pd
 
-from crvfastsim import genassoc, geometry, tables
+from crvfastsim import dcache, genassoc, geometry, tables
 from . import corrected_denominator as D
 from . import descendant_audit as A
 from . import generator_bank_campaign as G
@@ -44,7 +44,7 @@ class Bindings:
     def add(self, hashes):
         for name, expected in hashes.items():
             path = Path(name)
-            if not path.is_absolute() or str(path).startswith("/pnfs/"):
+            if not path.is_absolute() or dcache.contains(path):
                 raise ValueError("require exact local absolute evidence path: " + str(path))
             if (not isinstance(expected, str) or len(expected) != 64
                     or any(c not in "0123456789abcdef" for c in expected)):
@@ -52,7 +52,7 @@ class Bindings:
             if name in self.hashes and self.hashes[name] != expected:
                 raise ValueError("conflicting hash binding: " + name)
             target = str(path.resolve(strict=True))
-            if target.startswith("/pnfs/"):
+            if dcache.contains(target):
                 raise ValueError("remote evidence target forbidden")
             if name in self.targets and self.targets[name] != target:
                 raise ValueError("path target drift: " + name)
@@ -64,7 +64,7 @@ class Bindings:
     def freeze(self, path):
         # Keep the lexical path too, so a symlink retarget cannot be hidden by resolve().
         name = os.path.abspath(path)
-        if name.startswith("/pnfs/") or str(Path(name).resolve(strict=True)).startswith("/pnfs/"):
+        if dcache.contains(name) or dcache.contains(Path(name).resolve(strict=True)):
             raise ValueError("remote evidence target forbidden")
         if name not in self.hashes:
             self.add({name: A.digest(name)})
@@ -506,7 +506,7 @@ def write_new_json(out, result):
 
 def run(campaign_report, cache, evaluation_certificate, out):
     output = Path(out).absolute()
-    if str(output).startswith("/pnfs/") or str(output.resolve()).startswith("/pnfs/"):
+    if dcache.contains(output) or dcache.contains(output.resolve()):
         raise ValueError("output must be local, not pnfs")
     if os.path.lexists(output):
         raise FileExistsError(output)

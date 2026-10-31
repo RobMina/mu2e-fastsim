@@ -48,7 +48,7 @@ optionally records cProfile files for preparation and each pass. Profiled wall
 times are diagnostics, not throughput measurements. `scripts/profile_context_hash.py` compares exact
 complete-context digests with 1/2/4/8 workers over three repetitions.
 `scripts/report_prepared_profile.py` summarizes retained reports without reruns.
-The saved-baseline comparator remains `scripts/agent13_compare_context.py`.
+The saved-baseline comparator remains `scripts/compare_context.py`.
 
 One CPU-node complete-payload measurement gave per-audit three-repeat medians
 8.7550/4.4521/2.3940/1.3664 seconds at 1/2/4/8 workers, with exact serial digests

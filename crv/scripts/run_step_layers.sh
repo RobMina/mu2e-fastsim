@@ -6,7 +6,7 @@
 #        [env: FASTC_DIR, G4_DIR, PYTHONPATH with core and crv]
 set -eo pipefail
 LIB=$1; OUT=$2; SHARDS=${3:-1-20}; shift 3 || true
-D=${CRVFS_DATA:-/exp/mu2e/data/users/ram2aq/crv_fastsim}
+D=${CRVFS_DATA:?set CRVFS_DATA to the CRV data root (see site.env.example)}
 FASTC_DIR=${FASTC_DIR:-$D/thread_a_ledger_20261025_c3895aae/extracted20/tables}
 G4_DIR=${G4_DIR:-$D/valhist/g4ref_v1/g4all_tables}
 mkdir -p "$OUT"

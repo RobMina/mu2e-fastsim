@@ -16,7 +16,16 @@ from crvfastsim import runconfig, tables
 from crvfastsim.analyses import transport, transport_validation as TV, v1compare as VC, v1strata as VS
 
 
-PREFIX = "/exp/mu2e/data/users/ram2aq/crv_fastsim/"
+# Data root recorded in the campaign manifest; PREFIX overrides it when set.
+PREFIX = None
+
+
+def recorded_prefix():
+    """Root under which the manifest recorded artefact paths: CRVFS_RECORDED_DATA, else CRVFS_DATA."""
+    if PREFIX is not None:
+        return PREFIX
+    from mu2efastsim import site
+    return (site.setting("CRVFS_RECORDED_DATA") or site.require("CRVFS_DATA")).rstrip("/") + "/"
 
 
 def reference_shards(root, subruns):
@@ -33,9 +42,10 @@ def reference_shards(root, subruns):
         for key in ("gen", "crvsteps"):
             evidence = matches[0]["artifacts"][key]
             old = evidence["path"]
-            if not old.startswith(PREFIX):
+            prefix = recorded_prefix()
+            if not old.startswith(prefix):
                 raise ValueError("reference path outside the declared campaign root")
-            path = root / old[len(PREFIX):]
+            path = root / old[len(prefix):]
             got = TV.fingerprint(path)
             if got["sha256"] != evidence["sha256"]:
                 raise ValueError(f"reference fingerprint mismatch: {path}")

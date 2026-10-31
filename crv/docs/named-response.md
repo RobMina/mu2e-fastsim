@@ -193,8 +193,8 @@ its spread is conditional on fixed G4/stock inputs, not full V2 uncertainty.
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 CRVFS_NO_FETCH=1 \
-PYTHONPATH=/tmp/r1-core-233771b:$PWD \
-/Users/rmina/mu2e/.venv/bin/python3 -m mu2efastsim.testselect --run --isolate -- -q -p no:cacheprovider
+PYTHONPATH=/path/to/core:$PWD \
+python3 -m mu2efastsim.testselect --run --isolate -- -q -p no:cacheprovider
 ```
 
 Synthetic tests cover both bar counts, every sector group, unsupported support

@@ -149,11 +149,11 @@ MC intensity remains a truth diagnostic, not a measured correction variable.
 
 ## Capture and next checks
 
-`scripts/capture_veto_historical_config.sh` archives small text members, exact
-catalog replies and selected release sources. It uses a new output directory,
-checks the three tarball hashes before and after, bounds the small extracted
-members and source snapshots, and records original paths and hashes. It never
-extracts executable archive paths or runs a campaign. Its marker is a documentary
+An earlier capture driver (not kept in the repository) archived small text members, exact
+catalog replies and selected release sources. It used a new output directory,
+checked the three tarball hashes before and after, bounded the small extracted
+members and source snapshots, and recorded original paths and hashes. It never
+extracted executable archive paths or ran a campaign. Its marker is a documentary
 completion note, **not** atomic publication or a production certificate.
 
 Completed capture: 2.90 s wall, 16,256 KiB peak RSS. Archive pathname size:

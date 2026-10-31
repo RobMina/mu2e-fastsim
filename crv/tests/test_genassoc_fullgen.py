@@ -8,6 +8,8 @@ import uproot
 
 from valhist import genassoc_fullgen as F
 
+pytestmark = pytest.mark.usefixtures("dcache_site")
+
 
 def save(path, value):
     path.write_text(json.dumps(value))
@@ -50,11 +52,11 @@ def logtext(art):
 
 
 def test_log_parsing_is_exact():
-    art = F.ART_TEMPLATE.format(sequence="001400_00000002")
+    art = F.art_template().format(sequence="001400_00000002")
     assert F.parse_dump_log(logtext(art), art) == art
     F.parse_driver_log("other\nshard 1 steps_rc=0 gen_rc=0 10:09:09\n")
     for bad in ("", logtext(art).replace("status 0", "status 01"),
-                logtext(art) + 'Opened input file "/pnfs/other.art"\n',
+                logtext(art) + 'Opened input file "/dcache-test/other.art"\n',
                 logtext(art).replace("g4ref_v1/", "wrong/"),
                 logtext(art) + "Art has completed and will exit with status -1\n"):
         with pytest.raises(ValueError, match="input/completion"):
@@ -115,7 +117,7 @@ def campaign(tmp_path, monkeypatch):
         rootfile(p, i)
         paths.append(str(p))
         if i != 1:
-            (old / f"logs/dumpgen.{seq}.log").write_text(logtext(F.ART_TEMPLATE.format(sequence=seq)))
+            (old / f"logs/dumpgen.{seq}.log").write_text(logtext(F.art_template().format(sequence=seq)))
     (old / "logs/driver.log").write_text("shard 1 steps_rc=0 gen_rc=0 10:09:09\n")
     area = tmp_path / "area"
     source = area / "CrvFastSim/src/CrvStepTableDumper_module.cc"
@@ -173,7 +175,7 @@ def test_twenty_file_certificate_and_no_overwrite(campaign):
     assert before == F._hashes(f["paths"])
     done = json.loads((f["out"] / "001400_00000001.done.json").read_text())
     assert "NOT certified" in done["source"]["source_evidence"]["status"]
-    assert done["source"]["art"] == F.ART_TEMPLATE.format(sequence="001400_00000001")
+    assert done["source"]["art"] == F.art_template().format(sequence="001400_00000001")
     assert done["loaded_plugin"] == str(f["plugin"])
     assert F.variants.sha256(f["plugin"]) == done["code_sha256_post"][str(f["plugin"])]
     assert all(row["zero_generator_events"] == 1 for row in result["files"].values())
@@ -227,7 +229,7 @@ def test_dangling_output_is_not_followed(campaign):
 def test_real_first_log_needs_no_driver(campaign):
     f = campaign
     (f["old"] / "logs/dumpgen.001400_00000001.log").write_text(
-        logtext(F.ART_TEMPLATE.format(sequence="001400_00000001")))
+        logtext(F.art_template().format(sequence="001400_00000001")))
     (f["old"] / "logs/driver.log").unlink()
     rows, bound = F.original_inputs(f["paths"])
     assert rows[0]["source_evidence"]["status"] == "certified historical dump log"

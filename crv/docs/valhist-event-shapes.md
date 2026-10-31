@@ -15,7 +15,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=core:crv \
   ~/mu2e/.venv/bin/python3 -B -m valhist.event_shapes \
   /data/a1/valhist.root /data/e2e/valhist.root \
   --edges /data/analysis/cluster-edges.json \
-  --replicas 999 --seed 12345 --out /tmp/event-shapes-new.json
+  --replicas 999 --seed 12345 --out NEW_event_shapes.json
 ```
 
 For multiple shards, supply a JSON list, not globs or positional directory
@@ -33,7 +33,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=core:crv \
   ~/mu2e/.venv/bin/python3 -B -m valhist.event_shapes \
   --pairs /data/analysis/paired-shards.json \
   --edges /data/analysis/cluster-edges.json \
-  --replicas 999 --seed 12345 --out /tmp/event-shapes-shards-new.json
+  --replicas 999 --seed 12345 --out NEW_event_shapes_shards.json
 ```
 
 Pair-list paths are relative to the **working directory**, not the JSON file.

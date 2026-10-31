@@ -9,10 +9,12 @@ import numpy as np
 from crvfastsim import genassoc as G
 from valhist import genassoc_campaign as C
 from valhist import library_variants as V
+from valhist import sources
 
 GENERATED_PER_FILE = 50_000
-ART_TEMPLATE = ("/pnfs/mu2e/scratch/users/ram2aq/crv_fastsim/g4ref_v1/"
-                "dts.ram2aq.CosmicCRYExtractedRef.v0.{sequence}.art")
+def art_template():
+    """Historical g4ref_v1 dts art path (CRVFS_PNFS, CRVFS_OWNER), field {sequence}."""
+    return sources.g4ref_art("dts")
 
 
 def _paths(meta, field):
@@ -84,7 +86,7 @@ def _logs(donors, out, bound):
             if len(inputs) != 1 or not exits or any(exit != "0" for exit in exits):
                 raise ValueError("cannot certify original input/completion from " + str(log))
             art = inputs.pop()
-            if art != ART_TEMPLATE.format(sequence=seq):
+            if art != art_template().format(sequence=seq):
                 raise ValueError("unexpected original reference art path: " + art)
             row.update(art=art, old_log=str(log), old_log_sha256=record["sha256"],
                        source_evidence={"status": "certified historical dump log", "logs": [record]})

@@ -87,7 +87,7 @@ reused passes validate paths/config rather than rehash immutable files. Source/i
 `passes_elapsed_s` and `invocation_elapsed_before_report_s` are measured outer intervals, not summed timers;
 the latter includes preparation and final verification. No audit-subtracted throughput is advertised.
 
-`scripts/agent13_compare_context.py OLD_REPORT NEW_REPORT --out NEW.json` reuses a completed baseline. It
+`scripts/compare_context.py OLD_REPORT NEW_REPORT --out NEW.json` reuses a completed baseline. It
 requires exact retained fingerprints (no rounding tolerance), matching devices/versions/config/input order,
 matching asset contents despite relocated paths and unchanged non-setup package sources. It allows only the
 three setup/instrumentation source files to differ and records those changes. Timings against saved reports

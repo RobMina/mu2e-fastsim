@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -J pvcreco_profile
-#SBATCH -A ldmxuva
+# Slurm account: set SBATCH_ACCOUNT (see site.env.example) or pass sbatch -A.
 #SBATCH -p gpu
 #SBATCH --gres=gpu:a100:1
 #SBATCH -C a100_80gb
@@ -10,7 +10,7 @@
 set -eo pipefail
 module load apptainer
 S=${PVC_RUN_DIR:?set PVC_RUN_DIR to a writable run directory}
-F=/scratch/$USER/mu2efastsim
+F=${FASTSIMKIT_SCRATCH:?set FASTSIMKIT_SCRATCH to the cluster working area}
 O=$S/profile_$SLURM_JOB_ID
 mkdir "$O"
 exec > "$O/run.log" 2>&1

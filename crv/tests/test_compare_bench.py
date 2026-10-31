@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-P = Path(__file__).resolve().parents[1] / "scripts" / "agent13_compare_bench.py"
+P = Path(__file__).resolve().parents[1] / "scripts" / "compare_bench.py"
 spec = importlib.util.spec_from_file_location("bench_compare", P)
 M = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(M)

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Audit retained transport tables without changing any producer or physics comparator.
-#SBATCH -A ldmxuva
+# Slurm account: set SBATCH_ACCOUNT (see site.env.example) or pass sbatch -A.
 #SBATCH -p standard
 #SBATCH -c 2
 #SBATCH --mem=12G

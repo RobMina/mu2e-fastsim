@@ -9,6 +9,8 @@ import pytest
 
 from valhist import generator_bank_support as S
 
+pytestmark = pytest.mark.usefixtures("dcache_site")
+
 
 def completed():
     return {"schema": S.G.SCHEMA, "scope": S.G.SCOPE, "assumptions": S.G.ASSUMPTIONS.copy(),

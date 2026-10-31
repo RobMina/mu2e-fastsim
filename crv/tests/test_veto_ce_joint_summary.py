@@ -52,7 +52,7 @@ def fixture_report():
             other[10] = arr[7]
             arrays.append(other)
         grids[name + "__" + S.PB] = packed(arrays)
-    sources = [dict(source_index=0, path="/pnfs/DO_NOT_OPEN.root", uuid="synthetic",
+    sources = [dict(source_index=0, path="/mnt/pnfs/DO_NOT_OPEN.root", uuid="synthetic",
                     retained_events=int(n.sum()), events_with_tracks=int(a.sum()), selected_tracks=int(t.sum()),
                     multiplicity_0_1_2_3_ge4=mult.sum(axis=(0, 1, 2)).tolist(),
                     measured_pbtime_min=-250., measured_pbtime_max=-180.)]
@@ -319,7 +319,7 @@ def test_output_guards(saved, kind, tmp_path):
         assert out.read_bytes() == b"keep"
 
 
-@pytest.mark.parametrize("value", ["root://host/report.json", "/pnfs/report.json", "/PNFS/report.json", "/x.ROOT/report.json", "//host/file", "a/../b"])
+@pytest.mark.parametrize("value", ["root://host/report.json", "/mnt/pnfs/report.json", "/PNFS/report.json", "/x.ROOT/report.json", "//host/file", "a/../b"])
 def test_local_path_guards(value):
     with pytest.raises(ValueError):
         S.local_path(value)

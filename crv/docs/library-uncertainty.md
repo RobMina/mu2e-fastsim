@@ -19,16 +19,10 @@ the configured data area, never the code tree. One compute job per GPVM, includi
 
 ## Remaining-shard extension
 
-`run_shards.sh TAG SHARD...` runs the existing pilot/audit drivers sequentially, refuses existing directories,
-and excludes already completed shard 11. Supply these environment variables:
-
-- `THREAD_B_CODE`: frozen CRV pilot checkout.
-- `M2FS_CORE`: frozen core checkout.
-- `CRVVAL_AREA`: already-built frozen stock work area.
-- `CRVFS_DATA`: CRV data root.
-- `THREAD_B_TRANSPORT`: retained corrected `fastC` table directory.
-- `THREAD_B_LIBRARY`: fixed nominal library ROOT file.
-- `THREAD_B_GENROOT`: known generator-art input directory.
+The remaining shards were run by an earlier sequential wrapper around the pilot/audit drivers (not kept in the
+repository); it refused existing directories and excluded the already completed shard 11. Its inputs were the
+frozen CRV pilot and core checkouts, the already-built frozen stock work area, the CRV data root, the retained
+corrected `fastC` table directory, the fixed nominal library ROOT file and the known generator-art directory.
 
 Each output is `CRVFS_DATA/valhist/TAG_sNNNNNNNN`. The source pilot records input/conditions/LUT/template/source
 and binary hashes; completion checks art exits, actual highest-cycle event counts and exact transport event IDs.
@@ -73,9 +67,8 @@ and seals alternating disjoint donor-file halves and optional whole-file bootstr
 library lacks donor event provenance, so random crossing/shower-ID halves would not establish independent donor
 sets. All descendants and showers from a chosen source file remain coupled. See `valhist-library-variants.md`.
 
-`run_library_halves.sh` is the initial sequential half-library assembly/replay wrapper. Use separate frozen
-physics and uncertainty checkouts in production; `resume_library_halves.sh` demonstrates reusing an assembled
-half and replaying through the untouched pilot checkout. `library_contrast` certifies the two successful fresh
+The half-library assembly and replay were run by earlier sequential wrappers (not kept in the repository), with
+separate frozen physics and uncertainty checkouts. `library_contrast` certifies the two successful fresh
 replays, verifies disjoint ten-file halves and correct exposure, then reports paired rates and event shapes:
 
 ```bash
@@ -86,8 +79,8 @@ A single half-library contrast is **sensitivity**, not a full-library standard e
 uncertainty, finite validation exposure, response randomness and bin-edge re-estimation must remain explicit.
 Do not relabel ordinary seed repeats as independent libraries.
 
-`run_library_bootstrap.sh INDEX...` assembles only the explicitly named planned full-size donor-file bootstrap
-libraries, then evaluates two draws per library on the same retained shard. It uses independent tier1b/fast
+The bootstrap replays (an earlier wrapper, not kept in the repository) assembled only the explicitly named planned
+full-size donor-file bootstrap libraries, then evaluated two draws per library on the same retained shard. They used independent tier1b/fast
 response seeds `200000 + 100*INDEX + DRAW`, with DRAW in {1,2}, rather than common seeds across replicas. A1 stock
 baseSeed stays fixed, so this estimates conditional donor/sampling variability, not all stock-response variance.
 Unique output directories are required; replay products stay separate from the nominal campaign.

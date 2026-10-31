@@ -6,7 +6,7 @@ R=$CRV_TIER1B_ROOT
 C=$CRV_TIER1B_CODE
 H=${CRV_TIER1B_INPUTS:?input root with offline/, tier1b_strict_v2/ and the saved transport tables}
 module load apptainer
-L=$(mktemp -d /tmp/crv_device_tier1b.XXXXXX)
+L=$(mktemp -d -t crv_device_tier1b.XXXXXX)
 trap 'rm -rf -- "$L"' EXIT
 F() {
  apptainer exec --cleanenv --env "PYTHONPATH=$C/core" -B "$R" -B "$L" \

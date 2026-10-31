@@ -20,9 +20,10 @@ import uuid
 import numpy as np
 import uproot
 
+from .. import dcache
+
 SCHEMA = "ce-proxy-availability-v1"
 XROOTD_TIMEOUT = 30
-XROOTD_PREFIX = "root://fndcadoor.fnal.gov//pnfs/fnal.gov/usr/mu2e"
 SELECTION_SHA256 = "f8029e1afc3db72b09549ac9e3ae92c5f5263f60f4db38fcda161166077731f3"
 JSON_CAP, SOURCE_CAP, OUTPUT_CAP = 8 << 20, 64 << 10, 2 << 20
 FILE_CAP, TOTAL_CAP, READ_CAP = 128 << 20, 1 << 30, 32 << 20
@@ -32,9 +33,14 @@ MAX_ENTRIES, MAX_TOTAL_ENTRIES, EXPECTED_ENTRIES = 10000, 100000, 91226
 VERSION_CAP, VERSION_BINS = 64 << 10, 16
 INDICES = frozenset((*range(7), *range(8, 12)))
 CAMPAIGN = "CeMLeadingLogMix1BB/MDC2025au_best_v1_1-001"
-PATH_RE = re.compile(r"/pnfs/mu2e/tape/phy-nts/nts/mu2e/" + CAMPAIGN +
+PATH_TAIL = (r"/tape/phy-nts/nts/mu2e/" + CAMPAIGN +
     r"/root/[0-9a-f]{2}/[0-9a-f]{2}/nts\.mu2e\.CeMLeadingLogMix1BB\."
     r"MDC2025au_best_v1_1-001\.001430_([0-9]{8})\.root")
+
+
+def path_re():
+    """Exact campaign path in the site's dCache area (CRVFS_DCACHE)."""
+    return re.compile(re.escape(dcache.area()) + PATH_TAIL)
 IDS = ("evtinfo/run", "evtinfo/subrun", "evtinfo/event")
 KINDS = dict.fromkeys(IDS, "id") | {
     "evtinfo/nprotons": "count", "evtinfo/pbtime": "time", "evtinfo/pbterr": "error",
@@ -105,7 +111,7 @@ def bindings(payload):
     seen, rows, total = set(), [], 0
     for row in records:
         require(type(row) is dict and type(row.get("path")) is str, "ntuple path required")
-        match = PATH_RE.fullmatch(row["path"])
+        match = path_re().fullmatch(row["path"])
         require(match is not None, "exact PNFS campaign path required")
         index = int(match[1])
         require(index in INDICES and index not in seen, "wrong/duplicate basename index")
@@ -180,10 +186,10 @@ class BoundedFile:
 
 def xrootd_url(path):
     # Lexical transform only, after the pinned report has validated identities.
-    # No user URL, host, alternate campaign, or namespace lookup is admitted.
-    match = PATH_RE.fullmatch(path) if type(path) is str else None
+    # The door is the site's configured CRVFS_XROOTD; no user URL, alternate campaign or namespace lookup is admitted.
+    match = path_re().fullmatch(path) if type(path) is str else None
     require(match is not None and int(match[1]) in INDICES, "exact PNFS campaign path required for XRootD")
-    return XROOTD_PREFIX + path[len("/pnfs/mu2e"):]
+    return dcache.xrootd(path)
 
 
 class XRootDBoundedFile(BoundedFile):

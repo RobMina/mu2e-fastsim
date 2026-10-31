@@ -52,7 +52,7 @@ class Saved:
             momentum_window=dict(pmin=85, pmax=200, strict=True, selected_events=5, selected_tracks=10),
             diagnostic=dict(ntuple_events=12, selected_events_matched=4, selected_tracks_matched=9,
                 selected_events_not_in_supplied_ntuples=1, pbi_quantile_strata=[]),
-            ntuples=[dict(path=f"/pnfs/frozen_{i}.root", uuid=f"uuid-{i}", trees={"EventNtuple/ntuple": dict(entries=6)}) for i in (6, 8)])
+            ntuples=[dict(path=f"/mnt/pnfs/frozen_{i}.root", uuid=f"uuid-{i}", trees={"EventNtuple/ntuple": dict(entries=6)}) for i in (6, 8)])
         self.extracted = dict(schema="ce-proxy-rows-v1", availability_report=dict(sha256=J.AVAILABILITY_SHA256),
             files=[dict(index=i, path=r["path"], uuid=r["uuid"], entries=6) for i, r in zip((6, 8), self.original["ntuples"])])
         self.mult = np.array([1, 2, 4, 0, 0, 0, 2, 0, 0, 0, 0, 0])
@@ -487,7 +487,7 @@ def test_cli(saved):
 
 
 def test_paths_symlinks_and_missing_parent(saved):
-    for path in ("root://host/f", "/pnfs/x", "/PNFS/x", "/net/x", "/test.root", "//server/x"):
+    for path in ("root://host/f", "/mnt/pnfs/x", "/PNFS/x", "/net/x", "/test.root", "//server/x"):
         with pytest.raises(ValueError):
             C.local_path(path)
     original = saved.npz.with_name("saved.npz")

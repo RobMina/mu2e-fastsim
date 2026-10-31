@@ -5,7 +5,7 @@
 # correction before accumulating. Outputs OUTDIR/<file stem>.json, OUTDIR/logs/, OUTDIR/logs/host_<i>.done.
 set -u
 OUT=${1:?outdir}; LIST=${2:?file list}; shift 2; HOSTS=("$@"); [ ${#HOSTS[@]} -gt 0 ] || { echo "need hosts"; exit 2; }
-CODE=/exp/mu2e/app/users/ram2aq/analysis/mu2e-fastsim
+CODE=${M2FS_CODE:?set M2FS_CODE to the mu2e-fastsim checkout on the hosts}
 ENV="source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh >/dev/null 2>&1; pyenv ana >/dev/null 2>&1; export PYTHONPATH=$CODE/core:$CODE/crv"
 TC=""; [ -n "${TIME_CORR:-}" ] && TC="--time-corr $TIME_CORR"
 ssh "${HOSTS[0]}" "mkdir -p $OUT/logs" </dev/null

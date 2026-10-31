@@ -5,7 +5,7 @@
 #   library/sampler version is recorded in logs/provenance.txt); TAG names the output arm (default a1_<TABLEDIR>).
 #   Reference on the same events: TABLEDIR g4ref_v1_tables, PREFIX crvsteps (G4's own steps injected, arm a0g).
 source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh >/dev/null 2>&1 || true
-AREA=${CRVVAL_AREA:-/exp/mu2e/app/users/ram2aq/crvval}
+AREA=${CRVVAL_AREA:?set CRVVAL_AREA to your built validation area}
 cd "$AREA" && muse setup >/dev/null 2>&1 || true
 set -u
 [ "$MUSE_WORK_DIR" = "$AREA" ] || { echo "wrong MUSE_WORK_DIR=$MUSE_WORK_DIR"; exit 2; }

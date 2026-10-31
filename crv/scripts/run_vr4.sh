@@ -2,7 +2,7 @@
 # V-R4 batch: fast chain vs stock chain on the g4ref_v1 shards FIRST..LAST (CrvStep tables + stock refs of
 # scripts/run_v2_arms.sh), one --emit JSON per shard, then the merged report. One GPVM, serially. Needs site.env.
 # usage: run_vr4.sh FIRST LAST [OUTTAG] [extra reco-vr4 args, e.g. --jax]
-source "${M2FS_CODE:-/exp/mu2e/app/users/ram2aq/analysis/mu2e-fastsim}/site.env"
+source "${M2FS_CODE:?set M2FS_CODE to the mu2e-fastsim checkout}/site.env"
 source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh >/dev/null 2>&1 || true
 pyenv ana >/dev/null 2>&1 || true
 set -u

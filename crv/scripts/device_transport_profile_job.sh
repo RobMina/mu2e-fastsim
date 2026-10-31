@@ -1,6 +1,6 @@
 #!/bin/bash
 # One-A100 warm CUDA profile; code snapshot is immutable for the job lifetime.
-#SBATCH -A ldmxuva
+# Slurm account: set SBATCH_ACCOUNT (see site.env.example) or pass sbatch -A.
 #SBATCH -p gpu
 #SBATCH --gres=gpu:a100:1
 #SBATCH -C a100_80gb

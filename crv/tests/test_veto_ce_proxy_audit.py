@@ -11,6 +11,8 @@ import uproot
 
 from crvfastsim.veto import ce_proxy_audit as A
 
+pytestmark = pytest.mark.usefixtures("dcache_site")
+
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -68,7 +70,7 @@ class Saved:
         self.report = {"selection": {"path": str(self.selected), "sha256": "a" * 64}, "ntuples": []}
         self.mapping = {}
         for index in sorted(A.INDICES):
-            path = ("/pnfs/mu2e/tape/phy-nts/nts/mu2e/" + A.CAMPAIGN +
+            path = ("/dcache-test/mu2e/tape/phy-nts/nts/mu2e/" + A.CAMPAIGN +
                 f"/root/ab/cd/nts.mu2e.CeMLeadingLogMix1BB.MDC2025au_best_v1_1-001.001430_{index:08d}.root")
             physical = evidence / f"test_{index}.root"
             identity = root_file(physical, index)
@@ -81,7 +83,7 @@ class Saved:
         original_open = A.os.open
         def exact_open(path, flags, *args, **kwargs):
             # Only the exact recorded paths may reach the low-level root opener.
-            if str(path).startswith("/pnfs"):
+            if str(path).startswith("/dcache-test"):
                 assert str(path) in self.mapping
                 return original_open(self.mapping[str(path)], flags, *args, **kwargs)
             return original_open(path, flags, *args, **kwargs)
@@ -133,7 +135,7 @@ def test_real_root_audit_allowlist_no_namespace(saved, monkeypatch):
     for method in ("stat", "lstat"):
         original = getattr(os, method)
         def guard(path, *args, _original=original, **kwargs):
-            assert not str(path).startswith("/pnfs")
+            assert not str(path).startswith("/dcache-test")
             assert str(path) != str(saved.selected)
             return _original(path, *args, **kwargs)
         monkeypatch.setattr(os, method, guard)
@@ -489,7 +491,7 @@ class FakeXRootD:
         monkeypatch.setitem(sys.modules, "XRootD.client", client)
 
     def add(self, path, data):
-        url = "root://fndcadoor.fnal.gov//pnfs/fnal.gov/usr/mu2e" + path[len("/pnfs/mu2e"):]
+        url = "root://door.test//ns" + path[len("/dcache-test"):]
         self.payloads[url] = data
         return url
 
@@ -500,7 +502,7 @@ def xclient(monkeypatch):
 
 
 def pinned_path(index=0):
-    return ("/pnfs/mu2e/tape/phy-nts/nts/mu2e/" + A.CAMPAIGN +
+    return ("/dcache-test/mu2e/tape/phy-nts/nts/mu2e/" + A.CAMPAIGN +
         f"/root/ab/cd/nts.mu2e.CeMLeadingLogMix1BB.MDC2025au_best_v1_1-001.001430_{index:08d}.root")
 
 
@@ -560,8 +562,8 @@ def test_xrootd_rejects_nonlexical_seek(xclient, offset, whence):
 @pytest.mark.parametrize("mutation", ["url", "prefix", "campaign", "traversal", "query", "index", "relative"])
 def test_xrootd_rejects_nonexact_paths_before_client(xclient, mutation):
     path = pinned_path()
-    if mutation == "url": path = A.XROOTD_PREFIX + path[len("/pnfs/mu2e"):]
-    elif mutation == "prefix": path = path.replace("/pnfs/mu2e/", "/pnfs/mu2e-other/")
+    if mutation == "url": path = "root://door.test//ns" + path[len("/dcache-test"):]
+    elif mutation == "prefix": path = path.replace("/dcache-test/mu2e/", "/dcache-test/mu2e-other/")
     elif mutation == "campaign": path = path.replace(A.CAMPAIGN, "Other/v1")
     elif mutation == "traversal": path = path.replace("/root/", "/root/../root/")
     elif mutation == "query": path += "?alternate=1"
@@ -641,7 +643,7 @@ def test_xrootd_synthetic_real_root_header_reopens_and_report(saved, xclient, mo
     for name in ("stat", "lstat"):
         original = getattr(os, name)
         def guard(path, *args, _original=original, **kwargs):
-            assert not str(path).startswith(("/pnfs", "root://"))
+            assert not str(path).startswith(("/dcache-test", "root://"))
             assert str(path) != str(saved.selected)
             return _original(path, *args, **kwargs)
         monkeypatch.setattr(os, name, guard)

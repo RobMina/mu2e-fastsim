@@ -194,7 +194,7 @@ Synthetic local validation (no production data or physics run):
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.:../core \
-  /Users/rmina/mu2e/.venv/bin/python3 -m pytest -p no:cacheprovider -q \
+  python3 -m pytest -p no:cacheprovider -q \
   tests/test_valhist_denominator_variants.py tests/test_valhist_library_variants.py
 ```
 

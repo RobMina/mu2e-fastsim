@@ -2,7 +2,7 @@
 # runchain on CPU with two crv checkouts (same core, seed, inputs): checks a refactor leaves the extracted chain
 # unchanged. usage: runchain_ab_cpu.sh <crv_dir_A> <crv_dir_B> <gen.root> [max_events=10000]
 # needs pyenv ana and CRVFS_DATA; outputs $CRVFS_DATA/runcfg_dev/ab_{A,B}; prints both cluster tables
-A=${1:?}; B=${2:?}; GEN=${3:?}; N=${4:-10000}; D=${CRVFS_DATA:?}; CORE=/exp/mu2e/app/users/ram2aq/analysis/mu2e-fastsim/core
+A=${1:?}; B=${2:?}; GEN=${3:?}; N=${4:-10000}; D=${CRVFS_DATA:?}; CORE=${M2FS_CODE:?set M2FS_CODE to the mu2e-fastsim checkout}/core
 for arm in A B; do
   dir=${!arm}; O=$D/runcfg_dev/ab_$arm; mkdir -p "$O"
   ( cd "$dir" && PYTHONPATH=$CORE:$dir python3 -m crvfastsim runchain "$GEN" --library "$D/tier1b_v7/lib_prod_as_20files.root" \

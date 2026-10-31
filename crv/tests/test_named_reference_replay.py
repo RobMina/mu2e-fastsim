@@ -7,6 +7,8 @@ import pytest
 from crvfastsim.analyses import named_reference_replay as R
 from test_named_reference_campaign import certificates, retained, mocked_driver, dump
 
+pytestmark = pytest.mark.usefixtures("dcache_site")
+
 
 @pytest.fixture
 def completed(mocked_driver, monkeypatch):

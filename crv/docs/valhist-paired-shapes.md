@@ -12,7 +12,7 @@ From the `mu2e-fastsim` umbrella:
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=core:crv \
   ~/mu2e/.venv/bin/python3 -B -m valhist.paired_shapes pairs.json \
-  --out /tmp/paired-shapes-new.json \
+  --out NEW_paired_shapes.json \
   --select '^crvRecoDQM/(PEc|NPc|X_extracted|Y_extracted|Z_extracted)$' \
   --count-key crvRecoDQM/PEc --count-key crvRecoDQM/NPc \
   --count-key crvRecoDQM/X_extracted --count-key crvRecoDQM/Y_extracted \

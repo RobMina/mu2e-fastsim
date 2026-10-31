@@ -15,6 +15,8 @@ from . import generator_bank_capture as B, generator_bank_provenance as P
 from . import generator_seed_report as R
 from . import generator_capture_verify as V, generator_history as H
 from . import genassoc_campaign as C, genassoc_fullgen as F
+from . import sources
+from mu2efastsim import site
 
 SCHEMA = "valhist.generator_bank_campaign.v1"
 SCOPE = "absolute-PDG/native-KE counts and full-census generated-event exposure only"
@@ -30,10 +32,16 @@ LIMITS = [
     "No library overwrite, asset alias/default promotion, build, grid submission or commit is authorized.",
 ]
 TASK = "R2 crv-tier1b-descendants; conditional94 strict captures; r2_cond94_20261027"
-LOCKS = Path("/exp/mu2e/data/users/ram2aq/agent_locks")
-DATA = Path("/exp/mu2e/data/users/ram2aq")
-LOG_TEMPLATE = ("/pnfs/mu2e/scratch/users/ram2aq/crv_fastsim/crygen_v1/logs/"
-                "mu2e.001400_{subrun:08d}.log.gz")
+LOCKS = None   # per-host lock directory; None: CRVFS_HOST_LOCKS
+DATA = None    # data area that holds campaign outputs; None: mu2efastsim.site.output_root() (M2FS_DATA)
+
+
+def data_area():
+    return Path(DATA) if DATA is not None else Path(site.output_root())
+
+
+def host_locks():
+    return Path(LOCKS) if LOCKS is not None else Path(site.require("CRVFS_HOST_LOCKS"))
 RESERVE_BYTES = 4 * 1024**3
 PER_FILE_BUDGET = 96 * 1024**2
 
@@ -71,8 +79,8 @@ def code_hashes():
 
 
 def quota(required):
-    used = int(os.getxattr(DATA, "ceph.dir.rbytes"))
-    limit = int(os.getxattr(DATA, "ceph.quota.max_bytes"))
+    used = int(os.getxattr(data_area(), "ceph.dir.rbytes"))
+    limit = int(os.getxattr(data_area(), "ceph.quota.max_bytes"))
     if limit <= 0 or used < 0 or limit - used < required + RESERVE_BYTES:
         raise ValueError(f"insufficient quota: used={used} limit={limit} required={required} reserve={RESERVE_BYTES}")
     return {"used_bytes": used, "limit_bytes": limit, "required_bytes": required,
@@ -100,7 +108,7 @@ def validate(plan):
     if plan["assignments"] != expected:
         raise ValueError("campaign assignments differ from exact inventory partition")
     root = Path(plan["outdir"])
-    if (not root.is_absolute() or root != root.resolve() or not root.is_relative_to(DATA.resolve())
+    if (not root.is_absolute() or root != root.resolve() or not root.is_relative_to(data_area().resolve())
             or plan["limits"] != LIMITS or not plan.get("authorization")):
         raise ValueError("invalid campaign location/limitations/authorization")
     return candidate
@@ -108,7 +116,7 @@ def validate(plan):
 
 def prepare(candidate, history, seed_report, certificates, area, hosts, outdir):
     out = B.V._new_output(outdir)
-    if not out.is_relative_to(DATA):
+    if not out.is_relative_to(data_area()):
         raise ValueError("campaign outputs must be in the data area")
     candidate, history, seed_report, area = (Path(p).resolve(strict=True) for p in (candidate, history, seed_report, area))
     source = read(candidate)
@@ -215,7 +223,7 @@ def producer(plan, subrun):
     out = Path(plan["outdir"]) / f"producer_{subrun}"
     out.mkdir()
     log = out / "generation.log.gz"
-    with open(LOG_TEMPLATE.format(subrun=subrun), "rb") as source, log.open("xb") as target:
+    with open(sources.crygen_log().format(subrun=subrun), "rb") as source, log.open("xb") as target:
         while block := source.read(1024 * 1024):
             target.write(block)
     gzip.decompress(log.read_bytes()).decode("utf-8", errors="strict")
@@ -231,7 +239,7 @@ def run(manifest, manifest_sha256, host):
     manifest, plan = load_plan(manifest, manifest_sha256)
     if socket.gethostname().split(".")[0] != host or host not in plan["assignments"]:
         raise ValueError("wrong host/assignment")
-    if (LOCKS / host / "task").read_text().strip() != TASK:
+    if (host_locks() / host / "task").read_text().strip() != TASK:
         raise ValueError("missing matching R2 host lock")
     pre = campaign_inputs(plan, manifest)
     F._unchanged(pre)

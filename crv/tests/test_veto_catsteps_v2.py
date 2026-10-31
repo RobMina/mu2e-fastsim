@@ -440,7 +440,7 @@ def test_companion_tampering_rejected(tmp_path, mode):
         v2.PoolV2([out])
 
 
-@pytest.mark.parametrize("name", ["../a.events.parquet", "/tmp/a.events.parquet",
+@pytest.mark.parametrize("name", ["../a.events.parquet", "/abs/a.events.parquet",
                                   "nested/a.events.parquet", r"..\a.events.parquet",
                                   "a.parquet", "C:a.events.parquet", "bad\0.events.parquet"])
 def test_companion_reference_cannot_escape_sibling(tmp_path, name):

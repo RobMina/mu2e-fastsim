@@ -7,6 +7,8 @@ import pytest
 from test_generator_bank_capture import inventory
 from valhist import generator_bank_campaign as G
 
+pytestmark = pytest.mark.usefixtures("dcache_site")
+
 
 def plan(tmp_path, monkeypatch):
     monkeypatch.setattr(G, "DATA", tmp_path)
@@ -61,7 +63,7 @@ def test_contract_tampering_rejected(tmp_path, monkeypatch, change):
     elif change == "duplicate":
         p["assignments"]["mu2egpvm02"][0] = p["assignments"]["mu2egpvm01"][0]
     elif change == "path":
-        p["outdir"] = "/tmp/wrong"
+        p["outdir"] = "/outside/wrong"
     else:
         p["limits"].pop()
     with pytest.raises(ValueError):
@@ -69,6 +71,7 @@ def test_contract_tampering_rejected(tmp_path, monkeypatch, change):
 
 
 def test_quota_reserve_and_no_disable(monkeypatch):
+    monkeypatch.setattr(G, "DATA", "/data-test")
     monkeypatch.setattr(G.os, "getxattr", lambda path, attr: b"100" if attr.endswith("rbytes") else str(G.RESERVE_BYTES + 200).encode(), raising=False)
     assert G.quota(100)["used_bytes"] == 100
     with pytest.raises(ValueError, match="quota"):

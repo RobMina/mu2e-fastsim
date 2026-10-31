@@ -3,6 +3,8 @@
 The job runs the code checkout CODE (a dir holding core/ and crv/; the EAF default is the shared umbrella).
 
     EAF_TOKEN_FILE=... PYTHONPATH=CODE/core:CODE/crv python3 live_kit_crv_response.py CODE [key=value ...]
+
+Needs the site variables CRVFS_DATA and FASTSIMKIT_EAF_SHARED_PREFIX (see site.env.example).
 """
 import json
 import os
@@ -12,7 +14,7 @@ import time
 from mu2efastsim.endpoints.eaf import EAFEndpoint
 from mu2efastsim.endpoints.kit import FastsimKit
 
-D = os.environ.get("CRVFS_DATA", "/exp/mu2e/data/users/ram2aq/crv_fastsim")
+D = os.environ.get("CRVFS_DATA") or sys.exit("set CRVFS_DATA to the CRV data root (see site.env.example)")
 
 
 def main():

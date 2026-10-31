@@ -6,9 +6,9 @@
 #   submit_vr4.sh [--first N] [--n M]      # M jobs from shard N (default 1..20)
 #   submit_vr4.sh --dry-run ...            # print the jobsub command only
 #   [--memory 12000MB] [--batch-events 100]  # for shards that went over the memory limit
-# Sizing (measured on mu2egpvm06): ~4.5 min and ~8 GB RSS peak per shard (2,500 events, batches of 250).
-BASE=/pnfs/mu2e/scratch/users/ram2aq/crvfs_vr4; IN=$BASE/in; OUT=$BASE/out_jax_v1
-D=/exp/mu2e/data/users/ram2aq/crv_fastsim; SIF=/exp/mu2e/data/users/ram2aq/container/mu2efastsim_cpu.sif
+# Sizing (measured on a Mu2e GPVM): ~4.5 min and ~8 GB RSS peak per shard (2,500 events, batches of 250).
+BASE=${VR4_BASE:?set VR4_BASE to the dCache scratch directory of the V-R4 inputs/outputs}; IN=$BASE/in; OUT=$BASE/out_jax_v1
+D=${CRVFS_DATA:?source site.env}; SIF=${FASTSIM_CPU_SIF:?set FASTSIM_CPU_SIF to the CPU container image}
 HERE=$(cd "$(dirname "$0")" && pwd); FIRST=1; N=20; DRY=false; STAGE=false
 while [ $# -gt 0 ]; do case "$1" in
   --stage) STAGE=true; shift ;; --test) N=1; shift ;; --first) FIRST=$2; shift 2 ;; --n) N=$2; shift 2 ;;
@@ -29,13 +29,13 @@ if $STAGE; then
   ifdh ls $IN | wc -l; exit 0
 fi
 # code tarball: git archive of core and crv at the checked-out (committed) commits; staged next to the inputs
-C=/exp/mu2e/app/users/ram2aq/analysis/mu2e-fastsim; T=$(mktemp -d)
+C=${M2FS_CODE:?set M2FS_CODE to the mu2e-fastsim checkout}; T=$(mktemp -d)
 mkdir -p $T/core $T/crv && git -C $C/core archive HEAD | tar -x -C $T/core && git -C $C/crv archive HEAD | tar -x -C $T/crv
 printf "core %s\ncrv %s\n" "$(git -C $C/core rev-parse --short HEAD)" "$(git -C $C/crv rev-parse --short HEAD)" > $T/VERSION
 CODE_TGZ=code_$(git -C $C/crv rev-parse --short HEAD).tgz
 tar -czf $T/$CODE_TGZ -C $T core crv VERSION && ($DRY || { ifdh rm $IN/$CODE_TGZ >/dev/null 2>&1; ifdh cp $T/$CODE_TGZ $IN/$CODE_TGZ; })
 rm -rf $T
-OUT_TOKEN=$(echo "$OUT" | sed 's|^/pnfs/mu2e|/mu2e|')
+DCACHE="${CRVFS_DCACHE:?set CRVFS_DCACHE to the dCache mount point (see site.env.example)}"; OUT_TOKEN=${OUT#"$DCACHE"}
 CMD=(jobsub_submit -N "$N" -G mu2e --role=Analysis --expected-lifetime=2h
   --resource-provides=usage_model=DEDICATED,OPPORTUNISTIC --lines='+FERMIHTC_AutoRelease=True'
   --memory="$MEM" --disk=8000MB --need-storage-modify="$OUT_TOKEN"
@@ -44,5 +44,6 @@ CMD=(jobsub_submit -N "$N" -G mu2e --role=Analysis --expected-lifetime=2h
 echo "${CMD[@]}"
 $DRY && exit 0
 ifdh mkdir_p "$OUT"
-"${CMD[@]}" 2>&1 | tee /tmp/$USER.submit_vr4.txt
-grep -qE "submitted to cluster" /tmp/$USER.submit_vr4.txt || { echo "ERROR: no cluster id: NOTHING SUBMITTED" >&2; exit 1; }
+LOG=$(mktemp -t submit_vr4.XXXXXX)
+"${CMD[@]}" 2>&1 | tee "$LOG"
+grep -qE "submitted to cluster" "$LOG" || { echo "ERROR: no cluster id: NOTHING SUBMITTED" >&2; exit 1; }

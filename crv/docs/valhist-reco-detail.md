@@ -123,7 +123,7 @@ No pooling of shard quantiles is attempted; inspect the per-shard reports.
 ## Synthetic regression tests
 
 ```bash
-/Users/rmina/mu2e/.venv/bin/python3 -m pytest -q -p no:cacheprovider \
+python3 -m pytest -q -p no:cacheprovider \
   tests/test_valhist_reco_detail.py
 ```
 

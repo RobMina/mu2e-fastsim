@@ -12,6 +12,8 @@ from crvfastsim.veto import ce_proxy_audit as A
 from crvfastsim.veto import ce_proxy_rows as R
 from test_veto_ce_proxy_audit import FakeXRootD, FakeStatus, forbidden, pinned_path, version_hist
 
+pytestmark = pytest.mark.usefixtures("dcache_site")
+
 
 def data(index):
     return {"evtinfo/run": np.full(4, 1430, dtype=np.uint32),
@@ -39,7 +41,9 @@ class SavedRows:
         self.ledger.parent.mkdir()
         self.selection = dict(selection=dict(path=str(self.selected), sha256="a" * 64),
                               exposure_ledger=dict(path=str(self.ledger)), ntuples=[])
-        self.availability = dict(schema=A.SCHEMA, source=dict(path=A.__file__, sha256=R.AUDIT_SOURCE_SHA256,
+        # Synthetic report made by the current audit source (the production report embeds the earlier revision).
+        monkeypatch.setattr(R, "REPORT_AUDIT_SOURCE_SHA256", A.sha(Path(A.__file__).read_bytes()))
+        self.availability = dict(schema=A.SCHEMA, source=dict(path=A.__file__, sha256=R.REPORT_AUDIT_SOURCE_SHA256,
             snapshot=Path(A.__file__).read_text()), total_entries=44, full_ids_unique=True, files=[])
         self.args = dict(selection_report=evidence / "selection.json", availability_report=evidence / "availability.json",
                          out_dir=base / "output")
@@ -115,7 +119,8 @@ def saved(tmp_path, monkeypatch):
 def test_production_constants():
     assert R.SELECTION_SHA256 == "f8029e1afc3db72b09549ac9e3ae92c5f5263f60f4db38fcda161166077731f3"
     assert R.AVAILABILITY_SHA256 == "2b59602667126391fe1b32bb6ce4051b83c88268f5f60c580922d1cfeef18325"
-    assert R.AUDIT_SOURCE_SHA256 == "3765b8114f4128d7bae438d3b943cc6f8b61c1c4f393e0963fb4ede6494cc776"
+    assert R.REPORT_AUDIT_SOURCE_SHA256 == "3765b8114f4128d7bae438d3b943cc6f8b61c1c4f393e0963fb4ede6494cc776"
+    assert R.AUDIT_SOURCE_SHA256 == "f776977470c9ed6c62ddb94f902c368cde76ccb8e5f5b64c74ade0bbc364abc7"
     assert A.sha(Path(A.__file__).read_bytes()) == R.AUDIT_SOURCE_SHA256
     assert A.EXPECTED_ENTRIES == 91226
     assert R.NPZ_CAP == 16 << 20 and R.REPORT_CAP == 2 << 20
@@ -150,7 +155,7 @@ def test_real_root_allowlist_digests_dtypes_and_exclusive_output(saved, monkeypa
     for name in ("stat", "lstat"):
         original = getattr(os, name)
         def guard(path, *args, _original=original, **kwargs):
-            assert not str(path).startswith("/pnfs")
+            assert not str(path).startswith("/dcache-test")
             assert path not in (saved.selected, saved.ledger)
             return _original(path, *args, **kwargs)
         monkeypatch.setattr(os, name, guard)
@@ -216,7 +221,7 @@ def test_availability_schema_before_remote(saved, monkeypatch, mutation):
     if mutation == "booltotal": old["total_entries"] = True
     if mutation == "unique": old["full_ids_unique"] = False
     if mutation == "count": old["files"].pop()
-    if mutation == "path": row["path"] = "/pnfs/other.root"
+    if mutation == "path": row["path"] = "/dcache-test/other.root"
     if mutation == "duplicate": old["files"][1] = row
     if mutation == "uuid": row["uuid"] = "a" * 32
     if mutation == "entries": row["entries"] = 3
@@ -371,7 +376,7 @@ def test_output_exclusion_before_remote(saved, monkeypatch, where):
         link = saved.base / "link"
         link.symlink_to(saved.base / "evidence", target_is_directory=True)
         out = link / "new"
-    if where == "pnfs": out = Path("/pnfs/forbidden/new")
+    if where == "pnfs": out = Path("/mnt/pnfs/forbidden/new")
     if where == "traversal": out = saved.base / "evidence" / ".." / "new"
     if where == "long": out = "/" + "x" * R.PATH_CAP
     monkeypatch.setattr(A, "XRootDBoundedFile", forbidden)

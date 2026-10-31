@@ -10,6 +10,8 @@ import uproot
 from valhist import genassoc_campaign as C, genassoc_source as S
 from valhist.library_variants import sha256
 
+pytestmark = pytest.mark.usefixtures("dcache_site")
+
 
 def save(path, value):
     path.write_text(json.dumps(value))
@@ -59,7 +61,7 @@ def campaign(tmp_path, monkeypatch):
         gen.append(str(full))
         if index != 1:
             (old / f"logs/dump.{seq}.log").write_text(
-                f'Opened input file "{S.ART_TEMPLATE.format(sequence=seq)}"\n'
+                f'Opened input file "{S.art_template().format(sequence=seq)}"\n'
                 'Art has completed and will exit with status 0.\n')
     (old / "logs/driver.log").write_text("shard 1 steps_rc=0 gen_rc=0 10:09:09\n")
     evaluation = tmp_path / "eval.root"
@@ -114,7 +116,7 @@ def test_plan_loads_in_existing_campaign_and_preserves_inputs(campaign):
     evidence = result["donors"][0]["source_evidence"]
     assert "NOT certified" in evidence["status"]
     assert result["donors"][0]["old_log"] is None
-    assert result["donors"][0]["art"] == S.ART_TEMPLATE.format(sequence="001400_00000001")
+    assert result["donors"][0]["art"] == S.art_template().format(sequence="001400_00000001")
     assert len(evidence["logs"]) == 2
     for record in evidence["logs"]:
         assert record["sha256"] == sha256(record["path"])
@@ -134,7 +136,7 @@ def test_plan_loads_in_existing_campaign_and_preserves_inputs(campaign):
 def test_real_first_log_is_certified_not_derived(campaign):
     f = campaign
     (f["old"] / "logs/dump.001400_00000001.log").write_text(
-        f'Opened input file "{S.ART_TEMPLATE.format(sequence="001400_00000001")}"\n'
+        f'Opened input file "{S.art_template().format(sequence="001400_00000001")}"\n'
         'Art has completed and will exit with status 0.\n')
     (f["old"] / "logs/driver.log").unlink()
     assert run(f)["donors"][0]["source_evidence"]["status"] == "certified historical dump log"
@@ -184,7 +186,7 @@ def test_log_failures_never_fall_back(campaign, case, match):
     elif case == "incomplete":
         log.write_text(log.read_text().splitlines()[0])
     elif case == "ambiguous":
-        log.write_text(log.read_text() + 'Opened input file "/pnfs/other.art"\n')
+        log.write_text(log.read_text() + 'Opened input file "/dcache-test/other.art"\n')
     elif case == "bad_first":
         (f["old"] / "logs/dump.001400_00000001.log").write_text("failed\n")
     else:

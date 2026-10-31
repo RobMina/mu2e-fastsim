@@ -76,7 +76,7 @@ class Site:
 
 class Source(FnalSource):
     def __init__(self):
-        super().__init__("gpvm", "/exp/data")
+        super().__init__("gpvm", "/fnal/data")
 
     revision = "original"
 
@@ -99,15 +99,16 @@ def make(tmp_path):
     source = Source()
 
     def stream_runner(src, host, remote, timeout):
-        rel = src[-1].split("/exp/data/", 1)[1].strip("'")
+        rel = src[-1].split("/fnal/data/", 1)[1].strip("'")
         dest = remote.split("cat > ")[1].split()[0].strip("'\"")
         streamed.append((rel, dest))
         return source.md5(rel) + " " + dest
 
-    ep = SlurmSSHEndpoint(runner=site, state_dir=tmp_path / "jobs", workdir="/scratch/u/kit", max_su_per_job=500.0,
+    ep = SlurmSSHEndpoint(host="cluster-test", account="account-test", runner=site, state_dir=tmp_path / "jobs",
+                          workdir="/cluster/u/kit", max_su_per_job=500.0,
                           stream_runner=stream_runner)
     kit = FastsimKit(endpoint=ep, state_dir=tmp_path / "kit", sif="/x/m.sif")
-    kit._delegates["crv_response"] = KU.CrvResponseStream(kit, source=source, code="/scratch/u/crvcode",
+    kit._delegates["crv_response"] = KU.CrvResponseStream(kit, source=source, code="/cluster/u/crvcode",
                                                           background=False)
     return site, ep, kit, streamed
 
@@ -128,7 +129,7 @@ def test_render_uva_body(tmp_path):
     d = kit._delegates["crv_response"]
     body, res = d.render(KU.validate({"task": "crv_response", "seed": 3.0, "speed_EX": 1.08, "period": "P3"}))
     assert not re.search(r"@[a-z_0-9]+@", body) and res.gpus == 1
-    assert "apptainer exec" in body and "/x/m.sif" in body and "/scratch/u/crvcode" in body
+    assert "apptainer exec" in body and "/x/m.sif" in body and "/cluster/u/crvcode" in body
     assert 'X="$L/in"' in body and "inbox" in body and "corr_P3_v2mod.json" in body and "dataref_P3.json" in body
     assert "/dev/shm/crvfs_resp_${USER}_" in body and "in_release" in body
     assert 'KN+=("speed_EX="1.08)' in body and "CRVFS_LOOKUP_DIR=$L" in body
@@ -182,7 +183,7 @@ def test_registered_as_delegate():
     from mu2efastsim.endpoints import kit as K
     assert K.DELEGATES.get("crv_response") is KU.Delegate
     assert KU.Delegate.applies(type("U", (), {"stream_in": lambda *a: None})())
-    assert not KU.Delegate.applies(type("E", (), {"fnal_data": "/exp"})())
+    assert not KU.Delegate.applies(type("E", (), {"fnal_data": "/fnal/data"})())
 
 
 def test_static_names_match_the_chain_and_objective():
@@ -447,7 +448,7 @@ def test_cache_writers_across_delegate_instances_are_serialized(tmp_path, monkey
     site, ep, kit, streamed = make(tmp_path)
     d1 = kit._delegates["crv_response"]
     d1.submit("writer1", {"task": "crv_response", "seed": 1})
-    d2 = KU.CrvResponseStream(kit, source=Source(), background=False)
+    d2 = KU.CrvResponseStream(kit, source=Source(), code="/cluster/u/crvcode", background=False)
     d2.submit("writer2", {"task": "crv_response", "seed": 2})
     _start(site, ep, "writer1")
     _start(site, ep, "writer2")

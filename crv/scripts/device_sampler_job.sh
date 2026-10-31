@@ -1,6 +1,6 @@
 #!/bin/bash
 # Paired GPU unit tests and full-size fluctuation-law validation in the project image.
-#SBATCH -A ldmxuva
+# Slurm account: set SBATCH_ACCOUNT (see site.env.example) or pass sbatch -A.
 #SBATCH -p gpu
 #SBATCH --gres=gpu:a100:1
 #SBATCH -C a100_80gb

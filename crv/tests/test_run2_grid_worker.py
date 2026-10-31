@@ -4,14 +4,18 @@ import os
 from pathlib import Path
 import subprocess
 
+import pytest
+
 from crvfastsim.analyses import run2_grid_plan as P
+
+pytestmark = pytest.mark.usefixtures("dcache_site")
 
 CODE = Path(__file__).resolve().parents[1]
 
 
 def worker_fixture(tmp_path):
     state = tmp_path / "state"
-    P.prepare(state, "/pnfs/mu2e/scratch/users/test/crv/reference", "test")
+    P.prepare(state, "/dcache-test/mu2e/scratch/users/test/crv/reference", "test")
     binpath = tmp_path / "bin"
     binpath.mkdir()
     setup = tmp_path / "setup.sh"

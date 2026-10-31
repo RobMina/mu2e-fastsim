@@ -8,6 +8,8 @@ import pytest
 
 from valhist import genassoc_campaign as C
 
+pytestmark = pytest.mark.usefixtures("dcache_site")
+
 
 def fixture_plan(tmp_path):
     donor_dir = tmp_path / "old"
@@ -15,7 +17,7 @@ def fixture_plan(tmp_path):
     donor = donor_dir / "crvsteps.001400_00000990.root"
     donor.write_bytes(b"original donor")
     log = donor_dir / "logs/dump.001400_00000990.log"
-    log.write_text('Opened input file "/pnfs/known/dts.x.001400_00000990.art"\n'
+    log.write_text('Opened input file "/dcache-test/known/dts.x.001400_00000990.art"\n'
                    'Art has completed and will exit with status 0.\n')
     gen = tmp_path / "gen.root"
     gen.write_bytes(b"complete generated population")
@@ -30,7 +32,7 @@ def test_plan_resolves_saved_paths_and_preserves_full_gen(tmp_path):
     C.plan(meta, out, tmp_path / "area", 500000)
     _, plan = C._load_plan(out / "plan.json")
     assert plan["gen"] == [str(gen)] and plan["generated"] == 500000
-    assert plan["donors"][0]["art"] == "/pnfs/known/dts.x.001400_00000990.art"
+    assert plan["donors"][0]["art"] == "/dcache-test/known/dts.x.001400_00000990.art"
     assert Path(plan["donors"][0]["new_table"]).parent == out / "donors"
     assert Path(plan["donors"][0]["new_table"]) != donor
     assert len((out / "donors.tsv").read_text().splitlines()) == 1
@@ -60,7 +62,7 @@ def test_plan_rejects_incomplete_log_and_wrong_exposure(tmp_path):
     with pytest.raises(ValueError, match="exposure"):
         C.plan(meta, out, tmp_path / "area", 499999)
     assert not out.exists()
-    log.write_text('Opened input file "/pnfs/known/dts.x.001400_00000990.art"\n')
+    log.write_text('Opened input file "/dcache-test/known/dts.x.001400_00000990.art"\n')
     with pytest.raises(ValueError, match="completion"):
         C.plan(meta, out, tmp_path / "area", 500000)
     assert not out.exists()

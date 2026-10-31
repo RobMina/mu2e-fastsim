@@ -3,6 +3,8 @@ import pytest
 
 from valhist import generator_history as H
 
+pytestmark = pytest.mark.usefixtures("dcache_site")
+
 
 def log(proc=0):
     return (f'=== grid_crygen: shard {proc} subrun {2001+proc} seed {20263000+proc} nevts 1000000 host node\n'
@@ -11,10 +13,10 @@ def log(proc=0):
 
 
 def ads():
-    return [dict(ClusterId=H.CLUSTER, Owner='ram2aq', ProcId=s-2001, JobStatus=3,
+    return [dict(ClusterId=H.CLUSTER, Owner='tester', ProcId=s-2001, JobStatus=3,
                  Environment=f'NEVTS=1000000 BASESEED=20263000 SUBRUN0=2001 MUSING=MDC2025ay PROCESS={s-2001}',
                  LastHoldReason=' SYSTEM_PERIODIC_HOLD  Run Time/limit 10853/1.080000000000000E+04',
-                 RemoveReason='via condor_rm (by user ram2aq)', NumJobStarts=1, RemoteWallClockTime=10853.,
+                 RemoveReason='via condor_rm (by user tester)', NumJobStarts=1, RemoteWallClockTime=10853.,
                  RemoteUserCpu=1300., RemoteSysCpu=30., LastRemoteHost='slot@node') for s in sorted(H.B.MISSING)]
 
 

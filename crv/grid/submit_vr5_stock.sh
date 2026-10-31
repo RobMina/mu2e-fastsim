@@ -9,9 +9,9 @@
 # five MDC2025as files 990-1122 whose CrvStep tables the fast arm replays), one grid job per (point, file), through the
 # crvonly_v05 chain with the point's FHiCL overrides, ending in the crvfastsim.objective accumulator.
 #   CODE  RCDS dir (or dropbox://Code.tar.bz2) of the crv_febphase muse tarball
-#   Env   FILELIST (default /exp/mu2e/data/users/ram2aq/crvonly_mc/dts_filelist_as.txt), MCR (the analysis repo with fcl/)
+#   Env   FILELIST (dts file list), MCR (the analysis repo with fcl/), VR5_BASE (dCache scratch root), CRVFS_DCACHE
 # Sizing: crvonly_v05 production (cluster 30732054) 20-28 min per 25 k-event file, 1.2 GB; outputs under
-# /pnfs/mu2e/scratch/users/$USER/vr5/NAME/{emit,nts,logs,config}. Merge per point:
+# $VR5_BASE/NAME/{emit,nts,logs,config}. Merge per point:
 #   python -m crvfastsim.objective "<emit>/<point>/*.json" --merge --compare <reference.json> --outdir <dir>
 set -euo pipefail
 NAME="${1:?name}"; CODE="${2:?RCDS dir or dropbox tarball}"; shift 2
@@ -22,9 +22,10 @@ while [[ $# -gt 0 ]]; do case "$1" in
   --nevts) NEVTS=$2; shift 2 ;; --lifetime) LIFE=$2; shift 2 ;; --test) TEST=true; shift ;; --dry-run) DRY=true; shift ;;
   --digi-textfile) DTF=$2; shift 2 ;;
   *) echo "Unknown option: $1" >&2; exit 1 ;; esac; done
-FILELIST="${FILELIST:-/exp/mu2e/data/users/ram2aq/crvonly_mc/dts_filelist_as.txt}"
-MCR="${MCR:-/exp/mu2e/app/users/ram2aq/analysis/mu2e_track_crv_mcresponse}"
-OUTBASE="/pnfs/mu2e/scratch/users/$USER/vr5/$NAME"
+FILELIST="${FILELIST:?set FILELIST to the dts file list}"
+MCR="${MCR:?set MCR to the analysis repository with fcl/}"
+OUTBASE="${VR5_BASE:?set VR5_BASE to the dCache scratch directory of the V-R5 runs}/$NAME"
+DCACHE="${CRVFS_DCACHE:?set CRVFS_DCACHE to the dCache mount point (see site.env.example)}"
 WRAPPER="$HERE/grid_vr5_stock.sh"
 
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/vr5_cfg_XXXX")"; trap 'rm -rf "$STAGE" "$STAGE.cfg.tar.bz2"' EXIT
@@ -86,7 +87,7 @@ ifdh cp "$STAGE.cfg.tar.bz2" "$OUTBASE/config/config.tar.bz2"
 jobsub_submit -N "$NJOBS" -G mu2e --role=Analysis --expected-lifetime="$LIFE" \
   --resource-provides=usage_model=DEDICATED,OPPORTUNISTIC --lines='+FERMIHTC_AutoRelease=True' \
   --memory=3000MB --disk=6GB -e NFILES="$NF" -e NEVTS="$NEVTS" \
-  --need-storage-modify="${OUTBASE#/pnfs}" --tar-file-name "$CODE" \
+  --need-storage-modify="${OUTBASE#"$DCACHE"}" --tar-file-name "$CODE" \
   "file://$WRAPPER" "$OUTBASE" 2>&1 | tee submit_out.txt
 grep -qE "submitted to cluster" submit_out.txt || { echo "ERROR: no cluster submitted" >&2; rm -f submit_out.txt; exit 1; }
 grep -E "submitted to cluster|job id" submit_out.txt; rm -f submit_out.txt

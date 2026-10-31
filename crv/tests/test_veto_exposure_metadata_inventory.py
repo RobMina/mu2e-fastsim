@@ -60,7 +60,7 @@ class Saved:
                 "event_count": 137, "metadata_sha256": sha(path), "parent_count": len(parents),
                 "parents_sha256": hashlib.sha256(("\n".join(parents) + "\n").encode()).hexdigest()}}
         self.selection = dict(selection=dict(path=str(self.selected), sha256="d" * 64, fields=["t_mid"], has_pbi=False),
-            ntuples=[{"path": "/pnfs/forbidden/input.root", "trees": {"never_read": {}}}],
+            ntuples=[{"path": "/mnt/pnfs/forbidden/input.root", "trees": {"never_read": {}}}],
             exposure_ledger=dict(path=str(self.ledger), sha256=sha(self.ledger)),
             diagnostic={"pbi_mean_ntuple_events": 1.5, "scope": "synthetic MC diagnostic"},
             measured_field_checks={"nprotons": {"min": -1.0, "max": -1.0, "equals_mc": False}})
@@ -309,7 +309,7 @@ def test_output_cap(saved, monkeypatch):
     assert not saved.args["out"].exists()
 
 
-@pytest.mark.parametrize("path", ["/pnfs/secret/ledger.parquet", "/tmp/not-in-root.parquet", "https://invalid/ledger.parquet"])
+@pytest.mark.parametrize("path", ["/mnt/pnfs/secret/ledger.parquet", "/elsewhere/not-in-root.parquet", "https://invalid/ledger.parquet"])
 def test_no_external_ledger_access(saved, path, monkeypatch):
     saved.selection["exposure_ledger"]["path"] = path
     saved.repin()

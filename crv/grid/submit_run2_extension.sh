@@ -38,7 +38,7 @@ printf 'phase=%s jobs=%s subruns=%s..%s seeds=%s..%s output=%s\n' "$PHASE" "$JOB
 printf '%q ' "${CMD[@]}"; printf '\n'
 [[ "$ACTION" = --submit ]] || { echo 'DRY RUN: no pnfs writes or submission'; exit 0; }
 for tool in jobsub_submit jobsub_q ifdh; do command -v "$tool"; done
-[[ "$PWD" != "$CODE"* && "$PWD" != /pnfs/* ]] || { echo 'submit from a local state/data directory'; exit 2; }
+[[ "$PWD" != "$CODE"* && "$PWD" != "${CRVFS_DCACHE:?set CRVFS_DCACHE (see site.env.example)}"/* ]] || { echo 'submit from a local state/data directory'; exit 2; }
 exec 9> "$STATE/submission.lock"
 flock -n 9 || { echo 'another submission owns the lock'; exit 2; }
 if [[ -e "$STATE/$PHASE.attempted" ]]; then

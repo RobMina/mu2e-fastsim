@@ -20,7 +20,7 @@ from valhist import shower_moments as M
 from valhist import denominator_provenance as P
 from valhist.genassoc_campaign import _new_json, verify_library
 from valhist.library_variants import sha256
-from valhist.steplayers import booking_edges, BOOKING, shard
+from valhist.steplayers import booking, booking_edges, shard
 
 GROUPS = ("EX", "T1", "T2", "M")
 KEY = tables.KEY
@@ -142,7 +142,7 @@ def prepare(campaign, outdir):
     meta_path = root / "library/library.json"
     meta = json.loads(meta_path.read_text())
     plan = json.loads(Path(meta["plan"]).read_text())
-    hashes = fingerprint([meta_path, root / "library/library.root", meta["plan"], meta["geometry"], BOOKING,
+    hashes = fingerprint([meta_path, root / "library/library.root", meta["plan"], meta["geometry"], booking(),
                           *meta["inputs"], *meta["gen"]])
     code = code_identity()
     geom = geometry.from_offline_config(meta["geometry"])

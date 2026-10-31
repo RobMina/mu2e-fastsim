@@ -16,9 +16,11 @@ tar -czf dumper_crygen.tgz -C "$T" lib fcl; rm -rf "$T"
 ifdh mkdir_p "$OUT" 2>/dev/null || true; ifdh rm "$OUT/dumper_crygen.tgz" 2>/dev/null || true
 ifdh cp dumper_crygen.tgz "$OUT/dumper_crygen.tgz"
 [[ $MODE == test ]] && NJOBS=1
-TOKEN_DIR="$(echo "$OUT" | sed 's|^/pnfs/mu2e|/mu2e|')"
+DCACHE="${CRVFS_DCACHE:?set CRVFS_DCACHE to the dCache mount point (see site.env.example)}"
+TOKEN_DIR="${OUT#"$DCACHE"}"
 jobsub_submit -N "$NJOBS" -G mu2e --role=Analysis --expected-lifetime=1h \
   --resource-provides=usage_model=DEDICATED,OPPORTUNISTIC --lines='+FERMIHTC_AutoRelease=True' \
   --memory=2000MB --disk=2000MB --need-storage-modify="$TOKEN_DIR" \
-  -e CFG="$CFG" -e INDIR="$IN" -e SUBRUN0="$SUBRUN0" -e DUMPER_PNFS="$OUT/dumper_crygen.tgz" -e OWNER="${CRVFS_OWNER:-$USER}" \
+  -e CFG="$CFG" -e INDIR="$IN" -e SUBRUN0="$SUBRUN0" -e DUMPER_PNFS="$OUT/dumper_crygen.tgz" -e OWNER="${CRVFS_OWNER:?source site.env}" \
+  -e DCACHE="$DCACHE" -e XROOTD="${CRVFS_XROOTD:?set CRVFS_XROOTD to the xrootd prefix of the dCache mount}" \
   "file://$HERE/grid_crygen_dump.sh" "$OUT"

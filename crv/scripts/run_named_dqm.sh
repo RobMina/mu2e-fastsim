@@ -9,7 +9,7 @@ NEVENTS=${5:-1000}
 [[ "${MUSE_WORK_DIR:-}" = "$AREA" ]] || { echo "wrong MUSE_WORK_DIR"; exit 2; }
 mkdir "$OUT"
 export FHICL_FILE_PATH="$CODE/art/CrvFastSim/fcl:$FHICL_FILE_PATH"
-IN=/pnfs/mu2e/scratch/users/ram2aq/crv_fastsim/g4ref_run1a_v1/dts.ram2aq.CosmicCRYrun1aRef.v1.001400_00000101.art
+IN="${CRVFS_PNFS:?source site.env}/g4ref_run1a_v1/dts.${CRVFS_OWNER:?source site.env}.CosmicCRYrun1aRef.v1.001400_00000101.art"
 for arm in stock a3 a4; do
   TABLE="$DATA/response_1k_v1/run1a/$arm.root"
   [[ "$arm" = stock ]] && TABLE="$DATA/stock_1k_v1/run1a/crvreco.root"

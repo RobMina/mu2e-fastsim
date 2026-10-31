@@ -10,7 +10,7 @@ From `crv/`, with the project environment and core available:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.:../core \
-  /Users/rmina/mu2e/.venv/bin/python3 -m valhist.library_ensemble \
+  python3 -m valhist.library_ensemble \
   --manifest /data/reports/library-cells.json \
   --out /data/reports/NEW-library-ensemble.json
 ```
@@ -125,7 +125,7 @@ Persisted donor disjointness says nothing about unpersisted generated donors or 
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.:../core \
-  /Users/rmina/mu2e/.venv/bin/python3 -m pytest -p no:cacheprovider -q \
+  python3 -m pytest -p no:cacheprovider -q \
   tests/test_valhist_library_ensemble.py
 ```
 

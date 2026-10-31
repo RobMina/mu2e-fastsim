@@ -14,7 +14,7 @@ on that path, and compares loaded-module locations. Existing geometry text must
 be locally resolvable through the usual `MU2E_SEARCH_PATH`/Offline roots; geometry
 fetching is disabled. `--geometry-dir` is the directory containing the versioned
 `mu2e_run1a_v01.gdml` and `mu2e_run2_v10.gdml`, **not** its parent data directory.
-All input paths must be local, without symlink components or `/pnfs` paths.
+All input paths must be local, without symlink components or dCache (`$CRVFS_DCACHE`) paths.
 
 Run on a reserved GPVM with valid worktree git metadata: the laptop mirror's `.git`
 files point to cluster paths and cannot establish `repo_state` locally. Synthetic tests
@@ -25,8 +25,8 @@ supplied old evidence is not by itself approval of a physics revision.
 ```bash
 source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh && pyenv ana
 export PYTHONDONTWRITEBYTECODE=1
-export PYTHONPATH=/exp/mu2e/app/users/ram2aq/analysis/core-thread-a-validation:/exp/mu2e/app/users/ram2aq/analysis/crv-thread-a-validation
-D=/exp/mu2e/data/users/ram2aq/crv_fastsim
+export PYTHONPATH=/path/to/core:/path/to/crv
+D=$CRVFS_DATA
 python3 -m crvfastsim.analyses.named_reference_campaign \
   --certificates "$D/thread_a_certification_baseline_20261025.json" \
     "$D/thread_a_grid_continuation_20261025/pilot/certification.json" \
@@ -167,8 +167,8 @@ models or invented PASS gates.
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 \
-PYTHONPATH=/Users/rmina/mu2e/remote/analysis/core-thread-a-validation:/Users/rmina/mu2e/remote/analysis/crv-thread-a-validation \
-/Users/rmina/mu2e/.venv/bin/python3 -m pytest -p no:cacheprovider \
+PYTHONPATH=/path/to/core:/path/to/crv \
+python3 -m pytest -p no:cacheprovider \
   tests/test_named_reference_campaign.py -q
 ```
 

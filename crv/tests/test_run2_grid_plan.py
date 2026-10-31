@@ -7,12 +7,14 @@ import pytest
 
 from crvfastsim.analyses import run2_grid_plan as P
 
+pytestmark = pytest.mark.usefixtures("dcache_site")
+
 CODE = Path(__file__).resolve().parents[1]
 
 
 def prepared(tmp_path):
     state = tmp_path / "prepared"
-    campaign = P.prepare(state, "/pnfs/mu2e/scratch/users/test/crv/reference", "test")
+    campaign = P.prepare(state, "/dcache-test/mu2e/scratch/users/test/crv/reference", "test")
     return state, campaign
 
 
@@ -32,7 +34,7 @@ def test_preparation_is_disjoint_and_frozen(tmp_path):
         P.prepare(state, c["outdir"], "test")
 
 
-@pytest.mark.parametrize("out", ["/exp/mu2e/data/test", "/pnfs/mu2e/scratch/users/test/../bad", "x;touch /tmp/bad"])
+@pytest.mark.parametrize("out", ["/local/data/test", "/dcache-test/mu2e/scratch/users/test/../bad", "x;touch bad"])
 def test_unsafe_output_refused_before_creation(tmp_path, out):
     with pytest.raises(ValueError):
         P.prepare(tmp_path / "unused", out, "test")
@@ -95,7 +97,7 @@ def test_gate_rejects_missing_or_duplicate_shards(tmp_path):
 def test_worker_policy_no_exp_build_or_timeout():
     worker = (CODE / "grid/grid_run2_extension.sh").read_text()
     assert "muse build" not in worker and "muse tarball" not in worker
-    assert "/exp/" not in worker and "timeout " not in worker
+    assert "timeout " not in worker   # site paths: tests/test_no_site_paths.py
     assert "partial unreceipted" in worker
     assert "persisted_event_counts_verified': False" in worker
     assert worker.index('ifdh cp "$GEN"') < worker.index("ifdh cp complete.json")

@@ -11,7 +11,7 @@ Transport was reused from Thread A, not regenerated:
 Its retained audit certifies 50,000 persisted generated event IDs. Source transport CRV `3895aae`; tier-1b,
 response/reco and pilot driver CRV `7d4642b` (isolated worktree based on `15c99fe`); isolated core `dcde9f0`.
 Tier-1b library `$CRVFS_DATA/tier1b_v7/lib_prod_as_20files.root`; seed 11; NumPy response/reco for the E2E table.
-Frozen stock area `/exp/mu2e/app/users/ram2aq/crvval`, backing
+Frozen stock area `$CRVVAL_AREA`, backing
 `51a5125d_19cf240c_2241f345`, DQM `e27eeee`. No source/build change in that area; plugins postdate their source.
 No builds, grid submissions, baseline rewrites or new G4 simulation.
 

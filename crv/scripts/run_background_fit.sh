@@ -1,12 +1,12 @@
 #!/bin/bash
-# run_background_fit.sh OUTDIR DATA_LIST MC_GLOB [HOSTS...] -- fit the out-of-time background model (reco.background)
+# run_background_fit.sh OUTDIR DATA_LIST MC_GLOB HOST [HOST...] -- fit the out-of-time background model (reco.background)
 # as a GPVM scatter: one data file per partial (~30 s per 500 k-event file, 1.4 GB), each host taking its share
 # serially (one job per host), then the merge on the first host. Launch from the laptop (it holds the ssh masters).
 # Outputs (mode 700 dir): OUTDIR/parts/{data_NN,mc_NN}.npz, OUTDIR/bg.npz, OUTDIR/background_model.json, logs/.
 set -u
 OUT=${1:?outdir}; LIST=${2:?data file list}; MCG=${3:?mc glob}; shift 3
-HOSTS=("${@:-mu2egpvm01 mu2egpvm05}"); HOSTS=(${HOSTS[@]})
-CODE=/exp/mu2e/app/users/ram2aq/analysis/mu2e-fastsim
+HOSTS=("$@"); [ ${#HOSTS[@]} -gt 0 ] || { echo "need hosts"; exit 2; }
+CODE=${M2FS_CODE:?set M2FS_CODE to the mu2e-fastsim checkout on the hosts}
 ENV="source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh >/dev/null 2>&1; pyenv ana >/dev/null 2>&1; export PYTHONPATH=$CODE/core:$CODE/crv"
 ssh "${HOSTS[0]}" "mkdir -p $OUT/parts $OUT/logs && chmod 700 $OUT" </dev/null
 NH=${#HOSTS[@]}

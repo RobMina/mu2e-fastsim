@@ -17,12 +17,14 @@ import time
 import numpy as np
 import uproot
 
-from crvfastsim import genassoc, tables
+from crvfastsim import dcache, genassoc, tables
 from . import genassoc_campaign as C, genassoc_fullgen as F, genassoc_smoke as S
 from . import library_variants as V
+from . import sources
 
-ART_TEMPLATE = ("/pnfs/mu2e/scratch/users/ram2aq/crv_fastsim/crygen_v1/"
-                "gen.ram2aq.CosmicCRYExtractedGen.v1.001400_{subrun:08d}.art")
+def art_template():
+    """crygen_v1 generator art path (CRVFS_PNFS, CRVFS_OWNER), field {subrun}."""
+    return sources.crygen_art()
 SOURCE_SHA256 = "9127327c865c39d1a006bc703787066171ffe6fdbda374335f3d29ef6634f1f2"
 PLUGIN_SHA256 = "3a884c6ac90836f752c96263d571c38cc4a4a1520df179b20928c73d7eaa5125"
 MISSING = {2011, 2028, 2031, 2033, 2034, 2037}
@@ -63,9 +65,9 @@ def select_record(candidate, subrun):
         raise ValueError("requested subrun absent from candidate")
     row = dict(matches[0])
     old = Path(row["path"])
-    if not old.is_absolute() or old.name != f"gen.001400_{subrun:08d}.root" or str(old).startswith("/pnfs/"):
+    if not old.is_absolute() or old.name != f"gen.001400_{subrun:08d}.root" or dcache.contains(old):
         raise ValueError("require exact local legacy table path")
-    row["art"] = ART_TEMPLATE.format(subrun=subrun)
+    row["art"] = art_template().format(subrun=subrun)
     return row
 
 

@@ -9,7 +9,7 @@ SEED=${5:-7311}
 [ "${MUSE_WORK_DIR:-}" = "$AREA" ] || { echo "wrong MUSE_WORK_DIR=${MUSE_WORK_DIR:-unset}"; exit 2; }
 [ -f "$TABLE" ] || { echo "missing replay table"; exit 2; }
 [[ "$EVENTS" =~ ^[1-9][0-9]*$ ]] || { echo "positive integer event count required"; exit 2; }
-case "$OUT" in /exp/mu2e/data/users/*) ;; *) echo "output must be in the data area"; exit 2;; esac
+case "$OUT" in "${M2FS_DATA:?set M2FS_DATA to the writable data area (see site.env.example)}"/*) ;; *) echo "output must be in the data area"; exit 2;; esac
 mkdir "$OUT"
 cat > "$OUT/replay.fcl" <<EOF
 #include "CrvFastSim/fcl/replay_crv_run1a.fcl"

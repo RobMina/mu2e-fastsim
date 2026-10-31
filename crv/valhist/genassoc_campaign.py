@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import uproot
 
-from crvfastsim import tables
+from crvfastsim import dcache, tables
 from valhist import denominator_provenance as P
 from valhist.library_variants import sha256
 
@@ -99,7 +99,7 @@ def plan(metadata, outdir, area, generated_per_file):
         if len(inputs) != 1 or "Art has completed and will exit with status 0" not in text:
             raise ValueError("cannot certify original input/completion from " + str(log))
         source = inputs.pop()
-        if not source.startswith("/pnfs/") or Path(source).name.split(".")[-2] != seq:
+        if not dcache.contains(source) or Path(source).name.split(".")[-2] != seq:
             raise ValueError("unexpected original art path: " + source)
         rows.append({"sequence": seq, "art": source, "old_table": str(p), "old_sha256": sha256(p),
                      "old_log": str(log), "old_log_sha256": sha256(log),

@@ -16,7 +16,7 @@ C4 stock choice and unestimated finite-library uncertainty remain unchanged.
 
 ## Search and evidence handling
 
-Direct `kb_search` and `kb_get` only; no `kb_research` or other agent synthesis.
+Direct `kb_search` and `kb_get` only; no `kb_research` or other synthesized answers.
 Searches request at most four results, restricted to Mu2e DocDB. Some subsequent
 searches additionally restrict to text and disable reranking. Search-result
 summaries are discovery aids, **not primary evidence**: the relevant documents

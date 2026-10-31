@@ -149,8 +149,8 @@ submit jobs or provide a normal response receipt. Run one replay at a time.
 ```bash
 PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
 MKL_NUM_THREADS=1 JAX_PLATFORMS=cpu \
-PYTHONPATH=/tmp/r1-core-233771b:$PWD \
-/Users/rmina/mu2e/.venv/bin/python3 -m pytest -p no:cacheprovider -q -s \
+PYTHONPATH=/path/to/core:$PWD \
+python3 -m pytest -p no:cacheprovider -q -s \
   tests/test_response_execution_trace.py
 ```
 
@@ -167,5 +167,5 @@ are not production optical-payload, GPU, or independent-seed physics validation.
 The focused local run on 2026-10-27 passed **26 tests in 1.93 s**, with no skips,
 including nine real charge executions (untraced, traced, and all-absent for each
 backend). JAX 0.11.2 reported observed argument placement on `cpu:0`. The complete
-local test log is `/tmp/response-execution-trace-tests.log`; this is a test result,
+local test log was kept outside the repository; this is a test result,
 not a performance benchmark or production-backend certificate.

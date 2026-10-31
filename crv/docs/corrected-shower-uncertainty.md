@@ -182,7 +182,7 @@ configuration-compatible generator/source data would be needed to certify tail r
 
 ## Evidence, tests and next gate
 
-Root: `/exp/mu2e/data/users/ram2aq/crv_genassoc_20261027/`.
+Root: `$M2FS_DATA/crv_genassoc_20261027/`.
 
 - `source_train_strict_v2/`: immutable plan, ten strict donor completions/comparisons, loader evidence and source
   library. `fullgen_census_v2/certificate.json`: full-event census and exact original payload audit, 20 files.

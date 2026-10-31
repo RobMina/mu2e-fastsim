@@ -9,7 +9,7 @@ import sys
 import pytest
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "agent13_context_campaign.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "context_benchmark.py"
 SPEC = importlib.util.spec_from_file_location("context_campaign", SCRIPT)
 M = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(M)

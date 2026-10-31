@@ -10,7 +10,7 @@ EVENTS=${4:-300}
 SEED=${5:-20261025}
 [ ! -e "$OUT" ] && [ ! -e "${OUT%.root}.json" ] && [ ! -e "${OUT%.root}.sources.txt" ] || { echo "output already exists"; exit 2; }
 command -v ifdh >/dev/null
-WORK=$(mktemp -d /tmp/crv-replay.XXXXXXXX)
+WORK=$(mktemp -d -t crv-replay.XXXXXXXX)
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$(dirname "$OUT")"
 for species in EleBeamFlashCat MuBeamFlashCat MuStopPileupCat NeutralsFlashCat; do

@@ -20,7 +20,12 @@ from . import ce_proxy_audit as A
 SCHEMA = "ce-proxy-rows-v1"
 SELECTION_SHA256 = "f8029e1afc3db72b09549ac9e3ae92c5f5263f60f4db38fcda161166077731f3"
 AVAILABILITY_SHA256 = "2b59602667126391fe1b32bb6ce4051b83c88268f5f60c580922d1cfeef18325"
-AUDIT_SOURCE_SHA256 = "3765b8114f4128d7bae438d3b943cc6f8b61c1c4f393e0963fb4ede6494cc776"
+# ce_proxy_audit.py revision that produced the frozen availability report (embedded in it as a source snapshot).
+REPORT_AUDIT_SOURCE_SHA256 = "3765b8114f4128d7bae438d3b943cc6f8b61c1c4f393e0963fb4ede6494cc776"
+# Current ce_proxy_audit.py: that revision with the dCache mount and xrootd door taken from the site configuration
+# (CRVFS_DCACHE, CRVFS_XROOTD) instead of written into the source; paths and URLs are identical when they are set to
+# the values the report was made with.
+AUDIT_SOURCE_SHA256 = "f776977470c9ed6c62ddb94f902c368cde76ccb8e5f5b64c74ade0bbc364abc7"
 JSON_CAP, SOURCE_CAP, REPORT_CAP, NPZ_CAP, PATH_CAP = 8 << 20, 64 << 10, 2 << 20, 16 << 20, 4096
 COLUMNS = dict(zip(A.IDS, ("run", "subrun", "event"))) | {
     "evtinfo/nprotons": "measured_nprotons", "evtinfo/pbtime": "measured_pbtime",
@@ -54,12 +59,12 @@ def availability_bindings(payload, records):
     A.require(type(selection) is dict and selection.get("sha256") == SELECTION_SHA256,
               "availability selection pin differs")
     pathname(selection.get("path"))
-    A.require(type(source) is dict and source.get("sha256") == AUDIT_SOURCE_SHA256,
+    A.require(type(source) is dict and source.get("sha256") == REPORT_AUDIT_SOURCE_SHA256,
               "availability source pin differs")
     pathname(source.get("path"))
     snapshot = source.get("snapshot")
     A.require(type(snapshot) is str and len(snapshot.encode("utf-8")) <= SOURCE_CAP and
-              A.sha(snapshot.encode("utf-8")) == AUDIT_SOURCE_SHA256, "availability source snapshot differs")
+              A.sha(snapshot.encode("utf-8")) == REPORT_AUDIT_SOURCE_SHA256, "availability source snapshot differs")
     A.require(type(old.get("total_entries")) is int and old["total_entries"] == A.EXPECTED_ENTRIES and
               old.get("full_ids_unique") is True, "availability total/uniqueness differs")
     files = old.get("files")

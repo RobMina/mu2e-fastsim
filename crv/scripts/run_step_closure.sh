@@ -1,8 +1,8 @@
 #!/bin/bash
 # Run the held-out shower-source diagnostic or the unchanged-primary validation on saved step tables.
 set -eo pipefail
-D=${CRVFS_DATA:-/exp/mu2e/data/users/ram2aq/crv_fastsim}
-O=${STEP_LAYERS_OUT:-/exp/mu2e/data/users/ram2aq/crv_step_layers_20261026}
+D=${CRVFS_DATA:?set CRVFS_DATA to the CRV data root (see site.env.example)}
+O=${STEP_LAYERS_OUT:?set STEP_LAYERS_OUT to the step-layer study directory}
 F=$D/thread_a_ledger_20261025_c3895aae/extracted20/tables
 G=$D/valhist/g4ref_v1/g4all_tables
 L=$O/tier1b_ctx/lib_prod_as_20files_ctx.root

@@ -14,7 +14,7 @@ OFFLINE=$(readlink -f "$AREA/backing/backing/Offline")
 for cfg in run1a run2; do
   Q="$OUT/$cfg"
   mkdir "$Q"
-  IN="/pnfs/mu2e/scratch/users/ram2aq/crv_fastsim/g4ref_${cfg}_v1/dts.ram2aq.CosmicCRY${cfg}Ref.v1.001400_00000101.art"
+  IN="${CRVFS_PNFS:?source site.env}/g4ref_${cfg}_v1/dts.${CRVFS_OWNER:?source site.env}.CosmicCRY${cfg}Ref.v1.001400_00000101.art"
   FCL="$CODE/art/CrvFastSim/fcl/dump_named_crvreco_$cfg.fcl"
   printf 'input=%s\narea=%s\noffline=%s\n' "$IN" "$AREA" "$OFFLINE" > "$Q/manifest.txt"
   sha256sum "$FCL" "$CODE/art/CrvFastSim/fcl/dump_named_crvreco.fcl" "$AREA/CrvFastSim/src/CrvRecoTableDumper_module.cc" "$AREA"/build/*/CrvFastSim/lib/libcrvfastsim_CrvRecoTableDumper_module.so >> "$Q/manifest.txt"

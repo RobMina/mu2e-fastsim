@@ -5,8 +5,8 @@ ROOT=$(cd "${1:?campaign directory}" && pwd); SHARDS=${2:-11-20}
 CODE=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$CODE"
 python3 -m valhist.genassoc_campaign verify-library "$ROOT"
-D=${CRVFS_DATA:-/exp/mu2e/data/users/ram2aq/crv_fastsim}
-OLD=${STEP_LAYERS_OUT:-/exp/mu2e/data/users/ram2aq/crv_step_layers_20261026}
+D=${CRVFS_DATA:?set CRVFS_DATA to the CRV data root (see site.env.example)}
+OLD=${STEP_LAYERS_OUT:?set STEP_LAYERS_OUT to the step-layer study directory}
 F=$D/thread_a_ledger_20261025_c3895aae/extracted20/tables
 G=$D/valhist/g4ref_v1/g4all_tables
 L=$ROOT/library/library.root

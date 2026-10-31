@@ -48,7 +48,7 @@ bash "$CRVFS_CODE/grid/submit_ref_sim.sh" --test --config run2 --nevts 50000 \
 ```
 
 This submitter stages FCL and submits immediately; it is **not a dry run**. Read its files, verify hashes and obtain
-approval first. Logical write scope is `/mu2e/scratch/users/ram2aq/crv_fastsim/g4ref_run2_ext_r1_v1`.
+approval first. Logical write scope is `/mu2e/scratch/users/<user>/crv_fastsim/g4ref_run2_ext_r1_v1`.
 The first-two-pilot/remainder invocations need separately audited disjoint ranges, not blind reruns.
 
 ## Storage and admission

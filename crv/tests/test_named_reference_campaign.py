@@ -7,6 +7,8 @@ import pytest
 
 from crvfastsim.analyses import named_reference_campaign as N
 
+pytestmark = pytest.mark.usefixtures("dcache_site")
+
 
 def dump(path, obj):
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -67,7 +67,7 @@ class Saved:
                 selected_events_not_in_supplied_ntuples=1, pbi_quantile_strata=[
                     dict(pbi_lo=0., pbi_hi=2., upper_inclusive=False, ntuple_events=2, selected_events=2, selected_tracks=5),
                     dict(pbi_lo=2., pbi_hi=5., upper_inclusive=True, ntuple_events=4, selected_events=1, selected_tracks=2)]),
-            ntuples=[dict(path=f"/pnfs/inherited_{i}.root", uuid=f"inherited-{i}",
+            ntuples=[dict(path=f"/mnt/pnfs/inherited_{i}.root", uuid=f"inherited-{i}",
                          trees={"EventNtuple/ntuple": dict(entries=3)}) for i in range(2)])
         self.rows_report = dict(schema="ce-proxy-rows-v1", availability_report=dict(sha256=J.AVAILABILITY_SHA256),
             files=[dict(index=i, path=r["path"], uuid=r["uuid"], entries=3) for i, r in enumerate(self.report["ntuples"])])
@@ -222,7 +222,7 @@ def test_output_existing_and_symlink(saved):
         saved.run()
 
 
-@pytest.mark.parametrize("path", ["root://host/file", "https://host/f", "/pnfs/x", "/net/server/x", "/x/test.root", "//server/share"])
+@pytest.mark.parametrize("path", ["root://host/file", "https://host/f", "/mnt/pnfs/x", "/net/server/x", "/x/test.root", "//server/share"])
 def test_nonlocal_paths(path):
     with pytest.raises(ValueError):
         J.local_path(path)

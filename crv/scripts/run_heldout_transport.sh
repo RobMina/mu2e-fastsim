@@ -2,7 +2,7 @@
 # Stage-C fast transport of held-out generator shards (seed = shard, the extracted20 recipe), one shard at a time.
 # usage: run_heldout_transport.sh GEN_DIR NEW_OUTDIR FIRST LAST   (PYTHONPATH with core and crv; env CRVFS_DATA)
 set -eo pipefail
-D=${CRVFS_DATA:-/exp/mu2e/data/users/ram2aq/crv_fastsim}
+D=${CRVFS_DATA:?set CRVFS_DATA to the CRV data root (see site.env.example)}
 GEN=${1:?generator table directory (gen.SUBRUN.root)}
 OUT=${2:?new output directory}
 FIRST=${3:?first shard}

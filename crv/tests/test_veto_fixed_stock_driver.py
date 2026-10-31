@@ -49,7 +49,6 @@ def rig(tmp_path):
     selection = put(tmp_path / "selected.parquet")
     reference = put(tmp_path / "reference.json", "{}")
     script = put(code / "scripts/compare_veto_fixed_stock.sh", DRIVER.read_text().replace(
-        "/exp/mu2e/data/users/", str(tmp_path / "data") + "/").replace(
         "/cvmfs/mu2e.opensciencegrid.org/Musings/Offline/v13_41_00", str(backing)))
     for name in ("check", "metrics", "policy"):
         put(code / f"crvfastsim/veto/replay_{name}.py", f"# fake {name}\n")
@@ -115,7 +114,7 @@ else:
 out.write_text(json.dumps(result))
 ''', executable=True)
     env = dict(os.environ, PATH=str(bin_dir) + os.pathsep + os.environ["PATH"],
-               MUSE_WORK_DIR=str(area), MUSE_STUB="al9-prof-e29-p109", MUSE_ENVSET="p109",
+               M2FS_DATA=str(tmp_path / "data"), MUSE_WORK_DIR=str(area), MUSE_STUB="al9-prof-e29-p109", MUSE_ENVSET="p109",
                PYTHONPATH=str(tmp_path / "unrelated-worktree"),
                MOCK_LAUNCHES=str(launches), MOCK_PYTHON_CALLS=str(calls))
     return SimpleNamespace(code=code, area=area, backing=backing, base=base, out=out,

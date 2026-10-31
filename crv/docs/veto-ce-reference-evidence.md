@@ -65,7 +65,7 @@ SHA-256: 735043e5ec4ba594263a49e161e5ebb2ff043c18eeeb82bb425987200f14227b
 ```
 
 The exact known catalog path is under
-`/pnfs/mu2e/persistent/datasets/phy-etc/log/mu2e/CeMLeadingLogMix1BB/MDC2025au_best_v1_3/log/0f/57/`.
+`$CRVFS_DCACHE/mu2e/persistent/datasets/phy-etc/log/mu2e/CeMLeadingLogMix1BB/MDC2025au_best_v1_3/log/0f/57/`.
 The read was capped at catalog size plus one byte, timed out after 60 seconds if
 necessary, and required exact size and SHA-256 agreement. No namespace listing,
 stat, payload staging or physics-file open occurred.
@@ -149,10 +149,8 @@ to pursue that lead.
 
 ## Captures and remaining gate
 
-The new documentary scripts are `scripts/discover_veto_ce_reference.sh`,
-`capture_veto_ce_worker_catalog.sh`, `capture_veto_ce_worker_log.sh` and
-`capture_veto_ce_retained_worker.sh`. Shell syntax checks pass; each real capture
-completed once, with exact mirrored script-hash checks, new output directories,
+The captures were made by earlier one-off documentary drivers, not kept in the
+repository. Each real capture completed once, with exact mirrored script-hash checks, new output directories,
 byte caps and checksum manifests. This is not an analysis test suite or a
 calibration validation. Measured capture costs:
 

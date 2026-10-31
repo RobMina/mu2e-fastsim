@@ -25,12 +25,22 @@ OUTPUT_CAP = 32 * 1024**2
 SELECTION_CAP = 256 * 1024**2
 IGNORE_SOURCE = Path("/cvmfs/mu2e.opensciencegrid.org/Musings/Offline/v13_41_00/Offline/CRVReco/src/CrvRecoPulsesFinder_module.cc")
 IGNORE_SOURCE_SHA = "f432feb9823fc76cd6a61e4b6309cb65f5e260726c69ed76141bf5ef300e8b0c"
-STOCK_BASE = Path("/exp/mu2e/data/users/ram2aq/crv_fastsim/deadtime_run1a/replay_d_20261025/fixed_stock_v13_41_00_20261025")
-IGNORE_CONFIGS = {
-    STOCK_BASE / "block0/effective_runtime.fcl": "826c274afdd73f611d7a6c99e640532119b85144c1965e5aad63bee48a0fc44b",
-    STOCK_BASE / "block1/effective_runtime.fcl": "a8d259be65b936d055a81f57223509944612bbdf22c975f51a053efbf9b52be2",
-    STOCK_BASE / "block2_fullinventory/effective_runtime.fcl": "ac076d8215fd3befdb2dc540515719c2ab0432030351b59a84f01e9a138594e3",
+# Fixed-stock replay configurations, relative to the CRV data root (CRVFS_DATA); IGNORE_CONFIGS overrides when set.
+STOCK_BASE = "deadtime_run1a/replay_d_20261025/fixed_stock_v13_41_00_20261025"
+STOCK_CONFIGS = {
+    "block0/effective_runtime.fcl": "826c274afdd73f611d7a6c99e640532119b85144c1965e5aad63bee48a0fc44b",
+    "block1/effective_runtime.fcl": "a8d259be65b936d055a81f57223509944612bbdf22c975f51a053efbf9b52be2",
+    "block2_fullinventory/effective_runtime.fcl": "ac076d8215fd3befdb2dc540515719c2ab0432030351b59a84f01e9a138594e3",
 }
+IGNORE_CONFIGS = None
+
+
+def ignore_configs():
+    if IGNORE_CONFIGS is not None:
+        return IGNORE_CONFIGS
+    from mu2efastsim import site
+    base = Path(site.require("CRVFS_DATA")) / STOCK_BASE
+    return {base / name: digest for name, digest in STOCK_CONFIGS.items()}
 SCOPE = ("Nine-frame maximum saved-pulse integration diagnostic. Native membership is internal to the "
          "unchanged reference finder, not a same-pulse stock comparison. Frozen track-grid values are "
          "per-frame conditional diagnostics, never a pilot F, new exposure or uncertainty estimate. "
@@ -88,7 +98,7 @@ def ignore_bindings():
     """Bind the reviewed stock ignore-channel policy, not a new pulse-quality selection."""
     bind(IGNORE_SOURCE, IGNORE_SOURCE_SHA)
     result = {str(IGNORE_SOURCE): IGNORE_SOURCE_SHA}
-    for path, digest in IGNORE_CONFIGS.items():
+    for path, digest in ignore_configs().items():
         text = bind(path, digest).read_text()
         values = re.findall(r"(?m)^\s*ignoreChannels:\s*(true|false)\b", text)
         _require(values == ["true"], "fixed stock ignoreChannels contract differs")

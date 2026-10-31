@@ -13,7 +13,7 @@ EVENTS=${4:-3000}
 : "${VETO_PHOTON_DEV:?photon deviation file}"
 : "${ANA_PY:?ana python3 path}"
 [ "${MUSE_WORK_DIR:-}" = "$AREA" ] || { echo "wrong MUSE_WORK_DIR"; exit 2; }
-case "$OUT" in /exp/mu2e/data/users/*) ;; *) echo "output must be under data area"; exit 2;; esac
+case "$OUT" in "${M2FS_DATA:?set M2FS_DATA to the writable data area (see site.env.example)}"/*) ;; *) echo "output must be under data area"; exit 2;; esac
 mkdir "$OUT"
 export PATH="$(dirname "$ANA_PY"):$PATH"
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1

@@ -7,6 +7,8 @@ import pytest
 from test_genassoc_fullgen import rootfile
 from valhist import generator_bank_capture as B, genassoc_fullgen as F
 
+pytestmark = pytest.mark.usefixtures("dcache_site")
+
 
 def inventory():
     return {"candidate_only": True, "downstream_authorized": False, "events": 94_000_000,
@@ -37,7 +39,7 @@ def test_inventory_rejects(kind):
     elif kind == "promoted":
         source["downstream_authorized"] = True
     else:
-        source["files"][0]["path"] = "/pnfs/data/gen.001400_00002001.root"
+        source["files"][0]["path"] = "/dcache-test/data/gen.001400_00002001.root"
     with pytest.raises(ValueError):
         B.select_record(source, 2001)
 

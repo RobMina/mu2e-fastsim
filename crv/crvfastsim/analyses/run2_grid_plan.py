@@ -27,7 +27,8 @@ def digest(path):
 def prepare(state, outdir, owner, source=None):
     """Create only local payload/manifest/commands with disjoint known reference identities."""
     import re
-    if not re.fullmatch(r"/pnfs/mu2e/scratch/users/[A-Za-z0-9_-]+/[A-Za-z0-9_./-]+", outdir):
+    from .. import dcache
+    if not re.fullmatch(re.escape(dcache.area() + "/") + r"scratch/users/[A-Za-z0-9_-]+/[A-Za-z0-9_./-]+", outdir):
         raise ValueError("explicit Mu2e pnfs scratch output required")
     if ".." in Path(outdir).parts or not re.fullmatch(r"[A-Za-z0-9_-]+", owner):
         raise ValueError("unsafe output or owner")
@@ -48,7 +49,7 @@ def prepare(state, outdir, owner, source=None):
     campaign = {
         "schema": "crv-run2-grid-extension-v1", "run": 1400, "config": "run2", "owner": owner,
         "tag": "v1", "musing": "MDC2025ay", "offline": "v13_39_00", "stub": "al9-prof-e29-p107",
-        "outdir": outdir.rstrip("/"), "write_scope": outdir.replace("/pnfs/mu2e/", "/mu2e/", 1).rstrip("/"),
+        "outdir": outdir.rstrip("/"), "write_scope": dcache.token_scope(outdir).rstrip("/"),
         "events_per_job": NEVTS, "baseseed": BASESEED, "first_subrun": 121, "last_subrun": 500,
         "additional_generated_events": 19000000, "reused_generated_events": 1000000,
         "total_generated_events": 20000000,

@@ -1,9 +1,9 @@
 #!/bin/bash
 # Make the stock-validation muse area: Offline main from a CI backing build, Mu2e/DQM (PR #48 branch until it merges)
 # and a copy of the CrvFastSim package. No muse command here: the user builds (printed at the end).
-# usage: setup_crvval_area.sh [AREA] [CI_BUILD]   (defaults: /exp/mu2e/app/users/ram2aq/crvval, newest CI build of main)
+# usage: setup_crvval_area.sh [AREA] [CI_BUILD]   (AREA required unless CRVVAL_AREA is set; newest CI build of main)
 set -e
-AREA=${1:-/exp/mu2e/app/users/ram2aq/crvval}
+AREA=${1:-${CRVVAL_AREA:?pass AREA or set CRVVAL_AREA}}
 CI=/cvmfs/mu2e-development.opensciencegrid.org/museCIBuild/main
 BACK=${2:-$CI/$(ls -t "$CI" | head -1)}
 SRC="${CRVFS_CODE:?source site.env}/art/CrvFastSim"

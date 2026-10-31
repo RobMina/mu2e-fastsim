@@ -1,6 +1,6 @@
 #!/bin/bash
 #PBS -N pvcreco_profile
-#PBS -A GenesisHackathonOct26
+# ALCF project: pass qsub -A "$ALCF_PROJECT" (see site.env.example).
 #PBS -q debug
 #PBS -l select=1
 #PBS -l place=scatter
@@ -10,7 +10,7 @@
 set -eo pipefail
 umask 077
 ulimit -c 0
-F=/lus/flare/projects/GenesisHackathonOct26/$USER/mu2efastsim
+F=${M2FS_FLARE:?set M2FS_FLARE to the mu2efastsim area on Flare (offline_data/, venv/)}
 S=${PVC_RUN_DIR:?set PVC_RUN_DIR to a writable run directory}
 O=$S/profile_${PBS_JOBID%%.*}
 mkdir "$O"

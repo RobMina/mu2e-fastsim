@@ -48,8 +48,8 @@ has not yet been tied to every concatenation worker's effective input assignment
 Its output sequencer must not be treated as a zero-based block index by analogy
 with the later FlashCat recipe.
 
-`scripts/capture_veto_neutrals_ancestor.sh` captures only these small documentary
-objects from exact known paths, with byte checks, archive before/after hashes,
+An earlier one-off capture driver (not kept in the repository) captured only these small
+documentary objects from exact known paths, with byte checks, archive before/after hashes,
 catalog/source-copy checks and a fresh output directory. Bash syntax checks and
 manifest verification pass; the single capture took 0.53 s, 17,024 KiB peak RSS.
 This is not a physics test, a full configuration expansion or execution proof.

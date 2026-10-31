@@ -166,7 +166,7 @@ upgrade historical smoke files to named V2 certification.
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 CRVFS_NO_FETCH=1 \
-PYTHONPATH=/tmp/r1-core-233771b:$PWD \
+PYTHONPATH=/path/to/core:$PWD \
 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
 NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
 ~/mu2e/.venv/bin/python3 -m pytest -p no:cacheprovider -q \
