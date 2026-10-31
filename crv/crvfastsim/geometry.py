@@ -15,15 +15,15 @@ from dataclasses import dataclass
 
 import numpy as np
 
-OFFLINE_ROOTS = ("/cvmfs/mu2e.opensciencegrid.org/Musings/Offline/v13_39_00",
-                 os.path.expanduser("~/mu2e/remote/off"))
+OFFLINE_ROOTS = tuple(r for r in (os.environ.get("CRVFS_OFFLINE_ROOT"),
+                                   "/cvmfs/mu2e.opensciencegrid.org/Musings/Offline/v13_39_00") if r)
 
 
 def find_counters(path):
     """Resolve an Offline-relative counters file (e.g. 'Offline/Mu2eG4/geom/crv_counters_extracted_v04.txt').
 
-    Absolute or existing paths are returned as is; otherwise MU2E_SEARCH_PATH, then the pinned CVMFS Offline release
-    and the laptop Offline mirror are searched.
+    Absolute or existing paths are returned as is; otherwise MU2E_SEARCH_PATH, then an optional local Offline tree
+    ($CRVFS_OFFLINE_ROOT) and the pinned CVMFS Offline release are searched.
     """
     if os.path.exists(path):
         return path

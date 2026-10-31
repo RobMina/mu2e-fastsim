@@ -12,7 +12,7 @@ are in [`../docs/plan.md`](../docs/plan.md); this file is the living reference f
 `crvfastsim` builds on `mu2efastsim` (the `core/` submodule of the umbrella `mu2e-fastsim`: energy loss, materials,
 world, generic crossings/transport/tables, statistics, plots, key matching, the IRI job tools). Put both on the path:
 from the umbrella root, `export PYTHONPATH=$M2FS_CODE/core:$M2FS_CODE/crv:$M2FS_CODE/tracker` (what `site.env` does), or
-`pip install -e core -e crv` in a venv. Laptop: `~/mu2e/.venv` (numpy, pandas, uproot, matplotlib, jax CPU, pytest).
+`pip install -e core -e crv` in a venv. Needs numpy, pandas, uproot, matplotlib, jax (CPU is enough) and pytest.
 GPVM: `source setupmu2e-art.sh && pyenv ana` (no JAX: the validation subcommands do not need it). Polaris: the project
 venv on Eagle (`core/iri/scripts/setup_venv.sh`, `jax[cuda12]`).
 

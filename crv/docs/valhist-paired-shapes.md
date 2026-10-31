@@ -11,7 +11,7 @@ From the `mu2e-fastsim` umbrella:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=core:crv \
-  ~/mu2e/.venv/bin/python3 -B -m valhist.paired_shapes pairs.json \
+  python3 -B -m valhist.paired_shapes pairs.json \
   --out NEW_paired_shapes.json \
   --select '^crvRecoDQM/(PEc|NPc|X_extracted|Y_extracted|Z_extracted)$' \
   --count-key crvRecoDQM/PEc --count-key crvRecoDQM/NPc \
@@ -231,7 +231,7 @@ exchangeability; review the declared/verified event counts and provenance first.
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=core:crv \
-  ~/mu2e/.venv/bin/python3 -B -m pytest -p no:cacheprovider \
+  python3 -B -m pytest -p no:cacheprovider \
   crv/tests/test_valhist_paired_shapes.py -q
 ```
 

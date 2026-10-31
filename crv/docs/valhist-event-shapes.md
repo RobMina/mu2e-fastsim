@@ -12,7 +12,7 @@ Run from the `mu2e-fastsim` umbrella with the existing local environment:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=core:crv \
-  ~/mu2e/.venv/bin/python3 -B -m valhist.event_shapes \
+  python3 -B -m valhist.event_shapes \
   /data/a1/valhist.root /data/e2e/valhist.root \
   --edges /data/analysis/cluster-edges.json \
   --replicas 999 --seed 12345 --out NEW_event_shapes.json
@@ -30,7 +30,7 @@ matching. Example `/data/analysis/paired-shards.json`:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=core:crv \
-  ~/mu2e/.venv/bin/python3 -B -m valhist.event_shapes \
+  python3 -B -m valhist.event_shapes \
   --pairs /data/analysis/paired-shards.json \
   --edges /data/analysis/cluster-edges.json \
   --replicas 999 --seed 12345 --out NEW_event_shapes_shards.json
@@ -75,8 +75,7 @@ shapes include whatever coordinate values the dumper persists even if
 There are no weighted-event or negative-weight semantics in this module.
 
 Local `Offline/CRVDQM/src/CRVRecoDQM.cc` copies were reviewed under
-`~/mu2e/remote/analysis/fastreco_p109`, `~/mu2e/remote/candidate`, and
-`~/mu2e/remote/off_dqm`. In those copies, `fillClusters` fills `NPc` from
+three local Offline/DQM work areas. In those copies, `fillClusters` fills `NPc` from
 `GetCrvRecoPulses().size()`, `PEc` from `GetPEs()`, start-time histograms from
 `GetStartTime()`, and position histograms only when the DQM configuration is
 valid. These copies differ; their identity with the actual frozen production
@@ -235,7 +234,7 @@ output creation. It also guards against densifying event/bin matrices.
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=core:crv \
-  ~/mu2e/.venv/bin/python3 -B -m pytest -p no:cacheprovider \
+  python3 -B -m pytest -p no:cacheprovider \
   crv/tests/test_valhist_event_shapes.py -q
 ```
 

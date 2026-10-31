@@ -30,12 +30,12 @@ forget per-channel timing conditions, or retain a channel marked ignored for pul
 
 ## Executed verification
 
-Laptop `~/mu2e/.venv/bin/python3`, JAX 0.11.2 CPU; no new dependencies. The initial new regression file gave
+JAX 0.11.2 CPU; no new dependencies. The initial new regression file gave
 **13 failures / 1 pass** before the repair. The expanded final contract has **24 tests**.
 
 ```bash
-cd ~/mu2e/remote/analysis/mu2e-fastsim
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=core:crv ~/mu2e/.venv/bin/python3 -m pytest -q -p no:cacheprovider \
+cd mu2e-fastsim                      # the umbrella checkout
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=core:crv python3 -m pytest -q -p no:cacheprovider \
   crv/tests/test_chain_reco_contract.py crv/tests/test_reco_pulsefit.py crv/tests/test_chain.py \
   crv/tests/test_reco_jax.py crv/tests/test_background.py crv/tests/test_runconfig.py \
   crv/tests/test_objective.py crv/tests/test_timecal.py

@@ -10,7 +10,7 @@ From the `mu2e-fastsim` umbrella:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=core:crv \
-  ~/mu2e/.venv/bin/python3 -B -m valhist.coverage \
+  python3 -B -m valhist.coverage \
   /data/reference/valhist.001.root /data/candidate/valhist.001.root \
   --outdir NEW_COVERAGE_DIR \
   --alias CrvDigis_fastCrvDigis=CrvDigis_Sim
@@ -162,7 +162,7 @@ TH1/TH2/TH3/TProfile API, including explicit flow and Sumw2 arrays.
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=core:crv \
-  ~/mu2e/.venv/bin/python3 -B -m pytest -p no:cacheprovider \
+  python3 -B -m pytest -p no:cacheprovider \
   crv/tests/test_valhist_coverage.py -q
 ```
 
