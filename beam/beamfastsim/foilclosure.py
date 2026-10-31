@@ -87,11 +87,11 @@ bool particleGun.verbose = false;
     return geom, gun
 
 
-def run_case(out, *, energy, thickness, cosine=1., pdg=13, events=10, seed=20261026,
-             export_tables=False, step_fraction=None, no_msc=False, final_range=.001, bins=None,
-             energy_max=None, cosine_min=None):
-    """New directory, immutable inputs, subprocess outcome, ROOT receipt and explicit unfinished marker."""
-    validate_case(energy, thickness, cosine, pdg, events, seed, energy_max, cosine_min)
+def control_text(events, seed, *, export_tables=False, step_fraction=None, no_msc=False,
+                 final_range=.001, bins=None, pdg=13, lateral_displacement=None, export_bins=168):
+    """Explicit opt-in controls; None preserves the inherited lateral-displacement setting."""
+    if lateral_displacement is not None and not isinstance(lateral_displacement, bool):
+        raise ValueError("lateral_displacement must be a boolean or None")
     if step_fraction is not None and (not math.isfinite(step_fraction) or not 0 < step_fraction < 1):
         raise ValueError("step fraction must lie in (0,1)")
     if not math.isfinite(final_range) or final_range <= 0:
@@ -100,6 +100,40 @@ def run_case(out, *, energy, thickness, cosine=1., pdg=13, events=10, seed=20261
         raise ValueError("positive integer bins required")
     if not isinstance(no_msc, bool):
         raise ValueError("no_msc must be a boolean")
+    if isinstance(export_bins, bool) or not isinstance(export_bins, int) or export_bins <= 0:
+        raise ValueError("positive integer export_bins required")
+    macro = ["/control/verbose 2"]
+    if export_tables:
+        macro.extend(["/run/particle/setStoredInAscii 1", "/process/eLoss/CSDARange true",
+                      f"/process/em/binsPerDecade {export_bins}"])
+    if bins is not None:
+        macro.append(f"/process/em/binsPerDecade {bins}")
+    if step_fraction is not None:
+        macro.append(f"/process/eLoss/StepFunctionMuHad {step_fraction:.17g} {final_range:.17g} mm")
+    if no_msc:
+        name = "mu-" if pdg == 13 else "mu+"
+        macro.extend(["/run/initialize", "/process/list all", f"/process/inactivate msc {name}",
+                      f"/process/inactivate CoulombScat {name}", f"/process/dump msc {name}",
+                      f"/process/dump CoulombScat {name}"])
+    config = f'''#include "base.fcl"
+source.maxEvents: {events}
+services.SeedService.baseSeed: {seed}
+physics.producers.g4run.g4Macro: "preinit.mac"
+'''
+    if export_tables:
+        config += 'physics.producers.g4run.debug.storePhysicsTablesDir: "tables"\n'
+    if lateral_displacement is not None:
+        config += 'physics.producers.g4run.physics.setMuHadLateralDisplacement: ' + str(lateral_displacement).lower() + '\n'
+    return "\n".join(macro) + "\n", config
+
+
+def run_case(out, *, energy, thickness, cosine=1., pdg=13, events=10, seed=20261026,
+             export_tables=False, step_fraction=None, no_msc=False, final_range=.001, bins=None,
+             energy_max=None, cosine_min=None, lateral_displacement=None):
+    """New directory, immutable inputs, subprocess outcome, ROOT receipt and explicit unfinished marker."""
+    validate_case(energy, thickness, cosine, pdg, events, seed, energy_max, cosine_min)
+    macro, config = control_text(events, seed, export_tables=export_tables, step_fraction=step_fraction,
+        no_msc=no_msc, final_range=final_range, bins=bins, pdg=pdg, lateral_displacement=lateral_displacement)
     name = "mu-" if pdg == 13 else "mu+"
     if os.environ.get("MUSE_WORK_DIR") != RELEASE:
         raise ValueError("published SimJob MDC2025ac setup required")
@@ -114,26 +148,9 @@ def run_case(out, *, energy, thickness, cosine=1., pdg=13, events=10, seed=20261
     (out / "foil_geom.txt").write_text(geometry)
     (out / "foil_gun.txt").write_text(gun)
     (out / "base.fcl").write_text(template.read_text())
-    macro = ["/control/verbose 2"]
     if export_tables:
         (out / "tables").mkdir()
-        macro.extend(["/run/particle/setStoredInAscii 1", "/process/eLoss/CSDARange true", "/process/em/binsPerDecade 168"])
-    if bins is not None:
-        macro.append(f"/process/em/binsPerDecade {bins}")
-    if step_fraction is not None:
-        macro.append(f"/process/eLoss/StepFunctionMuHad {step_fraction:.17g} {final_range:.17g} mm")
-    if no_msc:
-        macro.extend(["/run/initialize", "/process/list all", f"/process/inactivate msc {name}",
-                      f"/process/inactivate CoulombScat {name}", f"/process/dump msc {name}",
-                      f"/process/dump CoulombScat {name}"])
-    (out / "preinit.mac").write_text("\n".join(macro) + "\n")
-    config = f'''#include "base.fcl"
-source.maxEvents: {events}
-services.SeedService.baseSeed: {seed}
-physics.producers.g4run.g4Macro: "preinit.mac"
-'''
-    if export_tables:
-        config += 'physics.producers.g4run.debug.storePhysicsTablesDir: "tables"\n'
+    (out / "preinit.mac").write_text(macro)
     (out / "job.fcl").write_text(config)
     env = os.environ.copy()
     for env_name in ("MU2E_SEARCH_PATH", "FHICL_FILE_PATH"):
@@ -145,7 +162,7 @@ physics.producers.g4run.g4Macro: "preinit.mac"
         case=dict(energy_MeV=energy, thickness_mm=thickness, cosine=cosine, pdg=pdg, events=events, seed=seed,
                   export_tables=export_tables, step_fraction=step_fraction, no_msc=no_msc, final_range=final_range, bins=bins,
                   energy_max_MeV=energy if energy_max is None else energy_max,
-                  cosine_min=cosine if cosine_min is None else cosine_min),
+                  cosine_min=cosine if cosine_min is None else cosine_min, lateral_displacement=lateral_displacement),
         sources=[_identity(p) for p in artifacts],
         scope="Zero-field G4_Al study box; material equivalence and stochastic closure require separate checks")
     (out / "receipt.json").write_text(json.dumps(receipt, indent=2))
@@ -190,6 +207,8 @@ def main(argv=None):
     ap.add_argument("--export-tables", action="store_true")
     ap.add_argument("--step-fraction", type=float)
     ap.add_argument("--no-msc", action="store_true")
+    ap.add_argument("--lateral-displacement", choices=("on", "off"), default=None,
+                    help="explicit muon/hadron MSC lateral-displacement override; omitted preserves inherited settings")
     ap.add_argument("--final-range", type=float, default=.001)
     ap.add_argument("--bins", type=int)
     ap.add_argument("--energy-max", type=float, help="flat-in-momentum gun from --energy to this kinetic energy")
@@ -197,7 +216,8 @@ def main(argv=None):
     a = ap.parse_args(argv)
     run_case(a.out, energy=a.energy, thickness=a.thickness, cosine=a.cosine, pdg=a.pdg,
              events=a.events, seed=a.seed, export_tables=a.export_tables, step_fraction=a.step_fraction, no_msc=a.no_msc,
-             final_range=a.final_range, bins=a.bins, energy_max=a.energy_max, cosine_min=a.cosine_min)
+             final_range=a.final_range, bins=a.bins, energy_max=a.energy_max, cosine_min=a.cosine_min,
+             lateral_displacement=None if a.lateral_displacement is None else a.lateral_displacement == "on")
 
 
 if __name__ == "__main__":

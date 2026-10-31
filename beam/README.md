@@ -573,3 +573,183 @@ mark that qualification **UNVERIFIED**. Slab mu+ does not certify target-materia
 mu+, and charge equivalence of the shared mu+-derived scattering table is still
 unverified. A small CDF point estimate is not equivalence: the independent
 reference size must permit its uncertainty band to fit inside the tolerance.
+
+### Reduced-reference recovery and precision planning
+
+`lossdiagnostic` is a read-only, opt-in saved-data reporter, not transport or a
+reference generator. Use it when only the historical `foil_threadG_compare_*`,
+`foil_threadG_final_report_*` and slab ASCII tables remain:
+
+```bash
+PYTHONPATH=/path/to/core:beam python3 -m beamfastsim.lossdiagnostic \
+  --recovered-root /path/to/recovered/beam_fastsim --out /path/to/NEW.json
+```
+
+The reporter checks the canonical summary hash, refined-array hashes when
+covered, persisted event/cell/outcome census, moments and consumed table hashes.
+Original reduced arrays lacking their generation manifest are explicitly only
+current-byte and historical-reduction checked. Missing effective configs, logs,
+macros, ROOT and receipts keep reference configuration **UNVERIFIED**; a case
+label or a packaged table provenance record cannot replace them. Old reduced
+arrays lack entry cosine and exit direction: recorded incidence is not a measured
+angular distribution. Chord sums are not true G4 path lengths. Source/table
+identity is not historical binary or physics certification.
+
+The all-entry `T < 0.1 MeV -> 0` variance decomposes into positive-component within
+variance plus between-zero/positive variance; the positive component is
+outcome-selected. Population components sum to population variance; the report
+also gives unbiased sample variance and pointwise influence-function SEs. This
+decomposition does not attribute a fast/reference difference to scattering.
+Unknown one-sided endpoint residuals in `[0,floor]` change population variance by
+at most `floor*sqrt(variance) + floor**2/4`; that diagnostic bound neither
+identifies physical stopping nor verifies unavailable response arrays.
+
+Precision planning retains both independent 99% DKW radii. At a 0.02 CDF band,
+5,000 reference entries alone already give radius 0.02448. Zero measured distance
+requires at least 29,958 entries **per arm** for equal samples; reserving 0.01 for
+measured distance requires 119,830 per arm. With one million fast entries, the
+report computes the independent reference size with the same headroom. These
+are pointwise feasibility calculations, not a predicted PASS, simultaneous
+certificate, runtime estimate or permission to generate G4.
+
+The report also inventories charge-specific material tables and the unsupported
+overlapping-hard Bohr region. A frozen-power leg-length screen is not a count of
+actual transport histories. Slab mu+ cannot certify target-material mu+; sharing
+a mu+-derived scattering table across charges remains unverified. No production
+setting or acceptance gate changes.
+
+The variance-size proxy scales the observed pilot fourth-moment SE to a specified
+3-SE relative budget (default 2.5% of reference variance, reserving part of the
+5% diagnostic band). This asymptotic planning proxy is not a tail guarantee or a
+power calculation. The unsupported-Bohr screen also evaluates the documented
+0.01-mm / 5%-energy leg ceiling on the actual log-log restricted Range grid;
+no-scattering and omitted angular/face limits make this a conservative leg-size
+screen, not an execution trace. Refinement reduces that ceiling. Neither check
+admits a new physics regime or changes the split sampler's fail-closed guard.
+
+### Follow-up on recovered artifacts
+
+`lossfollowup` runs **new** slab response samples against lower-tier recovered
+reductions. It is separate from the audited `slabstudy` path, whose checks are
+unchanged. It requires the recovered table bytes and exact numerical equality
+with the supplied slab package, and records that the original reference
+configuration remains unverified. It saves all response arrays, keyed identities,
+ledgers, unresolved endpoints and threshold-mixture comparisons. Never describe
+its new outputs as recovered historical arrays or qualified G4 closure.
+
+```bash
+PYTHONPATH=/path/to/core:beam python3 -m beamfastsim.lossfollowup \
+  --recovered-root /path/to/recovered/beam_fastsim --cell moved_edge \
+  --samples 2000 --seed 92 --arms no_scatter diffuse refined --out /path/to/NEW
+python3 -m beamfastsim.lossexplain --study /path/to/NEW --out /path/to/NEW_explanation.json
+```
+
+`lossexplain` decomposes the all-entry threshold variance difference exactly into
+symmetric occupancy, conditional-mean-squared and conditional-width terms with
+correlated delta-method SEs. Those are algebraic contributions, not mechanisms.
+The loss-channel covariance budget uses applied energies after path/stop
+selection; it is not a primitive microscopic variance estimate. Keyed numerical
+refinements retain their matched sample identity, not Brownian-bridge coupling.
+Independent seeds must not be paired as refinements.
+
+`lossarchive` audits a recovered original grid scan bundle and the saved
+whole-event pilot, preserving missing ROOT/energy-cut-export limits. Its
+`--full-fast/--full-metrics` option checks an older full baseline's counts and
+profiles, but explicitly does not infer historical row alignment absent a saved
+input hash. `lossscan` selects a uniform outcome-independent subset of the archived
+scan, uses actual entry energy and incidence, and retains every selected event
+in fixed energy/angle bins. It compares paired threshold outcomes, not physical
+stops or exit angles. No command generates G4 or changes production defaults.
+
+### Bounded refined-full / lateral-displacement edge controls
+
+`foilclosure --lateral-displacement on|off` is explicit and opt-in; omission
+preserves the inherited setting. `edgeg4 prepare` writes a new, bounded mu−
+reference directory (at most 5k events) without running G4. Both named modes
+use 168 bins/decade and StepFunctionMuHad 0.005 / 0.00005 mm; only the lateral
+boolean differs. Use independent seeds. A single refined level is not a
+convergence proof, and old stock references retain their original qualification.
+
+```bash
+PYTHONPATH=core:beam python3 -m beamfastsim.edgeg4 prepare \
+  --out "$DATA/NEW" --cell moved_edge --mode full_refined --events 5000 --seed 12345
+# In a Slurm CPU allocation, with the saved EL8 client and pinned stock EL9 worker image:
+export CVMFSEXEC_DIST=/path/to/saved/cvmfsexec-el8
+export OFFLINE_IMAGE=/cvmfs/singularity.opensciencegrid.org/.images/sha256:aa/REPLACE_WITH_PINNED_IMAGE
+export EDGE_MOUNT_RUNNER=/path/to/container/offline/offline_uva.sh
+bash beam/art/edge_offline_uva.sh "$DATA/NEW"
+# Back in the analysis Python environment:
+PYTHONPATH=core:beam python3 -m beamfastsim.edgeg4 finalize --out "$DATA/NEW"
+```
+
+The opt-in runtime adapter uses the unchanged Offline UVA wrapper's mounted-image
+entrypoint, a unique node-local cache and the already-published MDC2025ac release;
+no build, install or image production. Finalization checks prepared/source hashes,
+effective configuration, echoed physics macro commands, completed event count,
+run-specific table export and highest-cycle streaming ROOT census. ROOT is retained.
+`edgeangles` adds first-exit directions/positions from the same existing primary
+pre-step rows, identity-matched to that census. Stoppers keep NaN directions;
+chords are not true G4 step lengths. `edgecompare` reuses finished fast arms and
+reports independent comparisons and outcome-conditioned angular diagnostics;
+it never reruns a sampler or silently certifies physical stopping.
+
+### Saved edge-shape and local angular-increment diagnostics
+
+```bash
+PYTHONPATH=core:beam python3 -m beamfastsim.edgeshape \
+  --root "$EDGE_REFERENCES" --prior "$EDGE_COMPARISON" \
+  --study "$NORMAL_COMPLETED_FAST" "$OBLIQUE_COMPLETED_FAST" --out "$DATA/NEW_SHAPES"
+PYTHONPATH=core:beam python3 -m beamfastsim.edgemoments \
+  --root "$EDGE_REFERENCES" --out "$DATA/NEW_LOCAL_MOMENTS"
+```
+
+These commands read completed, hash-bound references through the unchanged
+strict loader and stream the original highest-cycle readback. They run no G4
+or fast sampler. `edgeshape` retains all entries in fixed diagnostic energy
+caps and exact variance partitions, adds exit-energy/angle standardization,
+and records primary-identity-bound adjacent angular/chord metrics before the
+first exit. `edgemoments` clusters local angular moments by primary against
+exported lambda budgets, including a q<=0.001 screen; it never treats millions
+of correlated steps as independent events. Neither command certifies physical
+stops for positive-floor fast endpoints or invents missing true G4 step lengths.
+Output-conditioned and capped statistics do not replace original gates. See
+[edge diagnostics](docs/loss-edge-diagnostics.md) for numerical qualifications.
+
+`python3 -m beamfastsim.edgeblocks --root "$EDGE_REFERENCES" --out "$DATA/NEW_BLOCKS"`
+aggregates the same retained primary rows into fixed 0.001/0.005/0.01-mm
+chord bins, retaining each block's actual endpoint deflection and summed
+chord/lambda budget. This saved-trajectory diagnostic checks scale sensitivity
+without generating a trajectory or claiming true-path/fast-leg equivalence.
+The bounded per-file primary projection is retained in memory; use a compute
+allocation, not a login node.
+
+### Explicit step/bin edge factorial
+
+`edgefactorial` adds three opt-in lateral-on modes without changing `edgeg4`'s
+existing two modes: `stock_step_bins7`, `stock_step_bins168`, and
+`refined_step_bins7`. Stock step means no step-function override in the released
+runtime; it does not certify an unavailable historical configuration. Refined
+step is 0.005 / 0.00005 mm. The export-bin setting is explicit, so a 7-bin arm
+never silently inherits dense export. Existing defaults remain byte-identical.
+
+```bash
+PYTHONPATH=core:beam python3 -m beamfastsim.edgefactorial prepare \
+  --out "$DATA/NEW" --cell moved_edge --mode stock_step_bins7 --events 5000 --seed 12346
+# Execute the prepared directory using the same private-cache adapter above.
+PYTHONPATH=core:beam python3 -m beamfastsim.edgefactorial finalize --out "$DATA/NEW"
+PYTHONPATH=core:beam python3 -m beamfastsim.edgefactorial collect --root "$FACTORIAL_REFERENCES"
+PYTHONPATH=core:beam python3 -m beamfastsim.edgefactorialreport \
+  --root "$FACTORIAL_REFERENCES" --reused-root "$EDGE_REFERENCES" \
+  --study "$NORMAL_COMPLETED_FAST" "$OBLIQUE_COMPLETED_FAST" \
+  --recovered-root "$RECOVERED_REFERENCES" --package "$SLAB_PACKAGE" --out "$DATA/NEW_FACTORIAL_REPORT"
+```
+
+Finalization additionally verifies the actual native table-node density and
+run-specific material/cuts. Reporting reuses the completed refined/168 arm,
+reaudits the original highest-cycle ROOT counts, checks identical runtime
+binary/source hashes and keeps independent seeds distinct. Simple step/bin
+contrasts, averaged main effects and interaction estimates retain shared-arm
+covariance; related estimates are not independent or simultaneous acceptance
+tests. Two numerical levels do not prove convergence. Coarse exported tables
+are separately audited, not required to equal the dense fast-response package,
+and diagnostic spline comparisons do not claim Geant4 interpolation parity.
