@@ -6,7 +6,8 @@ import statistics
 
 
 SETUP_SOURCES = {"crvfastsim/analyses/runchain.py", "crvfastsim/analyses/e2e_bench.py",
-                 "crvfastsim/analyses/context_audit.py"}
+                 "crvfastsim/analyses/context_audit.py", "crvfastsim/analyses/library_cache.py",
+                 "crvfastsim/tier1b_assets.py"}
 DEFAULTS = {"deviation": None, "gdml": None, "counters": None, "jax": False, "max_events": None,
             "reco_cpu": False, "msc_tail": False, "tail_k": None, "sliced_msc": False,
             "first_muon_only": False, "no_absorbers": False, "run_config": None, "window": None,
@@ -67,7 +68,7 @@ def removed_appledouble(reference, candidate):
     return removed
 
 
-def compare(reference, candidate, allow_removed_appledouble=False):
+def compare(reference, candidate, allow_removed_appledouble=False, allow_prefetch=False, allow_cpu_reco=False):
     a, b = (json.loads(Path(p).read_text()) for p in (reference, candidate))
     for report in (a, b):
         if report.get("status") != "complete" or not report.get("repeat_fingerprints_identical"):
@@ -77,7 +78,12 @@ def compare(reference, candidate, allow_removed_appledouble=False):
     for key in ("boundary", "device"):
         if a[key] != b[key]:
             raise ValueError(f"incompatible {key}")
-    if settings(a) != settings(b):
+    settings_a, settings_b = settings(a), settings(b)
+    prefetch_changed = settings_a.get("prefetch", False) != settings_b.get("prefetch", False)
+    if allow_prefetch:
+        settings_a.pop("prefetch", None)
+        settings_b.pop("prefetch", None)
+    if settings_a != settings_b:
         raise ValueError("physics arguments/input ordering differ")
     if named_hashes(a["provenance"]["assets_sha256"]) != named_hashes(b["provenance"]["assets_sha256"]):
         raise ValueError("asset content differs")
@@ -94,8 +100,13 @@ def compare(reference, candidate, allow_removed_appledouble=False):
     sa, sb = (named_hashes(r["provenance"]["source_sha256"], source=True) for r in (a, b))
     metadata = removed_appledouble(sa, sb) if allow_removed_appledouble else {}
     changed = sorted(k for k in (sa.keys() | sb.keys()) - metadata.keys() if sa.get(k) != sb.get(k))
-    if set(changed) - SETUP_SOURCES:
-        raise ValueError(f"non-setup source changed: {sorted(set(changed) - SETUP_SOURCES)}")
+    allowed = set(SETUP_SOURCES)
+    if allow_cpu_reco:
+        if a["device"] != {"response": "numpy CPU", "reco": "numpy CPU"}:
+            raise ValueError("CPU-reco source exception requires NumPy CPU response and reco")
+        allowed.update(("crvfastsim/reco/coinc.py", "crvfastsim/reco/coinc_cpu.py", "crvfastsim/reco/pulsefit.py"))
+    if set(changed) - allowed:
+        raise ValueError(f"non-setup source changed: {sorted(set(changed) - allowed)}")
     reference_fps = [r["fingerprint"] for r in a["passes"][0]["files"]]
     for report in (a, b):
         for p in report["passes"]:
@@ -104,6 +115,8 @@ def compare(reference, candidate, allow_removed_appledouble=False):
     aw = [p["elapsed_s"] for p in a["passes"][1:]]
     bw = [p["elapsed_s"] for p in b["passes"][1:]]
     return {"exact_output_identity": True, "source_changes": changed,
+            "prefetch_execution_change": bool(prefetch_changed and allow_prefetch),
+            "cpu_reco_source_exception": bool(allow_cpu_reco),
             "source_gate": "explicit removed AppleDouble filename exception" if metadata else "strict",
             "removed_appledouble_sha256": metadata,
             "reference": str(reference), "candidate": str(candidate),
@@ -124,8 +137,13 @@ def main(argv=None):
     p.add_argument("--out", required=True)
     p.add_argument("--allow-removed-appledouble", action="store_true",
                    help="explicit packaging exception for removed ._* files with retained paired sources; recorded by hash")
+    p.add_argument("--allow-prefetch", action="store_true",
+                   help="explicit scheduling-only difference; exact output/input/config/source gates remain")
+    p.add_argument("--allow-cpu-reco", action="store_true",
+                   help="explicit NumPy-only reco source changes; every named output must remain byte-identical")
     a = p.parse_args(argv)
-    result = compare(a.reference, a.candidate, allow_removed_appledouble=a.allow_removed_appledouble)
+    result = compare(a.reference, a.candidate, allow_removed_appledouble=a.allow_removed_appledouble,
+                     allow_prefetch=a.allow_prefetch, allow_cpu_reco=a.allow_cpu_reco)
     with open(a.out, "x") as stream:
         json.dump(result, stream, indent=2, allow_nan=False)
         stream.write("\n")

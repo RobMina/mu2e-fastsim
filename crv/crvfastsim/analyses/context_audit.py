@@ -15,7 +15,9 @@ replacement is intentionally equivalent. Neither operation deep-copies data.
 import dataclasses
 import hashlib
 import json
+import os
 import struct
+from concurrent.futures import Future, ThreadPoolExecutor
 import sys
 import types
 
@@ -65,9 +67,22 @@ def _readonly(array):
         current = current.base
 
 
+def _digest(chunks):
+    h = hashlib.sha256()
+    for data in chunks:
+        if isinstance(data, Future):
+            data = data.result()
+        elif isinstance(data, tuple):
+            data = _digest(data)
+        h.update(struct.pack(">Q", len(data)))
+        h.update(data)
+    return h.digest()
+
+
 class _Audit:
-    def __init__(self, freeze):
+    def __init__(self, freeze, executor=None):
         self.freeze = freeze
+        self.executor = executor
         self.active = set()
         # Retain temporary pandas views too: id reuse must not hit a stale memo.
         self.memo = {}
@@ -87,10 +102,12 @@ class _Audit:
             self.active.remove(ident)
 
     def node(self, value):
-        h = None if self.freeze else hashlib.sha256()
+        h = None if self.freeze else ([] if self.executor is not None else hashlib.sha256())
 
         def emit(data):
-            if h is not None:
+            if isinstance(h, list):
+                h.append(data)
+            elif h is not None:
                 h.update(struct.pack(">Q", len(data)))
                 h.update(data)
 
@@ -192,6 +209,14 @@ class _Audit:
             child(vars(value))
         else:
             raise TypeError(f"unsupported context type: {_typename(value)}")
+        if isinstance(h, list):
+            chunks = tuple(h)
+            if (type(value) is np.ndarray and value.dtype.kind != "O"
+                    and value.nbytes >= 1024 * 1024):
+                return self.executor.submit(_digest, chunks)
+            if any(isinstance(data, (Future, tuple)) for data in chunks):
+                return chunks
+            return _digest(chunks)
         return b"" if h is None else h.digest()
 
     def pandas_array(self, value):
@@ -235,11 +260,23 @@ def freeze_arrays(value):
     return value
 
 
-def content_fingerprint(value):
-    """Return an order-sensitive SHA256 hex digest of supported context data.
+def content_fingerprint(value, *, workers=None):
+    """Return the same order-sensitive SHA256 digest with optional parallel leaves.
 
     Shared references are legal and equivalent to equal independent host
     values; cycles fail closed. NumPy writeability and pandas' internal caches
     are deliberately excluded, so freezing or index lookup cannot cause drift.
+    No content hash is cached across calls; every reachable buffer is rechecked.
     """
-    return _Audit(freeze=False).visit(value).hex()
+    workers = int(os.environ.get("CRVFS_CONTEXT_HASH_WORKERS", "1")) if workers is None else workers
+    if type(workers) is not int or not 1 <= workers <= 32:
+        raise ValueError("context hash workers must be an integer in [1,32]")
+    if workers == 1:
+        return _Audit(freeze=False).visit(value).hex()
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        result = _Audit(freeze=False, executor=executor).visit(value)
+        if isinstance(result, Future):
+            result = result.result()
+        elif isinstance(result, tuple):
+            result = _digest(result)
+        return result.hex()

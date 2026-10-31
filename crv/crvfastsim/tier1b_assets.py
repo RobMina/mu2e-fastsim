@@ -125,8 +125,16 @@ def sha256(path):
 
 
 def load(spec, geom):
-    """Library of the spec with its sidecars attached (topology first, then templates, as tier1b-apply does). With
-    sidecars the library is hashed once: it must equal the pinned set content and the sidecars' library."""
+    """Load checked sidecars normally, or opt into a content-bound attached-library cache."""
+    directory = os.environ.get("CRVFS_PREPARED_LIBRARY_CACHE")
+    if directory:
+        from .analyses.library_cache import load as cached_load
+        return cached_load(spec, geom, directory, _load_uncached)
+    return _load_uncached(spec, geom)
+
+
+def _load_uncached(spec, geom):
+    """Attach checked topology and template sidecars in their reference order."""
     from . import tier1b
     from .analyses.tier1b import read_template_sidecar, read_topology_sidecar
     lib = tier1b.read_library(spec.library)

@@ -18,6 +18,7 @@ is the parallel axis of the JAX twin). Output: one row per cluster with the puls
 """
 from dataclasses import dataclass, field
 from itertools import chain, combinations, product
+import os
 
 import numpy as np
 import pandas as pd
@@ -253,6 +254,12 @@ def _check_coincidence_vec(cluster, cfg, chunk=2_000_000):
 
 def _attach_opposite_side_pulses(clusters, hits, max_dt):
     """Attach filtered hits using only original members, with stock cluster/candidate tie ordering."""
+    mode = os.environ.get("CRVFS_CPU_ATTACHMENT", "reference")
+    if mode == "numpy":
+        from .coinc_cpu import attach_opposite_side_pulses
+        return attach_opposite_side_pulses(clusters, hits, max_dt)
+    if mode != "reference":
+        raise ValueError("CRVFS_CPU_ATTACHMENT must be reference or numpy")
     if not clusters or not hits:
         return
     columns = ["idx", "bar", "sipm", "side", "t", "seq"]

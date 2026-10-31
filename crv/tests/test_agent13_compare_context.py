@@ -103,3 +103,40 @@ def test_appledouble_exception_never_allows_real_changes(tmp_path, kind):
     pb.write_text(json.dumps(b))
     with pytest.raises(ValueError):
         M.compare(pa, pb, allow_removed_appledouble=True)
+
+
+def test_prefetch_requires_explicit_scheduling_exception_and_exact_outputs(tmp_path):
+    a, b = report("/old", True), report("/new", True)
+    b["arguments"]["prefetch"] = True
+    pa, pb = tmp_path / "serial.json", tmp_path / "prefetch.json"
+    pa.write_text(json.dumps(a))
+    pb.write_text(json.dumps(b))
+    with pytest.raises(ValueError, match="arguments"):
+        M.compare(pa, pb)
+    assert M.compare(pa, pb, allow_prefetch=True)["prefetch_execution_change"]
+    b["passes"][1]["files"][0]["fingerprint"] = "changed"
+    pb.write_text(json.dumps(b))
+    with pytest.raises(ValueError, match="output differs"):
+        M.compare(pa, pb, allow_prefetch=True)
+
+
+def test_cpu_reco_source_exception_requires_cpu_and_exact_outputs(tmp_path):
+    a, b = report('/old', True), report('/new', True)
+    for item in (a, b):
+        item['device'] = {'response': 'numpy CPU', 'reco': 'numpy CPU'}
+    b['provenance']['source_sha256']['/new/crvfastsim/reco/coinc.py'] = 'numpy-attachment'
+    pa, pb = tmp_path / 'cpu_a.json', tmp_path / 'cpu_b.json'
+    pa.write_text(json.dumps(a))
+    pb.write_text(json.dumps(b))
+    with pytest.raises(ValueError, match='non-setup'):
+        M.compare(pa, pb)
+    assert M.compare(pa, pb, allow_cpu_reco=True)['cpu_reco_source_exception']
+    b['passes'][1]['files'][0]['fingerprint'] = 'one ulp changed'
+    pb.write_text(json.dumps(b))
+    with pytest.raises(ValueError, match='output differs'):
+        M.compare(pa, pb, allow_cpu_reco=True)
+    a['device'] = b['device'] = {'response': 'cuda:0'}
+    pa.write_text(json.dumps(a))
+    pb.write_text(json.dumps(b))
+    with pytest.raises(ValueError, match='NumPy CPU'):
+        M.compare(pa, pb, allow_cpu_reco=True)

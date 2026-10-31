@@ -15,6 +15,7 @@ coordinates, float64, so interior minima match Minuit2 to its tolerance; the fai
 (validated by V-R2, docs/fastreco.md).
 """
 from dataclasses import dataclass, replace
+import os
 
 import numpy as np
 
@@ -138,8 +139,14 @@ def fit_gumbel(t, y, mask, p0, lo, hi, iterations=40):
     u = _to_int(p0, lo, hi)
     lam = np.full(K, 1e-3)
     w = mask.astype(float)
+    reuse = os.environ.get("CRVFS_CPU_FIT_WORKSPACE", "0")
+    if reuse not in ("0", "1"):
+        raise ValueError("CRVFS_CPU_FIT_WORKSPACE must be 0 or 1")
+    reuse = reuse == "1"
+    Jwork = np.empty((K, t.shape[1], 3)) if reuse else None
+    Jnext = np.empty_like(Jwork) if reuse else None
 
-    def resid_jac(u):
+    def resid_jac(u, workspace=None):
         p = _to_ext(u, lo, hi)
         A, mu, b = p[:, 0:1], p[:, 1:2], p[:, 2:3]
         z = (t - mu) / b
@@ -151,12 +158,25 @@ def fit_gumbel(t, y, mask, p0, lo, hi, iterations=40):
         dfdz = f * (ez - 1.0)            # d/dz of A*exp(-z-e^-z)
         dfdmu = dfdz * (-1.0 / b)
         dfdb = dfdz * (-z / b)
-        dpdu = (hi - lo) * 0.5 * np.cos(u)   # [K,3]
-        J = np.stack([dfdA * dpdu[:, 0:1], dfdmu * dpdu[:, 1:2], dfdb * dpdu[:, 2:3]], axis=-1) * w[..., None]
+        dpdu = (hi - lo) * 0.5 * np.cos(u)
+        if workspace is None:
+            J = np.stack([dfdA * dpdu[:, 0:1], dfdmu * dpdu[:, 1:2], dfdb * dpdu[:, 2:3]], axis=-1) * w[..., None]
+        else:
+            J = workspace
+            np.multiply(dfdA, dpdu[:, 0:1], out=J[..., 0])
+            np.multiply(dfdmu, dpdu[:, 1:2], out=J[..., 1])
+            np.multiply(dfdb, dpdu[:, 2:3], out=J[..., 2])
+            np.multiply(J, w[..., None], out=J)
         return r, J
 
-    r, J = resid_jac(u)
+    r, J = resid_jac(u, Jwork)
     chi2 = (r * r).sum(1)
+    cached = os.environ.get("CRVFS_CPU_FIT_NORMAL_CACHE", "0")
+    if cached not in ("0", "1"):
+        raise ValueError("CRVFS_CPU_FIT_NORMAL_CACHE must be 0 or 1")
+    if cached == "1":
+        from .pulsefit_cpu import fit_cached
+        return fit_cached(u, r, J, chi2, lo, hi, iterations, resid_jac)
     for _ in range(iterations):
         JTJ = np.einsum("kpi,kpj->kij", J, J)
         JTr = np.einsum("kpi,kp->ki", J, r)
@@ -167,12 +187,15 @@ def fit_gumbel(t, y, mask, p0, lo, hi, iterations=40):
         except np.linalg.LinAlgError:
             du = np.zeros_like(u)
         un = u + du
-        rn, Jn = resid_jac(un)
+        rn, Jn = resid_jac(un, Jnext)
         chi2n = (rn * rn).sum(1)
         better = chi2n < chi2
         u = np.where(better[:, None], un, u)
         r = np.where(better[:, None], rn, r)
-        J = np.where(better[:, None, None], Jn, J)
+        if reuse:
+            np.copyto(J, Jn, where=better[:, None, None])
+        else:
+            J = np.where(better[:, None, None], Jn, J)
         chi2 = np.where(better, chi2n, chi2)
         lam = np.clip(np.where(better, lam * 0.3, lam * 10.0), 1e-9, 1e9)
     # polish: plain Gauss-Newton with step halving (LM's damping can stall a step short of the minimum)
@@ -186,12 +209,15 @@ def fit_gumbel(t, y, mask, p0, lo, hi, iterations=40):
         du = np.where(np.isfinite(du), du, 0.0)
         for scale in (1.0, 0.5, 0.25, 0.125):
             un = u + scale * du
-            rn, Jn = resid_jac(un)
+            rn, Jn = resid_jac(un, Jnext)
             chi2n = (rn * rn).sum(1)
             better = chi2n < chi2
             u = np.where(better[:, None], un, u)
             r = np.where(better[:, None], rn, r)
-            J = np.where(better[:, None, None], Jn, J)
+            if reuse:
+                np.copyto(J, Jn, where=better[:, None, None])
+            else:
+                J = np.where(better[:, None, None], Jn, J)
             chi2 = np.where(better, chi2n, chi2)
             du = np.where(better[:, None], 0.0, du)
     # convergence: one more step would not lower chi2 by more than 1e-6 relative (Minuit2 EDM-like)

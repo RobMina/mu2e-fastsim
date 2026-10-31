@@ -72,6 +72,10 @@ not a security boundary: callers must not modify or share a context concurrently
 or clearing the process-global waveform/optical cache invalidates an existing context. This API is for
 sequential repeated workloads, not concurrent configurations or an optimizer's mutable parameter object.
 
+`CRVFS_CONTEXT_HASH_WORKERS=4` optionally parallelizes large host-array hashes without changing the serial
+fingerprint or skipping content checks; the default is one worker. See [audit worker settings](context-hash-workers.md)
+for CPU-allocation limits, measurements and the exact guarantee.
+
 Memory-dependent fused-response batching is explicitly **unsupported** with reuse. Reuse retains the existing
 two-stage response, transport and all recovery paths. It does not change kernel shapes or RNG semantics.
 
@@ -235,8 +239,8 @@ occupancy measurement or clock-stability certification.
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 \
-PYTHONPATH=/Users/rmina/mu2e/remote/analysis/crv_wt/core_e2e_gpu13:/Users/rmina/mu2e/remote/analysis/crv_wt/e2e_gpu13 \
-/Users/rmina/mu2e/.venv/bin/python3 -m pytest -q -p no:cacheprovider \
+PYTHONPATH=<core checkout>:<crv checkout> \
+python3 -m pytest -q -p no:cacheprovider \
   tests/test_e2e_bench.py tests/test_chain.py
 ```
 
