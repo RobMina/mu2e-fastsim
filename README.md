@@ -50,7 +50,6 @@ git submodule update --init --recursive   # keep the compatible recorded pins
 |---|---|---|---|---|
 | ALCF Polaris (A100) | IRI API | a venv on Eagle (`M2FS_EAGLE`) or the image | reference for the performance goals | `core/iri/` |
 | ALCF Aurora (Intel PVC) | SSH + PBS | venv with `jax[oneapi]` | CRV response runs; fast reco does not port yet | `core/aurora/` |
-| ESnet East (AWS) | IRI API v2 | OCI image as Kubernetes pods | CPU and T4 pods run | `core/iri/` (`IRI_FACILITY=esnet`) |
 | UVA Rivanna/Afton (A100, B200) | SSH + Slurm | the Apptainer image | in-image validation passes on A100 and B200; production as one-GPU jobs | `core/uva/` |
 | Fermilab EAF (A100 MIG slices) | JupyterHub API, driven from a GPVM | a JAX venv (`FASTSIMKIT_EAF_VENV`) | Mu2eBO endpoint: queue, auto-stop, keepalive; Mu2e inputs stay at FNAL | `core/eaf/` |
 

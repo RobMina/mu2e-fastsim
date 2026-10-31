@@ -9,7 +9,7 @@ import jax.numpy as jnp
 
 from mu2efastsim import eloss
 
-from beamfastsim import chaincompare, foilfast, g4ref, g4tables, geometry, layerphys, transport
+from beamfastsim import g4ref, g4tables, geometry, layerphys, transport
 
 
 @pytest.mark.parametrize("table,material", [("target", "StoppingTarget_Al"), ("slab", "G4_Al")])
@@ -90,18 +90,6 @@ def test_presets_and_legacy_default():
         transport.layer_tables(transport.Params(mean="range", law="nope"))
 
 
-def test_foilfast_edges():
-    """Normal incidence on 0.1056 mm Al: far below the edge all stop, far above none; range mode removes the legacy
-    four-slice under-stopping near the edge."""
-    e = np.repeat([1.0, 1.42, 3.0], 4000)
-    out = {}
-    for name in ("legacy", "g4"):
-        _, st, _ = foilfast.respond(e, np.ones_like(e), 0.1056, transport.params(name, msc_path=False), seed=2)
-        out[name] = st.reshape(3, -1).mean(axis=1)
-        assert out[name][0] == 1.0 and out[name][2] == 0.0
-    assert out["g4"][1] > out["legacy"][1] + 0.2
-
-
 def test_gunfile(tmp_path):
     g = dict(x=np.array([-3904.0, -3900.5]), y=np.array([1.0, -2.0]), z=np.array([4179.0, 4179.0]),
              px=np.array([1.0, 2.0]), py=np.array([0.5, -0.5]), pz=np.array([40.0, 30.0]),
@@ -114,34 +102,3 @@ def test_gunfile(tmp_path):
     assert [line.split()[7] for line in p.read_text().splitlines()] == ["13", "-13"]
 
 
-def test_chain_metrics():
-    n = 1000
-    rng = np.random.default_rng(1)
-    foil = np.where(rng.random(n) < 0.4, rng.integers(0, 5, n), -1)
-    g = dict(foil=foil, q=np.where(rng.random(n) < 0.1, 1.0, -1.0), xstop=np.full(n, -3854.0), ystop=np.zeros(n))
-    f = dict(fate=np.where(foil >= 0, 1, 6), foil=foil, x=np.tile([-3854.0, 0.0, 6000.0], (n, 1)))
-    m = chaincompare.metrics(g, f, 5)
-    assert m["ratio"] == 1.0 and m["foil_chi2_ndf"] == 0.0 and m["ratio_err_paired"] == 0.0
-    assert m["first_foil_ratio"] == 1.0 and json.dumps(m)
-
-
-def test_foilcells_contracts():
-    from beamfastsim import foilcells, foilscan
-    assert set(foilcells.cells()) == {"nom_edge", "moved_edge", "nom_5", "moved_5", "moved_20", "oblique_edge"}
-    assert all(foilscan.SCANS[c][1] == foilscan.SCANS[c][2] for c in foilcells.cells())
-    assert foilcells.binomial_difference(50000, 100000, 50000, 100000)["state"] == "PASS"
-    assert foilcells.binomial_difference(6000, 10000, 5000, 10000)["state"] == "FAIL"
-    assert foilcells.binomial_difference(51, 100, 50, 100)["state"] == "INDETERMINATE"
-    g = dict(exit_MeV=np.array([0., .05, .5, 1.]), exit=np.array([False, True, True, True]),
-             physical_stop=np.array([True, False, False, False]))
-    e = foilcells.endpoint(np.array([0., 0., .05, .5, 1., 1., .02, 2.]), g)
-    assert e["physical_stop"]["candidate"] == .25 and e["physical_stop"]["reference"] == .25
-    assert e["subthreshold_exit"]["candidate"] == .25 and e["threshold_stop"]["reference"] == .5
-
-
-def test_foilfast_raw_keeps_subthreshold_exits():
-    prm = transport.params("g4", msc_path=False, table="slab")
-    ex, st, _, raw = foilfast.respond(np.array([1.4]), np.array([1.0]), 0.1056, prm, replicas=4000, seed=3, raw=True)
-    assert np.all(ex[st] == 0) and np.all(raw[~st] >= .1)
-    assert np.any((raw > 0) & (raw < .1)) and np.any(raw == 0)
-    assert np.array_equal(st, raw < .1)

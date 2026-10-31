@@ -23,23 +23,7 @@ apptainer exec --nv mu2efastsim.sif crvfastsim reco-bench synthetic --stage chai
 - Size: the untrimmed GPU image is 3.5 GB (5.6 GB unpacked, 4.8 GB of it CUDA wheels; cuDNN alone 1.2 GB). R4 asks for
   "the fast-sim image + < 0.5 GB": the reco adds ~1 MB of code and data to the shared JAX/CUDA stack.
 
-## Celeritas image (`celeritas.def`, `build_celeritas.sh`)
-
-A second, separate image for the GPU electromagnetic transport feasibility study of the Mu2eBO `elebeam_flash` stage:
-Celeritas 0.6.3 (CUDA, sm_80), Geant4 11.3.2, VecGeom 1.2.11 (+gdml, CUDA), G4VG and covfie, built with spack on
-`nvidia/cuda:12.6.3-devel-rockylinux9` along the lines of Celeritas' own `scripts/docker/dev/rocky-cuda12.yaml`. It
-provides `celer-g4` (Celeritas' standalone Geant4 application) for EM feasibility checks. **The stock 0.6.3
-application only wires uniform/RZ fields, not the Cartesian DSMap**: library Cartesian support alone does not make
-the proposed Mu2e run executable. The saved build also has `~root`; its default `event_hit` scorer cannot write
-ROOT hits. See [the feasibility contract](celeritas-feasibility.md) before preparing transport inputs.
-Built by the user on a UVA node (1-3 h, needs `--fakeroot` and outbound internet):
-
-```bash
-module load apptainer
-JOBS=32 container/build_celeritas.sh "$CELERITAS_SIF"
-```
-
-Both build scripts cap `mksquashfs` (the step that packs the `.sif`) at `SQUASHFS_MEM` (default 4G) and
+`build.sh` caps `mksquashfs` (the step that packs the `.sif`) at `SQUASHFS_MEM` (default 4G) and
 `SQUASHFS_PROCS` (default the job's CPUs). Its own defaults follow the node's RAM and CPU count, not the job's: on a
 376 GB UVA node it sized its caches at ~96 GB and was killed inside a 32 GB job.
 

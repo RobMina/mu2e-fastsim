@@ -61,7 +61,6 @@ defaults. Public locations (CVMFS, relative paths, `~/.mu2efastsim` tool state) 
 | ALCF | run on Polaris or Aurora | `ALCF_PROJECT`, `M2FS_EAGLE`, `M2FS_FLARE`, `IRI`, `IRI_PY` |
 | CRV, tracker, beam | run that stage's job scripts | `CRVFS_*`, `MU2E_SEARCH_PATH`, `TRKFS_*`, `BEAMFS_DATA_ROOT`, `VENV` |
 | Offline runner | run art without host CVMFS (`container/offline/`) | `CVMFSEXEC_DIST`, `OFFLINE_ROOT`, `OFFLINE_AREA`, `OFFLINE_INPUT`, other `OFFLINE_*` |
-| Celeritas probes | rerun the GPU probes (`container/celeritas_adapter/`) | `CELERITAS_SIF`, `CELERITAS_PROBE_OUT`, `CELERITAS_BUILD_ROOT`, the per-probe roots and builds |
 
 Paths on the FNAL side (`M2FS_*`, `FASTSIMKIT_*_DATA`, `CRVFS_DATA`) are as seen on the FNAL host; Slurm-side paths
 (`FASTSIMKIT_SCRATCH` and below) are as seen on the cluster. Keep secrets (tokens, keys) out of site.env; point to
