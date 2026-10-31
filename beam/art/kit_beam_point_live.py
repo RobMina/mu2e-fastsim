@@ -2,7 +2,8 @@
 """Live test of the fastsimkit task beam_point on the EAF endpoint, driven from a GPVM.
 
 Registers the task at runtime (beamfastsim.kit_task.register) so kit.py is not edited, then runs the contract:
-check -> submit -> status (poll) -> results, for each geometry given. EAF_TOKEN_FILE must be set.
+check -> submit -> status (poll) -> results, for each geometry given. EAF_TOKEN_FILE must be set; the kit state
+directory is FASTSIMKIT_STATE_DIR (default ~/.mu2efastsim/kit).
   python3 beam/art/kit_beam_point_live.py PREFIX geom[,geom...] [muons] [repeat]
 """
 import json
@@ -21,7 +22,7 @@ def main():
     muons = int(sys.argv[3]) if len(sys.argv) > 3 else 105350
     repeat = int(sys.argv[4]) if len(sys.argv) > 4 else 0
     os.environ.setdefault("FASTSIMKIT_ENDPOINT", "eaf")
-    k = kit.FastsimKit(state_dir=os.environ.get("FASTSIMKIT_STATE_DIR", "/exp/mu2e/data/users/ram2aq/beam_fastsim/kit_state"))
+    k = kit.FastsimKit()
     handles = []
     for i, g in enumerate(geoms):
         name = f"{prefix}.{i:02d}"

@@ -1,5 +1,13 @@
 # mu2e-fastsim
 
+## Collaborator first run
+
+Start with [setup/README.md](setup/README.md): explicit input-release and output roots,
+checksum verification, one-shard CRV/tracker recipes and endpoint prerequisites.
+There is no approved shared input release bundled here; another user's data area is not a collaborator data
+source. Keep the recorded submodule pins when reproducing a run. Every site, user and storage path comes from your
+`site.env` (see `site.env.example`); nothing in the code falls back to a built-in location.
+
 Umbrella repository of the Mu2e Geant4-free, GPU-accelerated fast simulation and fast reconstruction: the extracted
 (KPP, no-field) cosmic configuration (CRV and tracker stages), and the muon beam from the detector-solenoid entrance to
 the stopping target (`beam/`). It pins compatible versions of three submodules and holds the beam stage itself:
@@ -25,7 +33,7 @@ This repository holds technical software only: no physics results, no Mu2e-inter
 ```bash
 git clone --recurse-submodules https://github.com/RobMina/mu2e-fastsim.git
 cd mu2e-fastsim
-git submodule update --remote --merge     # move every submodule to its branch head, then commit the new pins
+git submodule update --init --recursive   # keep the compatible recorded pins
 ```
 
 ## Status (2026-10-23)
@@ -40,11 +48,11 @@ git submodule update --remote --merge     # move every submodule to its branch h
 
 | endpoint | submission | runtime | state | drivers |
 |---|---|---|---|---|
-| ALCF Polaris (A100) | IRI API | Eagle venv or the image | reference for the performance goals | `core/iri/` |
+| ALCF Polaris (A100) | IRI API | a venv on Eagle (`M2FS_EAGLE`) or the image | reference for the performance goals | `core/iri/` |
 | ALCF Aurora (Intel PVC) | SSH + PBS | venv with `jax[oneapi]` | CRV response runs; fast reco does not port yet | `core/aurora/` |
 | ESnet East (AWS) | IRI API v2 | OCI image as Kubernetes pods | CPU and T4 pods run | `core/iri/` (`IRI_FACILITY=esnet`) |
 | UVA Rivanna/Afton (A100, B200) | SSH + Slurm | the Apptainer image | in-image validation passes on A100 and B200; production as one-GPU jobs | `core/uva/` |
-| Fermilab EAF (A100 MIG slices) | JupyterHub API, driven from a GPVM | `venv_eaf` (JAX) | Mu2eBO endpoint: queue, auto-stop, keepalive; Mu2e inputs stay at FNAL | `core/eaf/` |
+| Fermilab EAF (A100 MIG slices) | JupyterHub API, driven from a GPVM | a JAX venv (`FASTSIMKIT_EAF_VENV`) | Mu2eBO endpoint: queue, auto-stop, keepalive; Mu2e inputs stay at FNAL | `core/eaf/` |
 
 `fastsimkit` (`core/mu2efastsim/endpoints/kit.py`) is the [Mu2eBO](https://github.com/Mu2e/Mu2eBO) native kit for
 the fast chain: it speaks the evaluator contract (`submit`/`status`/`results`/`check`/`describe`/`cancel`) and runs
@@ -72,14 +80,14 @@ For Mu2e collaborators with an account on the Mu2e interactive machines. Nothing
 `ana` environment on CVMFS.
 
 ```bash
-cd /exp/mu2e/app/users/$USER
+cd "$YOUR_APP_AREA"              # your Mu2e app (code) area on the interactive machines
 git clone --recurse-submodules https://github.com/RobMina/mu2e-fastsim.git
 cd mu2e-fastsim
-cp site.env.example site.env     # edit the first block: M2FS_CODE=$PWD, M2FS_DATA=/exp/mu2e/data/users/$USER
+cp site.env.example site.env     # edit M2FS_CODE, approved M2FS_INPUTS, writable M2FS_DATA and site paths
 # every new shell:
 source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh
 pyenv ana
-cd /exp/mu2e/app/users/$USER/mu2e-fastsim && source site.env      # PYTHONPATH=core:crv:tracker:beam
+cd "$YOUR_APP_AREA/mu2e-fastsim" && source site.env      # PYTHONPATH=core:crv:tracker:beam
 # check (run the suites one at a time: crv/tests and tracker/tests share a test file name)
 python3 -m pytest -q -p no:cacheprovider core/tests
 python3 -m pytest -q -p no:cacheprovider tracker/tests
@@ -100,13 +108,14 @@ python3 -m mu2efastsim.testselect --also ../core --run --isolate -- -q          
 python3 -m pytest -q -p no:cacheprovider tests --runslow                          # everything, slow checks included
 ```
 
-Outputs go to `$M2FS_DATA` (your `/exp/mu2e/data/users/$USER`, 150 GiB quota), never into the clone. Run one job per
+Outputs go to `$M2FS_DATA` (your Mu2e data area, which has a quota), never into the clone. Run one job per
 GPVM. The inputs (GDML export, G4 reference tables) are Mu2e-internal and not in the repositories; the stage READMEs
-say where readable copies are and how they are produced.
+describe their production. Readable collaborator publication is a separate gate; see setup/README.md.
 
 ## Python environment elsewhere
 
 ```bash
+python3 -m venv .venv
 .venv/bin/python3 -m pip install -e core -e crv -e tracker
 .venv/bin/python3 -m pytest core/tests; .venv/bin/python3 -m pytest crv/tests; .venv/bin/python3 -m pytest tracker/tests
 PYTHONPATH=core:beam .venv/bin/python3 -m pytest beam/tests                 # beam/ is not an installable package yet
@@ -114,7 +123,9 @@ PYTHONPATH=core:beam .venv/bin/python3 -m pytest beam/tests                 # be
 
 ## Site settings
 
-Copy `site.env.example` to `site.env` (git-ignored) and source it before running anything. The first block (code and
-data paths) is all the Python validation needs; the grid, ALCF and muse lines are for the job scripts of each stage.
+Copy `site.env.example` to `site.env` (git-ignored, or keep it outside the clone) and source it before running
+anything; `setup/README.md` explains each block. The first block (code and data paths) is all the Python validation
+needs; the endpoint, grid, ALCF, Offline-runner and muse blocks are for the job scripts of each stage. Code that needs
+a variable you have not set stops with a message naming it.
 
 License: Apache-2.0 (`LICENSE`).

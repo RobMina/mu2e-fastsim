@@ -57,10 +57,24 @@ def test_submit_dry_run_does_not_stage_or_contact_grid(tmp_path):
     (core / "mu2efastsim").mkdir(parents=True)
     tasks = tmp_path / "tasks.txt"
     tasks.write_text("\nfoilscan moved_edge -13 1000 9 full_finest\n")
-    stage = f"/exp/mu2e/data/users/ram2aq/beam_dry_test_{tmp_path.name}"
-    env = dict(os.environ, BEAMFS_CORE=str(core))
+    stage = tmp_path / "data" / "beam_dry_test"
+    env = dict(os.environ, BEAMFS_CORE=str(core), M2FS_DATA=str(tmp_path / "data"), PNFS_OUT=str(tmp_path / "pnfs"))
     result = subprocess.run(["bash", str(ART / "submit_beam_closure.sh"), stage, str(tasks), "--test"],
                             env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "tasks: 1" in result.stdout and "jobsub_submit" in result.stdout
-    assert not Path(stage).exists()
+    assert not stage.exists() and not (tmp_path / "pnfs").exists()
+
+
+@pytest.mark.parametrize("missing", ["PNFS_OUT", "M2FS_DATA"])
+def test_submit_requires_site_configuration(tmp_path, missing):
+    core = tmp_path / "core"
+    (core / "mu2efastsim").mkdir(parents=True)
+    tasks = tmp_path / "tasks.txt"
+    tasks.write_text("foilscan moved_edge -13 1000 9 full_finest\n")
+    env = dict(os.environ, BEAMFS_CORE=str(core), M2FS_DATA=str(tmp_path / "data"), PNFS_OUT=str(tmp_path / "pnfs"))
+    del env[missing]
+    result = subprocess.run(["bash", str(ART / "submit_beam_closure.sh"), str(tmp_path / "data" / "s"), str(tasks)],
+                            env=env, capture_output=True, text=True)
+    assert result.returncode != 0 and missing in result.stderr
+    assert "jobsub_submit" not in result.stdout

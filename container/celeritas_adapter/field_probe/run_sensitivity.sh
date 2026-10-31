@@ -1,23 +1,24 @@
 #!/bin/bash
 #SBATCH --job-name=m2fs_celer_h6b
-#SBATCH --account=ldmxuva
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:a100:1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=8G
 #SBATCH --time=00:25:00
-#SBATCH --output=/scratch/%u/mu2efastsim/probe/celer-h6b-%j.out
 # Execute new control-isolation fixtures with the unchanged h6 binary and runner.
+# Submit with the account and log location from site.env, e.g.
+#   sbatch -A "$SBATCH_ACCOUNT" --output="$CELERITAS_PROBE_OUT/%x-%j.out" container/celeritas_adapter/field_probe/run_sensitivity.sh
+# CELERITAS_FIELD_SENSITIVITY_INPUT holds the prepared checker/, fixtures/ and snapshot.sha256.
 set -eo pipefail
 module load apptainer
 set -u
 : "${SLURM_JOB_ID:?Submit with sbatch}"
-SRC=/home/$USER/mu2e/fastsim_uva/celer_field_h6/src
-INPUT=/home/$USER/mu2e/fastsim_uva/celer_field_h6b
-BUILD=/scratch/$USER/mu2efastsim/celer_field_h6-build
-H5=/scratch/$USER/mu2efastsim/celer_rdc_h5
-IMAGE=/scratch/$USER/mu2efastsim/mu2e-celeritas.sif
-BASE=/scratch/$USER/mu2efastsim/probe
+SRC=${CELERITAS_FIELD_PROBE_ROOT:?set CELERITAS_FIELD_PROBE_ROOT to the prepared field-probe snapshot (site.env)}/src
+INPUT=${CELERITAS_FIELD_SENSITIVITY_INPUT:?set CELERITAS_FIELD_SENSITIVITY_INPUT to the prepared sensitivity snapshot (site.env)}
+BUILD=${CELERITAS_FIELD_PROBE_BUILD:?set CELERITAS_FIELD_PROBE_BUILD to the field-probe build directory (site.env)}
+H5=${CELERITAS_BUILD_ROOT:?set CELERITAS_BUILD_ROOT to the existing Celeritas build root holding install/ (site.env)}
+IMAGE=${CELERITAS_SIF:?set CELERITAS_SIF to the existing Celeritas image (site.env)}
+BASE=${CELERITAS_PROBE_OUT:?set CELERITAS_PROBE_OUT to the probe evidence directory (site.env)}
 OUT=$BASE/celer_field_h6b_${SLURM_JOB_ID}
 GPU=$(nvidia-smi --query-gpu=name,uuid,driver_version --format=csv,noheader)
 [[ $GPU == *A100* ]] || { echo 'A100 required' >&2; exit 2; }

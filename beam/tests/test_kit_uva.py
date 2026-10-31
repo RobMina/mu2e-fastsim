@@ -74,9 +74,24 @@ class Site:
         return subprocess.CompletedProcess(cmd, 0, out, b"")
 
 
+GEO = "/fnal/geom-area"          # placeholder FASTSIMKIT_GEOMETRY_PREFIX for absolute overlay paths
+
+
+# Placeholder site configuration (mu2efastsim.site); nothing here names a real site, user or storage area.
+SITE = {"FASTSIMKIT_GEOMETRY_PREFIX": GEO, "FASTSIMKIT_FNAL_HOST": "fnal-host.example",
+        "FASTSIMKIT_SLURM_HOST": "slurm-host.example", "FASTSIMKIT_SLURM_ACCOUNT": "test_account",
+        "FASTSIMKIT_SCRATCH": "/path/to/slurm"}
+
+
+@pytest.fixture(autouse=True)
+def _site(monkeypatch):
+    for name, value in SITE.items():
+        monkeypatch.setenv(name, value)
+
+
 class Source(kit_uva._Source):
     def __init__(self):
-        super().__init__("gpvm", "/exp/beam")
+        super().__init__("gpvm", "/fnal/beam")
 
     revision = "original"
 
@@ -95,13 +110,13 @@ def make(tmp_path, cleanup=True, md5_ok=True):
 
     def stream_runner(src, host, remote, timeout):
         path = src[-1].split("cat ", 1)[1].strip("'")
-        rel = path.split("/exp/beam/", 1)[1] if path.startswith("/exp/beam/") else path
+        rel = path.split("/fnal/beam/", 1)[1] if path.startswith("/fnal/beam/") else path
         streamed.append((rel, remote.split("cat > ")[1].split()[0].strip("'\"")))
         return (source.md5(rel) if md5_ok else "bad") + " x"
 
-    ep = SlurmSSHEndpoint(runner=site, state_dir=tmp_path / "jobs", workdir="/scratch/u/kit", stream_runner=stream_runner)
+    ep = SlurmSSHEndpoint(runner=site, state_dir=tmp_path / "jobs", workdir="/path/to/slurm/kit", stream_runner=stream_runner)
     kit = FastsimKit(endpoint=ep, state_dir=tmp_path / "kit", sif="/x/m.sif")
-    kit._delegates["beam_point"] = kit_uva.BeamPointStream(kit, source=source, code="/scratch/u/beam", background=False)
+    kit._delegates["beam_point"] = kit_uva.BeamPointStream(kit, source=source, code="/path/to/slurm/beam", background=False)
     return site, ep, kit, streamed
 
 
@@ -114,14 +129,14 @@ def test_validate():
                 {**P, "muons": 0}, {**P, "repeat": 1.5}, {k: v for k, v in P.items() if k != "seed"}):
         with pytest.raises(ValueError):
             kit_uva.validate(bad)
-    assert kit_uva.validate({**P, "geom": "/exp/mu2e/data/users/x/geom/pt01.txt"})["geom"].endswith("pt01.txt")
+    assert kit_uva.validate({**P, "geom": f"{GEO}/x/geom/pt01.txt"})["geom"].endswith("pt01.txt")
 
 
 def test_uva_delegates_and_eaf_does_not(tmp_path):
     _, ep, kit, _ = make(tmp_path)
     assert kit.check("b", P, [], [])["ok"]                       # FNAL-only as a plain task, but delegated on UVA
     assert kit_task._UVADelegate.applies(ep)
-    assert not kit_task._UVADelegate.applies(type("E", (), {"fnal_data": "/exp/x", "stream_in": 1})())
+    assert not kit_task._UVADelegate.applies(type("E", (), {"fnal_data": "/fnal/x", "stream_in": 1})())
 
 
 def test_submit_stream_results(tmp_path):
@@ -134,10 +149,10 @@ def test_submit_stream_results(tmp_path):
     assert r.returncode == 0, r.stderr.decode()
     assert kit.status("bp1")["state"] == "working" and not streamed
     site.state[j] = "RUNNING"
-    site.files[f"{site.dirs[j]}/inbox"] = "udc-a1 /tmp/beamfs_kit_j7001_9\n"
+    site.files[f"{site.dirs[j]}/inbox"] = "udc-a1 /dev/shm/beamfs_kit_j7001_9\n"
     kit.status("bp1")
-    assert streamed == [("g4ref_full/g4ref.npz", "/tmp/beamfs_kit_j7001_9/g4ref.npz")]
-    assert any("touch" in c and "/tmp/beamfs_kit_j7001_9/ready" in c for c in site.cmds)
+    assert streamed == [("g4ref_full/g4ref.npz", "/dev/shm/beamfs_kit_j7001_9/g4ref.npz")]
+    assert any("touch" in c and "/dev/shm/beamfs_kit_j7001_9/ready" in c for c in site.cmds)
     site.state[j] = "COMPLETED"
     res = kit.results("bp1")
     assert res["metrics"]["stop_frac"] == 0.358 and res["metrics"]["input_wait_s"] == 12
@@ -147,12 +162,12 @@ def test_submit_stream_results(tmp_path):
 
 def test_overlay_path_streamed_and_md5_mismatch_cancels(tmp_path):
     site, ep, kit, streamed = make(tmp_path, md5_ok=False)
-    g = "/exp/mu2e/data/users/x/geom/pt01.txt"
+    g = f"{GEO}/x/geom/pt01.txt"
     kit.submit("bp2", {**P, "geom": g}, [], [])
     j = ep.state.get("bp2").job_id
     assert '--geom "$L/geom_overlay.txt"' in site.body
     site.state[j] = "RUNNING"
-    site.files[f"{site.dirs[j]}/inbox"] = "udc-a1 /tmp/t\n"
+    site.files[f"{site.dirs[j]}/inbox"] = "udc-a1 /dev/shm/t\n"
     kit.status("bp2")
     assert site.state[j] == "CANCELLED"
     assert "stream error" in kit.status("bp2")["message"]
@@ -346,14 +361,15 @@ def test_artifact_binding_is_durable_before_dispatch_and_retry(tmp_path, monkeyp
 
 
 @pytest.mark.parametrize("field", ["host", "account", "partition", "workdir", "source_host", "source_root"])
-def test_retry_target_changes_refused(tmp_path, field):
+def test_retry_target_changes_refused(tmp_path, monkeypatch, field):
     _, ep, kit, _ = make(tmp_path)
     d = kit._delegates["beam_point"]
     d.submit("target", P)
-    if field.startswith("source_"):
-        setattr(d.source, field.removeprefix("source_"), "changed")
-    else:
-        setattr(ep, field, "changed")
+    obj, name = (d.source, field.removeprefix("source_")) if field.startswith("source_") else (ep, field)
+    try:
+        setattr(obj, name, "changed")
+    except AttributeError:                     # a read-only property resolved from the site configuration
+        monkeypatch.setattr(type(obj), name, "changed")
     with pytest.raises(ValueError, match="target|source"):
         d.submit("target", P)
 
@@ -450,3 +466,20 @@ def test_uva_geometry_retry_never_renders_current_body(tmp_path, monkeypatch):
     assert not check["ok"] and "target/source" in check["message"]
     with pytest.raises(ValueError, match="target/source"):
         kit.submit("geometry", params, [ref], [], ["stop_frac"])
+
+
+def test_source_and_code_fail_closed_without_site_variables(tmp_path, monkeypatch):
+    from mu2efastsim import site
+    for v in ("FASTSIMKIT_FNAL_HOST", "FASTSIMKIT_BEAM_DATA", "FASTSIMKIT_BEAM_CODE", "FASTSIMKIT_SCRATCH",
+              "M2FS_INPUTS", "M2FS_DATA"):
+        monkeypatch.delenv(v, raising=False)
+    _, _, kit, _ = make(tmp_path)
+    d = kit_uva.BeamPointStream(kit, background=False)
+    with pytest.raises(site.SiteConfigError, match="FASTSIMKIT_FNAL_HOST"):
+        d.source
+    with pytest.raises(site.SiteConfigError, match="FASTSIMKIT_SCRATCH"):
+        d.code
+    monkeypatch.setenv("FASTSIMKIT_FNAL_HOST", "fnal-host")
+    monkeypatch.setenv("M2FS_INPUTS", "/inputs")
+    monkeypatch.setenv("FASTSIMKIT_SCRATCH", "/path/to/slurm")
+    assert (d.source.host, d.source.root, d.code) == ("fnal-host", "/inputs/beam_fastsim", "/path/to/slurm/beam_code_kit")

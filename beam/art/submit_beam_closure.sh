@@ -11,9 +11,11 @@ for o in "$@"; do case "$o" in --test) TEST=1 ;; --submit) SUBMIT=1 ;; *) echo "
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"           # beam/
 CORE="${BEAMFS_CORE:-$(cd "$HERE/../core" 2>/dev/null && pwd)}"   # core checkout holding mu2efastsim/
 [ -d "$CORE/mu2efastsim" ] || { echo "ERROR: set BEAMFS_CORE to the core checkout"; exit 1; }
-PNFS="${PNFS_OUT:-/pnfs/mu2e/scratch/users/ram2aq/beam_closure_20261026}"
-OUTDIR="$PNFS/out"; TOKEN_DIR="$(echo "$PNFS" | sed 's|^/pnfs/mu2e|/mu2e|')"
-case "$STAGE" in /exp/mu2e/data/users/ram2aq/*) ;; *) echo "ERROR: staging requires a data-area path"; exit 2 ;; esac
+PNFS="${PNFS_OUT:?set PNFS_OUT to a new dCache (pnfs) scratch output directory}"
+# storage.modify scope of the token: the path without its mount-point component (/<mount>/mu2e/... -> /mu2e/...)
+OUTDIR="$PNFS/out"; TOKEN_DIR="/${PNFS#/*/}"
+DATA="${M2FS_DATA:?set M2FS_DATA to your writable data area (site.env)}"
+case "$STAGE" in "${DATA%/}"/*) ;; *) echo "ERROR: staging requires a path inside the data area M2FS_DATA=$DATA"; exit 2 ;; esac
 [ -f "$TASKS" ] || { echo "ERROR: no task list $TASKS"; exit 2; }
 N=$(grep -cv '^[[:space:]]*$' "$TASKS")
 [ "$N" -gt 0 ] || { echo "ERROR: empty task list"; exit 2; }

@@ -71,7 +71,7 @@ art multithreading.
 
 ## Probes and exact bridge comparison
 
-`probe_r1.sbatch` prepares the client with UVA host tools and runs `probe_r1.sh` in an existing EL9 image. Supply
+`probe_cvmfs.sbatch` prepares the client with the host tools and runs `probe_cvmfs.sh` in an existing EL9 image. Supply
 `OFFLINE_ROOT` as an output/snapshot directory and `OFFLINE_IMAGE`; an optional `CVMFSEXEC_DIST` reuses the distribution.
 The probe mounts config-osg, mu2e and fermilab, sets up released SimJob MDC2025ba, runs version and FCL checks twice
 against the same local cache, and reports cold/warm time. The release is an explicit test reference, not a default
@@ -82,7 +82,9 @@ Supply `OFFLINE_INPUT` (containing `gen.art` and `dts.art`), `OFFLINE_AREA` (the
 `OFFLINE_G4_TABLE` and the same runtime variables. `compare_reference.sbatch` also takes `OFFLINE_BRIDGE` and
 `OFFLINE_REFERENCE` (with `<arm>/valhist.<shard>.root`; `OFFLINE_SHARD` defaults to `001400_00000022`).
 `parallel_reference.sbatch` runs two independent-cache A0 invocations in a two-core allocation. These are explicit
-validation fixtures, not general data-discovery or production-submission tools.
+validation fixtures, not general data-discovery or production-submission tools. The `.sbatch` files name no Slurm
+account: pass `-A` or set Slurm's own `SBATCH_ACCOUNT` (site.env), and keep the umbrella checkout at
+`$OFFLINE_ROOT/code`.
 
 ```bash
 python3 container/offline/compare_root.py reference.root candidate.root --output comparison.json

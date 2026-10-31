@@ -85,22 +85,23 @@ prescale one, zero-hit events and event-cluster uncertainty. Do not use the TS3 
 
 ## Replay and tests
 
-From the workspace with the project Python environment:
+From the umbrella checkout, with a Python environment holding numpy/scipy/pytest:
 
 ```bash
-E=remote-uva-data/mu2efastsim/probe
-P=remote/analysis/fs_wt/flash/container
-.venv/bin/python3 "$P/celeritas_adapter/field_probe/sensitivity.py" check \
+E="$CELERITAS_PROBE_OUT"                         # or a local copy of it
+P=container
+python3 "$P/celeritas_adapter/field_probe/sensitivity.py" check \
   "$E/celer_field_h6b_21983992/results" --baseline "$E/celer_field_h6_21983494/results"
 # Expected exit 1: the retained loose-setting momentum failures remain failures.
-.venv/bin/python3 "$P/celeritas_adapter/boundary.py" check "$E/n5_boundary_22043561/results"
-.venv/bin/python3 "$P/celeritas_adapter/map_coverage.py" "$E/n5_audit_20261027/"*.header \
-  --gdml remote-data/crv_fastsim/geometry/mu2e_run1a_v01.gdml --mu2e-origin-world-mm 0 0 0
+python3 "$P/celeritas_adapter/boundary.py" check "$E/n5_boundary_22043561/results"
+python3 "$P/celeritas_adapter/map_coverage.py" "$E/n5_audit_20261027/"*.header \
+  --gdml "$CRVFS_DATA/geometry/mu2e_run1a_v01.gdml" --mu2e-origin-world-mm 0 0 0
 M2FS_FIELD_PROBE_RESULTS="$PWD/$E/celer_field_h6_21983494/results" \
-  .venv/bin/python3 -m pytest -q "$P/tests"
+  python3 -m pytest -q "$P/tests"
 ```
 
 Local suite: **70 passed, one optional pinned-upstream preparation skip**. Boundary replay is now read-only
 and additionally rederives map/GDML plus verifies the retained h5 binary hash; the submitted runner snapshot
-is unchanged. New runner deployment lives at `fastsim_uva/n5_boundary_20261027`; results at
-`probe/n5_boundary_22043561`, audit/replays at `probe/n5_audit_20261027`. No rerun is needed for replay.
+is unchanged. The one-off batch wrapper of run 22043561 is not kept in the repository (`boundary.py run` is the
+entry point it called); results are at `$CELERITAS_PROBE_OUT/n5_boundary_22043561`, audit/replays at
+`$CELERITAS_PROBE_OUT/n5_audit_20261027`. No rerun is needed for replay.

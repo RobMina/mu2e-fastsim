@@ -1,5 +1,17 @@
 # beam/: Geant4-free muon beam transport to the stopping target (prototype)
 
+## Collaborator inputs
+
+The umbrella [input inventory and setup](../setup/README.md) lists the MuBeamCat-derived
+muon table, field map, geometry include tree and their publication gate.
+No approved distributable beam input release is bundled. `beamfastsim.stage` can
+fetch public map/geometry assets, but their hashes must be pinned alongside the
+muon input. The streamed endpoint needs `FASTSIMKIT_FNAL_HOST` and reads `FASTSIMKIT_BEAM_DATA` (default
+`$M2FS_INPUTS/beam_fastsim`) and `FASTSIMKIT_BEAM_CODE` (default `$FASTSIMKIT_SCRATCH/beam_code_kit`). The job
+scripts take `M2FS_CODE`, `VENV` or `FASTSIMKIT_EAF_VENV` (a Python/JAX venv), `BEAMFS_DATA_ROOT` (the
+`beam_fastsim` data area every closure output must be inside), `M2FS_DATA` and `PNFS_OUT` (grid staging) from your
+site.env; each stops with a message naming a missing variable.
+
 Package `beamfastsim` (imports `mu2efastsim` from `core/`). Replaces the DS stage of the stock beam chain
 (`Production/JobConfig/pileup/MuBeamResampler.fcl`) for the target-stop question: muons from the DS entrance (as
 written by the POT stage, `MuBeamCat`) are carried through the field map, the stopping-target foils and the IPA in
@@ -132,7 +144,7 @@ PYTHONPATH=core:beam python3 -m beamfastsim.layerreport \
 ```
 
 Pass the same `--geom` to `layerstudy` for a moved target. On the GPVM, `pyenv ana` alone does not supply JAX;
-use the existing project JAX environment (the path is documented in `art/run_fast_cpu.sh`), its `bin/python3`,
+use an existing JAX environment (`VENV` or `FASTSIMKIT_EAF_VENV`, as in `art/run_fast_cpu.sh`), its `bin/python3`,
 `JAX_PLATFORMS=cpu` and one CPU affinity. These are diagnostics, not BO parameters or a production-slice change.
 
 `layerstudy` checks the saved whole-event pilot's source/input/geometry/field hashes, then observes its seed's
@@ -293,7 +305,7 @@ in a small vacuum world, not a renamed Mu2e material. No art output, build or pr
 
 In an idle one-CPU GPVM session with the published release set up, use an existing Python environment with
 uproot/SciPy/JAX and explicit `PYTHONPATH=core:beam`. In the examples `$PY` is that environment's `bin/python3`;
-all `$DATA` paths must be inside `/exp/mu2e/data/users/ram2aq/beam_fastsim`.
+all `$DATA` paths must be inside `$BEAMFS_DATA_ROOT` (your `beam_fastsim` data area; the drivers refuse others).
 
 ```bash
 # Setup once in the session, never in a build/setup script.
@@ -399,11 +411,12 @@ its output archive is not evidence of success without a checked completion marke
 MSC effective-path approximation. It is not Geant4 transport and is not eligible for production promotion from
 aggregate stop counts. `msc=False` disables both the angular kick and effective-path correction. Requires the
 separate core `eloss_jax.sample_loss(..., mean=)` change; select that checkout explicitly on `PYTHONPATH`.
-The campaign's companion checkout is `../beam-core` relative to this worktree; the umbrella's empty `core/`
-submodule directory and an older main core do not supply that API.
+Put a core checkout with that API first on `PYTHONPATH` (written `$CORE` below); an uninitialised `core/` submodule
+directory or an older core does not supply it.
 
 **Grid** (`art/submit_beam_closure.sh STAGE TASKS [--test] [--submit]`, worker `art/grid_beam_closure.sh`, code
-tarball staged on pnfs, `BEAMFS_CORE` = the core checkout, `MEMORY` overrides 4000MB). Task lines:
+tarball staged on pnfs, `BEAMFS_CORE` = the core checkout, `MEMORY` overrides 4000MB). `STAGE` must be a new
+directory inside `M2FS_DATA`; `PNFS_OUT` is the pnfs scratch directory for the tarball and outputs. Task lines:
 
 ```text
 foilscan SCAN PDG [EVENTS [SEEDOFF]] MODES...   G4 slab runs (foilscan.SCANS: flat scans t1056/t2/t4 or cells)
@@ -467,7 +480,7 @@ ComputeGeomPathLength,ComputeTrueStepLength}` and `G4VMscModel::GetTransportMean
 belongs to step-limited segments; using it as a whole-foil traversal condition is not equivalent.
 
 ```bash
-PYTHONPATH=../beam-core:beam python3 -m beamfastsim.slabstudy \
+PYTHONPATH="$CORE:beam" python3 -m beamfastsim.slabstudy \
   --cell moved_edge --pdg -13 --samples 2000 --seed 71 \
   --arms no_scatter diffuse half_step half_angle half_energy refined \
   --slab-tables "$SLAB_EXPORT" --campaign "$SAVED_G4_CAMPAIGN" --out "$DATA/slab_NEW"
@@ -497,7 +510,7 @@ reference exits incompatible with the infinite-plane model. Mu+ slab validation 
 mu+ response, and the shared charge assumption for the MSC table remains unvalidated.
 
 ```bash
-PYTHONPATH=../beam-core:beam python3 -m beamfastsim.slabstudy \
+PYTHONPATH="$CORE:beam" python3 -m beamfastsim.slabstudy \
   --cell moved_edge --pdg 13 --samples 2000 --seed 72 --arms no_scatter diffuse refined \
   --max-steps 20000 --slab-tables "$SLAB_EXPORT" \
   --campaign "$SAVED_MATRIX" "$SAVED_REFINEMENT" --out "$DATA/slab_NEW"

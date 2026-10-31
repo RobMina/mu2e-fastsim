@@ -23,9 +23,10 @@ if [ "$MUSE_WORK_DIR" != /cvmfs/mu2e.opensciencegrid.org/Musings/SimJob/MDC2025a
     echo "Refusing unexpected release: $MUSE_WORK_DIR" >&2
     exit 2
 fi
+DATA=$(realpath -m "${BEAMFS_DATA_ROOT:?set BEAMFS_DATA_ROOT to your beam_fastsim data area (site.env)}")
 case "$OUT" in
-    /exp/mu2e/data/users/ram2aq/beam_fastsim/*) ;;
-    *) echo "Output must be in the beam_fastsim data area" >&2; exit 2 ;;
+    "$DATA"/*) ;;
+    *) echo "Output must be in the beam_fastsim data area $DATA (BEAMFS_DATA_ROOT)" >&2; exit 2 ;;
 esac
 if [ -e "$OUT" ]; then
     echo "Output already exists: $OUT" >&2

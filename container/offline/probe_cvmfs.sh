@@ -1,7 +1,7 @@
 #!/bin/bash
 # Run inside an EL9 image on an allocated CPU node, with /dev/fuse and node-local scratch bound.
 set -eo pipefail
-OUT=${1:?usage: probe_r1.sh OUTPUT NODE_LOCAL}
+OUT=${1:?usage: probe_cvmfs.sh OUTPUT NODE_LOCAL}
 LOCAL=${2:?need node-local scratch}
 mkdir -p "$OUT" "$LOCAL"
 exec > >(tee "$OUT/probe.log") 2>&1

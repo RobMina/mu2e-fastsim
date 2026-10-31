@@ -3,7 +3,7 @@
 Registered in mu2efastsim.endpoints.kit by `register(TASKS, Task, Resources, FNAL_TASKS)`. Reads the Mu2e-internal
 DS-entrance muons (g4ref table made from MuBeamCat) in place, so it runs only on an endpoint that mounts FNAL storage
 (eaf), or with the muon table streamed into the job on a Slurm-over-SSH endpoint (UVA; kit_uva). Params:
-  geom     geometry file: absolute path on FNAL storage (/exp/mu2e/...), a name under beam/geom, or "nominal"
+  geom     geometry file: absolute path on FNAL storage, a name under beam/geom, or "nominal"
   muons    number of DS-entrance muons to transport (<= the table size, 105,350 for MDC2025ac)
   seed     random seed
   repeat   warm passes for the throughput metric (0 = none)

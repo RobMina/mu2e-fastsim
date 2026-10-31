@@ -9,10 +9,14 @@ Offline geometry tree) are fetched inside the job from the CVMFS Stratum-1 (``be
 retained read-only snapshot of the umbrella on the endpoint (FASTSIMKIT_BEAM_CODE, FASTSIMKIT_CODE_REF) run in the image (FASTSIMKIT_SIF).
 The kit host must reach both the endpoint and the FNAL host by ssh for the point's lifetime.
 
-Environment: FASTSIMKIT_FNAL_HOST (default mu2egpvm03), FASTSIMKIT_BEAM_DATA (FNAL dir holding g4ref_full/g4ref.npz),
-FASTSIMKIT_BEAM_CODE, FASTSIMKIT_CODE_REF.
+Environment (site.env): FASTSIMKIT_FNAL_HOST (required: the FNAL host the input is streamed from),
+FASTSIMKIT_BEAM_DATA (FNAL dir holding g4ref_full/g4ref.npz; default <M2FS_INPUTS or M2FS_DATA>/beam_fastsim),
+FASTSIMKIT_BEAM_CODE (default <FASTSIMKIT_SCRATCH>/beam_code_kit), FASTSIMKIT_CODE_REF (default main).
+They are read when the source or the code snapshot is first needed; a missing one raises site.SiteConfigError.
 """
 from __future__ import annotations
+
+from mu2efastsim import site
 
 import json
 from dataclasses import asdict
@@ -70,15 +74,34 @@ def validate(params: Dict[str, Any]) -> Dict[str, Any]:
 class BeamPointStream:
     def __init__(self, kit, source=None, code=None, background=True, poll_s=10.0):
         self.kit, self.ep = kit, kit.ep
-        self.source = source or _Source(os.environ.get("FASTSIMKIT_FNAL_HOST", "mu2egpvm03"),
-                                        os.environ.get("FASTSIMKIT_BEAM_DATA", "/exp/mu2e/data/users/ram2aq/beam_fastsim"))
-        self.code = code or os.environ.get("FASTSIMKIT_BEAM_CODE", "/scratch/ram2aq/mu2efastsim/beam_code_kit")
+        self._source, self._code = source, code
         self.code_ref = os.environ.get("FASTSIMKIT_CODE_REF", "main")
         self.background, self.poll_s = background, poll_s
         self.dir = Path(kit.out_root).parent / "beam_point"
         self.dir.mkdir(parents=True, exist_ok=True)
         self._threads: Dict[str, threading.Thread] = {}
         self._lock = threading.Lock()
+
+    @property
+    def source(self):
+        if self._source is None:
+            self._source = _Source(site.require("FASTSIMKIT_FNAL_HOST"),
+                                   site.setting("FASTSIMKIT_BEAM_DATA") or site.data_root() + "/beam_fastsim")
+        return self._source
+
+    @source.setter
+    def source(self, value):
+        self._source = value
+
+    @property
+    def code(self):
+        if self._code is None:
+            self._code = site.setting("FASTSIMKIT_BEAM_CODE") or site.scratch() + "/beam_code_kit"
+        return self._code
+
+    @code.setter
+    def code(self, value):
+        self._code = value
 
     def _mark(self, name, what, text=""):
         (self.dir / f"{name}.{what}").write_text(text)

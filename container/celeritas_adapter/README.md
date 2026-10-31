@@ -1,7 +1,7 @@
 # Celeritas 0.6.3 Cartesian-field and rootless-event adapter
 
 **October 27 follow-up:** the existing user-built h5 adapter and h6 probe have been exercised; see
-[control sensitivity, thin-surface results and remaining Mu2e gates](n5-results.md). The preparation/build
+[control sensitivity, thin-surface results and remaining Mu2e gates](boundary-results.md). The preparation/build
 sections below describe the original h4 handoff, not a request to rebuild. Use the repaired h5 library prefix
 for runtime; the original image's Cartesian device kernel must not be reused unpatched.
 
@@ -51,19 +51,20 @@ field-domain coverage from the sample's resolved geometry/configuration, not cop
 
 ## User build (inside the existing image, on an allocated UVA node)
 
-Prepared source is deployed at `/home/ram2aq/mu2e/fastsim_uva/celer_adapter_h4` (h2/h3 are superseded preparation
+Prepared source is deployed at `$CELERITAS_ADAPTER_SRC` (h2/h3 are superseded preparation
 snapshots; do not use them). Its manifest SHA256 is
-`774e93dc8e2f8aec55b0e76947cb237c72300d5e1d122ccc89ca08b57fe28933`, verified after mirror sync. All **29 Python
+`774e93dc8e2f8aec55b0e76947cb237c72300d5e1d122ccc89ca08b57fe28933`, verified after copying. All **29 Python
 contract/preparation tests pass**, including the exact upstream hashes. No compiler/configure command was run.
-These are manual user commands, not a build script. From `uva-hpc`, obtain a normal short queue allocation:
+These are manual user commands, not a build script. From the Slurm login host (`FASTSIMKIT_SLURM_HOST`), obtain a normal short queue allocation:
 
 ```bash
-srun -A ldmxuva -p gpu --gres=gpu:a100:1 -c 2 --mem=8G -t 00:20:00 --pty bash -l
+srun -A "$SBATCH_ACCOUNT" -p gpu --gres=gpu:a100:1 -c 2 --mem=8G -t 00:20:00 --pty bash -l
 module load apptainer
-SRC=/home/ram2aq/mu2e/fastsim_uva/celer_adapter_h4
-BUILD=/scratch/ram2aq/mu2efastsim/celer_adapter_h4-build
+source /path/to/your/site.env      # CELERITAS_ADAPTER_SRC, CELERITAS_ADAPTER_BUILD, CELERITAS_SIF
+SRC=$CELERITAS_ADAPTER_SRC
+BUILD=$CELERITAS_ADAPTER_BUILD
 mkdir "$BUILD"
-IMAGE=/scratch/ram2aq/mu2efastsim/mu2e-celeritas.sif
+IMAGE=$CELERITAS_SIF
 apptainer exec --cleanenv --nv --bind "$SRC:$SRC:ro" --bind "$BUILD:$BUILD" "$IMAGE" \
   cmake -S "$SRC" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=80
 apptainer exec --cleanenv --nv --bind "$SRC:$SRC:ro" --bind "$BUILD:$BUILD" "$IMAGE" \

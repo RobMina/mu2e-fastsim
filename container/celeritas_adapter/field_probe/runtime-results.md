@@ -22,7 +22,7 @@ step size or map refinement. The diagnostic error envelopes are not Mu2e accepta
 | Source manifest | `7b6c29280c469ac98a21c5ec26e352c96c78734f115b16e36b70c28f133c78bf` |
 | Executable SHA256 | `a423c659bda77c78b738fc50c5a63540caecf1807aa19f16beb7a395e10922a6` |
 | Submitted wrapper SHA256 | `d685fd772483471f42f450c497cb027f7ae4768bdf52476f8e3806e276af0a03` |
-| Existing library prefix | `/scratch/ram2aq/mu2efastsim/celer_rdc_h5/install` |
+| Existing library prefix | `$CELERITAS_BUILD_ROOT/install` |
 
 The five build steps include `ProbeKernels.cu` compiled with **`-rdc=true`**, a device link against h5 static
 archives and image VecGeom, and the executable link. Cache/compilation database bind the pinned source,
@@ -32,15 +32,15 @@ h5, with no missing dependencies. H6 owns its final device link; no separate `li
 in this executable's loaded family. Geant4/VecGeom remain image dependencies.
 
 Evidence root on UVA:
-`/scratch/ram2aq/mu2efastsim/probe/celer_field_h6_21983494/`, plus `celer-h6-21983494.out`.
-Mirrored under `~/mu2e/remote-uva-data/mu2efastsim/probe/`.
+`$CELERITAS_PROBE_OUT/celer_field_h6_21983494/`, plus `celer-h6-21983494.out`.
+Mirrored under `a local copy of `$CELERITAS_PROBE_OUT``.
 The root holds build logs/cache, compiler database, source manifest, Slurm accounting and hashes;
 `results/` holds the unchanged maps/requests/expectations, raw host/device outputs, memcheck logs and run
 manifest. `oracle-check-v3.json` is the successful corrected replay. `replay-source/` and
 `replay-provenance.sha256` retain the checker actually used. Raw result/fixture hashes were verified after
 sync; the checker independently regenerates all six fixtures and reference solutions.
 
-No h4/h5 baseline was rerun, no agent build was started, and no Mu2e-internal input was transferred.
+No h4/h5 baseline was rerun, no automated build was started, and no Mu2e-internal input was transferred.
 
 ## Measured values
 
@@ -102,15 +102,14 @@ helix-radius check derived independently from SI charge, momentum and speed-of-l
 ## Reproduce without rerunning GPU transport
 
 ```bash
-cd ~/mu2e
-E=remote-uva-data/mu2efastsim/probe/celer_field_h6_21983494
-.venv/bin/python3 "$E/replay-source/oracle.py" check "$E/results" > /tmp/h6-replay.json
-M2FS_FIELD_PROBE_RESULTS="$PWD/$E/results" .venv/bin/python3 -m pytest -q \
-  remote/analysis/mu2e-fastsim/container/tests
+# from the umbrella checkout, with a Python environment holding numpy/scipy/pytest
+E="$CELERITAS_PROBE_OUT/celer_field_h6_21983494"     # or a local copy of it
+python3 "$E/replay-source/oracle.py" check "$E/results" > h6-replay.json
+M2FS_FIELD_PROBE_RESULTS="$E/results" python3 -m pytest -q container/tests
 ```
 
 The executed wrapper is `field_probe/run_probe.sh`, deployed outside immutable `src/` at
-`/home/ram2aq/mu2e/fastsim_uva/celer_field_h6/run_probe.sh`; it requests one A100 and runs only the existing
+`$CELERITAS_FIELD_PROBE_ROOT/run_probe.sh`; it requests one A100 and runs only the existing
 binary under memcheck. No new run is needed to reproduce the local verdict.
 
 ## Next gates

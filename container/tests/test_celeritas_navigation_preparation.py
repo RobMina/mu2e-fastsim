@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -23,9 +24,9 @@ runner = load("run_probe")
 
 class PreparationTest(unittest.TestCase):
     def test_source_pins_match_read_only_upstream(self):
-        upstream = Path("/tmp/thread-h-celeritas-full")
-        if not upstream.exists():
-            self.skipTest("optional pinned upstream source absent")
+        if not os.environ.get("M2FS_CELERITAS_SOURCE"):
+            self.skipTest("set M2FS_CELERITAS_SOURCE to the pinned upstream source for this optional check")
+        upstream = Path(os.environ["M2FS_CELERITAS_SOURCE"])
         for name, digest in prepare.API_PINS.items():
             self.assertEqual(prepare.digest(upstream / "src" / name), digest, name)
 

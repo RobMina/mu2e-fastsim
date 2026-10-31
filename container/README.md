@@ -36,7 +36,7 @@ Built by the user on a UVA node (1-3 h, needs `--fakeroot` and outbound internet
 
 ```bash
 module load apptainer
-JOBS=32 container/build_celeritas.sh /scratch/$USER/mu2efastsim/mu2e-celeritas.sif
+JOBS=32 container/build_celeritas.sh "$CELERITAS_SIF"
 ```
 
 Both build scripts cap `mksquashfs` (the step that packs the `.sif`) at `SQUASHFS_MEM` (default 4G) and

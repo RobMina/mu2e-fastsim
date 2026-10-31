@@ -1,22 +1,23 @@
 #!/bin/bash
 #SBATCH --job-name=m2fs_celer_h6
-#SBATCH --account=ldmxuva
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:a100:1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=8G
 #SBATCH --time=00:25:00
-#SBATCH --output=/scratch/%u/mu2efastsim/probe/celer-h6-%j.out
 # Execute the immutable h6 probe under memcheck without compiling anything.
+# Submit with the account and log location from site.env, e.g.
+#   sbatch -A "$SBATCH_ACCOUNT" --output="$CELERITAS_PROBE_OUT/%x-%j.out" container/celeritas_adapter/field_probe/run_probe.sh
+# CELERITAS_FIELD_PROBE_ROOT holds the prepared src/ and fixtures/, CELERITAS_FIELD_PROBE_BUILD the user build.
 set -eo pipefail
 module load apptainer
 set -u
 : "${SLURM_JOB_ID:?Submit with sbatch}"
-ROOT=/home/$USER/mu2e/fastsim_uva/celer_field_h6
-BUILD=/scratch/$USER/mu2efastsim/celer_field_h6-build
-H5=/scratch/$USER/mu2efastsim/celer_rdc_h5
-IMAGE=/scratch/$USER/mu2efastsim/mu2e-celeritas.sif
-BASE=/scratch/$USER/mu2efastsim/probe
+ROOT=${CELERITAS_FIELD_PROBE_ROOT:?set CELERITAS_FIELD_PROBE_ROOT to the prepared field-probe snapshot (site.env)}
+BUILD=${CELERITAS_FIELD_PROBE_BUILD:?set CELERITAS_FIELD_PROBE_BUILD to the field-probe build directory (site.env)}
+H5=${CELERITAS_BUILD_ROOT:?set CELERITAS_BUILD_ROOT to the existing Celeritas build root holding install/ (site.env)}
+IMAGE=${CELERITAS_SIF:?set CELERITAS_SIF to the existing Celeritas image (site.env)}
+BASE=${CELERITAS_PROBE_OUT:?set CELERITAS_PROBE_OUT to the probe evidence directory (site.env)}
 EVIDENCE=$BASE/celer_field_h6_${SLURM_JOB_ID}
 GPU=$(nvidia-smi --query-gpu=name,uuid,driver_version --format=csv,noheader)
 [[ $GPU == *A100* ]] || { echo 'A100 required' >&2; exit 2; }

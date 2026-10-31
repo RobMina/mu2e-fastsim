@@ -67,27 +67,31 @@ The exact predeclared thresholds live in `oracle.py` and the generated expectati
 
 Canonical files are in `container/celeritas_adapter/field_probe/`. `prepare_probe.py` accepts the hash-pinned
 h4 snapshot, copies its map parser plus these source files, writes SHA256 provenance, and never configures or
-builds. Fixtures and source deploy through the UVA mirror; the prepared source manifest is checked before
+builds. Fixtures and source deploy to the cluster; the prepared source manifest is checked before
 runtime. Build paths:
 
-- Source: `/home/ram2aq/mu2e/fastsim_uva/celer_field_h6/src`.
-- Fixtures: `/home/ram2aq/mu2e/fastsim_uva/celer_field_h6/fixtures`.
-- New build: `/scratch/ram2aq/mu2efastsim/celer_field_h6-build`.
-- Existing Celeritas: `/scratch/ram2aq/mu2efastsim/celer_rdc_h5/install`.
+- Source: `$CELERITAS_FIELD_PROBE_ROOT/src`.
+- Fixtures: `$CELERITAS_FIELD_PROBE_ROOT/fixtures`.
+- New build: `$CELERITAS_FIELD_PROBE_BUILD`.
+- Existing Celeritas: `$CELERITAS_BUILD_ROOT/install`.
 
-Paste in a laptop terminal on the UVA network/VPN. The requested 30-minute allocation is a ceiling, not a
+Every variable comes from your site.env (sourced locally for the `ssh`/`srun` line and again inside
+the remote shell, whose first command below sources it).
+
+Paste in a terminal that can reach the Slurm login host. The requested 30-minute allocation is a ceiling, not a
 runtime estimate. The command builds **only the new probe** and never invokes a Celeritas/dependency build.
 Do not repeat the h5 rebuild. `mkdir` refuses an existing h6 build; inspect any interrupted job before retrying.
 
 ```bash
-ssh -T uva-hpc \
-  'srun -A ldmxuva -p gpu --gres=gpu:a100:1 -c 4 --mem=16G -t 00:30:00 --job-name=celer-field-h6-build bash -l -s' <<'UVA_COMMANDS'
+ssh -T "$FASTSIMKIT_SLURM_HOST" \
+  "srun -A $SBATCH_ACCOUNT -p gpu --gres=gpu:a100:1 -c 4 --mem=16G -t 00:30:00 --job-name=celer-field-h6-build bash -l -s" <<'UVA_COMMANDS'
+source /path/to/your/site.env
 module load apptainer || exit 1
 set -euo pipefail
-SRC=/home/ram2aq/mu2e/fastsim_uva/celer_field_h6/src
-BUILD=/scratch/ram2aq/mu2efastsim/celer_field_h6-build
-H5=/scratch/ram2aq/mu2efastsim/celer_rdc_h5
-IMAGE=/scratch/ram2aq/mu2efastsim/mu2e-celeritas.sif
+SRC=${CELERITAS_FIELD_PROBE_ROOT:?}/src
+BUILD=${CELERITAS_FIELD_PROBE_BUILD:?}
+H5=${CELERITAS_BUILD_ROOT:?}
+IMAGE=${CELERITAS_SIF:?}
 mkdir "$BUILD"
 apptainer exec --cleanenv --nv \
   --bind "$SRC:$SRC:ro" --bind "$BUILD:$BUILD" --bind "$H5:$H5:ro" \

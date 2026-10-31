@@ -1,7 +1,7 @@
 """Small opt-in slab-diffusion diagnostic; never launches Geant4 or production transport.
 
 Example (from the repository root)::
-  PYTHONPATH=../beam-core:beam /path/to/.venv/bin/python3 -m beamfastsim.slabstudy \
+  PYTHONPATH="$CORE:beam" python3 -m beamfastsim.slabstudy \
     --cell moved_edge --pdg 13 --samples 2000 --arms no_scatter diffuse \
     --seed 71 --slab-tables /path/to/audited/export --out /path/to/NEW
 

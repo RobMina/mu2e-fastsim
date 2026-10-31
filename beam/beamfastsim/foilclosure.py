@@ -13,6 +13,8 @@ import shutil
 import subprocess
 import time
 
+from mu2efastsim import site
+
 from .reference_audit import _identity
 
 RELEASE = "/cvmfs/mu2e.opensciencegrid.org/Musings/SimJob/MDC2025ac"
@@ -138,7 +140,7 @@ def run_case(out, *, energy, thickness, cosine=1., pdg=13, events=10, seed=20261
     if os.environ.get("MUSE_WORK_DIR") != RELEASE:
         raise ValueError("published SimJob MDC2025ac setup required")
     out = Path(out).resolve()
-    data = Path(os.environ.get("BEAMFS_DATA_ROOT", "/exp/mu2e/data/users/ram2aq/beam_fastsim")).resolve()
+    data = Path(site.require("BEAMFS_DATA_ROOT")).resolve()
     if data not in out.parents:
         raise ValueError(f"output must be inside the data area {data} (BEAMFS_DATA_ROOT on grid workers)")
     template = Path(__file__).resolve().parents[1] / "fcl/foilclosure.fcl"

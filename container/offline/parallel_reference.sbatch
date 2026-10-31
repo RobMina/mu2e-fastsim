@@ -1,5 +1,4 @@
 #!/bin/bash
-#SBATCH --account=ldmxuva
 #SBATCH --partition=standard
 #SBATCH --job-name=offline_two_art
 #SBATCH --cpus-per-task=2

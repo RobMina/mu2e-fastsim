@@ -2,7 +2,7 @@
 # run_fast_cpu.sh G4DIR OUTDIR N [extra run args] : G4 table (once), field check, fast transport of the first N muons, comparison (GPVM CPU)
 G4=$1; OUT=$2; N=${3:-20000}; shift 3
 HERE=$(cd "$(dirname "$0")/../.." && pwd)
-VENV=${VENV:-/exp/mu2e/data/users/ram2aq/crv_fastsim/venv_eaf}
+VENV=${VENV:-${FASTSIMKIT_EAF_VENV:?set VENV or FASTSIMKIT_EAF_VENV to a Python/JAX venv (site.env)}}
 export PYTHONPATH=$HERE/core:$HERE/beam JAX_PLATFORMS=cpu
 mkdir -p "$OUT"
 PY=$VENV/bin/python

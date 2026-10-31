@@ -4,13 +4,13 @@ Status (2026-10-25): image packaging, A100-node CLI loading and **synthetic GPU 
 Mu2e geometry, Cartesian field, cuts and flash objective remain unvalidated. Load-only job **21958048**
 completed at 16:58 EDT (4 s elapsed, exit 0), on `udc-an36-19`, A100-SXM4-80GB, driver 595.71.05, Apptainer 1.4.5.
 The probe ran `--help`, `--version` (0.6.3), and `--dump-default` successfully; the latter reports CGS input units.
-Evidence: `/scratch/ram2aq/mu2efastsim/probe/celer_load_21958048/` and `celer-load-21958048.out`; synced to
-`~/mu2e/remote-uva-data/mu2efastsim/probe/`. No build, transport or internal-data transfer occurred.
-At 16:53 EDT, `squeue -u ram2aq` and `squeue -A ldmxuva` returned no jobs. This is not a lack of
-project allocation: `allocations -a ldmxuva` confirms the active award through 2027-06-19, with 9,998,969 SU
+Evidence: `$CELERITAS_PROBE_OUT/celer_load_21958048/` and `celer-load-21958048.out`; synced to
+`a local copy of `$CELERITAS_PROBE_OUT``. No build, transport or internal-data transfer occurred.
+At 16:53 EDT, `squeue -u $USER` and `squeue -A $SBATCH_ACCOUNT` returned no jobs. This is not a lack of
+project allocation: `allocations -a $SBATCH_ACCOUNT` confirms the active award through 2027-06-19, with 9,998,969 SU
 remaining at this check. Image metadata was read from login host `udc-ba37-32c1`, with no Slurm job/step set;
-shared `/scratch` was accessible there without an active compute job. The existing image is
-`/scratch/ram2aq/mu2efastsim/mu2e-celeritas.sif`, 7,059,009,536 bytes, mtime `2026-10-25 00:00:03 -0400`.
+the shared scratch file system was accessible there without an active compute job. The existing image is
+`$CELERITAS_SIF`, 7,059,009,536 bytes, mtime `2026-10-25 00:00:03 -0400`.
 The saved `celeritas_build.log` records `celeritas@0.6.3+covfie+cuda+geant4+hepmc3~root+shared+vecgeom`,
 Geant4 11.3.2, VecGeom 1.2.11, CUDA 12.6.3/sm80 and HepMC3 3.3.1. It is not the JAX image.
 
@@ -23,22 +23,22 @@ CLI success does **not** establish GPU kernel execution or Mu2e compatibility. I
 an immutable digest; hash the image before a physics campaign.
 
 An existing interactive allocation is **not** a prerequisite: submit a short batch job through the approved
-`ldmxuva` queue workflow. Deployed through the UVA mirror as
-`/home/ram2aq/mu2e/fastsim_uva/probe_celeritas_0a1589c.sh` (SHA256
+project Slurm account (`SBATCH_ACCOUNT`). Copied to the cluster as
+`$CELERITAS_STAGE/probe_celeritas_0a1589c.sh` (SHA256
 `a63bae495671d9a3235b12d817d8c80ac84c816c3f3e342e6367cbdd557b8fd2`). The completed job used this command on the login host:
 
 ```bash
-sbatch --parsable --job-name=m2fs_celer_load --account=ldmxuva --partition=gpu \
+sbatch --parsable --job-name=m2fs_celer_load --account="$SBATCH_ACCOUNT" --partition=gpu \
   --gres=gpu:a100:1 --cpus-per-task=2 --mem=8G --time=00:05:00 \
-  --output=/scratch/ram2aq/mu2efastsim/probe/celer-load-%j.out \
-  --wrap='module load apptainer && srun --ntasks=1 bash /home/ram2aq/mu2e/fastsim_uva/probe_celeritas_0a1589c.sh /scratch/ram2aq/mu2efastsim/mu2e-celeritas.sif /scratch/ram2aq/mu2efastsim/probe/celer_load_${SLURM_JOB_ID}'
+  --output="$CELERITAS_PROBE_OUT/celer-load-%j.out" \
+  --wrap='module load apptainer && srun --ntasks=1 bash "$CELERITAS_STAGE/probe_celeritas_0a1589c.sh" "$CELERITAS_SIF" "$CELERITAS_PROBE_OUT/celer_load_${SLURM_JOB_ID}"'
 ```
 
 Check existing jobs before submitting to avoid duplicates. Laptop guard checks (no container or GPU involved):
 
 ```bash
 bash -n container/probe_celeritas.sh
-PYTHONDONTWRITEBYTECODE=1 ~/mu2e/.venv/bin/python3 -m unittest discover -s container/tests -v
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s container/tests -v
 ```
 
 Seven mocked tests pass: missing allocation/step, wrong GPU, missing image, existing-output preservation, CLI-only
@@ -74,19 +74,19 @@ flush. This is a source-supported explanation for the bogus diagnostic total, no
 Exclude this log count; the separately accumulated calorimeter energy closes. Fix initialization in a future
 user-built adapter/image. The existing binary has not been patched and no upstream issue/PR was submitted.
 
-Evidence: `/scratch/ram2aq/mu2efastsim/probe/celer_smoke_21958075/` and `celer-smoke-21958075.out`, synced to
-`~/mu2e/remote-uva-data/mu2efastsim/probe/`. The executed script hash is
+Evidence: `$CELERITAS_PROBE_OUT/celer_smoke_21958075/` and `celer-smoke-21958075.out`, synced to
+`a local copy of `$CELERITAS_PROBE_OUT``. The executed script hash is
 `8e376c76768e489c9502eac156e44aecca626ebcc85b5da28f94d97e1627030e` (h1, before adding the offline checker).
 `--check-only` inspected the saved results without rerunning either arm. `summary.json` holds the checked values.
 The current runner automatically performs the same check after running; **17 local tests** cover the probe and
 smoke card/environment/score/count/device guards. Only public synthetic data were used; no build or install.
 
 ```bash
-# Submit after deploying both files through the UVA mirror and checking their hashes.
-sbatch /home/ram2aq/mu2e/fastsim_uva/smoke_celeritas.sh /home/ram2aq/mu2e/fastsim_uva/smoke_celeritas.py
+# Submit after deploying both files to the cluster and checking their hashes.
+sbatch -A "$SBATCH_ACCOUNT" --output="$CELERITAS_PROBE_OUT/%x-%j.out" "$CELERITAS_STAGE/smoke_celeritas.sh" "$CELERITAS_STAGE/smoke_celeritas.py"
 # Recheck completed output locally, with no new transport.
-~/mu2e/.venv/bin/python3 container/smoke_celeritas.py \
-  ~/mu2e/remote-uva-data/mu2efastsim/probe/celer_smoke_21958075 --check-only
+python3 container/smoke_celeritas.py \
+  a local copy of `$CELERITAS_PROBE_OUT`celer_smoke_21958075 --check-only
 ```
 
 ## Version-pinned interface findings
@@ -129,7 +129,7 @@ a DS-only map can cover the full Mu2e world. Field-check queries also require th
 
 **29 Python tests pass**, including asymmetric affine/constant-map interpolation contracts and exact upstream
 source preparation; C++ remains **uncompiled/unvalidated**. Prepared h4 source and synthetic maps are deployed
-through the UVA mirror at `/home/ram2aq/mu2e/fastsim_uva/celer_adapter_h4`; manifest SHA256
+to the cluster at `$CELERITAS_ADAPTER_SRC`; manifest SHA256
 `774e93dc8e2f8aec55b0e76947cb237c72300d5e1d122ccc89ca08b57fe28933`. See
 [`celeritas_adapter/README.md`](celeritas_adapter/README.md) for the exact **user-run build commands** and next
 field/event validation gates. No adapter transport or build was started; no Mu2e data were transferred.

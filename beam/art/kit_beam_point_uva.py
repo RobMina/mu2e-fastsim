@@ -4,7 +4,8 @@
 The kit streams the muon table from the FNAL host (ssh) into the UVA job's tmpfs; the job fetches the public inputs
 from the CVMFS Stratum-1. check -> submit -> status (poll) -> results for each geometry given.
   python3 beam/art/kit_beam_point_uva.py PREFIX geom[,geom...] [muons] [repeat]
-Env: FASTSIMKIT_STATE_DIR (default ~/mu2e/scratch_uva/fastsimkit_beam), FASTSIMKIT_FNAL_HOST (mu2egpvm03).
+Env (site.env): FASTSIMKIT_STATE_DIR (default ~/.mu2efastsim/kit), FASTSIMKIT_FNAL_HOST, FASTSIMKIT_BEAM_DATA or
+M2FS_INPUTS, FASTSIMKIT_BEAM_CODE or FASTSIMKIT_SCRATCH.
 """
 import json
 import os
@@ -24,7 +25,7 @@ def main():
     muons = int(sys.argv[3]) if len(sys.argv) > 3 else 105350
     repeat = int(sys.argv[4]) if len(sys.argv) > 4 else 1
     os.environ.setdefault("FASTSIMKIT_ENDPOINT", "uva")
-    k = kit.FastsimKit(state_dir=os.path.expanduser(os.environ.get("FASTSIMKIT_STATE_DIR", "~/mu2e/scratch_uva/fastsimkit_beam")))
+    k = kit.FastsimKit()
     handles = []
     for i, g in enumerate(geoms):
         name = f"{prefix}.{i:02d}"

@@ -64,7 +64,7 @@ The saved build log and CUDA object show that `NavKernels.cu` compiled with `-rd
 device-link result was produced. Preserve `celer_navigation_h7` and `celer_navigation_h7-build` as the original
 snapshot and failed build. The corrected source below uses **new h7a source and build directories**. Fixtures,
 budgets, navigation algorithms, CUDA source and dependencies are unchanged. No corrected C++/CUDA build has
-been run by the agent; the user subsequently completed the build as recorded below.
+been run by the preparation step; the user subsequently completed the build as recorded below.
 
 ## User-build and initial runtime follow-up
 
@@ -113,22 +113,26 @@ The immutable deployed h7a README remains the build-time record; this working-tr
 
 ## Historical user build on UVA (already completed; do not repeat)
 
-Prepared source: `/home/ram2aq/mu2e/fastsim_uva/celer_navigation_h7a/src`.
-Build destination: `/scratch/ram2aq/mu2efastsim/celer_navigation_h7a-build`.
-The user runs the whole block below from a laptop terminal on the UVA network/VPN. It allocates an A100,
+Prepared source: `$CELERITAS_NAV_PROBE_ROOT/src`.
+Build destination: `$CELERITAS_NAV_PROBE_BUILD`.
+Every variable comes from your site.env (sourced locally for the `ssh`/`srun` line and again inside
+the remote shell, whose first command below sources it).
+
+The user runs the whole block below from a terminal that can reach the Slurm login host. It allocates an A100,
 checks the source/API pins, and builds **only this executable**. The 30-minute allocation is a ceiling, not a
 runtime prediction. `mkdir` refuses an existing build directory: after interruption inspect the job and logs
 before retrying; do not remove old outputs or blindly launch a second build.
 
 ```bash
-ssh -T uva-hpc \
-  'srun -A ldmxuva -p gpu --gres=gpu:a100:1 -c 4 --mem=16G -t 00:30:00 --job-name=celer-nav-h7a-build bash -l -s' <<'UVA_COMMANDS'
+ssh -T "$FASTSIMKIT_SLURM_HOST" \
+  "srun -A $SBATCH_ACCOUNT -p gpu --gres=gpu:a100:1 -c 4 --mem=16G -t 00:30:00 --job-name=celer-nav-h7a-build bash -l -s" <<'UVA_COMMANDS'
+source /path/to/your/site.env
 module load apptainer || exit 1
 set -euo pipefail
-ROOT=/home/ram2aq/mu2e/fastsim_uva/celer_navigation_h7a
-BUILD=/scratch/ram2aq/mu2efastsim/celer_navigation_h7a-build
-H5=/scratch/ram2aq/mu2efastsim/celer_rdc_h5
-IMAGE=/scratch/ram2aq/mu2efastsim/mu2e-celeritas.sif
+ROOT=${CELERITAS_NAV_PROBE_ROOT:?}
+BUILD=${CELERITAS_NAV_PROBE_BUILD:?}
+H5=${CELERITAS_BUILD_ROOT:?}
+IMAGE=${CELERITAS_SIF:?}
 (cd "$ROOT" && sha256sum --check snapshot.sha256)
 (cd "$ROOT/src" && sha256sum --check source.sha256)
 (cd "$H5/install/include" && sha256sum --check "$ROOT/src/api-pins.sha256")
@@ -156,7 +160,7 @@ CONTAINER_COMMANDS
 UVA_COMMANDS
 ```
 
-**Stop after the build and report completion.** The agent will verify source/cache bindings, actual CUDA
+**Stop after the build and report completion.** Then verify source/cache bindings, actual CUDA
 `-rdc=true` and device-link command, binary identity and loaded h5 libraries before any transport. Python
 contract tests and a source review are not a C++ compilation/link/runtime result. Geometry/field payload and
 helper lifetime errors can still require a corrected snapshot and user rebuild.

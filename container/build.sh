@@ -8,8 +8,10 @@
 set -e
 cd "$(dirname "$0")/.."
 OUT=$(realpath -m "${1:-mu2efastsim.sif}")
-export APPTAINER_TMPDIR=${APPTAINER_TMPDIR:-/tmp/$USER/apptainer_tmp}; mkdir -p "$APPTAINER_TMPDIR"
-export APPTAINER_CACHEDIR=${APPTAINER_CACHEDIR:-/tmp/$USER/apptainer_cache}
+# APPTAINER_TMPDIR / APPTAINER_CACHEDIR: set them to a local build area; unset, a fresh private directory under
+# ${TMPDIR:-/tmp} is used for both (no cache reuse between builds).
+export APPTAINER_TMPDIR=${APPTAINER_TMPDIR:-$(mktemp -d "${TMPDIR:-/tmp}/apptainer_tmp.XXXXXX")}; mkdir -p "$APPTAINER_TMPDIR"
+export APPTAINER_CACHEDIR=${APPTAINER_CACHEDIR:-$APPTAINER_TMPDIR/cache}
 STAGE=$(mktemp -d "$APPTAINER_TMPDIR/stage.XXXX"); trap 'rm -rf "$STAGE"' EXIT
 git archive HEAD | tar -x -C "$STAGE"
 for p in core crv tracker; do
