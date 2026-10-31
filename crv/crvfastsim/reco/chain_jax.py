@@ -7,6 +7,7 @@ the next; on CPU the stages simply run in turn. Waveforms longer than the kernel
 rounds or overflowed its window go to full-length numpy pulse reco (as in reco-vr2jax).
 """
 import dataclasses
+import os
 import time as _time
 
 import numpy as np
@@ -21,6 +22,8 @@ PULSE_KEYS = ("found", "pe", "time", "rounds_exhausted", "window_overflow", "inp
 def _pulse_dispatch(W, rows, cfg, batch, L):
     import jax.numpy as jnp
     outs = CJ._DispatchOutputs()
+    if os.environ.get('CRVFASTSIM_PVC_RECO') == '1' and CJ.is_oneapi():
+        batch = min(batch, 4096)
     for a in range(0, len(rows), batch):
         r = rows[a:a + batch]
         n = len(r)

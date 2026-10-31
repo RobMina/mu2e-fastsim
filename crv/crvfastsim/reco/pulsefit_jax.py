@@ -15,6 +15,7 @@ physics setting (thresholds, beta and time limits, height ratios, failed-fit tol
 value of a tuning knob reuses the compiled kernel.
 """
 from functools import partial
+import os
 
 import numpy as np
 
@@ -108,6 +109,35 @@ def _to_int(p, lo, hi):
     return jnp.arcsin(jnp.clip(2.0 * (p - lo) / (hi - lo) - 1.0, -1.0, 1.0))
 
 
+def _eigvalsh3(m):
+    """Scaled cyclic Jacobi eigenvalues for symmetric 3x3 batches, without host solver calls."""
+    scale = jnp.max(jnp.abs(m), axis=(-2, -1))
+    a = m / jnp.where(scale > 0, scale, 1.)[..., None, None]
+
+    def sweep(a, _):
+        for p, q in ((0, 1), (0, 2), (1, 2)):
+            apq = a[..., p, q]
+            delta = (a[..., q, q] - a[..., p, p]) * .5
+            hyp = jnp.hypot(delta, apq)
+            denominator = delta + jnp.where(delta >= 0, hyp, -hyp)
+            tangent = jnp.where(apq != 0, apq / jnp.where(denominator != 0, denominator, 1.), 0.)
+            c = 1. / jnp.sqrt(1. + tangent * tangent)
+            s = tangent * c
+            r = 3 - p - q
+            arp, arq = a[..., r, p], a[..., r, q]
+            nrp, nrq = c * arp - s * arq, s * arp + c * arq
+            app, aqq = a[..., p, p], a[..., q, q]
+            a = a.at[..., p, p].set(app - tangent * apq)
+            a = a.at[..., q, q].set(aqq + tangent * apq)
+            a = a.at[..., p, q].set(0.).at[..., q, p].set(0.)
+            a = a.at[..., r, p].set(nrp).at[..., p, r].set(nrp)
+            a = a.at[..., r, q].set(nrq).at[..., q, r].set(nrq)
+        return a, None
+
+    a, _ = lax.scan(sweep, a, None, length=8)
+    return jnp.sort(jnp.diagonal(a, axis1=-2, axis2=-1), axis=-1) * scale[..., None]
+
+
 def _fit(t, y, w, p0, lo, hi, lm_iter, gn_iter):
     """Batched bounded Gumbel least squares (as pulsefit.fit_gumbel). t, y, w [K,PW]; p0, lo, hi [K,3]."""
     eye = jnp.eye(3)
@@ -176,7 +206,7 @@ def _fit(t, y, w, p0, lo, hi, lm_iter, gn_iter):
     JTr = jnp.einsum("kpi,kp->ki", J, r)
     step = solve(JTJ + 1e-12 * eye, JTr)
     edm = 0.5 * jnp.einsum("ki,ki->k", JTr, step)
-    eig = jnp.linalg.eigvalsh(JTJ)
+    eig = _eigvalsh3(JTJ) if os.environ.get('CRVFASTSIM_PVC_RECO') == '1' else jnp.linalg.eigvalsh(JTJ)
     hess_ok = eig[:, 0] > 1e-12 * jnp.maximum(eig[:, -1], 1e-300)
     conv = jnp.isfinite(edm) & (edm <= 1e-3 * jnp.maximum(chi2, 1.0))
     return _to_ext(u, lo, hi), chi2, conv, hess_ok

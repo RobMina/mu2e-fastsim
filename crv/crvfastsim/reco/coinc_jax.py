@@ -190,6 +190,17 @@ def _closure(A):
 
 
 def _labels(A, valid):
+    if os.environ.get('CRVFASTSIM_PVC_RECO') == '1':
+        H = A.shape[-1]
+        labels = jnp.broadcast_to(jnp.arange(H), valid.shape)
+
+        def step(state):
+            i, labels, _ = state
+            next_labels = jnp.min(jnp.where(A, labels[..., None, :], H), axis=-1)
+            return i + 1, next_labels, jnp.any(next_labels != labels)
+
+        _, labels, _ = jax.lax.while_loop(lambda s: (s[0] < H - 1) & s[2], step, (0, labels, True))
+        return jnp.where(valid, labels, -1)
     R = _closure(A)
     return jnp.where(valid, jnp.argmax(R, axis=-1), -1)
 
@@ -487,7 +498,7 @@ def find_async(ev, idx, bar, sipm, time, pe, seq, G, status, cfg=C.FinderConfig(
     bounded row padding and real-row-only grouped host transfer; H/K and recovery are unchanged."""
     import time as _time
     tiers = backend_tiers(tiers)
-    compact = _compact_dispatch()
+    compact = _compact_dispatch() and not (os.environ.get('CRVFASTSIM_PVC_RECO') == '1' and is_oneapi())
     timers = timers if timers is not None else {}
     params = params or type_params(G, cfg)
     tables = tables or hit_tables(G, status, cfg)
