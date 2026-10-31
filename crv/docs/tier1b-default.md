@@ -14,7 +14,7 @@ its options down.
 |---|---|---|---|---|
 | `strict_v4` (default) | the `strict_v3` files | the `strict_v3` sidecars | the `strict_v3` options and `hard` | `extracted_v04` only |
 | `strict_v3` | the `strict_v2` library and topology sidecar | `templates_v3.npz` (library chords; near-miss census g4ref_v1 1-10 + odd g4ref_v2 21-219), with its `.json` | the `strict_v2` options and `chord` | `extracted_v04` only |
-| `strict_v2` | `tier1b_strict_v2/library.root`, sha256 `ebb015a7...7c7` (20 association-certified donors, [generator-association-repair.md](generator-association-repair.md)) | `topology_sidecar_strict_v2_v2.npz` ([descendant-placement-closure.md](descendant-placement-closure.md)), `templates_v2.npz` ([descendant-template-closure.md](descendant-template-closure.md)), each with its `.json` | `context`, `contain`, `point`, `topology`, `unvisited`, `nearmiss` | `extracted_v04` only |
+| `strict_v2` | `tier1b_strict_v2/library.root`, sha256 `ebb015a7...7c7` (20 association-certified donors, generator-association-repair.md (branch `park/tier1b-library`)) | `topology_sidecar_strict_v2_v2.npz` ([descendant-placement-closure.md](descendant-placement-closure.md)), `templates_v2.npz` ([descendant-template-closure.md](descendant-template-closure.md)), each with its `.json` | `context`, `contain`, `point`, `topology`, `unvisited`, `nearmiss` | `extracted_v04` only |
 | `legacy` | `tier1b_v7/lib_prod_as_20files.root` | none | none | all (the only set of `run1a_v01`, `run1b_v01`, `run2_v10`) |
 
 Paths are relative to `$CRVFS_DATA`. `--tier1b-dir DIR` points at a copy of the set's files, as the endpoints use.

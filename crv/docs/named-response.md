@@ -177,7 +177,7 @@ Emit/merge/generated-denominator/counters overrides are refused in this mode.
 certification; **overall V2 remains unsupported**. Full V2 guardrails and stock binding
 remain open even when the receipt and implemented metrics pass.
 
-See [named-response-diagnosis.md](named-response-diagnosis.md) for the all-sector,
+See named-response-diagnosis.md (branch `park/named-run2`) for the all-sector,
 paired-event saved-product audit, the explicit stock shared-yield diagnostic, and
 the opt-in physical readout mask. Neither changes named production defaults.
 
@@ -186,7 +186,7 @@ input and records strict Python call evidence before ROOT publication. Optional
 `--jax --fused-response` additionally requires the trace and offspill window.
 Traced/fused outputs cannot enter normal receipt admission. The default backend
 and I/O policy are unchanged; see [response-execution-trace.md](response-execution-trace.md).
-Fresh replay seeds can be compared with [named-seed-audit.md](named-seed-audit.md);
+Fresh replay seeds can be compared with named-seed-audit.md (branch `park/named-run2`);
 its spread is conditional on fixed G4/stock inputs, not full V2 uncertainty.
 
 ## Local tests

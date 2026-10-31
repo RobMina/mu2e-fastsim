@@ -43,7 +43,7 @@ paths whose fill semantics have been checked against source. See `docs/valhist-c
 `pilot.py` records hashes and certifies the complete event population from highest-cycle output trees.
 `audit_pilot.sh` compares original pilot/reference shards. `paired_rates.py` estimates conditional event-paired
 rate errors when both inputs retain all event rows; it rejects mismatched or duplicate event populations.
-The executed shard-11 result and remaining gates are in `docs/valhist-dqm-pilot.md`. No blanket DQM pass is implied.
+The executed shard-11 result and remaining gates are in `docs/valhist-dqm-pilot.md` (branch `park/tier1b-library`). No blanket DQM pass is implied.
 
 ## Historical campaign paths
 
