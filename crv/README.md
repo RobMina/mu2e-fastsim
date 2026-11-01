@@ -56,6 +56,18 @@ core's extracted-only `chain_point gen_set=4`, and validation limits.
 `--gen device` / core `chain_point gen_set=5` select JAX on-device generation.
 Table-driven defaults are unchanged.
 
+## Device precision
+
+The device (JAX) chain (transport, tier 1b, photons, SiPM, waveforms, pulses, coincidences) runs in float32 by
+default; `MU2EFS_DEVICE_FLOAT=float64` restores float64 (identical to the float64 output of earlier releases). On
+5 M generated cosmics, float32 is within the float64 seed-to-seed spread on every validated quantity except the
+mean pulse PE (see [device precision](docs/device-precision.md)). It runs 1.2-2.8x faster on cards with reduced FP64 rate
+(MIG slices, A40, RTX PRO 6000), with no gain on A100, B200 and PVC. float64 output is identical on every GPU model
+for a given seed. float32 output repeats on one model but its discrete results can differ slightly between models,
+so `runchain` and `e2e-bench` record the precision and device model (`precision` in their stats, `--emit` shards
+and merge). NumPy (CPU) paths are float64 and unchanged. The UVA kit (`kit_uva.py`) passes `FASTSIMKIT_DEVICE_FLOAT`
+(default float32) to its jobs and shares a JAX compilation cache (`FASTSIMKIT_JAX_CACHE`).
+
 ## Studies kept off main
 
 Finished or paused studies live on branches, each the full tree at the point it left main:
