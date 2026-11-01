@@ -18,6 +18,8 @@ and the legacy `DqmCrv`, run unchanged in the `crvval` muse area.
 | `../art/CrvFastSim/src/Crv{Digis,RecoPulses,CoincidenceClusters}FromTable` | art producers reading those tables (and stock dumps, for the round trip) into the stock collections |
 | `../art/CrvFastSim/fcl/valhist_{fromtable,digisfromtable}.fcl`, `run_fromtable.sh` | table arms: all three products from the table, or digis only + stock reco |
 | `run_compare_g4ref.sh` | merge each arm's shards and compare every arm with its reference (dts arms vs A0, gen-stream arms vs A0g), floor = A0' vs A0 |
+| `deck_rule.py` | the validation deck's flag rule on ValCrvStep refills (`stephist` accumulators): clustering-factor variance for t/t2/lt, exact clustered variance for posx and y/z, Poisson otherwise; threshold max(2, 3 x floor); reproduces the deck's published fast-steps vs Geant4 statistics from its merged histograms (`read_valcrvstep`) |
+| `tier1b_floor.py` | seed floor of the tier-1b step histograms: the NumPy sampler with two seeds on the same transport tables, in the summary layout `deck_rule` reads (`device_tier1b --floor-seed` adds the same arm to the device audit) |
 | `deficit.py`, `oneside.py` | where a digi/pulse count difference between two arms sits: per sector group, SiPM charge, pulse PE and time; events with activity in one arm only, by CRY primary class |
 
 Arms on `g4ref_v1` (outputs `$CRVFS_DATA/valhist/g4ref_v1/<arm>/`): `a0` stock reference, `a0p` floor (other digi seed),
