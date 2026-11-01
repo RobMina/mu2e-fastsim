@@ -15,6 +15,9 @@ import numpy as np
 from . import coinc as C
 from . import coinc_jax as CJ
 from . import pulsefit, pulsefit_jax as PJ
+from mu2efastsim import precision as dprec
+
+dprec.register(__name__)   # JAX creators/samplers here follow MU2EFS_DEVICE_FLOAT
 
 PULSE_KEYS = ("found", "pe", "time", "rounds_exhausted", "window_overflow", "input_truncated")
 
@@ -44,7 +47,7 @@ def _pulse_collect(outs, W, rows, cfg_np):
         host = CJ._real_rows_to_host(outs, PULSE_KEYS)
         d = {k: np.concatenate([o[k] for o in host]) for k in PULSE_KEYS}
     else:
-        d = {k: np.concatenate([np.asarray(o[k])[:n] for o, n in outs]) for k in PULSE_KEYS}
+        d = {k: np.concatenate([dprec.host(o[k])[:n] for o, n in outs]) for k in PULSE_KEYS}
     wf, seq = np.nonzero(d["found"])
     redo = d["rounds_exhausted"] | d["window_overflow"] | d["input_truncated"]
     pe, tm = d["pe"][wf, seq], d["time"][wf, seq]

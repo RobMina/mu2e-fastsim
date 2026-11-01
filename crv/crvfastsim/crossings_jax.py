@@ -8,6 +8,9 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+from mu2efastsim import precision as dprec
+
+dprec.register(__name__)   # JAX creators/samplers here follow MU2EFS_DEVICE_FLOAT
 
 jax.config.update("jax_enable_x64", True)
 
@@ -22,13 +25,13 @@ class Crossings(NamedTuple):
 
 def slab(origin, direction, lo, hi):
     """Dense slab parameters on the device; same parallel-ray convention as core."""
-    inv = 1.0 / jnp.where(direction == 0., 1e-300, direction)
+    inv = 1.0 / jnp.where(direction == 0., dprec.TINY, direction)
     a = (lo[None] - origin[:, None]) * inv[:, None]
     b = (hi[None] - origin[:, None]) * inv[:, None]
     return jnp.minimum(a, b).max(-1), jnp.maximum(a, b).min(-1)
 
 
-@partial(jax.jit, static_argnames=("capacity",))
+@partial(dprec.jit, static_argnames=("capacity",))
 def crossings(origin, direction, lo, hi, capacity=64, active=None):
     """Padded [track, capacity] crossings; ties retain ascending bar order."""
     ti, to = slab(origin, direction, lo, hi)

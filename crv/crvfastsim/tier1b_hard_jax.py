@@ -3,6 +3,9 @@ import numpy as np
 
 from . import tier1b as T
 from .tier1b_jax import _jax
+from mu2efastsim import precision as dprec
+
+dprec.register(__name__)   # JAX creators/samplers here follow MU2EFS_DEVICE_FLOAT
 
 
 def prepare(hard):
@@ -67,7 +70,7 @@ def patterns(x, g, h):
     ic, kc = lookup(h["cat_keys"], want)
     ip, kp = lookup(h["pn_keys"], j.stack((pc, count), axis=1))
     nlib, nhard = _value(h, "nlib", ir, kr), _value(h, "nhard", ir, kr)
-    rate = j.where(nlib >= T.HARD_MIN_KEY_MUONS, nhard / j.maximum(nlib, 1), _value(h, "rate_pn", ip, kp))
+    rate = j.where(nlib >= T.HARD_MIN_KEY_MUONS, nhard.astype(dprec.FLOAT) / j.maximum(nlib, 1), _value(h, "rate_pn", ip, kp))
     rate = j.where((count > 0) & (count <= T.HARD_MAX_CROSSINGS), rate, 0.)
     cnt = _value(h, "cnt", ic, kc).astype(j.int64)
     return dict(rank=rank, count=count, rate=rate, have=(cnt > 0) & (count > 0),

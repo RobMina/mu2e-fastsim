@@ -206,8 +206,8 @@ def test_conditions_real_coincidence_membership():
 def test_no_pulses_retains_event_population(jax, ignored):
     if jax:
         pytest.importorskip('jax')
+        from crvfastsim.reco import chain_jax
     from crvfastsim.reco.cli import _coinc_geom
-    from crvfastsim.reco import chain_jax
     G = _coinc_geom()
     W = waveforms(channels=(0, 1))
     if not ignored:

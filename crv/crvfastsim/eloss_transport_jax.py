@@ -24,6 +24,9 @@ from jax import lax
 from mu2efastsim import eloss_jax as ej
 from mu2efastsim.eloss import (ME, MMU, TWOPI_MC2_RCL2, _A0, _BOHR_MIN,
                               _FW, _MINLOSS, _NMAXCONT, _RATE)
+from mu2efastsim import precision as dprec
+
+dprec.register(__name__)   # JAX creators/samplers here follow MU2EFS_DEVICE_FLOAT
 
 # Reuse, do not fork the material, stopping-power or fluctuation helpers.
 MatConsts = ej.MatConsts
@@ -52,9 +55,9 @@ def _gamma_parallel(key, alpha, rounds=GAMMA_ROUNDS):
     cc = 1.0 / jnp.sqrt(9 * d)
     if rounds:
         keys = jax.vmap(jax.random.split)(_round_keys(kr, rounds))
-        x = jax.vmap(lambda k: jax.random.normal(k, alpha.shape, jnp.float64))(keys[:, 0])
+        x = jax.vmap(lambda k: jax.random.normal(k, alpha.shape, dprec.FLOAT))(keys[:, 0])
         lu = jnp.log(jax.vmap(lambda k: jax.random.uniform(
-            k, alpha.shape, jnp.float64, minval=1e-300))(keys[:, 1]))
+            k, alpha.shape, dprec.FLOAT, minval=dprec.TINY))(keys[:, 1]))
         v = (1 + cc * x) ** 3
         ok = (v > 0) & (lu < 0.5 * x * x + d - d * v + d * jnp.log(jnp.where(v > 0, v, 1.0)))
         first = jnp.argmax(ok, axis=0)
@@ -62,7 +65,7 @@ def _gamma_parallel(key, alpha, rounds=GAMMA_ROUNDS):
         val = jnp.where(jnp.any(ok, axis=0), val, d)
     else:
         val = d
-    ub = jax.random.uniform(kb, alpha.shape, jnp.float64, minval=1e-300)
+    ub = jax.random.uniform(kb, alpha.shape, dprec.FLOAT, minval=dprec.TINY)
     return jnp.where(alpha < 1, val * ub ** (1 / jnp.where(alpha > 0, alpha, 1.0)), val)
 
 
@@ -73,7 +76,7 @@ def _poisson_cdfs(lams, K=K_POISSON):
     recurrence preserves near-boundary Poisson decisions without runtime loops.
     """
     if K == 0:
-        return jnp.zeros((0,) + lams.shape, jnp.float64)
+        return jnp.zeros((0,) + lams.shape, dprec.FLOAT)
     pmf0 = jnp.exp(-lams)
 
     def cdf_step(carry, j):
@@ -88,37 +91,37 @@ def _poisson_cdfs(lams, K=K_POISSON):
 def _poisson_ion(key, lams, uu, w3, w, K=K_POISSON):
     """Same capped inverse CDF as core; compare/draw/reduce rounds in parallel."""
     if K == 0:
-        return jnp.zeros(lams.shape, jnp.int32), jnp.zeros(w3.shape, jnp.float64)
+        return jnp.zeros(lams.shape, jnp.int32), jnp.zeros(w3.shape, dprec.FLOAT)
     above = uu[None] > _poisson_cdfs(lams, K)
-    r = jax.vmap(lambda k: jax.random.uniform(k, w3.shape, jnp.float64))(_round_keys(key, K))
+    r = jax.vmap(lambda k: jax.random.uniform(k, w3.shape, dprec.FLOAT))(_round_keys(key, K))
     ion = jnp.sum(jnp.where(above[:, 2], w3 / (1 - w * r), 0.0), axis=0)
     return jnp.sum(above, axis=0, dtype=jnp.int32), ion
 
 
-@partial(jax.jit, static_argnames=("K", "gamma_rounds"))
+@partial(dprec.jit, static_argnames=("K", "gamma_rounds"))
 def _sample(key, c, p, length, tcut, mass, K=K_POISSON, gamma_rounds=GAMMA_ROUNDS, mean=None):
-    p = jnp.asarray(p, jnp.float64)
-    p, length, tcut = jnp.broadcast_arrays(p, jnp.asarray(length, jnp.float64), jnp.asarray(tcut, jnp.float64))
-    c = MatConsts(*(jnp.broadcast_to(jnp.asarray(v, jnp.float64), p.shape) for v in c))
+    p = jnp.asarray(p, dprec.FLOAT)
+    p, length, tcut = jnp.broadcast_arrays(p, jnp.asarray(length, dprec.FLOAT), jnp.asarray(tcut, dprec.FLOAT))
+    c = MatConsts(*(jnp.broadcast_to(jnp.asarray(v, dprec.FLOAT), p.shape) for v in c))
     sh = p.shape
     ks = jax.random.split(key, 9)
     tkin, beta2, bg2, gam, tmax = kinematics(p, mass)
     cut = jnp.minimum(tcut, tmax)
     # mean: caller-supplied mean loss (e.g. range-integrated, as G4VEnergyLossProcess for long steps)
-    mean = _dedx(c, p, tcut, mass) * length if mean is None else jnp.broadcast_to(jnp.asarray(mean, jnp.float64), sh)
+    mean = _dedx(c, p, tcut, mass) * length if mean is None else jnp.broadcast_to(jnp.asarray(mean, dprec.FLOAT), sh)
     # Gaussian/Gamma regime: many collisions, cut close to tmax
     bohr = (mean >= _BOHR_MIN * cut) & (tmax <= 2 * cut)
     siga = jnp.sqrt(jnp.clip((tmax / beta2 - 0.5 * cut) * TWOPI_MC2_RCL2 * length * c.ne, 0, None))
     sn = mean / jnp.where(siga > 0, siga, 1)
     gs = bohr & (sn >= 2)
     gm = bohr & (sn < 2)
-    x_gs = _gauss_clipped(jax.random.uniform(ks[0], sh, jnp.float64), mean, siga ** 2)
+    x_gs = _gauss_clipped(jax.random.uniform(ks[0], sh, dprec.FLOAT), mean, siga ** 2)
     neff = jnp.where(gm, sn * sn, 1.0)
     # The scalar conditional skips all Gamma work for ordinary transport batches.
     # Within a mixed batch the original full-shape RNG draws are retained.
     x_gm = lax.cond(jnp.any(gm),
                     lambda: mean * _gamma_parallel(ks[1], neff, gamma_rounds) / neff,
-                    lambda: jnp.zeros(sh, jnp.float64))
+                    lambda: jnp.zeros(sh, dprec.FLOAT))
     # Urban model for the rest (inputs made safe outside u so every lane stays finite)
     u = ~bohr & (mean >= _MINLOSS) & (cut > c.e0)
     tc = jnp.where(u, cut, 1.0)
@@ -156,14 +159,14 @@ def _sample(key, c, p, length, tcut, mass, K=K_POISSON, gamma_rounds=GAMMA_ROUND
     w = jnp.where(has, (tc - w3) / tc, 0.0)
     lam3 = jnp.where(has, jnp.clip(p3, 0, None), 0.0)
     # Generate exactly the reference round substreams, but in one batched operation.
-    uu = jax.random.uniform(ks[2], (3,) + sh, jnp.float64)
+    uu = jax.random.uniform(ks[2], (3,) + sh, dprec.FLOAT)
     kk, ion = _poisson_ion(ks[3], jnp.stack([lam1, lam2, lam3]), uu, w3, w, K)
-    rx = jax.random.uniform(ks[4], (2,) + sh, jnp.float64)
+    rx = jax.random.uniform(ks[4], (2,) + sh, dprec.FLOAT)
     loss = jnp.where(kk[0] > 0, ((kk[0] + 1) - 2 * rx[0]) * e1, 0.0)
     loss = loss + jnp.where(kk[1] > 0, ((kk[1] + 1) - 2 * rx[1]) * e2, 0.0)
-    loss = loss + jnp.where(s2 > 0, _gauss_clipped(jax.random.uniform(ks[5], sh, jnp.float64), eav, s2), 0.0)
+    loss = loss + jnp.where(s2 > 0, _gauss_clipped(jax.random.uniform(ks[5], sh, dprec.FLOAT), eav, s2), 0.0)
     loss = loss + ion
-    loss = loss + jnp.where(s23 > 0, _gauss_clipped(jax.random.uniform(ks[6], sh, jnp.float64), eav3,
+    loss = loss + jnp.where(s23 > 0, _gauss_clipped(jax.random.uniform(ks[6], sh, dprec.FLOAT), eav3,
                                                     jnp.where(s23 > 0, s23, 0.0)), 0.0)
     out = jnp.where(gs, x_gs, jnp.where(gm, x_gm, mean))
     return jnp.where(u, loss * scaling, out)
@@ -175,5 +178,5 @@ def sample_loss(key, mat, p, length, tcut, mass=MMU, K=K_POISSON, mean=None):
     key: jax.random key; mat: Material or MatConsts. jit-able (close over a Material, or pass MatConsts as arrays).
     mean: optional mean loss [MeV] replacing dE/dx(p) * length (the fluctuation width still uses p, length, tcut).
     """
-    return _sample(key, consts(mat), p, length, tcut, jnp.asarray(mass, jnp.float64), K=K, mean=mean)
+    return _sample(key, consts(mat), p, length, tcut, jnp.asarray(mass, dprec.FLOAT), K=K, mean=mean)
 

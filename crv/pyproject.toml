@@ -8,7 +8,7 @@ version = "0.2.0"
 description = "Geant4-free CRV simulation and fast CRV reconstruction for the Mu2e extracted (KPP) configuration"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
-dependencies = ["mu2efastsim", "numpy", "pandas", "uproot", "awkward", "matplotlib"]
+dependencies = ["mu2efastsim", "numpy", "pandas", "uproot", "awkward", "matplotlib", "scipy", "pyyaml", "pyarrow"]
 
 [project.optional-dependencies]
 jax = ["jax"]

@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-import jax
+jax = pytest.importorskip("jax")
 
 
 def test_device_photons_split_equals_fused():

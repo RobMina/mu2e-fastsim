@@ -16,11 +16,14 @@ import jax.numpy as jnp
 from . import photons, photons_jax, sipm_jax
 from .sipm import NPIX
 from .contract import require_complete, validate_sipm
+from mu2efastsim import precision as dprec
+
+dprec.register(__name__)   # JAX creators/samplers here follow MU2EFS_DEVICE_FLOAT
 
 CHAN_MULT = 32768  # = chain.CHAN_MULT (chain imports response, not the reverse)
 
 
-@jax.jit
+@dprec.jit
 def _mask_label(step, chan, t, valid, status, ev_key):
     """Status and time masks and the SiPM label in one kernel (eager gathers over the photon buffer abort the oneAPI
     compiler: 7-wide vector in the index conversion)."""
@@ -28,7 +31,7 @@ def _mask_label(step, chan, t, valid, status, ev_key):
     return valid, ev_key[step] * CHAN_MULT + chan
 
 
-@partial(jax.jit, static_argnames=("NB",))
+@partial(dprec.jit, static_argnames=("NB",))
 def _compact_slots(valid, step, t, label, nv, NB):
     """Compact to the first NB valid photons and give each SiPM label a dense slot (rank among the valid labels)."""
     keep = jnp.nonzero(valid, size=NB, fill_value=0)[0]
@@ -43,7 +46,7 @@ def _compact_slots(valid, step, t, label, nv, NB):
     return step, t, label, vc, slot
 
 
-@jax.jit
+@dprec.jit
 def _take_root(root, label, step, n):
     root = jnp.minimum(root, n - 1)
     return label[root], step[root]
@@ -88,7 +91,7 @@ def to_host(r):
     """Fired hits as host arrays sorted by (label, time), like sipm.simulate's output (chan = label)."""
     require_complete(r)
     f = np.asarray(r["fired"])
-    out = {k: np.asarray(r[k])[f] for k in ("label", "time", "charge", "pe", "step")}
+    out = {k: dprec.host(r[k])[f] for k in ("label", "time", "charge", "pe", "step")}
     o = np.lexsort((out["time"], out["label"]))
     out = {k: v[o] for k, v in out.items()}
     out["chan"], out["photon"] = out.pop("label"), out.pop("step")

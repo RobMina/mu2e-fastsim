@@ -15,6 +15,8 @@ from pathlib import Path
 
 import numpy as np
 
+from mu2efastsim import precision as dprec
+
 from .. import chain, geometry, tables, tier1b_assets
 from . import runchain
 
@@ -193,7 +195,7 @@ def software_hardware():
     return {"platform": platform.platform(), "hostname": platform.node(), "machine": platform.machine(),
             "processor": platform.processor(), "cpu_count": os.cpu_count(), "python": sys.version,
             "executable": sys.executable, "versions": versions,
-            "environment": {k: v for k, v in os.environ.items() if k.startswith(("CRVFS_", "CRVFASTSIM_", "JAX_", "XLA_"))
+            "environment": {k: v for k, v in os.environ.items() if k.startswith(("CRVFS_", "CRVFASTSIM_", "JAX_", "XLA_", "MU2EFS_"))
                             or k in ("CUDA_VISIBLE_DEVICES", "ZE_AFFINITY_MASK", "ONEAPI_DEVICE_SELECTOR",
                                      "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "PYTHONPATH", "MU2E_SEARCH_PATH")}}
 
@@ -211,7 +213,7 @@ def accelerator(requested):
                                           "devices": [{"id": d.id, "platform": d.platform,
                                                        "kind": d.device_kind, "description": str(d),
                                                        "platform_version": getattr(d.client, "platform_version", None)} for d in jax.devices()],
-                                          "jax_enable_x64": bool(jax.config.jax_enable_x64)}
+                                          "jax_enable_x64": bool(jax.config.jax_enable_x64), "precision": dprec.provenance()}
 
 
 class Recorder:

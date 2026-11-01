@@ -5,6 +5,9 @@ from jax import lax
 
 from mu2efastsim import eloss as E, eloss_jax as ej, materials as M
 from . import eloss_transport_jax as sampling, transport as T
+from mu2efastsim import precision as dprec
+
+dprec.register(__name__)   # JAX creators/samplers here follow MU2EFS_DEVICE_FLOAT
 
 jax.config.update("jax_enable_x64", True)
 
@@ -46,10 +49,10 @@ def delta_sum(key, p, length, cut):
         done, energy, stream = state
         stream, kr, ka = jax.random.split(stream, 3)
         shape = (32,) + p.shape
-        r = jax.random.uniform(kr, shape, j.float64)
+        r = jax.random.uniform(kr, shape, dprec.FLOAT)
         value = cut * tmax / (tmax * (1 - r) + cut * r)
         weight = 1 - beta2 * value / tmax + value * value / (2 * tot * tot)
-        accept = jax.random.uniform(ka, shape, j.float64) * (1 + tmax * tmax / (2 * tot * tot)) <= weight
+        accept = jax.random.uniform(ka, shape, dprec.FLOAT) * (1 + tmax * tmax / (2 * tot * tot)) <= weight
         take = accept & (j.cumsum(accept, axis=0) <= (count - done)[None])
         return done + j.sum(take, axis=0), energy + j.sum(j.where(take, value, 0.), axis=0), stream
     return lax.while_loop(cond, body, (j.zeros_like(count), j.zeros_like(p), ke))[1]
@@ -61,8 +64,8 @@ def absorber_loss(key, mat, p, length, knots, straggling=True):
     dl = sampling.sample_loss(ka, mat, p, length, 1e9) if straggling else naive
     rl = range_loss(p, length, knots)
     tin = j.sqrt(p * p + E.MMU ** 2) - E.MMU
-    dl *= rl / j.maximum(naive, 1e-300)
-    normal = jax.random.normal(kr, p.shape, j.float64)
+    dl *= rl / j.maximum(naive, dprec.TINY)
+    normal = jax.random.normal(kr, p.shape, dprec.FLOAT)
     return j.where(rl > T.RANGE_NEAR * tin, range_loss(p, length, knots, normal), dl)
 
 
@@ -86,7 +89,7 @@ def bar_loss(keys, p, length, cut):
             kd = dl + delta_sum(jax.random.fold_in(delta, k + 1), pc, step, cut)
             rest = tin - total
             out = go & (kd >= rest)
-            frac = j.where(out, rest / j.maximum(kd, 1e-300), 1.)
+            frac = j.where(out, rest / j.maximum(kd, dprec.TINY), 1.)
             return (total + j.where(go, j.minimum(kd, rest), 0.), deposited + j.where(go, dl * frac, 0.),
                     j.where(out, (k + frac) * ds, plen), done | out)
         return lax.fori_loop(0, T.SUBSTEP_N, body, (j.zeros_like(p), j.zeros_like(p), length, j.zeros(p.shape, bool)))
@@ -96,7 +99,7 @@ def bar_loss(keys, p, length, cut):
     stops = j.where(near, done, stops)
     length = j.where(near & done, plen, length)
     ordinary_stop = stops & ~(near & done)
-    share = dep / j.maximum(dep + dk, 1e-300)
+    share = dep / j.maximum(dep + dk, dprec.TINY)
     dep = j.where(ordinary_stop, tin * share, dep)
     dk = j.where(ordinary_stop, tin * (1 - share), dk)
     stop_path = tin / ej.dedx_restricted(M.POLYSTYRENE, p, 1e9)
@@ -108,7 +111,7 @@ def make_kernel(dev, air_loss, absorber_straggling):
     from .crossings_jax import crossings, slab
     from .transport_jax import p_after
     ab, knots = dev.absorbers, dev.range_knots
-    @jax.jit
+    @dprec.jit
     def kernel(key, o, d, p, offset, active):
         bar, ti, to, valid, overflow = crossings(o, d, dev.lo, dev.hi, dev.capacity, active)
         valid &= active[:, None]

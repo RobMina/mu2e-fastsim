@@ -141,6 +141,24 @@ def test_render_uva_body(tmp_path):
             KU.validate(bad)
 
 
+def test_render_device_float_and_jax_cache(tmp_path, monkeypatch):
+    params = KU.validate({"task": "crv_response", "seed": 3, "period": "P3"})
+    monkeypatch.delenv("FASTSIMKIT_DEVICE_FLOAT", raising=False)
+    monkeypatch.delenv("FASTSIMKIT_JAX_CACHE", raising=False)
+    monkeypatch.setenv("FASTSIMKIT_SCRATCH", "/cluster/scratch")
+    body, _ = make(tmp_path)[2]._delegates["crv_response"].render(params)
+    assert "MU2EFS_DEVICE_FLOAT=float32" in body                   # the device default
+    assert "JC=/cluster/scratch/jaxcache" in body and "JAX_COMPILATION_CACHE_DIR=$JC" in body and '-B "$JC"' in body
+    monkeypatch.setenv("FASTSIMKIT_DEVICE_FLOAT", "float64")
+    monkeypatch.setenv("FASTSIMKIT_JAX_CACHE", "")
+    body, _ = make(tmp_path / "b")[2]._delegates["crv_response"].render(params)
+    assert "MU2EFS_DEVICE_FLOAT=float64" in body and "JAX_COMPILATION_CACHE_DIR" not in body
+    subprocess.run(["bash", "-n"], input=body.encode(), check=True)
+    monkeypatch.setenv("FASTSIMKIT_DEVICE_FLOAT", "float16")
+    with pytest.raises(ValueError, match="FASTSIMKIT_DEVICE_FLOAT"):
+        make(tmp_path / "c")
+
+
 def test_point_streams_inputs_and_returns_metrics(tmp_path):
     site, ep, kit, streamed = make(tmp_path)
     assert kit.check("pt", {"task": "crv_response", "seed": 1, "atten_T1": 0.58}, [], [])["ok"]

@@ -13,7 +13,9 @@ reach both the endpoint and the FNAL host by ssh for the point's lifetime.
 Environment (see site.env.example): FASTSIMKIT_FNAL_HOST (required: the FNAL host the inputs stream from),
 FASTSIMKIT_CRV_DATA (default mu2efastsim.site.crv_data()), FASTSIMKIT_CRV_CODE (default
 <FASTSIMKIT_SCRATCH>/crv_response_code_kit), FASTSIMKIT_CRV_CODE_REF (umbrella ref, default main),
-FASTSIMKIT_CRV_BRANCH (optional). A missing required variable raises mu2efastsim.site.SiteConfigError.
+FASTSIMKIT_CRV_BRANCH (optional), FASTSIMKIT_JAX_CACHE (JAX compilation cache, default
+<FASTSIMKIT_SCRATCH>/jaxcache, "" = off), FASTSIMKIT_DEVICE_FLOAT (float32 or float64, default float32).
+A missing required variable raises mu2efastsim.site.SiteConfigError.
 """
 from __future__ import annotations
 
@@ -130,6 +132,19 @@ class CrvResponseStream:
         self._lock = threading.Lock()
         self._node: Dict[str, threading.Lock] = {}      # one input stream per (node, cache) at a time
         self.streams = int(os.environ.get("FASTSIMKIT_STREAMS", 3))      # parallel file streams per point
+        self.device_float = os.environ.get("FASTSIMKIT_DEVICE_FLOAT") or "float32"    # MU2EFS_DEVICE_FLOAT of the jobs
+        if self.device_float not in ("float64", "float32"):
+            raise ValueError(f"FASTSIMKIT_DEVICE_FLOAT must be float64 or float32, not {self.device_float!r}")
+
+    @property
+    def jax_cache(self):
+        """JAX persistent compilation cache shared by all jobs: $FASTSIMKIT_JAX_CACHE ("" = off), else under
+        $FASTSIMKIT_SCRATCH (off when that is unset); keys carry the card, the JAX version and the program."""
+        value = os.environ.get("FASTSIMKIT_JAX_CACHE")
+        if value is not None:
+            return value
+        scratch = site.setting("FASTSIMKIT_SCRATCH")
+        return scratch + "/jaxcache" if scratch else ""
 
     def _mark(self, name, what, text=""):
         (self.dir / f"{name}.{what}").write_text(text)
@@ -148,13 +163,17 @@ class CrvResponseStream:
             raise ValueError(f"fastsimkit: crv_response streams its inputs into the job and needs an endpoint that can "
                              f"(slurm_ssh); {getattr(self.ep, 'name', '?')!r} cannot")
         code = shlex.quote(manifest["code"]["path"] if manifest else self.code)
+        dev = (f'JC={shlex.quote(self.jax_cache)}; mkdir -p "$JC"; ' if self.jax_cache else "")
+        env = (",JAX_COMPILATION_CACHE_DIR=$JC,JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0" if self.jax_cache else "")
+        env += f",MU2EFS_DEVICE_FLOAT={self.device_float}"
+        bind = ' -B "$JC"' if self.jax_cache else ""
         rt = {"a": f'CODE={code}\n'
-                   'A() { apptainer exec --nv --cleanenv --env "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0},'
-                   'PYTHONPATH=$CODE/core:$CODE/crv,XLA_PYTHON_CLIENT_PREALLOCATE=false" -B "$M2FS_OUT" -B "$CODE" '
+                   f'A() {{ {dev}apptainer exec --nv --cleanenv --env "CUDA_VISIBLE_DEVICES=${{CUDA_VISIBLE_DEVICES:-0}},'
+                   f'PYTHONPATH=$CODE/core:$CODE/crv,XLA_PYTHON_CLIENT_PREALLOCATE=false{env}" -B "$M2FS_OUT" -B "$CODE"{bind} '
                    '${L:+-B "$L"} --pwd "$CODE" @sif@ "$@"; }\n',
-              "t": 'T() { apptainer exec --nv --cleanenv --env "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0},'
-                   'PYTHONPATH=$CODE/core:$CODE/crv,XLA_PYTHON_CLIENT_PREALLOCATE=false,CRVFS_LOOKUP_DIR=$L" '
-                   '-B "$L" -B "$M2FS_OUT" -B "$CODE" --pwd "$CODE" @sif@ "$@"; }'}
+              "t": f'T() {{ {dev}apptainer exec --nv --cleanenv --env "CUDA_VISIBLE_DEVICES=${{CUDA_VISIBLE_DEVICES:-0}},'
+                   f'PYTHONPATH=$CODE/core:$CODE/crv,XLA_PYTHON_CLIENT_PREALLOCATE=false,CRVFS_LOOKUP_DIR=$L{env}" '
+                   f'-B "$L" -B "$M2FS_OUT" -B "$CODE"{bind} --pwd "$CODE" @sif@ "$@"; }}'}
         tables = K._TABLES.replace("@runtime_t@", rt["t"] + "\n" + WAIT)
         body = kit_task.body(K._COMMON.replace("@runtime_a@", rt["a"]), tables)
         body = body.replace('A python -c "import jax', 'A python -c "import crvfastsim.kit_task, jax', 1)
