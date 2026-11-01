@@ -12,7 +12,8 @@ scripts take `M2FS_CODE`, `VENV` or `FASTSIMKIT_EAF_VENV` (a Python/JAX venv), `
 `beam_fastsim` data area every closure output must be inside), `M2FS_DATA` and `PNFS_OUT` (grid staging) from your
 site.env; each stops with a message naming a missing variable.
 
-Package `beamfastsim` (imports `mu2efastsim` from `core/`). Replaces the DS stage of the stock beam chain
+Package `beamfastsim` (imports `mu2efastsim` from `core/`; installable with `pip install ./beam`, metadata in
+`beam/pyproject.toml`). Replaces the DS stage of the stock beam chain
 (`Production/JobConfig/pileup/MuBeamResampler.fcl`) for the target-stop question: muons from the DS entrance (as
 written by the POT stage, `MuBeamCat`) are carried through the field map, the stopping-target foils and the IPA in
 batched JAX lanes (CPU or GPU) to their stop, decay or exit.

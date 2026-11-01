@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "beamfastsim"
+version = "0.0.1"
+description = "Geant4-free muon beam transport from the Mu2e DS entrance to the stopping target (prototype)"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+dependencies = ["mu2efastsim", "numpy", "scipy", "uproot", "jax"]
+
+[project.optional-dependencies]
+plots = ["matplotlib"]
+test = ["pytest"]
+
+[project.scripts]
+beamfastsim = "beamfastsim.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["beamfastsim*"]
+
+[tool.setuptools.package-data]
+beamfastsim = ["data/*.npz"]
