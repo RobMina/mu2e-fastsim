@@ -22,6 +22,9 @@ import jax.numpy as jnp
 from jax import lax
 
 from .sipm import NPIX
+from mu2efastsim import precision as dprec
+
+dprec.register(__name__)   # JAX creators/samplers here follow MU2EFS_DEVICE_FLOAT
 
 jax.config.update("jax_enable_x64", True)
 
@@ -33,7 +36,7 @@ def _bucket(n, lo=1 << 12):
     return max(lo, 1 << int(np.ceil(np.log2(max(n, 1)))))
 
 
-@partial(jax.jit, static_argnames=("M", "nx", "ny"))
+@partial(dprec.jit, static_argnames=("M", "nx", "ny"))
 def _candidates(slot, pix, t, valid, key, q_ct, M, nx, ny):
     """Cross-talk candidates of the given hits: [M] compacted (slot, pixel, time, parent index, valid)."""
     x, y = pix // NPIX, pix % NPIX
@@ -51,7 +54,7 @@ def _gather(arr_sorted, fill, di):
     return jnp.concatenate([arr_sorted, jnp.array([fill], arr_sorted.dtype)])[di]
 
 
-@partial(jax.jit, static_argnames=("L", "SL", "LL", "rounds"))
+@partial(dprec.jit, static_argnames=("L", "SL", "LL", "rounds"))
 def _solve(key_sort, t, u, parent, valid, dead, vov, tau, p1, p2, L, SL, LL, rounds):
     """Sort hits into pixel streams, then the fixed point over the active set.
 
@@ -119,7 +122,7 @@ LONG_LL = 64      # ... and their length; on overflow the caller retries once wi
 LONG_CELLS_MAX = 1 << 26  # long-table cells beyond which the chunk goes to the host path instead (memory guard)
 
 
-@partial(jax.jit, static_argnames=("NB", "M1", "M2", "M3", "Ntot", "L", "SL", "LL", "nx", "ny", "gens"))
+@partial(dprec.jit, static_argnames=("NB", "M1", "M2", "M3", "Ntot", "L", "SL", "LL", "nx", "ny", "gens"))
 def device_sipm(slot, t, valid, key, cum, ncol, dead, q_ct, vov, tau, p1, p2, cap,
                 NB, M1, M2, M3, Ntot, L, SL, LL, nx, ny, gens=GENERATIONS):
     """All of the SiPM stage in one jitted call, fixed shapes, no host round trip.
@@ -231,8 +234,8 @@ def simulate(chan, time, photon, pmap, cfg, rng, key, t_end=1e5, max_photons=1 <
         f = np.asarray(r["fired"])
         idx = np.flatnonzero(f)
         rt = np.asarray(r["root"])[idx]
-        outs.append({"chan": uc[np.asarray(r["slot"])[idx]], "time": np.asarray(r["time"])[idx],
-                     "charge": np.asarray(r["charge"])[idx], "pe": np.asarray(r["pe"])[idx],
+        outs.append({"chan": uc[np.asarray(r["slot"])[idx]], "time": dprec.host(r["time"])[idx],
+                     "charge": dprec.host(r["charge"])[idx], "pe": dprec.host(r["pe"])[idx],
                      "photon": photon[a:b][np.minimum(rt, n - 1)]})
     if not outs:
         return {k: np.zeros(0) for k in ("chan", "time", "charge", "pe", "photon")}

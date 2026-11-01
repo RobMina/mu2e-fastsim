@@ -17,6 +17,9 @@ import jax
 import jax.numpy as jnp
 
 from . import lookup, photons
+from mu2efastsim import precision as dprec
+
+dprec.register(__name__)   # JAX creators/samplers here follow MU2EFS_DEVICE_FLOAT
 
 jax.config.update("jax_enable_x64", True)
 
@@ -47,8 +50,8 @@ class DeviceTable:
                for t in T]
         self.offsets = tuple(int(x) for x in np.r_[0, np.cumsum([len(t.prob) for t in T])[:-1]])
         self.cum = jnp.asarray(np.vstack(cum))
-        self.prob = jnp.asarray(np.concatenate([t.prob for t in T]).astype(np.float64))
-        self.dsum = jnp.asarray(np.concatenate([t.delay_sum for t in T]).astype(np.float64))
+        self.prob = jnp.asarray(np.concatenate([t.prob for t in T]).astype(dprec.FLOAT))
+        self.dsum = jnp.asarray(np.concatenate([t.delay_sum for t in T]).astype(dprec.FLOAT))
         self.edges = {k: jnp.asarray(v) for k, v in L.edges.items()}
         self.p_typical = 2.0 * float(L.tables["scint"].prob.mean())  # buffer estimate for device_photons (x2 margin)
         self.nb = _NB({k: len(v) - 1 for k, v in L.edges.items()})
@@ -70,7 +73,7 @@ def _find_bin(edges, v):
     return jnp.where((i >= 1) & (i <= edges.shape[0] - 1), i - 1, -1)
 
 
-@partial(jax.jit, static_argnames=("SB", "nb", "const", "offsets"))
+@partial(dprec.jit, static_argnames=("SB", "nb", "const", "offsets"))
 def _kernel_a(rows, key, edges, prob, SB, nb, const, offsets):
     """Rows (padded) -> per substep: arrivals per type [SB, 3], their table bins [SB, 3], times [SB], row ids [SB]."""
     hT, hW, hL, fsep, hrx, hry, frad, crad = const
@@ -79,7 +82,7 @@ def _kernel_a(rows, key, edges, prob, SB, nb, const, offsets):
     first = jnp.cumsum(rows["nsub"]) - rows["nsub"]
     k = jnp.arange(SB) - first[ri]
     valid = jnp.arange(SB) < rows["nsub"].sum()
-    frac = (k + 0.5) / rows["nsub"][ri]
+    frac = (k.astype(dprec.FLOAT) + 0.5) / rows["nsub"][ri]
     p = rows["s"][ri] + rows["d"][ri] * frac[:, None]
     t = rows["t0"][ri] + (rows["t1"][ri] - rows["t0"][ri]) * frac
     x, y, z = p[:, 0], p[:, 1], p[:, 2]
@@ -111,12 +114,12 @@ def _kernel_a(rows, key, edges, prob, SB, nb, const, offsets):
     gbin = jnp.where(bins >= 0, bins + jnp.asarray(offsets)[None, :], 0)
     pr = jnp.minimum(prob[gbin] * (rows["dev"][ri] * jnp.exp(-rows["mu"][ri] * z))[:, None], 1.0)
     n = jnp.where((bins >= 0) & valid[:, None], n, 0)
-    narr = jax.random.binomial(key, n.astype(jnp.float64), pr).astype(jnp.int64)
+    narr = jax.random.binomial(key, n.astype(dprec.FLOAT), pr).astype(jnp.int64)
     narr = jnp.where(n > 0, narr, 0)
     return narr, gbin, t, ri
 
 
-@partial(jax.jit, static_argnames=("AB",))
+@partial(dprec.jit, static_argnames=("AB",))
 def _kernel_b(narr, gbin, t, ri, key, cum, dsum, AB):
     """One entry per arrival: substep, delay draw, time; plus the validity mask of the padded tail."""
     flat = jnp.repeat(jnp.arange(narr.size), narr.ravel(), total_repeat_length=AB)
@@ -154,7 +157,7 @@ def substep_photons(dt, rows, key, max_sub=1 << 22):
         if total == 0:
             continue
         tt, rr, valid = _kernel_b(narr, gbin, t, ri, kb, dt.cum, dt.dsum, _bucket(total))
-        tt, rr = np.asarray(tt)[:total], np.asarray(rr)[:total] + a
+        tt, rr = dprec.host(tt)[:total], np.asarray(rr)[:total] + a
         out_s.append(rows["step"][rr])
         out_c.append(rows["chan"][rr])
         out_t.append(tt)
@@ -182,7 +185,7 @@ def load_device_tables(cfg, directory=None):
 ARRIVAL_SAFETY = 1.25  # kernel-B buffer = 1.25 x expected arrivals + 8 sigma + 4096; overflow flagged
 
 
-@partial(jax.jit, static_argnames=("SB", "AB", "nb", "const", "offsets"))
+@partial(dprec.jit, static_argnames=("SB", "AB", "nb", "const", "offsets"))
 def _photons_device(chunk, step, chan, key, edges, prob, cum, dsum, SB, AB, nb, const, offsets):
     """Kernels A and B in one call with a static arrival buffer: (step, channel, time, valid, overflow) on device."""
     ka, kb = jax.random.split(key)
@@ -191,7 +194,7 @@ def _photons_device(chunk, step, chan, key, edges, prob, cum, dsum, SB, AB, nb, 
     return step[rr], chan[rr], tt, valid, narr.sum() > AB
 
 
-@jax.jit
+@dprec.jit
 def _take_rows(step, chan, rr, narr, AB):
     return step[rr], chan[rr], narr.sum() > AB
 

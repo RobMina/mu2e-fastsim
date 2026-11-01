@@ -53,7 +53,7 @@ Two passes with the same seed must give identical fingerprints.
 
 Add `--jax` (response, waveforms, reco on the device) and optionally `--transport-backend jax --tier1b-backend jax`
 ([device.md](device.md); the device tier 1b is a speed option, see [limitations.md](limitations.md)). Set
-`XLA_PYTHON_CLIENT_PREALLOCATE=false` on a shared card. Device precision is float64.
+`XLA_PYTHON_CLIENT_PREALLOCATE=false` on a shared card. Device precision is float32 by default (`MU2EFS_DEVICE_FLOAT=float64` for float64; see `device-precision.md`).
 
 ## Options that change the physics
 

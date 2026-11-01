@@ -21,7 +21,7 @@ This repository holds code only: no Mu2e-internal conditions, tables, data or re
 | waveforms, pulses, coincidences | NumPy; JAX with `--jax` | V-R1..V-R5 pass; fast response + reco on fast steps 0/133 histograms flagged vs stock |
 | whole chain vs Geant4 + stock | | 5 M held-out events: 21/155 histograms flagged (steps), 13/133 end to end; counts within 0.25 % |
 | named configurations (Run 1A, Run 2) | | Run 1A V1 pass, Run 2 V1 fail; no tier-1b library: cannot run end to end |
-| device precision | float64 | float32 validated on a branch, not on `main` |
+| device precision | float32 in the device kernels (float64 one variable away) | within the float64 seed spread on 100 shards; pulse PE offset bounded at <= 0.3 % (`docs/device-precision.md`) |
 
 Numbers, samples, thresholds and commits: [`docs/validation.md`](docs/validation.md). What is missing or not
 validated: [`docs/limitations.md`](docs/limitations.md).
@@ -72,6 +72,18 @@ its goals and thresholds are still the agreed ones).
 validations are `@pytest.mark.slow` (run with `--runslow`); `python3 -m mu2efastsim.testselect --also ../core` selects
 the test files a change affects. CI runs the suite with and without JAX on every pull request (`CONTRIBUTING.md` in
 the umbrella).
+
+## Device precision
+
+The device (JAX) chain (transport, tier 1b, photons, SiPM, waveforms, pulses, coincidences) runs in float32 by
+default; `MU2EFS_DEVICE_FLOAT=float64` restores float64 (identical to the float64 output of earlier releases). On
+5 M generated cosmics, float32 is within the float64 seed-to-seed spread on every validated quantity except the
+mean pulse PE (see [device precision](docs/device-precision.md)). It runs 1.2-2.8x faster on cards with reduced FP64 rate
+(MIG slices, A40, RTX PRO 6000), with no gain on A100, B200 and PVC. float64 output is identical on every GPU model
+for a given seed. float32 output repeats on one model but its discrete results can differ slightly between models,
+so `runchain` and `e2e-bench` record the precision and device model (`precision` in their stats, `--emit` shards
+and merge). NumPy (CPU) paths are float64 and unchanged. The UVA kit (`kit_uva.py`) passes `FASTSIMKIT_DEVICE_FLOAT`
+(default float32) to its jobs and shares a JAX compilation cache (`FASTSIMKIT_JAX_CACHE`).
 
 ## Studies kept off main
 

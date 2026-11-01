@@ -18,6 +18,9 @@ from jax import lax
 
 from .pulsefit import PERIOD
 from .waveform import WaveformConfig, charge_clusters, single_pe_template
+from mu2efastsim import precision as dprec
+
+dprec.register(__name__)   # JAX creators/samplers here follow MU2EFS_DEVICE_FLOAT
 
 jax.config.update("jax_enable_x64", True)
 
@@ -51,7 +54,7 @@ def pack(chan, time, charge, tdc0_of_chan, cfg=WaveformConfig(), Q=None, L=None)
     return dict(T=T, W=W, n=nq, t_start=t_start, tdc0=tdc0, keep=keep, chan=cchan, est=est, L=L, tmpl=tmpl)
 
 
-@partial(jax.jit, static_argnames=("L", "zs"))
+@partial(dprec.jit, static_argnames=("L", "zs"))
 def synth_dense(T, W, n, t_start, keep, tmpl, key, L, zs, precision, noise, min_voltage, adc_conv, pedestal, adc_lo,
                 adc_hi):
     """Dense waveforms, ADCs and digi starts for C clusters. T, W [C,Q]; n, t_start, keep [C].
@@ -59,7 +62,7 @@ def synth_dense(T, W, n, t_start, keep, tmpl, key, L, zs, precision, noise, min_
     precision and the template itself are data (a tuning knob reuses the compiled kernel)."""
     C, Q = T.shape
     qmask = jnp.arange(Q)[None, :] < n[:, None]
-    ts = t_start[:, None] + jnp.arange(L)[None, :] * PERIOD                       # [C, L]
+    ts = t_start[:, None] + jnp.arange(L, dtype=dprec.FLOAT)[None, :] * PERIOD                       # [C, L]
     dt = ts[:, None, :] - T[:, :, None]                                           # [C, Q, L]
     ti = jnp.rint(dt / precision).astype(jnp.int64)
     ok = (dt >= 0) & (ti < tmpl.shape[0]) & qmask[:, :, None]

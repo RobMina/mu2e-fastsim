@@ -7,6 +7,9 @@ import numpy as np
 import pandas as pd
 
 from . import tier1b as T
+from mu2efastsim import precision as dprec
+
+dprec.register(__name__)   # JAX creators/samplers here follow MU2EFS_DEVICE_FLOAT
 
 
 def _jax():
@@ -221,8 +224,8 @@ def _closest(pos, u, lo, hi):
         par = u == 0
         inside = (pos >= low) & (pos <= high)
         t1, t2 = (low - pos) / u, (high - pos) / u
-        tn = j.max(j.where(par, j.where(inside, -j.inf, j.inf), j.minimum(t1, t2)), axis=1)
-        tf = j.min(j.where(par, j.where(inside, j.inf, -j.inf), j.maximum(t1, t2)), axis=1)
+        tn = j.max(j.where(par, j.where(inside, -j.inf, j.inf).astype(t1.dtype), j.minimum(t1, t2)), axis=1)
+        tf = j.min(j.where(par, j.where(inside, j.inf, -j.inf).astype(t1.dtype), j.maximum(t1, t2)), axis=1)
         enters = (tn <= tf) & (tf >= 0)
         corners = j.stack(j.meshgrid(*[j.stack([low[k], high[k]]) for k in range(3)], indexing="ij"), axis=-1).reshape(8, 3)
         proj = j.sum((corners[None] - pos[:, None, :]) * u[:, None, :], axis=2)
@@ -257,7 +260,7 @@ class DeviceRandom:
     def random(self, n):
         jax, j = _jax()
         self.key, key = jax.random.split(self.key)
-        out = jax.random.uniform(key, (int(n),), dtype=j.float64)
+        out = jax.random.uniform(key, (int(n),), dtype=dprec.FLOAT)
         if self.draws is not None:
             self.draws.append(np.asarray(out))
         return out
@@ -308,7 +311,7 @@ def _block_fields(values, d, fx, rows, ix, valid, source):
     out.update(lsp=d["sp"][rows].astype(j.int64), parent=fx["sp"][ix], src=j.full(len(ix), source, j.int64),
                pdg=d["pdg"][rows].astype(j.int32), t0=fx["t0"][ix] + d["dt0"][rows],
                t1=fx["t0"][ix] + d["dt1"][rows])
-    out.update({c: d[c][rows].astype(j.float64) for c in ("p1", "len", "edep")})
+    out.update({c: d[c][rows].astype(dprec.FLOAT) for c in ("p1", "len", "edep")})
     return out
 
 
@@ -381,18 +384,18 @@ class DeviceTier1b:
         self.boxes = tuple(j.asarray(a) for a in T.group_boxes(geom))
         from . import tier1b_metadata_jax as metadata
         self.metadata_constants = metadata.prepare(geom, lib["libbins"])
-        self.crossing_metadata = jax.jit(metadata.metadata)
+        self.crossing_metadata = dprec.jit(metadata.metadata)
         from . import tier1b_csr_jax as csr
         self.main_csr = csr.prepare(self.ld.xid.to_numpy(), len(self.lx), ~self.ld.uv.to_numpy())
         self.uv_csr = csr.prepare(self.uvd.xid.to_numpy(), len(lib["uvxing"]["entry"]))
         from . import tier1b_hard_jax as hard
         self.hard = hard.prepare(lib["hard"]) if "hard" in lib else None
-        self.hard_patterns, self.hard_choose, self.hard_redraw = jax.jit(hard.patterns), jax.jit(hard.choose), jax.jit(hard.redraw)
-        self.csr_layout = jax.jit(csr.layout)
-        self.main_block, self.uv_block = jax.jit(_main_block), jax.jit(_uv_block)
-        self.main_select = jax.jit(_main_select)
-        self.uv_select = jax.jit(_uv_select)
-        self.main_place, self.uv_place, self.closest = jax.jit(_main_place), jax.jit(_uv_place), jax.jit(_closest)
+        self.hard_patterns, self.hard_choose, self.hard_redraw = dprec.jit(hard.patterns), dprec.jit(hard.choose), dprec.jit(hard.redraw)
+        self.csr_layout = dprec.jit(csr.layout)
+        self.main_block, self.uv_block = dprec.jit(_main_block), dprec.jit(_uv_block)
+        self.main_select = dprec.jit(_main_select)
+        self.uv_select = dprec.jit(_uv_select)
+        self.main_place, self.uv_place, self.closest = dprec.jit(_main_place), dprec.jit(_uv_place), dprec.jit(_closest)
         jax.block_until_ready((self.support, self.g, self.dld, self.dlx, self.duvd, self.xgeo, self.uvsupport,
                                self.metadata_constants, self.main_csr, self.uv_csr, self.hard))
         self.preparation_s = time.perf_counter() - tick
@@ -458,7 +461,7 @@ class DeviceTier1b:
         jax, _ = _jax()
         chunks = {}
         for out in self.device_blocks(selection, component):
-            for c, a in jax.device_get(out).items():
+            for c, a in dprec.host(jax.device_get(out)).items():
                 chunks.setdefault(c, []).append(a)
         total = int(selection["plan"]["total"])
         if not total:
@@ -563,7 +566,7 @@ class DeviceTier1b:
         kb = j.where(group == 0, j.searchsorted(j.asarray(T.NM_KE_EDGES), j.asarray(cand.ke.to_numpy()), side="right"), 0)
         cell = (group * 10 + db) * 10 + kb
         r = self.lib["nmreach"]
-        prob = j.zeros(len(cand), j.float64)
+        prob = j.zeros(len(cand), dprec.FLOAT)
         if len(r):
             rc = j.asarray(r.cell.to_numpy())
             ii = j.minimum(j.searchsorted(rc, cell), len(r) - 1)

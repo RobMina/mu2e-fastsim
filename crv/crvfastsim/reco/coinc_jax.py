@@ -20,6 +20,9 @@ import jax
 import jax.numpy as jnp
 
 from . import coinc as C
+from mu2efastsim import precision as dprec
+
+dprec.register(__name__)   # JAX creators/samplers here follow MU2EFS_DEVICE_FLOAT
 
 jax.config.update("jax_enable_x64", True)
 
@@ -239,7 +242,7 @@ def _attach_opposite(lab, kept, filt, comp, idx, bar, sipm, first, t, enabled, w
     return jnp.where(selected, chosen_lab, lab), kept | selected
 
 
-@partial(jax.jit, static_argnames=("ld", "ns", "uniform", "K"))
+@partial(dprec.jit, static_argnames=("ld", "ns", "uniform", "K"))
 def find_dense(valid, idx, side, bar, sipm, first, layer, counter, x, y, t, pe, pos, cut, tp, cu, ld, ns, uniform, K=K_DEFAULT):
     """One sector type, [G, H] hits -> per-hit cluster label (root hit, -1 = no cluster) and per-root properties.
     cut [G, H, len(CUT_COLS)]: each hit's sector cuts; cu [len(CUT_COLS)]: the shared cuts when `uniform`;
@@ -331,7 +334,7 @@ def find_dense(valid, idx, side, bar, sipm, first, layer, counter, x, y, t, pe, 
         rank = [sum(((X[q] < X[p]) | ((X[q] == X[p]) & (q < p))).astype(jnp.int64) for q in range(n) if q != p)
                 for p in range(n)]
         for p, l in enumerate(layers):
-            w = jnp.zeros_like(ok, dtype=jnp.float64)
+            w = jnp.zeros_like(ok, dtype=dprec.FLOAT)
             for q in range(n):
                 if q == p:
                     continue
@@ -355,7 +358,7 @@ def find_dense(valid, idx, side, bar, sipm, first, layer, counter, x, y, t, pe, 
                                  both & (attach > 0.5), max_dt + 2.0 * (p1 - p0) / 2.0 / v)
     # clusterProperties per root
     M = (lab[:, None, :] == jnp.arange(H)[None, :, None]) & kept[:, None, :]
-    Mf = M.astype(jnp.float64)
+    Mf = M.astype(dprec.FLOAT)
     sm = lambda a: jnp.einsum("grh,gh->gr", Mf, a)
     tot = sm(pe)
     is_root = jnp.any(M, -1)
@@ -372,9 +375,9 @@ def find_dense(valid, idx, side, bar, sipm, first, layer, counter, x, y, t, pe, 
     for s in (0, 1):
         Ms = M & ((side == s) & (pe > 0))[:, None, :]
         nh.append(jnp.sum(Ms, -1))
-        e_ = jnp.einsum("grh,gh->gr", Ms.astype(jnp.float64), pe)
+        e_ = jnp.einsum("grh,gh->gr", Ms.astype(dprec.FLOAT), pe)
         spe.append(e_)
-        stt.append(jnp.where(e_ > 0, jnp.einsum("grh,gh->gr", Ms.astype(jnp.float64), t * pe) /
+        stt.append(jnp.where(e_ > 0, jnp.einsum("grh,gh->gr", Ms.astype(dprec.FLOAT), t * pe) /
                              jnp.where(e_ > 0, e_, 1.0), 0.0))
         tmn.append(jnp.min(jnp.where(Ms, t[:, None, :], big), -1))
         tmx.append(jnp.max(jnp.where(Ms, t[:, None, :], -big), -1))
@@ -421,7 +424,7 @@ def _real_rows_to_host(outs, keys):
     Labels are hit-column roots, not flattened padded-row indices; do not compact the hit axis.
     Pulse outputs likewise retain every pulse slot and every per-row recovery flag.
     """
-    return jax.device_get([{k: d[k][:n] for k in keys} for d, n in outs])
+    return dprec.host(jax.device_get([{k: d[k][:n] for k in keys} for d, n in outs]))
 
 
 def _dispatch_tier(arr, P, K, batch, compact=None):
@@ -445,7 +448,7 @@ def _collect_tier(outs, keys=OUT_KEYS):
     if getattr(outs, "compact", False):
         host = _real_rows_to_host(outs, keys)
         return {k: np.concatenate([d[k] for d in host]) for k in keys}
-    host = [({k: np.asarray(d[k]) for k in keys}, n) for d, n in outs]
+    host = [({k: dprec.host(d[k]) for k in keys}, n) for d, n in outs]
     return {k: np.concatenate([d[k][:n] for d, n in host]) for k in keys}
 
 

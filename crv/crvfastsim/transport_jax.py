@@ -19,6 +19,9 @@ from . import tables
 from . import transport as nt
 from .crossings_jax import crossings, slab
 from . import eloss_transport_jax as sampling
+from mu2efastsim import precision as dprec
+
+dprec.register(__name__)   # JAX creators/samplers here follow MU2EFS_DEVICE_FLOAT
 
 jax.config.update("jax_enable_x64", True)
 
@@ -28,7 +31,7 @@ def p_after(p, loss):
     return jnp.sqrt(jnp.maximum((jnp.maximum(tk, 0.) + eloss.MMU) ** 2 - eloss.MMU ** 2, 0.))
 
 
-@jax.jit
+@dprec.jit
 def slab_loss(key, c, p, length):
     """Core slab_loss slicing, stopping and mean-tail rules with fixed-shape lanes."""
     tk0 = jnp.sqrt(p * p + eloss.MMU ** 2) - eloss.MMU
@@ -56,7 +59,7 @@ def slab_loss(key, c, p, length):
     return jnp.where(tk0 - lost <= ct.TK_STOP, tk0, jnp.minimum(lost, tk0))
 
 
-@partial(jax.jit, static_argnames=("nmats",))
+@partial(dprec.jit, static_argnames=("nmats",))
 def column(o, d, length, planes, mat, lo, hi, nmats):
     """Convex-piece clipping, reduced per material without host sparse compaction."""
     enter = jnp.zeros((len(o), len(mat)))
@@ -75,7 +78,7 @@ def column(o, d, length, planes, mat, lo, hi, nmats):
     box_hit = jnp.minimum(box_out, length[:, None]) > jnp.maximum(box_in, 0.)
     lengths = jnp.where(outside | ~box_hit, 0., jnp.maximum(leave - enter, 0.))
     return (jnp.stack([jnp.where(mat[None] == k, lengths, 0.).sum(1) for k in range(nmats)], axis=1)
-            if nmats else jnp.zeros((len(o), 0), jnp.float64))
+            if nmats else jnp.zeros((len(o), 0), dprec.FLOAT))
 
 
 def pack(pieces):
@@ -86,7 +89,7 @@ def pack(pieces):
     return (jnp.asarray(ps.P), jnp.asarray(ps.mat), jnp.asarray(ps.lo), jnp.asarray(ps.hi)), ps.mats
 
 
-@jax.jit
+@dprec.jit
 def scatter(key, o, d, p, y_plane, xx0, bh):
     """CRV default band-weighted Highland covariance and projection onto the plane."""
     length = (o[:, 1] - y_plane) / -d[:, 1]
@@ -98,8 +101,8 @@ def scatter(key, o, d, p, y_plane, xx0, bh):
     syt = th ** 2 * (w * bh).sum(1)
     syy = th ** 2 * (w * bh ** 2).sum(1)
     kt, ky = jax.random.split(key)
-    zt = jax.random.normal(kt, (len(o), 2), jnp.float64)
-    zy = jax.random.normal(ky, (len(o), 2), jnp.float64)
+    zt = jax.random.normal(kt, (len(o), 2), dprec.FLOAT)
+    zy = jax.random.normal(ky, (len(o), 2), dprec.FLOAT)
     dth = zt * th[:, None]
     dy = zt * (syt / jnp.maximum(th, 1e-30))[:, None]
     dy += zy * jnp.sqrt(jnp.maximum(syy - syt ** 2 / jnp.maximum(th ** 2, 1e-30), 0.))[:, None]
@@ -126,7 +129,7 @@ class DeviceTransport:
         if self.range_out and stage != "C":
             raise ValueError("device range_out supports stage C only")
         self.batch_size, self.capacity = batch_size, capacity
-        self.y = nt.msc_plane(geom)
+        self.y = float(nt.msc_plane(geom))   # Python floats: weak-typed in the device kernels
         self.lo, self.hi = (jnp.asarray(a) for a in (geom.center - geom.halflen, geom.center + geom.halflen))
         tag = np.arange(geom.nbars) >= nt.TAGGER_FIRST_BAR if tagger_bar is None else np.asarray(tagger_bar, bool)
         cut = np.where(tag, materials.POLYSTYRENE.cuts_e_MeV["tagger"], materials.POLYSTYRENE.cuts_e_MeV["crv"])
@@ -156,14 +159,14 @@ class DeviceTransport:
             self.bar_kernel = ro.make_kernel(self, air_loss, absorber_straggling)
         else:
             self.bar_kernel = self._make_bar_kernel(air_loss, absorber_straggling)
-        self.batch_kernel = jax.jit(self.batch)
+        self.batch_kernel = dprec.jit(self.batch)
 
     def world(self, key, o, d, p, active):
         loss = jnp.zeros_like(p)
         length = jnp.maximum((o[:, 1] - self.y) / -jnp.where(d[:, 1] < 0, d[:, 1], -1.), 0.)
         bxx, bh = [], []
         for k, (data, names, order) in enumerate(self.bands):
-            top, bot = self.edges[k:k+2]
+            top, bot = (float(e) for e in self.edges[k:k+2])
             st = jnp.clip((o[:, 1] - top) / -jnp.where(d[:, 1] < 0, d[:, 1], -1.), 0., length)
             sb = jnp.clip((o[:, 1] - bot) / -jnp.where(d[:, 1] < 0, d[:, 1], -1.), 0., length)
             seg = jnp.where(active, sb - st, 0.)
@@ -175,17 +178,17 @@ class DeviceTransport:
                 dl = slab_loss(jax.random.fold_in(key, k * 100 + j), ej.consts(mat), p_after(p, loss), c)
                 loss += jnp.where(c > 0., dl, 0.)
                 solid += c
-                xx += c / eloss.radiation_length_mm(mat)
+                xx += c / float(eloss.radiation_length_mm(mat))
             air = jnp.maximum(seg - solid, 0.)
             loss += ej.dedx_restricted(materials.AIR, jnp.maximum(p_after(p, loss), 1.), 1e9) * air
-            bxx.append(xx + air / eloss.radiation_length_mm(materials.AIR))
+            bxx.append(xx + air / float(eloss.radiation_length_mm(materials.AIR)))
             bh.append(length - .5 * (st + sb))
         alive = jnp.sqrt(p*p + eloss.MMU**2) - eloss.MMU - loss > .5
         return p_after(p, loss), alive, jnp.stack(bxx, 1), jnp.stack(bh, 1)
 
     def _make_bar_kernel(self, air_loss, absorber_straggling):
         lo, hi, cut, capacity, ab, stage = self.lo, self.hi, self.cut, self.capacity, self.absorbers, self.stage
-        @jax.jit
+        @dprec.jit
         def kernel(key, o, d, p, offset, active):
             xs = crossings(o, d, lo, hi, capacity, active)
             bar, ti, to, valid, overflow = xs
@@ -293,7 +296,7 @@ def transport(gen, geom, rng, *, stage="C", world=None, absorbers=None, tagger_b
         p = np.ones(dev.batch_size); p[:n] = p0[selected]
         out = dev.batch_kernel(jax.random.fold_in(key, start), jnp.asarray(o), jnp.asarray(d), jnp.asarray(p),
                         jnp.arange(dev.batch_size) < n)
-        o, d, offset, result = jax.device_get(out)
+        o, d, offset, result = dprec.host(jax.device_get(out))
         bar, ti, to, pin, path, loss, vis, keep, overflow = result
         if overflow:
             raise RuntimeError(f"JAX crossing capacity {dev.capacity} exceeded; increase capacity, no table published")

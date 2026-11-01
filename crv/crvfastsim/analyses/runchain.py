@@ -437,8 +437,10 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
     res["wall_s"] = time.perf_counter() - t0
     if jax:
         import jax as _jax
+        from mu2efastsim import precision as _dprec
         res["device"] = str(_jax.devices()[0])
         res["reco_device"] = "cpu" if reco_cpu else res["device"]
+        res["precision"] = _dprec.provenance()   # float32 discrete results depend on the device model: record both
     if emit:   # per-shard accumulators for a merge (node jobs: one process per tile)
         with open(emit, "w") as fh:
             json.dump({"generated_events": n_gen, "timers": T, "wall_s": res["wall_s"],
@@ -451,7 +453,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
                        "run_config": rc.name, "window": list(cfg.window), "time_window": time_window,
                        "type_names": {int(k): v for k, v in stype_name.items()},
                        "device": res.get("device"), "reco_device": res.get("reco_device"),
-                       "inputs": list(tables.expand(inputs))}, fh)
+                       "precision": res.get("precision"), "inputs": list(tables.expand(inputs))}, fh)
     if benchmark is not None:
         res["sector_type_names"] = {str(k): v for k, v in stype_name.items()}
         res["instrumented_wall_before_stats_s"] = time.perf_counter() - bench_start
@@ -503,7 +505,8 @@ def merge(inputs, outdir, wall=None, **kw):
            "stage_s_summed_over_shards": {k: v for k, v in T.items() if k.endswith("_s")},
            "ms_per_event_with_steps_per_process": {k[:-2]: 1e3 * v / max(acc, 1) for k, v in T.items()
                                                    if k.endswith("_s") and k != "setup_s"},
-           "devices": sorted({str(j.get("device")) for j in J}), "reco_devices": sorted({str(j.get("reco_device")) for j in J})}
+           "devices": sorted({str(j.get("device")) for j in J}), "reco_devices": sorted({str(j.get("reco_device")) for j in J}),
+           "precisions": sorted({json.dumps(j.get("precision"), sort_keys=True) for j in J})}
     res.update(time_metadata)
     res.update(generator_metadata)
     if generator_metadata:
