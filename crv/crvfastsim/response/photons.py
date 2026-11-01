@@ -112,17 +112,28 @@ def _per_substep(avg, nsub, rng):
     return np.maximum(np.rint(_draw_counts(avg, rng) / nsub), 0).astype(np.int64)
 
 
+ROW_CHUNK = 1 << 18   # arrivals per cumulative-table block: bounds the [rows, bins] temporaries, same result
+
+
+def _first_above(table, bins, thr):
+    """Per row, the number of cumulative table entries below thr, over blocks of ROW_CHUNK rows."""
+    out = np.empty(len(bins), np.int64)
+    for a in range(0, len(bins), ROW_CHUNK):
+        b = min(a + ROW_CHUNK, len(bins))
+        cum = np.cumsum(table[bins[a:b]].astype(np.int32), axis=1)
+        out[a:b] = (cum < thr[a:b, None]).sum(axis=1)
+    return out
+
+
 def _sample_delays(T, bins, rng):
     """Delay index per arrival: first j with u * sum <= cumsum_j (stock GetRandomTime), u ~ U[0, 1)."""
-    cum = np.cumsum(T.delays[bins].astype(np.int32), axis=1)
     thr = rng.random(len(bins)) * T.delay_sum[bins]
-    return (cum < thr[:, None]).sum(axis=1).astype(float)
+    return _first_above(T.delays, bins, thr).astype(float)
 
 
 def _sample_emissions(T, bins, rng):
-    cum = np.cumsum(T.emis[bins].astype(np.int32), axis=1)
     thr = rng.random(len(bins)) * T.emis_sum[bins]
-    return (cum < thr[:, None]).sum(axis=1)
+    return _first_above(T.emis, bins, thr)
 
 
 def _inside_scint(L, x, y, z):
