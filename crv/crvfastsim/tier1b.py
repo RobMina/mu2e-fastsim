@@ -305,7 +305,7 @@ def attach_topology(lib, crossings, visits, geom):
     ld = lib["libdesc"].drop(columns=[c for c in TOPO_COLS if c in lib["libdesc"].columns])
     lib = dict(lib)
     lib["libdesc"] = pd.concat([ld.reset_index(drop=True), topo], axis=1)
-    return lib
+    return index_library(lib)
 
 
 INSET_MM = 0.1
@@ -550,7 +550,67 @@ def write_library(path, lib):
 
 
 def read_library(path):
-    return {k: core_tables.read(path, k) for k in LIB_TREES}
+    return index_library({k: core_tables.read(path, k) for k in LIB_TREES})
+
+
+def _stable_order(*keys):
+    """Stable sort order by keys (last key primary), None when the rows are already in that order."""
+    o = np.lexsort(keys) if len(keys) > 1 else np.argsort(keys[0], kind="stable")
+    if np.array_equal(o, np.arange(len(o))):
+        return None
+    return o.astype(np.int32) if len(o) < 2 ** 31 else o
+
+
+def index_library(lib):
+    """Row orders of libdesc (by xid) and libxing (by bin, by bin and context, by xid) that _desc_for_crossings would
+    otherwise build on every call, as permutations (None: already in order); no frame is copied."""
+    if ("libdesc" not in lib or "libxing" not in lib or "xid" not in lib["libdesc"].columns
+            or not {"xid", "bin"} <= set(lib["libxing"].columns)):
+        return lib
+    lx, ld = lib["libxing"], lib["libdesc"]
+    lib = dict(lib)
+    lib["index"] = {"n_desc": len(ld), "n_xing": len(lx), "desc_by_xid": _stable_order(ld.xid.to_numpy()),
+                    "xing_by_bin": _stable_order(lx.bin.to_numpy()), "xing_by_xid": _stable_order(lx.xid.to_numpy()),
+                    "xing_by_bin_ctx": _stable_order(lx.ctx.to_numpy(), lx.bin.to_numpy()) if "ctx" in lx.columns
+                    else None}
+    return lib
+
+
+def _is_stable_order(order, *keys):
+    """True when order (None: identity) is exactly the stable sort of the rows by keys (last key primary)."""
+    n = len(keys[0])
+    o = np.arange(n) if order is None else order
+    if len(o) != n:
+        return False
+    if n < 2:
+        return True
+    later, tied = np.zeros(n - 1, bool), np.ones(n - 1, bool)
+    for k in reversed(keys):
+        kk = k[o]
+        later |= tied & (kk[1:] > kk[:-1])
+        tied &= kk[1:] == kk[:-1]
+    return bool(np.all(later | (tied & (o[1:] > o[:-1]))))
+
+
+def _indexed(lib):
+    """The library's prepared row orders if they are the stable sorts of its current libdesc/libxing, else None
+    (per-call sorts). Checked on every call against the frames themselves, so a replaced, reordered or reloaded
+    frame can never be read through a stale order."""
+    idx = lib.get("index")
+    if idx is None or idx["n_desc"] != len(lib["libdesc"]) or idx["n_xing"] != len(lib["libxing"]):
+        return None
+    ld, lx = lib["libdesc"], lib["libxing"]
+    if "xid" not in ld.columns or not {"xid", "bin"} <= set(lx.columns):
+        return None
+    bins = lx.bin.to_numpy()
+    ok = (_is_stable_order(idx["desc_by_xid"], ld.xid.to_numpy()) and _is_stable_order(idx["xing_by_bin"], bins)
+          and _is_stable_order(idx["xing_by_xid"], lx.xid.to_numpy())
+          and ("ctx" not in lx.columns or _is_stable_order(idx["xing_by_bin_ctx"], lx.ctx.to_numpy(), bins)))
+    return idx if ok else None
+
+
+def _take(frame, order):
+    return frame if order is None else frame.take(order)
 
 
 # ----------------------------------------------------------------------------------------------------------- sample
@@ -745,6 +805,28 @@ def _hard_picks(fx, geom, lib, pick, lo, hi, lx_xid, rng):
     return pick, info
 
 
+def _support(fx, lib, geom, context, idx):
+    """Library crossings in draw order and each fast crossing's support [lo, hi) in it: its (bin, context) cell, or
+    its bin when the cell has fewer than MIN_CTX_CROSSINGS (context), else its bin. idx: prepared row orders or None."""
+    p = np.sqrt(fx.px0 ** 2 + fx.py0 ** 2 + fx.pz0 ** 2).to_numpy()
+    b = _bin(lib["libbins"], _group_index(geom, fx.bar), p, fx.len.to_numpy())
+    lx = lib["libxing"]
+    if context:   # draw within the crossing's (bin, context) cell, else within its bin
+        lx = _take(lx, idx["xing_by_bin_ctx"]) if idx is not None else lx.sort_values(["bin", "ctx"], kind="stable")
+        code = b * N_CTX + crossing_context(fx, geom)
+        lcode = lx.bin.to_numpy() * N_CTX + lx.ctx.to_numpy()
+        lo, hi = np.searchsorted(lcode, code, "left"), np.searchsorted(lcode, code, "right")
+        few = (hi - lo) < MIN_CTX_CROSSINGS
+        lbin = lx.bin.to_numpy()
+        lo[few], hi[few] = np.searchsorted(lbin, b[few], "left"), np.searchsorted(lbin, b[few], "right")
+    else:
+        lx = _take(lx, idx["xing_by_bin"]) if idx is not None else lx.sort_values("bin", kind="stable")
+        lbin = lx.bin.to_numpy()
+        lo, hi = np.searchsorted(lbin, b, "left"), np.searchsorted(lbin, b, "right")
+    assert np.all(hi > lo), "empty library bin"
+    return lx, lo, hi
+
+
 def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=False, mirror=False,
                         translate=False, topology=False, trace=None, drop_unvisited=False, chord=False, follow=False,
                         hard=False):
@@ -764,27 +846,13 @@ def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=
     fast crossing's chord at their fraction of the library chord (_chord_map) instead of at their distance along the
     library muon's direction. follow (template sidecar with the next crossing of each library crossing): chain draw
     along each fast muon (_follow_picks). Both consume no other random numbers."""
-    p = np.sqrt(fx.px0 ** 2 + fx.py0 ** 2 + fx.pz0 ** 2).to_numpy()
-    b = _bin(lib["libbins"], _group_index(geom, fx.bar), p, fx.len.to_numpy())
-    lx = lib["libxing"]
-    if context and "ctx" not in lx.columns:
+    if context and "ctx" not in lib["libxing"].columns:
         raise ValueError("crossing context needs a library built with the ctx column (tier1b-build after this change)")
     if topology and "tvis" not in lib["libdesc"].columns:
         raise ValueError("topology placement needs the desc_topology columns (attach_topology with a sidecar)")
-    if context:   # draw within the crossing's (bin, context) cell, else within its bin
-        lx = lx.sort_values(["bin", "ctx"], kind="stable")
-        code = b * N_CTX + crossing_context(fx, geom)
-        lcode = lx.bin.to_numpy() * N_CTX + lx.ctx.to_numpy()
-        lo, hi = np.searchsorted(lcode, code, "left"), np.searchsorted(lcode, code, "right")
-        few = (hi - lo) < MIN_CTX_CROSSINGS
-        lbin = lx.bin.to_numpy()
-        lo[few], hi[few] = np.searchsorted(lbin, b[few], "left"), np.searchsorted(lbin, b[few], "right")
-    else:
-        lx = lx.sort_values("bin", kind="stable")
-        lbin = lx.bin.to_numpy()
-        lo, hi = np.searchsorted(lbin, b, "left"), np.searchsorted(lbin, b, "right")
-    assert np.all(hi > lo), "empty library bin"
-    pick = lx.xid.to_numpy()[lo + (rng.random(len(b)) * (hi - lo)).astype(np.int64)]
+    idx = _indexed(lib)
+    lx, lo, hi = _support(fx, lib, geom, context, idx)
+    pick = lx.xid.to_numpy()[lo + (rng.random(len(lo)) * (hi - lo)).astype(np.int64)]
     if (chord or follow) and "xgeo" not in lib:
         raise ValueError("chord / follow need a template sidecar with the library chords (attach_templates)")
     if follow:
@@ -797,8 +865,12 @@ def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=
         if "hard" not in lib:
             raise ValueError("hard draw needs attach_hard")
         pick, hinfo = _hard_picks(fx, geom, lib, pick, lo, hi, lx.xid.to_numpy(), rng)
-    ld = lib["libdesc"].sort_values("xid", kind="stable")
-    lxid = ld.xid.to_numpy()
+    if idx is not None:   # sorted view through the prepared order: only the drawn rows are gathered
+        ld, order = lib["libdesc"], idx["desc_by_xid"]
+        lxid = ld.xid.to_numpy() if order is None else ld.xid.to_numpy()[order]
+    else:
+        ld, order = lib["libdesc"].sort_values("xid", kind="stable"), None
+        lxid = ld.xid.to_numpy()
     a, z = np.searchsorted(lxid, pick, "left"), np.searchsorted(lxid, pick, "right")
     cnt = z - a
     ix = np.repeat(np.arange(len(fx)), cnt)                        # fast crossing of each new step
@@ -806,10 +878,19 @@ def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=
     if drop_unvisited:
         if "uv" not in ld.columns:
             raise ValueError("unvisited-layer templates need the uv column (attach_templates with a template sidecar)")
-        keep_row = ~ld.uv.to_numpy()[rows]
+        keep_row = ~ld.uv.to_numpy()[rows if order is None else order[rows]]
         ix, rows = ix[keep_row], rows[keep_row]
-    dd = ld.iloc[rows]
-    lu = lib["libxing"].set_index("xid").loc[pick[ix], ["ux", "uy", "uz"]].to_numpy()
+    dd = ld.iloc[rows if order is None else order[rows]]
+    if idx is not None:   # xid -> libxing row through the prepared xid order (xid unique, as set_index().loc needs)
+        xx = lib["libxing"]
+        xs = idx["xing_by_xid"]
+        xid_sorted = xx.xid.to_numpy() if xs is None else xx.xid.to_numpy()[xs]
+        at = np.searchsorted(xid_sorted, pick[ix])
+        if len(at) and (at.max() >= len(xid_sorted) or not np.array_equal(xid_sorted[at], pick[ix])):
+            raise KeyError("drawn library crossing not in libxing")
+        lu = xx[["ux", "uy", "uz"]].to_numpy()[at if xs is None else xs[at]]
+    else:
+        lu = lib["libxing"].set_index("xid").loc[pick[ix], ["ux", "uy", "uz"]].to_numpy()
     fu = _unit(fx[["px0", "py0", "pz0"]].to_numpy())[ix]
     entry = fx[["x0", "y0", "z0"]].to_numpy()[ix]
     r0 = entry + rotate(dd[["dx0", "dy0", "dz0"]].to_numpy(), lu, fu)
@@ -1160,7 +1241,7 @@ def attach_templates(lib, side, geom):
     r["nden"] = r.ncensus * scale
     r["prob"] = np.where(r.nden > 0, np.minimum(r.ntemp / np.maximum(r.nden, 1e-300), 1.0), 0.0)
     lib["nmreach"] = r.astype({"cell": np.int64}).sort_values("cell").reset_index(drop=True)
-    return lib
+    return index_library(lib)
 
 
 def _unvisited_for_crossings(fx, lib, geom, rng):
