@@ -556,7 +556,9 @@ def read_library(path):
 def _stable_order(*keys):
     """Stable sort order by keys (last key primary), None when the rows are already in that order."""
     o = np.lexsort(keys) if len(keys) > 1 else np.argsort(keys[0], kind="stable")
-    return None if np.array_equal(o, np.arange(len(o))) else o
+    if np.array_equal(o, np.arange(len(o))):
+        return None
+    return o.astype(np.int32) if len(o) < 2 ** 31 else o
 
 
 def index_library(lib):

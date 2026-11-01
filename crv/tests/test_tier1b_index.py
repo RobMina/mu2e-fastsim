@@ -63,7 +63,7 @@ def test_index_is_permutations_only(geom):
     ind = T.index_library(lib)
     assert ind["libdesc"] is lib["libdesc"] and ind["libxing"] is lib["libxing"]
     idx = ind["index"]
-    assert idx["desc_by_xid"].dtype == np.int64 and len(idx["desc_by_xid"]) == len(lib["libdesc"])
+    assert idx["desc_by_xid"].dtype == np.int32 and len(idx["desc_by_xid"]) == len(lib["libdesc"])
     s = T.index_library({**lib, "libdesc": lib["libdesc"].sort_values("xid", kind="stable").reset_index(drop=True)})
     assert s["index"]["desc_by_xid"] is None                  # already in order: nothing stored
 
