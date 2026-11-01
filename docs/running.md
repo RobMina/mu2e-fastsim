@@ -17,7 +17,7 @@ Pick one:
 
 | Where | How | JAX |
 |---|---|---|
-| any machine | `python3 -m venv .venv && .venv/bin/pip install -e core -e crv -e tracker -r core/ci/requirements.txt` (`beam/` is used from `PYTHONPATH`) | CPU JAX from the requirements; drop it for a NumPy-only setup |
+| any machine | `python3 -m venv .venv && .venv/bin/pip install -e core -e crv -e tracker -e beam -r core/ci/requirements.txt` | CPU JAX from the requirements; drop it for a NumPy-only setup |
 | Mu2e GPVM | `source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh && pyenv ana` | none (JAX tests skip; the beam stage needs JAX) |
 | Slurm cluster | the project image (`container/mu2efastsim.def`, built with `container/build.sh`): `apptainer exec --cleanenv --env PYTHONPATH=... -B <code>,<inputs>,<outputs> mu2efastsim.sif python3 ...` | CPU or CUDA JAX |
 
