@@ -101,8 +101,8 @@ The device kernels run in float32 by default since 2026-11-01 (`MU2EFS_DEVICE_FL
 Validated on 100 shards on V100 and A100 MIG slices: every aggregate within the float64 seed-to-seed spread; seq-0
 pulse PE float32 - float64 between -0.03 and -0.14 %, bounded at <= 0.3 % (2 sigma) per sector group; the device
 tier-1b sampler passes the deck rule at float32 (0 of 21 shapes). Rows above that say float64 were measured at
-float64. Run-to-run identity on the GPU (2026-11-01, held-out shards 22 and 24, every stage hashed per column): with
-XLA autotuning off (the default `MU2EFS_DEVICE_DETERMINISTIC`), separate processes byte-identical at float32 on the
-RTX PRO 6000 MIG slice, the full RTX PRO 6000 and the A100, and at float64 on the MIG slice; with autotuning on they
-were not, on every card. Cost +0.4-0.8 % warm, cold pass 16-28 % faster. Details:
+float64. Run-to-run identity on the GPU (2026-11-01, held-out shards 22 and 24, every stage hashed per column): with XLA
+autotuning off (the default `MU2EFS_DEVICE_DETERMINISTIC`), separate processes byte-identical at float32 on the RTX PRO
+6000 MIG slice, the full RTX PRO 6000, the A100 and the V100, and at float64 on the MIG slice; with autotuning on they
+were not on the first three (the V100 happened to repeat). Cost +0.4-0.8 % warm, cold pass 16-28 % faster. Details:
 [device-precision.md](device-precision.md#reproducibility).

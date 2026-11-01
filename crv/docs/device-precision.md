@@ -46,12 +46,13 @@ processes did not. Measured 2026-11-01 with autotuning on, held-out shard 22 (50
 | RTX PRO 6000 MIG 1g.24gb | 52 of 1,408 | float32: transport floats (energy deposit, momentum, path) in some pairs; digi voltages; 1 ADC count of 728 k; cluster PE, time and slope in about 3 % of clusters (up to 0.005 PE, 1.2 ps), same clusters and members. float64: digi voltages only (151 of 722 k samples, 1 ulp); ADCs, pulses and clusters identical |
 | A100-SXM4-80GB | 18-26 of about 1,400 | float32: transport floats and digi voltages in 2 of 3 pairs |
 | RTX PRO 6000 (full card) | 12-15 of about 1,400 | float32: digi voltages in 2 of 3 pairs |
+| V100-SXM2-32GB | 3-5 of 1,304 (GEMM configurations only) | none in 3 runs |
 
-A floating-point difference upstream can move a discrete result: an earlier float32 pair on the MIG slice changed
-the SiPM charges of one shard in ten. With autotuning off, every pair of processes was identical at every stage:
-float32 on the MIG slice (3 processes, shards 22 and 24), A100 (2), RTX PRO 6000 (2); float64 on the MIG slice (2).
-A shared persistent compilation cache (`JAX_COMPILATION_CACHE_DIR`, used by the UVA kit) also freezes the choices for
-the jobs that load from it, but a new cache tunes again. With the setting on, cached and uncached runs were identical.
+A floating-point difference upstream can move a discrete result: an earlier float32 pair on the MIG slice changed the
+SiPM charges of one shard in ten. With autotuning off, every pair of processes was identical at every stage: float32 on
+the MIG slice (3 processes, shards 22 and 24), A100 (2), RTX PRO 6000 (2), V100 (2); float64 on the MIG slice (2). A
+shared persistent compilation cache (`JAX_COMPILATION_CACHE_DIR`, used by the UVA kit) also freezes the choices for the
+jobs that load from it, but a new cache tunes again. With the setting on, cached and uncached runs were identical.
 Stage-by-stage checks: `scripts/chain_identity.py` (per-column hashes of every stage, in-process repeats, dumps and a
 per-column diff).
 
@@ -65,13 +66,14 @@ scatter-add.
 **Across GPU kinds** results are not bit-identical. A MIG slice is its own kind: XLA's default configurations depend on
 the size of the device, so a slice and the full card of the same chip differ in float values. float32, autotuning off,
 shard 22: A100, RTX PRO 6000 and its MIG slice gave the same charges, ADCs and cluster lists, while transport floats,
-voltages and cluster PE/time differed. Across architecture classes, float32 discrete counts differ slightly, within the
-seed-to-seed spread. For one 50 k-generated shard: 2,866 clusters / 70,459 pulses on Ampere-class cards, 2,869 / 70,593
-on a B200, 2,877 / 70,910 on V100 / RTX 2080 Ti. float64 keeps the discrete output across kinds (A100 vs MIG slice,
-shard 22: same ADCs, pulses, clusters and members; a ten-card sweep found the same pulse and cluster lists on every
-card), but float values differ in the last bits (transport, photon times, SiPM charges, cluster PE and time; pulse PE up
-to 3e-7 in the sweep), so it is not bit-identical either. `runchain` (stats, `--emit` shards and merge) and `e2e-bench`
-record `precision`: device float, determinism setting, JAX backend and device kinds.
+voltages and cluster PE/time differed; a V100 gave other steps and clusters. Across architecture classes, float32
+discrete counts differ slightly, within the seed-to-seed spread. For one 50 k-generated shard: 2,866 clusters / 70,459
+pulses on Ampere-class cards, 2,869 / 70,593 on a B200, 2,877 / 70,910 on V100 / RTX 2080 Ti. float64 keeps the discrete
+output across kinds (A100 vs MIG slice, shard 22: same ADCs, pulses, clusters and members; a ten-card sweep found the
+same pulse and cluster lists on every card), but float values differ in the last bits (transport, photon times, SiPM
+charges, cluster PE and time; pulse PE up to 3e-7 in the sweep), so it is not bit-identical either. `runchain` (stats,
+`--emit` shards and merge) and `e2e-bench` record `precision`: device float, determinism setting, JAX backend and device
+kinds.
 
 ## Speed
 
