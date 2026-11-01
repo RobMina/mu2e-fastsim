@@ -2,9 +2,10 @@
 trilinear lookup, SimpleConfig parsing.
 """
 import numpy as np
+import pytest
 
-import jax
-import jax.numpy as jnp
+jax = pytest.importorskip("jax")
+import jax.numpy as jnp  # noqa: E402
 
 from beamfastsim import fieldmap, geometry, simpleconfig, transport
 
