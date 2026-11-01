@@ -562,7 +562,8 @@ def _stable_order(*keys):
 def index_library(lib):
     """Row orders of libdesc (by xid) and libxing (by bin, by bin and context, by xid) that _desc_for_crossings would
     otherwise build on every call, as permutations (None: already in order); no frame is copied."""
-    if "libdesc" not in lib or "libxing" not in lib:
+    if ("libdesc" not in lib or "libxing" not in lib or "xid" not in lib["libdesc"].columns
+            or not {"xid", "bin"} <= set(lib["libxing"].columns)):
         return lib
     lx, ld = lib["libxing"], lib["libdesc"]
     lib = dict(lib)
