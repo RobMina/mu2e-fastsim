@@ -148,7 +148,20 @@ def pack(ev, idx, bar, sipm, time, pe, seq, G, tables, t_type, H=H_DEFAULT, cfg=
                pe=dense(pe[sel] * tables["pefac"][ch[sel]]),
                pos=dense(G.pos[b]),
                cut=dense(tables["cuts"][ch[sel]]))
+    if dprec.SINGLE and Ng:   # reduced device precision: hit times and x/y relative to the group's first hit
+        _centre(out)
     return out, gev, gev[cnt > H]
+
+
+def _centre(out):
+    """Subtract each group's first-hit t, x, y from its hits (host, float64) and keep them as tref/xref/yref: the
+    kernel's differences, moments and slopes then work on small numbers. Cluster times get tref back in finish();
+    positions and slopes are translation invariant."""
+    v = out["valid"]
+    for k in ("t", "x", "y"):
+        ref = out[k][:, 0].copy()
+        out[k] = np.where(v, out[k] - ref[:, None], out[k])
+        out[k + "ref"] = ref
 
 
 def link_scales(G, P):
@@ -540,8 +553,12 @@ def finish(h, fallback=True):
     def take(d, arr, tg, tt, to_ev):
         good = ~d["overflow"]
         g, r = np.nonzero(d["root"] & good[:, None])
-        rows.append(dict(cl_event=to_ev(tg[g]), cl_type=np.full(len(g), tt), **{f"cl_{k}": d[k][g, r] for k in
-                         ("pe", "start", "end", "slope", "avgtime", "poscalc") + (("pos",) if "pos" in d else ())}))
+        row = dict(cl_event=to_ev(tg[g]), cl_type=np.full(len(g), tt), **{f"cl_{k}": d[k][g, r] for k in
+                   ("pe", "start", "end", "slope", "avgtime", "poscalc") + (("pos",) if "pos" in d else ())})
+        if "tref" in arr:   # centred hit times (reduced precision): back to absolute cluster times
+            for k in ("cl_start", "cl_end", "cl_avgtime"):
+                row[k] = row[k] + arr["tref"][g]
+        rows.append(row)
         cmap = np.full(d["root"].shape, -1, np.int64)
         cmap[g, r] = ncl[0] + np.arange(len(g))
         ncl[0] += len(g)
