@@ -24,6 +24,7 @@ import jax.numpy as jnp
 from jax import lax
 
 from .pulsefit import E, PERIOD, RecoConfig
+from mu2efastsim import precision as dprec
 
 jax.config.update("jax_enable_x64", True)
 
@@ -35,7 +36,7 @@ KNOBS = ("min_adc_difference", "default_beta", "min_beta", "max_beta", "max_time
 
 def knobs_of(cfg):
     """The traced physics settings of a RecoConfig as float64 device scalars."""
-    return {k: jnp.asarray(float(getattr(cfg, k)), jnp.float64) for k in KNOBS}
+    return {k: jnp.asarray(float(getattr(cfg, k)), dprec.FLOAT) for k in KNOBS}
 
 
 def _near_peak(y, valid, thr, edge):
@@ -207,7 +208,7 @@ def _fit(t, y, w, p0, lo, hi, lm_iter, gn_iter):
     step = solve(JTJ + 1e-12 * eye, JTr)
     edm = 0.5 * jnp.einsum("ki,ki->k", JTr, step)
     eig = _eigvalsh3(JTJ) if os.environ.get('CRVFASTSIM_PVC_RECO') == '1' else jnp.linalg.eigvalsh(JTJ)
-    hess_ok = eig[:, 0] > 1e-12 * jnp.maximum(eig[:, -1], 1e-300)
+    hess_ok = eig[:, 0] > 1e-12 * jnp.maximum(eig[:, -1], dprec.TINY)
     conv = jnp.isfinite(edm) & (edm <= 1e-3 * jnp.maximum(chi2, 1.0))
     return _to_ext(u, lo, hi), chi2, conv, hess_ok
 
@@ -219,17 +220,17 @@ def reconstruct_dense(adc, n, start_tdc, pedestal_db, calib_area, calib_height, 
                               P=cfg.max_pulses, sb=cfg.samples_before, sa=cfg.samples_after, lm=cfg.lm_iterations)
 
 
-@partial(jax.jit, static_argnames=("P", "sb", "sa", "lm"))
+@partial(dprec.jit, static_argnames=("P", "sb", "sa", "lm"))
 def _reconstruct_dense(adc, n, start_tdc, pedestal_db, calib_area, calib_height, cfg, P, sb, sa, lm):
     W, L = adc.shape
     cfg = _Knobs(cfg)
     PW = sb + sa + 1 + PLATEAU_SLOTS
-    adc = adc.astype(jnp.float64)
+    adc = adc.astype(dprec.FLOAT)
     under = pedestal_db - adc[:, 0] > cfg.pedestal_undershoot_threshold
     ped = jnp.where(under, adc[:, 0], pedestal_db)
     valid = jnp.arange(L)[None, :] < n[:, None]
     y0 = jnp.where(valid, adc - ped[:, None], 0.0)
-    tgrid = (start_tdc[:, None] + jnp.arange(L)[None, :]) * PERIOD
+    tgrid = (start_tdc[:, None] + jnp.arange(L)[None, :]).astype(dprec.FLOAT) * PERIOD
     near0 = _near_peak(y0, valid, cfg.min_adc_difference, cfg.knife_edge_adc)
 
     def round_(carry, _):
@@ -238,8 +239,8 @@ def _reconstruct_dense(adc, n, start_tdc, pedestal_db, calib_area, calib_height,
         fs, fe = _window(y, n, ps, pe, found, sb, sa)
         overflow = overflow | (found & (fe - fs + 1 > PW))
         yps = jnp.take_along_axis(y, ps[:, None], 1)[:, 0]
-        t_ps = (start_tdc + ps) * PERIOD
-        t_pe = (start_tdc + pe) * PERIOD
+        t_ps = (start_tdc + ps).astype(dprec.FLOAT) * PERIOD
+        t_pe = (start_tdc + pe).astype(dprec.FLOAT) * PERIOD
         t_peak = 0.5 * (t_ps + t_pe)
         p0 = jnp.stack([yps * E, t_peak, jnp.full(W, cfg.default_beta)], 1)
         lo = jnp.stack([yps * E * cfg.min_pulse_height_ratio, t_ps - cfg.max_time_difference,
@@ -252,7 +253,7 @@ def _reconstruct_dense(adc, n, start_tdc, pedestal_db, calib_area, calib_height,
         idxc = jnp.clip(idx, 0, L - 1)
         tt = jnp.take_along_axis(tgrid, idxc, 1)
         yy = jnp.take_along_axis(y, idxc, 1)
-        par, chi2, conv, hok = _fit(tt, yy, mask.astype(jnp.float64), p0, lo, hi, lm, 8)
+        par, chi2, conv, hok = _fit(tt, yy, mask.astype(dprec.FLOAT), p0, lo, hi, lm, 8)
         npts = mask.sum(1)
         ndf = npts - 3
         span = hi - lo
