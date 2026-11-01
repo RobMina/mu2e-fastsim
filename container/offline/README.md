@@ -64,6 +64,10 @@ The runner checks `MUSE_WORK_DIR`, expands FCL before running, records `mu2e --v
 | `OFFLINE_WARM_REPEAT` | `0` | Set `1` to repeat art in the same mounted environment/cache, with a separate `.warm.root` and `.warm.art.time` |
 | `OFFLINE_SEARCH_PATH` | unset | Directory prepended to `MU2E_SEARCH_PATH` (e.g. a private geometry or conditions copy); also bind it with `OFFLINE_BINDS` |
 
+A long art job needs `SQLITE_TMPDIR` and `TMPDIR` on node-local disk. Inside `--containall` the session `/tmp` is small
+and art's per-event SQLite tables end the job after about 85,000 events (`SQLExecutionError: database or disk is full`).
+Setting both fixed it on a 105,000-event G4 job. The runner does not set them yet.
+
 One invocation has one cache manager. Parallel invocations **must not share a cache**; the wrapper allocates a
 unique local directory for each. Two concurrent art jobs on two cores are validated below; shared pilot/prewarming
 and whole-node scaling are not certified. Use one core per art job unless a measured configuration explicitly uses

@@ -1,138 +1,107 @@
 # mu2e-fastsim
 
-## Collaborator first run
+Geant4-free, GPU-ready fast simulation and fast reconstruction for Mu2e design and calibration studies:
 
-Start with [setup/README.md](setup/README.md): explicit input-release and output roots,
-checksum verification, one-shard CRV/tracker recipes and endpoint prerequisites.
-There is no approved shared input release bundled here; another user's data area is not a collaborator data
-source. Keep the recorded submodule pins when reproducing a run. Every site, user and storage path comes from your
-`site.env` (see `site.env.example`); nothing in the code falls back to a built-in location.
+- the **cosmic chain of the extracted (KPP, no field) configuration**: CRV (fast CrvSteps, response, digis, pulses,
+  coincidences) and tracker (StrawGasSteps, digis, hits, seeds, line fit, EventNtuple), from the same CRY primaries;
+- the **muon beam** from the detector-solenoid entrance to the stopping target (stop fraction and stop profile).
 
-Umbrella repository of the Mu2e Geant4-free, GPU-accelerated fast simulation and fast reconstruction: the extracted
-(KPP, no-field) cosmic configuration (CRV and tracker stages), and the muon beam from the detector-solenoid entrance to
-the stopping target (`beam/`). It pins compatible versions of three submodules and holds the beam stage itself:
+Each stage reproduces its stock Offline counterpart on identical inputs, so it can stand in for Geant4 + art in a
+Mu2eBO optimisation loop or a MC/data study. This umbrella pins compatible commits of three submodules and holds the
+beam stage, the project image and the shared docs. Code only: no Mu2e-internal conditions, tables, data or results.
 
-| Submodule | Repository | What it holds |
+## Architecture
+
+| Repository | Path | What it holds |
 |---|---|---|
-| `core/` | [mu2e-fastsim-core](https://github.com/RobMina/mu2e-fastsim-core) | detector-independent physics and infrastructure: energy loss and fluctuations matched to Geant4, materials, GDML world, crossings, transport helpers, table I/O, statistics, compute-endpoint drivers and the Mu2eBO kit |
-| `crv/` | [mu2e-crv-fastsim](https://github.com/RobMina/mu2e-crv-fastsim) | stage 1: CRV `CrvStep`s, GPU CRV response and fast CRV reconstruction |
-| `tracker/` | [mu2e-tracker-fastsim](https://github.com/RobMina/mu2e-tracker-fastsim) | stage 2: tracker `StrawGasStep`s and fast tracker reconstruction |
+| [mu2e-fastsim-core](https://github.com/RobMina/mu2e-fastsim-core) | `core/` | physics primitives (Geant4-matched energy loss, materials, scattering, world, crossings), tables and statistics, CRY backends, endpoint adapters and the Mu2eBO kit `fastsimkit`, site configuration, test tooling |
+| [mu2e-crv-fastsim](https://github.com/RobMina/mu2e-crv-fastsim) | `crv/` | CRV stage: transport, tier-1b secondary library, photons, SiPM charges, waveforms, pulses, coincidences |
+| [mu2e-tracker-fastsim](https://github.com/RobMina/mu2e-tracker-fastsim) | `tracker/` | tracker stage: transport, secondaries, digitisation, hit reco, line finding and fit, EventNtuple |
+| this repository | `beam/`, `container/` | beam stage (`beamfastsim`), the Apptainer image, the Offline-on-Slurm runner |
 
-| Directory (in this repository) | What it holds |
-|---|---|
-| `beam/` | package `beamfastsim`: muon transport from the DS entrance through the field map and the stopping-target foils (stops, decays, exits), the Geant4 reference job and the fast-vs-Geant4 comparison; see `beam/README.md` |
+Every stage is NumPy by default with JAX twins for CPU and GPU; stages exchange flat tables keyed by
+`(run, subrun, event)`. Diagram and ownership: [`docs/architecture.md`](docs/architecture.md).
 
-Each stage is its own repository; this one records which commits work together and is the single working area: work in
-the submodule checkouts here, commit and push in each submodule, then commit the new pins here. The CRV and tracker
-packages import the shared code from `core/` (package `mu2efastsim`); there are no copies.
+## Status
 
-This repository holds technical software only: no physics results, no Mu2e-internal conditions, tables or data.
+| Stage | Validated against | Result | Open |
+|---|---|---|---|
+| CRV | Geant4 + stock Offline, stage by stage and end to end | V0, V1, V4, V-R1..V-R5 pass; 5 M held-out events: counts within 0.25 %, 21/155 histograms flagged (steps), 13/133 end to end | cluster-PE shape, adjacent-layer descendant correlation; Run 2 V1; named configurations |
+| tracker | Geant4 + stock Offline | T-V0, T-V1 pass; digis, hits, seeds agree with stock | rate -0.89 +- 0.32 %; T-V3 yield -2.04 +- 0.37 %; F1 95.6 % vs 99.5 % |
+| beam | stock Geant4 DS stage on the same muons | stop fraction ratio 0.9976 +- 0.0058 (nominal), 0.9950 +- 0.0031 (49 foils) | loss model at the stopping edge |
+| electrons | ESTAR, Geant4 thin layers | on a core branch, not on `main` | multiple scattering, annihilation, field |
 
-## Clone
+Tables with samples, thresholds, dates and commits: [`docs/validation.md`](docs/validation.md). Not implemented or
+not validated: [`docs/limitations.md`](docs/limitations.md).
+
+## Quickstart
 
 ```bash
-git clone --recurse-submodules https://github.com/RobMina/mu2e-fastsim.git
-cd mu2e-fastsim
-git submodule update --init --recursive   # keep the compatible recorded pins
+git clone --recurse-submodules https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
+cp site.env.example site.env      # set M2FS_INPUTS (verified input release) and M2FS_DATA (outputs)
+source site.env
+python3 -m pytest -q -p no:cacheprovider core/tests          # no inputs needed
+python3 -m mu2efastsim.inputs check-inputs --manifest RELEASE.json --root "$M2FS_INPUTS"
+G="$CRVFS_DATA/g4ref_v2_tables/gen.001400_00000022.root"; GEOM="$CRVFS_DATA/geometry"
+# CRV, default chain on 1,000 events (CPU)
+python3 -m crvfastsim runchain "$G" --tier1b-dir "$CRVFS_DATA/tier1b_strict_v2" --gdml "$GEOM/mu2e_extracted_v04.gdml" \
+  --calib "$GEOM/crvcalib_sim_best_v1_5_run1400.csv" --deviation "$GEOM/crvphoton_sim_best_v1_5_run1400.csv" \
+  --max-events 1000 --seed 22 --outdir "$M2FS_DATA/crv-smoke"
+# tracker, stage C steps of the same shard
+python3 -m trkfastsim steps "$G" --gdml "$GEOM/mu2e_extracted_v04.gdml" --stage C --sliced-msc --seed 22 \
+  --outdir "$M2FS_DATA/tracker-smoke"
+# beam, stop fraction of the nominal target (JAX)
+python3 -m beamfastsim point --g4 "$M2FS_INPUTS/beam_fastsim/g4ref_full/g4ref.npz" --n 20000 --out "$M2FS_DATA/beam-smoke"
 ```
 
-## Status (2026-10-23)
+Environment options (venv, Mu2e GPVM, image), every `site.env` block and the beam staging step without CVMFS:
+[`docs/running.md`](docs/running.md). **The inputs are Mu2e-internal and not yet published as a collaborator
+release**; [`setup/README.md`](setup/README.md) gives the release layout and its verification.
 
-| stage | state | reproduce |
+## Endpoints and throughput
+
+CRV default chain, cached CRY primaries to coincidence clusters, warm, float64, events with CRV steps per second:
+
+| Endpoint | Unit | Events/s |
+|---|---|---:|
+| stock Offline | one grid job (one core) | 0.92 |
+| fast, CPU | one core | 55 |
+| Fermilab EAF | one A100 MIG 1g.10gb slice | 163 |
+| ALCF Polaris | one node, 4 A100 | 990 |
+| ALCF Aurora | one node, 12 PVC tiles | 1,212 |
+| UVA | 8 A100 (one per job) | 1,695 |
+
+Beam: 14,260 muons/s on a MIG slice, 42,270 on an A100 (Geant4: 83 per core). Tracker F2 fit: 57,000 tracks/s on a
+MIG slice (stock KKLine about 26 per core). The Mu2eBO kit `fastsimkit` runs one point as one job on UVA (Slurm) or
+EAF; tasks and setup in `core/docs/running.md`. On UVA a one-GPU job that asks for at most 32 GB runs on the free
+RTX PRO 6000 MIG slice by default (`gpu_type="auto"`); larger requests keep their card.
+
+**Device precision.** The throughput rows above are float64. The CRV device (JAX) kernels now run in float32 by
+default (`MU2EFS_DEVICE_FLOAT`; float64 one variable away): within the float64 seed-to-seed spread on every validated
+CRV quantity, mean pulse PE 0.03-0.14 % lower (bounded at 0.3 %, `crv/docs/device-precision.md`), 1.2-2.8x faster on
+cards with reduced FP64 rate (MIG slices, A40, RTX PRO 6000). float64 output is identical on every GPU model for a
+seed; float32 output repeats on one model, so outputs record the precision and the device model. Host NumPy code and
+the beam and tracker JAX code stay float64.
+
+## Configuration
+
+`site.env.example` is the one site template of all four repositories: every path, host and account comes from it;
+nothing falls back to a built-in location, and a missing variable stops the command with its name. Each repository's
+`tests/test_no_site_paths.py` (shared checker in core) keeps user names and site paths out of the code.
+
+## Contributing and tests
+
+Branches and pull requests only, with a green `tests` workflow (CI runs every suite with and without JAX) and a
+review: [`CONTRIBUTING.md`](CONTRIBUTING.md). Cross-repository changes use one branch name in every repository.
+
+## Studies kept off main
+
+| Repository | Branch | Contents |
 |---|---|---|
-| CRV (`crv/`) | fast CrvStep transport, tier 1b secondaries, fused GPU CRV response (photons -> SiPM charges) and fast reco (waveforms, pulses, coincidences) in numpy and JAX. The fast chain (fast response + fast reco) reproduces the stock chain from the same G4 steps (V-R4), and the CRV response objective has the same minimum from both paths on a knob scan (V-R5). One objective point on 1 M cached events runs end to end in 10.4 min on one Polaris node (R3). An out-of-time background model resampled from KPP data (`crvfastsim.reco.background`) is the newest piece | `crv/README.md`, `crv/crvfastsim/README.md`, `crv/docs/fastreco.md` |
-| tracker (`tracker/`) | fast primary-muon StrawGasSteps: world transport, support-structure loss, in-tracker multiple scattering in support and straws with a single-scattering tail, G4-matched eIon, G4 secondary library. Fast reco started (`trkfastsim.reco`, numpy with JAX twins): straw-hit and combo-hit reco reproduce stock on the same digis (T-VR1), time clusters and line seeds too (T-VR1b); digitisation and the track fit are next | `tracker/README.md` ("Reproducing the validation on a Mu2e GPVM") |
-| beam (`beam/`) | muon transport from the DS entrance (stock `MuBeamCat` muons) through the DS field map (RK4, trilinear lookup as Offline), the stopping-target foils and the IPA, with Geant4-matched energy loss (`mu2efastsim.eloss_jax`), Highland scattering, range-out and decay in flight, in JAX on CPU or GPU. Stopping fraction and stop profile agree with the stock Geant4 DS stage run on the same muons, for the nominal target and a 49-foil geometry move; one A100 MIG slice replaces the order of a hundred grid slots for this stage | `beam/README.md` |
-
-## Compute endpoints and the Mu2eBO kit
-
-| endpoint | submission | runtime | state | drivers |
-|---|---|---|---|---|
-| ALCF Polaris (A100) | IRI API | a venv on Eagle (`M2FS_EAGLE`) or the image | reference for the performance goals | `core/iri/` |
-| ALCF Aurora (Intel PVC) | SSH + PBS | venv with `jax[oneapi]` | CRV response runs; fast reco does not port yet | `core/aurora/` |
-| UVA Rivanna/Afton (MIG slices, A40, A100, B200, ...) | SSH + Slurm | the Apptainer image | in-image validation passes on A100 and B200; production as one-GPU jobs; jobs that ask for at most 32 GB run on the free RTX PRO 6000 MIG slice by default (`gpu_type="auto"`, `core/mu2efastsim/endpoints/slurm_ssh.py`), larger ones keep their card | `core/uva/` |
-| Fermilab EAF (A100 MIG slices) | JupyterHub API, driven from a GPVM | a JAX venv (`FASTSIMKIT_EAF_VENV`) | Mu2eBO endpoint: queue, auto-stop, keepalive; Mu2e inputs stay at FNAL | `core/eaf/` |
-
-`fastsimkit` (`core/mu2efastsim/endpoints/kit.py`) is the [Mu2eBO](https://github.com/Mu2e/Mu2eBO) native kit for
-the fast chain: it speaks the evaluator contract (`submit`/`status`/`results`/`check`/`describe`/`cancel`) and runs
-one point as one job through an endpoint adapter (`core/mu2efastsim/endpoints/`: Slurm over SSH, and Fermilab EAF).
-Two Mu2eBO entries use it: `fastsimkit` (UVA) and `fastsimkit_eaf` (EAF, one A100 MIG slice with a queue).
-
-**Device precision.** The CRV device (JAX) kernels run in float32 by default (`MU2EFS_DEVICE_FLOAT=float32`;
-`float64` is one variable away). On 5 M generated cosmics float32 agrees with float64 within the float64
-seed-to-seed spread on every validated CRV quantity except a 0.03-0.14 % lower mean pulse PE (see
-`crv/docs/device-precision.md`), and runs 1.2-2.8x faster on cards with reduced FP64 rate (MIG slices, A40, RTX PRO
-6000; no gain on A100/B200/PVC). float64 output is identical on every GPU model for a given seed; float32 output
-repeats on one model but its discrete results can differ slightly between models, so outputs record the precision
-and the device model. Host NumPy code, the beam and tracker JAX code are float64 in both settings.
-
-| Task | What it returns | Endpoints |
-|---|---|---|
-| `reco_bench` | synthetic CRV reco chain throughput | any GPU |
-| `response_bench` | photon and SiPM throughput with the real lookup table and photon map | any GPU |
-| `v4_response` | the V4 photon and SiPM checks (pass flags, largest deviation) | any GPU |
-| `chain_point` | one point of the whole CRV fast chain as N one-GPU jobs with the inputs streamed in | UVA |
-| `chain`, `regression` | the CRV fast chain on held-out G4 shards vs the stock chain; the regression set | EAF |
-| `veto_c4` | CRV veto inefficiency of a veto card on a cached Run 1A selection (CPU) | EAF |
-| `beam_point` | stopping fraction and stop profile of a stopping-target geometry (`beam/`) | EAF |
-
-Tasks that use the Mu2e-internal tables fetch them per job into node memory and delete them at exit, and the kit
-refuses results without the job's deletion record; tasks that read Mu2e-internal inputs in place run only on EAF, so
-nothing leaves Fermilab. `beam_point` is registered when `beam/` is on `PYTHONPATH`. The `kits.toml` entries are in
-`core/uva/README.md` and in the Mu2eBO repository.
-
-## Setup on a Mu2e GPVM
-
-For Mu2e collaborators with an account on the Mu2e interactive machines. Nothing is built; the Python code runs in the
-`ana` environment on CVMFS.
-
-```bash
-cd "$YOUR_APP_AREA"              # your Mu2e app (code) area on the interactive machines
-git clone --recurse-submodules https://github.com/RobMina/mu2e-fastsim.git
-cd mu2e-fastsim
-cp site.env.example site.env     # edit M2FS_CODE, approved M2FS_INPUTS, writable M2FS_DATA and site paths
-# every new shell:
-source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh
-pyenv ana
-cd "$YOUR_APP_AREA/mu2e-fastsim" && source site.env      # PYTHONPATH=core:crv:tracker:beam
-# check (run the suites one at a time: crv/tests and tracker/tests share a test file name)
-python3 -m pytest -q -p no:cacheprovider core/tests
-python3 -m pytest -q -p no:cacheprovider tracker/tests
-python3 -m pytest -q -p no:cacheprovider crv/tests      # a few JAX tests skip without JAX
-python3 -m pytest -q -p no:cacheprovider beam/tests     # needs JAX (the beam stage has no numpy fallback)
-```
-
-**Which tests to run.** A change rarely needs every suite. From a stage's directory, `python3 -m mu2efastsim.testselect`
-lists the test files that import, directly or transitively, a module changed since the merge base with `origin/main`
-(`--also ../core` counts core changes too; `--why` gives the reason per file). `--run --isolate` runs them one pytest
-process per file, so peak memory is that of the heaviest file (at most about 1.7 GB in core, crv and tracker on a
-laptop) instead of the whole suite (about 3 GB for `crv/tests` in one process). Large-sample statistical validations are marked `@pytest.mark.slow` and skipped
-unless `--runslow` is given; run them when the code they validate changes (`--run --isolate -- --runslow`).
-
-```bash
-cd crv && python3 -m mu2efastsim.testselect --also ../core --why                  # what a branch affects
-python3 -m mu2efastsim.testselect --also ../core --run --isolate -- -q            # run it, one file per process
-python3 -m pytest -q -p no:cacheprovider tests --runslow                          # everything, slow checks included
-```
-
-Outputs go to `$M2FS_DATA` (your Mu2e data area, which has a quota), never into the clone. Run one job per
-GPVM. The inputs (GDML export, G4 reference tables) are Mu2e-internal and not in the repositories; the stage READMEs
-describe their production. Readable collaborator publication is a separate gate; see setup/README.md.
-
-## Python environment elsewhere
-
-```bash
-python3 -m venv .venv
-.venv/bin/python3 -m pip install -e core -e crv -e tracker
-.venv/bin/python3 -m pytest core/tests; .venv/bin/python3 -m pytest crv/tests; .venv/bin/python3 -m pytest tracker/tests
-PYTHONPATH=core:beam .venv/bin/python3 -m pytest beam/tests                 # beam/ is not an installable package yet
-```
-
-## Site settings
-
-Copy `site.env.example` to `site.env` (git-ignored, or keep it outside the clone) and source it before running
-anything; `setup/README.md` explains each block. The first block (code and data paths) is all the Python validation
-needs; the endpoint, grid, ALCF, Offline-runner and muse blocks are for the job scripts of each stage. Code that needs
-a variable you have not set stops with a message naming it.
+| umbrella | `park/beam-loss-studies` | beam loss diagnostics modules, tests and scripts |
+| umbrella | `park/flash-celeritas` | Celeritas image, adapter and probes |
+| core | `park/endpoint-esnet`, `park/beam-loss-studies` | ESnet endpoint; slab-split loss study |
+| crv | `park/veto-closure`, `park/tier1b-library`, `park/response-diagnosis`, `park/named-run2`, `park/pvc-reco` | see the crv README |
+| tracker | `park/f1-native-closure`, `park/ordered-navigation`, `park/rate-ledger`, `park/tv3-rescoring` | see the tracker README |
 
 License: Apache-2.0 (`LICENSE`).
