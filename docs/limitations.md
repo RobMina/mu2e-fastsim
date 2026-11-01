@@ -23,11 +23,19 @@ items and the beam stage.
 - Replaces the DS stage only (DS entrance to the stopping target): no TS transport, no flash `dts`, no IPA-stop
   output for downstream stages; it gives the stop fraction and stop positions.
 - Physics: Geant4-matched mean loss and Urban fluctuations, Highland scattering, range-out and decay in flight;
-  supports and absorbers are approximated. At the stopping edge, the loss model's agreement with a finer-step Geant4
-  reference is indeterminate; the opt-in loss-model refinements are not promoted.
+  supports and absorbers are approximated. The stop fraction does not change with much finer Geant4 steps (1.0016 +-
+  0.0020 nominal, 1.0019 +- 0.0011 moved), but the shape of the stopping edge does: finer steps raise the exit-energy
+  variance at the edge by 15-40 %. The default transport has no comparison at that level, only at the stop fraction.
+- The fast stop fraction is 0.5-0.7 % below Geant4 with paired errors on the same muons (0.9927 +- 0.0019 nominal,
+  0.9934 +- 0.0011 moved against refined steps). Against refined steps the moved target is 2.15 sigma out with the
+  independent-sample error, just outside its 2-sigma threshold. Any study needing the fraction better than 1 % should
+  take this as a bias.
+- The loss-model refinements on `park/beam-loss-studies` are not promoted: their slab comparison at the stopping edge
+  is indeterminate against refined steps (variance ratios 0.89 / 1.02).
 - Validated on the nominal 37-foil target and one 49-foil move; a broader Mu2eBO search space (per-foil holes, other
   materials) is not certified. Geometry changes outside the target-overlay keys are refused.
-- The nominal Geant4 reference comes partly from an incomplete job; its certification is pending.
+- The nominal Geant4 reference covers 105,350 muons of the 214,310 MuBeamCat events: an `NO_SUBRUN` input fault stops
+  the stock job at event 105,100. A clean rerun to event 105,099 now exits 0 and agrees with it (1.0033 +- 0.0020).
 - The beam stage needs JAX (no NumPy fallback).
 
 ## Studies kept off main
