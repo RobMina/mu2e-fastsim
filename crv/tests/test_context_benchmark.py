@@ -73,11 +73,10 @@ def campaign(tmp_path, monkeypatch):
 
 def test_deterministic_campaign_exact_comparison_and_measured_counts(campaign, monkeypatch):
     args, calls, _, _ = campaign
-    monkeypatch.setenv("CRVFASTSIM_COMPACT_DISPATCH", "unexpected inherited value")
     monkeypatch.setenv("PYTHONPATH", "ownedCRV:ownedCore")
     result = M.run(args)
-    assert result["status"] == "complete" and len(calls) == 4
-    for (name, shards, compact, seed, repeat, prepared, prefetch), (command, env, log) in zip(M.RUNS, calls):
+    assert result["status"] == "complete" and len(calls) == 3
+    for (name, shards, seed, repeat, prepared, prefetch), (command, env, log) in zip(M.RUNS, calls):
         assert command[3:command.index("--library")] == [str(args.inputs_dir / f"gen.001400_{n:08d}.root") for n in shards]
         for flag, value in (("--seed", seed), ("--repeat", repeat), ("--max-events", 50000),
                             ("--run-config", "extracted_v04"), ("--window", "offspill")):
@@ -86,21 +85,19 @@ def test_deterministic_campaign_exact_comparison_and_measured_counts(campaign, m
         assert ("--prefetch" in command) is prefetch
         assert "--jax" in command
         assert not any("tolerance" in arg or "rounding" in arg for arg in command)
-        assert env["CRVFASTSIM_COMPACT_DISPATCH"] == str(compact)
         assert env["PYTHONPATH"] == "ownedCRV:ownedCore"
         assert env["CRVFS_DATA"] == env["CRVFS_LOOKUP_DIR"] == str(args.data)
         assert env["PYTHONDONTWRITEBYTECODE"] == "1"
         assert log == str(args.summary_dir / (name + ".log"))
         assert (args.summary_dir / (name + ".json")).read_bytes() == (args.outdir / name / "benchmark.json").read_bytes()
     assert not list(args.summary_dir.glob("*.npz"))
-    assert len(list(args.outdir.glob("*/private.npz"))) == 4
+    assert len(list(args.outdir.glob("*/private.npz"))) == 3
     heldout = result["runs"]["context_heldout_candidate"]["dataset"]
     assert heldout["generated_events_per_pass"] == 35
     assert heldout["input_generated_events"] == 215
     assert heldout["generated_event_executions"] == 140
     assert [f["generated_events"] for f in heldout["files"]] == [17, 18]
-    for compact in (0, 1):
-        assert result["comparisons"][f"n50000_compact{compact}"]["status"] == "deferred"
+    assert result["comparisons"]["n50000"]["status"] == "deferred"
     comparison = json.loads((args.summary_dir / "context_heldout_comparison.json").read_text())
     assert comparison["exact_output_identity"] is True
     assert comparison["source_changes"] == []
@@ -176,7 +173,7 @@ def test_no_clobber_admission(campaign, target):
         args.outdir.symlink_to(args.outdir.parent / "missing")
         path = args.outdir
     else:
-        name = {"log": "n50000_compact0.log", "report": "context_heldout_reference.json",
+        name = {"log": "n50000.log", "report": "context_heldout_reference.json",
                 "comparison": "context_heldout_comparison.json", "campaign": "campaign.json"}[target]
         path = args.summary_dir / name
         path.write_text("preserve")
@@ -232,7 +229,7 @@ def test_source_drift_stops_before_next_subprocess(campaign, monkeypatch):
     with pytest.raises(ValueError, match="source snapshot changed"):
         M.run(args)
     assert len(calls) == 1
-    assert not (args.summary_dir / "n50000_compact0.json").exists()
+    assert not (args.summary_dir / "n50000.json").exists()
     assert not (args.summary_dir / "campaign.json").exists()
 
 
@@ -245,13 +242,13 @@ def test_saved_reference_compared_without_shard11_reload(campaign, monkeypatch, 
     def with_reference(command, **kwargs):
         result = execute(command, **kwargs)
         if len(calls) == 1:
-            report = json.loads((args.outdir / "n50000_compact0" / "benchmark.json").read_text())
+            report = json.loads((args.outdir / "n50000" / "benchmark.json").read_text())
             report["context_policy"] = "reload_each_pass"
             report["arguments"]["repeat"] = 2
             report["passes"] = report["passes"][:2]
             if mismatch:
                 report["passes"][0]["files"][0]["fingerprint"] = "different"
-            (args.reference_dir / "n50000_compact0.json").write_text(json.dumps(report))
+            (args.reference_dir / "n50000.json").write_text(json.dumps(report))
         return result
 
     monkeypatch.setattr(M.subprocess, "run", with_reference)
@@ -263,6 +260,5 @@ def test_saved_reference_compared_without_shard11_reload(campaign, monkeypatch, 
     else:
         result = M.run(args)
         assert len(calls) == 4
-        assert result["comparisons"]["n50000_compact0"]["status"] == "complete"
-        assert result["comparisons"]["n50000_compact1"]["status"] == "deferred"
+        assert result["comparisons"]["n50000"]["status"] == "complete"
     assert all("--reuse-context" in c[0] for c in calls[:2])

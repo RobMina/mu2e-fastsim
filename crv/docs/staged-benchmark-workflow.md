@@ -7,8 +7,6 @@ measure and reduce implementation overhead without dropping difficult events or 
 ## Entry points
 
 - `python3 -m crvfastsim e2e-bench`: provenance-checked repeated full chain; details in `e2e-benchmark.md`.
-- `CRVFASTSIM_COMPACT_DISPATCH=1`: optional compact coincidence row batches and sliced host transfers;
-  details in `reco-dispatch.md`. Default remains the original dispatch.
 - `scripts/bench_rates.py REPORT.json ...`: rates from measured completed pass elapsed time.
 - `scripts/compare_bench.py BASE CAND --out NEW.json`: exact same-backend output regression.
   `--allow-derived-rounding` separately accepts only documented tiny derived-cluster changes; it never
@@ -53,7 +51,7 @@ paired source hashes and all output fingerprints exactly. It does not allow adde
 non-setup source changes. Original reports are never rewritten to conceal the packaging difference.
 
 `scripts/context_benchmark.py` extends this check to two input files: shards 12 and 13 with a new seed,
-prefetch enabled and compact dispatch. It runs a new reload reference twice, then four prepared passes, and
+prefetch enabled. It runs a new reload reference twice, then four prepared passes, and
 requires exact fingerprints. Shard 11 runs only prepared passes; existing reload reports can be supplied through
 `--reference-dir`, otherwise their comparison is explicitly deferred. `--max-events 50000` applies per input file;
 actual full-key denominators are read from completed reports. `--data`, `--lookup-dir`, `--inputs-dir` and explicit

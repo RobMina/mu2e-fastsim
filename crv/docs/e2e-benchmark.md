@@ -72,8 +72,8 @@ not a security boundary: callers must not modify or share a context concurrently
 or clearing the process-global waveform/optical cache invalidates an existing context. This API is for
 sequential repeated workloads, not concurrent configurations or an optimizer's mutable parameter object.
 
-`CRVFS_CONTEXT_HASH_WORKERS=4` optionally parallelizes large host-array hashes without changing the serial
-fingerprint or skipping content checks; the default is one worker. See [audit worker settings](context-hash-workers.md)
+`CRVFS_CONTEXT_HASH_WORKERS` (default 4) parallelizes large host-array hashes without changing the serial
+fingerprint or skipping content checks. See [audit worker settings](context-hash-workers.md)
 for CPU-allocation limits, measurements and the exact guarantee.
 
 Memory-dependent fused-response batching is explicitly **unsupported** with reuse. Reuse retains the existing

@@ -44,7 +44,6 @@ def test_same_physics_relocated_assets_and_new_repeats(tmp_path):
     lambda b: b["passes"][1]["files"][0].update(fingerprint="one ulp different"),
     lambda b: b["provenance"]["source_sha256"].update({"/new/crvfastsim/chain.py": "changed"}),
     lambda b: b["provenance"]["assets_sha256"].update({"/new/lib.root": "different"}),
-    lambda b: b["hardware_software"]["environment"].update(CRVFASTSIM_COMPACT_DISPATCH="1"),
     lambda b: b["hardware_software"]["versions"].update(jax="other"),
     lambda b: b["arguments"].update(seed=2),
     lambda b: b["device"].update(response="cpu"),

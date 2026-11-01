@@ -97,6 +97,7 @@ Finished or paused studies live on branches, each the full tree at the point it 
 | `park/response-diagnosis` | joint response fits, response diagnosis and explicit-list validation |
 | `park/named-run2` | named-run reference campaigns, production reuse/scope, Run 2 grid planning, scatter convergence and V1 strata |
 | `park/pvc-reco` | PVC (Aurora) reco profiling and parity probes |
+| `park/cpu-speed` | speed switches measured and not promoted: the pulse-fit Jacobian workspace (no gain over the normal-equation cache) and compact reco dispatch (faster, output not identical) |
 
 ## License
 

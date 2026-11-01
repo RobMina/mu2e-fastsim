@@ -7,21 +7,25 @@ replacement, mutable aliases and buffer edits. File provenance remains checked
 at preparation and at final benchmark verification. A context is single-owner;
 these checks are not a security boundary or support for concurrent mutation.
 
-## Opt-in execution setting
+## Execution setting
 
-`CRVFS_CONTEXT_HASH_WORKERS=N` enables up to N hashing threads, with 1 the
-unchanged serial default and a supported range of 1–32. It changes neither the
-hash schema nor any simulation/reconstruction operation. For example:
+`CRVFS_CONTEXT_HASH_WORKERS=N` sets the number of hashing threads: 4 by default,
+1 for serial, supported range 1–32. It changes neither the hash schema nor any
+simulation/reconstruction operation. The audit runs in `e2e-bench --reuse-context`
+and the library cache only; a production chain job never calls it. For example:
 
 ```bash
-CRVFS_CONTEXT_HASH_WORKERS=4 python3 -m crvfastsim e2e-bench ... --reuse-context
+CRVFS_CONTEXT_HASH_WORKERS=1 python3 -m crvfastsim e2e-bench ... --reuse-context
 ```
 
 The setting is captured by the benchmark's existing CRVFS environment inventory.
-Use it only within the CPU allocation: four threads per process across eight
-GPUs requires capacity for 32 hash workers, in addition to other active host
-work. Keep 1 on a single-core interactive host. More threads are not necessarily
-faster under whole-node memory-bandwidth contention.
+Four threads per process across eight GPUs need capacity for 32 hash workers, in
+addition to other active host work. Set 1 on a single-core host. More threads are
+not necessarily faster under whole-node memory-bandwidth contention.
+
+Interleaved warm passes on one A100-80GB (ten shards, float32): 1.042x (1.037-1.046)
+at four workers and 1.049x (1.045-1.056) at eight, audit 4.93 -> 1.64 / 1.07 s per
+pass, every audit digest equal to the serial one.
 
 ## Identical guarantee
 

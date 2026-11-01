@@ -24,7 +24,7 @@ PULSE_KEYS = ("found", "pe", "time", "rounds_exhausted", "window_overflow", "inp
 
 def _pulse_dispatch(W, rows, cfg, batch, L):
     import jax.numpy as jnp
-    outs = CJ._DispatchOutputs()
+    outs = []
     if os.environ.get('CRVFASTSIM_PVC_RECO') == '1' and CJ.is_oneapi():
         batch = min(batch, 4096)
     for a in range(0, len(rows), batch):
@@ -43,11 +43,7 @@ def _pulse_dispatch(W, rows, cfg, batch, L):
 
 def _pulse_collect(outs, W, rows, cfg_np):
     """Flat pulses (waveform row, seq, pe, time) in (waveform, seq) order; flagged waveforms redone in numpy."""
-    if getattr(outs, "compact", False):
-        host = CJ._real_rows_to_host(outs, PULSE_KEYS)
-        d = {k: np.concatenate([o[k] for o in host]) for k in PULSE_KEYS}
-    else:
-        d = {k: np.concatenate([dprec.host(o[k])[:n] for o, n in outs]) for k in PULSE_KEYS}
+    d = {k: np.concatenate([dprec.host(o[k])[:n] for o, n in outs]) for k in PULSE_KEYS}
     wf, seq = np.nonzero(d["found"])
     redo = d["rounds_exhausted"] | d["window_overflow"] | d["input_truncated"]
     pe, tm = d["pe"][wf, seq], d["time"][wf, seq]
@@ -75,9 +71,7 @@ def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.Finde
     coinc_finish_s, wall_s). keep_pulses: each chunk output also carries its flat pulses under "pulses" (ev, idx, bar,
     sipm, seq, pe, time; idx is the member index mem_idx refers to). with_pos: clusters carry cl_pos [n, 3].
     add_pulses: callable(events) -> extra pulses (ev, bar, sipm, pe, time, seq) merged before the coincidence finder
-    (reco.background: out-of-time light deposits the MC does not simulate).
-    CRVFASTSIM_COMPACT_DISPATCH=1 opts into real-row-only grouped transfers and compact coincidence
-    row batches. Pulse-fit batch shapes stay fixed to preserve fit arithmetic."""
+    (reco.background: out-of-time light deposits the MC does not simulate)."""
     timers = timers if timers is not None else {}
     if not len(W['ev']):
         timers.update(events=0, waveforms=0, wall_s=0.0)
