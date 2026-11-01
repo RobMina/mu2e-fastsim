@@ -84,6 +84,22 @@ def diff_npz(reference, candidate):
     return result
 
 
+def difference(reference, candidate):
+    """diff_npz over the first pass of two runs, summed per array name across inputs and chunks."""
+    total = {}
+    for path in sorted((Path(reference) / "benchmark/pass_000").glob("input_*.npz")):
+        for name, row in diff_npz(path, Path(candidate) / "benchmark/pass_000" / path.name).items():
+            kept = total.setdefault(name.partition("__")[2] or name, {"size": 0, "changed": 0})
+            if "changed" not in row:
+                kept["structure"] = True
+                continue
+            kept["size"] += row["size"]
+            kept["changed"] += row["changed"]
+            if "max_abs" in row:
+                kept["max_abs"] = max(kept.get("max_abs", 0.0), row["max_abs"])
+    return total
+
+
 def run(args):
     arms = dict(parse_arm(text) for text in args.arm)
     names = list(arms)
@@ -139,16 +155,20 @@ def report(args):
     rows = {}
     for text in args.arm:
         name, _, directory = text.partition("=")
-        rows.setdefault(name, []).append(json.loads((Path(directory) / "summary.json").read_text()))
+        summary = json.loads((Path(directory) / "summary.json").read_text())
+        rows.setdefault(name, []).append((directory, summary))
     reference = args.reference
-    base = rows[reference][0]
+    base_directory, base = rows[reference][0]
     result = {"reference": reference, "arms": {}}
     for name, runs in rows.items():
-        identical = all(r["fingerprints"] == base["fingerprints"] for r in runs)
-        row = {"identical": identical, "hosts": sorted({r["host"] for r in runs}),
-               "warm_median_s": [statistics.median(p["elapsed_s"] for p in r["passes"] if p["round"] >= 0) for r in runs],
-               "preparation_s": [r["preparation_s"] for r in runs], "cold_s": [r["cold_s"] for r in runs]}
+        identical = [r["fingerprints"] == base["fingerprints"] for _, r in runs]
+        row = {"identical": all(identical), "identical_per_run": identical, "hosts": sorted({r["host"] for _, r in runs}),
+               "warm_median_s": [statistics.median(p["elapsed_s"] for p in r["passes"] if p["round"] >= 0) for _, r in runs],
+               "preparation_s": [r["preparation_s"] for _, r in runs], "cold_s": [r["cold_s"] for _, r in runs],
+               "stage_median_s": next(iter(runs[0][1]["summary"].values()))["stage_median_s"]}
         row["median_of_runs_s"] = statistics.median(row["warm_median_s"])
+        if not all(identical):
+            row["difference"] = difference(base_directory, runs[identical.index(False)][0])
         result["arms"][name] = row
     for row in result["arms"].values():
         row["speedup"] = result["arms"][reference]["median_of_runs_s"] / row["median_of_runs_s"]

@@ -53,3 +53,13 @@ def test_diff_npz_reports_changed_arrays(tmp_path):
     result = switch_ab.diff_npz(tmp_path / "a.npz", tmp_path / "b.npz")
     assert set(result) == {"moved", "kind"}
     assert result["moved"]["changed"] == 1 and result["moved"]["max_abs"] == 0.5
+
+
+def test_difference_sums_over_inputs_and_chunks(tmp_path):
+    for arm, offset in (("a", 0.0), ("b", 0.25)):
+        folder = tmp_path / arm / "benchmark/pass_000"
+        folder.mkdir(parents=True)
+        for index in range(2):
+            np.savez(folder / f"input_{index:04d}.npz", chunk_0000__cl_pe=np.array([1.0, 2.0 + offset]),
+                     chunk_0001__cl_pe=np.array([3.0, 4.0]), cl_count=np.arange(2))
+    assert switch_ab.difference(tmp_path / "a", tmp_path / "b") == {"cl_pe": {"size": 4, "changed": 2, "max_abs": 0.25}}
