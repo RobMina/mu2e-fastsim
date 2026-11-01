@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from crvfastsim import chain                                            # noqa: E402
@@ -35,5 +36,6 @@ def test_label_has_room_for_every_run1a_channel():
     """SiPM labels are event key * CHAN_MULT + channel: Run 1A has 5,120 channels (T2 starts at 4352), so CHAN_MULT
     4096 put T2 and the last 64 T1 bars into the next event's labels (fast deadtime frames lost them)."""
     assert chain.CHAN_MULT > 1280 * 4
+    pytest.importorskip("jax")
     from crvfastsim.response import device
     assert device.CHAN_MULT == chain.CHAN_MULT

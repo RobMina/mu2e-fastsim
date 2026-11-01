@@ -1,6 +1,9 @@
 """Shape-bucketed waveform synthesis (used on oneAPI) gives the same digis as the fixed-batch path without noise, and
 the same digi count and noise statistics with it."""
 import numpy as np
+import pytest
+
+pytest.importorskip("jax")
 
 
 def _inputs(n_events=400, seed=4):

@@ -49,6 +49,8 @@ def test_trace_refuses_reco_and_existing_output(monkeypatch, tmp_path):
 @pytest.mark.parametrize("fail", [False, True])
 def test_trace_brackets_digis_and_validates_before_write(monkeypatch, tmp_path, backend, fail):
     jax = backend in ("jax", "fused")
+    if jax:
+        pytest.importorskip("jax")
     cfg = replace(runconfig.get("run2_v10").chain_config(jax=jax), window=(0., 100000.))
     metadata = {}
     active = []
