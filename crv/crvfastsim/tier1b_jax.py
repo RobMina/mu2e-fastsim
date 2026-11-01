@@ -9,6 +9,8 @@ import pandas as pd
 from . import tier1b as T
 from mu2efastsim import precision as dprec
 
+dprec.register(__name__)   # JAX creators/samplers here follow MU2EFS_DEVICE_FLOAT
+
 
 def _jax():
     import jax

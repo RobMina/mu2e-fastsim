@@ -17,6 +17,8 @@ from . import coinc_jax as CJ
 from . import pulsefit, pulsefit_jax as PJ
 from mu2efastsim import precision as dprec
 
+dprec.register(__name__)   # JAX creators/samplers here follow MU2EFS_DEVICE_FLOAT
+
 PULSE_KEYS = ("found", "pe", "time", "rounds_exhausted", "window_overflow", "input_truncated")
 
 

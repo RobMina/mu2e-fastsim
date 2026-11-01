@@ -26,6 +26,8 @@ from jax import lax
 from .pulsefit import E, PERIOD, RecoConfig
 from mu2efastsim import precision as dprec
 
+dprec.register(__name__)   # JAX creators/samplers here follow MU2EFS_DEVICE_FLOAT
+
 jax.config.update("jax_enable_x64", True)
 
 PLATEAU_SLOTS = 6   # extra fit-window slots for flat-topped (saturated) peaks

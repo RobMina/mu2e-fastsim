@@ -10,6 +10,8 @@ import jax
 import jax.numpy as jnp
 from mu2efastsim import precision as dprec
 
+dprec.register(__name__)   # JAX creators/samplers here follow MU2EFS_DEVICE_FLOAT
+
 jax.config.update("jax_enable_x64", True)
 
 

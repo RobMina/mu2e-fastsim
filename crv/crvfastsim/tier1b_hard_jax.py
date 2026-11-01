@@ -5,6 +5,8 @@ from . import tier1b as T
 from .tier1b_jax import _jax
 from mu2efastsim import precision as dprec
 
+dprec.register(__name__)   # JAX creators/samplers here follow MU2EFS_DEVICE_FLOAT
+
 
 def prepare(hard):
     _, j = _jax()

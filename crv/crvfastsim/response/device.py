@@ -18,6 +18,8 @@ from .sipm import NPIX
 from .contract import require_complete, validate_sipm
 from mu2efastsim import precision as dprec
 
+dprec.register(__name__)   # JAX creators/samplers here follow MU2EFS_DEVICE_FLOAT
+
 CHAN_MULT = 32768  # = chain.CHAN_MULT (chain imports response, not the reverse)
 
 

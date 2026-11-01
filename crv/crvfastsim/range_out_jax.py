@@ -7,6 +7,8 @@ from mu2efastsim import eloss as E, eloss_jax as ej, materials as M
 from . import eloss_transport_jax as sampling, transport as T
 from mu2efastsim import precision as dprec
 
+dprec.register(__name__)   # JAX creators/samplers here follow MU2EFS_DEVICE_FLOAT
+
 jax.config.update("jax_enable_x64", True)
 
 

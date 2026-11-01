@@ -26,6 +26,8 @@ from mu2efastsim.eloss import (ME, MMU, TWOPI_MC2_RCL2, _A0, _BOHR_MIN,
                               _FW, _MINLOSS, _NMAXCONT, _RATE)
 from mu2efastsim import precision as dprec
 
+dprec.register(__name__)   # JAX creators/samplers here follow MU2EFS_DEVICE_FLOAT
+
 # Reuse, do not fork the material, stopping-power or fluctuation helpers.
 MatConsts = ej.MatConsts
 consts = ej.consts

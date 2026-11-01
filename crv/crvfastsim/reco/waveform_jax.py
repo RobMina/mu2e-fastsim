@@ -20,6 +20,8 @@ from .pulsefit import PERIOD
 from .waveform import WaveformConfig, charge_clusters, single_pe_template
 from mu2efastsim import precision as dprec
 
+dprec.register(__name__)   # JAX creators/samplers here follow MU2EFS_DEVICE_FLOAT
+
 jax.config.update("jax_enable_x64", True)
 
 

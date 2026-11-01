@@ -19,6 +19,8 @@ import jax.numpy as jnp
 from . import lookup, photons
 from mu2efastsim import precision as dprec
 
+dprec.register(__name__)   # JAX creators/samplers here follow MU2EFS_DEVICE_FLOAT
+
 jax.config.update("jax_enable_x64", True)
 
 MIN_BUCKET = 1 << 12
