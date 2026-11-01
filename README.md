@@ -50,13 +50,21 @@ git submodule update --init --recursive   # keep the compatible recorded pins
 |---|---|---|---|---|
 | ALCF Polaris (A100) | IRI API | a venv on Eagle (`M2FS_EAGLE`) or the image | reference for the performance goals | `core/iri/` |
 | ALCF Aurora (Intel PVC) | SSH + PBS | venv with `jax[oneapi]` | CRV response runs; fast reco does not port yet | `core/aurora/` |
-| UVA Rivanna/Afton (A100, B200) | SSH + Slurm | the Apptainer image | in-image validation passes on A100 and B200; production as one-GPU jobs | `core/uva/` |
+| UVA Rivanna/Afton (MIG slices, A40, A100, B200, ...) | SSH + Slurm | the Apptainer image | in-image validation passes on A100 and B200; production as one-GPU jobs; jobs that ask for at most 32 GB run on the free RTX PRO 6000 MIG slice by default (`gpu_type="auto"`, `core/mu2efastsim/endpoints/slurm_ssh.py`), larger ones keep their card | `core/uva/` |
 | Fermilab EAF (A100 MIG slices) | JupyterHub API, driven from a GPVM | a JAX venv (`FASTSIMKIT_EAF_VENV`) | Mu2eBO endpoint: queue, auto-stop, keepalive; Mu2e inputs stay at FNAL | `core/eaf/` |
 
 `fastsimkit` (`core/mu2efastsim/endpoints/kit.py`) is the [Mu2eBO](https://github.com/Mu2e/Mu2eBO) native kit for
 the fast chain: it speaks the evaluator contract (`submit`/`status`/`results`/`check`/`describe`/`cancel`) and runs
 one point as one job through an endpoint adapter (`core/mu2efastsim/endpoints/`: Slurm over SSH, and Fermilab EAF).
 Two Mu2eBO entries use it: `fastsimkit` (UVA) and `fastsimkit_eaf` (EAF, one A100 MIG slice with a queue).
+
+**Device precision.** The CRV device (JAX) kernels run in float32 by default (`MU2EFS_DEVICE_FLOAT=float32`;
+`float64` is one variable away). On 5 M generated cosmics float32 agrees with float64 within the float64
+seed-to-seed spread on every validated CRV quantity except a 0.03-0.14 % lower mean pulse PE (see
+`crv/docs/device-precision.md`), and runs 1.2-2.8x faster on cards with reduced FP64 rate (MIG slices, A40, RTX PRO
+6000; no gain on A100/B200/PVC). float64 output is identical on every GPU model for a given seed; float32 output
+repeats on one model but its discrete results can differ slightly between models, so outputs record the precision
+and the device model. Host NumPy code, the beam and tracker JAX code are float64 in both settings.
 
 | Task | What it returns | Endpoints |
 |---|---|---|
