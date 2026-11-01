@@ -73,7 +73,15 @@ CRV default chain, cached CRY primaries to coincidence clusters, warm, float64, 
 
 Beam: 14,260 muons/s on a MIG slice, 42,270 on an A100 (Geant4: 83 per core). Tracker F2 fit: 57,000 tracks/s on a
 MIG slice (stock KKLine about 26 per core). The Mu2eBO kit `fastsimkit` runs one point as one job on UVA (Slurm) or
-EAF; tasks and setup in `core/docs/running.md`.
+EAF; tasks and setup in `core/docs/running.md`. On UVA a one-GPU job that asks for at most 32 GB runs on the free
+RTX PRO 6000 MIG slice by default (`gpu_type="auto"`); larger requests keep their card.
+
+**Device precision.** The throughput rows above are float64. The CRV device (JAX) kernels now run in float32 by
+default (`MU2EFS_DEVICE_FLOAT`; float64 one variable away): within the float64 seed-to-seed spread on every validated
+CRV quantity, mean pulse PE 0.03-0.14 % lower (bounded at 0.3 %, `crv/docs/device-precision.md`), 1.2-2.8x faster on
+cards with reduced FP64 rate (MIG slices, A40, RTX PRO 6000). float64 output is identical on every GPU model for a
+seed; float32 output repeats on one model, so outputs record the precision and the device model. Host NumPy code and
+the beam and tracker JAX code stay float64.
 
 ## Configuration
 
