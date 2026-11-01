@@ -33,6 +33,16 @@ def measured(function, directory, label):
     return call
 
 
+def chain_options(root, shards, cpu=False, max_events=50000, prefetch=False, reco_cpu=False):
+    """e2e-bench arguments of the default chain on staged inputs, with the input list under "inputs"."""
+    return dict(inputs=[str(root / f"gen_even/gen.001400_{shard:08d}.root") for shard in shards],
+                calib=str(root / "data/geometry/crvcalib_sim_best_v1_5_run1400.csv"),
+                deviation=str(root / "data/geometry/crvphoton_sim_best_v1_5_run1400.csv"),
+                gdml=str(root / "data/geometry/mu2e_extracted_v04.gdml"),
+                tier1b_set="strict_v4", tier1b_dir=str(root / "tier1b_strict_v2"),
+                jax=not cpu, max_events=max_events, prefetch=prefetch, reco_cpu=reco_cpu)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--outdir", required=True)
@@ -49,16 +59,11 @@ def main():
     parser.add_argument("--alternate-audit", action="store_true",
                         help="alternate 1/4 workers inside one prepared process; retain exact repeat checks")
     args = parser.parse_args()
-    root = Path(args.inputs_root)
     out = Path(args.outdir)
     out.mkdir(parents=True, exist_ok=False)
-    options = dict(calib=str(root / "data/geometry/crvcalib_sim_best_v1_5_run1400.csv"),
-                   deviation=str(root / "data/geometry/crvphoton_sim_best_v1_5_run1400.csv"),
-                   gdml=str(root / "data/geometry/mu2e_extracted_v04.gdml"),
-                   tier1b_set="strict_v4", tier1b_dir=str(root / "tier1b_strict_v2"),
-                   jax=not args.cpu, max_events=args.max_events, prefetch=args.prefetch,
-                   reco_cpu=args.reco_cpu)
-    inputs = [str(root / f"gen_even/gen.001400_{shard:08d}.root") for shard in args.shards]
+    options = chain_options(Path(args.inputs_root), args.shards, cpu=args.cpu, max_events=args.max_events,
+                            prefetch=args.prefetch, reco_cpu=args.reco_cpu)
+    inputs = options.pop("inputs")
     prepare = runchain.prepare
     run = runchain.run
     index = 0

@@ -268,7 +268,7 @@ def content_fingerprint(value, *, workers=None):
     are deliberately excluded, so freezing or index lookup cannot cause drift.
     No content hash is cached across calls; every reachable buffer is rechecked.
     """
-    workers = int(os.environ.get("CRVFS_CONTEXT_HASH_WORKERS", "1")) if workers is None else workers
+    workers = int(os.environ.get("CRVFS_CONTEXT_HASH_WORKERS", "4")) if workers is None else workers
     if type(workers) is not int or not 1 <= workers <= 32:
         raise ValueError("context hash workers must be an integer in [1,32]")
     if workers == 1:

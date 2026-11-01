@@ -90,11 +90,6 @@ def compare(reference, candidate, allow_removed_appledouble=False, allow_prefetc
     for field in ("effective_run_config", "effective_chain_config"):
         if effective_config(a, field) != effective_config(b, field):
             raise ValueError(f"incompatible {field}")
-    for report in (a, b):
-        report["hardware_software"].setdefault("environment", {})
-    env_a, env_b = (x["hardware_software"]["environment"] for x in (a, b))
-    if env_a.get("CRVFASTSIM_COMPACT_DISPATCH", "0") != env_b.get("CRVFASTSIM_COMPACT_DISPATCH", "0"):
-        raise ValueError("compact dispatch differs")
     if a["hardware_software"]["versions"] != b["hardware_software"]["versions"]:
         raise ValueError("software versions differ")
     sa, sb = (named_hashes(r["provenance"]["source_sha256"], source=True) for r in (a, b))

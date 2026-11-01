@@ -73,6 +73,28 @@ Throughput of the default chain per endpoint (cached CRY primaries to coincidenc
 steps per second, transport and tier 1b on the device, float64): one GPVM core 55; EAF A100 MIG 1g.10gb slice 163;
 Polaris node (4 A100) 990; Aurora node (12 PVC tiles) 1,212; UVA 8 x A100 1,695. Stock Offline on one grid job: 0.92.
 
+## Speed switches
+
+Measured 2026-11-01 on the default chain: ten held-out shards 22-40 (500,000 generated events), two seeds, NumPy transport
+and tier 1b, one A100-80GB node. Identity is byte equality of every retained array per seed: pulses, clusters, members,
+digis, charges. Speedups are warm-pass ratios; where one prepared process could hold both arms they are paired over
+alternating passes (`scripts/switch_ab.py`), otherwise separate processes in the order A B B A.
+
+After the switches became defaults the chain was re-checked against the code with the old defaults, one process each,
+same shards: NumPy chain byte-identical at both seeds (reco 190 -> 116 s and 189 -> 105 s per pass); GPU chain at float32
+on an A100-80GB byte-identical at seed 20261027.
+
+| Switch | Chain, precision | Identity | Warm speedup | Decision |
+|---|---|---|---|---|
+| `CRVFS_CPU_ATTACHMENT` | NumPy | identical | 1.154x (1.148-1.161) | on by default |
+| `CRVFS_CPU_FIT_NORMAL_CACHE` | NumPy | identical | 1.028x (1.026-1.035) | on by default |
+| both | GPU, float32 (NumPy redo path) | identical | 1.015x (1.013-1.018) | |
+| `CRVFS_CPU_FIT_WORKSPACE` | NumPy | identical | 1.007x (1.004-1.013); none on top of the cache | `park/cpu-speed` |
+| `CRVFS_CONTEXT_HASH_WORKERS` | GPU, float32 | identical | 1.042x at 4, in `e2e-bench --reuse-context` only | default 4 |
+| `CRVFS_PREPARED_LIBRARY_CACHE` | GPU, float32 | identical | none warm (0.984x, overlapping); preparation 52.5 -> 19.9 s, first creation 70.9 s | kept: a site path |
+| `CRVFASTSIM_COMPACT_DISPATCH` | GPU, float32 and float64 | **not identical** (cluster PE, time, position, slope only; float32 `cl_pos` up to 0.07 mm, float64 5e-9 mm) | 1.05-1.11x warm; cold pass 1.2x slower (more shapes to compile) | `park/cpu-speed` |
+| `CRVFASTSIM_PVC_RECO` | GPU (A100), float32 | identical | 0.977x (separate processes) | opt-in; not measured on PVC (Aurora) |
+
 ## Device precision
 
 The device kernels run in float32 by default since 2026-11-01 (`MU2EFS_DEVICE_FLOAT`; float64 one variable away).

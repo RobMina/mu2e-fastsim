@@ -42,10 +42,19 @@ Cluster, pulse and digi counts agree within 0.25 %.
 ## Not validated
 
 - **Float32 device precision** (default): the 0.1 % pulse-PE offset is bounded (<= 0.3 %), not removed; float32 output
-  repeats on one GPU model but discrete counts differ slightly between models (float64 is bit-identical across models).
-- The opt-in CPU-speed switches (`CRVFS_CPU_*`, `CRVFS_CONTEXT_HASH_WORKERS`, `CRVFS_PREPARED_LIBRARY_CACHE`) and the
-  compact reco dispatch (`CRVFASTSIM_COMPACT_DISPATCH`, default in the tests only) are checked for identical output
-  on test samples, not on a full campaign.
+  repeats on the A100 (not on every card, below) but discrete counts differ slightly between models (float64 is
+  bit-identical across models).
+- The speed switches are checked for identical output on ten held-out shards at two seeds
+  ([switch table](validation.md#speed-switches)), not on a full campaign.
+- **Float32 cluster properties depend on the kernel batch shape.** `find_dense` sums cluster moments with `einsum`, whose
+  addition order on the GPU follows the batch shape. With hit times and positions centred per group, batch shapes that
+  differ by padding alone move `cl_avgtime` by up to 0.0005 ns, `cl_pe` by 0.001 PE, `cl_pos` by up to 0.07 mm and
+  `cl_slope` by up to 1.5e-5 with the same clusters and members (A100, ten shards; float64: 6e-11 ns, 5e-9 mm).
+- **Float32 does not repeat run to run on the RTX PRO 6000 MIG 1g.24gb slice:** two processes with the same code and seed
+  differed in about 0.4 % of pulse PE values, and some process pairs in pulse and cluster counts. Float32 on the A100 and
+  float64 on that slice repeated byte for byte.
+- The prepared library cache has no eviction: its key binds every source file, so each code version writes a new 3.1 GiB
+  entry under `CRVFS_PREPARED_LIBRARY_CACHE`.
 - P1 (about 1.9 ms per accepted event on one core) was measured on a shared host and has to be re-measured on an idle
   one.
 - Named-configuration response and conditions bundles ([named-response.md](named-response.md),

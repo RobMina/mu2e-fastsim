@@ -15,10 +15,9 @@ import compare_context
 
 
 RUNS = (
-    ("n50000_compact0", (11,), 0, 20261027, 4, True, False),
-    ("n50000_compact1", (11,), 1, 20261027, 4, True, False),
-    ("context_heldout_reference", (12, 13), 1, 20261028, 2, False, True),
-    ("context_heldout_candidate", (12, 13), 1, 20261028, 4, True, True),
+    ("n50000", (11,), 20261027, 4, True, False),
+    ("context_heldout_reference", (12, 13), 20261028, 2, False, True),
+    ("context_heldout_candidate", (12, 13), 20261028, 4, True, True),
 )
 
 
@@ -63,13 +62,13 @@ def parser():
     p.add_argument("--lookup-dir", type=Path, help="optical table root, default --data")
     p.add_argument("--outdir", required=True, type=Path, help="new private directory for detailed NPZ products")
     p.add_argument("--summary-dir", required=True, type=Path, help="existing directory for JSON and logs only")
-    p.add_argument("--reference-dir", type=Path, help="saved n50000_compact{0,1}.json; absent references are deferred")
+    p.add_argument("--reference-dir", type=Path, help="saved n50000.json; absent references are deferred")
     for name in ("library", "calib", "deviation", "gdml"):
         p.add_argument("--" + name, type=Path, help="explicit local asset path overriding --data defaults")
     return p
 
 
-def validate_report(report, expected, compact, prepared, sources):
+def validate_report(report, expected, prepared, sources):
     if report.get("status") != "complete" or report.get("repeat_fingerprints_identical") is not True:
         raise ValueError("completed repeat-identical report required")
     arguments = report["arguments"]
@@ -79,8 +78,6 @@ def validate_report(report, expected, compact, prepared, sources):
     policy = "prepared_once" if prepared else "reload_each_pass"
     if report.get("context_policy") != policy or (prepared and report.get("context_audits_passed") is not True):
         raise ValueError("completed report has invalid context policy/audits")
-    if report["hardware_software"]["environment"].get("CRVFASTSIM_COMPACT_DISPATCH") != str(compact):
-        raise ValueError("completed report has incorrect compact dispatch")
     if report["provenance"]["source_sha256"] != sources:
         raise ValueError("subprocess source snapshot differs from campaign source snapshot")
     passes = report["passes"]
@@ -134,8 +131,7 @@ def run(args):
               "deviation": require_file(args.deviation or data / "crvphoton_sim_best_v1_5_run1400.csv"),
               "gdml": require_file(args.gdml or data / "mu2e_extracted_v04.gdml")}
     inputs = {n: require_file(args.inputs_dir / f"gen.001400_{n:08d}.root") for n in (11, 12, 13)}
-    comparison_names = [f"context_n50000_compact{c}_comparison.json" for c in (0, 1)]
-    comparison_names.append("context_heldout_comparison.json")
+    comparison_names = ["context_n50000_comparison.json", "context_heldout_comparison.json"]
     destinations = [summary / (r[0] + suffix) for r in RUNS for suffix in (".json", ".log")]
     destinations += [summary / name for name in ["campaign.json", *comparison_names]]
     for path in destinations:
@@ -161,7 +157,7 @@ def run(args):
                 "max_events_policy": "50000 event numbers per input file; actual full-key counts are read from reports",
                 "stock_physics_validation": "not evaluated", "runs": {}, "comparisons": {}}
     reports = {}
-    for name, shards, compact, seed, repeat, prepared, prefetch in RUNS:
+    for name, shards, seed, repeat, prepared, prefetch in RUNS:
         check_sources()
         expected = {"inputs": [str(inputs[n]) for n in shards], "seed": seed, "repeat": repeat,
                     "max_events": 50000, "run_config": "extracted_v04", "window": "offspill",
@@ -174,19 +170,18 @@ def run(args):
             command.append("--reuse-context")
         if prefetch:
             command.append("--prefetch")
-        run_env = {**env, "CRVFASTSIM_COMPACT_DISPATCH": str(compact)}
         log = summary / (name + ".log")
         with log.open("x") as stream:
-            subprocess.run(command, env=run_env, stdout=stream, stderr=subprocess.STDOUT, check=True)
+            subprocess.run(command, env=env, stdout=stream, stderr=subprocess.STDOUT, check=True)
         check_sources()
         report_path = outdir / name / "benchmark.json"
         report = json.loads(report_path.read_text())
-        dataset = validate_report(report, expected, compact, prepared, sources)
+        dataset = validate_report(report, expected, prepared, sources)
         copied = summary / (name + ".json")
         with report_path.open("rb") as src, copied.open("xb") as dst:
             shutil.copyfileobj(src, dst)
         reports[name] = report_path
-        campaign["runs"][name] = {"command": command, "compact_dispatch": compact, "report": str(copied),
+        campaign["runs"][name] = {"command": command, "report": str(copied),
                                   "detailed_report": str(report_path), "log": str(log), "dataset": dataset}
         if shards == (11,):
             reference = args.reference_dir / (name + ".json") if args.reference_dir is not None else None
