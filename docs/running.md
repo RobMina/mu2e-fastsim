@@ -22,7 +22,13 @@ Pick one:
 | Slurm cluster | the project image (`container/mu2efastsim.def`, built with `container/build.sh`): `apptainer exec --cleanenv --env PYTHONPATH=... -B <code>,<inputs>,<outputs> mu2efastsim.sif python3 ...` | CPU or CUDA JAX |
 
 The CI environment is `core/ci/requirements.txt` (Python 3.13, pinned numpy, pandas, uproot, awkward, scipy,
-matplotlib, pyarrow, PyYAML, JAX). The image is not downloadable from these repositories yet.
+matplotlib, pyarrow, PyYAML, JAX, hep-endpoints). The image is not downloadable from these repositories yet.
+
+The kit host (the machine that runs `fastsimkit` or any `mu2efastsim.endpoints` code) also needs
+[hep-endpoints](https://github.com/RobMina/hep-endpoints) (`hependpoints`, standard library only) at the commit pinned
+in `core/pyproject.toml`; the first row above installs it, and on any other host
+`pip install "hep-endpoints @ git+https://github.com/RobMina/hep-endpoints.git@<that commit>"` does. Jobs do not need
+it: the image, the EAF venv and GPVM `pyenv ana` run task bodies that never import it.
 
 ## 3. Site configuration
 
@@ -129,6 +135,7 @@ A smoke run tests the setup, not physics closure or throughput; do not extrapola
 ## 7. Endpoints and the Mu2eBO kit
 
 `python3 -m mu2efastsim.endpoints.kit` is `fastsimkit`; `FASTSIMKIT_ENDPOINT=uva` (any Slurm site over ssh) or `eaf`.
+It runs on a kit host with hep-endpoints installed (section 2).
 Tasks and the `kits.toml` entry: `core/docs/running.md` and `core/uva/README.md`. The EAF CRV task is `chain`
 (inputs read in place); `chain_point` (inputs streamed) runs on Slurm sites only. Art jobs (stock Offline) run on a
 Slurm cluster without host CVMFS through `container/offline/` ([README](../container/offline/README.md)).
