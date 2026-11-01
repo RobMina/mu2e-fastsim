@@ -1,7 +1,8 @@
 """Deterministic stepping and cap regressions, independent of loss fluctuations."""
-import jax
 import numpy as np
 import pytest
+
+jax = pytest.importorskip("jax")
 
 from beamfastsim import transport
 from test_transport import _geom, _uniform_map
