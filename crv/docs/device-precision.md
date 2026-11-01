@@ -31,11 +31,47 @@ transport, offspill, extracted_v04), float32 x2 seeds and float64 x3 seeds, on a
 
 ## Reproducibility
 
-float64 output is identical on every GPU model for a given seed. float32 output repeats exactly on one GPU model,
-but its discrete results (pulse and cluster counts) can differ slightly between models, within the seed-to-seed
-spread. For one 50 k-generated shard: 2,866 clusters / 70,459 pulses on Ampere-class cards, 2,869 / 70,593 on a
-B200, 2,877 / 70,910 on V100 / RTX 2080 Ti. `runchain` (stats, `--emit` shards and merge) and `e2e-bench` record
-`precision`: the device float, JAX backend and device models.
+**Run to run** (same code, seed and GPU kind): the device chain repeats bit for bit at both precisions. The core
+package switches off XLA's GPU autotuning when it is imported (`MU2EFS_DEVICE_DETERMINISTIC`, default on, appends
+`--xla_gpu_autotune_level=0` to `XLA_FLAGS`; `MU2EFS_DEVICE_DETERMINISTIC=0` restores autotuning). The setting and the
+flag value are recorded in `precision.deterministic`.
+
+Why it is needed: when XLA compiles a fused GPU kernel it times candidate configurations (its native emitter or a
+Triton block-level kernel, tile shapes, GEMM configurations) and keeps the fastest. Timings vary between processes,
+so the choices do, and with them the order of floating-point sums. In-process repeats always matched; separate
+processes did not. Measured 2026-11-01 with autotuning on, held-out shard 22 (50 k generated), seed 1:
+
+| Card | Autotune choices that differ between two runs | What differed between runs |
+|---|---|---|
+| RTX PRO 6000 MIG 1g.24gb | 52 of 1,408 | float32: transport floats (energy deposit, momentum, path) in some pairs; digi voltages; 1 ADC count of 728 k; cluster PE, time and slope in about 3 % of clusters (up to 0.005 PE, 1.2 ps), same clusters and members. float64: digi voltages only (151 of 722 k samples, 1 ulp); ADCs, pulses and clusters identical |
+| A100-SXM4-80GB | 18-26 of about 1,400 | float32: transport floats and digi voltages in 2 of 3 pairs |
+| RTX PRO 6000 (full card) | 12-15 of about 1,400 | float32: digi voltages in 2 of 3 pairs |
+
+A floating-point difference upstream can move a discrete result: an earlier float32 pair on the MIG slice changed
+the SiPM charges of one shard in ten. With autotuning off, every pair of processes was identical at every stage:
+float32 on the MIG slice (3 processes, shards 22 and 24), A100 (2), RTX PRO 6000 (2); float64 on the MIG slice (2).
+A shared persistent compilation cache (`JAX_COMPILATION_CACHE_DIR`, used by the UVA kit) also freezes the choices for
+the jobs that load from it, but a new cache tunes again. With the setting on, cached and uncached runs were identical.
+Stage-by-stage checks: `scripts/chain_identity.py` (per-column hashes of every stage, in-process repeats, dumps and a
+per-column diff).
+
+Cost (MIG slice, `e2e-bench` on shard 22 with a reused context, warm-pass chain time without the benchmark's audit,
+two interleaved rounds): float32 3.12 -> 3.14 s (+0.8 %, within the 1 % round-to-round spread), float64 9.03 -> 9.07 s
+(+0.4 %). The cold pass gets faster because nothing is tuned: 128 -> 108 s (float32), 183 -> 131 s (float64).
+`--xla_gpu_deterministic_ops=true` also repeats, but it slows the SiPM stage 3.3x (chain 1.7x): it makes the integer
+scatters there deterministic, which they already are. It is not needed because the device code has no floating-point
+scatter-add.
+
+**Across GPU kinds** results are not bit-identical. A MIG slice is its own kind: XLA's default configurations depend on
+the size of the device, so a slice and the full card of the same chip differ in float values. float32, autotuning off,
+shard 22: A100, RTX PRO 6000 and its MIG slice gave the same charges, ADCs and cluster lists, while transport floats,
+voltages and cluster PE/time differed. Across architecture classes, float32 discrete counts differ slightly, within the
+seed-to-seed spread. For one 50 k-generated shard: 2,866 clusters / 70,459 pulses on Ampere-class cards, 2,869 / 70,593
+on a B200, 2,877 / 70,910 on V100 / RTX 2080 Ti. float64 keeps the discrete output across kinds (A100 vs MIG slice,
+shard 22: same ADCs, pulses, clusters and members; a ten-card sweep found the same pulse and cluster lists on every
+card), but float values differ in the last bits (transport, photon times, SiPM charges, cluster PE and time; pulse PE up
+to 3e-7 in the sweep), so it is not bit-identical either. `runchain` (stats, `--emit` shards and merge) and `e2e-bench`
+record `precision`: device float, determinism setting, JAX backend and device kinds.
 
 ## Speed
 
