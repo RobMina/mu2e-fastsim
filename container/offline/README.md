@@ -12,8 +12,8 @@ The Python fast-simulation image is not an Offline runtime. The runtime image mu
 - A Slurm CPU allocation, Apptainer, unprivileged namespaces, `/dev/fuse`, and outbound HTTP to CVMFS Stratum-1s.
 - The stock `/cvmfs/singularity.opensciencegrid.org/fermilab/fnal-wn-el9:latest` image directory (default),
   fetched on demand by CVMFS. Pin its `.images/sha256:...` target for reproducible campaigns. A local `OFFLINE_IMAGE`
-  may be used only if it supplies the full EL9 runtime: the existing Celeritas Rocky9 SIF lacks libfreetype and
-  is **not** a working Offline image. Rocky9 additionally needs the al9 Spack/UPS selection that the runner sets.
+  may be used only if it supplies the full EL9 runtime (a Rocky9 CUDA development SIF, for example, lacks
+  libfreetype and is **not** a working Offline image). Rocky9 additionally needs the al9 Spack/UPS selection that the runner sets.
 - A prepared cvmfsexec tree (`CVMFSEXEC_DIST`, with `dist/`); make it once on a compute node with host tools.
   For the default outer mount, the client must match the **host** (UVA standard hosts are EL8), not the EL9 payload:
 

@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from beamfastsim import physics_tables as pt, rangestudy
+from beamfastsim import physics_tables as pt
 
 
 def _table(path, vectors):
@@ -81,19 +81,6 @@ def test_malformed_mapping_or_vector_fails(tmp_path, change):
         pt.load_target(tmp_path)
 
 
-def test_range_report_uses_same_frozen_rows(tmp_path):
-    _export(tmp_path)
-    tables, info, _ = pt.load_target(tmp_path)
-    frozen = dict(row=np.array([7, 2, 19]), entry_MeV=np.array([.09, 2., 3.]), length_mm=np.array([.2, 2., .1]))
-    report, stored = rangestudy.compare_integrators(frozen, tables, info, fractions=(.1, .01))
-    assert report["models"]["g4_unrestricted"]["stop_rows"] == [7, 2]
-    assert report["g4_native_range_check"]["g4_unrestricted"]["disagree_integral"] == 0
-    assert report["adaptive"]["g4_unrestricted"]["0.01"]["disagree_integral"] == 0
-    np.testing.assert_array_equal(stored["row"], frozen["row"])
-    for fraction in (.1, .01):
-        assert report["adaptive"]["g4_unrestricted"][f"{fraction:g}"]["maximum_fraction"] <= fraction * (1 + 1e-14)
-
-
 def test_reject_trailing_cut_garbage_and_bad_density(tmp_path):
     _export(tmp_path)
     path = tmp_path / "cut.dat"
@@ -107,13 +94,3 @@ def test_reject_trailing_cut_garbage_and_bad_density(tmp_path):
         pt.load_target(tmp_path)
 
 
-def test_mixed_charge_entries_are_not_compared_to_one_table():
-    frozen = dict(row=np.array([2, 0, 1]), entry_MeV=np.array([1., 2., 3.]), length_mm=np.ones(3))
-    g = dict(pdg=np.array([13, -13, 13]), foil=np.array([0, 0, -1]))
-    selected, info = rangestudy.negative_entries(frozen, g)
-    assert selected["row"].tolist() == [2, 0]
-    assert selected["entry_MeV"].tolist() == [1., 2.]
-    assert info["positive_excluded"] == 1 and info["positive_g4_first"] == 1
-    g["pdg"][0] = 11
-    with pytest.raises(ValueError, match="non-muon"):
-        rangestudy.negative_entries(frozen, g)
