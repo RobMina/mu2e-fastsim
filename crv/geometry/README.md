@@ -34,7 +34,8 @@ python3 -m crvfastsim v0check $O/mu2e_extracted_v04.gdml --g4log $O/dump.log --o
 | printout cross-check (1-decimal print) | max 0.05 mm, the print rounding |
 
 Outputs (data area): `$CRVFS_DATA/geometry/{mu2e_extracted_v04.gdml (3.7 MB),
-dump.log, v0_check.json, crv_bars_extracted_v04.csv}`; copies of the JSON and CSV are in `results/`.
+dump.log, v0_check.json, crv_bars_extracted_v04.csv}`; the summary is the table above (raw outputs are not kept in this
+repository).
 
 The GDML also holds the passive material (building, hatch blocks, G-blocks, CRV aluminium sheets and strongbacks)
 that the muon transport needs next.
