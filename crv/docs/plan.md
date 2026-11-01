@@ -1,5 +1,9 @@
 # mu2e-crv-fastsim: a Geant4-free, GPU-accelerated simulation of the KPP (extracted) CRV cosmic sample
 
+> **Historical.** The original plan as agreed on 2026-10-15, kept because code and docs cite its goals (section 4) and
+> validation thresholds (section 5). Current status: [validation.md](validation.md), [limitations.md](limitations.md),
+> [architecture.md](architecture.md).
+
 Status: **agreed 2026-10-15.** Sections 4 and 5 (performance goals, validation thresholds) are agreed as written,
 and so is a Geant4-built library for the non-muon component (tier 1b). Implementation starts after ALCF access.
 

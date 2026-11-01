@@ -5,7 +5,7 @@ follows the muon's kinetic energy near the end of its range; `--legacy-transport
 the named configurations (`run1a_v01`, `run1b_v01`, `run2_v10`) keep it. `transport.transport(range_out=...)` is off
 by default for direct callers. The opt-in JAX backend (`--transport-backend jax`) includes a device twin of these
 rules; `--legacy-transport` retains its earlier kernel. New-default validation is distinct from the earlier
-transport certificate and is described in [device-new-default.md](device-new-default.md).
+transport certificate and is described in [device.md](device.md).
 
 ## What changes
 
