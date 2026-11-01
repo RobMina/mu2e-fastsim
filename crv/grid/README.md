@@ -1,7 +1,7 @@
 # G4 reference sample (plan section 5)
 
 For the frozen Run 2 1M → 20M extension, see
-[`docs/run2-grid-extension.md`](../docs/run2-grid-extension.md): dry-run-first preparation, disjoint subruns/seeds,
+`docs/run2-grid-extension.md` (branch `park/named-run2`): dry-run-first preparation, disjoint subruns/seeds,
 pilot gates and direct-pnfs art/log/receipt output. No bulk exp storage, build or tarball is required.
 
 Stock `ExtractedCRY.fcl` (run 1400) from the CVMFS Musing `SimJob MDC2025ay`: no tarball. Each shard writes the

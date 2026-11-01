@@ -1,3 +1,0 @@
-# Negative control: staged Cat primaries must not pass the retained-primary PDG policy.
-#include "CrvFastSim/fcl/dump_crvsteps_cat.fcl"
-physics.analyzers.dump.associationPolicy : "retained_primary"

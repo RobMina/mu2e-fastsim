@@ -108,7 +108,7 @@ Before interpretation or promotion:
    truncation, not convergence. Changing controls changes RNG draw order; same seed is not trackwise correlated
    scattering and bitwise equality is not expected for the enabled mode. Even zero scattering with subdivided
    stochastic losses need not be seed-identical to legacy full-chord sampling.
-4. Apply the full persisted-table validation/V1 workflow in `transport_validation.md`, retain all sectors and
+4. Apply the full persisted-table validation/V1 workflow in `transport_validation.md` (branch `park/named-run2`), retain all sectors and
    producer hashes, and inspect matched/unmatched truth identities. No V1 result is provided by these tests.
 
 **Timing is still approximate physics.** Table times use accumulated polygonal flight distance divided by the

@@ -71,8 +71,8 @@ Treat background assumptions as model discrepancy, not detector calibration. The
 `r3.json` gains `resolved_config`: schema, full effective values, canonical SHA256, implementation-support label,
 and resolved SHA256s for calibration/deviation/background/time-shift/counters/template/photon-map/LUT files.
 This configuration hash is **not** an automatically installed Mu2eBO board hash and is not a substitute for code,
-input-event, reference or container identity. It records what ran. `objective/validation.py` continues to provide
-separate immutable code/input provenance for explicit-list validation. No running replica checkout is modified.
+input-event, reference or container identity. It records what ran. Explicit-list validation with
+separate immutable code/input provenance (`objective/validation.py`) is on branch `park/response-diagnosis`. No running replica checkout is modified.
 
 Full-file nominal CPU equivalence was executed on GPVM07 with candidate CRV `0d58650`, core `d629620`, against
 the saved pre-refactor closure (CRV `8d42b1b`, core `a554571`). Same input subrun 990, seed 20261025, one pass,

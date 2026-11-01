@@ -20,9 +20,9 @@ Run: `mu2e -c CrvFastSim/fcl/dump_crvsteps.fcl -s dts....art` (and `dump_gen.fcl
 Schema v2 validates pointer ProductIDs/keys and adds an event census. Donor dumps select compressed generators;
 `dump_gen.fcl` explicitly keeps the complete `cosmicTimeOffset` stream for exposure. Old donor tables require a
 new dump before building libraries; old libraries remain available for baseline comparisons. Build/validation
-procedure: [`../docs/generator-association-repair.md`](../docs/generator-association-repair.md).
+procedure: `../docs/generator-association-repair.md` (branch `park/tier1b-library`).
 The `events` census tree also keeps the v1 branches `ngen` and `nsteps` (`nsteps=-1` with `writeSteps=false`:
-not extracted, not zero) that the opt-in [Cat v2 contract](../docs/veto-cat-v2.md) reads; that contract requires a
+not extracted, not zero) that the opt-in Cat v2 contract (branch `park/veto-closure`) reads; that contract requires a
 successful full-source extraction and explicit source/extraction provenance, and legacy converter/mixer behaviour is
 unchanged. The merged module (schema v2 + census v1 branches) is built and smoke-tested at `40d9339`: on 100 events
 of one reference shard, `dump_gen.fcl` writes `nsteps = -1` and `ngen = n_gen` in every event and `dump_crvsteps.fcl`

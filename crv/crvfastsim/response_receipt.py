@@ -76,7 +76,7 @@ def _sources():
              "reco/pulsefit.py", "reco/coinc.py", "reco/cli.py", "reco/coinc_jax.py", "reco/chain_jax.py",
              "reco/waveform.py", "reco/waveform_jax.py", "reco/pulsefit_jax.py",
              "response/photons.py", "response/photons_jax.py", "response/sipm.py", "response/sipm_jax.py",
-             "response/lookup.py", "response/stockphotons.py", "response/stocksipm.py", "response/wfpack.py",
+             "response/lookup.py", "response/stockphotons.py", "response/stocksipm.py",
              "response/device.py", "response/contract.py", "response/shared_yield.py", "response_config.py"]
     return {**{name: _record(root / name) for name in names},
             "valhist/fasttables.py": _record(root.parent / "valhist/fasttables.py")}

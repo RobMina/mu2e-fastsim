@@ -32,10 +32,6 @@ status: the umbrella README; fast reco goals and results: `docs/fastreco.md`.
 | `docs/response-configuration.md` | schema-v1 JSON response/reco configuration, units/support policy, CLI/kit overrides and resolved asset provenance |
 | `docs/transport-range-out.md` | the stage-C muon range-out default (`range_out`, `--legacy-transport`): deltas above the cut, bar sub-steps, absorber range table, evidence |
 | `docs/tier1b-default.md` | the tier-1b default asset set (`strict_v4`), `strict_v3`, `strict_v2` and the `legacy` option: files, options, named-configuration caveat, equivalence |
-| `docs/step-layer-closure.md` | opt-in tier-1b placement, held-out shower-source diagnostic, remaining closure and identity limits |
-| `docs/tier1b-descendant-audit.md` | descendant expectation/migration, factorial DQM controls, independent shower closure and candidate-bank support |
-| `docs/generator-association-repair.md` | strict donor association schema, completed production repair and held-out physics validation |
-| `docs/corrected-shower-uncertainty.md` | exact shower sampler moments, donor-file uncertainty, corrected source contrast and exposure census |
 | `docs/schema_and_transport.md` | CrvStep-table design notes and the muon-transport design |
 | `crvfastsim/` | the Python package and CLI (`python3 -m crvfastsim`); **reference: `crvfastsim/README.md`** |
 | `tests/` | pytest unit tests (from the umbrella root: `PYTHONPATH=core:crv python3 -m pytest -q crv/tests`) |
@@ -59,6 +55,18 @@ the gen-table dependency only; other chain inputs remain required. See
 core's extracted-only `chain_point gen_set=4`, and validation limits.
 `--gen device` / core `chain_point gen_set=5` select JAX on-device generation.
 Table-driven defaults are unchanged.
+
+## Studies kept off main
+
+Finished or paused studies live on branches, each the full tree at the point it left main:
+
+| Branch | Contents |
+|---|---|
+| `park/veto-closure` | the full veto-inefficiency closure (frame replay, CE normalisation, bounded response, refit and membership audits, deadtime frame production); main keeps the C4 rule evaluation (`crvfastsim.veto`, `veto.deadtime`, `veto.cosmic_ana`) |
+| `park/tier1b-library` | tier-1b library studies: generator association, shower sampling and uncertainty, denominator audits, library ensembles, device-chain certificates and reports |
+| `park/response-diagnosis` | joint response fits, response diagnosis and explicit-list validation |
+| `park/named-run2` | named-run reference campaigns, production reuse/scope, Run 2 grid planning, scatter convergence and V1 strata |
+| `park/pvc-reco` | PVC (Aurora) reco profiling and parity probes |
 
 ## License and data
 

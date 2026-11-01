@@ -168,7 +168,7 @@ sample SD**, not paired-event SE or an error on the mean:
 The mask removes the large unphysical R4 excess, while declared-yield T5 retains
 the stock shared-yield discrepancy in every backend. C2 illustrates the large
 seed sensitivity of sparse sectors. Do not rank backend precision from four-seed
-SDs or tune to these means. The [conditional seed audit](named-seed-audit.md)
+SDs or tune to these means. The conditional seed audit (branch `park/named-run2`)
 reports the full inventory and flags the small ensembles. This is no stock-seed
 replication, spectral closure, cross-backend equivalence gate, GPU validation,
 full V2 certification or default promotion.

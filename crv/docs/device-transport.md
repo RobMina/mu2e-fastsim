@@ -71,7 +71,7 @@ Synthetic tests cover slab faces, overflow, schema, padding, multi-muon identity
 repeatability, stops, empty inputs, bypass populations, convex columns, unsupported
 options and the slab-loss law. Run tests on a compute node, not a login node.
 
-See [validation and timing details](device-transport-performance.md) for the
+See validation and timing details (branch `park/tier1b-library`) for the
 measured boundary, failed experiments and reproduction tools.
 
 ## Measured transport result

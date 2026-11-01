@@ -130,7 +130,7 @@ terminate other threads or weaken the response-thread rule. Network ROOT URLs
 are outside this mode. The metadata records this local-I/O policy. Native JAX
 workers remain outside the Python-call observation boundary.
 
-`bash scripts/run_named_response_seed.sh NEW BASE STEPS CORE run2 jax SEED`
+`scripts/run_named_response_seed.sh` (branch `park/named-run2`)
 provides a serial driver. Set `CRVFS_LOOKUP_DIR` and
 `CRVFS_VALIDATION_OFFLINE` to explicit existing optical and Offline payload
 roots. It records input/optical/source hashes before execution and rechecks them

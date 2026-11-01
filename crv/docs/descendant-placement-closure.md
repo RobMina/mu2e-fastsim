@@ -108,7 +108,7 @@ Truth topology census, energy fast/G4 (SE), topology (CCP):
 | T2 | 1.069 (0.042) (0.775) | 1.095 (0.042) (0.921) | 1.016 (1.027) | 0.511 (0.537) | 4,354 | 0.906 (0.757) |
 | M | 0.996 (0.066) (0.706) | 0.851 (0.097) (0.648) | 0.992 (1.010) | 0.191 (0.202) | 2,040 | 0.555 (0.473) |
 
-"All other-bar" is every label except own bar and no crossing (the other-bar observable of tier1b-descendant-audit.md), without SE, since the labels share
+"All other-bar" is every label except own bar and no crossing (the other-bar observable of tier1b-descendant-audit.md on branch `park/tier1b-library`), without SE, since the labels share
 events. The never-visited layers hold 48.7k G4 steps in T1 (8.4 GeV): that is the whole T1 descendant deficit. In M
 they hold 12.5k steps (6.7 GeV, 46 % of M other-bar energy). EX has an excess of steps more than 3 bars from the
 muon in its top and bottom layers (1.15-1.76). They are most likely rows with no library topology, placed by the CCP fallback; this is not traced.
