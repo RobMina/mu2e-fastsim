@@ -1,4 +1,4 @@
-"""Measure CPU pulse reconstruction on retained stock digis and validate exact workspace reuse."""
+"""Measure CPU pulse reconstruction on retained stock digis and validate the exact normal-equation cache."""
 import argparse
 import hashlib
 import json
@@ -33,13 +33,12 @@ def main():
     cfg = PF.RecoConfig()
     W = _prepare([args.input], None, cfg)
     events = len(reftables.read([args.input], "events", ["event"]))
-    modes = {"reference": False, "workspace": True, "normal_cache": True}
+    modes = ("reference", "normal_cache")
     timings = {mode: [] for mode in modes}
     expected = None
     count = None
     for rep in range(args.repeat):
-        for mode in (list(modes) if rep % 2 == 0 else list(reversed(modes))):
-            os.environ["CRVFS_CPU_FIT_WORKSPACE"] = str(int(modes[mode]))
+        for mode in (modes if rep % 2 == 0 else modes[::-1]):
             os.environ["CRVFS_CPU_FIT_NORMAL_CACHE"] = str(int(mode == "normal_cache"))
             start = time.perf_counter()
             result = PF.reconstruct_full(W["mat"], W["n"], W["start"], W["ped"], W["area"], W["height"], cfg)
@@ -48,7 +47,7 @@ def main():
             if expected is None:
                 expected, count = actual, len(result["wf"])
             if actual != expected:
-                raise ValueError("CPU pulse workspace changed outputs")
+                raise ValueError("CPU normal-equation cache changed outputs")
             timings[mode].append(elapsed)
             print(mode, rep, elapsed, actual, flush=True)
     stock = {}
@@ -71,7 +70,7 @@ def main():
               "stock_log_sha256": hashlib.sha256(Path(args.stock_log).read_bytes()).hexdigest(), "events": events,
               "waveforms": len(W["n"]), "pulses": count, "exact_all_repeats": True,
               "fingerprint": expected, "seconds": timings, "medians_s": medians,
-              "workspace_speedups": {mode: medians["reference"] / value for mode, value in medians.items()},
+              "speedups": {mode: medians["reference"] / value for mode, value in medians.items()},
               "stock_module_observations": stock,
               "stock_pulse_total_s_median": statistics.median(q["total_module_s"] for q in stock["CrvRecoPulses"]),
               "scope": "identical retained stock digis; one CPU core each, different UVA CPU hosts/allocations; setup/IO outside fast timing; stock TimeTracker excludes framework overhead; not literal stock-float equality"}
