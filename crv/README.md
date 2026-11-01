@@ -31,7 +31,7 @@ status: the umbrella README; fast reco goals and results: `docs/fastreco.md`.
 | `docs/staged-benchmark-workflow.md` | experimental staged full-chain benchmarking, exact output contracts and opt-in dispatch optimization |
 | `docs/response-configuration.md` | schema-v1 JSON response/reco configuration, units/support policy, CLI/kit overrides and resolved asset provenance |
 | `docs/transport-range-out.md` | the stage-C muon range-out default (`range_out`, `--legacy-transport`): deltas above the cut, bar sub-steps, absorber range table, evidence |
-| `docs/tier1b-default.md` | the tier-1b default asset set (`strict_v4`), `strict_v3`, `strict_v2` and the `legacy` option: files, options, named-configuration caveat, equivalence |
+| `docs/tier1b-default.md` | the tier-1b asset set (`strict_v4`), how earlier option combinations are reproduced with explicit flags, named-configuration caveat, equivalence |
 | `docs/schema_and_transport.md` | CrvStep-table design notes and the muon-transport design |
 | `crvfastsim/` | the Python package and CLI (`python3 -m crvfastsim`); **reference: `crvfastsim/README.md`** |
 | `tests/` | pytest unit tests (from the umbrella root: `PYTHONPATH=core:crv python3 -m pytest -q crv/tests`) |

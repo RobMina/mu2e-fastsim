@@ -5,7 +5,7 @@ import json
 import pytest
 
 from crvfastsim import cli, response_receipt as RR
-from crvfastsim.analyses import v2compare as V
+from crvfastsim.validation import v2compare as V
 from test_named_response import named, populated
 
 

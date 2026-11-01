@@ -32,7 +32,7 @@ import numpy as np
 import uproot
 
 from crvfastsim import chain, geometry, tables, runconfig
-from crvfastsim.analyses import v2compare as V2
+from crvfastsim.validation import v2compare as V2
 from crvfastsim.reco import coinc as C
 from crvfastsim.reco import pulsefit
 

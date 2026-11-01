@@ -10,11 +10,11 @@ COUNTS=(--count-key crvRecoDQM/NPc --count-key crvRecoDQM/PEc --count-key crvRec
         --count-key crvRecoDQM/Y_extracted --count-key crvRecoDQM/Z_extracted \
         --count-key dqmCrv/NPc --count-key dqmCrv/PEc --count-key dqmCrv/X --count-key dqmCrv/Y --count-key dqmCrv/Z)
 for arm in a1 e2e; do
-  python3 -m valhist.coverage "$REF" "$OUT/$arm/valhist.root" --outdir "$OUT/coverage_${arm}_v2" "${AL[@]}" "${COUNTS[@]}"
+  python3 -m crvfastsim.validation.coverage "$REF" "$OUT/$arm/valhist.root" --outdir "$OUT/coverage_${arm}_v2" "${AL[@]}" "${COUNTS[@]}"
 done
-python3 -m valhist.coverage "$OUT/a1/valhist.root" "$OUT/e2e/valhist.root" --outdir "$OUT/coverage_e2e_vs_a1" "${AL[@]}" "${COUNTS[@]}"
-python3 -m valhist.paired_rates "$OUT/a1/valhist.root" "$OUT/e2e/valhist.root" --out "$OUT/paired_e2e_vs_a1.json"
+python3 -m crvfastsim.validation.coverage "$OUT/a1/valhist.root" "$OUT/e2e/valhist.root" --outdir "$OUT/coverage_e2e_vs_a1" "${AL[@]}" "${COUNTS[@]}"
+python3 -m crvfastsim.validation.paired_rates "$OUT/a1/valhist.root" "$OUT/e2e/valhist.root" --out "$OUT/paired_e2e_vs_a1.json"
 if [ "$#" -ge 4 ]; then
-  python3 -m valhist.coverage "$3" "$OUT/a1/valhist.root" --outdir "$OUT/coverage_a1_vs_frozen" "${AL[@]}" "${COUNTS[@]}"
-  python3 -m valhist.coverage "$4" "$OUT/e2e/valhist.root" --outdir "$OUT/coverage_e2e_vs_frozen" "${AL[@]}" "${COUNTS[@]}"
+  python3 -m crvfastsim.validation.coverage "$3" "$OUT/a1/valhist.root" --outdir "$OUT/coverage_a1_vs_frozen" "${AL[@]}" "${COUNTS[@]}"
+  python3 -m crvfastsim.validation.coverage "$4" "$OUT/e2e/valhist.root" --outdir "$OUT/coverage_e2e_vs_frozen" "${AL[@]}" "${COUNTS[@]}"
 fi

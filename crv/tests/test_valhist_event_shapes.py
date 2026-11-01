@@ -8,7 +8,7 @@ import pytest
 from scipy import sparse
 import uproot
 
-from valhist.event_shapes import main, run, shape, validate_edges
+from crvfastsim.validation.event_shapes import main, run, shape, validate_edges
 
 
 def dump(path, events=(1, 2, 3, 4), cluster_events=(2, 2, 3),

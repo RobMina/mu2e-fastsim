@@ -54,7 +54,7 @@ def main():
         chain.clusters = collect
         try:
             stats = runchain.run([inputs], str(out / name), gdml=a.gdml, calib=a.calib,
-                                  deviation=a.deviation, tier1b_set="strict_v3", tier1b_dir=a.tier1b_dir,
+                                  deviation=a.deviation, tier1b_dir=a.tier1b_dir,
                                   seed=20261030 if name == "native" else 20261031,
                                   jax=a.backend == "device",
                                   **({"gen": a.backend, "gen_events": a.events, "gen_subrun": 900} if name == "native" else {}))

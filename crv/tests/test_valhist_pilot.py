@@ -3,7 +3,7 @@ import json
 import numpy as np
 import pytest
 import uproot
-from valhist.pilot import tree_inventory, verify
+from crvfastsim.validation.pilot import tree_inventory, verify
 
 
 def write_events(f, name, events):
@@ -50,7 +50,7 @@ def test_verify_keys_entries_and_exit(tmp_path, candidate, rc, completed):
 
 
 def test_prepare_records_assets_and_refuses_reuse(tmp_path, monkeypatch):
-    from valhist import pilot
+    from crvfastsim.validation import pilot
     from crvfastsim import geometry
     from crvfastsim.response import lookup
     area, core, data = tmp_path / 'area', tmp_path / 'core', tmp_path / 'data'

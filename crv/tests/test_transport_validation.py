@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import uproot
 
-from crvfastsim.analyses import transport_validation as V
+from crvfastsim.validation import transport_validation as V
 
 
 def test_paired_error_includes_empty_events():

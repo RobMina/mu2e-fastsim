@@ -1,6 +1,6 @@
 # Retained A1 / hybrid reconstruction detail
 
-`valhist.reco_detail` is a **read-only** follow-up to a completed
+`crvfastsim.validation.reco_detail` is a **read-only** follow-up to a completed
 `valhist.reco_attribution` report. It does not launch reconstruction, response,
 transport, builds, remote processes, or modify retained inputs. This diagnostic
 locates differences in persisted pulse fits versus coincidence membership and
@@ -11,7 +11,7 @@ cluster calculations; it does not claim causal fractions or physics acceptance.
 From the canonical CRV package, in the established analysis environment:
 
 ```bash
-python3 -m valhist.reco_detail \
+python3 -m crvfastsim.validation.reco_detail \
   --attribution /path/to/thread_b_reco_attribution_20261025 \
   --out /path/to/new_reco_detail.json
 ```

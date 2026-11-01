@@ -10,7 +10,7 @@ and the legacy `DqmCrv`, run unchanged in the `crvval` muse area.
 | `run_stock_g4ref.sh` | arms A0 / A0' (floor, other digitisation seed) on `g4ref_v1` shards, one GPVM, serially |
 | `run_faststeps_g4ref.sh` | arm A1 (fast step tables via `CrvStepsFromTable`, gen stream) or A0g (G4 steps injected the same way: `TABLEDIR valhist/g4ref_v1/g4all_tables`, prefix `g4all`) |
 | `g4table.py` | G4 CrvStep tables retyped to the fast-table column types (all steps kept) for A0g |
-| `compare.py` | `merge` shard files (flow kept; `--alias` to line up product directories) and `compare` two arms: chi2/ndf, KS, totals, mean shift, pulls, under/overflow fractions; floor-calibrated flags; `report.tsv`, `summary.json`, overlay PDF |
+| `crvfastsim/validation/compare.py` (alias `valhist.compare`) | `merge` shard files (flow kept; `--alias` to line up product directories) and `compare` two arms: chi2/ndf, KS, totals, mean shift, pulls, under/overflow fractions; floor-calibrated flags; `report.tsv`, `summary.json`, overlay PDF |
 | `../art/CrvFastSim/fcl/valhist_stock.fcl` | stock CRV digitisation + reco + the three histogram sets on a G4 dts file |
 | `../art/CrvFastSim/fcl/valhist_faststeps.fcl` | the same with `CrvStepsFromTable` steps, on the gen stream |
 | `fasttables.py` | fast chain -> CrvRecoTableDumper-layout tables: `digis` (A2), `reco` on stock digis (A3), `chain` (A4 on G4 steps, E2E on fast steps); numpy pulse fit (chi2, LE, height, beta) and coincidence finder |
@@ -25,7 +25,7 @@ Arms on `g4ref_v1` (outputs `$CRVFS_DATA/valhist/g4ref_v1/<arm>/`): `a0` stock r
 `a1_<tables>` fast steps + stock digi/reco, `a2` fast digis + stock reco, `a3` stock digis + fast reco, `a4` fast
 digis + fast reco on G4 steps, `e2e_<tables>` fast steps + fast digis + fast reco (gen stream).
 
-Run from the umbrella with `PYTHONPATH=crv:core`: `python3 -m valhist.compare ...`, `python3 -m valhist.g4table ...`.
+Run from the umbrella with `PYTHONPATH=crv:core`: `python3 -m crvfastsim.validation.compare ...`, `python3 -m valhist.g4table ...`.
 
 Outputs: `$CRVFS_DATA/valhist/<input>/<arm>/valhist.<subrun>.root` (Mu2e-internal: never committed).
 
@@ -34,14 +34,14 @@ Outputs: `$CRVFS_DATA/valhist/<input>/<arm>/valhist.<subrun>.root` (Mu2e-interna
 `compare merge` keeps flow bins, ROOT statistics, titles, histogram class and (when every source has it) Sumw2;
 `compare compare` reports under/overflow per arm and lists histograms with every entry outside the booked range
 (status `all_flow`, e.g. Validation step `posy`/`posz` and cluster `Y`/`Z` on the extracted CRV). Files merged
-before this change have lost flow and Sumw2: use original shard files for coverage claims on them. `python3 -m valhist.coverage REF CAND --outdir NEW` inventories the union, compares TH1/2/3 including flow,
+before this change have lost flow and Sumw2: use original shard files for coverage claims on them. `python3 -m crvfastsim.validation.coverage REF CAND --outdir NEW` inventories the union, compares TH1/2/3 including flow,
 separates normalization/shape descriptively, and reports missing/unsupported objects and variance gaps explicitly.
 Profiles and general derived-map statistics are not silently treated as counts. `--count-key` is only for exact
 paths whose fill semantics have been checked against source. See `docs/valhist-coverage.md`.
 
 `run_pilot.sh NEW_OUT FASTC LIBRARY GEN_ART SEED` reuses retained transport in a frozen, already-built stock area;
-`pilot.py` records hashes and certifies the complete event population from highest-cycle output trees.
-`audit_pilot.sh` compares original pilot/reference shards. `paired_rates.py` estimates conditional event-paired
+`crvfastsim/validation/pilot.py` records hashes and certifies the complete event population from highest-cycle output trees.
+`audit_pilot.sh` compares original pilot/reference shards. `crvfastsim/validation/paired_rates.py` estimates conditional event-paired
 rate errors when both inputs retain all event rows; it rejects mismatched or duplicate event populations.
 The executed shard-11 result and remaining gates are in `docs/valhist-dqm-pilot.md` (branch `park/tier1b-library`). No blanket DQM pass is implied.
 

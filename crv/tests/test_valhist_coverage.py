@@ -10,7 +10,7 @@ import pytest
 import uproot
 from uproot.writing import identify
 
-from valhist.coverage import audit
+from crvfastsim.validation.coverage import audit
 
 
 KEY = "Validation/CrvDigis_stock/hits"
@@ -201,7 +201,7 @@ def test_cli_new_output_and_default_selection_preserve_sources(tmp_path):
     ref, cand = files(tmp_path, {KEY: histogram([0, 0, 0]), "other/h": histogram([0, 1, 0])}, {KEY: histogram([0, 1, 0])})
     before = [p.read_bytes() for p in (ref, cand)]
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
-    command = [sys.executable, "-B", "-m", "valhist.coverage", str(ref), str(cand), "--outdir", str(tmp_path / "cli")]
+    command = [sys.executable, "-B", "-m", "crvfastsim.validation.coverage", str(ref), str(cand), "--outdir", str(tmp_path / "cli")]
     result = subprocess.run(command, capture_output=True, text=True, env=env)
     assert result.returncode == 0, result.stderr
     summary = json.loads((tmp_path / "cli" / "summary.json").read_text())
@@ -295,7 +295,7 @@ def test_catalogue_detects_missing_from_both_arms(tmp_path):
 
 
 def test_catalogue_fixed_axis_uses_booking_not_linspace_roundoff(tmp_path):
-    from valhist.coverage import catalogue_check
+    from crvfastsim.validation.coverage import catalogue_check
     root = tmp_path / 'fixed.root'
     h = identify.to_TH1x(fName='Z', fTitle='Z', data=np.zeros(155), fEntries=0, fTsumw=0,
                          fTsumw2=0, fTsumwx=0, fTsumwx2=0, fSumw2=None,
@@ -309,7 +309,7 @@ def test_catalogue_fixed_axis_uses_booking_not_linspace_roundoff(tmp_path):
 
 
 def test_catalogue_precision_is_reported_not_passed(tmp_path):
-    from valhist.coverage import catalogue_check
+    from crvfastsim.validation.coverage import catalogue_check
     p = tmp_path / 'fixed.root'
     h = identify.to_TH1x(fName='Z', fTitle='Z', data=np.zeros(102), fEntries=0, fTsumw=0,
                          fTsumw2=0, fTsumwx=0, fTsumwx2=0, fSumw2=None,

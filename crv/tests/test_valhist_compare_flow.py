@@ -1,11 +1,11 @@
-"""valhist.compare: merge keeps under/overflow, statistics, titles, class and Sumw2; compare reports flow fractions."""
+"""crvfastsim.validation.compare: merge keeps under/overflow, statistics, titles, class and Sumw2; compare reports flow fractions."""
 import json
 
 import numpy as np
 import uproot
 from uproot.writing import identify
 
-from valhist import compare as VC
+from crvfastsim.validation import compare as VC
 
 STEP = "Validation/CrvSteps_steps_noName"
 

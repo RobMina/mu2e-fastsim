@@ -59,7 +59,7 @@ def main():
         out[name] = {c: {"events": v[0], "digis": v[1]} for c, v in sorted(row.items())}
     # muon one-side events: sector group of their digis and the primary muon's energy and zenith
     from crvfastsim import geometry
-    from crvfastsim.analyses import v2compare as V2
+    from crvfastsim.validation import v2compare as V2
     geom = geometry.from_offline_config(geometry.find_counters(V2.DEFAULT_COUNTERS))
     grp = np.full(len(geom.sector), "", object)
     for name, secs in V2.GROUPS.items():

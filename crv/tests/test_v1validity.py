@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from scipy.optimize import OptimizeWarning
 
-from crvfastsim.analyses import v1compare as V
+from crvfastsim.validation import v1compare as V
 from test_v1compare import _state
 
 

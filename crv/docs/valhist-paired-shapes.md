@@ -1,7 +1,7 @@
 # Paired-shard histogram shape uncertainty
 
-`valhist.paired_shapes` is a read-only, standalone complement to `valhist.coverage`
-and `valhist.paired_rates`. It resamples **original shard pairs**, not bins or
+`crvfastsim.validation.paired_shapes` is a read-only, standalone complement to `crvfastsim.validation.coverage`
+and `crvfastsim.validation.paired_rates`. It resamples **original shard pairs**, not bins or
 individual fills. No independent-bin, Poisson or source-Sumw2 variance model is
 used. This is an exploratory uncertainty analysis, not a physics acceptance test.
 
@@ -11,7 +11,7 @@ From the `mu2e-fastsim` umbrella:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=core:crv \
-  python3 -B -m valhist.paired_shapes pairs.json \
+  python3 -B -m crvfastsim.validation.paired_shapes pairs.json \
   --out NEW_paired_shapes.json \
   --select '^crvRecoDQM/(PEc|NPc|X_extracted|Y_extracted|Z_extracted)$' \
   --count-key crvRecoDQM/PEc --count-key crvRecoDQM/NPc \

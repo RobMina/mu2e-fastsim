@@ -5,9 +5,7 @@
             (proves the table and the pulse grouping reproduce the art job; needs a built muse area)
   vr1       V-R1: dumped SiPM charges -> fast waveforms + digis vs the dumped digis (noise off: compare digi MC
             voltages too)
-  direct    direct path: fit the charge -> pulse model on half of the events, sample the other half, compare with
-            the stock pulses and with the waveform path (fidelity and cost per event)
-  cost      wall time per event of both paths on the same events (CPU, this host)
+  cost      wall time per event of the waveform path (synthesis + pulse reco; CPU, this host)
 
 """
 import argparse
@@ -21,7 +19,6 @@ import numpy as np
 
 from mu2efastsim import match, plots, stats
 from . import compare, pulsefit, reftables, waveform
-from .direct import N_MODELLED, DirectModel, DirectModelV2, assign_pulses, cluster_features
 
 NCHAN_PER_BAR = 4
 
@@ -664,135 +661,6 @@ def _synth_jax_bucketed(WJ, Q, tdc0_row, cfg, noise=0.0, seed=0, budget_gib=SYNT
     return {k: v[o] for k, v in out.items()}
 
 
-def _direct_inputs(paths, max_events):
-    """Charge clusters, the stock pulses assigned to them (time-ordered, DB time offset removed) and the reference
-    TDC0 of each cluster's (event, FEB)."""
-    cfg = waveform.WaveformConfig()
-    Q = _charges(paths)
-    events = np.unique(Q["ev_row"])
-    if max_events:
-        events = events[:max_events]
-    keep = np.isin(Q["ev_row"][Q["row"]], events)
-    feat = cluster_features(Q["row"][keep], Q["time"][keep], Q["pe"][keep], cfg)
-    P = _pulses(paths, events)
-    C_ = reftables.calib(paths)
-    rk = (Q["ev_row"].astype(np.int64) << 16) | Q["chan_row"]
-    pk = (P["ev"].astype(np.int64) << 16) | P["chan"]
-    srt = np.argsort(rk)
-    pos = np.clip(np.searchsorted(rk[srt], pk), 0, len(srt) - 1)
-    prow = np.where(rk[srt][pos] == pk, srt[pos], -1)
-    tn = P["time"] - C_["timeoffset"][P["chan"]]
-    cl = np.full(len(pk), -1, np.int64)
-    okp = prow >= 0
-    cl[okp] = assign_pulses(feat, prow[okp], tn[okp], cfg)
-    Cn = len(feat["q"])
-    npul = np.bincount(cl[cl >= 0], minlength=Cn)
-    a = np.flatnonzero(cl >= 0)
-    o = a[np.lexsort((tn[a], cl[a]))]
-    first = np.searchsorted(cl[o], cl[o])
-    rank = np.arange(len(o)) - first
-    m = rank < N_MODELLED
-    pul = {k: np.full((Cn, N_MODELLED), np.nan) for k in ("pe", "time", "beta")}
-    pul["failed"] = np.zeros((Cn, N_MODELLED), bool)
-    for k, src in (("pe", P["pe"]), ("time", tn), ("beta", P["beta"]), ("failed", P["failed"])):
-        pul[k][cl[o][m], rank[m]] = src[o][m]
-    # reference TDC0 per (event, FEB) from the digi MC
-    md = reftables.read(paths, "digimc", columns=["run", "subrun", "event", "bar", "sipm", "tdc0"])
-    mev = reftables.event_key(md)
-    mch = ak.to_numpy(md.bar) * NCHAN_PER_BAR + ak.to_numpy(md.sipm)
-    feb = C_["feb"]
-    cev, cch = Q["ev_row"][feat["chan"]], Q["chan_row"][feat["chan"]]
-    kref = mev * 4096 + feb[mch]
-    u, fi = np.unique(kref, return_index=True)
-    kc = cev * 4096 + feb[cch]
-    j = np.clip(np.searchsorted(u, kc), 0, len(u) - 1)
-    tdc0 = np.where(u[j] == kc, ak.to_numpy(md.tdc0)[fi][j], np.nan)
-    return dict(feat=feat, npul=npul, pul=pul, tdc0=tdc0, cev=cev, cch=cch, calib=C_, P=P, cl=cl, events=events,
-                feb=feb)
-
-
-def _coinc_from(ev, chan, time, pe, seq, G, status):
-    from . import coinc_jax as CJ
-    o = np.lexsort((seq, time, chan, ev))
-    ev, chan, time, pe, seq = ev[o], chan[o], time[o], pe[o], seq[o]
-    idx = np.arange(len(ev)) - np.searchsorted(ev, ev)
-    return CJ.find(ev, idx, chan // NCHAN_PER_BAR, chan % NCHAN_PER_BAR, time, pe, seq, G, status)
-
-
-def cmd_direct(args):
-    """Direct path v2: fit on even events, test on odd. Per cluster pulse count and the first N_MODELLED pulses vs
-    stock, then the coincidence finder on direct-path pulses vs on stock pulses of the same events (V-R4 style)."""
-    if getattr(args, "v1", False):
-        return cmd_direct_v1(args)
-    D = _direct_inputs(args.inputs, args.max_events)
-    feat, npul, pul, cev = D["feat"], D["npul"], D["pul"], D["cev"]
-    Cn = len(feat["q"])
-    rng = np.random.default_rng(args.seed)
-    train = (cev % 2) == 0
-    fsel = lambda m: {k: (v[m] if isinstance(v, np.ndarray) and len(v) == Cn else v) for k, v in feat.items()}
-    fit = train & (np.isfinite(D["tdc0"]) | (npul == 0))   # pulsed clusters need their FEB's reference TDC0
-    model = DirectModelV2.fit(fsel(fit), npul[fit], {k: v[fit] for k, v in pul.items()}, np.nan_to_num(D["tdc0"])[fit])
-    te = ~train
-    ft = fsel(te)
-    # one TDC0 per (event, FEB), uniform over a clock period, as stock
-    kc = cev[te] * 4096 + D["feb"][D["cch"][te]]
-    uk, inv = np.unique(kc, return_inverse=True)
-    t0 = time.perf_counter()
-    tdc0 = (args.feb_phase_offset + rng.random(len(uk)) * args.feb_phase_spread)[inv]
-    s = model.sample(ft, tdc0, rng)
-    dt_sample = time.perf_counter() - t0
-    toff = D["calib"]["timeoffset"][D["cch"][te]]
-    n_ref, n_fast = npul[te], s["n"]
-    ref_p = {k: v[te] for k, v in pul.items()}
-    out = {"model": "v2 joint resampling, TDC0 per (event, FEB)", "clusters_test": int(te.sum()),
-           "events_test": int(len(np.unique(cev[te]))),
-           "npulse_hist": {"ref": (np.bincount(np.minimum(n_ref, 4), minlength=5) / len(n_ref)).tolist(),
-                           "fast": (np.bincount(np.minimum(n_fast, 4), minlength=5) / len(n_fast)).tolist()},
-           "found_frac_vs_q": _eff_vs_q(ft["q"], n_ref > 0, n_fast > 0)}
-    for k in range(min(2, N_MODELLED)):
-        fast = {"pe": s["pe"][:, k], "time": s["time"][:, k], "beta": s["beta"][:, k]}
-        ref = {"pe": ref_p["pe"][:, k], "time": ref_p["time"][:, k], "beta": ref_p["beta"][:, k]}
-        if k > 0:
-            fast["time"] = s["time"][:, k] - s["time"][:, 0]
-            ref["time"] = ref_p["time"][:, k] - ref_p["time"][:, 0]
-        out[f"pulse{k}"] = {"summary": compare.distribution_summary(fast, ref),
-                            "binned": {c: _band(fast[c], ref[c]) for c in ("pe", "beta", "time")}}
-    out["failed_frac"] = {"ref": float(ref_p["failed"][:, 0][n_ref > 0].mean()),
-                          "fast": float(s["failed"][:, 0][n_fast > 0].mean())}
-    # downstream: coincidences from stock pulses vs direct-path pulses, same test events
-    G = _coinc_geom()
-    status = D["calib"]["status"]
-    P = D["P"]
-    pm = (P["ev"] % 2) == 1
-    ref_cl = _coinc_from(P["ev"][pm], P["chan"][pm], P["time"][pm], P["pe"][pm], P["seq"][pm], G, status)
-    h = s["has"]
-    ci, ki = np.nonzero(h)
-    t_fast = s["time"][ci, ki] + toff[ci]
-    fast_cl = _coinc_from(cev[te][ci], D["cch"][te][ci], t_fast, s["pe"][ci, ki], ki, G, status)
-    ne = out["events_test"]
-    per_type = lambda c: {int(t): int((c["cl_type"] == t).sum()) for t in np.unique(np.r_[ref_cl["cl_type"],
-                                                                                          fast_cl["cl_type"]])}
-    out["coincidences"] = {"per_event": {"ref": len(ref_cl["cl_type"]) / ne, "fast": len(fast_cl["cl_type"]) / ne},
-                           "ratio": len(fast_cl["cl_type"]) / max(len(ref_cl["cl_type"]), 1),
-                           "per_sector_type": {"ref": per_type(ref_cl), "fast": per_type(fast_cl)},
-                           "cluster_pe": _band(fast_cl["cl_pe"], ref_cl["cl_pe"]),
-                           "cluster_pe_median": {"ref": float(np.median(ref_cl["cl_pe"])),
-                                                 "fast": float(np.median(fast_cl["cl_pe"]))},
-                           "cluster_duration_median_ns": {
-                               "ref": float(np.median(ref_cl["cl_end"] - ref_cl["cl_start"])),
-                               "fast": float(np.median(fast_cl["cl_end"] - fast_cl["cl_start"]))}}
-    out["v_r4_checks"] = {"coincidences_per_event_within_1pct": abs(out["coincidences"]["ratio"] - 1) <= 0.01,
-                          "cluster_pe_median_within_2pct": abs(out["coincidences"]["cluster_pe_median"]["fast"] /
-                                                               out["coincidences"]["cluster_pe_median"]["ref"] - 1) <= 0.02,
-                          "pulse_pe_band": out["pulse0"]["binned"]["pe"]["max_abs_dev_minus_2sigma"] is not None and
-                          out["pulse0"]["binned"]["pe"]["max_abs_dev_minus_2sigma"] <= BAND_TOL["pe"]}
-    out["unassigned_ref_pulses"] = {"n": int((D["cl"] < 0).sum()), "frac": float((D["cl"] < 0).mean())}
-    out["us_per_event_sample"] = 1e6 * dt_sample / max(ne, 1)
-    os.makedirs(args.outdir, exist_ok=True)
-    model.save(os.path.join(args.outdir, "direct_model_v2.npz"))
-    _report(args, "direct", out)
-
-
 def cmd_noise(args):
     """Noise-pulse model: fit on even events of a data table, generate for the odd events, compare with the held-out
     data (count per event, channels, PE, time), then coincidences from (data signal pulses + generated noise) vs the
@@ -994,101 +862,13 @@ def cmd_repro(args):
     _report(args, "repro", out)
 
 
-def cmd_direct_v1(args):
-    """Fit on even events, test on odd: pulse count per cluster, first-pulse PE/time/beta vs stock pulses."""
-    cfg = waveform.WaveformConfig()
-    Q = _charges(args.inputs)
-    events = np.unique(Q["ev_row"])
-    if args.max_events:
-        events = events[:args.max_events]
-    P = _pulses(args.inputs, events)
-    rows_ev = Q["ev_row"][Q["row"]]
-    keep = np.isin(rows_ev, events)
-    lab = Q["row"][keep]
-    feat = cluster_features(lab, Q["time"][keep], Q["pe"][keep], cfg)
-    # pulse -> charges row (same event and channel) -> cluster
-    rk = (Q["ev_row"].astype(np.int64) << 16) | Q["chan_row"]
-    pk = (P["ev"].astype(np.int64) << 16) | P["chan"]
-    srt = np.argsort(rk)
-    pos = np.clip(np.searchsorted(rk[srt], pk), 0, len(srt) - 1)
-    prow = np.where(rk[srt][pos] == pk, srt[pos], -1)
-    cl = np.full(len(pk), -1, np.int64)
-    okp = prow >= 0
-    C_ = reftables.calib(args.inputs)
-    toff = C_["timeoffset"][P["chan"]]
-    t_nooff = P["time"] - toff
-    cl[okp] = assign_pulses(feat, prow[okp], t_nooff[okp], cfg)
-    Cn = len(feat["q"])
-    npul = np.bincount(cl[cl >= 0], minlength=Cn)
-    # first pulse per cluster = lowest seq among assigned
-    firstp = np.full(Cn, -1, np.int64)
-    a = np.flatnonzero(cl >= 0)
-    o = a[np.lexsort((P["seq"][a], cl[a]))]
-    u, fi = np.unique(cl[o], return_index=True)
-    firstp[u] = o[fi]
-    hp = firstp >= 0
-    first = {"pe": np.where(hp, P["pe"][np.maximum(firstp, 0)], np.nan),
-             "dt": np.where(hp, t_nooff[np.maximum(firstp, 0)] - feat["t10"], np.nan),
-             "beta": np.where(hp, P["beta"][np.maximum(firstp, 0)], np.nan),
-             "failed": np.where(hp, P["failed"][np.maximum(firstp, 0)], False)}
-    cev = Q["ev_row"][feat["chan"]]
-    train = (cev % 2) == 0
-    tr = {k: (v[train] if isinstance(v, np.ndarray) and len(v) == Cn else v) for k, v in feat.items()}
-    model = DirectModel.fit(tr, npul[train], {k: v[train] for k, v in first.items()})
-    te = {k: (v[~train] if isinstance(v, np.ndarray) and len(v) == Cn else v) for k, v in feat.items()}
-    rng = np.random.default_rng(args.seed)
-    t0 = time.perf_counter()
-    s = model.sample(te, rng)
-    dt = time.perf_counter() - t0
-    ntest = int(len(np.unique(cev[~train])))
-    ref = {"pe": first["pe"][~train], "time": first["dt"][~train] + feat["t10"][~train], "beta": first["beta"][~train]}
-    fast = {"pe": s["pe"], "time": s["time"], "beta": s["beta"]}
-    n_ref, n_fast = npul[~train], s["n"]
-    out = {"clusters_test": int((~train).sum()), "events_test": ntest,
-           "pulses_per_cluster_mean": {"ref": float(n_ref.mean()), "fast": float(n_fast.mean())},
-           "found_frac": {"ref": float((n_ref > 0).mean()), "fast": float((n_fast > 0).mean())},
-           "found_frac_vs_q": _eff_vs_q(te["q"], n_ref > 0, n_fast > 0),
-           "first_pulse": compare.distribution_summary(fast, ref),
-           "first_pulse_binned": {c: _band(fast[c], ref[c]) for c in ("pe", "beta")},
-           "failed_frac": {"ref": float(first["failed"][~train][n_ref > 0].mean()) if (n_ref > 0).any() else None,
-                           "fast": float(s["failed"][n_fast > 0].mean()) if (n_fast > 0).any() else None},
-           "unassigned_ref_pulses": int((cl < 0).sum()), "wall_s_sample": dt,
-           "us_per_event": 1e6 * dt / max(ntest, 1)}
-    out["first_pulse_binned_pass"] = {c: bool(out["first_pulse_binned"][c]["max_abs_dev_minus_2sigma"] is not None and
-                                              out["first_pulse_binned"][c]["max_abs_dev_minus_2sigma"] <= BAND_TOL[c])
-                                      for c in BAND_TOL}
-    os.makedirs(args.outdir, exist_ok=True)
-    model.save(os.path.join(args.outdir, "direct_model.npz"))
-    _report(args, "direct", out)
-
-
-BAND_TOL = {"pe": 0.03, "beta": 0.03}   # binned-ratio tolerance (V-R4's +-3 %), 2 sigma allowed
-
-
-def _band(a, b):
-    a, b = np.asarray(a, float), np.asarray(b, float)
-    r = stats.ratio_band(a[np.isfinite(a)], b[np.isfinite(b)], q=(0.02, 0.98), nbins=40, min_ref=400)
-    out = {k: r[k] for k in ("max_abs_dev", "max_abs_dev_minus_2sigma", "nbins_used")}
-    return out
-
-
-def _eff_vs_q(q, a, b, edges=(0, 2, 4, 6, 8, 10, 15, 20, 30, 50, 100, 1e9)):
-    e = np.asarray(edges, float)
-    i = np.clip(np.searchsorted(e, q, side="right") - 1, 0, len(e) - 2)
-    n = np.bincount(i, minlength=len(e) - 1)
-    return [{"q_lo": float(e[k]), "q_hi": float(e[k + 1]), "n": int(n[k]),
-             "ref": float(np.bincount(i, weights=a, minlength=len(e) - 1)[k] / n[k]) if n[k] else None,
-             "fast": float(np.bincount(i, weights=b, minlength=len(e) - 1)[k] / n[k]) if n[k] else None}
-            for k in range(len(e) - 1)]
-
-
 def cmd_cost(args):
-    """Both fast paths on the same events, CPU wall per event (synthesis + reco vs direct sampling)."""
+    """The waveform path on the reference events, CPU wall per event (synthesis + pulse reco)."""
     cfg_w, cfg_r = waveform.WaveformConfig(), pulsefit.RecoConfig()
     Q = _charges(args.inputs)
     events = np.unique(Q["ev_row"])[:args.max_events] if args.max_events else np.unique(Q["ev_row"])
     keep = np.isin(Q["ev_row"][Q["row"]], events)
-    lab, tq, qq, pe = Q["row"][keep], Q["time"][keep], Q["charge"][keep], Q["pe"][keep]
+    lab, tq, qq = Q["row"][keep], Q["time"][keep], Q["charge"][keep]
     rng = np.random.default_rng(args.seed)
     tdc0 = rng.random(len(Q["chan_row"])) * pulsefit.PERIOD
     t0 = time.perf_counter()
@@ -1102,19 +882,11 @@ def cmd_cost(args):
     res = pulsefit.reconstruct(mat, n, start, np.full(W, float(cfg_w.pedestal)), np.full(W, 1.0), np.full(W, 1.0),
                                cfg_r)
     t2 = time.perf_counter()
-    feat = cluster_features(lab, tq, pe, cfg_w)
-    t3 = time.perf_counter()
-    model = DirectModel.load(args.model) if args.model else None
-    if model is not None:
-        model.sample(feat, rng)
-    t4 = time.perf_counter()
     ne = max(len(events), 1)
     out = {"events": int(len(events)), "charges": int(len(lab)), "digis": int(len(dg["chan"])),
            "pulses_waveform_path": int(len(res["wf"])),
            "us_per_event": {"waveform_synthesis": 1e6 * (t1 - t0) / ne, "pulse_reco": 1e6 * (t2 - t1) / ne,
-                            "waveform_path_total": 1e6 * (t2 - t0) / ne, "direct_features": 1e6 * (t3 - t2) / ne,
-                            "direct_sample": 1e6 * (t4 - t3) / ne if model is not None else None,
-                            "direct_path_total": 1e6 * (t4 - t2) / ne if model is not None else None},
+                            "waveform_path_total": 1e6 * (t2 - t0) / ne},
            "stock_reference_ms_per_event": {"CrvRecoPulsesFinder_A6": 1.56, "CrvRecoPulsesFinder_A8": 3.73,
                                             "CRV_response_total": 19.8, "note": "stock TimeTracker means (docs/fastreco.md)"}}
     _report(args, "cost", out)
@@ -1125,7 +897,7 @@ def _report(args, name, out):
     print(json.dumps(plots._clean(out), indent=1)[:4000])
 
 
-RECO_CMDS = ("vr2", "vr2stock", "vr2jax", "bench", "vr1", "vr3", "vr4", "vr4eff", "r3", "direct", "noise", "repro", "cost", "inspect",
+RECO_CMDS = ("vr2", "vr2stock", "vr2jax", "bench", "vr1", "vr3", "vr4", "vr4eff", "r3", "noise", "repro", "cost", "inspect",
              "background")
 
 
@@ -1335,12 +1107,6 @@ def add_reco_args(sp, name):
                         help="--both: finder with add_opposite_side_pulses off (control)")
     if name == "inspect":
         sp.add_argument("--keys", required=True, help="a vr2/vr2stock stats JSON (its unmatched_*_keys)")
-    if name == "direct":
-        sp.add_argument("--v1", action="store_true", help="the v1 model (first pulse only, independent residuals)")
-        sp.add_argument("--feb-phase-spread", type=float, default=12.5,
-                        help="FEB clock phase (TDC0) drawn uniform in [offset, offset+spread] ns per (event, FEB); "
-                        "stock MC 12.5 (one period); a tuning knob for data")
-        sp.add_argument("--feb-phase-offset", type=float, default=0.0)
     if name == "vr4":
         sp.add_argument("--refs", nargs="+", default=None, help="stock CrvRecoTableDumper files, same shards and order")
         sp.add_argument("--calib", default=None, help="CRVCalib CSV of the reference job (crvdump/calib dump)")
@@ -1395,13 +1161,11 @@ def add_reco_args(sp, name):
         sp.add_argument("--counter-only", action="store_true",
                         help="noise = no partner on the same counter only (default also requires none in another "
                         "layer of the sector)")
-    if name == "cost":
-        sp.add_argument("--model", default=None, help="direct_model.npz from the direct subcommand")
 
 
 def run_reco(name, a):
     a.outdir = a.outdir or f"plots/reco_{name}"
-    {"vr2": cmd_vr2, "vr2stock": lambda x: cmd_vr2(x, oracle=True), "vr1": cmd_vr1, "vr3": cmd_vr3, "direct": cmd_direct, "noise": cmd_noise, "background": cmd_background, "repro": cmd_repro, "vr4": cmd_vr4, "vr4eff": cmd_vr4eff, "r3": cmd_r3,
+    {"vr2": cmd_vr2, "vr2stock": lambda x: cmd_vr2(x, oracle=True), "vr1": cmd_vr1, "vr3": cmd_vr3, "noise": cmd_noise, "background": cmd_background, "repro": cmd_repro, "vr4": cmd_vr4, "vr4eff": cmd_vr4eff, "r3": cmd_r3,
      "cost": cmd_cost, "inspect": cmd_inspect, "vr2jax": lambda x: cmd_vr2(x, use_jax=True),
      "bench": cmd_bench}[name](a)
 

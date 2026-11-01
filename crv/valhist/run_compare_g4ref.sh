@@ -10,7 +10,7 @@ D=${CRVFS_DATA:?source site.env}/valhist/g4ref_v1; cd "$D"; mkdir -p merged cmp
 T=s$(printf %02d "$A")-$(printf %02d "$B")
 files() { for k in $(seq "$A" "$B"); do printf "%s/valhist.001400_%08d.root " "$1" "$k"; done; }
 AL="--alias CrvSteps_fastCrvSteps_noName=CrvSteps_steps_noName --alias SimParticlemv_fastCrvSteps_noName=SimParticlemv_steps_noName --alias CrvSteps_compressDetStepMCs_noName=CrvSteps_steps_noName"
-M() { PYTHONPATH=$CRVFS_CODE:$M2FS_CODE/core python3 -m valhist.compare "$@"; }
+M() { PYTHONPATH=$CRVFS_CODE:$M2FS_CODE/core python3 -m crvfastsim.validation.compare "$@"; }
 for arm in a0 a0p a0g "$@"; do [ -s "merged/$arm.$T.root" ] || M merge "merged/$arm.$T.root" $(files "$arm") $AL | tail -1; done
 for arm in "$@"; do
   case $arm in a1*|e2e*|a0g) REF=a0g ;; *) REF=a0 ;; esac

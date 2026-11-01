@@ -3,16 +3,13 @@ digis -> pulses -> clusters (crvfastsim/chain.py), with the cost of every stage.
 files of the stock chain on the same shards) it reports clusters per generated event per sector type, fast vs stock.
 
     runchain gen.<shard>.root [...] --calib crvcalib.csv [--deviation crvphoton.csv] [--jax]
-             [--tier1b strict_v4|strict_v3|strict_v2|legacy [--tier1b-dir DIR] | --library lib.root]
+             [--tier1b strict_v4 [--tier1b-dir DIR] | --library lib.root]
              [--reco-cpu] [--max-events N] [--compare ref.<shard>.root ...] [--emit shard.json] --outdir DIR
     runchain-merge shard*.json --outdir DIR      (node totals: events, clusters per sector type, rates)
 
 Tier 1b (crvfastsim.tier1b_assets): default asset set strict_v4 for extracted_v04 (strict library, crossing context,
-containment, point and topology placement, v3 templates, chord placement, hard-muon draws); --tier1b strict_v3 is the
-same without the hard-muon draws (the default 2026-10-29 to 30); --tier1b strict_v2 is strict_v3 without
-chord placement and with the v2 templates (the default 2026-10-28 to 29); --tier1b legacy is the tier1b_v7 library without placement (the
-default before 2026-10-28) and the only set of the named run configurations; --library is a custom library sampled
-without placement options.
+containment, point and topology placement, v3 templates, chord placement, hard-muon draws); the named run
+configurations have no set and need --library, a custom library sampled without placement options.
 
 Named conditions manifests are supported only by ordinary, non-prepared runs. They are mutually exclusive
 with calib/deviation. Prepared contexts and benchmark callbacks reject manifests before any setup: their
@@ -63,14 +60,11 @@ def _resolve(library, calib, deviation, gdml, jax, counters, run_config, window,
     return rc, cfg, gdml_path, time_window, spec
 
 
-def _signature(rc, cfg, gdml, spec, calib, deviation, no_absorbers, unbanded_world, no_below_world,
-               below_margin=None):
+def _signature(rc, cfg, gdml, spec, calib, deviation, below_margin=None):
     canonical = lambda p: str(Path(p).resolve()) if p and p != "nominal" else p
     return {"run_config": dataclasses.asdict(rc), "chain_config": dataclasses.asdict(cfg),
             "paths": [canonical(p) for p in (gdml, *spec.paths(), calib, deviation)],
             "tier1b": {"set": spec.name, "options": dict(spec.options), "library_sha256": spec.library_sha256},
-            "no_absorbers": bool(no_absorbers), "unbanded_world": bool(unbanded_world),
-            "no_below_world": bool(no_below_world),
             "below_margin": None if below_margin is None else float(below_margin),
             "asset_environment": {k: os.environ.get(k) for k in
                                   ("CRVFS_DATA", "CRVFS_LOOKUP_DIR", "CRVFS_OFFLINE_CACHE", "MU2E_SEARCH_PATH")}}
@@ -103,9 +97,9 @@ class PreparedContext:
                 raise ValueError("prepared context device changed")
 
 
-def prepare(library=None, calib=None, deviation=None, gdml=None, jax=False, counters=None, no_absorbers=False,
-            run_config=None, window=None, benchmark=None, fused_response=False, unbanded_world=False,
-            no_below_world=False, below_margin=None, conditions_manifest=None, geometry_readout=False,
+def prepare(library=None, calib=None, deviation=None, gdml=None, jax=False, counters=None,
+            run_config=None, window=None, benchmark=None, fused_response=False,
+            below_margin=None, conditions_manifest=None, geometry_readout=False,
             tier1b_set=None, tier1b_dir=None):
     """Load and seal reusable CSV setup; named manifests and physical masks are not supported by reuse/benchmark."""
     if geometry_readout:
@@ -119,12 +113,10 @@ def prepare(library=None, calib=None, deviation=None, gdml=None, jax=False, coun
     rc, cfg, gdml_path, _, spec = _resolve(library, calib, deviation, gdml, jax, counters, run_config, window,
                                            fused_response, tier1b_set=tier1b_set, tier1b_dir=tier1b_dir)
     rc, cfg = copy.deepcopy((rc, cfg))
-    sig = _signature(rc, cfg, gdml_path, spec, calib, deviation, no_absorbers, unbanded_world, no_below_world,
-                     below_margin)
+    sig = _signature(rc, cfg, gdml_path, spec, calib, deviation, below_margin)
     if benchmark is not None:
         benchmark.setup(rc, cfg, gdml_path, spec, calib, deviation)
-    payload, timers = _load_setup(rc, cfg, gdml_path, gdml, spec, calib, deviation, jax,
-                                  no_absorbers, unbanded_world, no_below_world, below_margin)
+    payload, timers = _load_setup(rc, cfg, gdml_path, gdml, spec, calib, deviation, jax, below_margin)
     a = time.perf_counter()
     if hasattr(payload["world"], "pieces"):
         payload["world"].pieces()
@@ -152,8 +144,7 @@ def prepare(library=None, calib=None, deviation=None, gdml=None, jax=False, coun
     return PreparedContext(sig, MappingProxyType(payload), propagation, template, template_args, fingerprint, device, timers)
 
 
-def _load_setup(rc, cfg, gdml_path, explicit_gdml, spec, calib, deviation, jax,
-                no_absorbers, unbanded_world, no_below_world, below_margin=None,
+def _load_setup(rc, cfg, gdml_path, explicit_gdml, spec, calib, deviation, jax, below_margin=None,
                 conditions_manifest=None, configured_rc=None):
     geometry_start = time.perf_counter()
     geom = rc.geometry()
@@ -171,10 +162,9 @@ def _load_setup(rc, cfg, gdml_path, explicit_gdml, spec, calib, deviation, jax,
     bar_cut = rc.bar_cut(geom)
     timers = {"geometry_conditions_config_s": time.perf_counter() - geometry_start}
     a = time.perf_counter()
-    world, ab = tr.load_world(gdml_path, banded=not unbanded_world, y_plane=tr.msc_plane(geom))
-    ab = None if no_absorbers else ab
+    world, ab = tr.load_world(gdml_path, banded=True, y_plane=tr.msc_plane(geom))
     below = None
-    if rc.below_world and not no_below_world:
+    if rc.below_world:
         from .transport import _below_kw
         below, ab = tr.load_below(explicit_gdml or rc.gdml_path(), geom,
                                   **_below_kw(rc, {"below_margin": below_margin})), None
@@ -192,11 +182,15 @@ def _load_setup(rc, cfg, gdml_path, explicit_gdml, spec, calib, deviation, jax,
 
 
 def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax=False, max_events=None, seed=1,
-        compare=None, counters=None, reco_cpu=False, emit=None, msc_tail=False, tail_k=None, sliced_msc=False,
-        first_muon_only=False, no_absorbers=False, run_config=None, window=None, benchmark=None, prepared=None,
+        compare=None, counters=None, reco_cpu=False, emit=None, run_config=None, window=None, benchmark=None,
+        prepared=None,
         conditions_manifest=None, geometry_readout=False, tier1b_set=None, tier1b_dir=None,
         transport_context=None, tier1b_context=None, tier1b_backend="numpy",
         gen="table", gen_events=None, gen_seed=None, gen_subrun=1, **kw):
+    removed = sorted(set(kw) & {"msc_tail", "tail_k", "sliced_msc", "first_muon_only", "no_absorbers",
+                                "unbanded_world", "no_below_world"})
+    if removed:
+        raise ValueError(f"runchain: options {removed} were removed (the transport subcommand keeps them)")
     native = gen in ("native", "device")
     generator_backend = gen
     if gen not in ("table", "native", "device"):
@@ -242,15 +236,12 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
             # Validate the stock snapshot against its configured window, not the cosmic crop.
             configured_rc = dataclasses.replace(rc, window=tuple(time_window["configured_window_ns"]))
             manifest_kw = dict(conditions_manifest=conditions_manifest, configured_rc=configured_rc)
-        payload, T = _load_setup(rc, cfg, gdml_path, gdml, spec, calib, deviation, jax, no_absorbers,
-                                kw.get("unbanded_world", False), kw.get("no_below_world", False),
-                                kw.get("below_margin"), **manifest_kw)
+        payload, T = _load_setup(rc, cfg, gdml_path, gdml, spec, calib, deviation, jax, kw.get("below_margin"),
+                                 **manifest_kw)
         if benchmark is None:
             T.pop("geometry_conditions_config_s")
     else:
-        signature = _signature(rc, cfg, gdml_path, spec, calib, deviation, no_absorbers,
-                               kw.get("unbanded_world", False), kw.get("no_below_world", False),
-                               kw.get("below_margin"))
+        signature = _signature(rc, cfg, gdml_path, spec, calib, deviation, kw.get("below_margin"))
         if signature != prepared.signature:
             raise ValueError("prepared context does not match requested configuration/assets")
         a = time.perf_counter()
@@ -273,7 +264,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
     range_out = rc.range_out and not kw.get("legacy_transport")
     if kw.get("transport_backend", "numpy") == "jax":
         from ..transport_jax import DeviceTransport, transport as run_device_transport
-        if msc_tail or sliced_msc or below is not None or kw.get("below_msc") or kw.get("below_scatter_in"):
+        if below is not None or kw.get("below_msc") or kw.get("below_scatter_in"):
             raise ValueError("JAX transport supports the straight-line default only")
         if transport_context is not None and prepared is None:
             raise ValueError("device transport reuse requires an audited prepared chain context")
@@ -289,8 +280,8 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         raise ValueError(f"unknown tier1b backend {tier1b_backend!r}")
     if tier1b_backend == "jax":
         from ..tier1b_jax import DeviceRandom, DeviceTier1b
-        if spec.name not in ("strict_v3", "strict_v4") or rc.name != runconfig.DEFAULT:
-            raise ValueError("device tier1b currently supports extracted strict_v3/strict_v4 only")
+        if spec.name != "strict_v4" or rc.name != runconfig.DEFAULT:
+            raise ValueError("device tier1b currently supports extracted strict_v4 only")
         if kw.get("prefetch"):
             raise ValueError("device tier1b prefetch is not certified")
         if tier1b_context is not None and prepared is None:
@@ -335,10 +326,9 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         a = time.perf_counter()
         diagnostics = {}
         if device_transport is not None:
-            st, pa = run_device_transport(gen, geom, rng, prepared=device_transport, all_muons=not first_muon_only)
+            st, pa = run_device_transport(gen, geom, rng, prepared=device_transport)
         else:
-            st, pa = tr.transport(gen, geom, rng, stage="C", world=world, msc_tail=msc_tail, tail_k=tail_k,
-                                  sliced_msc=sliced_msc, all_muons=not first_muon_only, absorbers=ab, tagger_bar=tagger,
+            st, pa = tr.transport(gen, geom, rng, stage="C", world=world, absorbers=ab, tagger_bar=tagger,
                                   bar_cut=bar_cut, below=below, range_out=range_out,
                                   below_msc=below is not None and (rc.below_msc or bool(kw.get("below_msc"))),
                                   **_scatter_in_kw(kw, diagnostics))

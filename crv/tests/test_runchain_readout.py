@@ -82,6 +82,7 @@ def test_named_mask_forwarded_to_all_stages_without_mutation(pipeline, monkeypat
     monkeypatch.setattr(R.runconfig.RunConfig, "tagger_bar", lambda *a: None)
     monkeypatch.setattr(R.runconfig, "sector_type_names", lambda *a: {1: names[0]})
     monkeypatch.setattr(named_conditions, "load_conditions", lambda *a: (cond, evidence))
+    monkeypatch.setattr(R.tr, "load_below", lambda *a, **kw: None)          # no below-plane world in the stub
     stages = []
     mask = readout.sensor_mask(geom, ccfg)
 
@@ -102,7 +103,7 @@ def test_named_mask_forwarded_to_all_stages_without_mutation(pipeline, monkeypat
     emit = tmp_path / "masked.json"
     result = ordinary(pipeline, inputs=[*pipeline["inputs"], str(second)], emit=str(emit), calib=None,
                       run_config=name, conditions_manifest="manifest.json", geometry_readout=True,
-                      no_below_world=True, prefetch=prefetch)
+                      prefetch=prefetch)
     shard = json.loads(emit.read_text())
     stats = json.loads((Path(pipeline["outdir"]) / "runchain_stats.json").read_text())
     expected = readout.apply(cond, geom, ccfg)[1]

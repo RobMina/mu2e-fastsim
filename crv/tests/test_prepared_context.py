@@ -75,13 +75,21 @@ def test_reuse_prefetch_multiple_inputs_and_new_seed(prepared_pipeline, tmp_path
     assert state["calls"][:2] != state["calls"][6:8]
 
 
-@pytest.mark.parametrize("option", [{"window": "onspill"}, {"no_absorbers": True}, {"unbanded_world": True},
-                                     {"no_below_world": True}, {"fused_response": True}])
+@pytest.mark.parametrize("option", [{"window": "onspill"}, {"fused_response": True}])
 def test_configuration_mismatch_rejected_before_events(prepared_pipeline, tmp_path, option):
     ctx = prepare(prepared_pipeline)
     with pytest.raises(ValueError, match="does not match"):
         R.run(prepared_pipeline["inputs"], str(tmp_path / "bad"), library=prepared_pipeline["library"],
               calib="nominal", gdml=prepared_pipeline["gdml"], prepared=ctx, **option)
+    assert not prepared_pipeline["calls"]
+
+
+@pytest.mark.parametrize("option", ["msc_tail", "tail_k", "sliced_msc", "first_muon_only", "no_absorbers",
+                                    "unbanded_world", "no_below_world"])
+def test_removed_ablation_options_rejected(prepared_pipeline, tmp_path, option):
+    with pytest.raises(ValueError, match="removed"):
+        R.run(prepared_pipeline["inputs"], str(tmp_path / "removed"), library=prepared_pipeline["library"],
+              calib="nominal", gdml=prepared_pipeline["gdml"], **{option: True})
     assert not prepared_pipeline["calls"]
 
 

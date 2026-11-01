@@ -1,6 +1,6 @@
 # ROOT histogram coverage and rate/shape audit
 
-`valhist.coverage` is a standalone, read-only complement to `valhist.compare`.
+`crvfastsim.validation.coverage` is a standalone, read-only complement to `crvfastsim.validation.compare`.
 It does not modify that comparator or merge files. Its purpose is to expose
 coverage gaps and describe differences, **not certify physics agreement**.
 
@@ -10,7 +10,7 @@ From the `mu2e-fastsim` umbrella:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=core:crv \
-  python3 -B -m valhist.coverage \
+  python3 -B -m crvfastsim.validation.coverage \
   /data/reference/valhist.001.root /data/candidate/valhist.001.root \
   --outdir NEW_COVERAGE_DIR \
   --alias CrvDigis_fastCrvDigis=CrvDigis_Sim
@@ -26,7 +26,7 @@ The output directory must not exist; existing paths are refused. The audit
 opens inputs read-only and never writes ROOT output. It handles one file per
 arm, not globs, event pairing, or shard aggregation.
 
-`--select` defaults to the same CRV regex as `valhist.compare`:
+`--select` defaults to the same CRV regex as `crvfastsim.validation.compare`:
 
 ```text
 ^(crvDigiDQM|crvRecoDQM|dqmCrv)/|^Validation/Crv
@@ -193,7 +193,7 @@ The summary records every override and any unused names. Profiles remain unsuppo
 `TNamed` objects (including DQM binning-version records) are compared by name/title; mismatches are coverage gaps.
 `report.tsv` is a compact view of totals, flow and normalized-shape distances; detailed provenance stays in JSON.
 
-`python3 -m valhist.paired_rates REF_DUMP CAND_DUMP --out NEW.json` supplies a separate, limited uncertainty
+`python3 -m crvfastsim.validation.paired_rates REF_DUMP CAND_DUMP --out NEW.json` supplies a separate, limited uncertainty
 calculation where both arms have full event trees. It validates identical sorted run/subrun/event populations,
 rejects duplicates, checks cluster-table totals against the per-event census, and retains zero-activity events.
 For per-event values a and b and ratio R=sum(b)/sum(a), its delta-method standard error is
