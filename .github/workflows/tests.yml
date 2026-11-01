@@ -1,5 +1,6 @@
 # Integration tests of the pinned submodule commits plus the umbrella's own code, on every pull request and on main.
-# The "suite (...)" jobs are the required status checks of the main branch.
+# The "suite (...)" jobs are the required status checks of the main branch; the "no JAX (...)" jobs run the same
+# suites without JAX installed, where the JAX tests must skip cleanly.
 name: tests
 on:
   pull_request:
@@ -54,6 +55,59 @@ jobs:
         run: |
           python -m pip install -q --no-deps ./beam
           cd "$RUNNER_TEMP" && python -c "import importlib.resources as r, beamfastsim; assert r.files('beamfastsim').joinpath('data/g4_al_mu.npz').is_file(); print(beamfastsim.__file__)"
+      - name: Public Offline files
+        run: |
+          bash core/ci/offline_data.sh "$RUNNER_TEMP/offline_data"
+          echo "MU2E_SEARCH_PATH=$RUNNER_TEMP/offline_data" >> "$GITHUB_ENV"
+      - name: pytest
+        run: |
+          export PYTHONPATH=$(echo "${{ matrix.path }}" | tr ':' '\n' | sed "s#^#$GITHUB_WORKSPACE/#" | paste -sd:)
+          if [ "${{ matrix.suite }}" = umbrella ]; then
+            python -m pytest -q -p no:cacheprovider tests
+            python -m pytest -q -p no:cacheprovider container/tests
+          else
+            cd "${{ matrix.dir }}" && python -m pytest -q -p no:cacheprovider --durations=15 tests
+          fi
+  nojax:
+    name: no JAX (${{ matrix.suite }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: core
+            dir: core
+            path: core:crv:beam
+          - suite: crv
+            dir: crv
+            path: crv:core
+          - suite: tracker
+            dir: tracker
+            path: tracker:core:crv
+          - suite: beam
+            dir: beam
+            path: beam:core
+          - suite: umbrella
+            dir: .
+            path: beam:core
+    env:
+      JAX_PLATFORMS: cpu
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: core/ci/requirements.txt
+      - name: Python packages without JAX
+        run: |
+          grep -v -E '^(jax|jaxlib)==' core/ci/requirements.txt > "$RUNNER_TEMP/requirements-nojax.txt"
+          python -m pip install -q -r "$RUNNER_TEMP/requirements-nojax.txt"
+          if python -c 'import jax' 2>/dev/null; then echo 'JAX is installed'; exit 1; fi
       - name: Public Offline files
         run: |
           bash core/ci/offline_data.sh "$RUNNER_TEMP/offline_data"

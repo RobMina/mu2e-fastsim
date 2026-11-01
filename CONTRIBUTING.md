@@ -29,6 +29,8 @@ no private data are available there, so:
   the missing variable or file), never fail;
 - large statistical validations carry `@pytest.mark.slow` and run only with `--runslow`;
 - `tests/test_no_site_paths.py` rejects user names and site paths in tracked files.
+- CI runs every suite twice: with the pinned packages and without JAX (`pytest (no JAX)`, `no JAX (...)`), where every
+  JAX test must skip cleanly (`pytest.importorskip("jax")`).
 
 To reproduce CI locally from a directory holding the four checkouts side by side:
 

@@ -4,6 +4,8 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
+pytest.importorskip("jax")
+
 from beamfastsim import geometry, transport
 from test_transport import _geom, _uniform_map
 
