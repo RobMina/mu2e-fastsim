@@ -15,7 +15,7 @@ shards are independent of every design choice.
 
 The deck comparison runs the stock CRVDQM histograms (CrvStep, digi, pulse and cluster histograms of every sector
 type) for two arms on identical CRY primaries and flags a histogram when its chi2/ndf (event-clustered errors, the
-lowest bin of the energy and momentum histograms left out) exceeds max(2, 3 x the stock-vs-stock floor) (`valhist.compare`).
+lowest bin of the energy and momentum histograms left out) exceeds max(2, 3 x the stock-vs-stock floor) (`crvfastsim.validation.compare`).
 Arms: A0g = Geant4 steps + stock response and reco on the generator stream; A1 = fast steps + stock response and reco;
 E2E = fast steps + fast response + fast reco; A2/A3/A4 = fast response / fast reco / both on Geant4 steps; A0' = A0
 with reseeded digitisation (the floor).

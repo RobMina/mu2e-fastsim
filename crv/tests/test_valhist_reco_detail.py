@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 import uproot
 
-from valhist import reco_detail as R
-from valhist.pilot import digest
+from crvfastsim.validation import reco_detail as R
+from crvfastsim.validation.pilot import digest
 
 
 def dump(path, *, change=False, seq=False, wf=False, sector=False, count=False,

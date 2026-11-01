@@ -37,8 +37,8 @@ python3 -m crvfastsim runchain gen.root --gdml world.gdml --calib calib.csv \
 
 ## Tier-1b contract
 
-- Sets `strict_v3` and `strict_v4` (context, contain, point, topology, unvisited, near-miss, chord, showers; v4 adds
-  hard-muon draws). Mirror, translate, follow and stop-product sampling are not ported.
+- Set `strict_v4` (context, contain, point, topology, unvisited, near-miss, chord, showers and hard-muon draws; the
+  sampler also replays the same options without the hard draws). Mirror, translate, follow and stop-product sampling are not ported.
 - Preparation builds immutable sorted support and CSR donor histories from the checked library and sidecars; every
   bound comes from the whole library, never from a validation shard. Missing positive-probability support raises;
   there is no history cap and no truncation. Geometry arithmetic is float64.

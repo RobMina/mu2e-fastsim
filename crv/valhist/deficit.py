@@ -14,7 +14,7 @@ import numpy as np
 import uproot
 
 from crvfastsim import geometry, tables
-from crvfastsim.analyses import v2compare as V2
+from crvfastsim.validation import v2compare as V2
 
 GROUPS = V2.GROUPS
 

@@ -1,6 +1,6 @@
 # Conditional event-paired cluster shape diagnostics
 
-`valhist.event_shapes` is a standalone, read-only analysis of two **complete**
+`crvfastsim.validation.event_shapes` is a standalone, read-only analysis of two **complete**
 `CrvRecoTableDumper` ROOT arms, such as A1 and E2E. It compares cluster-fill
 shapes on the same generated events, including events with no clusters. It
 writes a new JSON report and does not modify inputs or existing comparators.
@@ -12,7 +12,7 @@ Run from the `mu2e-fastsim` umbrella with the existing local environment:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=core:crv \
-  python3 -B -m valhist.event_shapes \
+  python3 -B -m crvfastsim.validation.event_shapes \
   /data/a1/valhist.root /data/e2e/valhist.root \
   --edges /data/analysis/cluster-edges.json \
   --replicas 999 --seed 12345 --out NEW_event_shapes.json
@@ -30,7 +30,7 @@ matching. Example `/data/analysis/paired-shards.json`:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=core:crv \
-  python3 -B -m valhist.event_shapes \
+  python3 -B -m crvfastsim.validation.event_shapes \
   --pairs /data/analysis/paired-shards.json \
   --edges /data/analysis/cluster-edges.json \
   --replicas 999 --seed 12345 --out NEW_event_shapes_shards.json

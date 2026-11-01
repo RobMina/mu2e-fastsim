@@ -3,20 +3,18 @@
 The callers (tier1b-apply, runchain, e2e-bench, the endpoint kits) pick one set by name; crvfastsim.tier1b itself has
 no default library. docs/tier1b-default.md has the provenance and the evidence behind the default.
 
-  strict_v4  default for extracted_v04: strict_v3 with whole-muon draws of hard library muons (summed descendant
-             energy above 30 MeV, keyed by momentum class and the group and layer of each crossing; tier1b.attach_hard),
-             which restores the correlation of a muon's descendants across its crossings.
-  strict_v3  strict_v2 with the v3 template sidecar (library chords, the larger near-miss census) and chord placement of
-             the same-bar descendant steps (the default 2026-10-29 to 2026-10-30).
-  strict_v2  association-certified library (20 donors) with crossing context, endpoint containment, point
-             placement, topology placement and the never-visited-layer / near-miss templates (the default
-             2026-10-28 to 2026-10-29).
-  legacy     the tier1b_v7 production library with no placement options (the default before 2026-10-28), and the
-             only set for the named run configurations (run1a_v01, run1b_v01, run2_v10): no library has been built
-             on their geometry, so they map their sectors onto this extracted library's groups (runconfig.lib_group).
+  strict_v4  default and only set, extracted_v04: the association-certified library (20 donors) with crossing context,
+             endpoint containment, point and topology placement, the never-visited-layer / near-miss templates (v3
+             sidecar: library chords), chord placement of the same-bar descendant steps and whole-muon draws of hard
+             library muons (summed descendant energy above 30 MeV, keyed by momentum class and the group and layer of
+             each crossing; tier1b.attach_hard).
+
+Other option combinations run with a custom library and explicit placement flags (tier1b-apply --library ...
+--crossing-context ...; docs/tier1b-default.md). The named run configurations (run1a_v01, run1b_v01, run2_v10) have
+no set: no library has been built on their geometry, so they need --library.
 
     spec = resolve(run_config="extracted_v04")            # the configuration's default set under $CRVFS_DATA
-    spec = resolve("legacy"); spec = resolve("strict_v4", directory="/dev/shm/x")   # files staged elsewhere
+    spec = resolve("strict_v4", directory="/dev/shm/x")   # files staged elsewhere
     spec = resolve(library="lib.root")                     # a custom library, no placement options
     lib = load(spec, geom); tier1b.sample(..., lib, geom, rng, **spec.options)
 """
@@ -28,7 +26,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 DEFAULT = "strict_v4"
-LEGACY = "legacy"
 EXTRACTED = "extracted_v04"
 
 
@@ -55,14 +52,6 @@ SETS = {
     "strict_v4": AssetSet(
         "tier1b_strict_v2", "library.root", "topology_sidecar_strict_v2_v2.npz", "templates_v3.npz", _STRICT_LIB,
         dict(_STRICT, chord=True, hard=True)),
-    "strict_v3": AssetSet(
-        "tier1b_strict_v2", "library.root", "topology_sidecar_strict_v2_v2.npz", "templates_v3.npz", _STRICT_LIB,
-        dict(_STRICT, chord=True)),
-    "strict_v2": AssetSet(
-        "tier1b_strict_v2", "library.root", "topology_sidecar_strict_v2_v2.npz", "templates_v2.npz",
-        _STRICT_LIB, dict(_STRICT)),
-    "legacy": AssetSet("tier1b_v7", "lib_prod_as_20files.root",
-                       run_configs=(EXTRACTED, "run1a_v01", "run1b_v01", "run2_v10")),
 }
 
 
@@ -87,8 +76,8 @@ class Tier1bSpec:
 
 
 def default_for(run_config=None):
-    """The default set of a run configuration: strict_v4 for extracted_v04, legacy for the named ones."""
-    return DEFAULT if (run_config or EXTRACTED) == EXTRACTED else LEGACY
+    """The default set of a run configuration: strict_v4 for extracted_v04, None for the named ones (no library)."""
+    return DEFAULT if (run_config or EXTRACTED) == EXTRACTED else None
 
 
 def resolve(tier1b=None, library=None, directory=None, run_config=None, data=None):
@@ -100,12 +89,14 @@ def resolve(tier1b=None, library=None, directory=None, run_config=None, data=Non
     if library:
         return Tier1bSpec(None, str(library))
     name = tier1b or default_for(rc)
+    if name is None:
+        raise ValueError(f"run configuration {rc!r} has no tier-1b asset set (no library has been built on its "
+                         f"geometry): pass a custom --library")
     if name not in SETS:
         raise ValueError(f"unknown tier-1b set {name!r}; known: {sorted(SETS)}")
     s = SETS[name]
     if rc not in s.run_configs:
-        raise ValueError(f"tier-1b set {name!r} has no library for run configuration {rc!r} "
-                         f"(use {LEGACY!r}: {sorted(n for n, x in SETS.items() if rc in x.run_configs)})")
+        raise ValueError(f"tier-1b set {name!r} has no library for run configuration {rc!r}: pass a custom --library")
     if directory is None:
         data = data or os.environ.get("CRVFS_DATA")
         if not data:

@@ -52,7 +52,8 @@ Mu2e-internal and not yet published as a collaborator release (umbrella `docs/ru
 |---|---|
 | `crvfastsim/` | the package and its CLI (`python3 -m crvfastsim <subcommand> -h`); reference: [`crvfastsim/README.md`](crvfastsim/README.md) |
 | `crvfastsim/response/`, `crvfastsim/reco/` | response and reconstruction stages, NumPy and JAX |
-| `valhist/` | the stock-DQM histogram comparisons (deck rule, coverage, paired shapes) |
+| `crvfastsim/validation/` | V0-V4 checks (`v0check` ... `v4sipm`, `transport_validation`) and the stock-DQM comparison core (compare, coverage, pilot, paired rates and shapes, event shapes, reco detail); `crvfastsim.analyses.<name>` and `valhist.<name>` are aliases for one release |
+| `valhist/` | the stock-DQM arms and studies (fast tables, deck rule, step closure, device harnesses) |
 | `art/` | muse satellite area: table dumpers and table-to-art injectors for the comparison arms |
 | `grid/`, `geometry/`, `profile/` | jobs that made the Geant4 references, the GDML export and the baseline profile |
 | `scripts/` | drivers of the validation campaigns (GPVM, UVA, grid) |

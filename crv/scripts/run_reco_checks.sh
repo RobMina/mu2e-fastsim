@@ -1,7 +1,7 @@
 #!/bin/bash
 # run_reco_checks.sh <pulses|chain> -- the crvfastsim.reco checks on the CrvRecoTableDumper references, one host.
 #   pulses : vr2stock (stock MakeCrvRecoPulses via PyROOT, NSTOCK events) then vr2 (all events), on MC and data
-#   chain  : vr1 (noise off), direct, cost on the MC reference
+#   chain  : vr1 (noise off), cost on the MC reference
 # Needs site.env (CRVFS_CODE, CRVFS_DATA) and CRVFS_STOCK_AREA = a built muse area with libmu2e_CRVReco.so (for vr2stock).
 # Outputs: $CRVFS_DATA/reco_ref/checks/<cmd>_<sample>/. No `set -u` before the setup (setupmu2e-art.sh).
 WHAT=${1:?usage: run_reco_checks.sh <pulses|chain>}
@@ -29,8 +29,7 @@ case "$WHAT" in
     run vr2_data vr2 "$DATA" ;;
   chain)
     run vr1_mc vr1 "$MC"
-    run direct_mc direct "$MC"
-    run cost_mc cost "$MC" --model "$O/direct_mc/direct_model.npz" ;;
+    run cost_mc cost "$MC" ;;
   *) echo "unknown $WHAT"; exit 2 ;;
 esac
 echo RUN_RECO_CHECKS_DONE

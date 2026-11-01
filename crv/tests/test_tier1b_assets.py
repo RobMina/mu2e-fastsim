@@ -11,36 +11,34 @@ from crvfastsim.analyses import tier1b as A
 from test_e2e_bench import pipeline  # noqa: F401  (fixture)
 
 STRICT = dict(context=True, contain=True, point=True, topology=True, unvisited=True, nearmiss=True)
-V3 = dict(STRICT, chord=True)                            # strict_v3: strict_v2 + v3 templates + chord placement
-DEFAULT = dict(V3, hard=True)                            # strict_v4: strict_v3 + hard-muon draws
+DEFAULT = dict(STRICT, chord=True, hard=True)            # strict_v4: chord placement + hard-muon draws
 
 
 def test_default_per_run_configuration():
     s = T.resolve(data="/D")
-    assert s.name == "strict_v4" and s.options == DEFAULT
-    v3 = T.resolve("strict_v3", data="/D")
-    assert v3.options == V3 and v3.paths() == s.paths() and v3.library_sha256 == s.library_sha256
+    assert s.name == "strict_v4" and s.options == DEFAULT and sorted(T.SETS) == ["strict_v4"]
     assert s.library == "/D/tier1b_strict_v2/library.root"
     assert s.paths() == ["/D/tier1b_strict_v2/library.root", "/D/tier1b_strict_v2/topology_sidecar_strict_v2_v2.npz",
                          "/D/tier1b_strict_v2/topology_sidecar_strict_v2_v2.npz.json",
                          "/D/tier1b_strict_v2/templates_v3.npz", "/D/tier1b_strict_v2/templates_v3.npz.json"]
-    old = T.resolve("strict_v2", data="/D")
-    assert old.options == STRICT and old.templates == "/D/tier1b_strict_v2/templates_v2.npz"
-    assert old.library == s.library and old.library_sha256 == s.library_sha256 and old.topology == s.topology
-    for rc in ("run1a_v01", "run1b_v01", "run2_v10"):        # no library of their own: legacy only
-        assert T.resolve(run_config=rc, data="/D").name == "legacy"
+    for rc in ("run1a_v01", "run1b_v01", "run2_v10"):        # no library of their own: a custom --library only
+        assert T.default_for(rc) is None
+        with pytest.raises(ValueError, match="no tier-1b asset set"):
+            T.resolve(run_config=rc, data="/D")
         with pytest.raises(ValueError, match="no library for run configuration"):
-            T.resolve("strict_v2", run_config=rc, data="/D")
-    legacy = T.resolve("legacy", data="/D")
-    assert legacy.library == "/D/tier1b_v7/lib_prod_as_20files.root" and legacy.options == {} and legacy.paths() == [legacy.library]
-    assert T.resolve("strict_v2", directory="/shm/x").templates == "/shm/x/templates_v2.npz"
+            T.resolve("strict_v4", run_config=rc, data="/D")
+        assert T.resolve(library="lib.root", run_config=rc).name is None
+    assert T.resolve("strict_v4", directory="/shm/x").templates == "/shm/x/templates_v3.npz"
+    for retired in ("strict_v3", "strict_v2", "legacy"):
+        with pytest.raises(ValueError, match="unknown tier-1b set"):
+            T.resolve(retired, data="/D")
 
 
 def test_custom_library_and_refusals(monkeypatch):
     c = T.resolve(library="lib.root")
     assert c.name is None and c.options == {} and c.paths() == ["lib.root"]
     with pytest.raises(ValueError, match="not both"):
-        T.resolve("legacy", library="lib.root")
+        T.resolve("strict_v4", library="lib.root")
     with pytest.raises(ValueError, match="unknown tier-1b set"):
         T.resolve("strict_v9", data="/D")
     monkeypatch.delenv("CRVFS_DATA", raising=False)
@@ -53,7 +51,7 @@ def test_sets_match_the_endpoint_registry():
     for name, s in T.SETS.items():
         directory, files, _ = cp.TIER1B_SETS[name]
         assert directory == s.directory and list(files) == s.files()
-    assert cp.LIBRARY == "/".join((T.SETS["legacy"].directory, T.SETS["legacy"].library))
+    assert sorted(cp.TIER1B_SETS) == sorted(T.SETS)
 
 
 def _fake_set(tmp_path, monkeypatch, library=b"library bytes"):
@@ -81,8 +79,8 @@ def test_load_order_and_library_pin(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="not the pinned library"):
         T.load(bad, geom=None)
     calls.clear()
-    assert T.load(T.Tier1bSpec("legacy", spec.library), geom=None) == {"lib": spec.library}
-    assert calls == [("read", spec.library)]                                   # legacy: read only, as before
+    assert T.load(T.Tier1bSpec(None, spec.library), geom=None) == {"lib": spec.library}
+    assert calls == [("read", spec.library)]                                   # custom library: read only
 
 
 def test_sidecar_reader_checks_library_by_hash(tmp_path):
@@ -111,25 +109,21 @@ def test_runchain_passes_the_set_options(pipeline, monkeypatch, tmp_path):  # no
     res = R.run(outdir=str(tmp_path / "d"), **base)
     assert seen[-1] == {"showers": True, **DEFAULT} and loaded[-1].name == "strict_v4"
     assert res["tier1b"]["set"] == "strict_v4" and res["tier1b"]["options"] == DEFAULT
-    res = R.run(outdir=str(tmp_path / "v3"), tier1b_set="strict_v3", **base)
-    assert seen[-1] == {"showers": True, **V3} and res["tier1b"]["set"] == "strict_v3"
-    res = R.run(outdir=str(tmp_path / "v2"), tier1b_set="strict_v2", **base)
-    assert seen[-1] == {"showers": True, **STRICT} and res["tier1b"]["set"] == "strict_v2"
-    res = R.run(outdir=str(tmp_path / "l"), tier1b_set="legacy", **base)
-    assert seen[-1] == {"showers": True} and res["tier1b"]["set"] == "legacy"
     R.run(outdir=str(tmp_path / "c"), library="custom.root", **base)
     assert seen[-1] == {"showers": True} and loaded[-1].library == "custom.root"
     with pytest.raises(SystemExit, match="no library for run configuration"):
-        R.run(outdir=str(tmp_path / "n"), tier1b_set="strict_v2", run_config="run2_v10", **base)
+        R.run(outdir=str(tmp_path / "n"), tier1b_set="strict_v4", run_config="run2_v10", **base)
+    with pytest.raises(SystemExit, match="no tier-1b asset set"):
+        R.run(outdir=str(tmp_path / "m"), run_config="run2_v10", **base)
 
 
 def test_prepared_signature_binds_the_set(tmp_path):
     rc, cfg = R.runconfig.get(), R.chain.ChainConfig()
-    sig = lambda spec: R._signature(rc, cfg, "world", spec, "nominal", None, False, False, False)
-    strict, legacy = T.resolve(data=str(tmp_path)), T.resolve("legacy", data=str(tmp_path))
-    assert sig(strict) != sig(legacy) and sig(strict)["tier1b"]["options"] == DEFAULT
-    assert sig(strict) != sig(T.resolve("strict_v2", data=str(tmp_path)))
-    assert sig(legacy)["paths"] == [str(Path("world").resolve()), str(Path(legacy.library).resolve()), "nominal", None]
+    sig = lambda spec: R._signature(rc, cfg, "world", spec, "nominal", None)
+    strict, custom = T.resolve(data=str(tmp_path)), T.resolve(library=str(tmp_path / "lib.root"))
+    assert sig(strict) != sig(custom) and sig(strict)["tier1b"]["options"] == DEFAULT
+    assert sig(strict) != sig(T.resolve(directory=str(tmp_path / "elsewhere")))
+    assert sig(custom)["paths"] == [str(Path("world").resolve()), str(Path(custom.library).resolve()), "nominal", None]
 
 
 def test_merge_refuses_mixed_sets(tmp_path):
@@ -137,9 +131,9 @@ def test_merge_refuses_mixed_sets(tmp_path):
              "window": [0.0, 1e5], "conditions": None}
     strict = {**shard, "tier1b": T.resolve(data="/A").describe()}
     other = {**shard, "tier1b": T.resolve(directory="/B").describe()}       # same set elsewhere: compatible
-    legacy = {**shard, "tier1b": T.resolve("legacy", data="/A").describe()}
+    custom = {**shard, "tier1b": T.resolve(library="/A/lib.root").describe()}
     paths = []
-    for i, j in enumerate((strict, other, legacy)):
+    for i, j in enumerate((strict, other, custom)):
         paths.append(tmp_path / f"s{i}.json")
         paths[-1].write_text(json.dumps(j))
     try:
@@ -150,7 +144,7 @@ def test_merge_refuses_mixed_sets(tmp_path):
         R.merge([str(paths[0]), str(paths[2])], str(tmp_path / "bad"))
 
 
-def test_tier1b_apply_default_legacy_and_custom(tmp_path, monkeypatch):
+def test_tier1b_apply_default_and_custom(tmp_path, monkeypatch):
     seen, loaded = [], []
     empty = pd.DataFrame({"run": [], "subrun": [], "event": []})
     monkeypatch.setattr(A.tables, "read", lambda f, tree: empty)
@@ -162,22 +156,21 @@ def test_tier1b_apply_default_legacy_and_custom(tmp_path, monkeypatch):
     monkeypatch.setenv("CRVFS_DATA", str(tmp_path))
     A.apply(["fastC.x.root"], str(tmp_path))
     assert seen[-1] == DEFAULT and loaded[-1].name == "strict_v4"
-    A.apply(["fastC.x.root"], str(tmp_path), tier1b_set="legacy")
-    assert seen[-1] == {} and loaded[-1].name == "legacy"
     A.apply(["fastC.x.root"], str(tmp_path), library="lib.root")
     assert seen[-1] == {k: False for k in ("context", "contain", "point", "mirror", "translate", "topology")}
     with pytest.raises(SystemExit, match="custom --library"):
         A.apply(["fastC.x.root"], str(tmp_path), crossing_context=True)
     with pytest.raises(SystemExit, match="not both"):
-        A.apply(["fastC.x.root"], str(tmp_path), library="lib.root", tier1b_set="legacy")
+        A.apply(["fastC.x.root"], str(tmp_path), library="lib.root", tier1b_set="strict_v4")
 
 
 def test_cli_exposes_the_sets():
     from crvfastsim import cli
     p = cli.build_parser()
-    a = p.parse_args(["tier1b-apply", "x.root", "--tier1b", "legacy", "--tier1b-dir", "/d"])
-    assert a.tier1b_set == "legacy" and a.tier1b_dir == "/d" and a.library is None
+    a = p.parse_args(["tier1b-apply", "x.root", "--tier1b", "strict_v4", "--tier1b-dir", "/d"])
+    assert a.tier1b_set == "strict_v4" and a.tier1b_dir == "/d" and a.library is None
     a = p.parse_args(["runchain", "x.root", "--calib", "c.csv"])
     assert a.tier1b_set is None and a.library is None
-    with pytest.raises(SystemExit):
-        p.parse_args(["runchain", "x.root", "--tier1b", "other"])
+    for retired in ("other", "strict_v3", "strict_v2", "legacy"):
+        with pytest.raises(SystemExit):
+            p.parse_args(["runchain", "x.root", "--tier1b", retired])

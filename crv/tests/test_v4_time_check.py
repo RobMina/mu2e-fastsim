@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from crvfastsim.analyses.v4photons import cdf_shift, time_check  # noqa: E402
+from crvfastsim.validation.v4photons import cdf_shift, time_check  # noqa: E402
 
 
 def _sample(rng, n_ev, offset=0.0):

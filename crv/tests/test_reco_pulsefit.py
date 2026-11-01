@@ -93,47 +93,6 @@ def test_waveform_then_reco_roundtrip():
     assert 290.0 < res["time"][0] < 360.0
 
 
-def test_direct_model_threshold_and_resampling():
-    from crvfastsim.reco import direct as DR
-    rng = np.random.default_rng(5)
-    C = 40000
-    q = rng.uniform(2.0, 30.0, C)
-    feat = {"q": q, "pfrac": rng.uniform(0.3, 0.9, C), "t10": np.zeros(C)}
-    found = rng.random(C) < 1 / (1 + np.exp(-(q - 9.0) / 0.7))
-    npul = found.astype(np.int64)
-    first = {"pe": np.where(found, 0.9 * q, np.nan), "dt": np.where(found, 5.0, np.nan),
-             "beta": np.where(found, 18.0, np.nan), "failed": np.zeros(C, bool)}
-    m = DR.DirectModel.fit(feat, npul, first)
-    s = m.sample(feat, np.random.default_rng(6))
-    for lo, hi in ((6, 8), (8, 10), (10, 12)):
-        sel = (q >= lo) & (q < hi)
-        assert abs((s["n"][sel] > 0).mean() - found[sel].mean()) < 0.03
-    assert abs(np.nanmedian(s["pe"] / q) - 0.9) < 1e-6
-
-
-def test_direct_v2_resamples_whole_response():
-    """DirectModelV2 returns a training cluster's full response: count, pulse ordering and spacing, TDC0 shift."""
-    import numpy as np
-    from crvfastsim.reco.direct import N_MODELLED, DirectModelV2
-    rng = np.random.default_rng(3)
-    C = 2000
-    feat = {"q": np.full(C, 40.0), "pfrac": np.full(C, 0.8), "t10": rng.uniform(100, 200, C)}
-    n = rng.integers(1, 3, C)
-    tdc0 = rng.uniform(0, 12.5, C)
-    pul = {k: np.full((C, N_MODELLED), np.nan) for k in ("pe", "time", "beta")}
-    pul["failed"] = np.zeros((C, N_MODELLED), bool)
-    pul["pe"][:, 0], pul["time"][:, 0], pul["beta"][:, 0] = 38.0, feat["t10"] - tdc0 + 30.0, 15.0
-    two = n == 2
-    pul["pe"][two, 1], pul["time"][two, 1], pul["beta"][two, 1] = 5.0, pul["time"][two, 0] + 40.0, 14.0
-    m = DirectModelV2.fit(feat, n, pul, tdc0)
-    t_new = rng.uniform(0, 12.5, C)
-    s = m.sample(feat, t_new, rng)
-    assert set(np.unique(s["n"])) == {1, 2}
-    assert np.allclose(s["time"][:, 0], feat["t10"] - t_new + 30.0)
-    t2 = s["n"] == 2
-    assert np.allclose(s["time"][t2, 1] - s["time"][t2, 0], 40.0) and np.all(np.isnan(s["time"][~t2, 1]))
-
-
 def test_noise_partner_and_model():
     """Noise flag: a pulse pair on two SiPMs of one counter is signal, a lone pulse is noise; the fitted model
     reproduces the per-event count and keeps generated pulses on the channels seen in training."""

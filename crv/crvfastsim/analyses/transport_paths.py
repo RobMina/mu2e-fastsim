@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from crvfastsim import geometry, runconfig, tables, transport
-from crvfastsim.analyses import transport_validation as V
+from crvfastsim.validation import transport_validation as V
 from mu2efastsim import eloss
 
 KEY = tables.KEY + ["genidx", "bar"]

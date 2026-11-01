@@ -12,7 +12,7 @@ source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh >/dev/null 2>&1 || true
 pyenv ana
 export PYTHONPATH="$CODE:$CORE" PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 export CRVFS_LOOKUP_DIR="$D/lookup_v6_0"
-python3 -m valhist.pilot prepare --out "$OUT" --fastc "$FASTC" --library "$LIB" --area "$AREA" \
+python3 -m crvfastsim.validation.pilot prepare --out "$OUT" --fastc "$FASTC" --library "$LIB" --area "$AREA" \
   --core "$CORE" --gen-art "$GEN" --seed "$SEED"
 python3 -m crvfastsim tier1b-apply "$FASTC" --library "$LIB" --outdir "$OUT/tables" --seed "$SEED" \
   > "$OUT/logs/tier1b.log" 2>&1
@@ -35,4 +35,4 @@ python3 -m valhist.fasttables chain "$TABLE" "$OUT/tables/chain.root" \
     fi
   done
 )
-python3 -m valhist.pilot verify "$OUT"
+python3 -m crvfastsim.validation.pilot verify "$OUT"

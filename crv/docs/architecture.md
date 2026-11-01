@@ -46,7 +46,8 @@ draws with NumPy, and are validated statistically against it ([device.md](device
 | CRV geometry, transport, tier 1b | `crvfastsim` top level (`geometry`, `transport`, `tier1b`, `tier1b_assets`, `runconfig`) and their `*_jax` twins | the tier-1b sampling and its asset sets are frozen except by a validated change |
 | response | `crvfastsim/response/` | lookup tables, photons, SiPM, the stock oracles through PyROOT |
 | reconstruction | `crvfastsim/reco/` | waveforms, pulse fit, coincidences, background model |
-| comparisons | `crvfastsim/analyses/`, `valhist/` | V0-V4 checks and the stock-DQM histogram comparisons |
+| validation | `crvfastsim/validation/` | V0-V4 checks and the stock-DQM histogram comparison core (old paths `crvfastsim.analyses.<name>`, `valhist.<name>` are aliases for one release) |
+| studies and arms | `crvfastsim/analyses/`, `valhist/` | runchain, e2e-bench, census and diagnostics; the stock-DQM arms (fast tables, deck rule, step closure) |
 | objective and veto | `crvfastsim/objective/`, `crvfastsim/veto/` | the CRV response objective; the C4 veto rule |
 | art modules | `art/CrvFastSim/` | table dumpers and table-to-art injectors for the comparison arms (built in a muse satellite area) |
 | Geant4 references | `grid/`, `art/dump_*.sh`, `geometry/` | jobs that made the reference samples and the GDML export |

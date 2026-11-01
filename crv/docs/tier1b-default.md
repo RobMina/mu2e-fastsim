@@ -1,45 +1,51 @@
 # Tier-1b default: the strict library with placement, templates, chord placement and hard-muon draws
 
-From 2026-10-30 the tier-1b step sampling of the **extracted** CRV configuration (`extracted_v04`) defaults to the
-asset set `strict_v4`: `strict_v3` plus whole-muon draws of hard library muons (`tier1b.attach_hard`, section
-"Hard-muon draws" below). From 2026-10-29 to 2026-10-30 the default was `strict_v3` (the strict library with placement
-and the v3 templates, plus chord placement of the same-bar descendant steps,
-[validation.md](validation.md)), and from 2026-10-28 to 2026-10-29 `strict_v2` (v2
-templates, no chord placement); both stay available by name. The default before
-2026-10-28 stays available as the asset set `legacy`. The sets are defined in
-`crvfastsim/tier1b_assets.py`. `crvfastsim/tier1b.py` itself has no default library: the callers pick a set and pass
-its options down.
+The tier-1b step sampling of the **extracted** CRV configuration (`extracted_v04`) uses the asset set `strict_v4`, the
+only named set: the association-certified strict library with crossing context, containment, point and topology
+placement, the v3 template sidecar, chord placement of the same-bar descendant steps
+([validation.md](validation.md)) and whole-muon draws of hard library muons
+(`tier1b.attach_hard`). It is defined in `crvfastsim/tier1b_assets.py`.
+`crvfastsim/tier1b.py` itself has no default library: the callers pick the set and pass its options down.
 
 | Set | Library | Sidecars | `tier1b.sample` options | Run configurations |
 |---|---|---|---|---|
-| `strict_v4` (default) | the `strict_v3` files | the `strict_v3` sidecars | the `strict_v3` options and `hard` | `extracted_v04` only |
-| `strict_v3` | the `strict_v2` library and topology sidecar | `templates_v3.npz` (library chords; near-miss census g4ref_v1 1-10 + odd g4ref_v2 21-219), with its `.json` | the `strict_v2` options and `chord` | `extracted_v04` only |
-| `strict_v2` | `tier1b_strict_v2/library.root`, sha256 `ebb015a7...7c7` (20 association-certified donors, generator-association-repair.md (branch `park/tier1b-library`)) | `topology_sidecar_strict_v2_v2.npz`, `templates_v2.npz`, each with its `.json` | `context`, `contain`, `point`, `topology`, `unvisited`, `nearmiss` | `extracted_v04` only |
-| `legacy` | `tier1b_v7/lib_prod_as_20files.root` | none | none | all (the only set of `run1a_v01`, `run1b_v01`, `run2_v10`) |
+| `strict_v4` | `tier1b_strict_v2/library.root`, sha256 `ebb015a7...7c7` (20 association-certified donors, generator-association-repair.md (branch `park/tier1b-library`)) | `topology_sidecar_strict_v2_v2.npz`, `templates_v3.npz` (library chords; near-miss census g4ref_v1 1-10 + odd g4ref_v2 21-219), each with its `.json` | `context`, `contain`, `point`, `topology`, `unvisited`, `nearmiss`, `chord`, `hard` | `extracted_v04` only |
 
 Paths are relative to `$CRVFS_DATA`. `--tier1b-dir DIR` points at a copy of the set's files, as the endpoints use.
 
+## Earlier option combinations
+
+The sets that were the default earlier are no longer selectable by name. Their sampling is reproduced step by step
+with `tier1b-apply`, a custom `--library` and explicit placement flags on the same library and sidecars (the custom
+path reads the library and attaches the topology, then the template sidecar, in the same order as the set):
+
+| Former name (default period) | `tier1b-apply` flags |
+|---|---|
+| `strict_v3` (2026-10-29 to 30): `strict_v4` without hard-muon draws | `--library L/library.root --crossing-context --contain-steps --point-placement --topology-sidecar L/topology_sidecar_strict_v2_v2.npz --template-sidecar L/templates_v3.npz --unvisited-layers --near-miss --chord-placement` |
+| `strict_v2` (2026-10-28 to 29): v2 templates, no chord placement | the same with `--template-sidecar L/templates_v2.npz` and without `--chord-placement` |
+| `legacy` (before 2026-10-28) | `--library tier1b_v7/lib_prod_as_20files.root` (that library was deleted and is not available) |
+
+`L` is the set's directory (`$CRVFS_DATA/tier1b_strict_v2`). The whole-muon hard draws have no flag: they belong to
+`strict_v4` only. `runchain` and `e2e-bench` take `--tier1b strict_v4` (the default) or a custom `--library` without
+placement.
+
 ## Choosing a set
 
-| Caller | Default | Legacy | Custom library |
-|---|---|---|---|
-| `tier1b-apply` | `strict_v4` | `--tier1b legacy` | `--library LIB` (placement only with the explicit flags `--crossing-context` ... `--near-miss`) |
-| `runchain`, `e2e-bench` | the run configuration's set (`strict_v4` for extracted, `legacy` for the named ones) | `--tier1b legacy` | `--library LIB` (no placement) |
-| core `chain_point` | parameter `tier1b` 0 = the configuration's set (`tier1b` 2 = `strict_v2`) | `tier1b` 1 | - |
-| core kit `chain`, `regression` (EAF, in place) | `strict_v4` | - | - |
-| core `uva/chain_array_uva.sh`, `chain_node_uva.sh`, `aurora/chain_node_aurora.sh` | `T1B=strict_v4` (`T1B=strict_v3`, `strict_v2`) | `T1B=legacy` | - |
+| Caller | Default | Custom library |
+|---|---|---|
+| `tier1b-apply` | `strict_v4` | `--library LIB` (placement only with the explicit flags `--crossing-context` ... `--chord-placement`) |
+| `runchain`, `e2e-bench` | `strict_v4` for extracted; the named configurations have no set | `--library LIB` (no placement) |
+| core `chain_point` | parameter `tier1b` 0 = `strict_v4`; named configurations are refused | - |
+| core kit `chain`, `regression` (EAF, in place) | `strict_v4` | - |
+| core `uva/chain_array_uva.sh`, `chain_node_uva.sh`, `aurora/chain_node_aurora.sh` | `T1B=strict_v4` | - |
 
-Any `strict_v*` set name is selected with `--tier1b NAME`. `chain_point` records with `tier1b` 0 written on
-2026-10-28 or 29 ran `strict_v2`.
+`--tier1b` and `--library` cannot be combined.
 
-`--tier1b` and `--library` cannot be combined. The legacy set and an explicit `--library tier1b_v7/...` call
-`tier1b.sample` exactly as before, so they reproduce the earlier default output bit for bit (evidence below). Scripts
-under `scripts/` that pass `--library .../lib_prod_as_20files.root` keep reproducing their recorded measurements.
-
-**Named run configurations have no library of their own.** `run1a_v01`, `run1b_v01` and `run2_v10` keep the legacy
-set: their sectors are mapped onto the extracted library groups (`runconfig.lib_group`) and their non-muon showers
-are off. `--tier1b strict_v4`, `strict_v3` or `strict_v2` with a named configuration is refused. The topology and template sidecars describe the
-extracted v04 layer structure and the strict library's crossings, so they do not carry over to other geometries.
+**Named run configurations have no library of their own.** `run1a_v01`, `run1b_v01` and `run2_v10` need a custom
+`--library`: their sectors are mapped onto the extracted library groups (`runconfig.lib_group`) and their non-muon
+showers are off. `--tier1b strict_v4` with a named configuration is refused. The topology and template sidecars
+describe the extracted v04 layer structure and the strict library's crossings, so they do not carry over to other
+geometries.
 
 ## Provenance and hashing
 
@@ -53,8 +59,8 @@ extracted v04 layer structure and the strict library's crossings, so they do not
 - `runchain` JSON (stats and `--emit`) records `tier1b` (set, paths, options, pinned hash). `runchain-merge` refuses
   shards that ran different sets. Shards of one set staged in different directories are compatible.
 - Endpoints stream the whole set into the node-shared library directory (`chain_point`) or the job tmpfs (UVA,
-  Aurora). Each file is md5- and sha256-checked against the pinned manifest. The node cache key of a `strict_v*` set is
-  a digest of all five file hashes; `legacy` keeps its earlier key (the library hash).
+  Aurora). Each file is md5- and sha256-checked against the pinned manifest. The node cache key of the set is
+  a digest of all five file hashes.
 
 ## Evidence for chord placement (2026-10-29)
 

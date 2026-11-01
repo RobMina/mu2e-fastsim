@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from crvfastsim.analyses import v1compare as V                         # noqa: E402
+from crvfastsim.validation import v1compare as V                         # noqa: E402
 
 
 def _xing(n, scale, seed):

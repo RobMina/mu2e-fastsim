@@ -3,7 +3,7 @@ import json
 import numpy as np
 import pytest
 import uproot
-from valhist.paired_rates import paired_ratio, run
+from crvfastsim.validation.paired_rates import paired_ratio, run
 
 
 def dump(path, order, clusters):

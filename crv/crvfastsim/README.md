@@ -116,9 +116,8 @@ resampled from G4 CrvStep tables of **training** shards and checked on others.
   callers (`tier1b-apply`, `runchain`, `e2e-bench`, the endpoint kits) use `strict_v4`: the association-certified
   library with crossing context, endpoint containment, point and topology placement, never-visited-layer and near-miss
   templates from the v3 sidecar, chord placement of the same-bar descendant steps, and whole-muon draws of hard library
-  muons. `--tier1b strict_v3` is the same without the hard-muon draws (the default 2026-10-29 to 30). `--tier1b strict_v2` is the
-  same without chord placement, with the v2 templates (the default 2026-10-28 to 29). `--tier1b legacy` is the `tier1b_v7` library without placement (the default before 2026-10-28), and the
-  only set of the named run configurations, which have no library of their own.
+  muons. It is the only set; other option combinations run with `tier1b-apply --library` and explicit placement flags
+  (docs/tier1b-default.md). The named run configurations have no library of their own and need `--library`.
 - *Build*: `tier1b-build crvsteps.*.root --gen gen.*.root --out lib.root`, one file at a time (a 5-file production
   build peaks at 5.2 GB). Production dts (`art/dump_prod_as.sh`) have no gen stream: pass `--generated N`
   (500 k per file, `dh.gencount`) and gen tables of the same CRY configuration for the reach denominator.
@@ -159,9 +158,9 @@ Outputs are a stats JSON (`plots.write_json`: NaN → null) plus figures.
 | `v2compare` | V2: two CrvRecoTableDumper arms (`--compare` = reference); `--steps`/`--compare-steps` add the layer-efficiency diagnostic; `--generated N` for rates per generated event. Batchable | `v2compare_stats.json`, `v2compare_pe.png` |
 | `secondaries` | tier-1b design input: G4 steps beyond the primary muon (descendants by process, birth place and bar; non-muon primaries by pdg and energy) | `secondaries_stats.json`, `secondaries_extra.png` |
 | `tier1b-build` | tier-1b library from G4 CrvStep tables (`--gen`, `--out`, `--generated`) | `lib.root` + `lib.json` |
-| `tier1b-apply` | add library descendants and showers to fast tables (default set `strict_v4`; `--tier1b strict_v3`, `strict_v2`, `--tier1b legacy`, `--tier1b-dir`, or a custom `--library` with placement flags; `--seed`) | `fast1b.*.root` |
+| `tier1b-apply` | add library descendants and showers to fast tables (default set `strict_v4`, `--tier1b-dir`, or a custom `--library` with placement flags; `--seed`) | `fast1b.*.root` |
 | `tier1b-check` | V3 step-level closure per group vs G4 tables of the same shards (`--compare`) | `tier1b_check.json` |
-| `runchain` | the whole fast chain on CRY gen tables (tier 1b: the configuration's set, `--tier1b legacy` or a custom `--library`; `--calib` CRVCalib + channel-map CSV, `--deviation`, `--jax`, `--max-events`, `--compare` stock reco tables): clusters per generated event per sector type, cost per stage | `runchain_stats.json` |
+| `runchain` | the whole fast chain on CRY gen tables (tier 1b: the configuration's set or a custom `--library`; `--calib` CRVCalib + channel-map CSV, `--deviation`, `--jax`, `--max-events`, `--compare` stock reco tables): clusters per generated event per sector type, cost per stage | `runchain_stats.json` |
 | `v4sipm` | V4 SiPM-charge stage vs stock `MakeCrvSiPMCharges` on the same photons (`--deviation`, `--max-steps`, `--jax`, `--no-stock`) | `v4sipm_stats.json` |
 | `v4photons` | V4 photon stage vs stock `MakeCrvPhotons` on the same steps (`--deviation`, `--max-steps`, `--jax`, `--no-stock`); the stock arm needs `muse setup SimJob ...` plus the `pyenv ana` site-packages on `PYTHONPATH` for pandas | `v4photons_stats.json` |
 | `pulsematch` | V2 diagnostic: per-channel PE of four arms (`--fast`, `--fast-mu`, `--ref`, `--ref-mu`) on the same events; the secondaries' added PE per muon-only PE bin, G4 vs fast | `pulsematch_stats.json` |
@@ -202,7 +201,10 @@ crvfastsim/
   chain.py      the whole chain without art: status mask, TDC0 per (event, FEB), digis -> reco waveforms, reco calls
   response/     lookup (v6 tables), photons / photons_jax / stockphotons (photon stage), sipm / sipm_jax / stocksipm
                 (SiPM-charge stage), bench
-  analyses/     g4cost, census, transport, v0check, v1compare, g4muon, v2compare, v2origin, pulsematch, crossingpos, secondaries, tier1b
+  analyses/     g4cost, census, transport, g4muon, v2origin, pulsematch, crossingpos, secondaries, tier1b, runchain, e2e_bench
+  validation/   v0check, v1compare, v2compare, v4photons, v4sipm, transport_validation; DQM histogram compare/coverage,
+                pilot, paired_rates, paired_shapes, event_shapes, reco_detail (old paths analyses.<name>, valhist.<name>
+                are aliases for one release)
   reco/         fast CRV reconstruction (section 10; subcommands reco-*)
 mu2efastsim (core/): eloss, materials, world, crossings, transport, tables, stats, plots, match
 scripts/        run_transport_v1.sh (transport the 20 g4ref_v1 shards + V1, one GPVM, ~40 s);
@@ -228,9 +230,8 @@ Two paths from SiPM charges to reco pulses are prototyped and compared on fideli
 | `reco/pulsefit.py` | batched port of `MakeCrvRecoPulses` + `CrvRecoPulsesFinder`: peak finder, fit window, Gumbel fit by fixed-iteration LM in Minuit's sine-mapped coordinates, failed-fit rules, subtract-and-repeat, digi grouping |
 | `reco/stockfit.py` | Offline's own `MakeCrvRecoPulses` through PyROOT (the oracle; needs a built muse area) |
 | `reco/waveform.py` | batched port of `CrvWaveformsGenerator` (ZS) + `MakeCrvWaveforms` + `MakeCrvDigis` |
-| `reco/direct.py` | direct charge -> pulse model (v0: conditional empirical resampling per charge/spread bin) |
 | `reco/compare.py` | V-R1/V-R2 matching and summaries, KS |
 
 Subcommands of the package CLI: `python3 -m crvfastsim reco-vr2|reco-vr2stock|reco-vr2jax|reco-bench|reco-vr1|
-reco-direct|reco-cost|reco-inspect REF.root ...` (alias `python3 -m crvfastsim.reco <cmd>`); key joins and the KS test
+reco-cost|reco-inspect REF.root ...` (alias `python3 -m crvfastsim.reco <cmd>`); key joins and the KS test
 come from `mu2efastsim.match`. Tests: `tests/test_reco_pulsefit.py`.

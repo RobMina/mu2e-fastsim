@@ -10,7 +10,7 @@ import pytest
 import uproot
 from uproot.writing import identify
 
-from valhist.paired_shapes import bootstrap_region, run
+from crvfastsim.validation.paired_shapes import bootstrap_region, run
 
 
 KEY = "Validation/CrvReco/hits"
@@ -313,7 +313,7 @@ def test_manifest_rejections(tmp_path, problem):
 def test_cli_new_output_and_error_exit(tmp_path):
     manifest, rows = pairs(tmp_path)
     out = tmp_path / "cli.json"
-    command = [sys.executable, "-B", "-m", "valhist.paired_shapes", str(manifest), "--out", str(out),
+    command = [sys.executable, "-B", "-m", "crvfastsim.validation.paired_shapes", str(manifest), "--out", str(out),
                "--replicas", "30", "--seed", "7"]
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     proc = subprocess.run(command, capture_output=True, text=True, env=env)

@@ -14,7 +14,7 @@ saw), so both share one denominator.
 import numpy as np
 
 from .. import chain, geometry, tables
-from ..analyses import v2compare as V2
+from ..validation import v2compare as V2
 
 THRESH = dict(V2.THRESH, pe_ratio_band=0.03)   # V-R4: response observables binned ratio within +-3 %
 

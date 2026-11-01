@@ -3,12 +3,13 @@
 Validation subcommands (docs/plan.md section 5) and, later, the fast-sim drivers. Run from the repository root so the
 package imports (Mu2e machines: $CRVFS_CODE; Polaris: the Eagle clone).
 Common flags: --outdir DIR (default plots/<cmd>), --compare REF [...], --emit X.json / --merge for batchable ones.
-Fast CRV reco: reco-vr2, reco-vr2stock, reco-vr2jax, reco-bench, reco-vr1, reco-direct, reco-cost, reco-inspect.
+Fast CRV reco: reco-vr2, reco-vr2stock, reco-vr2jax, reco-bench, reco-vr1, reco-cost, reco-inspect.
 """
 import argparse
 import sys
 
-from .analyses import census, crossingpos, runchain, g4cost, g4muon, pulsematch, secondaries, tier1b, transport, v0check, v1compare, v2compare, v2origin, v4photons, v4sipm
+from .analyses import census, crossingpos, runchain, g4cost, g4muon, pulsematch, secondaries, tier1b, transport, v2origin
+from .validation import v0check, v1compare, v2compare, v4photons, v4sipm
 from . import tier1b_assets as T1B
 from .reco import cli as reco_cli
 
@@ -80,7 +81,7 @@ def build_parser():
                             help="stage C: world columns piece by piece (before 2026-10-24; the banded grid is the default)")
         if name in ("tier1b-apply", "runchain"):
             sp.add_argument("--tier1b-backend", choices=["numpy", "jax"], default="numpy",
-                            help="experimental strict_v3/strict_v4 device sampler; NumPy remains the default")
+                            help="experimental strict_v4 device sampler; NumPy remains the default")
         if name in ("transport", "runchain"):
             sp.add_argument("--transport-backend", choices=["numpy", "jax"], default="numpy",
                             help="opt-in device transport (straight-line stages A/C, including extracted range_out)")
@@ -116,8 +117,8 @@ def build_parser():
         if name in ("runchain", "tier1b-apply"):
             sp.add_argument("--tier1b", dest="tier1b_set", default=None, choices=sorted(T1B.SETS),
                             help=f"tier-1b asset set (library, placement sidecars and options; crvfastsim.tier1b_assets). "
-                                 f"Default: {T1B.DEFAULT} for extracted_v04; the named run configurations have only "
-                                 f"{T1B.LEGACY} (tier1b_v7 library, no placement: the default before 2026-10-28)")
+                                 f"Default: {T1B.DEFAULT} for extracted_v04; the named run configurations have no set "
+                                 f"and need --library")
             sp.add_argument("--tier1b-dir", default=None, metavar="DIR",
                             help="directory with the set's files (default $CRVFS_DATA/<set directory>)")
         if name == "runchain":
@@ -134,25 +135,12 @@ def build_parser():
             sp.add_argument("--calib", default=None, metavar="CSV", help="CRVCalib + channel map CSV")
             sp.add_argument("--deviation", default=None, metavar="CSV", help="CRVPhoton deviations")
             sp.add_argument("--gdml", default=None, help="GDML world for stage C transport")
-            sp.add_argument("--msc-tail", action="store_true",
-                            help="stage C: single-scattering tail above the Gaussian MSC core, per height band")
-            sp.add_argument("--tail-k", type=float, default=None,
-                            help="with --msc-tail: tail threshold in units of theta0 (default: density crossing)")
-            sp.add_argument("--sliced-msc", action="store_true", help="stage C: per-band |p| in the MSC")
-            sp.add_argument("--first-muon-only", action="store_true",
-                            help="transport only the first generated muon of each event (before 2026-10-23; default: all)")
-            sp.add_argument("--no-absorbers", action="store_true",
-                            help="stage C: no energy loss in the CRV aluminium (absorbers, module skins) between bars (before 2026-10-24)")
-            sp.add_argument("--no-below-world", action="store_true",
-                            help="run configurations with below_world: no material between the MSC plane and the bars")
             sp.add_argument("--below-msc", action="store_true",
                             help="run configurations with below_world: multiple scattering below the MSC plane, bar to "
                                  "bar (transport.scattered_crossings; default straight lines)")
             sp.add_argument("--below-margin", type=float, default=None, metavar="MM",
                             help="run configurations with below_world: read the below-plane material inside the CRV box "
                                  "grown by MM (default: the configuration's below_margin)")
-            sp.add_argument("--unbanded-world", action="store_true",
-                            help="stage C: world columns piece by piece (before 2026-10-24; the banded grid is the default)")
             sp.add_argument("--run-config", default=None, help="named CRV run configuration (crvfastsim.runconfig: "
                             "extracted_v04 default, run1a_v01, run1b_v01, run2_v10): counters, GDML, response, cuts, window")
             sp.add_argument("--window", default=None, help="digitisation window override: offspill, onspill")
@@ -255,7 +243,7 @@ def main(argv=None):
         from .analyses import e2e_bench
         return e2e_bench.main(argv[1:])
     if argv and argv[0] == "transport-validation":
-        from .analyses import transport_validation
+        from .validation import transport_validation
         return transport_validation.main(argv[1:])
     if argv and argv[0] == "transport-paths":
         from .analyses import transport_paths

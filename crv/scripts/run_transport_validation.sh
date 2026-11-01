@@ -18,7 +18,7 @@ for k in $(seq "$FIRST" "$LAST"); do
   FAST=$OUT/tables/fastC.$S.root
   /usr/bin/time -f 'transport_wall_s=%e maxrss_kb=%M' python3 -m crvfastsim transport "$GEN" --stage C --seed "$k" \
     --run-config extracted_v04 --gdml "$D/geometry/mu2e_extracted_v04.gdml" --outdir "$OUT/tables" > "$OUT/transport_$k.log" 2>&1
-  python3 -m crvfastsim.analyses.transport_validation --gen "$GEN" --reference "$REF" --baseline "$BASE" --candidate "$FAST" \
+  python3 -m crvfastsim.validation.transport_validation --gen "$GEN" --reference "$REF" --baseline "$BASE" --candidate "$FAST" \
     --config extracted_v04 --expected-events 50000 --gdml "$D/geometry/mu2e_extracted_v04.gdml" \
     --output "$OUT/audit/shard_$k.json" > "$OUT/audit_$k.log" 2>&1
   python3 -m crvfastsim v1compare "$FAST" --compare "$REF" --run-config extracted_v04 \

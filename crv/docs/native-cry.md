@@ -11,7 +11,7 @@ python3 -m crvfastsim runchain native --gen native --gen-events 50000 \
   --gen-seed 1234 --seed 5678 --gen-subrun 1 \
   --gdml /inputs/mu2e_extracted_v04.gdml \
   --calib /inputs/crvcalib.csv --deviation /inputs/crvphoton.csv \
-  --tier1b strict_v3 --tier1b-dir /inputs/tier1b_strict_v2 \
+  --tier1b strict_v4 --tier1b-dir /inputs/tier1b_strict_v2 \
   --outdir /outputs/native
 ```
 

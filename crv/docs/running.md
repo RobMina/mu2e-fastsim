@@ -59,7 +59,7 @@ Add `--jax` (response, waveforms, reco on the device) and optionally `--transpor
 
 | Option | Effect |
 |---|---|
-| `--tier1b NAME` | another tier-1b set (`strict_v3`, `strict_v2`, `legacy`; see [tier1b-default.md](tier1b-default.md)) |
+| `--tier1b strict_v4` | the tier-1b set (the default and only set); earlier option combinations run with `tier1b-apply --library` and explicit flags ([tier1b-default.md](tier1b-default.md)) |
 | `--library LIB` | a custom tier-1b library without placement |
 | `--legacy-transport` | the stage-C transport before `range_out` ([transport-range-out.md](transport-range-out.md)) |
 | `--run-config NAME` | a named configuration (needs a tier-1b library that does not exist today) |

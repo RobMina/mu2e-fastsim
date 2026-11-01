@@ -58,10 +58,10 @@ def test_manifest_validates_configured_not_effective_window(pipeline, monkeypatc
     monkeypatch.setattr(named_conditions, "load_conditions", load)
     monkeypatch.setattr(R.runconfig.RunConfig, "tagger_bar", lambda *a: None)
     monkeypatch.setattr(R.runconfig, "sector_type_names", lambda *a: {1: "R1"})
+    monkeypatch.setattr(R.tr, "load_below", lambda *a, **kw: None)          # no below-plane world in the stub
     emit = tmp_path / "manifest-shard.json"
     result = ordinary(pipeline, calib=None, run_config="run2_v10", window=window,
-                      conditions_manifest="bundle/manifest.json", counters="override.txt", no_below_world=True,
-                      emit=str(emit))
+                      conditions_manifest="bundle/manifest.json", counters="override.txt", emit=str(emit))
     assert len(seen) == 1
     manifest, rc, geom = seen[0]
     assert manifest == "bundle/manifest.json" and geom.nbars == 2

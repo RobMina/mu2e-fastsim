@@ -223,7 +223,7 @@ def main():
     for name in ("counters", "library-dir", "transport", "out"):
         p.add_argument("--" + name, required=True)
     p.add_argument("--shards", type=int, nargs="+", default=[22])
-    p.add_argument("--tier1b-set", choices=("strict_v3", "strict_v4"), default="strict_v4")
+    p.add_argument("--tier1b-set", choices=("strict_v4",), default="strict_v4")
     p.add_argument("--batch-size", type=int, default=2048)
     p.add_argument("--replay-only", action="store_true")
     p.add_argument("--warm-repeats", type=int, default=0)

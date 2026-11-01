@@ -18,7 +18,7 @@ def sha(path):
 def report(root, code, core):
     result = {"response": {}, "scatter_in": {}, "source_sha256": {}}
     for path in [code / "crvfastsim/transport.py", code / "crvfastsim/analyses/transport.py",
-                 code / "crvfastsim/analyses/v2compare.py", code / "valhist/fasttables.py",
+                 code / "crvfastsim/validation/v2compare.py", code / "valhist/fasttables.py",
                  code / "crvfastsim/named_conditions.py", core / "mu2efastsim/transport.py"]:
         result["source_sha256"][str(path)] = sha(path)
     lines = ["# Named-run checkpoint", "", "## Response diagnostic (1000 stock-accepted events/config)", "",

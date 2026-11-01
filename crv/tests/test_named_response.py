@@ -10,7 +10,7 @@ import pytest
 import uproot
 
 from crvfastsim import geometry, named_conditions, runconfig
-from crvfastsim.analyses import v2compare as V
+from crvfastsim.validation import v2compare as V
 from valhist import fasttables as FT
 
 

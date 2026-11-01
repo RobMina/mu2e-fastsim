@@ -17,7 +17,7 @@ from pathlib import Path
 
 import uproot
 
-from . import compare as VC
+from crvfastsim.validation import compare as VC
 from .descendant_audit import digest
 from .steplayers import shards as parse_shards
 

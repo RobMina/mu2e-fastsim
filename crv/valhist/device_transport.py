@@ -19,7 +19,7 @@ import pandas as pd
 
 from crvfastsim import geometry, tables, transport as nt, transport_jax as jt
 from crvfastsim import crossings as nc, crossings_jax as jc
-from crvfastsim.analyses import v1compare as v1
+from crvfastsim.validation import v1compare as v1
 from . import stephist as sh, steplayers as sl
 
 
