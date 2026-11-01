@@ -1,60 +1,77 @@
 # mu2e-crv-fastsim
 
-## Collaborator first run
+Geant4-free simulation and fast reconstruction of the Mu2e **Cosmic Ray Veto** for the extracted (KPP, no field)
+cosmic configuration: fast CrvSteps (muon transport plus a Geant4 secondary library), the CRV response (photons,
+SiPM charges), waveforms and digis, pulse and coincidence reconstruction, in NumPy with JAX twins for GPUs. It feeds
+CRV MC/data and design studies (Mu2eBO) without art or Geant4, and reproduces the stock Offline chain stage by stage.
 
-Clone the umbrella with its pinned submodules and follow its
-[collaborator quickstart](https://github.com/RobMina/mu2e-fastsim/blob/main/setup/README.md#crv-one-manifest-selected-shard-cpu-reference).
-It gives explicit `runchain` and `e2e-bench` one-shard commands, separate read-only
-inputs from outputs, and verifies SHA256 before use. No shared input release is
-bundled or currently promised. The default remains extracted `strict_v4` on
-`range_out`; native CRY and device paths are opt-in. The legacy library required
-by named configurations is not available. Site, user and storage paths are never
-built in: set them from `site.env.example` (tools stop and name a missing variable).
-Data directories named in docs are relative to those configured roots and record
-provenance, not portable download locations.
+Stage 1 of the umbrella [`mu2e-fastsim`](https://github.com/RobMina/mu2e-fastsim) (submodule `crv/`), which pins
+compatible commits; detector-independent physics comes from [`mu2e-fastsim-core`](https://github.com/RobMina/mu2e-fastsim-core)
+(package `mu2efastsim`). Work from a clone of the umbrella.
 
-Stage 1 of the umbrella repository [`mu2e-fastsim`](https://github.com/RobMina/mu2e-fastsim) (submodule `crv/`). The
-detector-independent code (energy loss, materials, world, generic crossings/transport/tables, statistics, plots, key
-matching and the ALCF IRI job tools) lives in [`mu2e-fastsim-core`](https://github.com/RobMina/mu2e-fastsim-core)
-(package `mu2efastsim`); this repository holds only the CRV-specific code and depends on it.
+This repository holds code only: no Mu2e-internal conditions, tables, data or results.
 
-A Geant4-free, GPU-accelerated simulation and fast reconstruction of the Mu2e KPP (extracted) Cosmic Ray Veto cosmic
-sample, for MC/data agreement studies: fast CrvSteps, the fused GPU CRV response, waveforms, pulse and coincidence
-reco, and the CRV response objective, in numpy and JAX. It runs on ALCF Polaris (IRI API) and Aurora, ESnet, UVA and
-Fermilab EAF through the endpoint drivers in `mu2e-fastsim-core`, and as the Mu2eBO kit `fastsimkit`. Validation
-status: the umbrella README; fast reco goals and results: `docs/fastreco.md`.
+## Status
 
-| path | content |
+| Part | Default | State |
+|---|---|---|
+| transport (tier 1a) | stage C with `range_out`, extracted_v04 | V0, V1 pass; device twin opt-in, validated |
+| tier 1b (secondaries) | asset set `strict_v4` | step yields within errors; two step-shape discrepancies open |
+| response (photons, SiPM) | NumPy; JAX with `--jax` | V4 pass on CPU and GPU (A100, PVC, B200, T4) |
+| waveforms, pulses, coincidences | NumPy; JAX with `--jax` | V-R1..V-R5 pass; fast response + reco on fast steps 0/133 histograms flagged vs stock |
+| whole chain vs Geant4 + stock | | 5 M held-out events: 21/155 histograms flagged (steps), 13/133 end to end; counts within 0.25 % |
+| named configurations (Run 1A, Run 2) | | Run 1A V1 pass, Run 2 V1 fail; no tier-1b library: cannot run end to end |
+| device precision | float64 | float32 validated on a branch, not on `main` |
+
+Numbers, samples, thresholds and commits: [`docs/validation.md`](docs/validation.md). What is missing or not
+validated: [`docs/limitations.md`](docs/limitations.md).
+
+Throughput of the default chain (cached CRY primaries to clusters, warm, events with CRV steps per second): one CPU
+core 55, one A100 MIG slice 163, one Polaris node 990, one Aurora node 1,212, 8 A100 at UVA 1,695; stock Offline on
+one grid job 0.92.
+
+## Quickstart
+
+```bash
+git clone --recurse-submodules https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
+cp site.env.example site.env        # fill M2FS_INPUTS (verified input release), M2FS_DATA (outputs); source it
+source site.env
+python3 -m pytest -q -p no:cacheprovider crv/tests          # JAX tests skip without JAX
+G="$CRVFS_DATA/g4ref_v2_tables/gen.001400_00000022.root"; GEOM="$CRVFS_DATA/geometry"
+python3 -m crvfastsim runchain "$G" --tier1b-dir "$CRVFS_DATA/tier1b_strict_v2" \
+  --gdml "$GEOM/mu2e_extracted_v04.gdml" --calib "$GEOM/crvcalib_sim_best_v1_5_run1400.csv" \
+  --deviation "$GEOM/crvphoton_sim_best_v1_5_run1400.csv" --max-events 1000 --seed 22 --outdir "$M2FS_DATA/crv-smoke"
+```
+
+Details, GPU options and the options that change the physics: [`docs/running.md`](docs/running.md). The inputs are
+Mu2e-internal and not yet published as a collaborator release (umbrella `docs/running.md`).
+
+## Map
+
+| Path | Content |
 |---|---|
-| `docs/plan.md` | scope, measured baseline, agreed performance goals and validation thresholds, architecture, schedule |
-| `docs/fastreco.md` | fast reconstruction: goals R1-R6, thresholds V-R1..V-R5, results (V-R4, V-R5, R3, the out-of-time background model) |
-| `docs/staged-benchmark-workflow.md` | experimental staged full-chain benchmarking, exact output contracts and opt-in dispatch optimization |
-| `docs/response-configuration.md` | schema-v1 JSON response/reco configuration, units/support policy, CLI/kit overrides and resolved asset provenance |
-| `docs/transport-range-out.md` | the stage-C muon range-out default (`range_out`, `--legacy-transport`): deltas above the cut, bar sub-steps, absorber range table, evidence |
-| `docs/tier1b-default.md` | the tier-1b default asset set (`strict_v4`), `strict_v3`, `strict_v2` and the `legacy` option: files, options, named-configuration caveat, equivalence |
-| `docs/schema_and_transport.md` | CrvStep-table design notes and the muon-transport design |
-| `crvfastsim/` | the Python package and CLI (`python3 -m crvfastsim`); **reference: `crvfastsim/README.md`** |
-| `tests/` | pytest unit tests (from the umbrella root: `PYTHONPATH=core:crv python3 -m pytest -q crv/tests`) |
-| `art/` | muse area with the `CrvFastSim` art package (`CrvStepTableDumper`) and `dump_g4ref.sh` |
-| `grid/` | FermiGrid jobs: the G4 reference sample (`g4ref_v1`), V-R4 and V-R5 stock arms, CRY generator tables (`grid/README.md`) |
-| `geometry/` | Offline job that exports the G4 world (GDML + bar printout) for `crvfastsim v0check` |
-| `profile/` | Offline job configs and driver of the 2026-10-15 baseline profile; summaries in `profile/results/` |
-| `scripts/` | GPVM drivers (reco checks, V-R4 runs, the background-model fit) |
-| `site.env.example` | site paths and accounts for the job scripts; copy to `site.env` (git-ignored) and source it |
+| `crvfastsim/` | the package and its CLI (`python3 -m crvfastsim <subcommand> -h`); reference: [`crvfastsim/README.md`](crvfastsim/README.md) |
+| `crvfastsim/response/`, `crvfastsim/reco/` | response and reconstruction stages, NumPy and JAX |
+| `valhist/` | the stock-DQM histogram comparisons (deck rule, coverage, paired shapes) |
+| `art/` | muse satellite area: table dumpers and table-to-art injectors for the comparison arms |
+| `grid/`, `geometry/`, `profile/` | jobs that made the Geant4 references, the GDML export and the baseline profile |
+| `scripts/` | drivers of the validation campaigns (GPVM, UVA, grid) |
+| `tests/` | pytest suite (synthetic inputs; geometry tests need the public Offline counters file) |
 
-Python conventions follow `crvextrap` (`RobMina/mu2e_track_crv_mcresponse`): one package, every analysis a subcommand,
-shared definitions in one module, vectorised hot paths, `--emit`/`--merge` batching, stats JSON beside the figures,
-no loose one-off scripts.
+Docs: [`architecture.md`](docs/architecture.md) (stages, backends, ownership), [`running.md`](docs/running.md),
+[`validation.md`](docs/validation.md), [`limitations.md`](docs/limitations.md), [`device.md`](docs/device.md) (JAX
+transport and tier 1b), [`tier1b-default.md`](docs/tier1b-default.md), [`transport-range-out.md`](docs/transport-range-out.md),
+[`fastreco.md`](docs/fastreco.md) (reco goals, V-R thresholds and results),
+[`response-configuration.md`](docs/response-configuration.md), [`e2e-benchmark.md`](docs/e2e-benchmark.md); opt-in
+features have their own page in `docs/`. [`docs/plan.md`](docs/plan.md) is the original 2026-10-15 plan (historical;
+its goals and thresholds are still the agreed ones).
 
-## Native CRY (opt-in)
+## Tests
 
-`runchain native --gen native --gen-events N` can generate extracted primaries
-in-process with the CRY-enabled container and current core wrapper. It removes
-the gen-table dependency only; other chain inputs remain required. See
-[native CRY](docs/native-cry.md) for setup, emitted/merged exposure receipts,
-core's extracted-only `chain_point gen_set=4`, and validation limits.
-`--gen device` / core `chain_point gen_set=5` select JAX on-device generation.
-Table-driven defaults are unchanged.
+`python3 -m pytest -q -p no:cacheprovider tests` from this directory with core and crv on `PYTHONPATH`. Large-sample
+validations are `@pytest.mark.slow` (run with `--runslow`); `python3 -m mu2efastsim.testselect --also ../core` selects
+the test files a change affects. CI runs the suite with and without JAX on every pull request (`CONTRIBUTING.md` in
+the umbrella).
 
 ## Studies kept off main
 
@@ -68,8 +85,6 @@ Finished or paused studies live on branches, each the full tree at the point it 
 | `park/named-run2` | named-run reference campaigns, production reuse/scope, Run 2 grid planning, scatter convergence and V1 strata |
 | `park/pvc-reco` | PVC (Aurora) reco profiling and parity probes |
 
-## License and data
+## License
 
-Apache-2.0 (`LICENSE`, `NOTICE`), as Mu2e Offline. The repository holds code, configuration and the agreed plan only:
-Mu2e-internal inputs (the CRV conditions and photon lookup tables, detector data and anything derived from it) and
-simulation outputs are never committed. Physics results from this work are reported through Mu2e documents.
+Apache-2.0 (`LICENSE`, `NOTICE`).

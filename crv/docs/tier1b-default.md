@@ -4,7 +4,7 @@ From 2026-10-30 the tier-1b step sampling of the **extracted** CRV configuration
 asset set `strict_v4`: `strict_v3` plus whole-muon draws of hard library muons (`tier1b.attach_hard`, section
 "Hard-muon draws" below). From 2026-10-29 to 2026-10-30 the default was `strict_v3` (the strict library with placement
 and the v3 templates, plus chord placement of the same-bar descendant steps,
-[descendant-samebar-closure.md](descendant-samebar-closure.md)), and from 2026-10-28 to 2026-10-29 `strict_v2` (v2
+[validation.md](validation.md)), and from 2026-10-28 to 2026-10-29 `strict_v2` (v2
 templates, no chord placement); both stay available by name. The default before
 2026-10-28 stays available as the asset set `legacy`. The sets are defined in
 `crvfastsim/tier1b_assets.py`. `crvfastsim/tier1b.py` itself has no default library: the callers pick a set and pass
@@ -14,7 +14,7 @@ its options down.
 |---|---|---|---|---|
 | `strict_v4` (default) | the `strict_v3` files | the `strict_v3` sidecars | the `strict_v3` options and `hard` | `extracted_v04` only |
 | `strict_v3` | the `strict_v2` library and topology sidecar | `templates_v3.npz` (library chords; near-miss census g4ref_v1 1-10 + odd g4ref_v2 21-219), with its `.json` | the `strict_v2` options and `chord` | `extracted_v04` only |
-| `strict_v2` | `tier1b_strict_v2/library.root`, sha256 `ebb015a7...7c7` (20 association-certified donors, generator-association-repair.md (branch `park/tier1b-library`)) | `topology_sidecar_strict_v2_v2.npz` ([descendant-placement-closure.md](descendant-placement-closure.md)), `templates_v2.npz` ([descendant-template-closure.md](descendant-template-closure.md)), each with its `.json` | `context`, `contain`, `point`, `topology`, `unvisited`, `nearmiss` | `extracted_v04` only |
+| `strict_v2` | `tier1b_strict_v2/library.root`, sha256 `ebb015a7...7c7` (20 association-certified donors, generator-association-repair.md (branch `park/tier1b-library`)) | `topology_sidecar_strict_v2_v2.npz`, `templates_v2.npz`, each with its `.json` | `context`, `contain`, `point`, `topology`, `unvisited`, `nearmiss` | `extracted_v04` only |
 | `legacy` | `tier1b_v7/lib_prod_as_20files.root` | none | none | all (the only set of `run1a_v01`, `run1b_v01`, `run2_v10`) |
 
 Paths are relative to `$CRVFS_DATA`. `--tier1b-dir DIR` points at a copy of the set's files, as the endpoints use.
@@ -62,13 +62,13 @@ Held-out step closure on even g4ref_v2 shards 22-220 (5 M generated events, none
 (v2) -> chord, deck chi2/ndf vs G4: all/y 3.23 -> 1.73, T1/y 4.53 -> 1.60, T2/y 5.42 -> 2.84; z, NStep, lE and the
 step yields are unchanged within their errors. Descendant steps only: all/y 7.73 -> 4.56, T1/y 13.3 -> 6.3. The
 `follow` option (chain draw along the library muon) is not part of the default: it lowers NStep (4.67 -> 3.03) but
-raises y and lE. See [descendant-samebar-closure.md](descendant-samebar-closure.md).
+raises y and lE.
 
 ## Evidence for the strict_v2 switch (2026-10-28)
 
 Held-out step closure on g4ref_v2 shards 21-220 (10 M generated events), topology placement -> templates, deck
 chi2/ndf: bar 41.5 -> 20.3, EX y/z 6.80/6.95 -> 2.91/4.10, M y 4.60 -> 1.46. Descendant yields are within 3.2 % of G4
-in every sector group. See [descendant-template-closure.md](descendant-template-closure.md). Against the previous
+in every sector group. Against the previous
 default (legacy library, no placement), the bar score is 189.9 -> 20.3 and EX y 431.9 -> 2.91. The residual T1/T2 y
 and NStep shape comes from same-bar descendant steps, which the templates do not reach.
 
