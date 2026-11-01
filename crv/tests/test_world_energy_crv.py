@@ -12,8 +12,12 @@ def _piece(name, bottom, top):
     return name, planes, np.array([-10., bottom, -10.]), np.array([10., top, 10.])
 
 
+def _kinetic(p):
+    return np.sqrt(p ** 2 + eloss.MMU ** 2) - eloss.MMU  # same expression as transport (np.hypot rounds differently per libm)
+
+
 def _remaining_p(p, loss):
-    kinetic = np.maximum(np.hypot(p, eloss.MMU) - eloss.MMU - loss, 0.)
+    kinetic = np.maximum(_kinetic(p) - loss, 0.)
     return np.sqrt(kinetic * (kinetic + 2 * eloss.MMU))
 
 
@@ -74,7 +78,7 @@ def test_crv_world_stopped_lane_stays_stopped(monkeypatch):
 
     def slab(rng, mat, momentum, length):
         seen.append(momentum.copy())
-        return np.hypot(momentum, eloss.MMU) - eloss.MMU
+        return _kinetic(momentum)
 
     monkeypatch.setattr(T, "slab_loss", slab)
     out = T.world_loss(np.random.default_rng(1), np.tile([0., 2., 0.], (2, 1)),

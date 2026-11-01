@@ -20,6 +20,23 @@ from crvfastsim.response import execution_trace, sipm
 from test_readout_execution import _optical_table
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _fresh_interpreter():
+    """The tracer refuses to run beside other Python threads, which earlier test modules can leave behind (uproot's
+    fsspec I/O loop); then this module runs once in a fresh interpreter and that result stands for its tests."""
+    if not execution_trace._has_workers():
+        yield
+        return
+    if os.environ.get("CRVFS_TRACE_TEST_ISOLATED"):
+        pytest.fail("worker threads are active even in a fresh interpreter")
+    run = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", __file__],
+                         env={**os.environ, "CRVFS_TRACE_TEST_ISOLATED": "1"}, cwd=Path(__file__).parent,
+                         capture_output=True, text=True)
+    if run.returncode:
+        pytest.fail("fresh-interpreter run failed:\n" + run.stdout[-4000:] + run.stderr[-2000:])
+    pytest.skip("passed in a fresh interpreter: " + run.stdout.strip().splitlines()[-1])
+
+
 SEED = 20261027
 
 
