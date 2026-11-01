@@ -34,7 +34,8 @@ python3 -m crvfastsim runchain "$G" --tier1b-dir "$CRVFS_DATA/tier1b_strict_v2" 
 
 `runchain_stats.json` in the output directory holds the counts per stage (steps, digis, pulses, clusters per sector
 type) and the cost per stage; the resolved tier-1b set, its pinned hash and every input path are recorded there too.
-Remove `--max-events` for the whole shard (a few minutes on one core; peak memory about 9 GB). The `strict_v4` files
+Remove `--max-events` for the whole shard. Even at 1,000 events the job peaks at about 9 GB (library and lookup
+tables), and the one-time setup takes about a minute; the whole shard takes longer. The `strict_v4` files
 live in the directory `tier1b_strict_v2` (the set reuses that library).
 
 Timing, fingerprints and repeated passes on the same inputs:
