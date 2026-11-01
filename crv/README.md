@@ -21,7 +21,7 @@ This repository holds code only: no Mu2e-internal conditions, tables, data or re
 | waveforms, pulses, coincidences | NumPy; JAX with `--jax` | V-R1..V-R5 pass; fast response + reco on fast steps 0/133 histograms flagged vs stock |
 | whole chain vs Geant4 + stock | | 5 M held-out events: 21/155 histograms flagged (steps), 13/133 end to end; counts within 0.25 % |
 | named configurations (Run 1A, Run 2) | | Run 1A V1 pass, Run 2 V1 fail; no tier-1b library: cannot run end to end |
-| device precision | float64 | float32 validated on a branch, not on `main` |
+| device precision | float32 in the device kernels (float64 one variable away) | within the float64 seed spread on 100 shards; pulse PE offset bounded at <= 0.3 % (`docs/device-precision.md`) |
 
 Numbers, samples, thresholds and commits: [`docs/validation.md`](docs/validation.md). What is missing or not
 validated: [`docs/limitations.md`](docs/limitations.md).

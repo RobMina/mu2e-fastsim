@@ -73,8 +73,10 @@ Throughput of the default chain per endpoint (cached CRY primaries to coincidenc
 steps per second, transport and tier 1b on the device, float64): one GPVM core 55; EAF A100 MIG 1g.10gb slice 163;
 Polaris node (4 A100) 990; Aurora node (12 PVC tiles) 1,212; UVA 8 x A100 1,695. Stock Offline on one grid job: 0.92.
 
-## Device precision (pending change)
+## Device precision
 
-A float32 device mode (`MU2EFS_DEVICE_FLOAT=float32`) is validated on 100 shards on V100 and A100 MIG slices: every
-aggregate within the float64 seed-to-seed spread; pulse PE -0.13 % (T2) and -0.12 % (T1). It is not on `main` yet;
-float64 is the device precision of every row above.
+The device kernels run in float32 by default since 2026-11-01 (`MU2EFS_DEVICE_FLOAT`; float64 one variable away).
+Validated on 100 shards on V100 and A100 MIG slices: every aggregate within the float64 seed-to-seed spread; seq-0
+pulse PE float32 - float64 between -0.03 and -0.14 %, bounded at <= 0.3 % (2 sigma) per sector group; the device
+tier-1b sampler passes the deck rule at float32 (0 of 21 shapes). Rows above that say float64 were measured at
+float64. Details: [device-precision.md](device-precision.md).

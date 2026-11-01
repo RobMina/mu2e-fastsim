@@ -41,9 +41,8 @@ Cluster, pulse and digi counts agree within 0.25 %.
 
 ## Not validated
 
-- **Float32 device precision**: validated on a branch (within the float64 seed spread, pulse PE about -0.1 %), not on
-  `main`. Float64 output is bit-identical across GPU models for a seed; float32 output is reproducible on one GPU
-  model but its discrete results (cluster and pulse counts) differ slightly between models.
+- **Float32 device precision** (default): the 0.1 % pulse-PE offset is bounded (<= 0.3 %), not removed; float32 output
+  repeats on one GPU model but discrete counts differ slightly between models (float64 is bit-identical across models).
 - The opt-in CPU-speed switches (`CRVFS_CPU_*`, `CRVFS_CONTEXT_HASH_WORKERS`, `CRVFS_PREPARED_LIBRARY_CACHE`) and the
   compact reco dispatch (`CRVFASTSIM_COMPACT_DISPATCH`, default in the tests only) are checked for identical output
   on test samples, not on a full campaign.
