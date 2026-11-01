@@ -106,3 +106,30 @@ def test_stale_index_falls_back(geom):
     lib = T.index_library(_library(geom))
     stale = {**lib, "libdesc": lib["libdesc"].iloc[:-1]}
     assert T._indexed(stale) is None and T._indexed({k: v for k, v in lib.items() if k != "index"}) is None
+
+
+def test_same_length_reordered_frames_fall_back_and_match(geom, monkeypatch):
+    monkeypatch.setattr(T, "MIN_CTX_CROSSINGS", 3)
+    lib = T.index_library(_library(geom))
+    fx = _crossings(geom)
+    g = np.random.default_rng(1)
+    for name in ("libdesc", "libxing"):
+        moved = {**lib, name: lib[name].iloc[g.permutation(len(lib[name]))].reset_index(drop=True)}
+        assert T._indexed(moved) is None
+        per_call = {k: v for k, v in moved.items() if k != "index"}
+        for opts in (dict(), dict(context=True, contain=True, point=True, drop_unvisited=True)):
+            a = T._desc_for_crossings(fx, per_call, geom, np.random.default_rng(4), **opts)
+            b = T._desc_for_crossings(fx, moved, geom, np.random.default_rng(4), **opts)
+            pd.testing.assert_frame_equal(a[0], b[0], check_exact=True)
+            assert a[1:] == b[1:]
+
+
+def test_order_check_is_exact():
+    k = np.array([3, 1, 3, 2, 1])
+    o = np.argsort(k, kind="stable")
+    assert T._is_stable_order(o, k)
+    assert not T._is_stable_order(o[[1, 0, 2, 3, 4]], k)      # ties out of row order
+    assert not T._is_stable_order(None, k) and T._is_stable_order(None, np.sort(k))
+    c = np.array([1, 0, 0, 1, 0])
+    o2 = np.lexsort((c, k))
+    assert T._is_stable_order(o2, c, k) and not T._is_stable_order(o, c, k)

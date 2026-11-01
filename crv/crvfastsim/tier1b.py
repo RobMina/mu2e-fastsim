@@ -576,12 +576,37 @@ def index_library(lib):
     return lib
 
 
+def _is_stable_order(order, *keys):
+    """True when order (None: identity) is exactly the stable sort of the rows by keys (last key primary)."""
+    n = len(keys[0])
+    o = np.arange(n) if order is None else order
+    if len(o) != n:
+        return False
+    if n < 2:
+        return True
+    later, tied = np.zeros(n - 1, bool), np.ones(n - 1, bool)
+    for k in reversed(keys):
+        kk = k[o]
+        later |= tied & (kk[1:] > kk[:-1])
+        tied &= kk[1:] == kk[:-1]
+    return bool(np.all(later | (tied & (o[1:] > o[:-1]))))
+
+
 def _indexed(lib):
-    """The library's prepared row orders if they describe its current libdesc/libxing, else None (per-call sorts)."""
+    """The library's prepared row orders if they are the stable sorts of its current libdesc/libxing, else None
+    (per-call sorts). Checked on every call against the frames themselves, so a replaced, reordered or reloaded
+    frame can never be read through a stale order."""
     idx = lib.get("index")
     if idx is None or idx["n_desc"] != len(lib["libdesc"]) or idx["n_xing"] != len(lib["libxing"]):
         return None
-    return idx
+    ld, lx = lib["libdesc"], lib["libxing"]
+    if "xid" not in ld.columns or not {"xid", "bin"} <= set(lx.columns):
+        return None
+    bins = lx.bin.to_numpy()
+    ok = (_is_stable_order(idx["desc_by_xid"], ld.xid.to_numpy()) and _is_stable_order(idx["xing_by_bin"], bins)
+          and _is_stable_order(idx["xing_by_xid"], lx.xid.to_numpy())
+          and ("ctx" not in lx.columns or _is_stable_order(idx["xing_by_bin_ctx"], lx.ctx.to_numpy(), bins)))
+    return idx if ok else None
 
 
 def _take(frame, order):
