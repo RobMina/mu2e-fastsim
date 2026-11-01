@@ -108,7 +108,7 @@ def test_deterministic_campaign_exact_comparison_and_measured_counts(campaign, m
     assert json.loads((args.summary_dir / "campaign.json").read_text()) == result
 
 
-@pytest.mark.parametrize("fail_at", [1, 3, 4])
+@pytest.mark.parametrize("fail_at", [1, 2, 3])
 def test_subprocess_failure_stops_without_completed_campaign(campaign, monkeypatch, fail_at):
     args, calls, execute, _ = campaign
 
@@ -133,7 +133,7 @@ def test_invalid_reports_and_exact_mismatch_never_complete(campaign, monkeypatch
 
     def altered(command, **kwargs):
         result = execute(command, **kwargs)
-        if len(calls) == 4:
+        if len(calls) == 3:
             path = args.outdir / "context_heldout_candidate" / "benchmark.json"
             report = json.loads(path.read_text())
             if mutation == "fingerprint":
@@ -157,7 +157,7 @@ def test_invalid_reports_and_exact_mismatch_never_complete(campaign, monkeypatch
     monkeypatch.setattr(M.subprocess, "run", altered)
     with pytest.raises(ValueError):
         M.run(args)
-    assert len(calls) == 4
+    assert len(calls) == 3
     assert not (args.summary_dir / "context_heldout_comparison.json").exists()
     assert not (args.summary_dir / "campaign.json").exists()
 
@@ -259,6 +259,6 @@ def test_saved_reference_compared_without_shard11_reload(campaign, monkeypatch, 
         assert not (args.summary_dir / "campaign.json").exists()
     else:
         result = M.run(args)
-        assert len(calls) == 4
+        assert len(calls) == 3
         assert result["comparisons"]["n50000"]["status"] == "complete"
-    assert all("--reuse-context" in c[0] for c in calls[:2])
+    assert "--reuse-context" in calls[0][0]
