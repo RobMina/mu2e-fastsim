@@ -115,3 +115,26 @@ def test_sipm_jax_matches_numpy_statistically():
     J = sipm_jax.simulate(chan, t, np.arange(len(chan)), pmap, cfg, np.random.default_rng(2), jax.random.PRNGKey(2))
     assert abs(J["pe"].sum() / F["pe"].sum() - 1) < 4 / np.sqrt(len(F["pe"]))
     assert abs((J["pe"] < 0.99).mean() - (F["pe"] < 0.99).mean()) < 0.003
+
+
+def test_delay_and_emission_blocks_match_one_block(monkeypatch):
+    """Row blocks of the cumulative-table search give the single-block result and draw the same uniforms."""
+    from types import SimpleNamespace
+    from crvfastsim.response import photons as P
+    g = np.random.default_rng(5)
+    delays = g.integers(0, 50, size=(40, 33)).astype(np.int16)
+    emis = g.integers(0, 9, size=(40, 7)).astype(np.int16)
+    T = SimpleNamespace(delays=delays, delay_sum=delays.astype(np.int64).sum(1), emis=emis,
+                        emis_sum=emis.astype(np.int64).sum(1))
+    bins = g.integers(0, 40, size=1001)
+    ref = {}
+    for chunk in (1 << 18, 7):
+        monkeypatch.setattr(P, "ROW_CHUNK", chunk)
+        rng = np.random.default_rng(11)
+        d, e = P._sample_delays(T, bins, rng), P._sample_emissions(T, bins, rng)
+        u = np.random.default_rng(11).random(2 * len(bins))
+        cum = np.cumsum(delays[bins].astype(np.int32), axis=1)
+        assert np.array_equal(d, (cum < (u[:len(bins)] * T.delay_sum[bins])[:, None]).sum(1).astype(float))
+        ref.setdefault("d", d), ref.setdefault("e", e)
+        assert np.array_equal(d, ref["d"]) and np.array_equal(e, ref["e"]) and d.dtype == float and e.dtype == np.int64
+        assert rng.random() == np.random.default_rng(11).random(2 * len(bins) + 1)[-1]
