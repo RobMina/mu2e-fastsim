@@ -101,8 +101,10 @@ def run(library, transport, reference, shard_list, arms, out, sidecar=None, rese
         for name, opts, tag in runs:
             base = name.split("~")[0]
             rng = np.random.default_rng([k, 1000, tag] if tag else [k, 1000])
+            ts = time.monotonic()
             steps, parts, info = T.sample(fx, fp, gen, lib, geom, rng,
                                           **{o: v for o, v in opts.items() if o in OPTIONS})
+            info = {**info, "sample_seconds": time.monotonic() - ts}
             if retained and name in retained:
                 ref_path = retained[name].format(s=S.shard(k), k=k)
                 old = tables.read(ref_path, "steps")
@@ -126,7 +128,8 @@ def run(library, transport, reference, shard_list, arms, out, sidecar=None, rese
             for key, val in info["other_bar"].items():
                 why[name][key] = why[name].get(key, 0) + int(val)
             rec["arms"][name] = {"steps": len(steps), "desc_steps": info["desc_steps"], "desc_dropped": info["desc_dropped"],
-                                 "showers": info["showers"], "shower_steps": info["shower_steps"]}
+                                 "showers": info["showers"], "shower_steps": info["shower_steps"],
+                                 "sample_seconds": info["sample_seconds"]}
             if "templates" in info:
                 rec["arms"][name]["templates"] = info["templates"]
             if name.endswith("~reseed"):
