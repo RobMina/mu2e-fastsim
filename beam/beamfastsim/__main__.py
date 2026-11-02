@@ -1,6 +1,6 @@
 """beamfastsim CLI.
 
-  python3 -m beamfastsim g4table --nts F.root [...] --out g4ref.npz
+  python3 -m beamfastsim g4table --nts F.root [...] --out g4ref.npz [--start-vd ID --events N]
   python3 -m beamfastsim run --g4 g4ref.npz --out fast.npz [--n N] [--seed S] [--ds MM] [--batch B] [--no-msc]
   python3 -m beamfastsim point --g4 g4ref.npz --out DIR [--geom F] [--n N] [--repeat R]   (fastsimkit beam_point)
   python3 -m beamfastsim compare --g4 g4ref.npz --fast fast.npz --out DIR
@@ -35,9 +35,12 @@ def _geom(path=None, target_contract=False):
 
 def cmd_g4table(a):
     from . import g4ref
-    t = g4ref.read(a.nts, _geom(a.geom))
+    t = g4ref.read(a.nts, _geom(a.geom), start_vd=a.start_vd)
+    if a.events:
+        t["events"] = np.array(a.events)   # generated events of the G4 job (muons per event = rows / events)
     g4ref.save(t, a.out)
-    print(f"{len(t['evt'])} DS-stage muons, {np.sum(t['foil'] >= 0)} stopped in a foil -> {a.out}")
+    per = f", {len(t['evt']) / a.events:.5f} per event" if a.events else ""
+    print(f"{len(t['evt'])} DS-stage muons{per}, {np.sum(t['foil'] >= 0)} stopped in a foil -> {a.out}")
 
 
 def cmd_gunfile(a):
@@ -67,7 +70,8 @@ def cmd_run(a):
     n = min(a.n or len(g["evt"]), len(g["evt"]))
     geom = _geom(a.geom, target_contract=True)
     over = {k: v for k, v in (("mean", getattr(a, "mean", None)), ("law", getattr(a, "law", None)),
-                              ("msc_path", getattr(a, "msc_path", None))) if v is not None}
+                              ("msc_path", getattr(a, "msc_path", None)), ("z_up", getattr(a, "z_up", None)))
+            if v is not None}
     prm = transport.params(getattr(a, "physics", transport.DEFAULT_PHYSICS), ds=a.ds, msc=not a.no_msc,
                            decay=not a.no_decay, n_slices=a.slices, tcut=a.tcut,
                            max_steps=getattr(a, "max_steps", 3000), **over)
@@ -170,6 +174,8 @@ def cmd_fieldcheck(a):
 
 def _physics_args(s):
     from .presets import DEFAULT_PHYSICS, PHYSICS
+    s.add_argument("--z-up", dest="z_up", type=float, default=None,
+                   help="upstream exit plane [mm] (default 4100); lower it for tables that start upstream, e.g. at VD 8")
     s.add_argument("--physics", choices=sorted(PHYSICS), default=DEFAULT_PHYSICS,
                    help="layer physics preset (transport.PHYSICS); the options below override single fields")
     s.add_argument("--mean", choices=["local", "range"], default=None)
@@ -183,6 +189,9 @@ def main(argv=None):
     sp = ap.add_subparsers(dest="cmd", required=True)
     s = sp.add_parser("g4table"); s.add_argument("--nts", nargs="+", required=True); s.add_argument("--out", required=True)
     s.add_argument("--geom", default=None)
+    s.add_argument("--start-vd", dest="start_vd", type=int, default=None,
+                   help="start each muon at its first crossing of this virtual detector id (e.g. 8, Coll5_Out)")
+    s.add_argument("--events", type=int, default=0, help="generated events of the G4 job, stored with the table")
     s = sp.add_parser("run")
     s.add_argument("--g4", required=True); s.add_argument("--out", required=True)
     s.add_argument("--n", type=int, default=0); s.add_argument("--seed", type=int, default=1)
