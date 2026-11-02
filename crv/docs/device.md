@@ -58,12 +58,21 @@ python3 -m crvfastsim runchain gen.root --gdml world.gdml --calib calib.csv \
 | Check | Sample | Result | Verdict |
 |---|---|---|---|
 | transport, JAX vs NumPy | 100 held-out shards, 5 M generated | steps 1,330,469 vs 1,329,978, +0.037 +- 0.047 % (same-event clustered); 21 step shapes unflagged; crossings and repeats exact; V1 passes in EX/T1/T2/M against NumPy and stock | pass |
-| tier 1b, fixed-uniform replay | same 100 shards | every step and ancestry exact (max field difference 3.6e-12) | pass |
-| tier 1b, independent streams | same 100 shards | steps 7,977,547 vs 7,958,555, +0.24 +- 0.39 % paired; sector y/z shapes unflagged; bar, t, t2, lt, posx flagged (deck chi2/ndf 8.8, 41.3, 38.6, 35.5, 14.6; exact-clustered 0.37-0.87) | **fail** (deck rule) |
+| tier 1b, fixed-uniform replay, float64 | same 100 shards | every step and ancestry exact (max field difference 3.6e-12) | pass |
+| tier 1b, fixed-uniform replay, float32 | same 100 shards | not exact by construction: entry positions within 1e-3 mm; 10 shards change a discrete outcome | diagnostic |
+| tier 1b, independent streams, float64 | same 100 shards | steps 7,977,547 vs 7,958,555, +0.24 +- 0.39 % paired; 0 of 21 shapes flagged: bar 8.85, t 0.49, t2 0.46, lt 0.42, posx 0.53 (floor 13.87, 0.43, 0.42, 0.22, 0.53) | pass (deck rule with floor) |
+| tier 1b, independent streams, float32 | same 100 shards | steps +0.19 +- 0.40 % paired; 0 of 21 shapes flagged: bar 18.96, t 0.43, t2 0.38, lt 0.30, posx 0.47 (same floor) | pass (deck rule with floor) |
 | downstream, both device backends | 500 k generated | clusters -0.40 +- 0.32 %, pulses -0.32 +- 0.39 % paired; PE, time and cluster y unflagged | diagnostic |
 
-Because the tier-1b deck rule fails, physics results use the NumPy tier 1b. The device tier 1b is a speed option until
-that is resolved.
+The deck rule (`valhist/deck_rule.py`) is the one of the validation deck: errors scaled by the NStep multiplicity for
+t, t2 and lt, exact clustered errors for posx, Poisson errors for the other shapes, and a flag above
+max(2, 3 x floor). The floor is the NumPy sampler against itself with a new seed. Earlier versions of this table used
+Poisson errors for every shape, which flagged t, t2, lt and posx at 14.6-41.3. bar passes through the floor: it is
+above 2, but NumPy against reseeded NumPy (13.87, threshold 41.61) is further apart than the device at float64, and at
+float32 the paired chi2/ndf is 0.95 against 0.69 for the floor, so no shape residual is seen.
+
+NumPy stays the default and the reference: the device tier 1b passes at the step level, and downstream of it the only
+comparison is the 500 k diagnostic above.
 
 ## Timing (one A100-80GB, warm)
 
