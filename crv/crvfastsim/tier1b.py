@@ -451,7 +451,7 @@ def build(step_paths, gen_paths, geom, generated=None, roots=False):
             "max_shower_sp": 0}
     xoff = soff = 0
     for f in step_paths:
-        lib, inf = _build_one([f], geom, libbins, _already_validated=validated, roots=roots)
+        lib, inf = _build_one([f], geom, libbins, _already_validated=validated, **({"roots": True} if roots else {}))
         lib["libxing"]["xid"] += xoff
         lib["libdesc"]["xid"] += xoff
         lib["libshower"]["shid"] += soff
