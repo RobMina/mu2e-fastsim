@@ -83,6 +83,14 @@ Two parts, both resampled from G4 CrvStep tables (CrvStepTableDumper) of trainin
    crossing, and the sector group and layer rank of each crossing in time order), and a hard fast muon takes one hard
    library muon of its key whole: its k-th crossing takes that muon's k-th crossing. The other crossings of muons whose
    key has hard library muons draw from the rest of their cell, so the overall rate is unchanged.
+   Root-coherent draws (sample(anchor, link); a library built with roots=True, a template sidecar v3, attach_anchors): one
+   step tree (a delta ray and its cascade: all steps sharing the direct child of the muon) deposits in several layers
+   along the muon, and the attachment above cuts it at the crossings, so independent draws lose what it shares.
+   - anchor: the rows of a tree stay with the first crossing they touch; a draw takes the trees anchored on the drawn
+     crossing, and each row goes to the fast crossing at its library distance along the muon, placed around that crossing
+     by the usual rules. The draw cell also holds the symbol of the next crossing, so forward rows find their crossing.
+   - link: chain draw on the same trees: a crossing takes the next crossing of the previous pick's library muon when a
+     tree joins them and that crossing has the fast crossing's symbol; the others draw crossings no tree enters.
 2. Non-muon primaries (e, gamma, n, p, pi from CRY). A library shower is every CrvStep whose primary is that particle,
    with absolute positions and times relative to the primary's generation time. Sampling: each non-muon CRY primary of
    the event (gen table) reaches the CRV with the library probability of its (pdg, kinetic-energy) bin, and then gets a
@@ -112,6 +120,8 @@ SHOWER_KEY_BASE = 10_000_000
 UPSTREAM_MM = 300.0      # crossing context: another module crossed within this distance before the entry
 N_CTX = 8                # context codes: layer rank (0 = top, clipped to 3) x 2 + upstream flag
 MIN_CTX_CROSSINGS = 20   # fewer library crossings in a (bin, context) cell: draw from the bin
+MAX_WALK = 24            # crossings looked at along a fast muon for a forward row
+N_SYM = 17               # next-crossing codes of an anchored draw: none, or the crossing symbol + 1 (_symbols)
 STEP_COLS = ["x0", "y0", "z0", "x1", "y1", "z1"]
 LIB_TREES = ("libbins", "libxing", "libdesc", "libshower", "libshowersteps", "libgen")
 
@@ -405,11 +415,27 @@ def _bin_edges(step_paths, geom):
     return pd.DataFrame(edges, columns=["kind", "group", "edge"]).astype({"kind": np.int64, "group": np.int64})
 
 
-def build(step_paths, gen_paths, geom, generated=None):
+def step_roots(parts):
+    """Per particle row, the key of its ancestor whose parent is a primary (the primary itself for primaries)."""
+    p = parts[KEY + ["key", "parent"]]
+    uid = pd.Series(np.arange(len(p)), index=pd.MultiIndex.from_frame(p[KEY + ["key"]]))
+    par = uid.reindex(pd.MultiIndex.from_frame(p[KEY + ["parent"]])).to_numpy()
+    par = np.where(np.isnan(par), -1, par).astype(np.int64)
+    cur = np.arange(len(p))
+    while True:
+        nxt = par[cur]
+        up = (nxt >= 0) & (par[np.maximum(nxt, 0)] >= 0)
+        if not up.any():
+            return p.key.to_numpy()[cur]
+        cur = np.where(up, nxt, cur)
+
+
+def build(step_paths, gen_paths, geom, generated=None, roots=False):
     """Library from G4 CrvStep tables, one file at a time (a GPVM holds ~5 production files at once, not 20).
 
     Bin edges come from all files first; each file's crossings, descendants and showers get ids offset past the previous
-    files'; the reach probability uses the showers of all files over the scaled gen-table counts.
+    files'; the reach probability uses the showers of all files over the scaled gen-table counts. roots: libdesc also
+    carries the step-tree root of each row (attach_anchors).
     """
     step_paths = list(step_paths)
     gen_paths = list(gen_paths)
@@ -425,7 +451,7 @@ def build(step_paths, gen_paths, geom, generated=None):
             "max_shower_sp": 0}
     xoff = soff = 0
     for f in step_paths:
-        lib, inf = _build_one([f], geom, libbins, _already_validated=validated)
+        lib, inf = _build_one([f], geom, libbins, _already_validated=validated, roots=roots)
         lib["libxing"]["xid"] += xoff
         lib["libdesc"]["xid"] += xoff
         lib["libshower"]["shid"] += soff
@@ -463,7 +489,7 @@ def _reach(libshower, gen_paths, generated):
     return lg.astype({"apdg": np.int64, "kebin": np.int64, "ngen": np.int64, "nshower": np.int64}), int(len(g))
 
 
-def _build_one(step_paths, geom, libbins, *, _already_validated=None):
+def _build_one(step_paths, geom, libbins, *, _already_validated=None, roots=False):
     """Library trees {name: DataFrame} of the given G4 CrvStep tables with the given bin edges (libgen not included).
 
 
@@ -513,6 +539,9 @@ def _build_one(step_paths, geom, libbins, *, _already_validated=None):
         "len": d.len.to_numpy(), "edep": d.edep.to_numpy(),
         "dcx": dc[:, 0], "dcy": dc[:, 1], "dcz": dc[:, 2], "entrylen": entry_len,
         **{f"l{c}{e}": (d[f"{c}{e}"].to_numpy() - geom.center[db][:, j]) for j, c in enumerate("xyz") for e in "01"}})
+    if roots:
+        rk = pd.DataFrame({**{k: parts[k].to_numpy() for k in KEY}, "sp": parts.key.to_numpy(), "root": step_roots(parts)})
+        lib["libdesc"]["root"] = d[KEY + ["sp"]].merge(rk, on=KEY + ["sp"], how="left").root.to_numpy().astype(np.int64)
     lib["libxing"] = pd.DataFrame({"xid": x.xid, "bin": x.bin.astype(np.int64),
                                    "ux": x.px0 / x.p, "uy": x.py0 / x.p, "uz": x.pz0 / x.p,
                                    "ctx": crossing_context(x, geom).astype(np.int64)})
@@ -805,6 +834,173 @@ def _hard_picks(fx, geom, lib, pick, lo, hi, lx_xid, rng):
     return pick, info
 
 
+def _next_crossing(fx, geom):
+    """Per fast crossing (one row per crossing): the next crossing in time of its muon (-1 at the last)."""
+    n = len(fx)
+    mu = fx.groupby(KEY + (["sp"] if "sp" in fx.columns else []), sort=False).ngroup().to_numpy()
+    order = np.lexsort((fx.t0.to_numpy(), mu))
+    nxt = np.full(n, -1, np.int64)
+    same = mu[order][1:] == mu[order][:-1]
+    nxt[order[:-1][same]] = order[1:][same]
+    return nxt
+
+
+def _support_next(fx, lib, geom):
+    """Anchored draws: library crossings in (bin, context, next symbol) order and each fast crossing's support: that cell,
+    else its (bin, context) cell, else its bin (fewer than MIN_CTX_CROSSINGS crossings)."""
+    A = lib["anchor"]
+    p = np.sqrt(fx.px0 ** 2 + fx.py0 ** 2 + fx.pz0 ** 2).to_numpy()
+    b = _bin(lib["libbins"], _group_index(geom, fx.bar), p, fx.len.to_numpy())
+    nxt = _next_crossing(fx, geom)
+    sym = _symbols(geom, fx.bar.to_numpy())
+    code = b * N_CTX + crossing_context(fx, geom)
+    fine = code * N_SYM + np.where(nxt >= 0, sym[np.maximum(nxt, 0)] + 1, 0)
+    lx = lib["libxing"].take(A["xing_order"])
+    lf, lc, lb = A["cell"][A["xing_order"]], lx.bin.to_numpy() * N_CTX + lx.ctx.to_numpy(), lx.bin.to_numpy()
+    lo, hi = np.searchsorted(lf, fine, "left"), np.searchsorted(lf, fine, "right")
+    few = (hi - lo) < MIN_CTX_CROSSINGS
+    lo[few], hi[few] = np.searchsorted(lc, code[few], "left"), np.searchsorted(lc, code[few], "right")
+    few = (hi - lo) < MIN_CTX_CROSSINGS
+    lo[few], hi[few] = np.searchsorted(lb, b[few], "left"), np.searchsorted(lb, b[few], "right")
+    assert np.all(hi > lo), "empty library bin"
+    return lx, lo, hi, nxt, sym
+
+
+def _anchor_rows(pick, nxt, sym, lib):
+    """Rows of the trees anchored on the picks. Returns (fast crossing of each row, libdesc row, library crossing of the
+    row, free flag, info). A forward row goes to the crossing at its library distance along the muon if that has the symbol
+    of the row's library crossing, else to the first crossing along the muon with that symbol, else stays on the anchor when
+    the anchor has it. A row with none of these is free: the muon does not go there, the row keeps its position relative to
+    the anchor."""
+    A = lib["anchor"]
+    a, z = np.searchsorted(A["sorted"], pick, "left"), np.searchsorted(A["sorted"], pick, "right")
+    cnt = z - a
+    ix = np.repeat(np.arange(len(pick)), cnt)
+    pos = np.repeat(a - np.r_[0, np.cumsum(cnt)[:-1]], cnt) + np.arange(cnt.sum())
+    rows = A["order"][pos]
+    dk = A["dk"][rows]
+    cur = ix.copy()
+    for d in range(1, int(dk.max()) + 1 if len(dk) else 1):
+        m = dk >= d
+        cur[m] = np.where(cur[m] >= 0, nxt[cur[m]], -1)
+    rx = lib["libdesc"].xid.to_numpy()[rows]
+    fwd = dk > 0
+    want = A["sym"][rx]
+    ok = cur >= 0
+    ok[fwd] &= sym[np.maximum(cur[fwd], 0)] == want[fwd]
+    miss = np.flatnonzero(fwd & ~ok)
+    at = ix[miss]                                    # else the first crossing along the muon with the row's symbol
+    for _ in range(MAX_WALK):
+        go = at >= 0
+        if not go.any():
+            break
+        at[go] = nxt[at[go]]
+        hit = at >= 0
+        hit[hit] = sym[at[hit]] == want[miss[hit]]
+        cur[miss[hit]], ok[miss[hit]] = at[hit], True
+        at[hit] = -1
+    left = miss[~ok[miss]]                           # or the anchor itself, for a second bar of the same layer
+    same = sym[ix[left]] == want[left]
+    cur[left[same]], ok[left[same]] = ix[left[same]], True
+    e = lib["libdesc"].edep.to_numpy()[rows]
+    free = fwd & ~ok
+    cur[free] = ix[free]
+    info = {"forward": int(fwd.sum()), "forward_free": int(free.sum()), "forward_edep": float(e[fwd].sum()),
+            "forward_edep_free": float(e[free].sum())}
+    return cur, rows, rx, free, info
+
+
+def attach_anchors(lib, geom):
+    """Root-coherent draws (a library built with roots=True and a template sidecar v3): per library row its anchor, the
+    first crossing in time of its library muon that its step tree touches, and its distance from it in crossings; the
+    crossings' symbols and (bin, context, next symbol) cells. Rows of never-visited layers stay on their own crossing."""
+    if "xgeo" not in lib or "nxt" not in lib["xgeo"] or "root" not in lib["libdesc"].columns:
+        raise ValueError("anchors need a library built with roots and a template sidecar v3 (attach_templates)")
+    if "ctx" not in lib["libxing"].columns:
+        raise ValueError("anchors need a library built with the ctx column")
+    g, ld = lib["xgeo"], lib["libdesc"]
+    nx = g["nxt"]
+    n = len(nx)
+    prv = np.full(n, -1, np.int64)
+    prv[nx[nx >= 0]] = np.flatnonzero(nx >= 0)
+    rank = np.zeros(n, np.int64)
+    cur, r = np.flatnonzero(prv < 0), 0
+    while len(cur):
+        rank[cur] = r
+        cur = nx[cur]
+        cur, r = cur[cur >= 0], r + 1
+    xid = ld.xid.to_numpy()
+    _, mu = np.unique(g["mu"], return_inverse=True)
+    _, rid = np.unique(mu[xid].astype(np.int64) * (1 << 31) + ld.root.to_numpy(), return_inverse=True)
+    move = ~ld.uv.to_numpy() if "uv" in ld.columns else np.ones(len(ld), bool)
+    ro = rank[xid]
+    head = np.full(int(rid.max()) + 1 if len(rid) else 0, np.iinfo(np.int64).max)
+    np.minimum.at(head, rid[move], ro[move])
+    dk = np.where(move, ro - head[rid], 0)
+    axid = xid.copy()
+    at = np.flatnonzero(dk > 0)                                 # walk back to the anchor along the library muon
+    for _ in range(int(dk.max()) if len(dk) else 0):
+        axid[at] = prv[axid[at]]
+        at = at[rank[axid[at]] > head[rid[at]]]
+    sym = _symbols(geom, g["bar"])
+    lx = lib["libxing"]
+    nsym = np.where(nx >= 0, sym[np.maximum(nx, 0)] + 1, 0)
+    order = np.argsort(lx.xid.to_numpy(), kind="stable")
+    cell = np.empty(n, np.int64)
+    cell[lx.xid.to_numpy()[order]] = ((lx.bin.to_numpy() * N_CTX + lx.ctx.to_numpy()) * N_SYM)[order]
+    cell += nsym
+    fwd = np.zeros(n, bool)                                     # crossings a tree leaves forward / enters from behind
+    fwd[axid[dk > 0]] = True
+    imp = np.zeros(n, bool)
+    imp[xid[dk > 0]] = True
+    joined = np.zeros(n, bool)
+    joined[prv[xid[dk > 0]]] = True
+    o = np.argsort(axid, kind="stable")
+    lib = dict(lib)
+    lib["anchor"] = {"axid": axid, "dk": dk, "order": o, "sorted": axid[o], "sym": sym, "cell": cell, "next": nx,
+                     "xing_order": np.argsort(cell[lx.xid.to_numpy()], kind="stable"), "joined": joined, "entered": imp,
+                     "n_roots": int(len(head)), "n_multi": int(np.unique(rid[dk > 0]).size),
+                     "forward_edep_share": float(ld.edep.to_numpy()[dk > 0].sum() / max(ld.edep.sum(), 1e-300))}
+    return lib
+
+
+def _link_picks(fx, geom, lib, pick, lo, hi, lx_xid, nxt, sym, rng):
+    """Chain draw on step trees: in time order along each fast muon, a crossing takes the next crossing of the previous
+    pick's library muon when a tree joins the two and that crossing has the fast crossing's symbol; a crossing no tree
+    joins to the previous one, the first of a muon excepted, redraws in its cell until no tree enters its pick."""
+    A = lib["anchor"]
+    pick = pick.copy()
+    n = len(fx)
+    info = {"linked": 0, "link_lost": 0, "left_entered": 0}
+    if n == 0:
+        return pick, info
+    prev = np.full(n, -1, np.int64)
+    prev[nxt[nxt >= 0]] = np.flatnonzero(nxt >= 0)
+    rank = np.zeros(n, np.int64)
+    cur, r = np.flatnonzero(prev < 0), 0
+    while len(cur):
+        rank[cur] = r
+        cur = nxt[cur]
+        cur, r = cur[cur >= 0], r + 1
+    for k in range(1, int(rank.max()) + 1):
+        c = np.flatnonzero(rank == k)
+        p = pick[prev[c]]
+        cand = np.where(A["joined"][p], A["next"][p], -1)
+        ok = cand >= 0
+        ok[ok] = A["sym"][cand[ok]] == sym[c[ok]]
+        info["link_lost"] += int((A["joined"][p] & ~ok).sum())
+        info["linked"] += int(ok.sum())
+        pick[c[ok]] = cand[ok]
+        redo = c[~A["joined"][p] & A["entered"][pick[c]]]
+        for _ in range(50):
+            if not len(redo):
+                break
+            pick[redo] = lx_xid[lo[redo] + (rng.random(len(redo)) * (hi[redo] - lo[redo])).astype(np.int64)]
+            redo = redo[A["entered"][pick[redo]]]
+        info["left_entered"] += int(len(redo))
+    return pick, info
+
+
 def _support(fx, lib, geom, context, idx):
     """Library crossings in draw order and each fast crossing's support [lo, hi) in it: its (bin, context) cell, or
     its bin when the cell has fewer than MIN_CTX_CROSSINGS (context), else its bin. idx: prepared row orders or None."""
@@ -829,7 +1025,7 @@ def _support(fx, lib, geom, context, idx):
 
 def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=False, mirror=False,
                         translate=False, topology=False, trace=None, drop_unvisited=False, chord=False, follow=False,
-                        hard=False):
+                        hard=False, anchor=False, link=False):
     """Descendant steps for the fast crossings fx (one row per crossing). Returns (steps, n_dropped, n_clamped, why).
     Opt-in (all off reproduces the earlier sampling bit for bit): context = draw within the crossing-context cell
     (library with a ctx column); contain = same-bar endpoints into the bar; point = other-bar steps whose target bar
@@ -845,13 +1041,17 @@ def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=
     chord (library chords from a template sidecar with them, attach_templates): same-bar rows are placed along the
     fast crossing's chord at their fraction of the library chord (_chord_map) instead of at their distance along the
     library muon's direction. follow (template sidecar with the next crossing of each library crossing): chain draw
-    along each fast muon (_follow_picks). Both consume no other random numbers."""
+    along each fast muon (_follow_picks). Both consume no other random numbers. anchor, link (attach_anchors):
+    root-coherent draws, module docstring."""
     if context and "ctx" not in lib["libxing"].columns:
         raise ValueError("crossing context needs a library built with the ctx column (tier1b-build after this change)")
     if topology and "tvis" not in lib["libdesc"].columns:
         raise ValueError("topology placement needs the desc_topology columns (attach_topology with a sidecar)")
     idx = _indexed(lib)
-    lx, lo, hi = _support(fx, lib, geom, context, idx)
+    if anchor or link:
+        lx, lo, hi, fnxt, fsym = _support_next(fx, lib, geom)
+    else:
+        lx, lo, hi = _support(fx, lib, geom, context, idx)
     pick = lx.xid.to_numpy()[lo + (rng.random(len(lo)) * (hi - lo)).astype(np.int64)]
     if (chord or follow) and "xgeo" not in lib:
         raise ValueError("chord / follow need a template sidecar with the library chords (attach_templates)")
@@ -865,42 +1065,53 @@ def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=
         if "hard" not in lib:
             raise ValueError("hard draw needs attach_hard")
         pick, hinfo = _hard_picks(fx, geom, lib, pick, lo, hi, lx.xid.to_numpy(), rng)
-    if idx is not None:   # sorted view through the prepared order: only the drawn rows are gathered
+    if link:
+        pick, linfo = _link_picks(fx, geom, lib, pick, lo, hi, lx.xid.to_numpy(), fnxt, fsym, rng)
+    if anchor:
+        ix, arows, row_x, free, ainfo = _anchor_rows(pick, fnxt, fsym, lib)
+        ld, order, rows = lib["libdesc"], None, arows
+    elif idx is not None:   # sorted view through the prepared order: only the drawn rows are gathered
         ld, order = lib["libdesc"], idx["desc_by_xid"]
         lxid = ld.xid.to_numpy() if order is None else ld.xid.to_numpy()[order]
     else:
         ld, order = lib["libdesc"].sort_values("xid", kind="stable"), None
         lxid = ld.xid.to_numpy()
-    a, z = np.searchsorted(lxid, pick, "left"), np.searchsorted(lxid, pick, "right")
-    cnt = z - a
-    ix = np.repeat(np.arange(len(fx)), cnt)                        # fast crossing of each new step
-    rows = np.repeat(a - np.r_[0, np.cumsum(cnt)[:-1]], cnt) + np.arange(cnt.sum())
+    if not anchor:
+        a, z = np.searchsorted(lxid, pick, "left"), np.searchsorted(lxid, pick, "right")
+        cnt = z - a
+        ix = np.repeat(np.arange(len(fx)), cnt)                    # fast crossing of each new step
+        rows = np.repeat(a - np.r_[0, np.cumsum(cnt)[:-1]], cnt) + np.arange(cnt.sum())
+        row_x = pick[ix]                                           # library crossing of each row
     if drop_unvisited:
         if "uv" not in ld.columns:
             raise ValueError("unvisited-layer templates need the uv column (attach_templates with a template sidecar)")
         keep_row = ~ld.uv.to_numpy()[rows if order is None else order[rows]]
-        ix, rows = ix[keep_row], rows[keep_row]
+        ix, rows, row_x = ix[keep_row], rows[keep_row], row_x[keep_row]
+        if anchor:
+            free = free[keep_row]
     dd = ld.iloc[rows if order is None else order[rows]]
     if idx is not None:   # xid -> libxing row through the prepared xid order (xid unique, as set_index().loc needs)
         xx = lib["libxing"]
         xs = idx["xing_by_xid"]
         xid_sorted = xx.xid.to_numpy() if xs is None else xx.xid.to_numpy()[xs]
-        at = np.searchsorted(xid_sorted, pick[ix])
-        if len(at) and (at.max() >= len(xid_sorted) or not np.array_equal(xid_sorted[at], pick[ix])):
+        at = np.searchsorted(xid_sorted, row_x)
+        if len(at) and (at.max() >= len(xid_sorted) or not np.array_equal(xid_sorted[at], row_x)):
             raise KeyError("drawn library crossing not in libxing")
         lu = xx[["ux", "uy", "uz"]].to_numpy()[at if xs is None else xs[at]]
     else:
-        lu = lib["libxing"].set_index("xid").loc[pick[ix], ["ux", "uy", "uz"]].to_numpy()
+        lu = lib["libxing"].set_index("xid").loc[row_x, ["ux", "uy", "uz"]].to_numpy()
     fu = _unit(fx[["px0", "py0", "pz0"]].to_numpy())[ix]
     entry = fx[["x0", "y0", "z0"]].to_numpy()[ix]
     r0 = entry + rotate(dd[["dx0", "dy0", "dz0"]].to_numpy(), lu, fu)
     r1 = entry + rotate(dd[["dx1", "dy1", "dz1"]].to_numpy(), lu, fu)
     mom = rotate(dd[["px0", "py0", "pz0"]].to_numpy(), lu, fu)
     same = dd.samebar.to_numpy() == 1
+    if anchor:
+        same &= ~free
     nchord = 0
     if chord:   # same-bar rows along the fast chord at their fraction of the library chord
         g = lib["xgeo"]
-        cl = (g["exit"] - g["entry"])[pick[ix]]
+        cl = (g["exit"] - g["entry"])[row_x]
         cf = (fx[["x1", "y1", "z1"]].to_numpy() - fx[["x0", "y0", "z0"]].to_numpy())[ix]
         ok, s0, s1, mo = _chord_map(dd[["dx0", "dy0", "dz0"]].to_numpy(), dd[["dx1", "dy1", "dz1"]].to_numpy(),
                                     dd[["px0", "py0", "pz0"]].to_numpy(), cl, cf, same)
@@ -908,7 +1119,7 @@ def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=
         nchord = int(ok.sum())
     bar = bar_containing(0.5 * (r0 + r1), geom)
     xbar = fx.bar.to_numpy()[ix]
-    other = ~same
+    other = ~same if not anchor else ~same & ~free
     why = {"other": int(other.sum()), "no_bar": 0, "axis": 0, "off_end": 0}
     if chord:
         why["chord"] = nchord
@@ -916,6 +1127,10 @@ def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=
         why["follow"] = nfollow
     if hard:
         why.update({f"hard_{k}": v for k, v in hinfo.items()})
+    if anchor:
+        why.update({f"anchor_{k}": v for k, v in ainfo.items()})
+    if link:
+        why.update({f"link_{k}": v for k, v in linfo.items()})
     if other.any():
         dc = dd.loc[:, ["dcx", "dcy", "dcz"]].to_numpy()[other]
         l0 = dd.loc[:, ["lx0", "ly0", "lz0"]].to_numpy()[other]
@@ -1013,9 +1228,20 @@ def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=
         if out_.any():
             idx = np.flatnonzero(sb)[out_]
             r0[idx], r1[idx] = fit_inside(r0[idx], r1[idx], c[out_] - h[out_], c[out_] + h[out_])
+    if anchor and free.any():   # the tree goes on without the muon: offset from the anchor's library entry, rotated
+        g = lib["xgeo"]
+        ax = lib["anchor"]["axid"][rows[free]]
+        off = (g["entry"][row_x[free]] - g["entry"][ax])
+        q0 = entry[free] + rotate(dd[["dx0", "dy0", "dz0"]].to_numpy()[free] + off, lu[free], fu[free])
+        q1 = entry[free] + rotate(dd[["dx1", "dy1", "dz1"]].to_numpy()[free] + off, lu[free], fu[free])
+        tb = bar_containing(0.5 * (q0 + q1), geom)
+        c, h = geom.center[np.maximum(tb, 0)], geom.halflen[np.maximum(tb, 0)]
+        q0, q1 = fit_inside(q0, q1, c - h, c + h)
+        r0[free], r1[free], bar[free] = q0, q1, tb
+        why["anchor_free_nobar"] = int((tb < 0).sum())
     keep = bar >= 0
     if trace is not None:
-        trace.update(xi=ix.copy(), xid=pick[ix].copy(), source_samebar=same.copy(),
+        trace.update(xi=ix.copy(), xid=row_x.copy(), pick=pick.copy(), source_samebar=same.copy(),
                      source_edep=dd.edep.to_numpy().copy(), target_bar=bar.copy(), kept=keep.copy())
         if "uv" in dd.columns:
             trace["source_uv"] = dd.uv.to_numpy().copy()
@@ -1341,18 +1567,19 @@ def _nearmiss_for_gen(fast_steps, gen, lib, geom, rng):
 
 def sample(fast_steps, fast_parts, gen, lib, geom, rng, showers=True, context=False, contain=False, point=False,
            mirror=False, translate=False, topology=False, unvisited=False, nearmiss=False, chord=False, follow=False,
-           hard=False):
+           hard=False, anchor=False, link=False):
     """Fast tier-1a tables + tier 1b: (steps, particles, info). Muons keep their keys (1, or 1..n with all_muons);
     descendants follow them; showers k*1e7+sp. showers=False: descendants only (run configurations whose bars are not
     the library's: the showers carry absolute extracted v04 bar positions). unvisited / nearmiss (opt-in, a library
     with attach_templates): their random draws come after the showers', so every other component is unchanged.
     chord / follow (opt-in, a template sidecar with library chords): same-bar placement along the chord and the chain
     draw of the main descendant draw (_desc_for_crossings); no random number changes. hard (a library with attach_hard):
-    whole-muon draws of hard library muons (_hard_picks); its random draws come after the main draw's."""
+    whole-muon draws of hard library muons (_hard_picks); its random draws come after the main draw's. anchor / link (a
+    library with attach_anchors): root-coherent draws of the step trees, module docstring."""
     fx = fast_steps.copy()
     desc, n_drop, n_clamp, why = _desc_for_crossings(fx, lib, geom, rng, context, contain, point, mirror, translate,
                                                      topology, drop_unvisited=unvisited, chord=chord, follow=follow,
-                                                     hard=hard)
+                                                     hard=hard, anchor=anchor, link=link)
     sh = _showers_for_gen(gen, lib, rng) if showers else _showers_for_gen(gen.iloc[:0], lib, rng)
     sp_of = fx.sp.to_numpy() if "sp" in fx.columns else np.ones(len(fx), np.int64)
     desc["src"], desc["parent"] = 0, sp_of[desc.xi.to_numpy()]
