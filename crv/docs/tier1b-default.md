@@ -1,21 +1,30 @@
-# Tier-1b default: the strict library with placement, templates, chord placement and hard-muon draws
+# Tier-1b default: the strict library with step-tree roots, placement, templates, chord placement and root-coherent draws
 
-The tier-1b step sampling of the **extracted** CRV configuration (`extracted_v04`) uses the asset set `strict_v4`, the
-only named set: the association-certified strict library with crossing context, containment, point and topology
-placement, the v3 template sidecar, chord placement of the same-bar descendant steps
-([validation.md](validation.md)) and whole-muon draws of hard library muons
-(`tier1b.attach_hard`). It is defined in `crvfastsim/tier1b_assets.py`.
-`crvfastsim/tier1b.py` itself has no default library: the callers pick the set and pass its options down.
+The tier-1b step sampling of the **extracted** CRV configuration (`extracted_v04`) uses the asset set `strict_v5`
+(default since 2026-11-02): the association-certified strict library rebuilt with the step-tree root of every
+descendant row, with crossing context, containment, point and topology placement, the v3 template sidecar, chord
+placement of the same-bar descendant steps ([validation.md](validation.md)) and **root-coherent draws**: a delta ray and
+its cascade (all steps that share the muon's direct child) stay together along the fast muon within a module
+(`tier1b.attach_anchors`, `sample(anchor=True)`). The previous default `strict_v4` (the same library without roots,
+whole-muon draws of hard library muons instead of root-coherent draws) stays selectable and samples exactly as before
+per seed. Both are defined in `crvfastsim/tier1b_assets.py`. `crvfastsim/tier1b.py` itself has no default library: the
+callers pick the set and pass its options down.
 
 | Set | Library | Sidecars | `tier1b.sample` options | Run configurations |
 |---|---|---|---|---|
+| `strict_v5` (default) | `tier1b_strict_v5/library.root`, sha256 `fc6e1518...5f4` (the 20 donors of `strict_v4` with step-tree roots; same bins, showers and reach) | `topology.npz`, `templates_v3.npz` (library chords; near-miss templates and census of `strict_v4`), each with its `.json` | `context`, `contain`, `point`, `topology`, `unvisited`, `nearmiss`, `chord`, `anchor` | `extracted_v04` only |
 | `strict_v4` | `tier1b_strict_v2/library.root`, sha256 `ebb015a7...7c7` (20 association-certified donors, generator-association-repair.md (branch `park/tier1b-library`)) | `topology_sidecar_strict_v2_v2.npz`, `templates_v3.npz` (library chords; near-miss census g4ref_v1 1-10 + odd g4ref_v2 21-219), each with its `.json` | `context`, `contain`, `point`, `topology`, `unvisited`, `nearmiss`, `chord`, `hard` | `extracted_v04` only |
 
 Paths are relative to `$CRVFS_DATA`. `--tier1b-dir DIR` points at a copy of the set's files, as the endpoints use.
+The device sampler (`--tier1b-backend jax`) implements `strict_v4` only and needs `--tier1b strict_v4`.
+
+## Evidence for root-coherent draws (2026-11-02)
+
+@EVIDENCE@
 
 ## Earlier option combinations
 
-The sets that were the default earlier are no longer selectable by name. Their sampling is reproduced step by step
+`strict_v4` (2026-10-30 to 2026-11-02) is selectable by name. The sets that were the default before it are not. Their sampling is reproduced step by step
 with `tier1b-apply`, a custom `--library` and explicit placement flags on the same library and sidecars (the custom
 path reads the library and attaches the topology, then the template sidecar, in the same order as the set):
 
@@ -26,24 +35,24 @@ path reads the library and attaches the topology, then the template sidecar, in 
 | `legacy` (before 2026-10-28) | `--library tier1b_v7/lib_prod_as_20files.root` (that library was deleted and is not available) |
 
 `L` is the set's directory (`$CRVFS_DATA/tier1b_strict_v2`). The whole-muon hard draws have no flag: they belong to
-`strict_v4` only. `runchain` and `e2e-bench` take `--tier1b strict_v4` (the default) or a custom `--library` without
-placement.
+`strict_v4` only, the root-coherent draws to `strict_v5` only. `runchain` and `e2e-bench` take `--tier1b strict_v5`
+(the default), `--tier1b strict_v4` or a custom `--library` without placement.
 
 ## Choosing a set
 
 | Caller | Default | Custom library |
 |---|---|---|
-| `tier1b-apply` | `strict_v4` | `--library LIB` (placement only with the explicit flags `--crossing-context` ... `--chord-placement`) |
-| `runchain`, `e2e-bench` | `strict_v4` for extracted; the named configurations have no set | `--library LIB` (no placement) |
-| core `chain_point` | parameter `tier1b` 0 = `strict_v4`; named configurations are refused | - |
-| core kit `chain`, `regression` (EAF, in place) | `strict_v4` | - |
-| core `uva/chain_array_uva.sh`, `chain_node_uva.sh`, `aurora/chain_node_aurora.sh` | `T1B=strict_v4` | - |
+| `tier1b-apply` | `strict_v5` (`--tier1b strict_v4`: the previous default) | `--library LIB` (placement only with the explicit flags `--crossing-context` ... `--chord-placement`) |
+| `runchain`, `e2e-bench` | `strict_v5` for extracted (`--tier1b strict_v4`; device tier 1b only with it); the named configurations have no set | `--library LIB` (no placement) |
+| core `chain_point` | parameter `tier1b` 0 = `strict_v5`, 1 = `strict_v4`; named configurations are refused | - |
+| core kit `chain`, `regression` (EAF, in place) | `strict_v5` | - |
+| core `uva/chain_array_uva.sh`, `chain_node_uva.sh`, `aurora/chain_node_aurora.sh` | `T1B=strict_v5` (or `strict_v4`) | - |
 
 `--tier1b` and `--library` cannot be combined.
 
 **Named run configurations have no library of their own.** `run1a_v01`, `run1b_v01` and `run2_v10` need a custom
 `--library`: their sectors are mapped onto the extracted library groups (`runconfig.lib_group`) and their non-muon
-showers are off. `--tier1b strict_v4` with a named configuration is refused. The topology and template sidecars
+showers are off. A named set with a named configuration is refused. The topology and template sidecars
 describe the extracted v04 layer structure and the strict library's crossings, so they do not carry over to other
 geometries.
 

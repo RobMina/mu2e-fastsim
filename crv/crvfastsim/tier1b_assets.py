@@ -51,7 +51,7 @@ class AssetSet:
 
 _STRICT = dict(context=True, contain=True, point=True, topology=True, unvisited=True, nearmiss=True)
 _STRICT_LIB = "ebb015a76d56edcf96c5bc533daa96729e3851ee3e59185abf0be5fd469257c7"
-_ROOTS_LIB = "@ROOTS_SHA@"
+_ROOTS_LIB = "fc6e1518a90632217f948e43cefde7c0a4f8919e6e4ba0e8ffa2d1d939bcc5f4"
 
 SETS = {
     "strict_v5": AssetSet(
