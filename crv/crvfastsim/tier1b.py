@@ -924,10 +924,14 @@ def _anchor_rows(pick, nxt, sym, lib):
     return (np.r_[cur, ecur], np.r_[rows, erows], np.r_[rx, pick[ecur]], np.r_[free, np.zeros(len(erows), bool)], info)
 
 
-def attach_anchors(lib, geom):
+def attach_anchors(lib, geom, scope="module"):
     """Root-coherent draws (a library built with roots=True and a template sidecar v3): per library row its anchor, the
     first crossing in time of its library muon that its step tree touches, and its distance from it in crossings; the
-    crossings' symbols and (bin, context, next symbol) cells. Rows of never-visited layers stay on their own crossing."""
+    crossings' symbols and (bin, context, next symbol) cells. Rows of never-visited layers stay on their own crossing.
+    scope "module": a tree is cut where it leaves the module of the crossing (a draw cell knows the next crossing, not
+    which module the muon reaches later, so a part in another module stays with that module's crossing); "muon": whole."""
+    if scope not in ("module", "muon"):
+        raise ValueError("anchor scope is module or muon")
     if "xgeo" not in lib or "nxt" not in lib["xgeo"] or "root" not in lib["libdesc"].columns:
         raise ValueError("anchors need a library built with roots and a template sidecar v3 (attach_templates)")
     if "ctx" not in lib["libxing"].columns:
@@ -945,7 +949,11 @@ def attach_anchors(lib, geom):
         cur, r = cur[cur >= 0], r + 1
     xid = ld.xid.to_numpy()
     _, mu = np.unique(g["mu"], return_inverse=True)
-    _, rid = np.unique(mu[xid].astype(np.int64) * (1 << 31) + ld.root.to_numpy(), return_inverse=True)
+    tkey = mu[xid].astype(np.int64) * (1 << 31) + ld.root.to_numpy()
+    if scope == "module":
+        b = np.asarray(g["bar"], np.int64)[xid]
+        tkey = np.unique(np.c_[tkey, geom.sector[b], geom.module[b]], axis=0, return_inverse=True)[1].ravel()
+    _, rid = np.unique(tkey, return_inverse=True)
     move = ~ld.uv.to_numpy() if "uv" in ld.columns else np.ones(len(ld), bool)
     ro = rank[xid]
     head = np.full(int(rid.max()) + 1 if len(rid) else 0, np.iinfo(np.int64).max)

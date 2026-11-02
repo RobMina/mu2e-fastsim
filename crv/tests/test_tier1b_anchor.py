@@ -113,3 +113,14 @@ def test_inert_without_option_and_same_as_default_without_trees(geom):
     # one-crossing trees only: the anchored draw takes each pick's own rows
     c = T.sample(fx, parts, gen, lib, geom, np.random.default_rng(3), context=True, anchor=True)
     assert len(c[0]) >= len(fx)
+
+
+def test_module_scope_cuts_a_tree_at_the_module(geom):
+    lib, bars = _tiny(geom)
+    lib["xgeo"]["bar"] = np.array([bars[0], bars[1], _ex(geom, 1, 9, module=2), bars[3]])
+    A = T.attach_anchors(lib, geom)["anchor"]
+    assert list(A["axid"]) == [0, 0, 1, 2, 3] and list(A["dk"]) == [0, 1, 0, 0, 0]   # tree 9 restarts in module 2
+    W = T.attach_anchors(lib, geom, scope="muon")["anchor"]
+    assert list(W["axid"]) == [0, 0, 1, 0, 3] and list(W["dk"]) == [0, 1, 0, 2, 0]
+    with pytest.raises(ValueError):
+        T.attach_anchors(lib, geom, scope="event")

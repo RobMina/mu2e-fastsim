@@ -51,7 +51,7 @@ def run(a):
     lib = T.attach_topology(lib, *D.read_sidecar(a.sidecar, a.library), geom)
     lib = T.attach_templates(lib, DT.read_sidecar(a.templates, a.library), geom)
     lib = T.attach_hard(lib, geom)
-    lib = T.attach_anchors(lib, geom)
+    lib = T.attach_anchors(lib, geom, a.scope)
     res = {}
     for k in a.shards:
         fx = tables.read(a.transport.format(s=S.shard(k), k=k), "steps")
@@ -101,6 +101,7 @@ def main():
         p.add_argument("--" + n, required=True)
     p.add_argument("--shards", required=True, help="first-last:step")
     p.add_argument("--hard", action="store_true")
+    p.add_argument("--scope", default="module", choices=("module", "muon"))
     a = p.parse_args()
     lo, _, st = a.shards.partition(":")
     x, _, y = lo.partition("-")

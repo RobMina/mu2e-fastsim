@@ -50,7 +50,7 @@ def parse_arm(spec):
 
 
 def run(library, transport, reference, shard_list, arms, out, sidecar=None, reseed=(), write=None, retained=None,
-        counters=None, templates=None, hard_e=None):
+        counters=None, templates=None, hard_e=None, anchor_scope="module"):
     out = Path(out)
     if out.exists():
         raise FileExistsError(out)
@@ -76,7 +76,7 @@ def run(library, transport, reference, shard_list, arms, out, sidecar=None, rese
     if any(o.get("hard") for _, o in arms):
         lib = T.attach_hard(lib, geom, hard_e)
     if any(o.get("anchor") or o.get("link") for _, o in arms):
-        lib = T.attach_anchors(lib, geom)
+        lib = T.attach_anchors(lib, geom, anchor_scope)
     edges = S.booking_edges()
     runs = [(name, opts, opts.get("seed_tag", 0)) for name, opts in arms]
     runs += [(f"{name}~reseed", opts, RESEED) for name, opts in arms if name in reseed]
@@ -313,6 +313,7 @@ def main():
                    help="require this arm's steps to equal a retained table (exact)")
     r.add_argument("--counters")
     r.add_argument("--hard-e", type=float, help="hard-muon threshold [MeV], default tier1b.HARD_E_MEV")
+    r.add_argument("--anchor-scope", default="module", choices=("module", "muon"), help="tree scope of anchor / link")
     s = sub.add_parser("report")
     s.add_argument("runs", nargs="+")
     s.add_argument("--json", help="also write the summary here (new file)")
@@ -326,7 +327,7 @@ def main():
             raise SystemExit("--reseed names an unknown arm")
         run(a.library, a.transport, a.reference, S.shards(a.shards), arms, a.out, a.sidecar, a.reseed,
             dict(x.split("=", 1) for x in a.write), dict(x.split("=", 1) for x in a.retained), a.counters,
-            a.templates, a.hard_e)
+            a.templates, a.hard_e, a.anchor_scope)
     else:
         sm = summary(a.runs)
         print_summary(sm)
