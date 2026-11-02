@@ -72,6 +72,8 @@ the inherited material, support and absorber approximations are not certified by
 
 - `stoppingTarget.{radii,halfThicknesses,zVars,deltaZ,z0InMu2e,holeRadius,holeRadii}`
 - `protonabsorber.distFromTargetEnd`
+- `hasTSdA`, only set to `false`: the TSdA absorber is then not built (the Mu2eBO foils studies run Geant4 without
+  it); the default geometry keeps it
 
 This includes changes through nested includes, not just the top-level file. A scalar hole change shadowed by a
 per-foil `holeRadii` vector is rejected. The baseline's unmodelled supports/absorbers remain approximations; parsed

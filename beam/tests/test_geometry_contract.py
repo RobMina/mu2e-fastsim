@@ -61,6 +61,36 @@ def test_overlay_allowed_keys_and_shadowing():
         geometry.check_overlay({"stoppingTarget.radii": [80.0]}, base)
 
 
+def test_overlay_absorber_off_only():
+    base = {"stoppingTarget.radii": [75.0], "hasTSdA": True}
+    assert geometry.check_overlay(dict(base, hasTSdA=False), base) == ["hasTSdA"]
+    with pytest.raises(ValueError, match="hasTSdA"):
+        geometry.check_overlay(dict(base, hasTSdA="off"), base)
+    with pytest.raises(ValueError, match="hasTSdA"):
+        geometry.check_overlay({"stoppingTarget.radii": [75.0], "hasTSdA": True}, {"stoppingTarget.radii": [75.0],
+                                                                                   "hasTSdA": False})
+
+
+def test_has_tsda_false_removes_the_absorber(tmp_path):
+    folder = tmp_path / "Offline" / "Mu2eG4" / "geom"
+    folder.mkdir(parents=True)
+    keys = {"mu2e.solenoidOffset": 3904.0, "stoppingTarget.radii": "{75, 75}",
+            "stoppingTarget.halfThicknesses": "{0.05}", "stoppingTarget.deltaZ": 22.0,
+            "stoppingTarget.z0InMu2e": 5871.0, "stoppingTarget.holeRadius": 21.5,
+            "protonabsorber.distFromTargetEnd": 625.0, "tsda.z0": 4235.0, "tsda.halfLength4": 50.0,
+            "tsda.rin": 170.0, "tsda.r4": 400.0, "protonabsorber.OutRadius0": 300.5,
+            "protonabsorber.thickness": 0.5, "protonabsorber.halfLength": 500.0,
+            "protonabsorber.outerPAInnerRadius0": 436.0, "protonabsorber.outerPAZCenter": 7000.0,
+            "protonabsorber.outerPAHalfLength": 1000.0}
+    lines = [f"{'vector<double>' if str(v).startswith('{') else 'double'} {k} = {v};" for k, v in keys.items()]
+    (folder / "geom_common.txt").write_text("\n".join(lines) + "\nbool hasTSdA = true;\n")
+    off = tmp_path / "off.txt"
+    off.write_text('#include "Offline/Mu2eG4/geom/geom_common.txt"\nbool hasTSdA = false;\n')
+    on = geometry.from_offline("Offline/Mu2eG4/geom/geom_common.txt", str(tmp_path))
+    assert on.tsda_hl == 50.0
+    assert geometry.from_offline(str(off), str(tmp_path)).tsda_hl == 0.0
+
+
 def test_cli_geometry_contract_follows_nested_includes(tmp_path, monkeypatch):
     from beamfastsim import __main__ as cli
 
