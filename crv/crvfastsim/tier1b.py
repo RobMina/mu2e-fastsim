@@ -1260,6 +1260,8 @@ def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=
                      source_edep=dd.edep.to_numpy().copy(), target_bar=bar.copy(), kept=keep.copy())
         if "uv" in dd.columns:
             trace["source_uv"] = dd.uv.to_numpy().copy()
+        if anchor:
+            trace.update(anchor_free=free.copy(), anchor_dk=lib["anchor"]["dk"][rows].copy())
     out = pd.DataFrame({k: fx[k].to_numpy()[ix][keep] for k in KEY})
     out["bar"] = bar[keep]
     out["lsp"] = dd.sp.to_numpy()[keep]
