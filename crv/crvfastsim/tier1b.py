@@ -871,7 +871,8 @@ def _anchor_rows(pick, nxt, sym, lib):
     row, free flag, info). A forward row goes to the crossing at its library distance along the muon if that has the symbol
     of the row's library crossing, else to the first crossing along the muon with that symbol, else stays on the anchor when
     the anchor has it. A row with none of these is free: the muon does not go there, the row keeps its position relative to
-    the anchor."""
+    the anchor. A crossing its predecessor's pick does not feed (no predecessor, or the pick's next library crossing has
+    another symbol) keeps the rows of its own pick that trees bring in from behind, as an independent draw would."""
     A = lib["anchor"]
     a, z = np.searchsorted(A["sorted"], pick, "left"), np.searchsorted(A["sorted"], pick, "right")
     cnt = z - a
@@ -905,9 +906,21 @@ def _anchor_rows(pick, nxt, sym, lib):
     e = lib["libdesc"].edep.to_numpy()[rows]
     free = fwd & ~ok
     cur[free] = ix[free]
+    prev = np.full(len(pick), -1, np.int64)
+    prev[nxt[nxt >= 0]] = np.flatnonzero(nxt >= 0)
+    ln = A["next"][pick[np.maximum(prev, 0)]]
+    fed = (prev >= 0) & (ln >= 0) & (A["sym"][np.maximum(ln, 0)] == sym)
+    u = np.flatnonzero(~fed)                         # unfed crossings keep their pick's rows entered from behind
+    a, z = np.searchsorted(A["ent_sorted"], pick[u], "left"), np.searchsorted(A["ent_sorted"], pick[u], "right")
+    cnt = z - a
+    pos = np.repeat(a - np.r_[0, np.cumsum(cnt)[:-1]], cnt) + np.arange(cnt.sum())
+    erows = A["ent_rows"][pos]
+    ecur = np.repeat(u, cnt)
+    e2 = lib["libdesc"].edep.to_numpy()[erows]
     info = {"forward": int(fwd.sum()), "forward_free": int(free.sum()), "forward_edep": float(e[fwd].sum()),
-            "forward_edep_free": float(e[free].sum())}
-    return cur, rows, rx, free, info
+            "forward_edep_free": float(e[free].sum()), "unfed": int(len(u)), "kept_entered": int(len(erows)),
+            "kept_entered_edep": float(e2.sum())}
+    return (np.r_[cur, ecur], np.r_[rows, erows], np.r_[rx, pick[ecur]], np.r_[free, np.zeros(len(erows), bool)], info)
 
 
 def attach_anchors(lib, geom):
@@ -956,10 +969,12 @@ def attach_anchors(lib, geom):
     joined = np.zeros(n, bool)
     joined[prv[xid[dk > 0]]] = True
     o = np.argsort(axid, kind="stable")
+    ent = np.flatnonzero(dk > 0)
+    eo = ent[np.argsort(xid[ent], kind="stable")]
     lib = dict(lib)
     lib["anchor"] = {"axid": axid, "dk": dk, "order": o, "sorted": axid[o], "sym": sym, "cell": cell, "next": nx,
                      "xing_order": np.argsort(cell[lx.xid.to_numpy()], kind="stable"), "joined": joined, "entered": imp,
-                     "n_roots": int(len(head)), "n_multi": int(np.unique(rid[dk > 0]).size),
+                     "ent_rows": eo, "ent_sorted": xid[eo], "n_roots": int(len(head)), "n_multi": int(np.unique(rid[dk > 0]).size),
                      "forward_edep_share": float(ld.edep.to_numpy()[dk > 0].sum() / max(ld.edep.sum(), 1e-300))}
     return lib
 

@@ -53,8 +53,25 @@ def test_anchor_rows_follow_the_muon_and_drop_without_a_crossing(geom):
     assert info["forward_edep_free"] == 6.0
     # the distance differs but the symbol is further along the muon
     long_ = np.array([sym[0], -1, sym[1], sym[2]])                       # -1: a symbol no library crossing has
-    cur, rows, _, free, _ = T._anchor_rows(np.array([0]), np.array([1, 2, 3, -1]), long_, lib)
-    assert sorted(zip(cur, rows)) == [(0, 0), (2, 1), (3, 3)] and not free.any()
+    cur, rows, _, free, _ = T._anchor_rows(np.array([0, 3, 3, 3]), np.array([1, 2, 3, -1]), long_, lib)
+    assert sorted(zip(cur, rows)) == [(0, 0), (1, 4), (2, 1), (2, 4), (3, 3), (3, 4)] and not free.any()
+
+
+def test_anchor_rows_unfed_crossing_keeps_rows_from_behind(geom):
+    lib, _ = _tiny(geom)
+    lib = T.attach_anchors(lib, geom)
+    s = lib["anchor"]["sym"]
+    # the first pick (crossing 3) has no next library crossing, so it does not feed the second (pick 1), which keeps the
+    # row tree 9 brings into crossing 1 from behind, next to its own tree 8
+    cur, rows, rx, free, info = T._anchor_rows(np.array([3, 1]), np.array([1, -1]), np.array([s[3], s[1]]), lib)
+    assert sorted(zip(cur, rows)) == [(0, 4), (1, 1), (1, 2)] and not free.any()
+    assert info["unfed"] == 2 and info["kept_entered"] == 1 and info["kept_entered_edep"] == 2.0
+    np.testing.assert_array_equal(rx, lib["libdesc"].xid.to_numpy()[rows])
+    # fed by pick 0 (whose next crossing 1 has the symbol), the same pick takes tree 9 only through the chain
+    # (the muon ends there, so the tree's third-layer row stays free on the anchor)
+    cur, rows, _, free, info = T._anchor_rows(np.array([0, 1]), np.array([1, -1]), np.array([s[0], s[1]]), lib)
+    assert sorted(zip(cur, rows)) == [(0, 0), (0, 3), (1, 1), (1, 2)] and info["kept_entered"] == 0
+    assert list(free[np.argsort(rows)]) == [False, False, False, True]
 
 
 def test_link_picks(geom):
