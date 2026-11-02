@@ -29,8 +29,20 @@ with reseeded digitisation (the floor).
 | A3 reco | A0 | same | flagged; pulse and cluster counts | 0 / 147; counts identical | 0 flagged | pass | 2026-10-30 | `9fe268a` |
 | A4 response + reco | A0 | same | flagged histograms | 0 / 147 | 0 flagged | pass | 2026-10-30 | `9fe268a` |
 | floor | A0 | same | flagged histograms | 0 / 177 | 0 flagged | pass | 2026-10-30 | `9fe268a` |
+| A1 steps, paired per-shard statistic | A0g | same 100 shards, 5 M | flagged histograms (distinct quantities); cluster PE chi2/ndf (limit); cluster PE above 2000, fast / Geant4 | 11 / 155 (7): cluster PE, PEc, NPc, NStep, NDigis, digis per event; cluster PE 3.28 +- 0.40 (1.67), rms excess 3.8 %; 0.923 +- 0.014 | per-histogram limit, family-wise 1 % | open: cluster PE and multiplicities | 2026-11-01 | `9fe268a` |
+| E2E end to end, paired per-shard statistic | A0g | same, 5 M | flagged histograms (distinct) | 12 / 133 (8), one of them a cluster-X bin edge at x = -3904 mm, not physics | per-histogram limit | open | 2026-11-01 | `9fe268a` |
+| factorisation, paired per-shard statistic | A1 | same, 5 M | flagged histograms (distinct); cluster PE | 9 / 133 (5): ADC saturation bin, pulse PE (rms 0.41 %), cluster-PE tail +1 %, cluster-X bin edge; cluster PE 1.19 +- 0.32 (1.64) | per-histogram limit | small fast-response differences; cluster PE clean | 2026-11-01 | `9fe268a` |
+| null of the paired statistic | A0 (A0' = reseeded digitisation) | 90 shards | flags; pull rms | 0 / 177; 1.013 +- 0.007 | 0 flagged | pass | 2026-11-01 | `9fe268a` |
 | `range_out` transport | Geant4 primary-muon crossings | `g4ref_v2` even 22-220, 5 M | chi2/ndf of log10 visible energy below 200 MeV/c; of the stopping crossing's entry momentum | 5.42 -> 1.18; 16.66 -> 2.01 (earlier transport -> `range_out`); in-bar stops 715 G4 / 555 -> 643 | improvement, no histogram worse | adopted as default | 2026-10-30 | `9fe268a` |
 | device transport (opt-in) | NumPy transport | 5 M generated | step yield; V1 | +0.04 +- 0.05 %; V1 pass | V1 | pass | 2026-10-30 | `a3a1612` |
+
+The paired per-shard rows replace the three error rules of the deck comparison with one: the variance of the
+per-shard difference of the two arms (both arms share the CRY primaries of each shard), a sign-flip reference of the
+shard differences that keeps the correlations between bins, and one limit per histogram at a family-wise 1 % over a
+comparison. The earlier time-histogram errors were 2.8-3.4x too large for a difference of arms that share the cosmic's
+time; per-bar and per-channel occupancy flags of the earlier rule disappear. A flag no longer means a large
+difference: the rms excess beside it gives the size. Same method as the tracker's
+[`shard-statistics.md`](https://github.com/RobMina/mu2e-tracker-fastsim/blob/main/docs/shard-statistics.md).
 
 ## Validation levels V0-V4 (simulation)
 
@@ -72,6 +84,23 @@ with reseeded digitisation (the floor).
 Throughput of the default chain per endpoint (cached CRY primaries to coincidence clusters, warm, events with CRV
 steps per second, transport and tier 1b on the device, float64): one GPVM core 55; EAF A100 MIG 1g.10gb slice 163;
 Polaris node (4 A100) 990; Aurora node (12 PVC tiles) 1,212; UVA 8 x A100 1,695. Stock Offline on one grid job: 0.92.
+
+Production throughput at the current defaults (2026-11-02, umbrella `main` `afea868`: device float32, XLA autotuning
+off; `runchain` over 11 held-out shards of 50,000 generated events, persistent compilation cache warm, steady state
+over shards 2-11, generated events per second; in brackets the number of stock single-core grid jobs replaced, at
+21.2 generated events/s per grid job, Geant4 + stock response and reco on the same events):
+
+| Device | Generated events/s | Events with CRV steps/s | Grid jobs replaced |
+|---|---:|---:|---:|
+| RTX PRO 6000 | 18,300 | 820 | 862 |
+| RTX PRO 6000 MIG 1g.24gb slice | 16,790 | 750 | 791 |
+| A40 | 12,270 | 550 | 578 |
+| A100-SXM4-80GB | 10,710 | 480 | 504 |
+| V100 | 7,930 | 350 | 373 |
+| one CPU core, NumPy chain (one pass of 10 shards, two seeds) | 860 | 39 | 40 |
+
+Without a warm cache the first shard takes 100-180 s (compilation) and later shards 1.5-2x their steady time. One job
+per device; jobs on one card have differed by up to 30 %.
 
 ## Speed switches
 
