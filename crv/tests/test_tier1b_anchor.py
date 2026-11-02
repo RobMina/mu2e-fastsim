@@ -124,3 +124,18 @@ def test_module_scope_cuts_a_tree_at_the_module(geom):
     assert list(W["axid"]) == [0, 0, 1, 0, 3] and list(W["dk"]) == [0, 1, 0, 2, 0]
     with pytest.raises(ValueError):
         T.attach_anchors(lib, geom, scope="event")
+
+
+def test_default_set_options_deterministic_per_seed(geom):
+    """The default set's sampling options on a roots library: the same seed gives the same tables, row for row."""
+    from crvfastsim import tier1b_assets
+    opts = {k: v for k, v in tier1b_assets.SETS[tier1b_assets.DEFAULT].options.items() if k != "topology"}
+    assert opts.get("anchor") and not opts.get("hard")
+    fx = _crossings(geom, [_ex(geom, 3, 9), _ex(geom, 2, 9), _ex(geom, 1, 9)], event=1)
+    gen, parts = _gen([1], x=fx.x0.iloc[0]), _parts([1])
+    lib, _ = _rootlib(geom)
+    a = T.sample(fx, parts, gen, lib, geom, np.random.default_rng([5, 1000]), **opts)
+    b = T.sample(fx, parts, gen, lib, geom, np.random.default_rng([5, 1000]), **opts)
+    pd.testing.assert_frame_equal(a[0], b[0])
+    pd.testing.assert_frame_equal(a[1], b[1])
+    assert len(a[0]) > len(fx)

@@ -3,18 +3,22 @@
 The callers (tier1b-apply, runchain, e2e-bench, the endpoint kits) pick one set by name; crvfastsim.tier1b itself has
 no default library. docs/tier1b-default.md has the provenance and the evidence behind the default.
 
-  strict_v4  default and only set, extracted_v04: the association-certified library (20 donors) with crossing context,
-             endpoint containment, point and topology placement, the never-visited-layer / near-miss templates (v3
-             sidecar: library chords), chord placement of the same-bar descendant steps and whole-muon draws of hard
-             library muons (summed descendant energy above 30 MeV, keyed by momentum class and the group and layer of
-             each crossing; tier1b.attach_hard).
+  strict_v5  default, extracted_v04: the strict library rebuilt with step-tree roots (the same 20 donors, bins and
+             showers) with crossing context, endpoint containment, point and topology placement, the never-visited-layer
+             / near-miss templates (v3 sidecar), chord placement and root-coherent draws: a delta ray and its cascade
+             stay together along the fast muon within a module (tier1b.attach_anchors, sample(anchor)). No hard-muon
+             draws.
+  strict_v4  the default before 2026-11-02, opt-in: the association-certified library (20 donors) with the same
+             placement and templates, chord placement and whole-muon draws of hard library muons (summed descendant
+             energy above 30 MeV, keyed by momentum class and the group and layer of each crossing; tier1b.attach_hard).
+             Byte-identical per seed to the default it was.
 
 Other option combinations run with a custom library and explicit placement flags (tier1b-apply --library ...
 --crossing-context ...; docs/tier1b-default.md). The named run configurations (run1a_v01, run1b_v01, run2_v10) have
 no set: no library has been built on their geometry, so they need --library.
 
     spec = resolve(run_config="extracted_v04")            # the configuration's default set under $CRVFS_DATA
-    spec = resolve("strict_v4", directory="/dev/shm/x")   # files staged elsewhere
+    spec = resolve("strict_v4", directory="/dev/shm/x")   # the previous default, files staged elsewhere
     spec = resolve(library="lib.root")                     # a custom library, no placement options
     lib = load(spec, geom); tier1b.sample(..., lib, geom, rng, **spec.options)
 """
@@ -25,7 +29,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT = "strict_v4"
+DEFAULT = "strict_v5"
 EXTRACTED = "extracted_v04"
 
 
@@ -47,8 +51,12 @@ class AssetSet:
 
 _STRICT = dict(context=True, contain=True, point=True, topology=True, unvisited=True, nearmiss=True)
 _STRICT_LIB = "ebb015a76d56edcf96c5bc533daa96729e3851ee3e59185abf0be5fd469257c7"
+_ROOTS_LIB = "@ROOTS_SHA@"
 
 SETS = {
+    "strict_v5": AssetSet(
+        "tier1b_strict_v5", "library.root", "topology.npz", "templates_v3.npz", _ROOTS_LIB,
+        dict(_STRICT, chord=True, anchor=True)),
     "strict_v4": AssetSet(
         "tier1b_strict_v2", "library.root", "topology_sidecar_strict_v2_v2.npz", "templates_v3.npz", _STRICT_LIB,
         dict(_STRICT, chord=True, hard=True)),
@@ -76,7 +84,7 @@ class Tier1bSpec:
 
 
 def default_for(run_config=None):
-    """The default set of a run configuration: strict_v4 for extracted_v04, None for the named ones (no library)."""
+    """The default set of a run configuration: strict_v5 for extracted_v04, None for the named ones (no library)."""
     return DEFAULT if (run_config or EXTRACTED) == EXTRACTED else None
 
 
@@ -125,7 +133,7 @@ def load(spec, geom):
 
 
 def _load_uncached(spec, geom):
-    """Attach checked topology and template sidecars in their reference order."""
+    """Attach checked topology and template sidecars in their reference order, then hard muons or anchors."""
     from . import tier1b
     from .analyses.tier1b import read_template_sidecar, read_topology_sidecar
     lib = tier1b.read_library(spec.library)
@@ -140,4 +148,6 @@ def _load_uncached(spec, geom):
         lib = tier1b.attach_templates(lib, read_template_sidecar(spec.templates, library_sha256=digest), geom)
     if spec.options.get("hard"):
         lib = tier1b.attach_hard(lib, geom)
+    if spec.options.get("anchor"):
+        lib = tier1b.attach_anchors(lib, geom)
     return lib
