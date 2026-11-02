@@ -19,7 +19,7 @@ This repository holds code only: no Mu2e-internal conditions, tables, data or re
 | tier 1b (secondaries) | asset set `strict_v5` (root-coherent draws; `strict_v4` selectable) | step yields within errors; layer correlation and cluster-PE shape closed; NPc and wide-range multiplicities open |
 | response (photons, SiPM) | NumPy; JAX with `--jax` | V4 pass on CPU and GPU (A100, PVC, B200, T4) |
 | waveforms, pulses, coincidences | NumPy; JAX with `--jax` | V-R1..V-R5 pass; fast response + reco on fast steps 0/133 histograms flagged vs stock |
-| whole chain vs Geant4 + stock | | 5 M held-out events, paired per-shard statistic: cluster PE chi2/ndf 1.09 (fast steps), 1.50 end to end; clusters above 2000 PE 0.991 +- 0.014; counts within 0.4 %; NPc and occupancy on half the shards open |
+| whole chain vs Geant4 + stock | | 5 M held-out events, paired per-shard statistic: cluster PE chi2/ndf 1.09 (fast steps), 1.50 end to end; clusters above 2000 PE 0.991 +- 0.014; counts within 0.4 %; NPc, wide-range multiplicities and descendant steps at the bar ends open |
 | named configurations (Run 1A, Run 2) | | Run 1A V1 pass, Run 2 V1 fail; no tier-1b library: cannot run end to end |
 | device precision | float32 in the device kernels (float64 one variable away) | within the float64 seed spread on 100 shards; pulse PE offset bounded at <= 0.3 % (`docs/device-precision.md`) |
 
