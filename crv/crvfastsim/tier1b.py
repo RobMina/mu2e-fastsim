@@ -1136,7 +1136,21 @@ def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=
         nchord = int(ok.sum())
     bar = bar_containing(0.5 * (r0 + r1), geom)
     xbar = fx.bar.to_numpy()[ix]
-    other = ~same if not anchor else ~same & ~free
+    fhit = np.zeros(len(same), bool)
+    if anchor and free.any():   # the tree goes on without the muon: offset from the anchor's library entry, rotated
+        g = lib["xgeo"]
+        fr = np.flatnonzero(free)
+        ax = lib["anchor"]["axid"][rows[fr]]
+        off = (g["entry"][row_x[fr]] - g["entry"][ax])
+        q0 = entry[fr] + rotate(dd[["dx0", "dy0", "dz0"]].to_numpy()[fr] + off, lu[fr], fu[fr])
+        q1 = entry[fr] + rotate(dd[["dx1", "dy1", "dz1"]].to_numpy()[fr] + off, lu[fr], fu[fr])
+        tb = bar_containing(0.5 * (q0 + q1), geom)
+        h_ = tb >= 0
+        c, h = geom.center[tb[h_]], geom.halflen[tb[h_]]
+        r0[fr[h_]], r1[fr[h_]] = fit_inside(q0[h_], q1[h_], c - h, c + h)
+        bar[fr[h_]], fhit[fr[h_]] = tb[h_], True
+        why_free = {"anchor_free_offset": int(h_.sum()), "anchor_free_other": int((~h_).sum())}
+    other = ~same & ~fhit       # free rows the offset misses are placed as other-bar rows of the anchor crossing
     why = {"other": int(other.sum()), "no_bar": 0, "axis": 0, "off_end": 0}
     if chord:
         why["chord"] = nchord
@@ -1146,10 +1160,16 @@ def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=
         why.update({f"hard_{k}": v for k, v in hinfo.items()})
     if anchor:
         why.update({f"anchor_{k}": v for k, v in ainfo.items()})
+        if free.any():
+            why.update(why_free)
     if link:
         why.update({f"link_{k}": v for k, v in linfo.items()})
     if other.any():
         dc = dd.loc[:, ["dcx", "dcy", "dcz"]].to_numpy()[other]
+        if anchor and free.any():   # a free row's bar offset from the anchor's library bar, not from its own crossing's
+            fo = free[other]
+            gb = lib["xgeo"]["bar"]
+            dc[fo] += geom.center[gb[row_x[other][fo]]] - geom.center[gb[lib["anchor"]["axid"][rows[other][fo]]]]
         l0 = dd.loc[:, ["lx0", "ly0", "lz0"]].to_numpy()[other]
         l1 = dd.loc[:, ["lx1", "ly1", "lz1"]].to_numpy()[other]
         elen = dd.entrylen.to_numpy()[other].copy()
@@ -1245,17 +1265,6 @@ def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=
         if out_.any():
             idx = np.flatnonzero(sb)[out_]
             r0[idx], r1[idx] = fit_inside(r0[idx], r1[idx], c[out_] - h[out_], c[out_] + h[out_])
-    if anchor and free.any():   # the tree goes on without the muon: offset from the anchor's library entry, rotated
-        g = lib["xgeo"]
-        ax = lib["anchor"]["axid"][rows[free]]
-        off = (g["entry"][row_x[free]] - g["entry"][ax])
-        q0 = entry[free] + rotate(dd[["dx0", "dy0", "dz0"]].to_numpy()[free] + off, lu[free], fu[free])
-        q1 = entry[free] + rotate(dd[["dx1", "dy1", "dz1"]].to_numpy()[free] + off, lu[free], fu[free])
-        tb = bar_containing(0.5 * (q0 + q1), geom)
-        c, h = geom.center[np.maximum(tb, 0)], geom.halflen[np.maximum(tb, 0)]
-        q0, q1 = fit_inside(q0, q1, c - h, c + h)
-        r0[free], r1[free], bar[free] = q0, q1, tb
-        why["anchor_free_nobar"] = int((tb < 0).sum())
     keep = bar >= 0
     if trace is not None:
         trace.update(xi=ix.copy(), xid=row_x.copy(), pick=pick.copy(), source_samebar=same.copy(),
