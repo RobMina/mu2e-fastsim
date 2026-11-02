@@ -28,6 +28,23 @@ def _by_group(geom, bars, w):
     return {k: float(w[g == k].sum()) for k in T.GROUPS}
 
 
+def _ranks(nx):
+    prv = np.full(len(nx), -1, np.int64)
+    prv[nx[nx >= 0]] = np.flatnonzero(nx >= 0)
+    rank = np.zeros(len(nx), np.int64)
+    cur, r = np.flatnonzero(prv < 0), 0
+    while len(cur):
+        rank[cur] = r
+        cur = nx[cur]
+        cur, r = cur[cur >= 0], r + 1
+    return rank
+
+
+def _rank_counts(geom, bars, rank):
+    return {g: np.bincount(np.minimum(rank[SECTOR_GROUP[geom.sector[bars]] == g], 5), minlength=6).tolist()
+            for g in T.GROUPS}
+
+
 def run(a):
     geom = geometry.from_offline_config(geometry.find_counters(S.COUNTERS))
     lib = T.read_library(a.library)
@@ -38,6 +55,9 @@ def run(a):
     res = {}
     for k in a.shards:
         fx = tables.read(a.transport.format(s=S.shard(k), k=k), "steps")
+        rc = _rank_counts(geom, fx.bar.to_numpy(), _ranks(T._next_crossing(fx, geom)))
+        res["fast/ranks"] = {g: (np.add(res["fast/ranks"][g], rc[g]).tolist() if "fast/ranks" in res else rc[g])
+                             for g in T.GROUPS}
         for name, extra in (("plain", {}), ("anchor", {"anchor": True})):
             tr = {}
             T._desc_for_crossings(fx, lib, geom, np.random.default_rng([k, 1000]), trace=tr, hard=a.hard, **BASE, **extra)
@@ -63,6 +83,7 @@ def run(a):
             e, dk = ld.edep.to_numpy(), A["dk"]
             for c, m in (("all", np.ones(len(e), bool)), ("dk1", dk == 1), ("dk2+", dk > 1)):
                 res[f"library/{c}"] = _by_group(geom, xb[m], e[m])
+            res["library/ranks"] = _rank_counts(geom, lib["xgeo"]["bar"], _ranks(A["next"]))
         ref = a.reference.format(s=S.shard(k), k=k)
         st = tables.read(ref, "steps", tables.KEY + ["bar", "sp", "edep"])
         pa = tables.read(ref, "particles", tables.KEY + ["key", "parent", "pdg"])
