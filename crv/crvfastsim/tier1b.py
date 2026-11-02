@@ -89,6 +89,10 @@ Two parts, both resampled from G4 CrvStep tables (CrvStepTableDumper) of trainin
    - anchor: the rows of a tree stay with the first crossing they touch; a draw takes the trees anchored on the drawn
      crossing, and each row goes to the fast crossing at its library distance along the muon, placed around that crossing
      by the usual rules. The draw cell also holds the symbol of the next crossing, so forward rows find their crossing.
+     A tree is cut at the module boundary (attach_anchors scope "module"): the cell does not know which module the
+     muon reaches later. A row whose crossing the fast muon lacks keeps its offset from the anchor, or is placed as an
+     other-bar row of the anchor crossing; a crossing its predecessor's pick does not feed keeps its pick's rows that
+     trees bring in from behind.
    - link: chain draw on the same trees: a crossing takes the next crossing of the previous pick's library muon when a
      tree joins them and that crossing has the fast crossing's symbol; the others draw crossings no tree enters.
 2. Non-muon primaries (e, gamma, n, p, pi from CRY). A library shower is every CrvStep whose primary is that particle,
