@@ -68,7 +68,7 @@ device replaces at the same event rate (definitions, per-GPU tables and validity
 |---|---:|---:|
 | CRV, cached CRY primaries to coincidence clusters | 40 | 370-860 (V100 to RTX PRO 6000; MIG slice 790) |
 | tracker, cached CRY primaries to line fits | 149 | 700 (A100); 1,090 (MIG slice) |
-| beam, DS entrance to target stops | 10 | 570-2,580 (MIG slice to A100) |
+| beam, DS entrance to target stops (49-foil design; stock starts at TS3) | not measured | 1,290 (MIG slice), 5,470 (A100) |
 
 The Mu2eBO kit `fastsimkit` runs one point as one job on UVA (Slurm) or
 EAF; tasks and setup in `core/docs/running.md`. On UVA a one-GPU job that asks for at most 32 GB runs on the free
