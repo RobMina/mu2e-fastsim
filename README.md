@@ -27,9 +27,9 @@ Every stage is NumPy by default with JAX twins for CPU and GPU; stages exchange 
 | Stage | Validated against | Result | Open |
 |---|---|---|---|
 | CRV | Geant4 + stock Offline, stage by stage and end to end | V0, V1, V4, V-R1..V-R5 pass; 5 M held-out events: counts within 0.25 %, 21/155 histograms flagged (steps), 13/133 end to end | cluster-PE shape, adjacent-layer descendant correlation; Run 2 V1; named configurations |
-| tracker | Geant4 + stock Offline | T-V0, T-V1 pass; digis, hits, seeds agree with stock | rate -0.89 +- 0.32 %; T-V3 yield -2.04 +- 0.37 %; F1 95.6 % vs 99.5 % |
-| beam | stock Geant4 DS stage on the same muons | stop fraction ratio 0.9976 +- 0.0058 (nominal), 0.9950 +- 0.0031 (49 foils) | loss model at the stopping edge |
-| electrons | ESTAR, Geant4 thin layers | on a core branch, not on `main` | multiple scattering, annihilation, field |
+| tracker | Geant4 + stock Offline | T-V0, T-V1 pass; digis, hits, seeds agree with stock | rate -0.82 +- 0.26 % (default), +0.14 +- 0.26 % with the opt-in `--scatter-in`; T-V3 yield -2.04 +- 0.37 % (default steps); F1 frozen at 94.2 % (default), 95.6 % (opt-in time model) vs 99.5 % |
+| beam | stock and refined-step Geant4 DS stage on the same muons | stop fraction ratio 0.9976 +- 0.0058 (nominal), 0.9950 +- 0.0031 (49 foils); finer Geant4 steps do not move it (refined / stock 1.0016 +- 0.0020, 1.0019 +- 0.0011) | fast 0.5-0.7 % low with paired errors, 2.15 sigma against refined steps on 49 foils; stopping-edge shape not compared for the default transport |
+| electrons | ESTAR, Geant4 slabs (EM option 4); field stepping against analytic helices and RK4 | on core `main`, opt-in: slab physics in NumPy (`eslab`); field stepping in NumPy (`ehelix`), not compared with Geant4; device stepper `eslab_jax` without field | [core limitations](https://github.com/RobMina/mu2e-fastsim-core/blob/main/docs/limitations.md) |
 
 Tables with samples, thresholds, dates and commits: [`docs/validation.md`](docs/validation.md). Not implemented or
 not validated: [`docs/limitations.md`](docs/limitations.md).

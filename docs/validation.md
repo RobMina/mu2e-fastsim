@@ -17,16 +17,18 @@ were agreed before the comparisons were run. What is open or not validated: [lim
 | CRV | default chain vs Geant4 + stock, 5 M held-out events | 21/155 histograms flagged (steps), 13/133 end to end, 0/133 fast vs stock response+reco on the same steps; counts within 0.25 % | open |
 | tracker | T-V0 geometry; T-V1 primary-muon steps vs Geant4 | 0 steps outside their straw; every T-V1 threshold | pass |
 | tracker | digis, hits, clusters, seeds vs stock on the same input | within the reseed floor; identical | pass |
-| tracker | F1 line fit vs stock KKLine | acceptance agreement 95.6 % (target 99.5 %) | open |
+| tracker | F1 line fit vs stock KKLine | acceptance agreement 94.2 % default, 95.6 % opt-in time model (target 99.5 %) | not met, frozen |
 | tracker | T-V3 reco yield on fast steps vs Geant4 + stock | -2.04 +- 0.37 % (threshold 1 %) | **fail** |
-| tracker | any-primary-muon rate | -0.89 +- 0.32 % | open |
+| tracker | any-primary-muon rate | -0.82 +- 0.26 % default; +0.14 +- 0.26 % with opt-in `--scatter-in` | open (default), pass (opt-in) |
 | beam | stop fraction, nominal target, vs Geant4 on the same muons | ratio 0.9976 +- 0.0058 | pass |
 | beam | stop fraction, 49-foil geometry move | ratio 0.9950 +- 0.0031 | pass |
 | beam | stop fraction under much finer Geant4 steps, same muons | refined / stock 1.0016 +- 0.0020 nominal, 1.0019 +- 0.0011 moved | pass |
 | beam | stop fraction vs refined-step Geant4 | ratio 0.9927 +- 0.0058 nominal; 0.9934 +- 0.0031 moved (2.15 sigma) | pass nominal, **fail** moved |
 | core | JAX loss sampler vs NumPy; device CRY vs stock CRY | within criteria; accepted rate 0.9998 +- 0.0016 | pass |
-| electrons (branch) | dE/dx vs ESTAR; thin layers vs Geant4 | 0.6 % / 1 %; chi2/ndf 0.6-1.6 | pass, not on `main` |
-| electrons (branch) | 1 X0 tungsten; positrons | no multiple scattering, no annihilation | **fail**, not on `main` |
+| electrons (opt-in) | dE/dx vs ESTAR | radiative 0.6 %, collision 1 % | pass |
+| electrons (opt-in) | 1 X0 tungsten, 105 MeV e-, vs Geant4 | loss chi2/ndf 0.8; exit angle 1.4; stopped 18.29 vs 18.41 +- 0.09 % | pass; reflected fraction open |
+| electrons (opt-in) | field stepping (`ehelix`) vs analytic helices and RK4; no Geant4 comparison | helix 1e-9 mm; 18 um median over 3.7 m of the DS map against 1 mm RK4 | pass |
+| electrons (opt-in) | device stepper `eslab_jax` vs NumPy `eslab`, no field | loss chi2/ndf 0.58-1.30, exit angle 0.60-1.21 | pass |
 
 ## Beam stage
 
@@ -57,7 +59,9 @@ the saved fast arm used here (stop fraction 0.66612; the 0.66588 row above is an
 Throughput: 14,260 muons/s on one A100 MIG slice, 42,270 on a whole A100, 184 on one CPU core; Geant4 83 muons/s on
 one GPVM core.
 
-## Device precision (pending change)
+## Device precision
 
-Every result above uses float64 on the device. A float32 device mode is validated on 100 CRV shards (within the
-float64 seed-to-seed spread, pulse PE about -0.1 %) but is not on `main`.
+The CRV device kernels run in float32 by default since 2026-11-01 (`MU2EFS_DEVICE_FLOAT`), validated on 100 CRV shards:
+within the float64 seed-to-seed spread, pulse PE 0.03-0.14 % lower, bounded at 0.3 %
+([crv `docs/device-precision.md`](https://github.com/RobMina/mu2e-crv-fastsim/blob/main/docs/device-precision.md)).
+The beam results above are float64, as beam and tracker JAX code stay.

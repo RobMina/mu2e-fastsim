@@ -13,8 +13,9 @@ items and the beam stage.
   location is undecided ([setup/README.md](../setup/README.md)). The project image is not downloadable either.
 - **Second account.** The quickstart has been run from an empty `HOME` with the same user, not yet from a second
   user account; access permissions of a shared release are therefore untested.
-- **Device precision** is float64; float32 is validated on a branch only. Float32 results are reproducible on one GPU
-  model, not across models.
+- **Device precision** is float32 by default in the CRV device kernels, float64 in beam, tracker and host code; the
+  0.1 % pulse-PE offset is bounded (<= 0.3 %), not removed. Device output repeats run to run on one GPU kind with XLA
+  autotuning off (the default) and is not bit-identical across GPU kinds.
 - **Endpoints.** Fermilab EAF allows one MIG slice per user; the kit host must reach the Slurm login host by ssh; ESnet
   is parked (`core` branch `park/endpoint-esnet`).
 
