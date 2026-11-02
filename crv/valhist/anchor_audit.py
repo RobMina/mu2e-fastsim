@@ -48,13 +48,21 @@ def run(a):
             else:
                 dk, free = tr["anchor_dk"], tr["anchor_free"]
                 on_pick = tr["xid"] == tr["pick"][tr["xi"]]
+                how = tr["anchor_how"]
                 cats = {"own": dk == 0, "forward": (dk > 0) & ~free & ~on_pick, "kept": (dk > 0) & on_pick & ~free,
-                        "free": free}
+                        "free": free, "dk1": (dk == 1) & ~free & ~on_pick, "dk2+": (dk > 1) & ~free & ~on_pick,
+                        "exact": how == 1, "walked": how == 2, "anchor_layer": how == 3}
             for c, m in cats.items():
                 for st, mm in (("placed", m & kept), ("dropped", m & ~kept)):
                     key = f"{name}/{c}/{st}"
                     v = _by_group(geom, xb[mm], e[mm])
                     res[key] = {g: res.get(key, {}).get(g, 0.0) + v[g] for g in T.GROUPS}
+        if k == a.shards[0]:                          # library side: energy entered from behind by distance, per group
+            ld, A = lib["libdesc"], lib["anchor"]
+            xb = lib["xgeo"]["bar"][ld.xid.to_numpy()]
+            e, dk = ld.edep.to_numpy(), A["dk"]
+            for c, m in (("all", np.ones(len(e), bool)), ("dk1", dk == 1), ("dk2+", dk > 1)):
+                res[f"library/{c}"] = _by_group(geom, xb[m], e[m])
         ref = a.reference.format(s=S.shard(k), k=k)
         st = tables.read(ref, "steps", tables.KEY + ["bar", "sp", "edep"])
         pa = tables.read(ref, "particles", tables.KEY + ["key", "parent", "pdg"])

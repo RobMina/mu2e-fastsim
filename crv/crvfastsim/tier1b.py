@@ -889,6 +889,7 @@ def _anchor_rows(pick, nxt, sym, lib):
     want = A["sym"][rx]
     ok = cur >= 0
     ok[fwd] &= sym[np.maximum(cur[fwd], 0)] == want[fwd]
+    how = np.where(fwd, 1, 0)                        # 0 own, 1 at its distance, 2 walked, 3 anchor's layer, 4 free, 5 kept
     miss = np.flatnonzero(fwd & ~ok)
     at = ix[miss]                                    # else the first crossing along the muon with the row's symbol
     for _ in range(MAX_WALK):
@@ -898,14 +899,14 @@ def _anchor_rows(pick, nxt, sym, lib):
         at[go] = nxt[at[go]]
         hit = at >= 0
         hit[hit] = sym[at[hit]] == want[miss[hit]]
-        cur[miss[hit]], ok[miss[hit]] = at[hit], True
+        cur[miss[hit]], ok[miss[hit]], how[miss[hit]] = at[hit], True, 2
         at[hit] = -1
     left = miss[~ok[miss]]                           # or the anchor itself, for a second bar of the same layer
     same = sym[ix[left]] == want[left]
-    cur[left[same]], ok[left[same]] = ix[left[same]], True
+    cur[left[same]], ok[left[same]], how[left[same]] = ix[left[same]], True, 3
     e = lib["libdesc"].edep.to_numpy()[rows]
     free = fwd & ~ok
-    cur[free] = ix[free]
+    cur[free], how[free] = ix[free], 4
     prev = np.full(len(pick), -1, np.int64)
     prev[nxt[nxt >= 0]] = np.flatnonzero(nxt >= 0)
     ln = A["next"][pick[np.maximum(prev, 0)]]
@@ -919,7 +920,7 @@ def _anchor_rows(pick, nxt, sym, lib):
     e2 = lib["libdesc"].edep.to_numpy()[erows]
     info = {"forward": int(fwd.sum()), "forward_free": int(free.sum()), "forward_edep": float(e[fwd].sum()),
             "forward_edep_free": float(e[free].sum()), "unfed": int(len(u)), "kept_entered": int(len(erows)),
-            "kept_entered_edep": float(e2.sum())}
+            "kept_entered_edep": float(e2.sum()), "how": np.r_[how, np.full(len(erows), 5)]}
     return (np.r_[cur, ecur], np.r_[rows, erows], np.r_[rx, pick[ecur]], np.r_[free, np.zeros(len(erows), bool)], info)
 
 
@@ -1084,6 +1085,7 @@ def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=
         pick, linfo = _link_picks(fx, geom, lib, pick, lo, hi, lx.xid.to_numpy(), fnxt, fsym, rng)
     if anchor:
         ix, arows, row_x, free, ainfo = _anchor_rows(pick, fnxt, fsym, lib)
+        how = ainfo.pop("how")
         ld, order, rows = lib["libdesc"], None, arows
     elif idx is not None:   # sorted view through the prepared order: only the drawn rows are gathered
         ld, order = lib["libdesc"], idx["desc_by_xid"]
@@ -1103,7 +1105,7 @@ def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=
         keep_row = ~ld.uv.to_numpy()[rows if order is None else order[rows]]
         ix, rows, row_x = ix[keep_row], rows[keep_row], row_x[keep_row]
         if anchor:
-            free = free[keep_row]
+            free, how = free[keep_row], how[keep_row]
     dd = ld.iloc[rows if order is None else order[rows]]
     if idx is not None:   # xid -> libxing row through the prepared xid order (xid unique, as set_index().loc needs)
         xx = lib["libxing"]
@@ -1261,7 +1263,7 @@ def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=
         if "uv" in dd.columns:
             trace["source_uv"] = dd.uv.to_numpy().copy()
         if anchor:
-            trace.update(anchor_free=free.copy(), anchor_dk=lib["anchor"]["dk"][rows].copy())
+            trace.update(anchor_free=free.copy(), anchor_dk=lib["anchor"]["dk"][rows].copy(), anchor_how=how.copy())
     out = pd.DataFrame({k: fx[k].to_numpy()[ix][keep] for k in KEY})
     out["bar"] = bar[keep]
     out["lsp"] = dd.sp.to_numpy()[keep]
