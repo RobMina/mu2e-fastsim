@@ -10,12 +10,12 @@ items and the beam stage.
 - **Scope.** The cosmic stages cover the extracted (KPP, no field) configuration only. Full-detector configurations
   with the field and the cosmic-induced fake-CE background are not simulated. Conversion electrons are carried from
   the stopping target to the tracker entry plane only (opt-in `beam/beamfastsim/cechain.py`, below).
-- **Conversion-electron chain (opt-in).** Energy at the tracker entry: the fast chain loses slightly less than Geant4
-  (mean E - E_CE -1.33 vs -1.41 MeV on the same starts; fraction losing more than 2 MeV 12.1 vs 13.2 %), not yet
-  attributed. Not modelled: foil and IPA support wires, IPA end rings, OPA slots and supports, TS4 bend and the
-  collimators upstream of COL5, field variation inside a layer, re-crossing of a surface within one 10 mm helix step;
-  layers are flat in the local frame (tangent plane for the IPA and OPA). Secondaries are not transported. The
-  vacuum stepping runs in NumPy on the host.
+- **Conversion-electron chain (opt-in).** Not modelled: foil and IPA support wires, OPA slots and supports, the TS4
+  bend and the collimators upstream of COL5, field variation inside a layer, re-crossing of a surface within one
+  10 mm helix step, exits through the z faces of the IPA end rings (the loss between the target exit and the tracker
+  entry is 0.53 vs 0.49 MeV in Geant4 on average, with the same fractions above 0.5 and 1 MeV). Layers are flat in the
+  local frame, with the IPA / OPA curvature as an equivalent field. Secondaries are not transported. The vacuum
+  stepping runs in NumPy on the host.
 - **Inputs are not published.** The chains read Mu2e-internal inputs; no collaborator release exists yet and its
   location is undecided ([setup/README.md](../setup/README.md)). The project image is not downloadable either.
 - **Second account.** The quickstart has been run from an empty `HOME` with the same user, not yet from a second
