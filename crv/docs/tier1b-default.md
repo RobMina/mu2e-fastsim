@@ -45,10 +45,11 @@ paired per-shard statistic (arms share the generated events shard by shard; a nu
 | tier-1b sampling, one CPU core | - | 16.3 k generated/s | 16.5 k generated/s |
 
 Open with this default (limitations.md): NPc (coincidence clusters per event) is not moved (A1 vs A0g paired 2.02,
-`strict_v4` 1.91); NDigis2 and NPulse2 (wide-range multiplicities) are worse (3.04 and 2.10, against 1.28 and 1.99); on
-the confirmation half the digi, pulse and cluster yields are +0.29 +- 0.16 % above `strict_v4` with a flat per-SiPM
-ratio, which flags the occupancy histograms there (dev half -0.02 +- 0.15 %; two tier-1b seeds on the dev half differ
-by 0.22 +- 0.20 %). Device tier 1b does not implement root-coherent draws.
+`strict_v4` 1.91); NDigis2 and NPulse2 (wide-range multiplicities) are worse (3.04 and 2.10, against 1.28 and 1.99);
+muon-descendant steps pile up at the bar ends (as with `strict_v4`). With one tier-1b seed the confirmation half showed
+digi, pulse and cluster yields +0.29 +- 0.16 % above `strict_v4`, flagging its occupancy histograms; a second seed gives
++0.05 +- 0.15 %, so that was draw noise (two seeds differ by about 0.2 % on either half). Device tier 1b does not
+implement root-coherent draws.
 
 **Library.** Rebuilt from the same 20 production donors with the step-tree root of every descendant row; its bins,
 crossings, descendant rows, showers and reach tables are identical row for row to the `strict_v4` library (only the

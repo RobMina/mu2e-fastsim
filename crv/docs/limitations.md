@@ -14,11 +14,17 @@ response or reco.
   the root-coherent draws. Part of the step multiplicity (NStep 1.3-1.6 against 2.9 before) is steps per donor, not
   placement.
 - **Wide-range digi and pulse multiplicities** (NDigis2, NPulse2): worse than with `strict_v4` (3.04 and 2.10 against
-  1.28 and 1.99); partly seed noise of the tier-1b draws (two seeds on the dev half: 1.65 and 0.58 end to end).
-- **Occupancy on the confirmation half** (shards 122-220): digi, pulse and cluster yields +0.29 +- 0.16 % above
-  `strict_v4` with a flat per-SiPM ratio; the per-SiPM, per-bar and per-event occupancy histograms flag there because
-  a common scale of that size is resolved. On the dev half the difference is -0.02 +- 0.15 %, and two tier-1b seeds
-  differ by 0.22 +- 0.20 %. Over all 5 M events: digis +0.33 +- 0.14 %, pulses +0.37 %, clusters +0.23 % against Geant4.
+  1.28 and 1.99); partly seed noise of the tier-1b draws (two seeds on the dev half: 1.65 and 0.58 end to end). Events
+  with more than 100 digis are 0.83 +- 0.05 of Geant4 (`strict_v4` 0.90 +- 0.06), more than 150 about 0.6 with both
+  sets; not attributed yet.
+- **Descendant steps at the bar ends**: the first and last bins of the step position along the bars are 13-16 % above
+  Geant4 (`strict_v4` 9-13 %), all muon-descendant steps. A descendant keeps its library offset along the bar, and one
+  that the offset carries past the bar end is moved back inside (`fit_inside`) instead of being lost.
+- **Tier-1b draw noise in the yields**: one tier-1b seed moves the digi, pulse and cluster yields by about 0.2 % (two
+  seeds differ by -0.22 +- 0.20 % on the dev half and -0.20 +- 0.17 % on the confirmation half). With one seed the
+  confirmation half showed +0.29 +- 0.16 % above `strict_v4` with a flat per-SiPM ratio, which flags the occupancy
+  histograms; the second seed gives +0.05 +- 0.15 %. Over all 5 M events (first seed): digis +0.33 +- 0.14 %, pulses
+  +0.37 %, clusters +0.23 % against Geant4.
 - **Finite library**: about 3,100 effective donor trees carry the forward energy above 10 MeV on 2.5 M events
   (repeat rate 0.12); the library's finite size is not propagated into the errors.
 - The device tier 1b implements the previous default `strict_v4` only.
