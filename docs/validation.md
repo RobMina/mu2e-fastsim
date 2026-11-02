@@ -4,7 +4,7 @@ Summary of what each stage is validated against. The full tables (sample, metric
 commit) are in each repository's `docs/validation.md`: [CRV](https://github.com/RobMina/mu2e-crv-fastsim/blob/main/docs/validation.md),
 [tracker](https://github.com/RobMina/mu2e-tracker-fastsim/blob/main/docs/validation.md),
 [core](https://github.com/RobMina/mu2e-fastsim-core/blob/main/docs/validation.md); the beam stage is below. Thresholds
-were agreed before the comparisons were run. What is open or not validated: [limitations.md](limitations.md).
+were agreed before the comparisons were run. What is open or not validated: [limitations.md](limitations.md). Throughput against stock and a one-table summary per chain: [performance.md](performance.md).
 
 ## Summary
 
@@ -14,11 +14,11 @@ were agreed before the comparisons were run. What is open or not validated: [lim
 | CRV | V1 Run 2 geometry | below-plane scatter-in missing | **fail** |
 | CRV | V4 photons and SiPM charges vs stock (CPU and GPU) | within 0.5 % and 0.2 ns | pass |
 | CRV | V-R1..V-R5 waveforms, pulses, coincidences, end to end, objective | identical or within thresholds | pass |
-| CRV | default chain vs Geant4 + stock, 5 M held-out events | 21/155 histograms flagged (steps), 13/133 end to end, 0/133 fast vs stock response+reco on the same steps; counts within 0.25 % | open |
+| CRV | default chain vs Geant4 + stock, 5 M held-out events, paired per-shard statistic (family-wise 1 % limit per histogram) | 11/155 histograms flagged with fast steps (7 quantities: cluster PE, multiplicities), 12/133 end to end, 9/133 fast vs stock response+reco on the same steps (small: ADC saturation bin, pulse PE 0.4 % rms); null 0/177; counts within 0.25 % | open |
 | tracker | T-V0 geometry; T-V1 primary-muon steps vs Geant4 | 0 steps outside their straw; every T-V1 threshold | pass |
 | tracker | digis, hits, clusters, seeds vs stock on the same input | within the reseed floor; identical | pass |
 | tracker | F1 line fit vs stock KKLine | acceptance agreement 94.2 % default, 95.6 % opt-in time model (target 99.5 %) | not met, frozen |
-| tracker | T-V3 reco yield on fast steps vs Geant4 + stock | -2.04 +- 0.37 % (threshold 1 %) | **fail** |
+| tracker | T-V3 reco yield on fast steps vs Geant4 + stock | -1.42 +- 0.37 % default, -0.85 +- 0.37 % opt-in `--scatter-in` (threshold 1 %) | **fail** (default), pass on central value (opt-in) |
 | tracker | any-primary-muon rate | -0.82 +- 0.26 % default; +0.14 +- 0.26 % with opt-in `--scatter-in` | open (default), pass (opt-in) |
 | beam | stop fraction, nominal target, vs Geant4 on the same muons | ratio 0.9976 +- 0.0058 | pass |
 | beam | stop fraction, 49-foil geometry move | ratio 0.9950 +- 0.0031 | pass |

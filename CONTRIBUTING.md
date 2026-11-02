@@ -9,6 +9,9 @@ All changes to `main` of the four repositories (this umbrella, `mu2e-fastsim-cor
 2. Keep defaults bit-identical unless the change is meant to move them; new behaviour is opt-in until validated.
 3. Push the branch and open a pull request against `main`. Describe what changes, how it was validated (tests, numbers
    with uncertainties, the reference used), and what is not done.
+   A change that moves a chain's validation result or its speed also updates that chain's row in
+   [`docs/performance.md`](docs/performance.md): validity as summary statistics with errors (never raw histogram
+   contents), throughput as events per second with the stock comparison defined there.
 4. The `tests` workflow runs on the pull request. A review and a green `tests` run are required before merging.
 5. After a submodule's pull request merges, open an umbrella pull request that moves its pin; the umbrella's tests run
    the pinned commits together.
