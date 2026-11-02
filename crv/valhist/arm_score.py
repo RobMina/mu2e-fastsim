@@ -88,11 +88,27 @@ def score(ref, cand, shards):
     return res
 
 
-def run(ref_pat, arms, shards, out):
+def detail(ref, cand, key, n):
+    """Per bin of one histogram: reference count, candidate/reference and its paired error."""
+    a = np.stack([r[key][0] for r in ref])[:, 1:-1]
+    b = np.stack([r[key][0] for r in cand])[:, 1:-1]
+    d = b - a
+    se = np.sqrt(n / (n - 1) * ((d - d.mean(0)) ** 2).sum(0))
+    e = ref[0][key][1]
+    s1 = a.sum(0)
+    return [(float(e[i]), float(e[i + 1]), float(s1[i]), float(b.sum(0)[i] / s1[i]), float(se[i] / s1[i]))
+            for i in range(len(s1)) if s1[i] > 0]
+
+
+def run(ref_pat, arms, shards, out, details=()):
     ref = [read(ref_pat.format(s=S.shard(k), k=k)) for k in shards]
     res = {}
     for a, pat in arms.items():
-        res[a] = score(ref, [read(pat.format(s=S.shard(k), k=k)) for k in shards], shards)
+        cand = [read(pat.format(s=S.shard(k), k=k)) for k in shards]
+        res[a] = score(ref, cand, shards)
+        for key in details:
+            res[a].setdefault("_detail", {})[key] = detail(ref, cand, key, len(shards))
+            print(f"{a} {key}: " + "; ".join(f"[{lo:g},{hi:g}) {r:.4f}+-{e:.4f}" for lo, hi, _, r, e in res[a]["_detail"][key]))
     if out:
         Path(out).write_text(json.dumps(res, indent=1))
     names = list(res)
@@ -115,10 +131,11 @@ def main():
     p.add_argument("--arm", action="append", required=True, metavar="NAME=PATTERN")
     p.add_argument("--shards", required=True, help="first-last:step")
     p.add_argument("--out")
+    p.add_argument("--detail", action="append", default=[], help="histogram key: print per-bin paired ratios")
     a = p.parse_args()
     lo, _, st = a.shards.partition(":")
     x, _, y = lo.partition("-")
-    run(a.ref, dict(s.split("=", 1) for s in a.arm), list(range(int(x), int(y or x) + 1, int(st or 1))), a.out)
+    run(a.ref, dict(s.split("=", 1) for s in a.arm), list(range(int(x), int(y or x) + 1, int(st or 1))), a.out, a.detail)
 
 
 if __name__ == "__main__":
