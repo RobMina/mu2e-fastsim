@@ -79,9 +79,11 @@ RTX PRO 6000 MIG slice by default (`gpu_type="auto"`); larger requests keep thei
 **Device precision.** The throughput rows above are float64. The CRV device (JAX) kernels now run in float32 by
 default (`MU2EFS_DEVICE_FLOAT`; float64 one variable away): within the float64 seed-to-seed spread on every validated
 CRV quantity, mean pulse PE 0.03-0.14 % lower (bounded at 0.3 %, `crv/docs/device-precision.md`), 1.2-2.8x faster on
-cards with reduced FP64 rate (MIG slices, A40, RTX PRO 6000). float64 output is identical on every GPU model for a
-seed; float32 output repeats on one model, so outputs record the precision and the device model. Host NumPy code and
-the beam and tracker JAX code stay float64.
+cards with reduced FP64 rate (MIG slices, A40, RTX PRO 6000). Device output repeats bit for bit from run to run on
+one GPU kind at either precision because XLA's GPU autotuning is off by default (`MU2EFS_DEVICE_DETERMINISTIC`, about
++0.5 % warm time, faster compiles). Across GPU kinds float values differ in the last bits and float32 discrete counts
+can differ slightly, so outputs record the precision, the determinism setting and the device model. Host NumPy code
+and the beam and tracker JAX code stay float64.
 
 ## Configuration
 
