@@ -72,3 +72,35 @@ def test_upstream_and_wall_losses_end_the_track():
     res = C.transport(rng, g, [0.0, 0.0, 0.0], x, u, C.P_CE_AL, 0.0)     # no field: straight lines
     assert list(res.fate) == [C.UPSTREAM, C.WALL]
     assert res.path[0] < 5700.0 - g.z_up + 20.0 and res.path[1] < g.r_wall + 20.0
+
+
+def test_recording_plane_keeps_the_vacuum_state_at_its_first_crossing():
+    rng = np.random.default_rng(4)
+    g = _geom(foil_z=(5000.0,), ipa=(300.0, 0.5, 9000.0, 9001.0), opa=(900.0, 900.0, 1.0))
+    x, u = _starts(200, rng, r=10.0, cos=(0.6, 0.8))
+    res = C.transport(rng, g, [0.0, 0.0, 1.0], x, u, C.P_CE_AL, 0.0, z_record=6276.0)
+    assert res.rec_ok.all() and np.allclose(res.rec_x[:, 2], 6276.0, atol=1e-6)
+    assert np.allclose(res.rec_t, (6276.0 - 5700.0) / u[:, 2] / (C.C_MM_NS * C._beta(res.rec_T)), rtol=1e-7)
+    assert np.allclose(res.rec_T, res.T)
+
+
+def test_shell_curvature_term_gives_the_straight_chord_through_a_thin_cylinder():
+    # no field: a straight line leaving a cylinder of radius R at a grazing angle crosses a wall of thickness t
+    # along sqrt((R + t)^2 - b^2) - sqrt(R^2 - b^2), b = R cos(alpha); the flat slab alone would give t / sin(alpha)
+    from mu2efastsim import ehelix
+    g = _geom()
+    R, t, n = 300.0, 0.5, 200
+    alpha = np.full(n, 0.01)
+    x = np.tile([AXIS + R, 0.0, 7000.0], (n, 1))
+    u = np.stack([np.sin(alpha), np.cos(alpha), np.zeros(n)], axis=1)
+    e1, e2, nn = C._frame_radial(g, x, np.ones(n, bool))
+    p = np.full(n, C.P_CE_AL)
+    T = np.hypot(p, 0.51099895) - 0.51099895
+    dBz = (u * e2).sum(1) * p / (ehelix.K * R)
+    B = np.zeros((n, 3))
+    B[:, 2] = dBz
+    _, _, _, _, path = C._cross_layer(np.random.default_rng(5), G.IPA_PE, T, x, u, e1, e2, nn, t, B, None, msc=False)
+    b = R * np.cos(alpha)
+    exact = np.sqrt((R + t) ** 2 - b ** 2) - np.sqrt(R ** 2 - b ** 2)
+    assert np.median(path) == pytest.approx(exact[0], rel=0.03)
+    assert exact[0] < 0.5 * t / np.sin(alpha[0])

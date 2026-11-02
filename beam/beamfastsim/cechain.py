@@ -1,21 +1,22 @@
-"""Conversion-electron chain from muon stops to the tracker entry plane (NumPy, opt-in, Geant4-free).
+"""Conversion-electron chain from muon stops to the tracker entry plane (NumPy host stepping, opt-in, Geant4-free).
 
-Electrons start inside a stopping-target foil (or in vacuum) and are carried through the DS field map in helix steps
+Electrons start inside a stopping-target foil (or in vacuum) and are carried through the DS field maps in helix steps
 (mu2efastsim.ehelix: each step on the helix of the field at its midpoint) until they cross the tracker entry plane,
 stop in material, leave the DS or exceed the path cap. Material is crossed with the option-4 slab physics of
-mu2efastsim.eslab (brem, ionisation, multiple scattering with the tabulated Mott factor) in the local frame of the
-surface, field off inside the layer:
+mu2efastsim.eslab (or eslab_jax) in the local frame of the surface, with the field at the entry point:
 
 - foils: annular planes (BeamGeometry foil arrays), slab normal along z; an electron born in a foil starts at its depth;
-- inner proton absorber (IPA): cylindrical shell, slab normal radial (tangent-plane approximation);
+- inner proton absorber (IPA): cylindrical shell, radial normal; the shell curvature enters the flat slab as an
+  equivalent axial field (valid for wall thickness << radius);
+- IPA end rings (corrugated polypropylene inside the IPA radius at both ends): short shells crossed radially, no exit
+  through their z faces;
 - outer proton absorber (OPA): conical shell from its upstream to its downstream inner radius, radial normal;
 - TSdA (annulus at the DS upstream end), the TS5 collimator (COL5, inside radius only), the TS5 bore and the DS wall
   radius absorb; tracks entering the TS4 bend (upstream end of TS5) are lost.
 
-Not modelled: foil support wires and rings, IPA wires and end rings, OPA slots and supports, field inside layers,
-lateral escape through a foil rim or hole within one crossing, re-crossing of a surface inside one helix step
-(sagitta of a step is h^2 / 8R, about 0.05 mm at h = 10 mm). Secondaries are not transported. Mu2e frame, mm, ns,
-MeV.
+Not modelled: foil support wires, IPA wires, OPA slots and supports, field variation inside a layer, lateral escape
+through a foil rim or hole within one crossing, re-crossing of a surface inside one helix step (sagitta h^2 / 8R, about
+0.05 mm at h = 10 mm). Secondaries are not transported. Mu2e frame, mm, ns, MeV.
 """
 from dataclasses import dataclass
 from typing import NamedTuple
@@ -31,9 +32,11 @@ P_CE_AL = 104.9726            # MeV/c: CeEndpoint momentum on Al (Offline genera
 TAU_MU_AL = 864.0             # ns: mu- lifetime in Al (CeEndpoint decay-time draw)
 C_MM_NS = 299.792458
 POLYETHYLENE096 = M.Material("Polyethylene096", 0.96, 57.4, {"C": 0.856, "H": 0.144})
+CORRUGATED_PP = M.Material("CorrugatedPolypropylene", 0.1892, 56.5, {"C": 0.856, "H": 0.144})   # IPA end rings
 # Production cuts for a 0.01 mm range cut (Geant4 couple table: Al from the electron-gun reference logs; the
 # polyethylenes scaled from mylar by density, gamma cuts at the 990 eV floor).
-CUTS = {"G4_Al": (0.03411, 0.00099), "IPAPolyethylene": (0.0150, 0.00099), "Polyethylene096": (0.0151, 0.00099)}
+CUTS = {"G4_Al": (0.03411, 0.00099), "IPAPolyethylene": (0.0150, 0.00099), "Polyethylene096": (0.0151, 0.00099),
+        "CorrugatedPolypropylene": (0.0070, 0.00099)}
 
 FATES = ("live", "plane", "stopped", "upstream", "wall", "absorbed", "looper")
 LIVE, PLANE, STOPPED, UPSTREAM, WALL, ABSORBED, LOOPER = range(7)
@@ -53,6 +56,8 @@ class CEGeometry:
     coll5_z0: float = 2930.2      # TS5 collimator (COL5): z range and inner radius; absorbs
     coll5_z1: float = 3930.2
     coll5_rin: float = 128.0
+    ring_t: float = 0.0           # IPA end rings (radial thickness inward from the IPA inner radius; 0: none)
+    ring_hl: float = 0.0          # their half length in z; centred one half length downstream of each IPA end
 
 
 def from_offline(geom_file, offline_root, z_plane=8539.9):
@@ -65,10 +70,13 @@ def from_offline(geom_file, offline_root, z_plane=8539.9):
     ts5_end = beam.tsda_z - beam.tsda_hl                 # TS5 ends at the TSdA upstream face
     ts5_start = ts5_end - 2 * c["ts.ts5.halfLength"]
     c5 = 0.5 * (ts5_start + ts5_end) + c["ts.coll5.sOffset"]
+    rings = c.get("protonabsorber.ipa.buildSupports", False) and c.get("protonabsorber.ipa.nEndRings", 0) > 0
     return CEGeometry(beam, c["protonabsorber.outerPAInnerRadius0"], c["protonabsorber.outerPAInnerRadius1"],
                       c["protonabsorber.outerPAThickness"], z_plane, z_up=ts5_start, z_ds=ts5_end,
                       r_ts=c.get("ts.ts5.rVac", c["ts.ts5in.rOut"]), coll5_z0=c5 - c["ts.coll5.halfLength"],
-                      coll5_z1=c5 + c["ts.coll5.halfLength"], coll5_rin=c["ts.coll5.Radius1"])
+                      coll5_z1=c5 + c["ts.coll5.halfLength"], coll5_rin=c["ts.coll5.Radius1"],
+                      ring_t=c.get("protonabsorber.ipa.endRingRadialLength", 0.0) if rings else 0.0,
+                      ring_hl=c.get("protonabsorber.ipa.endRingHalfLength", 0.0))
 
 
 class Result(NamedTuple):
@@ -81,6 +89,12 @@ class Result(NamedTuple):
     nfoil: np.ndarray      # foil crossings (the birth foil counts)
     nipa: np.ndarray       # IPA crossings
     nopa: np.ndarray       # OPA crossings
+    nring: np.ndarray = None   # IPA end-ring crossings
+    rec_ok: np.ndarray = None  # with z_record: first crossing of that plane (either direction) and the state there
+    rec_x: np.ndarray = None
+    rec_u: np.ndarray = None
+    rec_T: np.ndarray = None
+    rec_t: np.ndarray = None
 
 
 def field_maps(headers):
@@ -201,11 +215,13 @@ def _layer_jax(rng, mat, T, d, L, tcut, kcut, B, z0, msc, min_bucket=256, chunk=
 
 
 def transport(rng, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True, layer_field=True, eps=1e-7,
-              wait_fraction=0.05, backend="numpy"):
-    """Carry electrons from (x0, u0, momentum p0 [MeV/c], global time t0) to the tracker entry plane. A start inside
-    a foil (BeamGeometry annulus, within its thickness) begins with the crossing from that depth. Tracks that reach a
-    layer wait until at most wait_fraction of the live tracks are still in vacuum; the waiting crossings then run as
-    one slab call per material (layer_field: the field at the entry point, constant through the layer)."""
+              wait_fraction=0.05, backend="numpy", z_record=None, shell_curvature=True):
+    """Carry electrons from (x0, u0, momentum p0 [MeV/c], global time t0) to the tracker entry plane (z_record: also
+    keep the state at the first crossing of that plane, e.g. a virtual detector downstream of the target). A start
+    inside a foil (BeamGeometry annulus, within its thickness) begins with the crossing from that depth. Tracks that
+    reach a layer wait until at most wait_fraction of the live tracks are still in vacuum; the waiting crossings then
+    run as one slab call per material (layer_field: the field at the entry point, constant through the layer;
+    shell_curvature: the IPA / OPA curvature is carried into the flat slab as an extra axial field)."""
     b = geom.beam
     x = np.array(x0, float)
     u = np.array(u0, float)
@@ -213,11 +229,14 @@ def transport(rng, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
     n = x.shape[0]
     T = np.sqrt(np.broadcast_to(np.asarray(p0, float), (n,)) ** 2 + eioni.ME ** 2) - eioni.ME
     t = np.array(np.broadcast_to(np.asarray(t0, float), (n,)), float)
+    if z_record is not None:
+        rec_ok = np.zeros(n, bool)
+        rec_x, rec_u, rec_T, rec_t = np.zeros((n, 3)), np.zeros((n, 3)), np.zeros(n), np.zeros(n)
     s = np.zeros(n)
     fate = np.zeros(n, int)
     pend = np.zeros(n, int)                              # waiting layer: 0 none, 2 foil, 3 IPA, 4 OPA
     pfoil = np.full(n, -1)
-    nfoil, nipa, nopa = (np.zeros(n, int) for _ in range(3))
+    nfoil, nipa, nopa, nring = (np.zeros(n, int) for _ in range(4))
     face_up = b.foil_z - b.foil_ht                       # entry face for tracks going to +z
     face_dn = b.foil_z + b.foil_ht
 
@@ -225,8 +244,11 @@ def transport(rng, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
         s[idx] += dpath
         t[idx] += dpath / (C_MM_NS * np.maximum(0.5 * (_beta(T0) + _beta(T1)), 1e-6))
 
-    def cross(idx, mat, thick, e1, e2, nn, entry, zl, cnt):
+    def cross(idx, mat, thick, e1, e2, nn, entry, zl, cnt, dBz=None):
         B = ehelix.field_at(field, x[idx]) if layer_field else None
+        if dBz is not None:
+            B = (np.zeros((idx.size, 3)) if B is None else B.copy())
+            B[:, 2] += dBz
         T0 = T[idx]
         T1, xn, un, stop, path = _cross_layer(rng, mat, T0, entry, u[idx], e1, e2, nn, thick, B, zl, msc, backend)
         account(idx, path, T0, T1)
@@ -248,7 +270,13 @@ def transport(rng, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
     def shells(idx, mat, thick, cnt):
         outward = ((x[idx, 0] - b.axis_x) * u[idx, 0] + x[idx, 1] * u[idx, 1]) > 0
         e1, e2, nn = _frame_radial(geom, x[idx], outward)
-        cross(idx, mat, thick, e1, e2, nn, x[idx], None, cnt)
+        dBz = None
+        if shell_curvature:
+            # the flat slab misses the shell's curvature: relative to the surface a track bends outward by
+            # u_perp^2 / R; for an e- that is an extra axial field (n.nn) u_e2 p / (K R) in the slab frame
+            sgn = np.where(outward, 1.0, -1.0)
+            dBz = sgn * (u[idx] * e2).sum(1) * _momentum(T[idx]) / (ehelix.K * radial(geom, x[idx]))
+        cross(idx, mat, thick, e1, e2, nn, x[idx], None, cnt, dBz)
 
     k0 = G.foil_index(b, x[:, 0], x[:, 1], x[:, 2], tol=1e-3)     # births inside a foil
     if (k0 >= 0).any():
@@ -268,6 +296,9 @@ def transport(rng, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
             f = w[pend[w] == 4]
             if f.size:
                 shells(f, POLYETHYLENE096, geom.opa_t, nopa)
+            f = w[pend[w] == 8]
+            if f.size:
+                shells(f, CORRUGATED_PP, geom.ring_t, nring)
             pend[w] = 0
             live = np.flatnonzero(fate == LIVE)
             continue
@@ -278,7 +309,7 @@ def transport(rng, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
         xe = ehelix.helix(xl, ul, pl, -1.0, Bm, h)[0]
         m = act.size
         s_ev = np.full(m, h)
-        kind = np.zeros(m, int)          # 0 none, 1 plane, 2 foil, 3 ipa, 4 opa, 5 tsda, 6 upstream, 7 wall
+        kind = np.zeros(m, int)          # 0 none, 1 plane, 2 foil, 3 ipa, 4 opa, 5 tsda, 6 upstream, 7 wall, 8 ring
         kfoil = np.full(m, -1)
         z0, z1 = xl[:, 2], xe[:, 2]
 
@@ -330,6 +361,27 @@ def transport(rng, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
             ok = (zh >= b.ipa_z0) & (zh <= b.ipa_z1)
             sv[np.flatnonzero(sel)[~ok]] = np.inf
             take(sel & np.isfinite(sv), sv, 3)
+        # IPA end rings (short shells inside the IPA radius at both IPA ends)
+        if geom.ring_t > 0:
+            rri, rro = b.ipa_r - geom.ring_t, b.ipa_r
+            out = (r0 < rri) & (r1 >= rri)
+            inn = (r0 > rro) & (r1 <= rro)
+            zr = [(z, z + 2 * geom.ring_hl) for z in (b.ipa_z0, b.ipa_z1)]
+            near = np.zeros(m, bool)
+            for za, zb in zr:
+                near |= (np.maximum(z0, z1) >= za) & (np.minimum(z0, z1) <= zb)
+            sel = (out | inn) & near
+            if sel.any():
+                sv = np.full(m, np.inf)
+                tgt_r = np.where(out, rri, rro)[sel]
+                sv[sel] = _bisect_radius(geom, xl[sel], ul[sel], pl[sel], Bm[sel], np.full(sel.sum(), h),
+                                         lambda z, r=tgt_r: r)
+                zh = ehelix.helix(xl[sel], ul[sel], pl[sel], -1.0, Bm[sel], sv[sel])[0][:, 2]
+                ok = np.zeros(zh.size, bool)
+                for za, zb in zr:
+                    ok |= (zh >= za) & (zh <= zb)
+                sv[np.flatnonzero(sel)[~ok]] = np.inf
+                take(sel & np.isfinite(sv), sv, 8)
         # OPA cone
         rc0, rc1 = opa_rin(geom, z0), opa_rin(geom, z1)
         out = (r0 < rc0) & (r1 >= rc1)
@@ -360,6 +412,16 @@ def transport(rng, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
         kind[(kind == 0) & (z1 >= geom.coll5_z0) & (z1 <= geom.coll5_z1) & (r1 > geom.coll5_rin)] = 5
 
         xn, un = ehelix.helix(xl, ul, pl, -1.0, Bm, s_ev)
+        if z_record is not None:
+            cand = ~rec_ok[act] & ((z0 - z_record) * (xn[:, 2] - z_record) <= 0) & (z0 != z_record)
+            if cand.any():
+                sr = ehelix.to_plane(xl[cand], ul[cand], pl[cand], -1.0, Bm[cand], z_record, s_ev[cand])
+                fin = np.isfinite(sr)
+                ic = np.flatnonzero(cand)[fin]
+                xr, ur = ehelix.helix(xl[ic], ul[ic], pl[ic], -1.0, Bm[ic], sr[fin])
+                j = act[ic]
+                rec_ok[j], rec_x[j], rec_u[j], rec_T[j] = True, xr, ur, Tl[ic]
+                rec_t[j] = t[j] + sr[fin] / (C_MM_NS * np.maximum(_beta(Tl[ic]), 1e-6))
         x[act], u[act] = xn, un
         account(act, s_ev, Tl, Tl)
         for kd, fv in ((1, PLANE), (5, ABSORBED), (6, UPSTREAM), (7, WALL)):
@@ -368,10 +430,13 @@ def transport(rng, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
         pfoil[act[kind == 2]] = kfoil[kind == 2]
         pend[act[kind == 3]] = 3
         pend[act[kind == 4]] = 4
+        pend[act[kind == 8]] = 8
         lp = act[(fate[act] == LIVE) & (pend[act] == 0) & (s[act] > s_max)]
         fate[lp] = LOOPER
         live = np.flatnonzero(fate == LIVE)
-    return Result(fate, x, u, T, t, s, nfoil, nipa, nopa)
+    if z_record is None:
+        return Result(fate, x, u, T, t, s, nfoil, nipa, nopa, nring)
+    return Result(fate, x, u, T, t, s, nfoil, nipa, nopa, nring, rec_ok, rec_x, rec_u, rec_T, rec_t)
 
 
 def isotropic(rng, n):
@@ -434,6 +499,8 @@ def main(argv=None):
     ap.add_argument("--no-msc", action="store_true")
     ap.add_argument("--no-layer-field", action="store_true")
     ap.add_argument("--backend", choices=("numpy", "jax"), default="numpy", help="slab physics in the layers")
+    ap.add_argument("--flat-shells", action="store_true", help="IPA / OPA as flat slabs (no curvature term)")
+    ap.add_argument("--z-record", type=float, help="also keep the state at the first crossing of this z plane [mm]")
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     rng = np.random.default_rng(np.random.SeedSequence([a.seed, a.chunk]))
@@ -442,9 +509,10 @@ def main(argv=None):
     x, u, p, t0, idx = _starts(a, rng)
     tic = time.time()
     res = transport(rng, geom, field, x, u, p, t0, h=a.step, msc=not a.no_msc, layer_field=not a.no_layer_field,
-                    backend=a.backend)
+                    backend=a.backend, z_record=a.z_record, shell_curvature=not a.flat_shells)
     wall = time.time() - tic
-    np.savez_compressed(a.out, idx=idx, x0=x, u0=u, p0=p, t0=t0, wall=wall, **res._asdict())
+    np.savez_compressed(a.out, idx=idx, x0=x, u0=u, p0=p, t0=t0, wall=wall,
+                        **{k: v for k, v in res._asdict().items() if v is not None})
     print(json.dumps(dict(n=int(idx.size), wall_s=round(wall, 1), us_per_e=round(1e6 * wall / max(idx.size, 1), 1),
                           fates={f: int((res.fate == k).sum()) for k, f in enumerate(FATES)}), indent=1))
 
