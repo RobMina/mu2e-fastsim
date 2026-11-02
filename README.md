@@ -26,8 +26,8 @@ Every stage is NumPy by default with JAX twins for CPU and GPU; stages exchange 
 
 | Stage | Validated against | Result | Open |
 |---|---|---|---|
-| CRV | Geant4 + stock Offline, stage by stage and end to end | V0, V1, V4, V-R1..V-R5 pass; 5 M held-out events: counts within 0.25 %, 21/155 histograms flagged (steps), 13/133 end to end | cluster-PE shape, adjacent-layer descendant correlation; Run 2 V1; named configurations |
-| tracker | Geant4 + stock Offline | T-V0, T-V1 pass; digis, hits, seeds agree with stock | rate -0.82 +- 0.26 % (default), +0.14 +- 0.26 % with the opt-in `--scatter-in`; T-V3 yield -2.04 +- 0.37 % (default steps); F1 frozen at 94.2 % (default), 95.6 % (opt-in time model) vs 99.5 % |
+| CRV | Geant4 + stock Offline, stage by stage and end to end | V0, V1, V4, V-R1..V-R5 pass; 5 M held-out events: counts within 0.25 %; paired per-shard statistic: 11/155 histograms flagged with fast steps (7 quantities: cluster PE, multiplicities), 12/133 end to end | cluster-PE shape, adjacent-layer descendant correlation; Run 2 V1; named configurations |
+| tracker | Geant4 + stock Offline | T-V0, T-V1 pass; digis, hits, seeds agree with stock | rate -0.82 +- 0.26 % (default), +0.14 +- 0.26 % with the opt-in `--scatter-in`; T-V3 yield -1.42 +- 0.37 % (default), -0.85 +- 0.37 % (`--scatter-in`); secondary placement; F1 frozen at 94.2 % (default), 95.6 % (opt-in time model) vs 99.5 % |
 | beam | stock and refined-step Geant4 DS stage on the same muons | stop fraction ratio 0.9976 +- 0.0058 (nominal), 0.9950 +- 0.0031 (49 foils); finer Geant4 steps do not move it (refined / stock 1.0016 +- 0.0020, 1.0019 +- 0.0011) | fast 0.5-0.7 % low with paired errors, 2.15 sigma against refined steps on 49 foils; stopping-edge shape not compared for the default transport |
 | electrons | ESTAR, Geant4 slabs (EM option 4); field stepping against analytic helices and RK4 | on core `main`, opt-in: slab physics in NumPy (`eslab`); field stepping in NumPy (`ehelix`), not compared with Geant4; device stepper `eslab_jax` without field | [core limitations](https://github.com/RobMina/mu2e-fastsim-core/blob/main/docs/limitations.md) |
 
@@ -60,23 +60,21 @@ release**; [`setup/README.md`](setup/README.md) gives the release layout and its
 
 ## Endpoints and throughput
 
-CRV default chain, cached CRY primaries to coincidence clusters, warm, float64, events with CRV steps per second:
+Throughput against stock Geant4 + Offline on a Fermilab grid node, as the number of single-core stock grid jobs one
+device replaces at the same event rate (definitions, per-GPU tables and validity summaries:
+[`docs/performance.md`](docs/performance.md)):
 
-| Endpoint | Unit | Events/s |
-|---|---|---:|
-| stock Offline | one grid job (one core) | 0.92 |
-| fast, CPU | one core | 55 |
-| Fermilab EAF | one A100 MIG 1g.10gb slice | 163 |
-| ALCF Polaris | one node, 4 A100 | 990 |
-| ALCF Aurora | one node, 12 PVC tiles | 1,212 |
-| UVA | 8 A100 (one per job) | 1,695 |
+| Chain | One CPU core | One GPU (default precision) |
+|---|---:|---:|
+| CRV, cached CRY primaries to coincidence clusters | 40 | 370-860 (V100 to RTX PRO 6000; MIG slice 790) |
+| tracker, cached CRY primaries to line fits | 149 | 700 (A100); 1,090 (MIG slice) |
+| beam, DS entrance to target stops | 10 | 570-2,580 (MIG slice to A100) |
 
-Beam: 14,260 muons/s on a MIG slice, 42,270 on an A100 (Geant4: 83 per core). Tracker F2 fit: 57,000 tracks/s on a
-MIG slice (stock KKLine about 26 per core). The Mu2eBO kit `fastsimkit` runs one point as one job on UVA (Slurm) or
+The Mu2eBO kit `fastsimkit` runs one point as one job on UVA (Slurm) or
 EAF; tasks and setup in `core/docs/running.md`. On UVA a one-GPU job that asks for at most 32 GB runs on the free
 RTX PRO 6000 MIG slice by default (`gpu_type="auto"`); larger requests keep their card.
 
-**Device precision.** The throughput rows above are float64. The CRV device (JAX) kernels now run in float32 by
+**Device precision.** The CRV rows above run the device kernels in float32, tracker and beam in float64. The CRV device (JAX) kernels now run in float32 by
 default (`MU2EFS_DEVICE_FLOAT`; float64 one variable away): within the float64 seed-to-seed spread on every validated
 CRV quantity, mean pulse PE 0.03-0.14 % lower (bounded at 0.3 %, `crv/docs/device-precision.md`), 1.2-2.8x faster on
 cards with reduced FP64 rate (MIG slices, A40, RTX PRO 6000). Device output repeats bit for bit from run to run on
