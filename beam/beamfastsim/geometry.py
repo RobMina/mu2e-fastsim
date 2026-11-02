@@ -67,6 +67,8 @@ TARGET_OVERLAY_KEYS = frozenset({
     "stoppingTarget.deltaZ", "stoppingTarget.z0InMu2e", "stoppingTarget.holeRadius",
     "stoppingTarget.holeRadii", "protonabsorber.distFromTargetEnd",
 })
+# Absorber switches an overlay may turn off (the only accepted value): the absorber is then not built.
+ABSORBER_OFF_KEYS = frozenset({"hasTSdA"})
 
 
 def check_overlay(candidate, baseline):
@@ -77,7 +79,8 @@ def check_overlay(candidate, baseline):
     """
     changed = sorted(k for k in candidate.keys() | baseline.keys()
                      if k not in candidate or k not in baseline or candidate[k] != baseline[k])
-    unsupported = [k for k in changed if k not in TARGET_OVERLAY_KEYS or k not in candidate]
+    unsupported = [k for k in changed if k not in candidate or not (
+        k in TARGET_OVERLAY_KEYS or (k in ABSORBER_OFF_KEYS and candidate[k] is False))]
     if unsupported:
         raise ValueError("Unsupported beam geometry changes: " + ", ".join(unsupported))
     if "stoppingTarget.holeRadius" in changed and "stoppingTarget.holeRadii" in candidate:
@@ -102,9 +105,10 @@ def from_offline(geom_file, offline_root, source_files=None):
     rin = np.array(c["stoppingTarget.holeRadii"], float) if "stoppingTarget.holeRadii" in c else \
         np.full(n, c.get("stoppingTarget.holeRadius", 0.0))
     t_end = foil_z.max() + ht.max()
+    tsda_hl = c["tsda.halfLength4"] if c.get("hasTSdA", True) is not False else 0.0   # 0: no TSdA
     ipa_z0 = t_end + c["protonabsorber.distFromTargetEnd"]
     return BeamGeometry(axis_x, foil_z, rin, rout, ht,
-                        c["tsda.z0"], c["tsda.halfLength4"], c["tsda.rin"], c["tsda.r4"],
+                        c["tsda.z0"], tsda_hl, c["tsda.rin"], c["tsda.r4"],
                         c["protonabsorber.OutRadius0"] - c["protonabsorber.thickness"],
                         c["protonabsorber.thickness"], ipa_z0, ipa_z0 + 2 * c["protonabsorber.halfLength"],
                         c["protonabsorber.outerPAInnerRadius0"],
