@@ -15,7 +15,8 @@ Proposed release layout (paths relative to `$M2FS_INPUTS`):
 
 | Path | Needed by | Reproduction/provenance |
 |---|---|---|
-| `crv_fastsim/tier1b_strict_v2/{library.root,topology_sidecar_strict_v2_v2.npz,topology_sidecar_strict_v2_v2.npz.json,templates_v3.npz,templates_v3.npz.json}` | default CRV tier1b-apply, runchain, e2e-bench, kit | crv `docs/tier1b-default.md` (pinned SHA-256 per file); donor G4 production and versioned builders |
+| `crv_fastsim/tier1b_strict_v5/{library.root,topology.npz,topology.npz.json,templates_v3.npz,templates_v3.npz.json}` | default CRV tier1b-apply, runchain, e2e-bench, kit (set `strict_v5`) | crv `docs/tier1b-default.md` (pinned SHA-256 per file); the `strict_v2` donors rebuilt with step-tree roots, versioned builders |
+| `crv_fastsim/tier1b_strict_v2/{library.root,topology_sidecar_strict_v2_v2.npz,topology_sidecar_strict_v2_v2.npz.json,templates_v3.npz,templates_v3.npz.json}` | opt-in previous default (`--tier1b strict_v4`, kit `tier1b=1`), device tier 1b | crv `docs/tier1b-default.md` (pinned SHA-256 per file); donor G4 production and versioned builders |
 | `crv_fastsim/geometry/mu2e_extracted_v04.gdml` | CRV and tracker transport | CRV geometry/ Offline export; pin release and configuration |
 | `crv_fastsim/geometry/{crvcalib_sim_best_v1_5_run1400.csv,crvphoton_sim_best_v1_5_run1400.csv}` | CRV response/reco | simulation run-1400 conditions; CRV docs/response-configuration.md; export needs conditions access |
 | `crv_fastsim/lookup_v6_0/{LookupTable_6000_0,LookupTable_2370_1,LookupTable_3200_0,photonMap.root}` | CRV response (not tier1b-apply alone) | CVMFS DataFiles/CRVConditions/v6_0; names from extracted response configuration; Mu2e-internal, publisher approval needed |

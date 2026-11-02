@@ -89,11 +89,11 @@ runs only the test files a branch affects, one process per file. `--runslow` add
 
 ## 6. One default shard per chain
 
-### CRV (CPU, extracted_v04 default: `range_out` transport, tier 1b `strict_v4`)
+### CRV (CPU, extracted_v04 default: `range_out` transport, tier 1b `strict_v5`)
 
 ```bash
 G="$CRVFS_DATA/g4ref_v2_tables/gen.001400_00000022.root"; GEOM="$CRVFS_DATA/geometry"
-python3 -m crvfastsim runchain "$G" --tier1b-dir "$CRVFS_DATA/tier1b_strict_v2" \
+python3 -m crvfastsim runchain "$G" --tier1b-dir "$CRVFS_DATA/tier1b_strict_v5" \
   --gdml "$GEOM/mu2e_extracted_v04.gdml" --calib "$GEOM/crvcalib_sim_best_v1_5_run1400.csv" \
   --deviation "$GEOM/crvphoton_sim_best_v1_5_run1400.csv" \
   --max-events 1000 --seed 22 --outdir "$M2FS_DATA/crv-smoke"

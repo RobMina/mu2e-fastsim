@@ -44,7 +44,7 @@ Allocation charges depend on the site's rates and are not given here.
 
 | Chain | Validity (summary) | Fast rate | Grid slots replaced |
 |---|---|---|---|
-| CRV default chain (`range_out` transport, tier 1b `strict_v4`) | V0, V1, V4, V-R1..V-R5 pass. 5 M held-out events, paired per-shard statistic: counts within 0.25 %; fast steps + stock response 11 of 155 histograms flagged (7 quantities: cluster PE and multiplicities), end to end 12 of 133; cluster-PE shape off by 3.8 % rms, overflow above 2000 PE 0.923 +- 0.014; null 0 of 177. Float32 device output within the float64 seed spread | one CPU core 860 generated/s; one GPU 7,900-18,300 generated/s (table below) | 40 per core; 370-860 per GPU; 1,100-1,360 per HPC node (older benchmark) |
+| CRV default chain (`range_out` transport, tier 1b `strict_v5`: root-coherent secondary draws) | V0, V1, V4, V-R1..V-R5 pass. 5 M held-out events, paired per-shard statistic: fast steps + stock response vs Geant4 + stock, cluster PE chi2/ndf 1.09 (3.28 with the previous tier 1b), end to end 1.50; clusters above 2000 PE 0.991 +- 0.014 (was 0.923); adjacent-layer correlation of secondaries 0.39-0.43 (Geant4 0.40); counts within 0.4 %. Open: clusters per event (NPc), wide-range multiplicities, occupancy on half of the shards (+0.3 % yield). Float32 device output within the float64 seed spread (previous tier 1b) | one CPU core 860 generated/s; one GPU 7,900-18,300 generated/s (table below) | 40 per core; 370-860 per GPU; 1,100-1,360 per HPC node (older benchmark) |
 | tracker, extracted configuration | T-V0, T-V1 primary-muon steps pass; fast digis vs stock on the same steps 0 of 19 flagged; hits, clusters and seeds identical to stock; device chain vs NumPy 0 of 11 flagged. Open: T-V3 track yield -1.42 +- 0.37 % (default), -0.85 +- 0.37 % (opt-in `--scatter-in`); muon rate -0.82 +- 0.26 %; secondary placement; F1 fit 94.2 % vs 99.5 % | one CPU core 3,030 generated/s; 40-core node 111,500; one RTX PRO 6000 MIG 1g.24gb slice 22,160; one A100 14,270 | 149 per core; 5,480 per 40-core node; 1,090 per MIG slice; 700 per A100 |
 | beam stop fraction | fast / Geant4 on the same muons 0.9976 +- 0.0058 (nominal target), 0.9950 +- 0.0031 (49 foils); finer Geant4 steps do not move it (1.0016 +- 0.0020); with paired errors fast is 0.5-0.7 % low | one GPU 10,100-45,900 muons/s on the nominal target (table below); 9,640 (MIG slice) and 40,900 (A100-40GB) on a 49-foil design | 1,290 per MIG slice, 5,470 per A100 (49-foil design) |
 | Mu2eBO stopping stand-in (`beam_point` on each design point's target) | 64 held-out Geant4-evaluated design points: Geant4 / fast 0.9960 +- 0.0004 (+- 0.0047 common scale), rms 0.30 % (0.34 % statistical), rank correlation 0.9991 | as beam; one design point (105,350 muons) 3-5 min through the kit including compilation | as beam; per design point the stopping objective drops from about 4 h (grid chain) to 4-5 min |
@@ -58,6 +58,10 @@ events, persistent compilation cache warm, steady state over shards 2-11 (in bra
 setup and the first shard); grid slots at 21.2 generated events/s. Beam: `beam_point` on the nominal 37-foil target,
 105,350 DS-entering muons, warm passes (a 49-foil design runs 4-6 % slower); no stock time per event exists for the
 nominal target on the grid at the same boundary, so the beam column gives rates only.
+
+The CRV rates were measured with the previous tier-1b set (`strict_v4`). The default `strict_v5` samples tier 1b at the
+same CPU rate (16.5 k against 16.3 k generated events/s on one core; the whole CPU chain is unchanged within its repeat
+spread) and adds about 13 s of one-time setup per process; the GPU rates have not been re-measured.
 
 | GPU | CRV generated events/s | CRV grid slots | Beam muons/s (nominal target) |
 |---|---:|---:|---:|
