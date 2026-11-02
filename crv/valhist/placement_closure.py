@@ -32,7 +32,7 @@ from . import stephist as H
 from . import steplayers as S
 
 OPTIONS = ("context", "contain", "point", "mirror", "translate", "topology", "unvisited", "nearmiss", "chord", "follow",
-           "hard")
+           "hard", "anchor", "link")
 RESEED = 7
 REPORT_KEYS = list(H.TARGET) + ["SMom2", "posx"] + [f"{g}/{v}" for g in S.POS_GROUPS for v in ("y", "z")]
 
@@ -50,7 +50,7 @@ def parse_arm(spec):
 
 
 def run(library, transport, reference, shard_list, arms, out, sidecar=None, reseed=(), write=None, retained=None,
-        counters=None, templates=None):
+        counters=None, templates=None, hard_e=None, anchor_scope="module"):
     out = Path(out)
     if out.exists():
         raise FileExistsError(out)
@@ -71,10 +71,12 @@ def run(library, transport, reference, shard_list, arms, out, sidecar=None, rese
         lib = T.attach_templates(lib, DT.read_sidecar(templates, library), geom)
         hashes[str(templates)] = A.digest(templates)
     if any(o.get("unvisited") or o.get("nearmiss") or o.get("chord") or o.get("follow") or o.get("hard")
-           for _, o in arms) and not templates:
-        raise ValueError("unvisited / nearmiss / chord / follow / hard arms need --templates")
+           or o.get("anchor") or o.get("link") for _, o in arms) and not templates:
+        raise ValueError("unvisited / nearmiss / chord / follow / hard / anchor / link arms need --templates")
     if any(o.get("hard") for _, o in arms):
-        lib = T.attach_hard(lib, geom)
+        lib = T.attach_hard(lib, geom, hard_e)
+    if any(o.get("anchor") or o.get("link") for _, o in arms):
+        lib = T.attach_anchors(lib, geom, anchor_scope)
     edges = S.booking_edges()
     runs = [(name, opts, opts.get("seed_tag", 0)) for name, opts in arms]
     runs += [(f"{name}~reseed", opts, RESEED) for name, opts in arms if name in reseed]
@@ -99,8 +101,10 @@ def run(library, transport, reference, shard_list, arms, out, sidecar=None, rese
         for name, opts, tag in runs:
             base = name.split("~")[0]
             rng = np.random.default_rng([k, 1000, tag] if tag else [k, 1000])
+            ts = time.monotonic()
             steps, parts, info = T.sample(fx, fp, gen, lib, geom, rng,
                                           **{o: v for o, v in opts.items() if o in OPTIONS})
+            info = {**info, "sample_seconds": time.monotonic() - ts}
             if retained and name in retained:
                 ref_path = retained[name].format(s=S.shard(k), k=k)
                 old = tables.read(ref_path, "steps")
@@ -124,7 +128,8 @@ def run(library, transport, reference, shard_list, arms, out, sidecar=None, rese
             for key, val in info["other_bar"].items():
                 why[name][key] = why[name].get(key, 0) + int(val)
             rec["arms"][name] = {"steps": len(steps), "desc_steps": info["desc_steps"], "desc_dropped": info["desc_dropped"],
-                                 "showers": info["showers"], "shower_steps": info["shower_steps"]}
+                                 "showers": info["showers"], "shower_steps": info["shower_steps"],
+                                 "sample_seconds": info["sample_seconds"]}
             if "templates" in info:
                 rec["arms"][name]["templates"] = info["templates"]
             if name.endswith("~reseed"):
@@ -310,6 +315,8 @@ def main():
     r.add_argument("--retained", action="append", default=[], metavar="ARM=PATTERN",
                    help="require this arm's steps to equal a retained table (exact)")
     r.add_argument("--counters")
+    r.add_argument("--hard-e", type=float, help="hard-muon threshold [MeV], default tier1b.HARD_E_MEV")
+    r.add_argument("--anchor-scope", default="module", choices=("module", "muon"), help="tree scope of anchor / link")
     s = sub.add_parser("report")
     s.add_argument("runs", nargs="+")
     s.add_argument("--json", help="also write the summary here (new file)")
@@ -323,7 +330,7 @@ def main():
             raise SystemExit("--reseed names an unknown arm")
         run(a.library, a.transport, a.reference, S.shards(a.shards), arms, a.out, a.sidecar, a.reseed,
             dict(x.split("=", 1) for x in a.write), dict(x.split("=", 1) for x in a.retained), a.counters,
-            a.templates)
+            a.templates, a.hard_e, a.anchor_scope)
     else:
         sm = summary(a.runs)
         print_summary(sm)

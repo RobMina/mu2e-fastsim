@@ -1,21 +1,64 @@
-# Tier-1b default: the strict library with placement, templates, chord placement and hard-muon draws
+# Tier-1b default: the strict library with step-tree roots, placement, templates, chord placement and root-coherent draws
 
-The tier-1b step sampling of the **extracted** CRV configuration (`extracted_v04`) uses the asset set `strict_v4`, the
-only named set: the association-certified strict library with crossing context, containment, point and topology
-placement, the v3 template sidecar, chord placement of the same-bar descendant steps
-([validation.md](validation.md)) and whole-muon draws of hard library muons
-(`tier1b.attach_hard`). It is defined in `crvfastsim/tier1b_assets.py`.
-`crvfastsim/tier1b.py` itself has no default library: the callers pick the set and pass its options down.
+The tier-1b step sampling of the **extracted** CRV configuration (`extracted_v04`) uses the asset set `strict_v5`
+(default since 2026-11-02): the association-certified strict library rebuilt with the step-tree root of every
+descendant row, with crossing context, containment, point and topology placement, the v3 template sidecar, chord
+placement of the same-bar descendant steps ([validation.md](validation.md)) and **root-coherent draws**: a delta ray and
+its cascade (all steps that share the muon's direct child) stay together along the fast muon within a module
+(`tier1b.attach_anchors`, `sample(anchor=True)`). The previous default `strict_v4` (the same library without roots,
+whole-muon draws of hard library muons instead of root-coherent draws) stays selectable and samples exactly as before
+per seed. Both are defined in `crvfastsim/tier1b_assets.py`. `crvfastsim/tier1b.py` itself has no default library: the
+callers pick the set and pass its options down.
 
 | Set | Library | Sidecars | `tier1b.sample` options | Run configurations |
 |---|---|---|---|---|
+| `strict_v5` (default) | `tier1b_strict_v5/library.root`, sha256 `fc6e1518...5f4` (the 20 donors of `strict_v4` with step-tree roots; same bins, showers and reach) | `topology.npz`, `templates_v3.npz` (library chords; near-miss templates and census of `strict_v4`), each with its `.json` | `context`, `contain`, `point`, `topology`, `unvisited`, `nearmiss`, `chord`, `anchor` | `extracted_v04` only |
 | `strict_v4` | `tier1b_strict_v2/library.root`, sha256 `ebb015a7...7c7` (20 association-certified donors, generator-association-repair.md (branch `park/tier1b-library`)) | `topology_sidecar_strict_v2_v2.npz`, `templates_v3.npz` (library chords; near-miss census g4ref_v1 1-10 + odd g4ref_v2 21-219), each with its `.json` | `context`, `contain`, `point`, `topology`, `unvisited`, `nearmiss`, `chord`, `hard` | `extracted_v04` only |
 
 Paths are relative to `$CRVFS_DATA`. `--tier1b-dir DIR` points at a copy of the set's files, as the endpoints use.
+The device sampler (`--tier1b-backend jax`) implements `strict_v4` only and needs `--tier1b strict_v4`.
+
+## Evidence for root-coherent draws (2026-11-02)
+
+Why: one step tree (a delta ray and its cascade, all steps that share the muon's direct child) deposits in several
+layers along the muon, and 77 % of the Geant4 adjacent-layer covariance of muon-descendant energy in EX comes from single
+trees. Attaching each step to the crossing of its bar cuts a tree at the crossings (84 % of the same-tree product ends
+up on different crossings), so independent draws per crossing lose the correlation and the very hard clusters. The
+root-coherent draw keeps each tree with the first crossing it touches; a draw takes the trees anchored on the drawn
+crossing, and every row goes to the fast crossing at its library distance along the muon (draw cells carry the symbol
+of the next crossing). A tree is cut where it leaves its module. The hard-muon draws of `strict_v4` are not used.
+
+Held-out sample: even `g4ref_v2` shards 22-220, 5 M generated events, none used by the library; dev half 22-120 for
+the choice (made on a half-size library), confirmation half 122-220 looked at for the chosen draw. Errors are the
+paired per-shard statistic (arms share the generated events shard by shard; a null has mean 1).
+
+| Quantity | Geant4 | `strict_v4` | `strict_v5` |
+|---|---:|---:|---:|
+| EX adjacent-layer correlation of muon-descendant energy, per muon (dev, two seeds) | 0.403 +- 0.023 | 0.244 +- 0.013 | 0.43 +- 0.07 / 0.39 +- 0.02 |
+| NStep per event vs Geant4, chi2/ndf (dev, two seeds; confirmation) | - | 2.92 | 1.29 / 1.48; 1.58 |
+| descendant energy vs Geant4 (dev) | - | -0.0 +- 0.7 % | +0.40 +- 0.67 % |
+| cluster PE, fast steps + stock response (A1) vs Geant4 (A0g), paired chi2/ndf, 5 M | - | 3.28 | **1.09** |
+| same, dev / confirmation half | - | 2.28 / 1.94 | 0.93 / 1.09 |
+| cluster PE end to end (E2E) vs A0g, 5 M | - | 3.26 | 1.50 |
+| clusters above 2000 PE, A1 / A0g, 5 M | - | 0.923 +- 0.014 | **0.991 +- 0.014** |
+| digis, pulses, clusters A1 / A0g - 1, 5 M | - | +0.19, +0.24, +0.12 % (+- 0.14, 0.13, 0.10) | +0.33, +0.37, +0.23 % |
+| tier-1b sampling, one CPU core | - | 16.3 k generated/s | 16.5 k generated/s |
+
+Open with this default (limitations.md): NPc (coincidence clusters per event) is not moved (A1 vs A0g paired 2.02,
+`strict_v4` 1.91); NDigis2 and NPulse2 (wide-range multiplicities) are worse (3.04 and 2.10, against 1.28 and 1.99); on
+the confirmation half the digi, pulse and cluster yields are +0.29 +- 0.16 % above `strict_v4` with a flat per-SiPM
+ratio, which flags the occupancy histograms there (dev half -0.02 +- 0.15 %; two tier-1b seeds on the dev half differ
+by 0.22 +- 0.20 %). Device tier 1b does not implement root-coherent draws.
+
+**Library.** Rebuilt from the same 20 production donors with the step-tree root of every descendant row; its bins,
+crossings, descendant rows, showers and reach tables are identical row for row to the `strict_v4` library (only the
+`root` column is added). The topology sidecar is rebuilt on it; the template sidecar keeps the near-miss templates and
+census of `strict_v4`. `tier1b-apply --tier1b strict_v4` reproduces the previous default's step and particle tables exactly (shards
+22-40).
 
 ## Earlier option combinations
 
-The sets that were the default earlier are no longer selectable by name. Their sampling is reproduced step by step
+`strict_v4` (2026-10-30 to 2026-11-02) is selectable by name. The sets that were the default before it are not. Their sampling is reproduced step by step
 with `tier1b-apply`, a custom `--library` and explicit placement flags on the same library and sidecars (the custom
 path reads the library and attaches the topology, then the template sidecar, in the same order as the set):
 
@@ -26,24 +69,24 @@ path reads the library and attaches the topology, then the template sidecar, in 
 | `legacy` (before 2026-10-28) | `--library tier1b_v7/lib_prod_as_20files.root` (that library was deleted and is not available) |
 
 `L` is the set's directory (`$CRVFS_DATA/tier1b_strict_v2`). The whole-muon hard draws have no flag: they belong to
-`strict_v4` only. `runchain` and `e2e-bench` take `--tier1b strict_v4` (the default) or a custom `--library` without
-placement.
+`strict_v4` only, the root-coherent draws to `strict_v5` only. `runchain` and `e2e-bench` take `--tier1b strict_v5`
+(the default), `--tier1b strict_v4` or a custom `--library` without placement.
 
 ## Choosing a set
 
 | Caller | Default | Custom library |
 |---|---|---|
-| `tier1b-apply` | `strict_v4` | `--library LIB` (placement only with the explicit flags `--crossing-context` ... `--chord-placement`) |
-| `runchain`, `e2e-bench` | `strict_v4` for extracted; the named configurations have no set | `--library LIB` (no placement) |
-| core `chain_point` | parameter `tier1b` 0 = `strict_v4`; named configurations are refused | - |
-| core kit `chain`, `regression` (EAF, in place) | `strict_v4` | - |
-| core `uva/chain_array_uva.sh`, `chain_node_uva.sh`, `aurora/chain_node_aurora.sh` | `T1B=strict_v4` | - |
+| `tier1b-apply` | `strict_v5` (`--tier1b strict_v4`: the previous default) | `--library LIB` (placement only with the explicit flags `--crossing-context` ... `--chord-placement`) |
+| `runchain`, `e2e-bench` | `strict_v5` for extracted (`--tier1b strict_v4`; device tier 1b only with it); the named configurations have no set | `--library LIB` (no placement) |
+| core `chain_point` | parameter `tier1b` 0 = `strict_v5`, 1 = `strict_v4`; named configurations are refused | - |
+| core kit `chain`, `regression` (EAF, in place) | `strict_v5` | - |
+| core `uva/chain_array_uva.sh`, `chain_node_uva.sh`, `aurora/chain_node_aurora.sh` | `T1B=strict_v5` (or `strict_v4`) | - |
 
 `--tier1b` and `--library` cannot be combined.
 
 **Named run configurations have no library of their own.** `run1a_v01`, `run1b_v01` and `run2_v10` need a custom
 `--library`: their sectors are mapped onto the extracted library groups (`runconfig.lib_group`) and their non-muon
-showers are off. `--tier1b strict_v4` with a named configuration is refused. The topology and template sidecars
+showers are off. A named set with a named configuration is refused. The topology and template sidecars
 describe the extracted v04 layer structure and the strict library's crossings, so they do not carry over to other
 geometries.
 

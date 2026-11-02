@@ -5,16 +5,27 @@ What the fast CRV chain does not do, and what it does but has not been validated
 
 ## Open discrepancies in the default chain
 
-On the 5 M held-out events, 21 of 155 CRVDQM histograms are flagged for fast steps + stock response (A1) and 13 of
-133 end to end (E2E); fast response and reco on fast steps agree with stock on the same steps (0 of 133), so the
-flags come from the steps (transport + tier-1b library), not from the response or reco. The two largest known causes:
+On the 5 M held-out events with the default tier 1b (`strict_v5`, root-coherent draws), fast steps + stock response
+(A1) against Geant4 steps + stock response (A0g), paired per-shard statistic: fast response and reco on fast steps
+agree with stock on the same steps, so what remains comes from the steps (transport + tier-1b library), not from the
+response or reco.
 
-- **Coincidence-cluster PE shape**: A1 chi2/ndf 3.10 against a flag level of 2.73.
-- **Adjacent-layer correlation of muon descendants**: the energy that the primary muon's descendants deposit in
-  neighbouring layers is less correlated than in Geant4 (correlation 0.12 fast vs 0.38 Geant4). This is a property of
-  the tier-1b library sampling.
+- **Coincidence clusters per event (NPc)**: paired chi2/ndf about 2 with every tier-1b default so far; not moved by
+  the root-coherent draws. Part of the step multiplicity (NStep 1.3-1.6 against 2.9 before) is steps per donor, not
+  placement.
+- **Wide-range digi and pulse multiplicities** (NDigis2, NPulse2): worse than with `strict_v4` (3.04 and 2.10 against
+  1.28 and 1.99); partly seed noise of the tier-1b draws (two seeds on the dev half: 1.65 and 0.58 end to end).
+- **Occupancy on the confirmation half** (shards 122-220): digi, pulse and cluster yields +0.29 +- 0.16 % above
+  `strict_v4` with a flat per-SiPM ratio; the per-SiPM, per-bar and per-event occupancy histograms flag there because
+  a common scale of that size is resolved. On the dev half the difference is -0.02 +- 0.15 %, and two tier-1b seeds
+  differ by 0.22 +- 0.20 %. Over all 5 M events: digis +0.33 +- 0.14 %, pulses +0.37 %, clusters +0.23 % against Geant4.
+- **Finite library**: about 3,100 effective donor trees carry the forward energy above 10 MeV on 2.5 M events
+  (repeat rate 0.12); the library's finite size is not propagated into the errors.
+- The device tier 1b implements the previous default `strict_v4` only.
 
-Cluster, pulse and digi counts agree within 0.25 %.
+Fixed by the root-coherent draws: the coincidence-cluster PE shape (A1 paired chi2/ndf 3.28 -> 1.09) and the cluster
+PE tail above 2000 PE (0.923 +- 0.014 -> 0.991 +- 0.014), and the adjacent-layer correlation of muon descendants
+(0.24 -> 0.39-0.43, Geant4 0.40).
 
 ## Configurations
 

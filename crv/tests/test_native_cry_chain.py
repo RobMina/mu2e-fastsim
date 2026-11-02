@@ -27,7 +27,7 @@ def test_real_native_shards_emit_and_merge(tmp_path):
                    "--gdml", str(geom / "mu2e_extracted_v04.gdml"),
                    "--calib", str(geom / "crvcalib_sim_best_v1_5_run1400.csv"),
                    "--deviation", str(geom / "crvphoton_sim_best_v1_5_run1400.csv"),
-                   "--tier1b-dir", str(base / "tier1b_strict_v2"),
+                   "--tier1b-dir", str(base / "tier1b_strict_v5"),
                    "--outdir", str(result_dir)]
         if backend == "device":
             command.append("--jax")

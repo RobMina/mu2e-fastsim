@@ -81,7 +81,8 @@ def build_parser():
                             help="stage C: world columns piece by piece (before 2026-10-24; the banded grid is the default)")
         if name in ("tier1b-apply", "runchain"):
             sp.add_argument("--tier1b-backend", choices=["numpy", "jax"], default="numpy",
-                            help="experimental strict_v4 device sampler; NumPy remains the default")
+                            help="experimental device sampler of the strict_v4 set (pass --tier1b strict_v4); "
+                                 "NumPy remains the default")
         if name in ("transport", "runchain"):
             sp.add_argument("--transport-backend", choices=["numpy", "jax"], default="numpy",
                             help="opt-in device transport (straight-line stages A/C, including extracted range_out)")
@@ -108,6 +109,8 @@ def build_parser():
             sp.add_argument("--out", default=None, metavar="ROOT", help="library file to write")
             sp.add_argument("--generated", type=int, default=None,
                             help="generated events behind the inputs when --gen is not their own gen stream (production)")
+            sp.add_argument("--roots", action="store_true",
+                            help="keep the step-tree root of every descendant row (root-coherent draws, strict_v5)")
         if name == "v4photons":
             sp.add_argument("--deviation", default=None, metavar="CSV", help="CRVPhoton table, channel,deviation (default 0)")
             sp.add_argument("--max-steps", type=int, default=None, help="first N steps only (the stock arm is a Python loop)")
