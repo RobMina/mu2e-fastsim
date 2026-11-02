@@ -3,13 +3,16 @@
 The response (photons, SiPM charges), waveforms and reco have had JAX twins since the first port (`runchain --jax`).
 This page covers the two later opt-in device backends for the steps: **transport** (`--transport-backend jax`) and
 **tier 1b** (`--tier1b-backend jax`). NumPy stays the default for both; JAX is optional and imported only when one
-of them is requested. Both implement the extracted default model (`range_out` stage-C transport, tier-1b set
-`strict_v4`); neither changes the reference physics or the asset sets.
+of them is requested. The transport implements the extracted default model (`range_out` stage C); the device tier 1b
+implements the previous default set `strict_v4` (hard-muon draws), not the root-coherent draws of the default
+`strict_v5`, so it runs only with `--tier1b strict_v4 --tier1b-dir $CRVFS_DATA/tier1b_strict_v2`. Neither changes the
+reference physics or the asset sets.
 
 ```bash
 python3 -m crvfastsim transport gen.root --stage C --gdml world.gdml --transport-backend jax --outdir device_steps
 python3 -m crvfastsim runchain gen.root --gdml world.gdml --calib calib.csv \
-  --jax --transport-backend jax --tier1b-backend jax --outdir device_chain
+  --jax --transport-backend jax --tier1b-backend jax --tier1b strict_v4 --tier1b-dir "$CRVFS_DATA/tier1b_strict_v2" \
+  --outdir device_chain
 ```
 
 `e2e-bench` and `tier1b-apply` accept the same options.
@@ -37,7 +40,7 @@ python3 -m crvfastsim runchain gen.root --gdml world.gdml --calib calib.csv \
 
 ## Tier-1b contract
 
-- Set `strict_v4` (context, contain, point, topology, unvisited, near-miss, chord, showers and hard-muon draws; the
+- Set `strict_v4` only (context, contain, point, topology, unvisited, near-miss, chord, showers and hard-muon draws; the
   sampler also replays the same options without the hard draws). Mirror, translate, follow and stop-product sampling are not ported.
 - Preparation builds immutable sorted support and CSR donor histories from the checked library and sidecars; every
   bound comes from the whole library, never from a validation shard. Missing positive-probability support raises;

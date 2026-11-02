@@ -11,7 +11,7 @@ Samples: `g4ref_v1` is the Geant4 reference of the extracted (KPP) configuration
 library and its templates were built from production files and from odd `g4ref_v2` shards only, so the even `g4ref_v2`
 shards are independent of every design choice.
 
-## Current default chain (extracted_v04: `range_out` transport, tier 1b `strict_v4`)
+## Current default chain (extracted_v04: `range_out` transport, tier 1b `strict_v5`)
 
 The deck comparison runs the stock CRVDQM histograms (CrvStep, digi, pulse and cluster histograms of every sector
 type) for two arms on identical CRY primaries and flags a histogram when its chi2/ndf (event-clustered errors, the
@@ -19,6 +19,15 @@ lowest bin of the energy and momentum histograms left out) exceeds max(2, 3 x th
 Arms: A0g = Geant4 steps + stock response and reco on the generator stream; A1 = fast steps + stock response and reco;
 E2E = fast steps + fast response + fast reco; A2/A3/A4 = fast response / fast reco / both on Geant4 steps; A0' = A0
 with reseeded digitisation (the floor).
+
+| Check | Reference | Sample | Metric | Result | Threshold | Verdict | Date | Commit |
+|---|---|---|---|---|---|---|---|---|
+| A1 steps, `strict_v5`, paired per-shard statistic | A0g | `g4ref_v2` even shards 22-220, 5 M generated | cluster PE chi2/ndf; above 2000 PE fast / Geant4; histograms over paired 2; counts | cluster PE 1.09 (`strict_v4` 3.28); 0.991 +- 0.014 (0.923 +- 0.014); 31 / 147 (15), dev half 3 (6), confirmation half 20 (7), all occupancy and multiplicity; digis +0.33 +- 0.14 %, pulses +0.37 %, clusters +0.23 % | per-histogram limit | cluster PE closed; NPc, NDigis2, confirmation-half occupancy open (limitations) | 2026-11-02 | `eed5cdd` |
+| E2E end to end, `strict_v5`, paired per-shard statistic | A0g | same, 5 M | cluster PE; above 2000 PE; histograms over paired 2 | 1.50 (`strict_v4` 3.26); 1.009 +- 0.014 (0.937 +- 0.014); 23 / 147 (21) | per-histogram limit | as A1 | 2026-11-02 | `eed5cdd` |
+| V3 tier-1b steps, `strict_v5` | Geant4 steps | dev half 22-120, 2.5 M | NStep chi2/ndf; EX adjacent-layer correlation of descendant energy; descendant energy | 1.29 / 1.48 (two seeds; `strict_v4` 2.92); 0.43 +- 0.07 / 0.39 +- 0.02 (Geant4 0.40 +- 0.02, `strict_v4` 0.24); +0.40 +- 0.67 % | 10 % relative | pass | 2026-11-02 | `eed5cdd` |
+| `strict_v4` reproduced | previous default tables | shards 22-40 | step and particle tables | identical | identical | pass | 2026-11-02 | `eed5cdd` |
+
+The rows below ran on the previous default `strict_v4` (hard-muon draws instead of root-coherent draws).
 
 | Check | Reference | Sample | Metric | Result | Threshold | Verdict | Date | Commit |
 |---|---|---|---|---|---|---|---|---|

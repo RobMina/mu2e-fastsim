@@ -20,7 +20,41 @@ The device sampler (`--tier1b-backend jax`) implements `strict_v4` only and need
 
 ## Evidence for root-coherent draws (2026-11-02)
 
-@EVIDENCE@
+Why: one step tree (a delta ray and its cascade, all steps that share the muon's direct child) deposits in several
+layers along the muon, and 77 % of the Geant4 adjacent-layer covariance of muon-descendant energy in EX comes from single
+trees. Attaching each step to the crossing of its bar cuts a tree at the crossings (84 % of the same-tree product ends
+up on different crossings), so independent draws per crossing lose the correlation and the very hard clusters. The
+root-coherent draw keeps each tree with the first crossing it touches; a draw takes the trees anchored on the drawn
+crossing, and every row goes to the fast crossing at its library distance along the muon (draw cells carry the symbol
+of the next crossing). A tree is cut where it leaves its module. The hard-muon draws of `strict_v4` are not used.
+
+Held-out sample: even `g4ref_v2` shards 22-220, 5 M generated events, none used by the library; dev half 22-120 for
+the choice (made on a half-size library), confirmation half 122-220 looked at for the chosen draw. Errors are the
+paired per-shard statistic (arms share the generated events shard by shard; a null has mean 1).
+
+| Quantity | Geant4 | `strict_v4` | `strict_v5` |
+|---|---:|---:|---:|
+| EX adjacent-layer correlation of muon-descendant energy, per muon (dev, two seeds) | 0.403 +- 0.023 | 0.244 +- 0.013 | 0.43 +- 0.07 / 0.39 +- 0.02 |
+| NStep per event vs Geant4, chi2/ndf (dev, two seeds; confirmation) | - | 2.92 | 1.29 / 1.48; 1.58 |
+| descendant energy vs Geant4 (dev) | - | -0.0 +- 0.7 % | +0.40 +- 0.67 % |
+| cluster PE, fast steps + stock response (A1) vs Geant4 (A0g), paired chi2/ndf, 5 M | - | 3.28 | **1.09** |
+| same, dev / confirmation half | - | 2.28 / 1.94 | 0.93 / 1.09 |
+| cluster PE end to end (E2E) vs A0g, 5 M | - | 3.26 | 1.50 |
+| clusters above 2000 PE, A1 / A0g, 5 M | - | 0.923 +- 0.014 | **0.991 +- 0.014** |
+| digis, pulses, clusters A1 / A0g - 1, 5 M | - | +0.19, +0.24, +0.12 % (+- 0.14, 0.13, 0.10) | +0.33, +0.37, +0.23 % |
+| tier-1b sampling, one CPU core | - | 16.3 k generated/s | 16.5 k generated/s |
+
+Open with this default (limitations.md): NPc (coincidence clusters per event) is not moved (A1 vs A0g paired 2.02,
+`strict_v4` 1.91); NDigis2 and NPulse2 (wide-range multiplicities) are worse (3.04 and 2.10, against 1.28 and 1.99); on
+the confirmation half the digi, pulse and cluster yields are +0.29 +- 0.16 % above `strict_v4` with a flat per-SiPM
+ratio, which flags the occupancy histograms there (dev half -0.02 +- 0.15 %; two tier-1b seeds on the dev half differ
+by 0.22 +- 0.20 %). Device tier 1b does not implement root-coherent draws.
+
+**Library.** Rebuilt from the same 20 production donors with the step-tree root of every descendant row; its bins,
+crossings, descendant rows, showers and reach tables are identical row for row to the `strict_v4` library (only the
+`root` column is added). The topology sidecar is rebuilt on it; the template sidecar keeps the near-miss templates and
+census of `strict_v4`. `tier1b-apply --tier1b strict_v4` reproduces the previous default's step and particle tables exactly (shards
+22-40).
 
 ## Earlier option combinations
 

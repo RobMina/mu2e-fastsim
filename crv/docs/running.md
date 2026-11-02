@@ -21,12 +21,12 @@ from the umbrella clone, or the project's Apptainer image); JAX only for the dev
 
 ## One shard of the default chain (CPU)
 
-Default = extracted_v04, `range_out` transport, tier-1b set `strict_v4`, NumPy everywhere.
+Default = extracted_v04, `range_out` transport, tier-1b set `strict_v5`, NumPy everywhere.
 
 ```bash
 G="$CRVFS_DATA/g4ref_v2_tables/gen.001400_00000022.root"     # 50,000 generated CRY events
 GEOM="$CRVFS_DATA/geometry"
-python3 -m crvfastsim runchain "$G" --tier1b-dir "$CRVFS_DATA/tier1b_strict_v2" \
+python3 -m crvfastsim runchain "$G" --tier1b-dir "$CRVFS_DATA/tier1b_strict_v5" \
   --gdml "$GEOM/mu2e_extracted_v04.gdml" --calib "$GEOM/crvcalib_sim_best_v1_5_run1400.csv" \
   --deviation "$GEOM/crvphoton_sim_best_v1_5_run1400.csv" \
   --max-events 1000 --seed 22 --outdir "$M2FS_DATA/crv-smoke/chain"
@@ -35,8 +35,8 @@ python3 -m crvfastsim runchain "$G" --tier1b-dir "$CRVFS_DATA/tier1b_strict_v2" 
 `runchain_stats.json` in the output directory holds the counts per stage (steps, digis, pulses, clusters per sector
 type) and the cost per stage; the resolved tier-1b set, its pinned hash and every input path are recorded there too.
 Remove `--max-events` for the whole shard. Even at 1,000 events the job peaks at about 9 GB (library and lookup
-tables), and the one-time setup takes about a minute; the whole shard takes longer. The `strict_v4` files
-live in the directory `tier1b_strict_v2` (the set reuses that library).
+tables), and the one-time setup takes about a minute; the whole shard takes longer. The `strict_v5` files
+live in the directory `tier1b_strict_v5`; those of the previous default `strict_v4` in `tier1b_strict_v2`.
 
 Timing, fingerprints and repeated passes on the same inputs:
 
@@ -59,7 +59,7 @@ Add `--jax` (response, waveforms, reco on the device) and optionally `--transpor
 
 | Option | Effect |
 |---|---|
-| `--tier1b strict_v4` | the tier-1b set (the default and only set); earlier option combinations run with `tier1b-apply --library` and explicit flags ([tier1b-default.md](tier1b-default.md)) |
+| `--tier1b strict_v5\|strict_v4` | the tier-1b set: `strict_v5` (default, root-coherent draws) or `strict_v4` (the previous default, hard-muon draws; `--tier1b-dir $CRVFS_DATA/tier1b_strict_v2`); earlier option combinations run with `tier1b-apply --library` and explicit flags ([tier1b-default.md](tier1b-default.md)) |
 | `--library LIB` | a custom tier-1b library without placement |
 | `--legacy-transport` | the stage-C transport before `range_out` ([transport-range-out.md](transport-range-out.md)) |
 | `--run-config NAME` | a named configuration (needs a tier-1b library that does not exist today) |
