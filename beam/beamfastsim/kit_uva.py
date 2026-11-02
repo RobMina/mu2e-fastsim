@@ -11,7 +11,8 @@ The kit host must reach both the endpoint and the FNAL host by ssh for the point
 
 Environment (site.env): FASTSIMKIT_FNAL_HOST (required: the FNAL host the input is streamed from),
 FASTSIMKIT_BEAM_DATA (FNAL dir holding g4ref_full/g4ref.npz; default <M2FS_INPUTS or M2FS_DATA>/beam_fastsim),
-FASTSIMKIT_BEAM_CODE (default <FASTSIMKIT_SCRATCH>/beam_code_kit), FASTSIMKIT_CODE_REF (default main).
+FASTSIMKIT_BEAM_CODE (default <FASTSIMKIT_SCRATCH>/beam_code_kit), FASTSIMKIT_CODE_REF (default main),
+FASTSIMKIT_STREAM_POLL_S (seconds between queue checks until the inputs are streamed; default 10).
 They are read when the source or the code snapshot is first needed; a missing one raises site.SiteConfigError.
 """
 from __future__ import annotations
@@ -72,11 +73,12 @@ def validate(params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 class BeamPointStream:
-    def __init__(self, kit, source=None, code=None, background=True, poll_s=10.0):
+    def __init__(self, kit, source=None, code=None, background=True, poll_s=None):
         self.kit, self.ep = kit, kit.ep
         self._source, self._code = source, code
         self.code_ref = os.environ.get("FASTSIMKIT_CODE_REF", "main")
-        self.background, self.poll_s = background, poll_s
+        self.background = background
+        self.poll_s = float(os.environ.get("FASTSIMKIT_STREAM_POLL_S", 10.0)) if poll_s is None else poll_s
         self.dir = Path(kit.out_root).parent / "beam_point"
         self.dir.mkdir(parents=True, exist_ok=True)
         self._threads: Dict[str, threading.Thread] = {}
