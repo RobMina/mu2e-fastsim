@@ -146,20 +146,88 @@ def compare(ref, fast_glob, geom, field, mode):
     return out
 
 
+def _paired_mean(a, b):
+    """Mean of b - a over the same starts with its standard error, and b.mean() / a.mean() with the paired error."""
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    d = b - a
+    n = d.size
+    ma, mb = a.mean(), b.mean()
+    sd = d.std(ddof=1) / np.sqrt(n) if n > 1 else np.nan
+    ratio = mb / ma if ma > 0 else np.nan
+    # delta method on the ratio of correlated means: var(b/a) = var(b - r a) / (n a^2)
+    rerr = (b - ratio * a).std(ddof=1) / (np.sqrt(n) * ma) if n > 1 and ma > 0 else np.nan
+    return dict(base=float(ma), cand=float(mb), diff=float(d.mean()), diff_err=float(sd), ratio=float(ratio),
+                ratio_err=float(rerr))
+
+
+def pair(base_glob, cand_glob, geom, field):
+    """Two fast runs of the same starts, row for row (e.g. the NumPy chain and the device chain): per-start yields
+    inside each selection, E - E_CE tail fractions per start in 0.25 MeV bins (paired differences), MPV / FWHM / mean,
+    plane shapes (two-sample chi2, arms treated as independent) and same-start momentum and time-of-flight differences."""
+    A, B = fast_plane(glob.glob(base_glob)), fast_plane(glob.glob(cand_glob))
+    if not (np.array_equal(A["idx"], B["idx"]) and np.array_equal(A["t0"], B["t0"])):
+        raise ValueError("pair: the two runs do not hold the same starts in the same order (same --seed, --n, "
+                         "--chunk / --nchunks and files)")
+    n = A["fate"].size
+    oa, ob = observables(geom, field, A), observables(geom, field, B)
+
+    def full(s, o, k):
+        v = np.full(n, np.nan)
+        v[s["ok"]] = o[k]
+        return v
+    pa, pb = full(A, oa, "p"), full(B, ob, "p")
+    ra, rb = full(A, oa, "rmax"), full(B, ob, "rmax")
+    da, db = full(A, oa, "dE"), full(B, ob, "dE")
+    out = dict(mode="pair", rows=int(n), wall_s=dict(base=A["wall"], cand=B["wall"]),
+               fates={f: _paired_mean(A["fate"] == k, B["fate"] == k) for k, f in enumerate(C.FATES)},
+               crossings={k: dict(base=float(A[k].mean()), cand=float(B[k].mean())) for k in ("nfoil", "nipa",
+                                                                                              "nopa")}, cuts={})
+    rng = np.random.default_rng(1)
+    for rc in RMAX_CUTS:
+        sa = A["ok"] & (np.nan_to_num(pa) > P_MIN) & (np.nan_to_num(ra) > rc)
+        sb = B["ok"] & (np.nan_to_num(pb) > P_MIN) & (np.nan_to_num(rb) > rc)
+        c = dict(yield_per_start=_paired_mean(sa, sb))
+        c["energy"] = dict(base=energy_metrics(da[sa], n, rng), cand=energy_metrics(db[sb], n, rng))
+        c["tail_bins"] = [_paired_mean(sa & (da >= lo) & (da < hi), sb & (db >= lo) & (db < hi))
+                          for lo, hi in zip(DE_EDGES[:-1], DE_EDGES[1:])]
+        c["below"] = _paired_mean(sa & (da < DE_EDGES[0]), sb & (db < DE_EDGES[0]))
+        ma, mb = sa[A["ok"]], sb[B["ok"]]
+        for k in ("p", "cos", "r", "rmax", "tof", "t"):
+            a, b = oa[k][ma], ob[k][mb]
+            e = quantile_edges(a, NBINS, lo=min(a.min(), b.min()), hi=max(a.max(), b.max()))
+            c2, nd = chi2(a, b, e)
+            c[k] = dict(base=summary(a), cand=summary(b), chi2=c2, ndf=nd - 1, chi2_ndf=c2 / max(nd - 1, 1))
+        both = sa & sb
+        c["same_start"] = dict(n=int(both.sum()), dp=summary(pb[both] - pa[both]),
+                               dtof=summary((B["t"] - B["t0"])[both] - (A["t"] - A["t0"])[both]))
+        out["cuts"][str(rc)] = c
+    return out
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python3 -m beamfastsim.cecompare", description=__doc__.split("\n")[0])
-    ap.add_argument("--ref", required=True)
+    ap.add_argument("--ref", help="Geant4 reference (modes stops, ref)")
     ap.add_argument("--fast", required=True, help="glob of cechain output npz files")
-    ap.add_argument("--mode", choices=("stops", "ref"), required=True)
+    ap.add_argument("--base", help="mode pair: glob of the baseline fast run on the same starts")
+    ap.add_argument("--mode", choices=("stops", "ref", "pair"), required=True)
     ap.add_argument("--geom", default="Offline/Mu2eG4/geom/geom_common.txt")
     ap.add_argument("--offline-root", required=True)
     ap.add_argument("--maps", nargs="+", required=True)
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
-    rep = compare(a.ref, a.fast, C.from_offline(a.geom, a.offline_root), C.field_maps(a.maps), a.mode)
+    geom, field = C.from_offline(a.geom, a.offline_root), C.field_maps(a.maps)
+    if a.mode == "pair":
+        if not a.base:
+            ap.error("--mode pair needs --base")
+        rep = pair(a.base, a.fast, geom, field)
+    else:
+        if not a.ref:
+            ap.error(f"--mode {a.mode} needs --ref")
+        rep = compare(a.ref, a.fast, geom, field, a.mode)
     with open(a.out, "w") as fh:
         json.dump(rep, fh, indent=1, default=float)
-    print(json.dumps({k: rep[k] for k in ("fast_rows", "fast_fates", "fast_us_per_e")}, default=float))
+    keys = ("rows", "fates") if a.mode == "pair" else ("fast_rows", "fast_fates", "fast_us_per_e")
+    print(json.dumps({k: rep[k] for k in keys}, default=float))
 
 
 if __name__ == "__main__":
