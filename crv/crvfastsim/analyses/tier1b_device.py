@@ -1,4 +1,4 @@
-"""Opt-in device tier1b-apply caller; the NumPy analysis caller remains untouched."""
+"""Device tier1b-apply caller (strict_v5, strict_v4); the NumPy analysis caller remains the reference."""
 import os
 
 import numpy as np
@@ -9,9 +9,8 @@ from .tier1b import _geom
 
 
 def apply(inputs, outdir, seed=1, counters=None, tier1b_set=None, tier1b_dir=None, library=None, **kw):
-    if library or tier1b_set != "strict_v4":
-        raise ValueError("device tier1b-apply implements the strict_v4 asset set only (no root-coherent draws): "
-                         "pass --tier1b strict_v4")
+    if library or (tier1b_set or tier1b_assets.DEFAULT) not in ("strict_v5", "strict_v4"):
+        raise ValueError("device tier1b-apply implements the strict_v5 and strict_v4 asset sets only")
     flags = ("crossing_context", "contain_steps", "point_placement", "mirror_offsets", "translate_offsets",
              "topology_sidecar", "template_sidecar", "unvisited_layers", "near_miss", "chord_placement", "follow_muon")
     if any(kw.get(k) for k in flags):

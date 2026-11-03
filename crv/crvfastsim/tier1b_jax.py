@@ -1,6 +1,8 @@
-"""Experimental strict-v3 device sampler; NumPy reference and defaults stay unchanged."""
+"""Device tier-1b sampler of the strict sets (strict_v4 hard-muon draws, strict_v5 root-coherent draws); the NumPy
+sampler in tier1b.py is the reference."""
 from __future__ import annotations
 
+import functools
 import time
 
 import numpy as np
@@ -113,9 +115,14 @@ def _uv_select(lib, cells, u):
 
 
 def _main_place(ld, lx, xgeo, fx, visits, g, rows, ix, picks):
+    return _place(ld, lx, xgeo, fx, visits, g, rows, ix, picks[ix])
+
+
+def _place(ld, lx, xgeo, fx, visits, g, rows, ix, xid, free=None, ax=None):
+    """Placement of library rows on fast crossings ix (xid: each row's library crossing). free (anchored draws): rows
+    whose tree goes on without the muon, offset from their anchor library crossing ax (tier1b._desc_for_crossings)."""
     _, j = _jax()
     d = {c: v[rows] for c, v in ld.items()}
-    xid = picks[ix]
     lu = _vectors(lx, ["ux", "uy", "uz"])[xid]
     fu = _unit(fx["mom"])[ix]
     entry, xb = fx["entry"][ix], fx["bar"][ix]
@@ -123,6 +130,8 @@ def _main_place(ld, lx, xgeo, fx, visits, g, rows, ix, picks):
     mo = _vectors(d, ["px0", "py0", "pz0"])
     r0, r1, mom = entry + _rotate(d0, lu, fu), entry + _rotate(d1, lu, fu), _rotate(mo, lu, fu)
     same = d["samebar"] == 1
+    if free is not None:
+        same = same & ~free
     cl, cf = xgeo["exit"][xid] - xgeo["entry"][xid], fx["exit"][ix] - entry
     ll, lf = d["chord_ll"], j.linalg.norm(cf, axis=1)
     ul, uf = _vectors(d, ["chord_ux", "chord_uy", "chord_uz"]), cf / j.maximum(lf, 1e-12)[:, None]
@@ -135,7 +144,17 @@ def _main_place(ld, lx, xgeo, fx, visits, g, rows, ix, picks):
     r1 = j.where(chord[:, None], entry + s1, r1)
     mom = j.where(chord[:, None], _rotate(mo, ul, uf), mom)
     bar = _bar((r0 + r1) * .5, g)
-    target = g["center"][xb] + _vectors(d, ["dcx", "dcy", "dcz"])
+    dc = _vectors(d, ["dcx", "dcy", "dcz"])
+    fhit = j.zeros(len(rows), bool)
+    if free is not None:   # the tree goes on without the muon: offset from the anchor's library entry, rotated
+        off = xgeo["entry"][xid] - xgeo["entry"][ax]
+        f0, f1 = entry + _rotate(d0 + off, lu, fu), entry + _rotate(d1 + off, lu, fu)
+        fb = _bar((f0 + f1) * .5, g)
+        fhit = free & (fb >= 0)
+        fbs = j.maximum(fb, 0)
+        f0, f1 = _fit(f0, f1, g["center"][fbs], g["half"][fbs])
+        dc = j.where(free[:, None], dc + (g["center"][xgeo["bar"][xid]] - g["center"][xgeo["bar"][ax]]), dc)
+    target = g["center"][xb] + dc
     l0, l1 = _vectors(d, ["lx0", "ly0", "lz0"]), _vectors(d, ["lx1", "ly1", "lz1"])
     tb = _bar(target, g)
     xa = g["axis"][xb, 2]
@@ -181,6 +200,9 @@ def _main_place(ld, lx, xgeo, fx, visits, g, rows, ix, picks):
     inside = j.all(midpoint >= g["center"][tbs] - g["half"][tbs], axis=1) & j.all(midpoint <= g["center"][tbs] + g["half"][tbs], axis=1)
     off_end = (tb >= 0) & ~inside
     o0, o1 = _fit(o0, o1, g["center"][tbs], g["half"][tbs])
+    if free is not None:
+        o0, o1 = j.where(fhit[:, None], f0, o0), j.where(fhit[:, None], f1, o1)
+        tb, mo = j.where(fhit, fb, tb), j.where(fhit[:, None], mom, mo)
     r0, r1 = j.where(same[:, None], r0, o0), j.where(same[:, None], r1, o1)
     bar, mom = j.where(same, bar, tb), j.where(same[:, None], mom, mo)
     clamp = same & (bar != xb)
@@ -196,9 +218,13 @@ def _main_place(ld, lx, xgeo, fx, visits, g, rows, ix, picks):
                                                        (j.abs(r1 - g["center"][xb]) > g["half"][xb]), axis=1)
     a0, a1 = _fit(r0, r1, g["center"][xb], g["half"][xb])
     r0, r1 = j.where(escaped[:, None], a0, r0), j.where(escaped[:, None], a1, r1)
-    return dict(r0=r0, r1=r1, mom=mom, bar=bar, clamp=clamp, chord=chord, other=~same,
-                no_bar=no_bar & ~same, axis=(~no_bar) & (g["axis"][j.maximum(_bar(target, g), 0), 2] != xa) & ~same,
-                point=point & ~same, topology=topology & ~same, off_end=off_end & ~same)
+    other = ~same & ~fhit
+    out = dict(r0=r0, r1=r1, mom=mom, bar=bar, clamp=clamp, chord=chord, other=other,
+               no_bar=no_bar & other, axis=(~no_bar) & (g["axis"][j.maximum(_bar(target, g), 0), 2] != xa) & other,
+               point=point & other, topology=topology & other, off_end=off_end & other)
+    if free is not None:
+        out.update(free_offset=fhit, free_other=free & ~fhit)
+    return out
 
 
 def _uv_place(uvd, uvx, fx, visits, g, rows, ix, picks):
@@ -337,6 +363,115 @@ def _uv_block(csr, plan, offset, lanes, uvd, uvx, fx, visits, g, picks):
     return _block_fields(values, uvd, fx, rows, ix, valid, 1)
 
 
+def _anchor_meta(x, meta, A, consts):
+    """Anchored draws: per fast crossing the next crossing in time of its muon, its symbol, its (bin, context, next
+    symbol) support and its predecessor (tier1b._support_next, _next_crossing)."""
+    _, j = _jax()
+    valid, n = meta["valid"], len(meta["valid"])
+    ii = j.arange(n, dtype=j.int64)
+    order = j.lexsort((ii, x["t0"], x["mu"], ~valid))
+    ms, ok = x["mu"][order], valid[order]
+    same = ok[:-1] & ok[1:] & (ms[:-1] == ms[1:])
+    nxt = j.full(n, -1, j.int64).at[order[:-1]].set(j.where(same, order[1:], -1))
+    prev = j.full(n, -1, j.int64).at[order[1:]].set(j.where(same, order[:-1], -1))
+    bar = x["bar"]
+    sym = consts["group"][bar] * 4 + j.minimum(consts["rank"][bar], 3)
+    code = meta["bins"] * T.N_CTX + meta["ctx"]
+    fine = code * T.N_SYM + j.where(nxt >= 0, sym[j.maximum(nxt, 0)] + 1, 0)
+    return dict(nxt=nxt, prev=prev, sym=sym, fine=fine, code=code)
+
+
+def _anchor_select(sup, am, bins, u):
+    """Uniform pick in the crossing's (bin, context, next symbol) cell, else its (bin, context) cell, else its bin."""
+    _, j = _jax()
+    out = None
+    for key, want in (("bin", bins), ("code", am["code"]), ("fine", am["fine"])):
+        lo, hi = j.searchsorted(sup[key], want, side="left"), j.searchsorted(sup[key], want, side="right")
+        if out is None:
+            out = (lo, hi)
+        else:
+            use = hi - lo >= T.MIN_CTX_CROSSINGS
+            out = (j.where(use, lo, out[0]), j.where(use, hi, out[1]))
+    lo, hi = out
+    idx = j.minimum(lo + (u * (hi - lo)).astype(j.int64), len(sup["order"]) - 1)
+    return sup["order"][idx], lo, hi
+
+
+def _anchor_rows(A, am, ld, rows, ix, max_dk):
+    """Fast crossing, library crossing, anchor and free flag of anchored rows drawn on crossings ix (tier1b._anchor_rows)."""
+    _, j = _jax()
+    nxt, fsym = am["nxt"], am["sym"]
+    dk, rx = A["dk"][rows], ld["xid"][rows]
+    want, fwd = A["sym"][rx], dk > 0
+    step = lambda c: j.where(c >= 0, nxt[j.maximum(c, 0)], -1)
+    cur = ix
+    for d in range(1, max_dk + 1):
+        cur = j.where(dk >= d, step(cur), cur)
+    ok = (cur >= 0) & (~fwd | (fsym[j.maximum(cur, 0)] == want))
+    miss = fwd & ~ok
+    at = j.where(miss, ix, -1)
+    for _ in range(T.MAX_WALK):
+        at = step(at)
+        hit = (at >= 0) & (fsym[j.maximum(at, 0)] == want)
+        cur, ok, at = j.where(hit, at, cur), ok | hit, j.where(hit, -1, at)
+    layer = miss & ~ok & (fsym[ix] == want)
+    cur, ok = j.where(layer, ix, cur), ok | layer
+    free = fwd & ~ok
+    return j.where(free, ix, cur), rx, A["axid"][rows], free, fwd
+
+
+def _anchor_block(csr, plan, offset, lanes, A, am, ld, lx, xgeo, fx, visits, g, picks, max_dk=0):
+    from .tier1b_csr_jax import block
+    ix, rows, valid = block(csr, plan, offset, lanes)
+    cur, rx, ax, free, fwd = _anchor_rows(A, am, ld, rows, ix, max_dk)
+    values = _place(ld, lx, xgeo, fx, visits, g, rows, cur, rx, free, ax)
+    out = _block_fields(values, ld, fx, rows, cur, valid, 0)
+    out.update(fwd=fwd & valid, free=free & valid)
+    return out
+
+
+def _entered_block(csr, plan, offset, lanes, A, am, ld, lx, xgeo, fx, visits, g, picks):
+    from .tier1b_csr_jax import block
+    _, j = _jax()
+    ix, rows, valid = block(csr, plan, offset, lanes)
+    values = _place(ld, lx, xgeo, fx, visits, g, rows, ix, picks[ix], j.zeros(len(rows), bool), picks[ix])
+    out = _block_fields(values, ld, fx, rows, ix, valid, 0)
+    out.update(fwd=j.zeros(len(rows), bool), free=j.zeros(len(rows), bool))
+    return out
+
+
+def _unfed(A, am, picks, valid):
+    """Fast crossings their predecessor's pick does not feed: they keep their pick's rows entered from behind."""
+    _, j = _jax()
+    prev = am["prev"]
+    ln = A["next"][picks[j.maximum(prev, 0)]]
+    fed = (prev >= 0) & (ln >= 0) & (A["sym"][j.maximum(ln, 0)] == am["sym"])
+    return valid & ~fed
+
+
+def _prepare_anchor(lib, ld_pos, n_xing):
+    """Device form of tier1b.attach_anchors: draw support in cell order, anchored-row and entered-row CSR (never-visited
+    rows left out, as drop_unvisited does), per-row distance and anchor in device row order."""
+    from . import tier1b_csr_jax as csr
+    _, j = _jax()
+    A, lx = lib["anchor"], lib["libxing"]
+    xo = A["xing_order"]
+    sl = lx.take(xo)
+    sup = {"fine": j.asarray(A["cell"][xo]),
+           "code": j.asarray(sl.bin.to_numpy() * T.N_CTX + sl.ctx.to_numpy()),
+           "bin": j.asarray(sl.bin.to_numpy()), "order": j.asarray(sl.xid.to_numpy())}
+    uv = lib["libdesc"].uv.to_numpy() if "uv" in lib["libdesc"].columns else np.zeros(len(lib["libdesc"]), bool)
+    keep = ~uv[A["order"]]
+    main = csr.prepare(A["sorted"], n_xing, keep)
+    main["rows"] = j.asarray(ld_pos[A["order"][np.asarray(main["rows"])]] if keep.any() else [0], dtype=j.int64)
+    ent = csr.prepare(A["ent_sorted"], n_xing)
+    ent["rows"] = j.asarray(ld_pos[A["ent_rows"]] if len(A["ent_rows"]) else [0], dtype=j.int64)
+    dk, axid = np.empty_like(A["dk"]), np.empty_like(A["axid"])
+    dk[ld_pos], axid[ld_pos] = A["dk"], A["axid"]
+    dev = {"dk": j.asarray(dk), "axid": j.asarray(axid), "sym": j.asarray(A["sym"]), "next": j.asarray(A["next"])}
+    return sup, main, ent, dev, int(A["dk"].max()) if len(A["dk"]) else 0
+
+
 class DeviceTier1b:
     """Prepared strict-v3 device metadata/CSR/placement; final ancestry publication stays on the host."""
     def __init__(self, lib, geom, batch_size=2048):
@@ -374,7 +509,7 @@ class DeviceTier1b:
             self.ld["chord_perp" + c] = perp[:, k]
             self.ld["chord_delta" + c] = delta[:, k]
         self.dld, self.dlx, self.duvd = _array_frame(self.ld), _array_frame(self.lx), _array_frame(self.uvd)
-        self.xgeo = {k: j.asarray(v) for k, v in lib["xgeo"].items() if k in ("entry", "exit")}
+        self.xgeo = {k: j.asarray(v) for k, v in lib["xgeo"].items() if k in ("entry", "exit", "bar")}
         self.uvx = j.asarray(lib["uvxing"]["entry"])
         lid, width = T.layer_slots(geom)
         code, order = T._slot_lookup(geom)
@@ -396,12 +531,23 @@ class DeviceTier1b:
         self.main_select = dprec.jit(_main_select)
         self.uv_select = dprec.jit(_uv_select)
         self.main_place, self.uv_place, self.closest = dprec.jit(_main_place), dprec.jit(_uv_place), dprec.jit(_closest)
+        self.anchor = None
+        if "anchor" in lib:   # root-coherent draws (strict_v5)
+            perm = np.argsort(lib["libdesc"].xid.to_numpy(), kind="stable")
+            ld_pos = np.empty(len(perm), np.int64)
+            ld_pos[perm] = np.arange(len(perm))
+            sup, amain, aent, adev, max_dk = _prepare_anchor(lib, ld_pos, len(self.lx))
+            self.anchor = dict(support=sup, main=amain, entered=aent, A=adev)
+            self.anchor_meta, self.anchor_select = dprec.jit(_anchor_meta), dprec.jit(_anchor_select)
+            self.anchor_unfed = dprec.jit(_unfed)
+            self.anchor_block = dprec.jit(functools.partial(_anchor_block, max_dk=max_dk))
+            self.entered_block = dprec.jit(_entered_block)
         jax.block_until_ready((self.support, self.g, self.dld, self.dlx, self.duvd, self.xgeo, self.uvsupport,
-                               self.metadata_constants, self.main_csr, self.uv_csr, self.hard))
+                               self.metadata_constants, self.main_csr, self.uv_csr, self.hard, self.anchor))
         self.preparation_s = time.perf_counter() - tick
         self.device_bytes = sum(a.nbytes for a in jax.tree.leaves((self.support, self.g, self.dld, self.dlx,
                                                                   self.duvd, self.xgeo, self.uvx, self.uvsupport, self.metadata_constants,
-                                                                  self.main_csr, self.uv_csr, self.hard)))
+                                                                  self.main_csr, self.uv_csr, self.hard, self.anchor)))
         self.last = {}
 
     def device_metadata(self, arrays):
@@ -518,6 +664,72 @@ class DeviceTier1b:
                          hi=np.asarray(selection["hi"])[:n], rows=rows, ix=ix, values=val, kept=kept)
         return out[kept].reset_index(drop=True), int((~kept).sum()), int(val["clamp"].sum()), why, selection["metadata"]
 
+    def plan_anchored(self, arrays, uniforms, metadata=None):
+        """Root-coherent draws: picks in the (bin, context, next symbol) cells, then CSR plans of the trees anchored on
+        the picks and of the rows that unfed crossings keep from behind; device buffers only."""
+        xx, vv, meta = self.device_metadata(arrays) if metadata is None else metadata
+        if uniforms.shape != meta["valid"].shape:
+            raise ValueError("device donor uniforms must match padded crossing lanes")
+        a = self.anchor
+        am = self.anchor_meta(xx, meta, a["A"], self.metadata_constants)
+        picks, lo, hi = self.anchor_select(a["support"], am, meta["bins"], uniforms)
+        unfed = self.anchor_unfed(a["A"], am, picks, meta["valid"])
+        return dict(picks=picks, lo=lo, hi=hi, am=am, unfed=unfed, metadata=(xx, vv, meta),
+                    plan=self.csr_layout(a["main"], picks, meta["valid"]),
+                    entered=self.csr_layout(a["entered"], picks, unfed),
+                    missing=((hi <= lo) & meta["valid"]).any())
+
+    def anchored_blocks(self, selection, component="main"):
+        """Device placement blocks of the anchored trees (main) or of the rows unfed crossings keep (entered)."""
+        _, j = _jax()
+        if bool(selection["missing"]):
+            raise ValueError("empty library bin")
+        xx, vv, _ = selection["metadata"]
+        a, lanes = self.anchor, j.arange(self.batch_size, dtype=j.int64)
+        kernel, plan = (self.anchor_block, selection["plan"]) if component == "main" else (self.entered_block, selection["entered"])
+        args = (a["A"], selection["am"], self.dld, self.dlx, self.xgeo, xx, vv, self.g, selection["picks"])
+        for start in range(0, int(plan["total"]), self.batch_size):
+            yield kernel(a[component], plan, j.asarray(start), lanes, *args)
+
+    def anchored(self, fx, rng, trace=None):
+        jax, j = _jax()
+        from .tier1b_metadata_jax import crossing_arrays
+        arrays = crossing_arrays(fx)
+        n = len(fx)
+        uniforms = j.pad(j.asarray(rng.random(n)), (0, _bucket(n) - n))
+        selection = self.plan_anchored(arrays, uniforms)
+        parts = []
+        for component, plan in (("main", selection["plan"]), ("entered", selection["entered"])):
+            chunks = {}
+            for out in self.anchored_blocks(selection, component):
+                for c, v in dprec.host(jax.device_get(out)).items():
+                    chunks.setdefault(c, []).append(v)
+            total = int(plan["total"])
+            parts.append({c: np.concatenate(v)[:total] for c, v in chunks.items()} if total else None)
+        nmain = int(selection["plan"]["total"])
+        have = [p for p in parts if p is not None]
+        if have:
+            val = {c: np.concatenate([p[c] for p in have]) for c in have[0]}
+        else:
+            val = self._collect_blocks(dict(selection, plan=dict(total=0)), "main")
+            val.update({c: np.zeros(0, bool) for c in ("fwd", "free", "free_offset", "free_other", "other", "no_bar",
+                                                       "axis", "off_end", "chord", "point", "topology")})
+        e = self.ld.edep.to_numpy()[val["rows"]]
+        fwd, free = val["fwd"], val["free"]
+        info = {"forward": int(fwd.sum()), "forward_free": int(free.sum()),
+                "forward_edep": float(e[:nmain][fwd[:nmain]].sum()), "forward_edep_free": float(e[:nmain][free[:nmain]].sum()),
+                "unfed": int(np.asarray(selection["unfed"]).sum()), "kept_entered": len(e) - nmain,
+                "kept_entered_edep": float(e[nmain:].sum())}
+        out = _block_frame(val)
+        kept = val["bar"] >= 0
+        why = {c: int(val[c].sum()) for c in ("other", "no_bar", "axis", "off_end", "chord", "point", "topology")}
+        why.update({f"anchor_{k}": v for k, v in info.items()})
+        if free.any():
+            why.update(anchor_free_offset=int(val["free_offset"].sum()), anchor_free_other=int(val["free_other"].sum()))
+        if trace is not None:
+            trace.update(picks=np.asarray(selection["picks"])[:n], rows=val["rows"], ix=val["ix"], values=val, kept=kept)
+        return out[kept].reset_index(drop=True), int((~kept).sum()), int(val["clamp"].sum()), why, selection["metadata"]
+
     def unvisited(self, fx, rng, metadata):
         _, j = _jax()
         n = len(fx)
@@ -596,12 +808,20 @@ class DeviceTier1b:
             raise ValueError("device sampler currently supports only strict_v3 options")
         if options.get("showers", True) is not True:
             raise ValueError("device sampler currently requires strict_v3 showers")
-        unknown = set(options) - set(required) - {"showers", "mirror", "translate", "follow", "hard"}
+        unknown = set(options) - set(required) - {"showers", "mirror", "translate", "follow", "hard", "anchor"}
         if unknown:
             raise ValueError(f"unknown device options: {sorted(unknown)}")
+        anchor = bool(options.get("anchor", False))
+        if anchor and options.get("hard", False):
+            raise ValueError("device sampler: anchored draws and hard-muon draws are separate sets")
+        if anchor and self.anchor is None:
+            raise ValueError("device anchored draws need a library with attach_anchors (strict_v5)")
         tick = time.perf_counter()
         fx = fast_steps.copy()
-        desc, n_drop, n_clamp, why, metadata = self.descendants(fx, rng, hard=options.get("hard", False))
+        if anchor:
+            desc, n_drop, n_clamp, why, metadata = self.anchored(fx, rng)
+        else:
+            desc, n_drop, n_clamp, why, metadata = self.descendants(fx, rng, hard=options.get("hard", False))
         desc_done = time.perf_counter()
         sh = self.showers(gen, rng)
         shower_done = time.perf_counter()

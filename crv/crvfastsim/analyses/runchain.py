@@ -245,9 +245,8 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         raise ValueError(f"unknown tier1b backend {tier1b_backend!r}")
     if tier1b_backend == "jax":
         from ..tier1b_jax import DeviceRandom, DeviceTier1b
-        if spec.name != "strict_v4" or rc.name != runconfig.DEFAULT:
-            raise ValueError("device tier1b currently supports extracted strict_v4 only (no root-coherent draws): "
-                             "pass --tier1b strict_v4")
+        if spec.name not in ("strict_v5", "strict_v4") or rc.name != runconfig.DEFAULT:
+            raise ValueError("device tier1b supports the extracted strict_v5 and strict_v4 sets only")
         if kw.get("prefetch"):
             raise ValueError("device tier1b prefetch is not certified")
         if tier1b_context is not None and prepared is None:
