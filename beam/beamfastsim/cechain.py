@@ -95,6 +95,9 @@ class Result(NamedTuple):
     rec_u: np.ndarray = None
     rec_T: np.ndarray = None
     rec_t: np.ndarray = None
+    nvac: np.ndarray = None    # device chain: vacuum steps, slab steps and waits per lane (loop diagnostics)
+    nslab: np.ndarray = None
+    nstall: np.ndarray = None
 
 
 def field_maps(headers):
@@ -498,23 +501,68 @@ def main(argv=None):
     ap.add_argument("--step", type=float, default=10.0)
     ap.add_argument("--no-msc", action="store_true")
     ap.add_argument("--no-layer-field", action="store_true")
-    ap.add_argument("--backend", choices=("numpy", "jax"), default="numpy", help="slab physics in the layers")
+    ap.add_argument("--backend", choices=("numpy", "jax", "device"), default="numpy",
+                    help="numpy: NumPy chain; jax: NumPy chain with eslab_jax layers; device: the whole chain in JAX "
+                         "(cechain_jax)")
+    ap.add_argument("--device-float", choices=("float64", "float32"), default="float64", help="device chain dtype")
+    ap.add_argument("--batch", type=int, default=0, help="device chain: electrons per transport call (0: all)")
+    ap.add_argument("--lanes", type=int, help="device chain: lanes per launch, refilled from the starts (default all)")
+    ap.add_argument("--chunk-iters", type=int, default=256, help="device chain: iterations between compactions")
+    ap.add_argument("--min-bucket", type=int, default=64, help="device chain: smallest lane bucket")
+    ap.add_argument("--shrink", type=int, default=2, help="device chain: compact once live lanes fit 1/shrink")
+    ap.add_argument("--cand-frac", type=float, default=0.125, help="device chain: crossing sub-batch fraction")
+    ap.add_argument("--slab-frac", type=float, default=0.5, help="device chain: slab sub-batch fraction")
+    ap.add_argument("--unroll", action="store_true", help="device chain: unroll fixed-trip loops (GPU)")
     ap.add_argument("--flat-shells", action="store_true", help="IPA / OPA as flat slabs (no curvature term)")
     ap.add_argument("--z-record", type=float, help="also keep the state at the first crossing of this z plane [mm]")
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     rng = np.random.default_rng(np.random.SeedSequence([a.seed, a.chunk]))
     geom = from_offline(a.geom, a.offline_root)
-    field = field_maps(a.maps)
     x, u, p, t0, idx = _starts(a, rng)
+    field = None if a.backend == "device" else field_maps(a.maps)
     tic = time.time()
-    res = transport(rng, geom, field, x, u, p, t0, h=a.step, msc=not a.no_msc, layer_field=not a.no_layer_field,
-                    backend=a.backend, z_record=a.z_record, shell_curvature=not a.flat_shells)
+    extra = {}
+    if a.backend == "device":
+        res, extra = _device(a, geom, x, u, p, t0)
+    else:
+        res = transport(rng, geom, field, x, u, p, t0, h=a.step, msc=not a.no_msc, layer_field=not a.no_layer_field,
+                        backend=a.backend, z_record=a.z_record, shell_curvature=not a.flat_shells)
     wall = time.time() - tic
     np.savez_compressed(a.out, idx=idx, x0=x, u0=u, p0=p, t0=t0, wall=wall,
                         **{k: v for k, v in res._asdict().items() if v is not None})
     print(json.dumps(dict(n=int(idx.size), wall_s=round(wall, 1), us_per_e=round(1e6 * wall / max(idx.size, 1), 1),
-                          fates={f: int((res.fate == k).sum()) for k, f in enumerate(FATES)}), indent=1))
+                          fates={f: int((res.fate == k).sum()) for k, f in enumerate(FATES)}, **extra), indent=1))
+
+
+def _device(a, geom, x, u, p, t0):
+    """The chain in cechain_jax, in batches of a.batch starts; returns (Result, timing and loop statistics)."""
+    import time
+    import jax
+    from . import cechain_jax
+    dt = np.dtype(a.device_float)
+    t_a = time.time()
+    maps = cechain_jax.device_maps(a.maps, dt)
+    t_maps = time.time() - t_a
+    key = jax.random.fold_in(jax.random.PRNGKey(a.seed), a.chunk)
+    parts, batches = [], []
+    nb = a.batch or x.shape[0]
+    for i, b0 in enumerate(range(0, x.shape[0], nb)):
+        sl = slice(b0, b0 + nb)
+        st, t_b = {}, time.time()
+        parts.append(cechain_jax.transport(jax.random.fold_in(key, i), geom, maps, x[sl], u[sl], p[sl], t0[sl],
+                                           h=a.step, msc=not a.no_msc, layer_field=not a.no_layer_field,
+                                           z_record=a.z_record, shell_curvature=not a.flat_shells, dtype=dt,
+                                           chunk=a.chunk_iters, min_bucket=a.min_bucket, cand_frac=a.cand_frac,
+                                           slab_frac=a.slab_frac, unroll=a.unroll, lanes=a.lanes, shrink=a.shrink,
+                                           stats=st))
+        batches.append(dict(n=int(parts[-1].fate.size), wall_s=round(time.time() - t_b, 2), **st))
+    res = Result(*(None if parts[0][j] is None else np.concatenate([r[j] for r in parts])
+                   for j in range(len(Result._fields))))
+    loop = {k: dict(mean=round(float(getattr(res, k).mean()), 2), max=int(getattr(res, k).max()))
+            for k in ("nvac", "nslab", "nstall")}
+    return res, dict(device=str(jax.devices()[0]), dtype=dt.name, maps_s=round(t_maps, 2), loop=loop,
+                     batches=batches)
 
 
 if __name__ == "__main__":
