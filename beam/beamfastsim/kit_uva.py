@@ -1,4 +1,6 @@
-"""beam_point on an endpoint without FNAL storage (UVA, Slurm over SSH): one one-GPU job, inputs streamed in.
+"""beam_point (and beam_sob) on an endpoint without FNAL storage (UVA, Slurm over SSH): one job, inputs streamed in.
+
+beam_point is one one-GPU job; beam_sob (BeamSobStream) one CPU job on the same route with the boards' beam table.
 
 The Mu2e-internal input (the DS-entrance muon table g4ref.npz, made from MuBeamCat) is never stored on the endpoint:
 when the job starts it writes ``<job dir>/inbox`` (node, tmpfs dir) and the kit pipes the file from the FNAL host
@@ -36,6 +38,8 @@ from mu2efastsim.endpoints.snapshots import prepare_code
 from mu2efastsim.endpoints.submission import submission_lock
 from mu2efastsim.endpoints import geometry as geometry_artifacts
 
+from . import kit_task
+
 G4REF = "g4ref_full/g4ref.npz"
 WAIT_S = 900
 RESOURCES = Resources(cores=8, mem_gb=64, gpus=1, gpu_type="a100", minutes=30)
@@ -66,20 +70,24 @@ class _Source(FnalSource):
         return rel if rel.startswith("/") else super().path(rel)
 
 
-def validate(params: Dict[str, Any]) -> Dict[str, Any]:
-    from . import kit_task
+def validate(params: Dict[str, Any], task: str = "beam_point") -> Dict[str, Any]:
     from mu2efastsim.endpoints.parameters import validate as validate_parameters
-    return validate_parameters("beam_point", params, kit_task.PARAMS)
+    return validate_parameters(task, params, kit_task.SOB_PARAMS if task == "beam_sob" else kit_task.PARAMS)
 
 
 class BeamPointStream:
+    TASK = "beam_point"
+    TABLE = G4REF
+    RESOURCES = RESOURCES
+    BODY = BODY
+
     def __init__(self, kit, source=None, code=None, background=True, poll_s=None):
         self.kit, self.ep = kit, kit.ep
         self._source, self._code = source, code
         self.code_ref = os.environ.get("FASTSIMKIT_CODE_REF", "main")
         self.background = background
         self.poll_s = float(os.environ.get("FASTSIMKIT_STREAM_POLL_S", 10.0)) if poll_s is None else poll_s
-        self.dir = Path(kit.out_root).parent / "beam_point"
+        self.dir = Path(kit.out_root).parent / self.TASK
         self.dir.mkdir(parents=True, exist_ok=True)
         self._threads: Dict[str, threading.Thread] = {}
         self._lock = threading.Lock()
@@ -115,19 +123,19 @@ class BeamPointStream:
         p = self.dir / f"{name}.json"
         return checked_record(p, allow_legacy=True)
 
-    @staticmethod
-    def inputs(p) -> Dict[str, str]:
+    @classmethod
+    def inputs(cls, p) -> Dict[str, str]:
         """Files the kit streams: {FNAL rel or abs path: name in the job's tmpfs}."""
-        out = {G4REF: "g4ref.npz"}
+        out = {cls.TABLE: "g4ref.npz"}
         if p["geom"].startswith("/"):
             out[p["geom"]] = "geom_overlay.txt"
         return out
 
     def render(self, p, manifest=None, geometry=None):
         from mu2efastsim.endpoints.kit import _COMMON, APPTAINER_RUNTIME, admit_resources
-        admit_resources(self.ep, RESOURCES)
+        admit_resources(self.ep, self.RESOURCES)
         if not hasattr(self.ep, "stream_in"):
-            raise ValueError(f"fastsimkit: beam_point streams its input into the job and needs an endpoint that can "
+            raise ValueError(f"fastsimkit: {self.TASK} streams its input into the job and needs an endpoint that can "
                              f"(slurm_ssh); {getattr(self.ep, 'name', '?')!r} cannot")
         g = p["geom"]
         if geometry is not None:
@@ -139,16 +147,15 @@ class BeamPointStream:
             stagegeom = geomarg = '--geom "$L/geom_overlay.txt"'
         else:
             stagegeom = geomarg = f'--geom "$CODE/beam/geom/{g}"'
-        body = BODY.replace("@common@", _COMMON).replace("@runtime_a@", APPTAINER_RUNTIME["a"])
+        body = self.BODY.replace("@common@", _COMMON).replace("@runtime_a@", APPTAINER_RUNTIME["a"])
         subs = {"sif": shlex.quote(manifest["image"]["path"] if manifest else self.kit.sif),
                 "code": shlex.quote(manifest["code"]["path"] if manifest else self.code), "waits": str(WAIT_S),
-                "stagegeom": stagegeom, "geomarg": geomarg, "muons": str(p["muons"]), "seed": str(p["seed"]),
-                "repeat": str(p["repeat"])}
+                "stagegeom": stagegeom, "geomarg": geomarg, **{k: str(v) for k, v in p.items() if k != "geom"}}
         for a, b in subs.items():
             body = body.replace(f"@{a}@", b)
         import re
         if re.search(r"@[a-z_]+@", body):
-            raise ValueError("fastsimkit: beam_point: unfilled placeholder")
+            raise ValueError(f"fastsimkit: {self.TASK}: unfilled placeholder")
         if geometry is not None:
             body = geometry_artifacts.stage_shell(geometry) + body
         if manifest is not None:
@@ -156,12 +163,12 @@ class BeamPointStream:
             body = body.replace('B python -m beamfastsim.stage',
                                 consumption_guard('"$L"', manifest["inputs"]["files"]) + 'B python -m beamfastsim.stage', 1)
             body = runtime_prefix(manifest) + body
-        return body, RESOURCES
+        return body, self.RESOURCES
 
     # -- contract ------------------------------------------------------------------------------------------------
     def check(self, name, params) -> Dict[str, Any]:
         try:
-            self.render(validate(params))
+            self.render(validate(params, self.TASK))
         except ValueError as e:
             return {"ok": False, "message": str(e)}
         return {"ok": True, "message": ""}
@@ -172,7 +179,7 @@ class BeamPointStream:
             return None
         if "manifest" not in old:
             raise ValueError("fastsimkit: legacy task has no pinned artifact binding")
-        p = validate(params)
+        p = validate(params, self.TASK)
         target = {"endpoint": self.ep.name, "host": getattr(self.ep, "host", ""),
                   "source_host": self.source.host, "source_root": self.source.root}
         target.update({k: getattr(self.ep, k) for k in ("account", "partition", "workdir") if hasattr(self.ep, k)})
@@ -186,7 +193,7 @@ class BeamPointStream:
         return prepare_code(self.ep, self.code, self.code_ref, modules=('core',))
 
     def submit(self, name, params, geometry=None) -> Dict[str, Any]:
-        p = validate(params)
+        p = validate(params, self.TASK)
         if geometry is not None and p["geom"] != "nominal":
             raise ValueError("fastsimkit: geometry FileRef conflicts with geom selector")
         old = self.check_binding(name, p, geometry)
@@ -200,7 +207,7 @@ class BeamPointStream:
             inputs = resolve_inputs(self.source, self.inputs(p))
             code = self.ensure_code()
             image = resolve_image(self.ep, self.kit.sif)
-            manifest = make_manifest("beam_point", code, image, inputs, p, geometry=geometry)
+            manifest = make_manifest(self.TASK, code, image, inputs, p, geometry=geometry)
             body, res = self.render(p, manifest, geometry=geometry)
             return {"params": p, "submitted_at": time.time(), "code": code["path"],
                     "code_ref": self.code_ref, "manifest": manifest,
@@ -310,3 +317,39 @@ class BeamPointStream:
 
     def cancel(self, name) -> Dict[str, Any]:
         return {"state": self.ep.cancel(name)}
+
+
+SOB_RESOURCES = Resources(cores=32, mem_gb=64, gpus=0, gpu_type="", minutes=40)
+SOB_BODY = """module load apptainer >/dev/null 2>&1
+M2FS_OUT=$(readlink -f "$M2FS_OUT")   # the scratch area may be a symlink (UVA): bind the real path
+echo "host $(hostname) job ${SLURM_JOB_ID:-none} cpus ${SLURM_CPUS_PER_TASK:-?} out $M2FS_OUT"
+CODE=@code@
+L=${TMPDIR:-/tmp}/beamfs_kit_j${SLURM_JOB_ID:-0}_$$; mkdir -p "$L"; chmod 700 "$L"
+trap 'rm -rf "$L"; echo "$(date -Is) $(hostname) deleted $L" >> "$M2FS_OUT/cleanup.txt"' EXIT
+trap 'exit 143' TERM INT
+B() { apptainer exec --cleanenv --env "JAX_PLATFORMS=cpu,OPENBLAS_NUM_THREADS=1,PYTHONDONTWRITEBYTECODE=1,PYTHONPATH=$CODE/core:$CODE/beam,BEAMFS_OFFLINE_ROOT=$L/pub/offline,BEAMFS_MAPS=$L/pub/maps" -B "$L" -B "$M2FS_OUT" -B "$CODE" --pwd "$CODE" @sif@ "$@"; }
+B python -c "import beamfastsim.stage, beamfastsim.cesob" || { echo "beamfastsim.cesob missing in $CODE"; exit 5; }
+echo "$(hostname) $L" > "$(dirname "$M2FS_OUT")/inbox"      # read by the kit, which then streams the inputs in
+tw=$SECONDS; while [ $((SECONDS-tw)) -lt @waits@ ]; do [ -f "$L/ready" ] && break; sleep 3; done
+[ -f "$L/ready" ] || { echo "no input arrived within @waits@ s"; exit 3; }
+echo "{\\"input_wait_s\\": $((SECONDS-tw))}" > "$M2FS_OUT/wait.json"
+B python -m beamfastsim.stage "$L/pub" @stagegeom@ --extra-map TSdMap --file @dio@ > "$M2FS_OUT/stage.txt" 2>&1 || { tail -5 "$M2FS_OUT/stage.txt"; exit 4; }
+tail -1 "$M2FS_OUT/stage.txt"
+B python -m beamfastsim.cesob point --g4 "$L/g4ref.npz" --z-up @zup@ @geomarg@ --muons @muons@ --electrons @electrons@ \\
+  --seed @seed@ --procs ${SLURM_CPUS_PER_TASK:-@cores@} --out "$M2FS_OUT" > "$M2FS_OUT/point.txt" 2>&1 || { tail -20 "$M2FS_OUT/point.txt"; exit 6; }
+tail -c 300 "$M2FS_OUT/point.txt"
+"""
+
+
+class BeamSobStream(BeamPointStream):
+    """beam_sob (beamfastsim.cesob point) on the streaming route: the boards' beam table streamed in, one CPU job
+    (stops on JAX-CPU, then the CE chain in one process per core)."""
+    TASK = "beam_sob"
+    TABLE = kit_task.SOB_TABLE
+    RESOURCES = SOB_RESOURCES
+
+    def __init__(self, kit, **kw):
+        from . import cesob
+        super().__init__(kit, **kw)
+        self.BODY = SOB_BODY.replace("@zup@", str(kit_task.SOB_Z_UP)).replace(
+            "@cores@", str(SOB_RESOURCES.cores)).replace("@dio@", cesob.DIO_TABLE)
