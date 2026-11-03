@@ -27,6 +27,8 @@ No Mu2e-internal data or results are stored here; the field maps, geometry and r
 | `beamfastsim/transport.py` | RK4 stepping, layer energy loss (G4 Urban via `mu2efastsim.eloss_jax`) and Highland scattering, range-out, decay, lane compaction |
 | `beamfastsim/g4ref.py`, `compare.py` | per-muon G4 reference table and fast-vs-G4 metrics/plots |
 | `beamfastsim/bench.py` | throughput on synthetic muons (no inputs needed) |
+| `beamfastsim/cechain.py` | conversion electrons (opt-in) from target stops or given starts to the tracker entry plane: helix steps in the field maps, foils / IPA / OPA crossed with the core `eslab` or `eslab_jax` slab physics; per-electron plane state in an npz |
+| `beamfastsim/cereference.py`, `cecompare.py` | Geant4 CeEndpoint reference table from `ReadVirtualDetector` trees; fast vs Geant4 at the entry plane (filter-implying selection, energy MPV/FWHM/tail fractions) |
 | `fcl/g4ref_mubeam_ntpart.fcl`, `art/run_g4ref.sh` | stock DS stage of SimJob MDC2025ac with a per-muon tree |
 | `art/run_fast_cpu.sh` | g4table + field check + fast run + comparison on a GPVM core |
 | `art/eaf_beam.sh` | the same plus a benchmark on an EAF A100 slice (`core/eaf/eafhub.py run`) |
@@ -35,6 +37,11 @@ No Mu2e-internal data or results are stored here; the field maps, geometry and r
 # GPVM: G4 reference (stock DS stage, ~12 ms/muon), then the fast arm on the same muons
 bash beam/art/run_g4ref.sh $M2FS_DATA/beam_fastsim/g4ref_full 214310 1
 bash beam/art/run_fast_cpu.sh $M2FS_DATA/beam_fastsim/g4ref_full $M2FS_DATA/beam_fastsim/fast_v1_20k 20000
+# conversion electrons (opt-in): starts of a Geant4 reference table, or isotropic CE from a stop table
+PYTHONPATH=core:beam python3 -m beamfastsim.cechain --offline-root $OFFLINE --maps DSMap.header TSdMap.header \
+  --stops g4ref.npz --n 8000 --backend jax --out ce_fast.npz
+PYTHONPATH=core:beam python3 -m beamfastsim.cecompare --ref ce_g4ref.npz --fast "ce_fast*.npz" --mode stops \
+  --offline-root $OFFLINE --maps DSMap.header TSdMap.header --out compare.json
 # laptop/any: unit tests and benchmark
 PYTHONPATH=core:beam python3 -m pytest -q beam/tests
 PYTHONPATH=core:beam python3 -m beamfastsim.bench --n 2000
