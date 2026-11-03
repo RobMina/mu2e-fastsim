@@ -66,7 +66,7 @@ def register(tasks, task_cls, resources_cls, fnal_tasks):
                                    body=BODY)
     fnal_tasks.add("beam_point")
     tasks["beam_sob"] = task_cls(params=SOB_PARAMS, metrics=SOB_METRICS,
-                                 resources=resources_cls(cores=SOB_CORES, mem_gb=64, gpus=0, gpu_type="", minutes=40),
+                                 resources=resources_cls(cores=SOB_CORES, mem_gb=96, gpus=0, gpu_type="", minutes=40),
                                  body=SOB_BODY)
     fnal_tasks.add("beam_sob")
 

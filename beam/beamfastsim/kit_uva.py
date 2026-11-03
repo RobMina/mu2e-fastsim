@@ -319,7 +319,7 @@ class BeamPointStream:
         return {"state": self.ep.cancel(name)}
 
 
-SOB_RESOURCES = Resources(cores=32, mem_gb=64, gpus=0, gpu_type="", minutes=40)
+SOB_RESOURCES = Resources(cores=32, mem_gb=96, gpus=0, gpu_type="", minutes=40)   # ~1.7 GB per CE process
 SOB_BODY = """module load apptainer >/dev/null 2>&1
 M2FS_OUT=$(readlink -f "$M2FS_OUT")   # the scratch area may be a symlink (UVA): bind the real path
 echo "host $(hostname) job ${SLURM_JOB_ID:-none} cpus ${SLURM_CPUS_PER_TASK:-?} out $M2FS_OUT"
