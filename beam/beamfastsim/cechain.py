@@ -36,7 +36,7 @@ CORRUGATED_PP = M.Material("CorrugatedPolypropylene", 0.1892, 56.5, {"C": 0.856,
 # Production cuts for a 0.01 mm range cut (Geant4 couple table: Al from the electron-gun reference logs; the
 # polyethylenes scaled from mylar by density, gamma cuts at the 990 eV floor).
 CUTS = {"G4_Al": (0.03411, 0.00099), "IPAPolyethylene": (0.0150, 0.00099), "Polyethylene096": (0.0151, 0.00099),
-        "CorrugatedPolypropylene": (0.0070, 0.00099)}
+        "CorrugatedPolypropylene": (0.0070, 0.00099), "CarbonFiber": (0.0224, 0.00099)}
 
 FATES = ("live", "plane", "stopped", "upstream", "wall", "absorbed", "looper")
 LIVE, PLANE, STOPPED, UPSTREAM, WALL, ABSORBED, LOOPER = range(7)

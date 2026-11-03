@@ -483,3 +483,26 @@ def test_source_and_code_fail_closed_without_site_variables(tmp_path, monkeypatc
     monkeypatch.setenv("M2FS_INPUTS", "/inputs")
     monkeypatch.setenv("FASTSIMKIT_SCRATCH", "/path/to/slurm")
     assert (d.source.host, d.source.root, d.code) == ("fnal-host", "/inputs/beam_fastsim", "/path/to/slurm/beam_code_kit")
+
+
+PS = {"task": "beam_sob", "geom": "move_extras12.txt", "muons": 0, "electrons": 100000, "seed": 1}
+
+
+def test_beam_sob_streams_the_boards_table_into_one_cpu_job(tmp_path):
+    site, ep, kit, streamed = make(tmp_path)
+    kit._delegates["beam_sob"] = kit_uva.BeamSobStream(kit, source=Source(), code="/path/to/slurm/beam", background=False)
+    assert kit_task._UVASobDelegate.applies(ep)
+    with pytest.raises(ValueError):
+        kit_uva.validate({**PS, "electrons": 10}, "beam_sob")
+    assert kit.submit("bs1", PS, [], []) == {"handle": "bs1"}
+    j = ep.state.get("bs1").job_id
+    body = site.body
+    assert "-m beamfastsim.cesob point" in body and "--electrons 100000 " in body and "--z-up 3900.0" in body
+    assert "--extra-map TSdMap --file Offline/ConditionsService/data/" in body and "gpu:" not in body
+    assert "nvidia-smi" not in body and "JAX_PLATFORMS=cpu" in body
+    r = subprocess.run(["bash", "-n"], input=body.encode(), capture_output=True)
+    assert r.returncode == 0, r.stderr.decode()
+    site.state[j] = "RUNNING"
+    site.files[f"{site.dirs[j]}/inbox"] = "udc-a1 /dev/shm/beamfs_kit_j7001_9\n"
+    kit.status("bs1")
+    assert streamed == [(kit_task.SOB_TABLE, "/dev/shm/beamfs_kit_j7001_9/g4ref.npz")]
