@@ -180,14 +180,19 @@ class BeamPointStream:
         if "manifest" not in old:
             raise ValueError("fastsimkit: legacy task has no pinned artifact binding")
         p = validate(params, self.TASK)
-        target = {"endpoint": self.ep.name, "host": getattr(self.ep, "host", ""),
-                  "source_host": self.source.host, "source_root": self.source.root}
-        target.update({k: getattr(self.ep, k) for k in ("account", "partition", "workdir") if hasattr(self.ep, k)})
+        target = self._target()
         if p != old["params"] or target != old["target"]:
             raise ValueError("fastsimkit: different params or target/source from artifact binding")
         if geometry_artifacts.identity(geometry) != geometry_artifacts.identity(old["manifest"].get("geometry")):
             raise ValueError("fastsimkit: geometry differs from artifact binding")
         return old
+
+    def _target(self):
+        """The endpoint and source a point is bound to (a later submit or check must match it)."""
+        target = {"endpoint": self.ep.name, "host": getattr(self.ep, "host", ""),
+                  "source_host": self.source.host, "source_root": self.source.root}
+        target.update({k: getattr(self.ep, k) for k in ("account", "partition", "workdir") if hasattr(self.ep, k)})
+        return target
 
     def ensure_code(self):
         return prepare_code(self.ep, self.code, self.code_ref, modules=('core',))
@@ -199,9 +204,7 @@ class BeamPointStream:
         old = self.check_binding(name, p, geometry)
         if old is None:
             self.render(p, geometry=geometry)
-        target = {"endpoint": self.ep.name, "host": getattr(self.ep, "host", ""),
-                  "source_host": self.source.host, "source_root": self.source.root}
-        target.update({k: getattr(self.ep, k) for k in ("account", "partition", "workdir") if hasattr(self.ep, k)})
+        target = self._target()
 
         def prepare():
             inputs = resolve_inputs(self.source, self.inputs(p))
@@ -341,15 +344,43 @@ tail -c 300 "$M2FS_OUT/point.txt"
 """
 
 
+# Device route of beam_sob (site setting FASTSIMKIT_SOB_BACKEND=device): one GPU job (on UVA the MIG slice fits),
+# stops, CE chain and calorimeter proxy on the device (cesob --backend device); FASTSIMKIT_JAX_CACHE (optional) is a
+# persistent JAX compilation cache directory on the endpoint.
+SOB_DEVICE_RESOURCES = Resources(cores=4, mem_gb=32, gpus=1, gpu_type="a100", minutes=30)
+SOB_BACKENDS = ("cpu", "device")
+SOB_DEVICE_BODY = (SOB_BODY.replace("apptainer exec --cleanenv", "apptainer exec --nv --cleanenv")
+                   .replace("JAX_PLATFORMS=cpu,", "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0},"
+                            "XLA_PYTHON_CLIENT_PREALLOCATE=false,@jaxcache@")
+                   .replace('--procs ${SLURM_CPUS_PER_TASK:-@cores@}', '--backend device')
+                   .replace('B python -c "import beamfastsim.stage, beamfastsim.cesob"',
+                            'B python -c "import beamfastsim.stage, beamfastsim.cesob, beamfastsim.calo_jax"'))
+
+
 class BeamSobStream(BeamPointStream):
     """beam_sob (beamfastsim.cesob point) on the streaming route: the design studies' beam table streamed in, one CPU job
-    (stops on JAX-CPU, then the CE chain in one process per core)."""
+    (stops on JAX-CPU, then the CE chain in one process per core), or with FASTSIMKIT_SOB_BACKEND=device one GPU job
+    (everything on the device). The device backend is part of the point's bound target."""
     TASK = "beam_sob"
     TABLE = kit_task.SOB_TABLE
     RESOURCES = SOB_RESOURCES
 
-    def __init__(self, kit, **kw):
+    def __init__(self, kit, backend=None, **kw):
         from . import cesob
         super().__init__(kit, **kw)
-        self.BODY = SOB_BODY.replace("@zup@", str(kit_task.SOB_Z_UP)).replace(
+        self.backend = backend or site.setting("FASTSIMKIT_SOB_BACKEND", "cpu")
+        if self.backend not in SOB_BACKENDS:
+            raise ValueError(f"fastsimkit: FASTSIMKIT_SOB_BACKEND must be one of {SOB_BACKENDS}, not {self.backend!r}")
+        body = SOB_BODY
+        if self.backend == "device":
+            self.RESOURCES = SOB_DEVICE_RESOURCES
+            cache = site.setting("FASTSIMKIT_JAX_CACHE")
+            body = SOB_DEVICE_BODY.replace("@jaxcache@", f"JAX_COMPILATION_CACHE_DIR={cache}," if cache else "")
+        self.BODY = body.replace("@zup@", str(kit_task.SOB_Z_UP)).replace(
             "@cores@", str(SOB_RESOURCES.cores)).replace("@dio@", cesob.DIO_TABLE)
+
+    def _target(self):
+        t = super()._target()
+        if self.backend != "cpu":
+            t["sob_backend"] = self.backend
+        return t

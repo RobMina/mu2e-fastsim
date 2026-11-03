@@ -506,3 +506,24 @@ def test_beam_sob_streams_the_boards_table_into_one_cpu_job(tmp_path):
     site.files[f"{site.dirs[j]}/inbox"] = "udc-a1 /dev/shm/beamfs_kit_j7001_9\n"
     kit.status("bs1")
     assert streamed == [(kit_task.SOB_TABLE, "/dev/shm/beamfs_kit_j7001_9/g4ref.npz")]
+
+
+def test_beam_sob_device_backend_is_one_gpu_job_bound_to_its_backend(tmp_path, monkeypatch):
+    site, ep, kit, streamed = make(tmp_path)
+    monkeypatch.setenv("FASTSIMKIT_JAX_CACHE", "/path/to/slurm/jaxcache")
+    d = kit_uva.BeamSobStream(kit, source=Source(), code="/path/to/slurm/beam", background=False, backend="device")
+    kit._delegates["beam_sob"] = d
+    assert kit.submit("bs2", PS, [], []) == {"handle": "bs2"}
+    body = site.body
+    assert "--backend device" in body and "--procs" not in body and "JAX_PLATFORMS=cpu" not in body
+    assert "apptainer exec --nv" in body and "JAX_COMPILATION_CACHE_DIR=/path/to/slurm/jaxcache," in body
+    assert d.RESOURCES.gpus == 1 and d.RESOURCES.mem_gb <= 32 and d.RESOURCES.cores <= 4
+    r = subprocess.run(["bash", "-n"], input=body.encode(), capture_output=True)
+    assert r.returncode == 0, r.stderr.decode()
+    assert d._target()["sob_backend"] == "device"
+    cpu = kit_uva.BeamSobStream(kit, source=Source(), code="/path/to/slurm/beam", background=False)
+    assert "sob_backend" not in cpu._target() and cpu.RESOURCES == kit_uva.SOB_RESOURCES
+    with pytest.raises(ValueError, match="different params or target"):
+        cpu.check_binding("bs2", PS)
+    with pytest.raises(ValueError, match="FASTSIMKIT_SOB_BACKEND"):
+        kit_uva.BeamSobStream(kit, source=Source(), code="/x", background=False, backend="gpu")
