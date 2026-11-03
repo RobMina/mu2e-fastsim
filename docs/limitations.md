@@ -9,14 +9,14 @@ items and the beam stage.
 
 - **Scope.** The cosmic stages cover the extracted (KPP, no field) configuration only. Full-detector configurations
   with the field and the cosmic-induced fake-CE background are not simulated. Conversion electrons are carried from
-  the stopping target to the tracker entry plane only (opt-in `beam/beamfastsim/cechain.py`, below).
-- **Conversion-electron chain (opt-in).** Not modelled: foil and IPA support wires, OPA slots and supports, the TS4
+  the stopping target to the tracker entry plane only (`beam/beamfastsim/cechain.py`, below).
+- **Conversion-electron chain (`cechain`, `cecompare`).** Not modelled: foil and IPA support wires, OPA slots and supports, the TS4
   bend and the collimators upstream of COL5, field variation inside a layer, re-crossing of a surface within one
   10 mm helix step, exits through the z faces of the IPA end rings (the loss between the target exit and the tracker
   entry is 0.53 vs 0.49 MeV in Geant4 on average, with the same fractions above 0.5 and 1 MeV). Layers are flat in the
   local frame, with the IPA / OPA curvature as an equivalent field. Secondaries are not transported. The vacuum
   stepping runs in NumPy on the host.
-- **sob stand-in (opt-in `cesob`).** The calorimeter selection is a proxy: a helix path of at least 17.8 mm inside
+- **sob stand-in (`cesob`).** The calorimeter selection is a proxy: a helix path of at least 17.8 mm inside
   crystals, with the disks' inner Al and carbon-fibre rings crossed with the slab physics. Not modelled: tracker
   material, the calorimeter front and back plates, the front-end electronics boxes and pipes (electrons that graze
   the first disk's inner edge and cross them are kept too often: +1.6 % in acceptance against Geant4), and showers.
