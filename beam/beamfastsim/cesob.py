@@ -6,8 +6,9 @@ Chain per design point (opt-in, Geant4-free):
    (stop fraction x muons per event of the start table);
 2. conversion electrons (104.97 MeV/c, isotropic) from the mu- stops through foils, IPA (with end rings), OPA and the
    DS field to the tracker entry plane (beamfastsim.cechain);
-3. calorimeter acceptance: the helix from the tracker entry plane in the DS field enters the crystal annulus of either
-   disk (the stand-in for a visible calorimeter energy above 10 MeV in the event); tracker material is not modelled;
+3. calorimeter acceptance: the helix from the tracker entry plane in the DS field runs at least 17.8 mm inside the
+   crystals of the two disks (the CsI path giving 10 MeV at minimum ionisation; the stand-in for a visible
+   calorimeter energy above 10 MeV in the event); tracker and support material are not modelled;
 4. the sensitivity estimate on the selected electrons, the approximate Run-1A estimate of the design studies: signal =
    energy at the tracker entry smeared by a 0.2 MeV Gaussian, normalised to stops/POT x accepted per generated electron;
    DIO = the Heeck/Szafron spectrum (Offline ConditionsService table) smeared by the measured entry-minus-birth energy
@@ -199,6 +200,10 @@ def jackknife(fn, groups):
 
 # --- calorimeter acceptance ------------------------------------------------------------------------------------------
 
+CSI_MIP_MEV_PER_MM = 1.243 * 4.51 / 10.0   # minimum-ionising loss in CsI [MeV/mm] (PDG: 1.243 MeV cm2/g, 4.51 g/cm3)
+CSI_PATH_MIN = CALO_EDEP_VIS_MEV / CSI_MIP_MEV_PER_MM   # 17.8 mm: CsI path that gives 10 MeV at minimum ionisation
+
+
 @dataclass(frozen=True)
 class CaloGeometry:
     axis_x: float
@@ -206,6 +211,31 @@ class CaloGeometry:
     z_back: tuple
     r_in: float        # crystal annulus (diskCrystalRIn, diskCrystalROut)
     r_out: float
+    cell: float = 34.3            # crystal pitch (crystal + 2 wrappers)
+    half: float = 17.0            # crystal half width
+    grid: np.ndarray = None       # valid[n + rows, j + cols]: cell at x = j cell / 2, y = n cell (j = n mod 2)
+
+
+def crystal_grid(cell, r_in, r_out, removed=((257.25, 583.1),)):
+    """Crystal cells of one disk (Offline Disk::fillCrystalsIdeal with the square-shift map): cells of side `cell`
+    whose four edges lie within [r_in, r_out], minus the four corner cells removed by hand. Returns the lookup."""
+    nmax = int(np.ceil(r_out / cell)) + 1
+    n = np.arange(-nmax, nmax + 1)[:, None]
+    j = np.arange(-2 * nmax, 2 * nmax + 1)[None, :]
+    x, y = j * cell / 2, n * cell * np.ones_like(j)
+    ok = (j - n) % 2 == 0
+    ax = np.array([-0.5, 0.5, 0.5, -0.5, -0.5]) * cell
+    ay = np.array([-0.5, -0.5, 0.5, 0.5, -0.5]) * cell
+    for i in range(1, 5):
+        p0x, p0y, p1x, p1y = x + ax[i - 1], y + ay[i - 1], x + ax[i], y + ay[i]
+        vx, vy = p1x - p0x, p1y - p0y
+        t = -(p0x * vx + p0y * vy) / (vx * vx + vy * vy)
+        cx, cy = np.where(t < 0, p0x, np.where(t > 1, p1x, p0x + t * vx)), np.where(t < 0, p0y, np.where(
+            t > 1, p1y, p0y + t * vy))
+        ok &= (np.hypot(cx, cy) >= r_in) & (np.maximum(np.hypot(p0x, p0y), np.hypot(p1x, p1y)) <= r_out)
+    for rx, ry in removed:
+        ok &= ~((np.abs(np.abs(x) - rx) < 1.0) & (np.abs(np.abs(y) - ry) < 1.0))
+    return ok
 
 
 def calo_from_config(c):
@@ -222,21 +252,39 @@ def calo_from_config(c):
     centre = 0.5 * (z0 + z1)
     fronts = tuple(centre - 0.5 * (z1 - z0) + disk_h + s + g("FEBToDiskZOffset") + vd + disp
                    for s in c["calorimeter.diskZMotherShift"])
+    cell = g("crystalXYLength") + 2 * g("wrapperThickness")
     return CaloGeometry(-c["mu2e.solenoidOffset"], fronts, tuple(f + 2 * crys_h for f in fronts),
-                        g("diskCrystalRIn"), g("diskCrystalROut"))
+                        g("diskCrystalRIn"), g("diskCrystalROut"), cell, g("crystalXYLength") / 2,
+                        crystal_grid(cell, g("diskCrystalRIn"), g("diskCrystalROut")))
 
 
-def calo_accept(field, calo, x, u, T, h_far=50.0, h_near=10.0, sub=4, margin=60.0, r_wall=950.0, s_max=30000.0):
-    """True where the e- helix from (x, u, kinetic energy T) enters a crystal annulus volume. Field-map helix steps
-    (field at the step midpoint), h_far until margin before the first disk, then h_near checked at `sub` points."""
+def in_crystal(calo, dx, dy):
+    """True where (dx, dy) about the disk axis lies inside a crystal (not its wrapper or a gap)."""
+    nr = (calo.grid.shape[0] - 1) // 2
+    nc = (calo.grid.shape[1] - 1) // 2
+    n = np.rint(dy / calo.cell).astype(int)
+    j = n + 2 * np.rint((2 * dx / calo.cell - n) / 2).astype(int)
+    ok = (np.abs(n) <= nr) & (np.abs(j) <= nc)
+    v = np.zeros(dx.shape, bool)
+    v[ok] = calo.grid[n[ok] + nr, j[ok] + nc]
+    return v & (np.abs(dx - j * calo.cell / 2) <= calo.half) & (np.abs(dy - n * calo.cell) <= calo.half)
+
+
+def calo_accept(field, calo, x, u, T, h_far=50.0, h_near=10.0, sub=5, margin=60.0, r_wall=950.0, s_max=30000.0,
+                path_min=CSI_PATH_MIN, annulus=False):
+    """Calorimeter acceptance of e- helices from (x, u, kinetic energy T): True where the path inside crystals
+    reaches path_min (CSI_PATH_MIN: 10 MeV at minimum ionisation); annulus=True: where the helix enters the crystal
+    annulus at all (the coarser first form). Field-map helix steps (field at the step midpoint), h_far until margin
+    before the first disk, then h_near sampled at `sub` points. Tracker and support material are not modelled."""
     x, u = np.array(x, float), np.array(u, float)
     p = np.sqrt(T * (T + 2 * eioni.ME))
     n = x.shape[0]
-    hit = np.zeros(n, bool)
+    path = np.zeros(n)
     live = np.ones(n, bool)
     s = np.zeros(n)
     zf, zb = np.array(calo.z_front), np.array(calo.z_back)
     z_lo = x[:, 2].min() - 100.0 if n else 0.0
+    goal = 1e-9 if annulus else path_min
     while live.any():
         i = np.flatnonzero(live)
         xi, ui, pi = x[i], u[i], p[i]
@@ -244,20 +292,20 @@ def calo_accept(field, calo, x, u, T, h_far=50.0, h_near=10.0, sub=4, margin=60.
         h = np.where(near, h_near, h_far)
         B0 = ehelix.field_at(field, xi)
         Bm = ehelix.field_at(field, ehelix.helix(xi, ui, pi, -1.0, B0, 0.5 * h)[0])
-        inside = np.zeros(i.size, bool)
         for k in range(1, sub + 1):
             xk = ehelix.helix(xi, ui, pi, -1.0, Bm, h * k / sub)[0]
-            r = np.hypot(xk[:, 0] - calo.axis_x, xk[:, 1])
+            dx, dy = xk[:, 0] - calo.axis_x, xk[:, 1]
             zin = ((xk[:, 2, None] >= zf) & (xk[:, 2, None] <= zb)).any(1)
-            inside |= zin & (r >= calo.r_in) & (r <= calo.r_out)
+            r = np.hypot(dx, dy)
+            hit = zin & ((r >= calo.r_in) & (r <= calo.r_out) if annulus else in_crystal(calo, dx, dy))
+            path[i] += np.where(hit, h / sub, 0.0)
         xn, un = ehelix.helix(xi, ui, pi, -1.0, Bm, h)
         x[i], u[i] = xn, un
         s[i] += h
-        hit[i[inside]] = True
         rn = np.hypot(xn[:, 0] - calo.axis_x, xn[:, 1])
-        done = inside | (xn[:, 2] > zb.max()) | (xn[:, 2] < z_lo) | (rn > r_wall) | (s[i] > s_max)
+        done = (path[i] >= goal) | (xn[:, 2] > zb.max()) | (xn[:, 2] < z_lo) | (rn > r_wall) | (s[i] > s_max)
         live[i[done]] = False
-    return hit
+    return path >= goal
 
 
 # --- fast chain ------------------------------------------------------------------------------------------------------
@@ -281,12 +329,14 @@ def _ce_chunk(args):
     x0, u0, p0, t0, idx = cechain.from_stops(rng, stops["x"], stops["t"], n)
     res = cechain.transport(rng, geom, field, x0, u0, p0, t0, backend=backend)
     plane = res.fate == cechain.PLANE
-    acc = np.zeros(n, bool)
+    acc, ann = np.zeros(n, bool), np.zeros(n, bool)
     if plane.any():
         acc[plane] = calo_accept(field, calo, res.x[plane], res.u[plane], res.T[plane])
+        ann[plane] = calo_accept(field, calo, res.x[plane], res.u[plane], res.T[plane], annulus=True)
     e_front = np.where(plane, res.T + eioni.ME, np.nan)
-    return dict(fate=res.fate.astype(np.int8), e_front=e_front, calo=acc, chunk=np.full(n, chunk, np.int16),
-                r0=np.hypot(x0[:, 0] - geom.beam.axis_x, x0[:, 1]), z0=x0[:, 2])
+    return dict(fate=res.fate.astype(np.int8), e_front=e_front, calo=acc, calo_annulus=ann,
+                chunk=np.full(n, chunk, np.int16), r0=np.hypot(x0[:, 0] - geom.beam.axis_x, x0[:, 1]), z0=x0[:, 2],
+                x_plane=res.x.astype(np.float32), u_plane=res.u.astype(np.float32))
 
 
 def _single_thread():
@@ -336,6 +386,8 @@ def ce_metrics(ce, stops_per_gen, dio_pdf, upstream_eff=UPSTREAM_EFF, cosmic_per
     m = one(np.ones(n, bool))
     plane = ce["fate"] == cechain.PLANE
     m.update(electrons=float(n), plane_frac=float(plane.mean()), stopped_frac=float((ce["fate"] == cechain.STOPPED).mean()))
+    if "calo_annulus" in ce:
+        m["ce_acceptance_annulus"] = float(ce["calo_annulus"].mean())
     if errors:
         for key in ("sensitivity", "ce_acceptance", "box_eff_per_stop", "total_background"):
             m[f"{key}_err"] = jackknife(lambda mk, key=key: one(mk)[key], ce["chunk"])
@@ -389,7 +441,9 @@ def cmd_point(a):
     m.update(muons_per_event=muons_per_event, beam_s=t_beam, ce_s=t_ce, electrons_per_s=m["electrons"] / t_ce)
     m = {k: float(v) for k, v in m.items()}
     json.dump(m, open(os.path.join(a.out, "metrics.json"), "w"))
-    if not a.keep:
+    if a.keep:
+        np.savez_compressed(os.path.join(a.out, "ce.npz"), **ce)
+    else:
         os.remove(stops)
     print(json.dumps(m))
 
@@ -448,26 +502,40 @@ def calo_check(ref, nts, geom=None, offline_root=None, maps=None, tree="EDepAna/
     u = pv / p[:, None]
     T = np.sqrt(p ** 2 + eioni.ME ** 2) - eioni.ME
     proxy = calo_accept(field, calo, x, u, T)
+    proxy_annulus = calo_accept(field, calo, x, u, T, annulus=True)
+    from dataclasses import replace
+    disk = [calo_accept(field, replace(calo, z_front=(zf,), z_back=(zb,)), x, u, T)
+            for zf, zb in zip(calo.z_front, calo.z_back)]
     g4 = vis[plane] > CALO_EDEP_VIS_MEV
     bz = ehelix.field_at(field, x)[:, 2]
     rmax = cechain.helix_rmax(cechain.from_offline(geom_file, root), x, u, p, bz)[0]
     edges = np.arange(300.0, 760.0, 20.0)
     k = np.digitize(rmax, edges)
     bins = [dict(rmax_lo=float(edges[i - 1]), n=int((k == i).sum()), g4=float(g4[k == i].mean()),
-                 proxy=float(proxy[k == i].mean())) for i in range(1, edges.size) if (k == i).sum()]
+                 proxy=float(proxy[k == i].mean()), annulus=float(proxy_annulus[k == i].mean()))
+            for i in range(1, edges.size) if (k == i).sum()]
+    t = np.asarray(r["tvd_front"], float)[plane]
+    tedges = np.array([0.0, 500.0, 1000.0, 1500.0, 2000.0, 3000.0, 5000.0, 1e9])
+    j = np.digitize(t, tedges)
+    tbins = [dict(t_lo=float(tedges[i - 1]), n=int((j == i).sum()), g4=float(g4[j == i].mean()),
+                  proxy=float(proxy[j == i].mean())) for i in range(1, tedges.size) if (j == i).sum()]
     summary = dict(rows=int(r["x"].size), joined=int(have.sum()), plane=int(plane.sum()), g4_sel=float(g4.mean()),
-                   proxy_sel=float(proxy.mean()), both=int((g4 & proxy).sum()), g4_only=int((g4 & ~proxy).sum()),
+                   proxy_sel=float(proxy.mean()), annulus_sel=float(proxy_annulus.mean()),
+                   by_disk={k: dict(n=int(m.sum()), g4=float(g4[m].mean()) if m.any() else -1.0) for k, m in (
+                       ("disk0_only", disk[0] & ~disk[1]), ("disk1_only", disk[1] & ~disk[0]),
+                       ("both_disks", disk[0] & disk[1]), ("none", ~disk[0] & ~disk[1]))},
+                   both=int((g4 & proxy).sum()), g4_only=int((g4 & ~proxy).sum()),
                    proxy_only=int((proxy & ~g4).sum()), neither=int((~g4 & ~proxy).sum()),
                    g4_sel_no_plane=float(np.mean(vis[have & ~r["isvd_front"]] > CALO_EDEP_VIS_MEV))
-                   if (have & ~r["isvd_front"]).any() else -1.0, rmax_bins=bins)
-    return summary, dict(rmax=rmax, g4=g4, proxy=proxy, vis=vis[plane], p=p, x=x, u=u)
+                   if (have & ~r["isvd_front"]).any() else -1.0, rmax_bins=bins, t_bins=tbins)
+    return summary, dict(rmax=rmax, g4=g4, proxy=proxy, annulus=proxy_annulus, vis=vis[plane], p=p, x=x, u=u, t=t)
 
 
 def cmd_calocheck(a):
     summary, rows = calo_check(a.ref, a.nts, a.geom)
     np.savez_compressed(a.out + ".npz", **rows)
     json.dump(summary, open(a.out + ".json", "w"), indent=1)
-    print(json.dumps({k: v for k, v in summary.items() if k != "rmax_bins"}))
+    print(json.dumps({k: v for k, v in summary.items() if k not in ("rmax_bins", "t_bins")}))
 
 
 def cmd_reduce(a):
@@ -532,7 +600,7 @@ def main(argv=None):
     s.add_argument("--muons", type=int, default=0)
     s.add_argument("--z-up", dest="z_up", type=float, default=None)
     s.add_argument("--batch", type=int, default=131072)
-    s.add_argument("--keep", action="store_true", help="keep OUT/stops.npz")
+    s.add_argument("--keep", action="store_true", help="keep OUT/stops.npz and the per-electron OUT/ce.npz")
     s.add_argument("--out", required=True)
     ce_args(s)
     common(s)
