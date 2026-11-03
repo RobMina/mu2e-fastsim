@@ -41,7 +41,7 @@ PE tail above 2000 PE (0.923 +- 0.014 -> 0.991 +- 0.014), and the adjacent-layer
   library is rebuilt for it. The `strict_v*` sets describe the extracted layer structure and are refused for named
   configurations.
 - **Run 2 V1 fails** (primary-muon crossings vs Geant4, 1 M events): the CRV that wraps the DS needs below-plane
-  scatter-in, which is an experimental opt-in ([below-scatter-in.md](below-scatter-in.md)). Run 1A V1 passes.
+  scatter-in; the experimental marcher is on branch `park/named-run2`. Run 1A V1 passes.
 - No magnetic field: the transport is straight-line plus multiple scattering, valid for the extracted configuration.
 
 ## Not implemented
@@ -61,7 +61,6 @@ PE tail above 2000 PE (0.923 +- 0.014 -> 0.991 +- 0.014), and the adjacent-layer
 - Device transport: single-scattering tails, sliced MSC and below-plane variants raise.
 - The out-of-time background is resampled from KPP data (`crvfastsim.reco.background`); it is not simulated.
 - Native and device CRY generation are opt-in; the default reads cached CRY primary tables (gen tables).
-- Fast reco on Intel PVC (Aurora) has opt-in kernels (`CRVFASTSIM_PVC_RECO`); not validated against real inputs.
 
 ## Not validated
 
@@ -82,10 +81,23 @@ PE tail above 2000 PE (0.923 +- 0.014 -> 0.991 +- 0.014), and the adjacent-layer
   entry under `CRVFS_PREPARED_LIBRARY_CACHE`.
 - P1 (about 1.9 ms per accepted event on one core) was measured on a shared host and has to be re-measured on an idle
   one.
-- Named-configuration response and conditions bundles ([named-response.md](named-response.md),
-  [named-conditions.md](named-conditions.md)) are admission contracts, not physics validation.
+- Named-configuration V2 ([named-response.md](named-response.md)) groups the metrics by sector type; its overall status
+  stays unsupported until both arms carry verified configuration provenance.
 - The fast chain is validated on MC only. KPP data comparisons need the measured data offsets and are outside this
   repository.
+
+## Kept off main
+
+- Intel PVC (Aurora) reco kernels (`CRVFASTSIM_PVC_RECO`: Jacobi Hessian eigenvalues, label propagation, batch cap):
+  branch `park/pvc-reco`. Not validated on PVC hardware; identical output and no gain on an A100.
+
+- Below-plane scatter-in for the CRV that wraps the DS (`--below-scatter-in`, `transport.scatter_in_crossings`,
+  Run 2 algorithm development; not converged, V1 Run 2 still fails): branch `park/named-run2`.
+
+- Named-run provenance and diagnostics: strict conditions bundles (`named_conditions`, `--conditions-manifest`),
+  fasttable receipts and the V2 receipt audit (`response_receipt`, `--write-receipt`, `--candidate-receipt`), the
+  fasttable named mode (`--run-config`, `--event-reference`), the stock shared-yield emulation
+  (`--stock-shared-yield-fcl`) and the response-execution trace (`--trace-response`): branch `park/named-run2`.
 
 ## Inputs
 

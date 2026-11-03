@@ -205,8 +205,6 @@ def _fill_eff(A, p, ev_keys, step_paths, geom, layout=None):
 
 
 def _merge_into(tot, d):
-    if "producer_receipt_audit" in tot or "producer_receipt_audit" in d:
-        raise ValueError("receipt-audited V2 states cannot be merged; revalidate original inputs")
     if ("configuration" in tot) != ("configuration" in d) or tot.get("configuration") != d.get("configuration"):
         raise ValueError("cannot merge different V2 configurations/geometries or named and legacy states")
     layout = _state_layout(tot)
@@ -360,9 +358,6 @@ def _summarise_named(S):
     out["status"] = "unsupported" if unsupported else ("pass" if out["pass"] else "fail")
     out["metrics_pass"], out["metrics_status"] = out["pass"], out["status"]
     out["input_provenance_status"] = "unverified_requested_configuration_not_bound_to_both_inputs"
-    if "producer_receipt_audit" in S:
-        out["producer_receipt_audit"] = S["producer_receipt_audit"]
-        out["input_provenance_status"] = "partial_fast_receipt_bound_stock_configuration_not_certified"
     out["pass"], out["status"] = False, "unsupported"
     return out
 
@@ -452,11 +447,7 @@ def report(S, outdir, labels=("reference", "fast sim")):
 
 
 def run(inputs, outdir, compare=None, steps=None, compare_steps=None, emit=None, merge=False, counters=None,
-        generated=None, compare_generated=None, run_config=None, candidate_receipt=None, conditions_manifest=None, **kw):
-    receipt_mode = candidate_receipt is not None or conditions_manifest is not None
-    if receipt_mode and (not candidate_receipt or not conditions_manifest or run_config is None or merge or emit
-                         or generated is not None or compare_generated is not None or counters):
-        raise ValueError("receipt audit needs named config, both receipt/conditions manifest, no emit/merge/overrides")
+        generated=None, compare_generated=None, run_config=None, **kw):
     geom = None
     if run_config is not None:
         from .. import runconfig
@@ -476,31 +467,8 @@ def run(inputs, outdir, compare=None, steps=None, compare_steps=None, emit=None,
     if geom is None:
         geom = geometry.from_offline_config(geometry.find_counters(counters or DEFAULT_COUNTERS))
     layout = _state_layout(S)
-    if receipt_mode:
-        from .. import response_receipt as RR
-        fast_paths = [os.path.realpath(p) for p in tables.expand(inputs)]
-        ref_paths = [os.path.realpath(p) for p in tables.expand(compare)]
-        if len(fast_paths) != 1 or len(ref_paths) != 1:
-            raise ValueError("receipt audit currently requires exactly one file per arm")
-        evidence = RR.validate_receipt(fast_paths[0], candidate_receipt, run_config=rc, geom=geom,
-                                       conditions_manifest=conditions_manifest)
-        receipt = RR._json(candidate_receipt)
-        source_key = "input" if receipt["metadata"]["stage"] == "reco" else "event_reference"
-        source = receipt["inputs"].get(source_key)
-        reference = RR._record(ref_paths[0])
-        if source is None or any(source[k] != reference[k] for k in ("sha256", "size")):
-            raise ValueError("comparison reference is not the producer's recorded stock population source")
-        if RR.event_identity(fast_paths[0]) != RR.event_identity(ref_paths[0]):
-            raise ValueError("receipt comparison event populations differ")
-        S["producer_receipt_audit"] = {"fast": evidence, "reference": reference,
-                                      "scope": "conditional_saved_stock_population_not_full_v2"}
-    _fill_arm(S["fast"], fast_paths if receipt_mode else inputs, steps, geom, layout)
-    _fill_arm(S["ref"], ref_paths if receipt_mode else compare, compare_steps, geom, layout)
-    if receipt_mode:
-        RR.validate_receipt(fast_paths[0], candidate_receipt, run_config=rc, geom=geom,
-                            conditions_manifest=conditions_manifest)
-        if RR._record(ref_paths[0]) != reference:
-            raise ValueError("reference changed during V2 filling")
+    _fill_arm(S["fast"], inputs, steps, geom, layout)
+    _fill_arm(S["ref"], compare, compare_steps, geom, layout)
     if layout:
         if compare_generated is not None and generated is None:
             raise ValueError("compare_generated requires generated")

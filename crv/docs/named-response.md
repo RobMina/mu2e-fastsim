@@ -1,8 +1,7 @@
-# Named-run response comparison and fast tables
+# Named-run V2 comparison
 
-These opt-in extensions preserve the default extracted V2 state schema and the
-legacy `valhist.fasttables --calib ...` workflow. They do not establish physics
-closure, certify a reference campaign, or turn a ten-event smoke test into V2.
+`v2compare --run-config` groups the V2 metrics by the sector types of a named run configuration. Without it the
+extracted V2 state schema is unchanged. It does not establish physics closure or certify a reference campaign.
 
 ## Named V2 API
 
@@ -91,115 +90,13 @@ identity as a JSON object for readability. These are compatibility checks, not
 cryptographic source authenticity or a defense against deliberately rewritten
 state files. Parsed counters are hashed semantically; source comments are not.
 
-## Fasttables named conditions/configuration
-
-```bash
-python3 -m valhist.fasttables chain steps.root fast.root \
-  --run-config run1a_v01 \
-  --conditions-manifest /data/conditions/run1a/manifest.json \
-  --window offspill
-
-python3 -m valhist.fasttables reco stock_reco.root fast_reco.root \
-  --run-config run2_v10 \
-  --conditions-manifest /data/conditions/run2/manifest.json
-```
-
-With `--run-config`, `--conditions-manifest` is mandatory. `--calib`,
-`--deviation`, and `--counters` cannot override named assets; mismatches fail, with
-no extracted or nominal fallback. The loader call is exactly
-`named_conditions.load_conditions(manifest, rc, geom) -> (conditions, metadata)`.
-It validates against the unmodified configured RC, **before** applying the
-explicit fasttable timing policy. See [named-conditions.md](named-conditions.md)
-for the strict bundle contract and evidence limitations. The named loader does
-not currently export an extracted bundle; use the legacy CSV mode for extracted.
-
-Geometry/counters come from the RC, response from `rc.chain_config(...)`, and
-coincidence settings from `rc.finder()`. `--no-opposite-side` remains an explicit
-control override. Existing NumPy reference reconstruction and coincidence loops
-are unchanged; `--jax` accelerates response/waveforms only.
-
-`--window offspill` is the explicit CLI default: a fixed absolute 0–100000 ns
-crop, even when the named RC's configured default is onspill (200–1500 ns).
-`--window onspill` requests that fixed 200–1500 ns crop. **Neither implements
-stock per-event spill/evlen/pbtime semantics or establishes onspill equivalence.**
-No event time rebasing, generator reweighting, or denominator correction is done.
-For `reco`, no time crop is applied: the supplied stock digis already embody the
-source timing policy. The output metadata explicitly records this.
-
-Named invocations write `OUT.root.metadata.json`, containing loader evidence,
-configured/effective windows, finder settings, stage/seed/backend/noise, a timing
-warning, `onspill_equivalence: false`, and whether the window was applied. The
-ROOT layout is unchanged. The sidecar describes settings; it is not an input or
-output hash receipt or an atomic publication protocol. Optional `--write-receipt`
-adds a separate prospective `OUT.root.receipt.json`; see [response-receipts.md](response-receipts.md).
-Legacy invocations do not gain a sidecar and retain their extracted defaults.
-
-Python configuration helper:
-
-```python
-from valhist.fasttables import configure
-geom, counters_cfg, conditions, chain_cfg, metadata = configure(
-    run_config="run2_v10", conditions_manifest="manifest.json",
-    window="offspill", jax=False, noise=True, no_opposite_side=False)
-```
-
-The helper does not run simulation or reconstruction. Legacy mode takes `calib`,
-optional `deviation`/`counters`, and returns `metadata=None`.
-
-### Remaining fasttable limits
-
-This extension does not change event labeling or population handling. The
-existing step-based chain writes event rows for events present in its step table;
-zero-step generated events need independent population/exposure bookkeeping. `--event-reference STOCK.root`
-selects exact stock run/subrun/event identities and retains its zero-step events, for conditional A4 diagnostics;
-this is not a generated-event transport acceptance comparison.
-Inputs are expected to be a single run, as in the original writer. Hardware IDs
-in the written digi-layout rows remain placeholder `-1`, even though response
-phase grouping uses the verified conditions mapping. The NumPy pulse fitter's
-existing pulse-round/fit limits remain. No claim of complete stock-product
-identity follows from table compatibility or this configuration wiring.
-
-## Optional receipt audit and diagnostics
-
-`fasttables --write-receipt` snapshots inputs before execution and records the actual
-complete chain configuration, output/event hashes and source hashes. Resolved input
-paths are frozen before reads; an input symlink retarget cannot change the producer's
-selected file. Existing outputs/sidecars are refused. Historical products are not
-upgraded. A normal receipt cannot admit the shared-yield or physical-readout overrides.
-
-Named V2 accepts `--candidate-receipt RECEIPT --conditions-manifest MANIFEST` for
-exactly one candidate/reference pair. It revalidates the fast producer receipt and
-requires the comparison reference to be byte-identical to its recorded stock
-input/event-reference, with identical event identities. The expanded file paths are
-frozen before metric filling; later glob matches cannot enter the comparison.
-Emit/merge/generated-denominator/counters overrides are refused in this mode.
-`producer_receipt_audit` is partial integrity evidence, not stock producer configuration
-certification; **overall V2 remains unsupported**. Full V2 guardrails and stock binding
-remain open even when the receipt and implemented metrics pass.
-
-See named-response-diagnosis.md (branch `park/named-run2`) for the all-sector,
-paired-event saved-product audit, the explicit stock shared-yield diagnostic, and
-the opt-in physical readout mask. Neither changes named production defaults.
-
-For real-backend diagnostics, `--trace-response` requires a named local step-mode
-input and records strict Python call evidence before ROOT publication. Optional
-`--jax --fused-response` additionally requires the trace and offspill window.
-Traced/fused outputs cannot enter normal receipt admission. The default backend
-and I/O policy are unchanged; see [response-execution-trace.md](response-execution-trace.md).
-Fresh replay seeds can be compared with named-seed-audit.md (branch `park/named-run2`);
-its spread is conditional on fixed G4/stock inputs, not full V2 uncertainty.
-
 ## Local tests
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 CRVFS_NO_FETCH=1 \
-PYTHONPATH=/path/to/core:$PWD \
-python3 -m mu2efastsim.testselect --run --isolate -- -q -p no:cacheprovider
+PYTHONDONTWRITEBYTECODE=1 CRVFS_NO_FETCH=1 PYTHONPATH=/path/to/core:$PWD \
+python3 -m pytest -q -p no:cacheprovider tests/test_named_response.py
 ```
 
-Synthetic tests cover both bar counts, every sector group, unsupported support
-boundaries, diagnostic-only efficiency, immutable identity/merge guards, missing
-trees and empty pulses, named configuration/conditions wiring, and legacy
-compatibility. They do not execute a real response simulation, download assets,
-certify conditions, or claim named-run V2 closure. Ten-event reference files are
-initially smoke evidence and are expected to report unsupported metrics.
+The synthetic tests cover both bar counts, every sector group, unsupported support boundaries, diagnostic-only
+efficiency, immutable identity/merge guards, missing trees and empty pulses. They do not run a response simulation or
+claim named-run V2 closure.

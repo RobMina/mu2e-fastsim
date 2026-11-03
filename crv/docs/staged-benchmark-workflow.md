@@ -30,16 +30,16 @@ benchmark report. Keep source immutable until every active invocation has comple
 
 ## Timing interpretation
 
-The default instrumented pass reloads its context, reads inputs, produces detailed pulses/coincidences,
+The instrumented pass (with `--reload-context`) reloads its context, reads inputs, produces detailed pulses/coincidences,
 validates links, hashes assets and writes NPZ. Its cold label means first runchain call in that process;
-OS caches are not flushed. Default repeated passes still reload assets; the explicit reuse mode below does not.
+OS caches are not flushed. With `--reload-context` repeated passes reload assets; the default below does not.
 
 Report generated events/s and events-with-steps/s separately. Neither is automatically a stock filter or
 trigger acceptance. Do not sum overlapping stage counters, turn cold/warm differences into compiler-only
 cost, or subtract setup from full-pass time to advertise a fabricated steady-state throughput. Measure
 prepared-context execution directly rather than deriving its rate from default-mode timers.
 
-`e2e-bench --reuse-context` now provides opt-in prepared context reuse with read-only host buffers,
+`e2e-bench` prepares the context once by default (`--reload-context` for the reference policy), with read-only host buffers,
 pre/post content audits, fixed device-table identity and separately measured preparation. The existing loop,
 input-order RNGs and physics are unchanged. Saved-baseline comparison uses
 `scripts/compare_context.py` and requires exact output fingerprints, not a tolerance.

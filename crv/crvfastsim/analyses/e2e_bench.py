@@ -305,8 +305,9 @@ class Recorder:
                            "detail_validate_fingerprint_output_s": time.perf_counter() - a})
 
 
-def run(inputs, outdir=None, repeat=2, seed=1, reuse_context=False, **kwargs):
-    """Run one cold-labelled pass and repeat-1 same-process warm passes; publish only after exact closure."""
+def run(inputs, outdir=None, repeat=2, seed=1, reuse_context=None, **kwargs):
+    """Run one cold-labelled pass and repeat-1 same-process warm passes; publish only after exact closure.
+    reuse_context (default: on, off with fused_response): prepare the setup once and audit it around every pass."""
     if not outdir:
         raise ValueError("e2e-bench requires an explicit new --outdir")
     if repeat < 1 or seed < 0 or (kwargs.get("max_events") is not None and kwargs["max_events"] < 1):
@@ -322,6 +323,8 @@ def run(inputs, outdir=None, repeat=2, seed=1, reuse_context=False, **kwargs):
         raise ValueError(f"unsupported benchmark options: {sorted(set(kwargs) - allowed)}")
     if not kwargs.get("calib"):
         raise ValueError("e2e-bench requires --calib")
+    if reuse_context is None:
+        reuse_context = not kwargs.get("fused_response")
     if reuse_context and kwargs.get("fused_response"):
         raise ValueError("prepared context does not support memory-dependent fused response batching")
     files = [str(Path(p).resolve()) for p in tables.expand(inputs)]
@@ -434,7 +437,8 @@ def main(argv=None):
     p.add_argument("--outdir", required=True)
     p.add_argument("--repeat", type=int, default=2, help="total passes, cold first then same-process warm")
     p.add_argument("--seed", type=int, default=1)
-    p.add_argument("--reuse-context", action="store_true", help="opt-in measured one-time preparation with audited context reuse")
+    p.add_argument("--reload-context", dest="reuse_context", action="store_false", default=None,
+                   help="reload the setup in every pass (reference; the default prepares it once and audits it)")
     p.add_argument("--calib", required=True)
     p.add_argument("--tier1b", dest="tier1b_set", choices=sorted(tier1b_assets.SETS),
                    help="tier-1b asset set (default: the run configuration's; crvfastsim.tier1b_assets)")

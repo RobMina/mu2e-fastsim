@@ -39,7 +39,7 @@ def prepare(state, **kwargs):
 
 def test_reuse_once_and_fresh_setup_outputs_exact(prepared_pipeline, tmp_path):
     state = prepared_pipeline
-    baseline = invoke(state, repeat=3, seed=17)
+    baseline = invoke(state, repeat=3, seed=17, reuse_context=False)
     state["load_counts"].clear()
     cached = invoke(state, outdir=str(tmp_path / "cached"), repeat=3, seed=17, reuse_context=True)
     assert set(state["load_counts"].values()) == {1}

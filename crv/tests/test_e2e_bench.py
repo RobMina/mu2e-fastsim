@@ -44,8 +44,10 @@ def pipeline(tmp_path, monkeypatch):
         self.provenance.setdefault("assets_sha256", {str(asset): B.sha256(asset)})
 
     monkeypatch.setattr(B.Recorder, "setup", setup)
-    monkeypatch.setattr(R.runconfig.RunConfig, "geometry", lambda self: SimpleNamespace(nbars=2))
-    monkeypatch.setattr(R.runconfig.RunConfig, "counters_cfg", lambda self: {})
+    monkeypatch.setattr(R.runconfig.RunConfig, "geometry",
+                        lambda self: SimpleNamespace(nbars=2, sector_names=["EX"], sector=np.zeros(2, int)))
+    monkeypatch.setattr(R.runconfig.RunConfig, "counters_cfg",
+                        lambda self: {"crs.sipmsAtSide0EX": True, "crs.sipmsAtSide1EX": True})
     monkeypatch.setattr(R.runconfig.RunConfig, "bar_cut", lambda self, geom: None)
     monkeypatch.setattr(R.tr, "msc_plane", lambda geom: 0)
     monkeypatch.setattr(R.tr, "load_world", lambda *a, **kw: (None, None))
@@ -404,3 +406,16 @@ def test_module_cli_passes_runchain_options(monkeypatch):
     assert seen[0]["run_config"] == "run2_v10" and seen[0]["seed"] == 17
     with pytest.raises(SystemExit):
         B.main(["gen.root", "--library", "lib.root", "--calib", "nominal"])
+
+
+def test_context_reuse_is_the_default_and_fused_response_reloads(monkeypatch):
+    seen = []
+    monkeypatch.setattr(B, "run", lambda **kwargs: seen.append(kwargs))
+    B.main(["gen.root", "--outdir", "a", "--calib", "nominal"])
+    B.main(["gen.root", "--outdir", "b", "--calib", "nominal", "--reload-context"])
+    assert seen[0]["reuse_context"] is None and seen[1]["reuse_context"] is False
+
+
+def test_default_policy_labels(pipeline, tmp_path):
+    assert invoke(pipeline, repeat=2)["context_policy"] == "prepared_once"
+    assert invoke(pipeline, outdir=str(tmp_path / "r"), repeat=2, reuse_context=False)["context_policy"] == "reload_each_pass"

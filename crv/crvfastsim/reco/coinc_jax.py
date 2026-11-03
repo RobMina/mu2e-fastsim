@@ -10,7 +10,6 @@ sector type (cuts are static per type). Equivalences used to get fixed shapes:
 Groups with more than H hits, or a (side, layer) with more than K filtered hits, are flagged and redone by coinc.py.
 """
 import functools
-import os
 from functools import partial
 from itertools import combinations
 
@@ -206,17 +205,6 @@ def _closure(A):
 
 
 def _labels(A, valid):
-    if os.environ.get('CRVFASTSIM_PVC_RECO') == '1':
-        H = A.shape[-1]
-        labels = jnp.broadcast_to(jnp.arange(H), valid.shape)
-
-        def step(state):
-            i, labels, _ = state
-            next_labels = jnp.min(jnp.where(A, labels[..., None, :], H), axis=-1)
-            return i + 1, next_labels, jnp.any(next_labels != labels)
-
-        _, labels, _ = jax.lax.while_loop(lambda s: (s[0] < H - 1) & s[2], step, (0, labels, True))
-        return jnp.where(valid, labels, -1)
     R = _closure(A)
     return jnp.where(valid, jnp.argmax(R, axis=-1), -1)
 

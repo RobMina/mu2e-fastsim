@@ -1,4 +1,4 @@
-"""Synthetic named V2/fasttable contracts, without conditions assets or geometry downloads."""
+"""Synthetic named V2 contracts and the fasttable defaults, without conditions assets or geometry downloads."""
 import copy
 import dataclasses
 import json
@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 import uproot
 
-from crvfastsim import geometry, named_conditions, runconfig
+from crvfastsim import geometry, runconfig
 from crvfastsim.validation import v2compare as V
 from valhist import fasttables as FT
 
@@ -183,45 +183,19 @@ def test_empty_efficiency_pulses_safe(named, monkeypatch):
     assert sum(G["eff_den"]) == 1 and sum(G["eff_num"]) == 0
 
 
-@pytest.mark.parametrize("name", ["run1a_v01", "run2_v10"])
-def test_fasttable_named_config_helper(named, monkeypatch, name):
-    rc = named(name)
-    seen = []
-    sentinel = object()
-    def load(manifest, passed_rc, geom):
-        seen.append((manifest, passed_rc, geom.nbars))
-        return sentinel, {"verified": "synthetic"}
-    monkeypatch.setattr(named_conditions, "load_conditions", load)
-    geom, ccfg, cond, cfg, metadata = FT.configure(run_config=name, conditions_manifest="manifest.json")
-    assert seen == [("manifest.json", rc, geom.nbars)]
-    assert cond is sentinel and ccfg == rc.counters_cfg()
-    assert cfg.response == rc.response() and cfg.finder == rc.finder()
-    assert cfg.window == runconfig.OFFSPILL_WINDOW and rc.window == runconfig.ONSPILL_WINDOW
-    assert not metadata["onspill_equivalence"]
-    assert metadata["timing_policy"] == "fixed_absolute_crop_no_pbtime_rebase"
-    _, _, _, on, meta = FT.configure(run_config=name, conditions_manifest="manifest.json",
-                                     window="onspill", no_opposite_side=True)
-    assert on.window == runconfig.ONSPILL_WINDOW and not on.finder.add_opposite_side_pulses
-    assert not meta["onspill_equivalence"]
-    for extra in ({"calib": "x"}, {"counters": "x"}, {"deviation": "x"}):
-        with pytest.raises(ValueError):
-            FT.configure(run_config=name, conditions_manifest="manifest.json", **extra)
-    with pytest.raises(ValueError):
-        FT.configure(run_config=name)
-
-
 def test_fasttable_legacy_defaults(monkeypatch):
     geom, ccfg = synthetic_geometry("run1a_v01")
     monkeypatch.setattr(FT.geometry, "find_counters", lambda path: __file__)
     monkeypatch.setattr(FT.geometry, "from_offline_config", lambda path: geom)
     monkeypatch.setattr(FT.geometry, "parse_simpleconfig", lambda text: ccfg)
     monkeypatch.setattr(FT.chain.Conditions, "from_csv", lambda *a: "legacy")
-    _, _, cond, cfg, metadata = FT.configure(calib="calib.csv")
-    assert cond == "legacy" and metadata is None
+    monkeypatch.setattr(FT.readout, "apply", lambda cond, g, cfg: (cond, g is geom, cfg is ccfg))
+    _, _, cond, cfg = FT.configure(calib="calib.csv")
+    assert cond == ("legacy", True, True)                 # the physical readout mask of the same counters
     assert cfg.response == FT.chain.ChainConfig().response
     assert cfg.finder == FT.C.FinderConfig() and cfg.window == (0.0, 100000.0)
     with pytest.raises(ValueError):
-        FT.configure(conditions_manifest="manifest.json")
+        FT.configure()
 
 
 def test_named_run_emit_merge_and_empty_group(named, monkeypatch, tmp_path):
@@ -247,35 +221,3 @@ def test_named_run_emit_merge_and_empty_group(named, monkeypatch, tmp_path):
     out = V.summarise(S)
     assert len(out["groups"]) == 7 and out["groups"][g]["status"] == "unsupported"
     assert not out["pass"]
-
-
-def test_fasttable_cli_reco_wiring_and_sidecar(named, monkeypatch, tmp_path):
-    import sys
-    rc = named("run1a_v01")
-    geom = rc.geometry()
-    cfg = dataclasses.replace(rc.chain_config(), window=runconfig.OFFSPILL_WINDOW)
-    seen = {}
-    def configured(**kw):
-        seen.update(kw)
-        return geom, rc.counters_cfg(), "conditions", cfg, {"onspill_equivalence": False}
-    monkeypatch.setattr(FT, "configure", configured)
-    monkeypatch.setattr(FT, "stock_digis", lambda _: {"run": 1400, "sentinel": "digis"})
-    def reco(D, cond, passed_geom, ccfg, **kw):
-        assert D == {"sentinel": "digis"} and cond == "conditions" and passed_geom is geom
-        assert kw["fcfg"] == rc.finder()
-        return "pulses", "clusters"
-    monkeypatch.setattr(FT, "fast_reco", reco)
-    inp, out = tmp_path / "input.root", tmp_path / "output.root"
-    with uproot.recreate(inp) as f:
-        f.mktree("crvdump/events", {"subrun": "int32", "event": "int32"})
-        f["crvdump/events"].extend({"subrun": np.array([1]), "event": np.array([7])})
-    writes = []
-    monkeypatch.setattr(FT, "write", lambda *args: writes.append(args))
-    monkeypatch.setattr(sys, "argv", ["fasttables", "reco", str(inp), str(out), "--run-config", rc.name,
-                                      "--conditions-manifest", "manifest.json"])
-    FT.main()
-    assert seen["window"] == "offspill" and seen["conditions_manifest"] == "manifest.json"
-    assert writes[0][1] == 1400 and writes[0][3:5] == ("pulses", "clusters")
-    metadata = json.loads((tmp_path / "output.root.metadata.json").read_text())
-    assert metadata["stage"] == "reco" and not metadata["window_applied"]
-    assert not metadata["onspill_equivalence"]
