@@ -494,9 +494,11 @@ def _single_thread():
 
 
 def run_ce(stops_npz, geom=None, electrons=100_000, seed=1, procs=1, chunks=None, offline_root=None, maps=None,
-           backend="jax", mu_minus_only=True, calo_model=CALO_MODEL):
+           backend="jax", mu_minus_only=True, calo_model=CALO_MODEL, device=None):
     """Electrons from the mu- stops of a stop table (``point --stops-out``), in `chunks` chunks over `procs`
-    processes (spawned: the JAX backend does not survive fork). Returns per-electron arrays."""
+    processes (spawned: the JAX backend does not survive fork). backend "device": one process, the CE chain
+    (cechain_jax) and the calorimeter proxy (calo_jax) on the default JAX device, options in `device`
+    (_run_ce_device); the chunks are then jackknife groups only. Returns per-electron arrays."""
     import time
     st = np.load(stops_npz)
     keep = st["q"] < 0 if mu_minus_only and (st["q"] < 0).any() else np.ones(st["q"].size, bool)
@@ -505,6 +507,8 @@ def run_ce(stops_npz, geom=None, electrons=100_000, seed=1, procs=1, chunks=None
         raise ValueError(f"{stops_npz}: no stops")
     geom_file, root, mp, _ = _paths(geom, offline_root, maps)
     k = chunks or max(16, procs)
+    if backend == "device":
+        return _run_ce_device(stops, geom_file, root, mp, electrons, seed, k, calo_model, **(device or {}))
     sizes = np.full(k, electrons // k) + (np.arange(k) < electrons % k)
     jobs = [(stops, geom_file, root, mp, int(sizes[c]), seed, c, backend, calo_model) for c in range(k)
             if sizes[c] > 0]
@@ -519,6 +523,56 @@ def run_ce(stops_npz, geom=None, electrons=100_000, seed=1, procs=1, chunks=None
     out["wall_s"] = np.array(time.time() - t0)
     out["stops_used"] = np.array(stops["t"].size)
     return out
+
+
+DEVICE_DEFAULTS = dict(dtype="float32", lanes=131072, shrink=32, min_bucket=1024, unroll=True)
+
+
+def _run_ce_device(stops, geom_file, root, maps, electrons, seed, chunks, calo_model, dtype="float32", lanes=131072,
+                   shrink=32, min_bucket=1024, unroll=True):
+    """run_ce on the device: starts drawn on the host, cechain_jax to the tracker entry, calo_jax for the flag
+    (and its annulus diagnostic); electron i is in jackknife group i mod chunks. Timings in transport_s, calo_s."""
+    import time
+    import jax
+    from . import calo_jax, cechain_jax, simpleconfig
+    t0 = time.time()
+    dt = np.dtype(dtype)
+    rng = np.random.default_rng(np.random.SeedSequence([seed, 0]))
+    geom = cechain.from_offline(geom_file, root)
+    path = geom_file if os.path.isabs(geom_file) else f"{root}/{geom_file}"
+    cfg = simpleconfig.read(path, root)
+    calo = calo_from_config(cfg)
+    wall = calo_wall_from_config(cfg, calo) if calo_model == "wall" else None
+    dmaps = cechain_jax.device_maps(maps, dt)
+    n = int(electrons)
+    x0, u0, p0, t_0, _ = cechain.from_stops(rng, stops["x"], stops["t"], n)
+    key = jax.random.PRNGKey(seed)
+    t1 = time.time()
+    tstat = {}
+    res = cechain_jax.transport(jax.random.fold_in(key, 0), geom, dmaps, x0, u0, p0, t_0, dtype=dt, lanes=lanes,
+                                shrink=shrink, min_bucket=min_bucket, unroll=unroll, stats=tstat)
+    t2 = time.time()
+    plane = res.fate == cechain.PLANE
+    acc, ann = np.zeros(n, bool), np.zeros(n, bool)
+    cstat, info = {}, {}
+    if plane.any():
+        acc[plane] = calo_jax.calo_accept(jax.random.fold_in(key, 1), dmaps, calo, res.x[plane], res.u[plane],
+                                          res.T[plane], wall=wall, dtype=dt, shrink=shrink, min_bucket=min_bucket,
+                                          unroll=unroll, info=info, stats=cstat)
+    t3 = time.time()
+    if plane.any():
+        ann[plane] = calo_jax.calo_accept(key, dmaps, calo, res.x[plane], res.u[plane], res.T[plane], annulus=True,
+                                          dtype=dt, shrink=shrink, min_bucket=min_bucket, unroll=unroll)
+    t4 = time.time()
+    e_front = np.where(plane, res.T + eioni.ME, np.nan)
+    return dict(fate=res.fate.astype(np.int8), e_front=e_front, calo=acc, calo_annulus=ann,
+                chunk=(np.arange(n) % chunks).astype(np.int16), r0=np.hypot(x0[:, 0] - geom.beam.axis_x, x0[:, 1]),
+                z0=x0[:, 2], x_plane=res.x.astype(np.float32), u_plane=res.u.astype(np.float32),
+                wall_s=np.array(t4 - t0), stops_used=np.array(stops["t"].size), setup_s=np.array(t1 - t0),
+                transport_s=np.array(t2 - t1), calo_s=np.array(t3 - t2), annulus_s=np.array(t4 - t3),
+                transport_iterations=np.array(tstat.get("iterations", 0)),
+                calo_iterations=np.array(cstat.get("iterations", 0)),
+                wall_cf=np.array(info.get("cf", 0)), wall_al=np.array(info.get("al", 0)))
 
 
 def ce_metrics(ce, stops_per_gen, dio_pdf, upstream_eff=UPSTREAM_EFF, cosmic_per_s_per_mev=COSMIC_PER_S_PER_MEV,
@@ -542,10 +596,21 @@ def ce_metrics(ce, stops_per_gen, dio_pdf, upstream_eff=UPSTREAM_EFF, cosmic_per
 
 
 def cmd_ce(a):
-    out = run_ce(a.stops, a.geom, a.electrons, a.seed, a.procs, a.chunks, backend=a.backend, calo_model=a.calo)
+    out = run_ce(a.stops, a.geom, a.electrons, a.seed, a.procs, a.chunks, backend=a.backend, calo_model=a.calo,
+                 device=_device_opts(a))
     np.savez_compressed(a.out, **out)
     print(json.dumps(dict(electrons=int(out["fate"].size), accepted=int(out["calo"].sum()),
                           plane=int((out["fate"] == cechain.PLANE).sum()), wall_s=float(out["wall_s"]))))
+
+
+DEVICE_TIMINGS = ("setup_s", "transport_s", "calo_s", "annulus_s", "transport_iterations", "calo_iterations")
+
+
+def _device_opts(a):
+    """Device-backend options of the CLI (None for the CPU backends)."""
+    if a.backend != "device":
+        return None
+    return dict(DEVICE_DEFAULTS, dtype=a.device_float, lanes=a.lanes, unroll=a.unroll)
 
 
 def cmd_sob(a):
@@ -629,7 +694,8 @@ def cmd_point(a):
         raise ValueError(f"{a.g4}: the start table records no generated events (g4table --events)")
     muons_per_event = int(np.load(a.g4)["evt"].size) / float(events)
     stops_per_gen = bm["stop_frac"] * muons_per_event
-    ce = run_ce(stops, a.geom, a.electrons, a.seed, a.procs, a.chunks, backend=a.backend, calo_model=a.calo)
+    ce = run_ce(stops, a.geom, a.electrons, a.seed, a.procs, a.chunks, backend=a.backend, calo_model=a.calo,
+                device=_device_opts(a))
     t_ce = float(ce["wall_s"])
     m = ce_metrics(ce, stops_per_gen, dio_density(_paths(a.geom, dio=a.dio)[3]), a.upstream_eff, a.cosmic)
     h = histograms(ce["e_front"], E_START, ce["calo"])
@@ -638,6 +704,7 @@ def cmd_point(a):
                                            range=FRONT_BINS[1:])[0], **h)
     m.update({f"beam_{k}" if k in m else k: v for k, v in bm.items()})
     m.update(muons_per_event=muons_per_event, beam_s=t_beam, ce_s=t_ce, electrons_per_s=m["electrons"] / t_ce)
+    m.update({k: float(ce[k]) for k in DEVICE_TIMINGS if k in ce})
     m = {k: float(v) for k, v in m.items()}
     json.dump(m, open(os.path.join(a.out, "metrics.json"), "w"))
     if a.keep:
@@ -867,7 +934,13 @@ def main(argv=None):
         s.add_argument("--seed", type=int, default=1)
         s.add_argument("--procs", type=int, default=1)
         s.add_argument("--chunks", type=int, default=None, help="chunks (jackknife groups); default max(16, procs)")
-        s.add_argument("--backend", choices=("numpy", "jax"), default="jax")
+        s.add_argument("--backend", choices=("numpy", "jax", "device"), default="jax",
+                       help="numpy / jax: CE processes on the CPU (layers in NumPy or JAX); device: CE chain and "
+                            "calorimeter proxy in one process on the JAX device (cechain_jax, calo_jax)")
+        s.add_argument("--device-float", dest="device_float", choices=("float32", "float64"),
+                       default=DEVICE_DEFAULTS["dtype"], help="device backend dtype")
+        s.add_argument("--lanes", type=int, default=DEVICE_DEFAULTS["lanes"], help="device backend: CE lanes")
+        s.add_argument("--no-unroll", dest="unroll", action="store_false", help="device backend: no loop unroll")
         s.add_argument("--calo", choices=CALO_MODELS, default=CALO_MODEL,
                        help="calorimeter proxy: crystal path in vacuum, or with the disks' inner wall")
     s = sp.add_parser("point")
