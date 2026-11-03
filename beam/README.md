@@ -28,6 +28,7 @@ No Mu2e-internal data or results are stored here; the field maps, geometry and r
 | `beamfastsim/g4ref.py`, `compare.py` | per-muon G4 reference table and fast-vs-G4 metrics/plots |
 | `beamfastsim/bench.py` | throughput on synthetic muons (no inputs needed) |
 | `beamfastsim/cechain.py` | conversion electrons (opt-in) from target stops or given starts to the tracker entry plane: helix steps in the field maps, foils / IPA / OPA crossed with the core `eslab` or `eslab_jax` slab physics; per-electron plane state in an npz |
+| `beamfastsim/cesob.py` | sob stand-in of the stopping-target design studies (opt-in): beam stops -> conversion electrons -> calorimeter-acceptance proxy (crystal map, disks' inner Al and carbon-fibre rings crossed with the slab physics) -> the studies' approximate sensitivity; the same estimate on a Geant4 EdepAna tree (`reduce`, `refsob`, bit-identical to the design studies), proxy checks against Geant4 (`calocheck`, `calodiag`), `hybrid` and `recalo`; fastsimkit task `beam_sob` |
 | `beamfastsim/cereference.py`, `cecompare.py` | Geant4 CeEndpoint reference table from `ReadVirtualDetector` trees; fast vs Geant4 at the entry plane (filter-implying selection, energy MPV/FWHM/tail fractions) |
 | `fcl/g4ref_mubeam_ntpart.fcl`, `art/run_g4ref.sh` | stock DS stage of SimJob MDC2025ac with a per-muon tree |
 | `art/run_fast_cpu.sh` | g4table + field check + fast run + comparison on a GPVM core |
@@ -42,6 +43,9 @@ PYTHONPATH=core:beam python3 -m beamfastsim.cechain --offline-root $OFFLINE --ma
   --stops g4ref.npz --n 8000 --backend jax --out ce_fast.npz
 PYTHONPATH=core:beam python3 -m beamfastsim.cecompare --ref ce_g4ref.npz --fast "ce_fast*.npz" --mode stops \
   --offline-root $OFFLINE --maps DSMap.header TSdMap.header --out compare.json
+# sob stand-in for one target geometry (opt-in): stops, CE, calorimeter proxy and the approximate sensitivity
+PYTHONPATH=core:beam python3 -m beamfastsim.cesob point --g4 g4ref_run1baa_vd8.npz --z-up 3900 --geom overlay.txt \
+  --electrons 100000 --procs 32 --out sob_point
 # laptop/any: unit tests and benchmark
 PYTHONPATH=core:beam python3 -m pytest -q beam/tests
 PYTHONPATH=core:beam python3 -m beamfastsim.bench --n 2000

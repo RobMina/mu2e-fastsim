@@ -2,7 +2,8 @@
 
 For endpoints without /cvmfs (UVA): the field map (.header + .bin) and a geometry file with its whole #include tree,
 laid out as on CVMFS so the defaults of beamfastsim work with BEAMFS_OFFLINE_ROOT and BEAMFS_MAPS pointed at it.
-  python3 -m beamfastsim.stage OUT [--geom Offline/Mu2eG4/geom/geom_common.txt] [--map DSMap] [--workers 16]
+  python3 -m beamfastsim.stage OUT [--geom Offline/Mu2eG4/geom/geom_common.txt] [--map DSMap] [--extra-map TSdMap]
+      [--file Offline/...] [--workers 16]
 Prints the two environment settings to export. An overlay geometry (absolute path, e.g. beam/geom/*.txt) is read from
 disk and its Offline includes are fetched.
 """
@@ -43,14 +44,17 @@ class _Repos:
         return self._r().fetch(path, out)
 
 
-def stage(out, geom="Offline/Mu2eG4/geom/geom_common.txt", map_name="DSMap", workers=16, offline=OFFLINE):
-    """Fetch map and geometry tree into out/{offline,maps}; returns (offline_root, maps_dir, n_files, seconds)."""
+def stage(out, geom="Offline/Mu2eG4/geom/geom_common.txt", map_name="DSMap", workers=16, offline=OFFLINE, extra_maps=(),
+          extra_files=()):
+    """Fetch maps and geometry tree into out/{offline,maps} (extra_files: more Offline files, e.g. a data table);
+    returns (offline_root, maps_dir, n_files, seconds)."""
     t0 = time.time()
     repo = _Repos()
     off_root, maps_dir = os.path.join(out, "offline"), os.path.join(out, "maps")
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = [ex.submit(repo.fetch, f"{MAPS}/{map_name}.{ext}", os.path.join(maps_dir, f"{map_name}.{ext}"))
-                for ext in ("header", "bin")]
+        futs = [ex.submit(repo.fetch, f"{MAPS}/{m}.{ext}", os.path.join(maps_dir, f"{m}.{ext}"))
+                for m in (map_name,) + tuple(extra_maps) for ext in ("header", "bin")]
+        futs += [ex.submit(repo.fetch, f"{offline}/{p}", os.path.join(off_root, p)) for p in extra_files]
         seen, frontier = set(), []
         if os.path.isabs(geom):
             with open(geom) as f:
@@ -69,7 +73,7 @@ def stage(out, geom="Offline/Mu2eG4/geom/geom_common.txt", map_name="DSMap", wor
             frontier = [i for txt in texts for i in _includes(txt) if i not in seen]
         for f in futs:
             f.result()
-    return off_root, maps_dir, len(seen) + 2, time.time() - t0
+    return off_root, maps_dir, len(seen) + len(futs), time.time() - t0
 
 
 def main(argv=None):
@@ -77,9 +81,11 @@ def main(argv=None):
     ap.add_argument("out")
     ap.add_argument("--geom", default="Offline/Mu2eG4/geom/geom_common.txt")
     ap.add_argument("--map", default="DSMap")
+    ap.add_argument("--extra-map", dest="extra_map", action="append", default=[], help="another map, e.g. TSdMap")
+    ap.add_argument("--file", action="append", default=[], help="another Offline file (path under the release)")
     ap.add_argument("--workers", type=int, default=16)
     a = ap.parse_args(argv)
-    off, maps, n, dt = stage(a.out, a.geom, a.map, a.workers)
+    off, maps, n, dt = stage(a.out, a.geom, a.map, a.workers, extra_maps=a.extra_map, extra_files=a.file)
     print(f"export BEAMFS_OFFLINE_ROOT={off} BEAMFS_MAPS={maps}   # {n} files in {dt:.1f} s")
 
 

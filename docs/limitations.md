@@ -16,6 +16,11 @@ items and the beam stage.
   entry is 0.53 vs 0.49 MeV in Geant4 on average, with the same fractions above 0.5 and 1 MeV). Layers are flat in the
   local frame, with the IPA / OPA curvature as an equivalent field. Secondaries are not transported. The vacuum
   stepping runs in NumPy on the host.
+- **sob stand-in (opt-in `cesob`).** The calorimeter selection is a proxy: a helix path of at least 17.8 mm inside
+  crystals, with the disks' inner Al and carbon-fibre rings crossed with the slab physics. Not modelled: tracker
+  material, the calorimeter front and back plates, the front-end electronics boxes and pipes (electrons that graze
+  the first disk's inner edge and cross them are kept too often: +1.6 % in acceptance against Geant4), and showers.
+  The fast chain uses EM option 4; full-simulation design points on FTFP_BERT (option 0) lose slightly less energy.
 - **Inputs are not published.** The chains read Mu2e-internal inputs; no collaborator release exists yet and its
   location is undecided ([setup/README.md](../setup/README.md)). The project image is not downloadable either.
 - **Second account.** The quickstart has been run from an empty `HOME` with the same user, not yet from a second
