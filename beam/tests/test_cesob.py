@@ -13,7 +13,8 @@ CALO = {"mu2e.solenoidOffset": 3904.0, "calorimeter.caloMotherZ0": 11842.0, "cal
         "calorimeter.FPCoolPipeRadius": 16.85, "calorimeter.BPHoleZLength": 15.0, "calorimeter.FEEZLength": 58.0,
         "calorimeter.FEEBoxThickness": 0.7, "calorimeter.BPPipeZOffset": 43.0, "calorimeter.BPPipeRadiusHigh": 13.45,
         "calorimeter.FEBToDiskZOffset": 1.98, "calorimeter.diskZMotherShift": [0.0, 700.0],
-        "calorimeter.diskCrystalRIn": 374.0, "calorimeter.diskCrystalROut": 660.0}
+        "calorimeter.diskCrystalRIn": 374.0, "calorimeter.diskCrystalROut": 660.0,
+        "calorimeter.crystalXYLength": 34.0, "calorimeter.wrapperThickness": 0.15}
 
 
 def test_calo_crystal_faces_follow_the_maker_arithmetic():
@@ -22,6 +23,14 @@ def test_calo_crystal_faces_follow_the_maker_arithmetic():
     assert c.z_front == pytest.approx((11882.875, 12582.875))
     assert c.z_back == pytest.approx((12082.875, 12782.875))
     assert (c.r_in, c.r_out) == (374.0, 660.0)
+
+
+def test_crystal_grid_has_the_offline_674_crystals_per_disk():
+    c = S.calo_from_config(CALO)
+    assert c.grid.sum() == 674 and c.cell == pytest.approx(34.3)
+    # Offline crystalPos.txt rows: (-188.65, 377.3) and (120.05, 377.3) are crystals, (0, 377.3) is not
+    assert S.in_crystal(c, np.array([-188.65, 120.05, 0.0]), np.full(3, 377.3)).tolist() == [True, True, False]
+    assert not S.in_crystal(c, np.array([-188.65 + 17.1]), np.array([377.3]))[0]       # in the wrapper
 
 
 def _helix_starts(rc, R, n=1, cos=0.7, z=8539.9):
@@ -37,7 +46,7 @@ def _helix_starts(rc, R, n=1, cos=0.7, z=8539.9):
     return x, u, R / st
 
 
-def test_calo_accept_in_a_uniform_field_hits_only_helices_that_reach_the_crystal_annulus():
+def test_calo_accept_in_a_uniform_field_hits_only_helices_that_reach_the_crystals():
     c = S.calo_from_config(CALO)
     T = 103.0
     p = math.sqrt(T * (T + 2 * 0.51099895))
@@ -45,8 +54,9 @@ def test_calo_accept_in_a_uniform_field_hits_only_helices_that_reach_the_crystal
     R = st * p / (0.299792458 * 1.0)                       # helix radius in 1 T
     for rc, want in ((0.0, False), (520.0 - R, True)):     # r_max = R (inside the hole) or 520 mm
         x, u, _ = _helix_starts(rc, R, n=8)
-        hit = S.calo_accept([0.0, 0.0, 1.0], c, x, u, np.full(8, T))
-        assert hit.all() == want and hit.any() == want
+        for annulus in (False, True):
+            hit = S.calo_accept([0.0, 0.0, 1.0], c, x, u, np.full(8, T), annulus=annulus)
+            assert hit.all() == want and hit.any() == want
 
 
 def test_gaussian_kernel_and_density_kernel_keep_their_totals():
