@@ -182,6 +182,10 @@ def sob_metrics(h, n_selected, n_gen, stops_per_gen, dio_pdf, upstream_eff=UPSTR
     stops_per_pot = stops_per_gen * upstream_eff
     sig_eff = stops_per_pot * acc
     m = sensitivity(h["front"], h["entries"], h["resp"], h["entries"], sig_eff, dio_pdf, cosmic_per_s_per_mev)
+    nf, flo, fhi = FRONT_BINS
+    edges = np.linspace(flo, fhi, nf + 1)
+    for dE in (0.5, 1.0, 2.0):   # selected electrons more than dE below the birth energy at the tracker entry
+        m[f"front_tail_{str(dE).replace('.', 'p')}mev"] = float(h["front"][edges[1:] <= E_START - dE].sum() / h["entries"])
     m.update(stops_per_gen_event=stops_per_gen, stops_per_pot=stops_per_pot, ce_acceptance=acc, sig_eff=sig_eff,
              box_eff_per_stop=m["signal_rate"] / (NPOT * BR * stops_per_pot),
              box_frac_selected=m["signal_rate"] / (NPOT * BR * sig_eff), n_selected=float(n_selected),
