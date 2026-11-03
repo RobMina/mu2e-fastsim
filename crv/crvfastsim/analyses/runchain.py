@@ -11,10 +11,6 @@ Tier 1b (crvfastsim.tier1b_assets): default asset set strict_v5 for extracted_v0
 crossing context, containment, point and topology placement, v3 templates, chord placement, root-coherent draws);
 strict_v4 (hard-muon draws instead of root-coherent ones) is the previous default; the named run configurations have no
 set and need --library, a custom library sampled without placement options.
-
-Named conditions manifests are supported only by ordinary, non-prepared runs. They are mutually exclusive
-with calib/deviation. Prepared contexts and benchmark callbacks reject manifests before any setup: their
-existing CSV signatures, sealing and benchmark asset inventories do not cover manifest bundles.
 """
 import json
 import os
@@ -40,12 +36,10 @@ SECTOR_TYPES = {1: "EX", 2: "T1", 3: "T2", 4: "M"}
 
 
 def _resolve(library, calib, deviation, gdml, jax, counters, run_config, window, fused_response=False,
-             conditions_manifest=None, tier1b_set=None, tier1b_dir=None):
+             tier1b_set=None, tier1b_dir=None):
     """Resolve setup arguments without loading large assets or drawing random numbers."""
-    if conditions_manifest is not None and (calib is not None or deviation is not None):
-        raise SystemExit("--conditions-manifest cannot be combined with --calib or --deviation")
-    if not (calib or conditions_manifest):
-        raise SystemExit("runchain needs either --calib or --conditions-manifest")
+    if not calib:
+        raise SystemExit("runchain needs --calib (a CRVCalib CSV or nominal)")
     from .transport import default_gdml
     rc, time_window = resolve_runchain_window(run_config, window)
     if counters:
@@ -100,13 +94,10 @@ class PreparedContext:
 
 def prepare(library=None, calib=None, deviation=None, gdml=None, jax=False, counters=None,
             run_config=None, window=None, benchmark=None, fused_response=False,
-            below_margin=None, conditions_manifest=None, geometry_readout=False,
-            tier1b_set=None, tier1b_dir=None):
-    """Load and seal reusable CSV setup; named manifests and physical masks are not supported by reuse/benchmark."""
+            below_margin=None, geometry_readout=False, tier1b_set=None, tier1b_dir=None):
+    """Load and seal reusable CSV setup; physical masks are not supported by reuse/benchmark."""
     if geometry_readout:
         raise ValueError("geometry readout is not supported with prepared contexts or benchmarks")
-    if conditions_manifest is not None:
-        raise ValueError("conditions manifests are not supported with prepared contexts or benchmarks")
     if fused_response:
         raise ValueError("prepared context does not support memory-dependent fused response batching")
     from .context_audit import freeze_arrays, content_fingerprint
@@ -145,17 +136,12 @@ def prepare(library=None, calib=None, deviation=None, gdml=None, jax=False, coun
     return PreparedContext(sig, MappingProxyType(payload), propagation, template, template_args, fingerprint, device, timers)
 
 
-def _load_setup(rc, cfg, gdml_path, explicit_gdml, spec, calib, deviation, jax, below_margin=None,
-                conditions_manifest=None, configured_rc=None):
+def _load_setup(rc, cfg, gdml_path, explicit_gdml, spec, calib, deviation, jax, below_margin=None):
     geometry_start = time.perf_counter()
     geom = rc.geometry()
     ccfg = rc.counters_cfg()
     conditions_metadata = {"status": "unverified_legacy", "calib": calib, "deviation": deviation}
-    if conditions_manifest is not None:
-        from ..named_conditions import load_conditions
-        cond, conditions_metadata = load_conditions(conditions_manifest, configured_rc, geom)
-    else:
-        cond = runconfig.nominal_conditions(geom) if calib == "nominal" else chain.Conditions.from_csv(calib, deviation)
+    cond = runconfig.nominal_conditions(geom) if calib == "nominal" else chain.Conditions.from_csv(calib, deviation)
     if len(cond.status) < 4 * geom.nbars:
         raise SystemExit(f"runchain: conditions cover {len(cond.status)} channels, {rc.name} has {4 * geom.nbars}; "
                          "pass the configuration's CRVCalib CSV or --calib nominal")
@@ -185,7 +171,7 @@ def _load_setup(rc, cfg, gdml_path, explicit_gdml, spec, calib, deviation, jax, 
 def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax=False, max_events=None, seed=1,
         compare=None, counters=None, reco_cpu=False, emit=None, run_config=None, window=None, benchmark=None,
         prepared=None,
-        conditions_manifest=None, geometry_readout=False, tier1b_set=None, tier1b_dir=None,
+        geometry_readout=False, tier1b_set=None, tier1b_dir=None,
         transport_context=None, tier1b_context=None, tier1b_backend="numpy",
         gen="table", gen_events=None, gen_seed=None, gen_subrun=1, **kw):
     removed = sorted(set(kw) & {"msc_tail", "tail_k", "sliced_msc", "first_muon_only", "no_absorbers",
@@ -217,27 +203,18 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         if prepared is not None or benchmark is not None:
             raise ValueError("geometry readout is not supported with prepared contexts or benchmarks")
         name = run_config if isinstance(run_config, str) else getattr(run_config, "name", None)
-        if name not in ("run1a_v01", "run2_v10") or conditions_manifest is None or counters is not None:
-            raise ValueError("geometry readout requires Run1A/Run2 --run-config and --conditions-manifest; no counters override")
-    if conditions_manifest is not None and (prepared is not None or benchmark is not None):
-        raise ValueError("conditions manifests are not supported with prepared contexts or benchmarks")
+        if name not in ("run1a_v01", "run2_v10") or counters is not None:
+            raise ValueError("geometry readout requires Run1A/Run2 --run-config; no counters override")
     bench_start = time.perf_counter() if benchmark is not None else None
     rc, cfg, gdml_path, time_window, spec = _resolve(library, calib, deviation, gdml, jax, counters, run_config, window,
-                                                     kw.get("fused_response", False), conditions_manifest,
-                                                     tier1b_set, tier1b_dir)
+                                                     kw.get("fused_response", False), tier1b_set, tier1b_dir)
     for warning in time_window["warnings"]:
         print(f"# time window: {warning}", flush=True)
     if benchmark is not None:
         benchmark.setup(rc, cfg, gdml_path, spec, calib, deviation)
     t0 = time.perf_counter()
     if prepared is None:
-        manifest_kw = {}
-        if conditions_manifest is not None:
-            # Validate the stock snapshot against its configured window, not the cosmic crop.
-            configured_rc = dataclasses.replace(rc, window=tuple(time_window["configured_window_ns"]))
-            manifest_kw = dict(conditions_manifest=conditions_manifest, configured_rc=configured_rc)
-        payload, T = _load_setup(rc, cfg, gdml_path, gdml, spec, calib, deviation, jax, kw.get("below_margin"),
-                                 **manifest_kw)
+        payload, T = _load_setup(rc, cfg, gdml_path, gdml, spec, calib, deviation, jax, kw.get("below_margin"))
         if benchmark is None:
             T.pop("geometry_conditions_config_s")
     else:

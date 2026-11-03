@@ -81,8 +81,8 @@ PE tail above 2000 PE (0.923 +- 0.014 -> 0.991 +- 0.014), and the adjacent-layer
   entry under `CRVFS_PREPARED_LIBRARY_CACHE`.
 - P1 (about 1.9 ms per accepted event on one core) was measured on a shared host and has to be re-measured on an idle
   one.
-- Named-configuration response and conditions bundles ([named-response.md](named-response.md),
-  [named-conditions.md](named-conditions.md)) are admission contracts, not physics validation.
+- Named-configuration V2 ([named-response.md](named-response.md)) groups the metrics by sector type; its overall status
+  stays unsupported until both arms carry verified configuration provenance.
 - The fast chain is validated on MC only. KPP data comparisons need the measured data offsets and are outside this
   repository.
 
@@ -93,6 +93,11 @@ PE tail above 2000 PE (0.923 +- 0.014 -> 0.991 +- 0.014), and the adjacent-layer
 
 - Below-plane scatter-in for the CRV that wraps the DS (`--below-scatter-in`, `transport.scatter_in_crossings`,
   Run 2 algorithm development; not converged, V1 Run 2 still fails): branch `park/named-run2`.
+
+- Named-run provenance and diagnostics: strict conditions bundles (`named_conditions`, `--conditions-manifest`),
+  fasttable receipts and the V2 receipt audit (`response_receipt`, `--write-receipt`, `--candidate-receipt`), the
+  fasttable named mode (`--run-config`, `--event-reference`), the stock shared-yield emulation
+  (`--stock-shared-yield-fcl`) and the response-execution trace (`--trace-response`): branch `park/named-run2`.
 
 ## Inputs
 

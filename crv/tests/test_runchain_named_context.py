@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from crvfastsim import named_conditions
 from test_e2e_bench import B, R, pipeline
 from test_prepared_context import prepared_pipeline
 
@@ -46,78 +45,11 @@ def test_stats_emit_and_merge_persist_contract(pipeline, tmp_path):
     assert merged["window"] == result["window"]
 
 
-@pytest.mark.parametrize("window", [None, "onspill", (-10, 900)])
-def test_manifest_validates_configured_not_effective_window(pipeline, monkeypatch, tmp_path, window):
-    seen = []
-    metadata = {"schema": "synthetic", "assets": {"calib.csv": {"sha256": "test-only"}}}
-
-    def load(manifest, rc, geom):
-        seen.append((manifest, rc, geom))
-        return R.runconfig.nominal_conditions(geom), metadata
-
-    monkeypatch.setattr(named_conditions, "load_conditions", load)
-    monkeypatch.setattr(R.runconfig.RunConfig, "tagger_bar", lambda *a: None)
-    monkeypatch.setattr(R.runconfig, "sector_type_names", lambda *a: {1: "R1"})
-    monkeypatch.setattr(R.tr, "load_below", lambda *a, **kw: None)          # no below-plane world in the stub
-    emit = tmp_path / "manifest-shard.json"
-    result = ordinary(pipeline, calib=None, run_config="run2_v10", window=window,
-                      conditions_manifest="bundle/manifest.json", counters="override.txt", emit=str(emit))
-    assert len(seen) == 1
-    manifest, rc, geom = seen[0]
-    assert manifest == "bundle/manifest.json" and geom.nbars == 2
-    assert rc.window == R.runconfig.get("run2_v10").window
-    assert rc.counters == "override.txt"
-    assert result["conditions"] == metadata == json.loads(emit.read_text())["conditions"]
-    assert result["time_window"]["configured_window_ns"] == list(rc.window)
-    assert result["window"] == ([0, 100000] if window is None else [200, 1500] if window == "onspill" else [-10, 900])
-
-
-@pytest.mark.parametrize("opts", [{"calib": "nominal"}, {"calib": "calib.csv"},
-                                  {"calib": None, "deviation": "photon.csv"}])
-def test_manifest_csv_exclusion_precedes_loading(pipeline, monkeypatch, opts):
-    monkeypatch.setattr(R, "_load_setup", lambda *a, **kw: pytest.fail("loaded before admission"))
-    with pytest.raises(SystemExit, match="cannot be combined"):
-        ordinary(pipeline, conditions_manifest="manifest.json", **opts)
-    assert not pipeline["calls"]
-
-
-def test_manifest_validation_failure_precedes_transport(pipeline, monkeypatch):
-    def invalid(*args):
-        raise ValueError("hash/size mismatch")
-    monkeypatch.setattr(named_conditions, "load_conditions", invalid)
-    with pytest.raises(ValueError, match="hash/size"):
-        ordinary(pipeline, calib=None, conditions_manifest="manifest.json")
-    assert not pipeline["calls"]
-
-
-@pytest.mark.parametrize("entry", ["prepare", "run_prepared", "run_benchmark", "prepare_benchmark"])
-def test_manifest_rejected_before_resolution_or_callbacks(monkeypatch, entry):
-    monkeypatch.setattr(R, "_resolve", lambda *a, **kw: pytest.fail("resolved before manifest rejection"))
-    options = {"conditions_manifest": "manifest.json"}
-    if "benchmark" in entry:
-        options["benchmark"] = object()
-    if entry == "run_prepared":
-        options["prepared"] = object()
-    with pytest.raises(ValueError, match="not supported with prepared contexts or benchmarks"):
-        if entry.startswith("prepare"):
-            R.prepare(**options)
-        else:
-            R.run([], "unused", **options)
-
-
-def test_benchmark_entry_refuses_manifest_before_output(pipeline):
-    opts = {k: pipeline[k] for k in ("inputs", "outdir", "library", "gdml")}
-    with pytest.raises(ValueError, match="unsupported benchmark options"):
-        B.run(**opts, conditions_manifest="manifest.json")
-    assert not Path(pipeline["outdir"]).exists()
-
-
-@pytest.mark.parametrize("change", [{"calib": "different.csv"}, {"deviation": "different.csv"},
-                                    {"conditions_manifest": "manifest.json", "calib": None}])
+@pytest.mark.parametrize("change", [{"calib": "different.csv"}, {"deviation": "different.csv"}])
 def test_prepared_rejects_mismatched_conditions_before_events(prepared_pipeline, change):
     state = prepared_pipeline
     context = R.prepare(library=state["library"], calib="nominal", gdml=state["gdml"])
-    with pytest.raises(ValueError, match="does not match|not supported"):
+    with pytest.raises(ValueError, match="does not match"):
         ordinary(state, prepared=context, **change)
     assert not state["calls"]
 
