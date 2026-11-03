@@ -41,7 +41,7 @@ PE tail above 2000 PE (0.923 +- 0.014 -> 0.991 +- 0.014), and the adjacent-layer
   library is rebuilt for it. The `strict_v*` sets describe the extracted layer structure and are refused for named
   configurations.
 - **Run 2 V1 fails** (primary-muon crossings vs Geant4, 1 M events): the CRV that wraps the DS needs below-plane
-  scatter-in, which is an experimental opt-in ([below-scatter-in.md](below-scatter-in.md)). Run 1A V1 passes.
+  scatter-in; the experimental marcher is on branch `park/named-run2`. Run 1A V1 passes.
 - No magnetic field: the transport is straight-line plus multiple scattering, valid for the extracted configuration.
 
 ## Not implemented
@@ -90,6 +90,9 @@ PE tail above 2000 PE (0.923 +- 0.014 -> 0.991 +- 0.014), and the adjacent-layer
 
 - Intel PVC (Aurora) reco kernels (`CRVFASTSIM_PVC_RECO`: Jacobi Hessian eigenvalues, label propagation, batch cap):
   branch `park/pvc-reco`. Not validated on PVC hardware; identical output and no gain on an A100.
+
+- Below-plane scatter-in for the CRV that wraps the DS (`--below-scatter-in`, `transport.scatter_in_crossings`,
+  Run 2 algorithm development; not converged, V1 Run 2 still fails): branch `park/named-run2`.
 
 ## Inputs
 

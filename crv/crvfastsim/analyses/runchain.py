@@ -221,7 +221,6 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
             raise ValueError("geometry readout requires Run1A/Run2 --run-config and --conditions-manifest; no counters override")
     if conditions_manifest is not None and (prepared is not None or benchmark is not None):
         raise ValueError("conditions manifests are not supported with prepared contexts or benchmarks")
-    from .transport import _scatter_in_kw
     bench_start = time.perf_counter() if benchmark is not None else None
     rc, cfg, gdml_path, time_window, spec = _resolve(library, calib, deviation, gdml, jax, counters, run_config, window,
                                                      kw.get("fused_response", False), conditions_manifest,
@@ -260,12 +259,11 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
     conditions_metadata = payload.get("conditions_metadata",
                                       {"status": "unverified_legacy", "calib": calib, "deviation": deviation})
     out_cl, n_gen = [], 0
-    transport_diagnostics = {}
     device_transport = None
     range_out = rc.range_out and not kw.get("legacy_transport")
     if kw.get("transport_backend", "numpy") == "jax":
         from ..transport_jax import DeviceTransport, transport as run_device_transport
-        if below is not None or kw.get("below_msc") or kw.get("below_scatter_in"):
+        if below is not None or kw.get("below_msc"):
             raise ValueError("JAX transport supports the straight-line default only")
         if transport_context is not None and prepared is None:
             raise ValueError("device transport reuse requires an audited prepared chain context")
@@ -326,16 +324,12 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         keys = gen[tables.KEY].drop_duplicates().to_numpy() if benchmark is not None else None
         ngen = int(gen[tables.KEY].drop_duplicates().shape[0])
         a = time.perf_counter()
-        diagnostics = {}
         if device_transport is not None:
             st, pa = run_device_transport(gen, geom, rng, prepared=device_transport)
         else:
             st, pa = tr.transport(gen, geom, rng, stage="C", world=world, absorbers=ab, tagger_bar=tagger,
                                   bar_cut=bar_cut, below=below, range_out=range_out,
-                                  below_msc=below is not None and (rc.below_msc or bool(kw.get("below_msc"))),
-                                  **_scatter_in_kw(kw, diagnostics))
-        if diagnostics:
-            transport_diagnostics[str(i)] = {"input": str(f), **diagnostics}
+                                  below_msc=below is not None and (rc.below_msc or bool(kw.get("below_msc"))))
         t["transport_s"] = time.perf_counter() - a
         a = time.perf_counter()
         if device_tier1b is None:
@@ -424,8 +418,6 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         res["compare_generated_events"] = n_gen
         res["clusters_per_generated_ref"] = {stype_name.get(int(k), str(k)): float((st_ref == k).sum() / n_gen)
                                              for k in np.unique(st_ref)}
-    if transport_diagnostics:
-        res["scatter_in_diagnostics"] = transport_diagnostics
     res["wall_s"] = time.perf_counter() - t0
     if jax:
         import jax as _jax
@@ -436,7 +428,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
     if emit:   # per-shard accumulators for a merge (node jobs: one process per tile)
         with open(emit, "w") as fh:
             json.dump({"generated_events": n_gen, "timers": T, "wall_s": res["wall_s"],
-                       "conditions": conditions_metadata, "scatter_in_diagnostics": transport_diagnostics,
+                       "conditions": conditions_metadata,
                        **({"native_generator": native_receipt, "live_seconds": native_receipt["live_seconds"]}
                           if native_receipt is not None else {}),
                        "tier1b": spec.describe(),

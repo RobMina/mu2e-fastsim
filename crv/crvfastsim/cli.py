@@ -89,11 +89,6 @@ def build_parser():
             sp.add_argument("--legacy-transport", action="store_true",
                             help="stage C without range_out (one bar loss at the entry momentum, restricted loss only, "
                                  "mean absorber dE/dx; the extracted_v04 default before 2026-10-30)")
-            sp.add_argument("--below-scatter-in", action="store_true",
-                            help="experimental bounded below-plane marcher; requires --below-msc and stage C")
-            sp.add_argument("--scatter-in-step-mm", type=float, default=50.0)
-            sp.add_argument("--scatter-in-envelope-mm", type=float, default=1500.0)
-            sp.add_argument("--scatter-in-max-steps", type=int, default=20000)
         if name == "g4cost":
             sp.add_argument("--digi", required=True, help="the digi job's TimeTracker SQLite (timing_digi.db)")
         if name == "v0check":

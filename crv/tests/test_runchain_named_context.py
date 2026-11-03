@@ -131,40 +131,6 @@ def test_prepared_metadata_is_sealed(prepared_pipeline):
     assert not state["calls"]
 
 
-@pytest.mark.parametrize("enabled,prefetch", [(False, False), (True, False), (True, True)])
-def test_scatter_opt_in_forwarding_and_diagnostics(pipeline, monkeypatch, tmp_path, enabled, prefetch):
-    old = R.tr.transport
-    seen = []
-
-    def transport(*args, **kw):
-        seen.append(kw)
-        if enabled:
-            assert kw["below_scatter_in"] is True
-            assert kw["scatter_in_step_mm"] == 25
-            assert kw["scatter_in_envelope_mm"] == 1200
-            assert kw["scatter_in_max_steps"] == 50
-            kw["scatter_in_diagnostics"].update(candidates=2)
-        else:
-            assert not any(k.startswith("scatter_in") or k == "below_scatter_in" for k in kw)
-        return old(*args, **kw)
-
-    monkeypatch.setattr(R.tr, "transport", transport)
-    second = tmp_path / "second.root"
-    second.write_bytes(b"synthetic")
-    emit = tmp_path / "scatter.json"
-    result = ordinary(pipeline, inputs=[*pipeline["inputs"], str(second)], emit=str(emit), prefetch=prefetch,
-                      below_scatter_in=enabled, scatter_in_step_mm=25, scatter_in_envelope_mm=1200,
-                      scatter_in_max_steps=50)
-    shard = json.loads(emit.read_text())
-    assert len(seen) == 2
-    if enabled:
-        expected = {str(i): {"input": f, "candidates": 2} for i, f in enumerate([*pipeline["inputs"], str(second)])}
-        assert result["scatter_in_diagnostics"] == shard["scatter_in_diagnostics"] == expected
-    else:
-        assert "scatter_in_diagnostics" not in result
-        assert shard["scatter_in_diagnostics"] == {}
-
-
 @pytest.mark.parametrize("change,match", [("conditions", "conditions"), ("missing_conditions", "conditions"),
                                         ("window", "window"), ("legacy", "legacy")])
 def test_merge_guards_before_counting(tmp_path, change, match):
