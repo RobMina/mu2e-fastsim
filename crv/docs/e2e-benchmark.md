@@ -57,9 +57,10 @@ in private storage; do not commit or publish them.
 * `event_keys`, `detail_arrays`, `fingerprint` expose the small validation and
   retention primitives used by focused tests.
 
-### Opt-in prepared context
+### Prepared context (default)
 
-`--reuse-context` retains loaded setup across passes; the default still reloads it. `runchain.prepare(...)`
+By default the setup is loaded once and retained across passes; `--reload-context` reloads it in every pass
+(the reference policy, and the policy used with `--fused-response`). `runchain.prepare(...)`
 creates a single-owner `PreparedContext`, and `runchain.run(..., prepared=context)` uses it. Setup arguments
 must match, including resolved paths, configuration, world/absorber switches and asset-search environment.
 RNGs, input tables, outputs, accumulators and prefetch executors are never stored in the context.
@@ -76,7 +77,7 @@ sequential repeated workloads, not concurrent configurations or an optimizer's m
 fingerprint or skipping content checks. See [audit worker settings](context-hash-workers.md)
 for CPU-allocation limits, measurements and the exact guarantee.
 
-Memory-dependent fused-response batching is explicitly **unsupported** with reuse. Reuse retains the existing
+Memory-dependent fused-response batching is **unsupported** with reuse, so `--fused-response` reloads the setup. Reuse retains the existing
 two-stage response, transport and all recovery paths. It does not change kernel shapes or RNG semantics.
 
 The report labels `context_policy=prepared_once`, records `preparation_elapsed_s`, preparation stage/hash
@@ -217,7 +218,7 @@ invented.
 `cold` means the first **runchain call in this process**. Device discovery/probe
 already occurred, and input/source hashing may have warmed filesystem caches.
 No OS cache flush, persistent JIT cache reset, or fresh interpreter is performed
-between repeats. Without `--reuse-context`, `warm` retains process/JIT/template caches but runs the same
+between repeats. With `--reload-context`, `warm` retains process/JIT/template caches but runs the same
 runchain setup and IO again. With reuse, preparation has its own measured interval and the existing
 runchain loop consumes the same sealed setup objects. Repeated pass times and identical fingerprints are reported
 individually, not pooled into a claimed GPU speedup.

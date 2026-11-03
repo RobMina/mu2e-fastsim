@@ -132,7 +132,7 @@ Run against an archive of the code before the switch (crv `05eeb47`, core `23377
 | `tier1b-apply` default vs the template-arm tables of the held-out closure | shards 21, 22 | identical: 79,164 / 101,217 and 82,373 / 103,793 rows |
 | `e2e-bench --tier1b legacy` vs old `--library tier1b_v7/...` (detail fingerprint: every key, step, charge, digi, pulse, cluster and member) | g4ref_v1 shard 11; g4ref_v2 shard 21 | identical fingerprints |
 
-Cost on one GPVM (4 cores, NumPy CPU path, g4ref_v1 shard 11, `e2e-bench --reuse-context --repeat 4`, mean of three
+Cost on one GPVM (4 cores, NumPy CPU path, g4ref_v1 shard 11, `e2e-bench --repeat 4` with a prepared context, mean of three
 warm passes, legacy -> default):
 
 | Quantity | legacy | strict_v2 |

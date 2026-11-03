@@ -407,3 +407,15 @@ def test_module_cli_passes_runchain_options(monkeypatch):
     with pytest.raises(SystemExit):
         B.main(["gen.root", "--library", "lib.root", "--calib", "nominal"])
 
+
+def test_context_reuse_is_the_default_and_fused_response_reloads(monkeypatch):
+    seen = []
+    monkeypatch.setattr(B, "run", lambda **kwargs: seen.append(kwargs))
+    B.main(["gen.root", "--outdir", "a", "--calib", "nominal"])
+    B.main(["gen.root", "--outdir", "b", "--calib", "nominal", "--reload-context"])
+    assert seen[0]["reuse_context"] is None and seen[1]["reuse_context"] is False
+
+
+def test_default_policy_labels(pipeline, tmp_path):
+    assert invoke(pipeline, repeat=2)["context_policy"] == "prepared_once"
+    assert invoke(pipeline, outdir=str(tmp_path / "r"), repeat=2, reuse_context=False)["context_policy"] == "reload_each_pass"

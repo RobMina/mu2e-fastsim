@@ -37,7 +37,7 @@ for backend in ${CRV_TIER1B_BACKENDS:-numpy jax}; do
  --deviation "$H/data/geometry/crvphoton_sim_best_v1_5_run1400.csv" \
  --gdml "$H/data/geometry/mu2e_extracted_v04.gdml" \
  --tier1b "${CRV_TIER1B_SET:-strict_v4}" --tier1b-dir "$H/tier1b_strict_v2" --jax \
- --transport-backend "$transport" --tier1b-backend "$backend" --reuse-context \
+ --transport-backend "$transport" --tier1b-backend "$backend" \
  --repeat "${CRV_TIER1B_REPEAT:-4}" --max-events "${CRV_TIER1B_CHAIN_EVENTS:-50000}" \
  --outdir "$R/${CRV_TIER1B_LABEL}_$backend"
 done

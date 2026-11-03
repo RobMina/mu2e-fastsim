@@ -129,8 +129,9 @@ on an A100-80GB byte-identical at seed 20261027.
 | `CRVFS_CPU_FIT_NORMAL_CACHE` | NumPy | identical | 1.028x (1.026-1.035) | on by default |
 | both | GPU, float32 (NumPy redo path) | identical | 1.015x (1.013-1.018) | |
 | `CRVFS_CPU_FIT_WORKSPACE` | NumPy | identical | 1.007x (1.004-1.013); none on top of the cache | `park/cpu-speed` |
-| `CRVFS_CONTEXT_HASH_WORKERS` | GPU, float32 | identical | 1.042x at 4, in `e2e-bench --reuse-context` only | default 4 |
+| `CRVFS_CONTEXT_HASH_WORKERS` | GPU, float32 | identical | 1.042x at 4, in `e2e-bench` prepared contexts only | default 4 |
 | `CRVFS_PREPARED_LIBRARY_CACHE` | GPU, float32 | identical | none warm (0.984x, overlapping); preparation 52.5 -> 19.9 s, first creation 70.9 s | kept: a site path |
+| `e2e-bench` prepared context (default since 2026-11-03; `--reload-context` the reference) | NumPy (CPU), GPU float32 (A100-80, MIG 1g.24gb) | identical | warm pass 1.76x (CPU, 143 -> 81 s), 5.4x (A100, 82.7 -> 15.4 s), 4.6x (MIG, 38.3 -> 8.4 s); whole invocation 1.33x / 1.73x / 1.62x | default |
 | `CRVFASTSIM_COMPACT_DISPATCH` | GPU, float32 and float64 | **not identical** (cluster PE, time, position, slope only; float32 `cl_pos` up to 0.07 mm, float64 5e-9 mm) | 1.05-1.11x warm; cold pass 1.2x slower (more shapes to compile) | `park/cpu-speed` |
 
 ## Physical readout mask

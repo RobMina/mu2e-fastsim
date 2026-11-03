@@ -166,8 +166,8 @@ def run(args):
         for key in ("library", "calib", "deviation", "gdml", "run_config", "window", "seed", "max_events", "repeat"):
             command += ["--" + key.replace("_", "-"), str(expected[key])]
         command += ["--jax", "--outdir", str(outdir / name)]
-        if prepared:
-            command.append("--reuse-context")
+        if not prepared:
+            command.append("--reload-context")
         if prefetch:
             command.append("--prefetch")
         log = summary / (name + ".log")

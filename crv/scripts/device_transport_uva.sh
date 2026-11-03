@@ -39,7 +39,7 @@ chain)
           --deviation "$H/data/geometry/crvphoton_sim_best_v1_5_run1400.csv" \
           --gdml "$H/data/geometry/mu2e_extracted_v04.gdml" \
           --tier1b strict_v3 --tier1b-dir "$H/tier1b_strict_v2" --jax \
-          --transport-backend "$backend" ${CRV_DEVICE_PREFETCH:+--prefetch} --reuse-context --repeat "${CRV_DEVICE_REPEAT:-2}" --max-events "${CRV_DEVICE_CHAIN_EVENTS:-1000}" \
+          --transport-backend "$backend" ${CRV_DEVICE_PREFETCH:+--prefetch} --repeat "${CRV_DEVICE_REPEAT:-2}" --max-events "${CRV_DEVICE_CHAIN_EVENTS:-1000}" \
           --outdir "$R/${CRV_DEVICE_LABEL:?}_$backend"
     done ;;
 *) exit 2 ;;

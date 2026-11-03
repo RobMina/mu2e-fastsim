@@ -42,7 +42,7 @@ def campaign(tmp_path, monkeypatch):
             value = command[command.index("--" + key.replace("_", "-")) + 1]
             options[key] = int(value) if key in ("seed", "max_events", "repeat") else value
         options.update(inputs=positional, jax=True, prefetch="--prefetch" in command)
-        prepared = "--reuse-context" in command
+        prepared = "--reload-context" not in command
         files = [{"input": p, "input_index": i, "fingerprint": f"exact-{p}",
                   "counts": {"generated_events": 17 + i, "input_generated_events": 107 + i}}
                  for i, p in enumerate(positional)]
@@ -81,7 +81,7 @@ def test_deterministic_campaign_exact_comparison_and_measured_counts(campaign, m
         for flag, value in (("--seed", seed), ("--repeat", repeat), ("--max-events", 50000),
                             ("--run-config", "extracted_v04"), ("--window", "offspill")):
             assert command[command.index(flag) + 1] == str(value)
-        assert ("--reuse-context" in command) is prepared
+        assert ("--reload-context" in command) is not prepared
         assert ("--prefetch" in command) is prefetch
         assert "--jax" in command
         assert not any("tolerance" in arg or "rounding" in arg for arg in command)
@@ -261,4 +261,4 @@ def test_saved_reference_compared_without_shard11_reload(campaign, monkeypatch, 
         result = M.run(args)
         assert len(calls) == 3
         assert result["comparisons"]["n50000"]["status"] == "complete"
-    assert "--reuse-context" in calls[0][0]
+    assert "--reload-context" not in calls[0][0]

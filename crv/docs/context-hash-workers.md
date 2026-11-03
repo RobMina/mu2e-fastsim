@@ -11,11 +11,11 @@ these checks are not a security boundary or support for concurrent mutation.
 
 `CRVFS_CONTEXT_HASH_WORKERS=N` sets the number of hashing threads: 4 by default,
 1 for serial, supported range 1–32. It changes neither the hash schema nor any
-simulation/reconstruction operation. The audit runs in `e2e-bench --reuse-context`
+simulation/reconstruction operation. The audit runs in `e2e-bench` (prepared context, the default)
 and the library cache only; a production chain job never calls it. For example:
 
 ```bash
-CRVFS_CONTEXT_HASH_WORKERS=1 python3 -m crvfastsim e2e-bench ... --reuse-context
+CRVFS_CONTEXT_HASH_WORKERS=1 python3 -m crvfastsim e2e-bench ...
 ```
 
 The setting is captured by the benchmark's existing CRVFS environment inventory.
