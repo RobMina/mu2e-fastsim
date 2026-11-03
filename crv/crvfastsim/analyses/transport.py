@@ -61,6 +61,10 @@ def run(inputs, outdir, seed=1, stage="A", counters=None, gdml=None, world_mods=
         if rc.below_world and not kw.get("no_below_world"):    # the below-plane world includes the CRV aluminium
             below, ab = tr.load_below(gdml or default_gdml(), geom, **_below_kw(rc, kw)), None
     range_out = stage == "C" and rc.range_out and not kw.get("legacy_transport")
+    device = None
+    if kw.get("transport_backend", "numpy") == "jax" and not (msc_tail or sliced_msc or below is not None):
+        from ..transport_jax import DeviceTransport   # prepared once: one compilation for all inputs
+        device = DeviceTransport(geom, world, ab, tagger, bar_cut, stage, range_out=range_out)
     for i, f in enumerate(tables.expand(inputs)):
         rng = np.random.default_rng([int(seed), i])
         gen = tables.read(f, "gen")
@@ -69,7 +73,8 @@ def run(inputs, outdir, seed=1, stage="A", counters=None, gdml=None, world_mods=
                                     sliced_msc=sliced_msc, all_muons=not first_muon_only, absorbers=ab, tagger_bar=tagger,
                                     bar_cut=bar_cut, below=below, transport_backend=kw.get("transport_backend", "numpy"),
                                     range_out=range_out,
-                                    below_msc=below is not None and (rc.below_msc or bool(kw.get("below_msc"))))
+                                    below_msc=below is not None and (rc.below_msc or bool(kw.get("below_msc"))),
+                                    device=device)
         name = os.path.basename(f).replace("gen.", f"fast{stage}.")
         tables.write(os.path.join(outdir, name), steps, parts, gen, sub, as_ttree=True)
         print(f"# {f}: {parts.shape[0]:,} primary muons, {steps[tables.KEY].drop_duplicates().shape[0]:,} with CRV "

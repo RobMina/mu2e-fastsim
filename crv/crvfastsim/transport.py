@@ -374,7 +374,7 @@ def _delta_energy(rng, p, length, cut):
 
 def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=False, tail_k=None, sliced_msc=False,
               all_muons=True, absorbers=None, absorber_straggling=True, tagger_bar=None, bar_cut=None, below=None,
-              below_msc=False, transport_backend="numpy", range_out=False):
+              below_msc=False, transport_backend="numpy", range_out=False, device=None):
     """Return (steps, particles) for the primary muons in `gen`.
 
     Stage A: air, no MSC. B: air + MSC to Y_MSC_PLANE. C: GDML world material (world = world.load(...)) + MSC.
@@ -417,7 +417,7 @@ def transport(gen, geom, rng, air_loss=True, stage="A", world=None, msc_tail=Fal
             raise ValueError("JAX transport supports the straight-line default only; no tail/sliced/below variants")
         return device_transport(gen, geom, rng, air_loss=air_loss, stage=stage, world=world,
                                 all_muons=all_muons, absorbers=absorbers, absorber_straggling=absorber_straggling,
-                                tagger_bar=tagger_bar, bar_cut=bar_cut, range_out=range_out)
+                                tagger_bar=tagger_bar, bar_cut=bar_cut, range_out=range_out, prepared=device)
     if transport_backend != "numpy":
         raise ValueError(f"unknown transport backend: {transport_backend}")
     y_plane = msc_plane(geom)
