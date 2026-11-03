@@ -274,12 +274,147 @@ def in_crystal(calo, dx, dy):
     return v & (np.abs(dx - j * calo.cell / 2) <= calo.half) & (np.abs(dy - n * calo.cell) <= calo.half)
 
 
+@dataclass(frozen=True)
+class CaloWall:
+    """Inner wall of the disk cases (Offline constructDiskCalorimeter): three Al rings (r al_rin-cf_rin, length
+    2 al_hl, at both case ends and the centre) and a carbon-fibre ring (r cf_rin-cf_rout) along each case."""
+    case_lo: tuple     # case z range per disk (crystal front minus cap, crystal back) [mm]
+    case_hi: tuple
+    al_rin: float
+    cf_rin: float
+    cf_rout: float
+    al_hl: float
+
+    def in_case(self, z):
+        return np.any([(z >= a) & (z <= b) for a, b in zip(self.case_lo, self.case_hi)], axis=0)
+
+    def in_al(self, z):
+        cs = [c for a, b in zip(self.case_lo, self.case_hi) for c in (a + self.al_hl, 0.5 * (a + b), b - self.al_hl)]
+        return np.any([np.abs(z - c) <= self.al_hl for c in cs], axis=0)
+
+
+def calo_wall_from_config(c, calo):
+    """CaloWall from the SimpleConfig keys (diskInAlRingRIn, diskInAlRingZLength, diskInCFRingRIn/ROut)."""
+    g = lambda k: c[f"calorimeter.{k}"]
+    cap = g("crystalCapZLength")
+    return CaloWall(tuple(f - cap for f in calo.z_front), tuple(calo.z_back), g("diskInAlRingRIn"),
+                    g("diskInCFRingRIn"), g("diskInCFRingROut"), g("diskInAlRingZLength") / 2)
+
+
+class _Axis:
+    """Minimal geometry for the cechain radial helpers: the disk axis."""
+    def __init__(self, axis_x):
+        self.beam = type("B", (), {"axis_x": axis_x})()
+
+
+def _wall_layer(rng, field, ax, mat, thick, x, u, T, outward, backend):
+    """One radial slab of the wall (cechain shell crossing: entry-point field plus the curvature term); returns
+    T, x, u, stopped, transmitted."""
+    e1, e2, nn = cechain._frame_radial(ax, x, outward)
+    B = ehelix.field_at(field, x).copy()
+    r = cechain.radial(ax, x)
+    B[:, 2] += np.where(outward, 1.0, -1.0) * (u * e2).sum(1) * cechain._momentum(T) / (ehelix.K * r)
+    T1, xn, un, stop, _ = cechain._cross_layer(rng, mat, T, x, u, e1, e2, nn, thick, B, None, True, backend)
+    r1 = cechain.radial(ax, xn)
+    through = np.where(outward, r1 > r + 0.5 * thick, r1 < r - 0.5 * thick) & ~stop
+    return T1, xn, un, stop, through
+
+
 def calo_accept(field, calo, x, u, T, h_far=50.0, h_near=10.0, sub=5, margin=60.0, r_wall=950.0, s_max=30000.0,
-                path_min=CSI_PATH_MIN, annulus=False):
+                path_min=CSI_PATH_MIN, annulus=False, wall=None, rng=None, backend="numpy", wait_fraction=0.05,
+                info=None):
     """Calorimeter acceptance of e- helices from (x, u, kinetic energy T): True where the path inside crystals
     reaches path_min (CSI_PATH_MIN: 10 MeV at minimum ionisation); annulus=True: where the helix enters the crystal
     annulus at all (the coarser first form). Field-map helix steps (field at the step midpoint), h_far until margin
-    before the first disk, then h_near sampled at `sub` points. Tracker and support material are not modelled."""
+    before the first disk, then h_near sampled at `sub` points. wall (CaloWall): the disks' inner Al and carbon-fibre
+    rings are crossed radially with the option-4 slab physics (cechain), so electrons entering a disk through its
+    inner edge lose energy, scatter or are reflected back into the bore; crossings wait until at most wait_fraction
+    of the live tracks are stepping. Not modelled: front and back plates, FEE, tracker material. info (dict): filled
+    with wall crossing counts."""
+    if wall is None:
+        return _calo_accept_vacuum(field, calo, x, u, T, h_far, h_near, sub, margin, r_wall, s_max, path_min, annulus)
+    from mu2efastsim import materials as Mt
+    rng = rng if rng is not None else np.random.default_rng(0)
+    ax = _Axis(calo.axis_x)
+    x, u, T = np.array(x, float), np.array(u, float), np.array(T, float)
+    n = x.shape[0]
+    path, s = np.zeros(n), np.zeros(n)
+    live = np.ones(n, bool)
+    pend = np.zeros(n, int)            # 1 outward at the Al face, 2 outward at the CF face, 3 inward at the CF face
+    zf, zb = np.array(calo.z_front), np.array(calo.z_back)
+    z_lo = x[:, 2].min() - 100.0 if n else 0.0
+    goal = 1e-9 if annulus else path_min
+    cnt = dict(al=0, cf=0, reflected=0, stopped=0)
+    while live.any():
+        act = live & (pend == 0)
+        waiting = live & (pend > 0)
+        if waiting.any() and act.sum() <= wait_fraction * live.sum():
+            for kind in (1, 2, 3):
+                j = np.flatnonzero(waiting & (pend == kind))
+                if not j.size:
+                    continue
+                outward = np.full(j.size, kind != 3)
+                first, second = ((Mt.ALUMINIUM, wall.cf_rin - wall.al_rin), (Mt.CARBON_FIBER, wall.cf_rout - wall.cf_rin))
+                order = [first, second] if kind == 1 else [second] if kind == 2 else [second, first]
+                for li, (mat, thick) in enumerate(order):
+                    if li == 1 and kind == 3:      # inward: the Al ring only where the CF exit lies at its z
+                        keep = wall.in_al(x[j, 2])
+                        j, outward = j[keep], outward[keep]
+                    if not j.size:
+                        break
+                    T1, xn, un, stop, through = _wall_layer(rng, field, ax, mat, thick, x[j], u[j], T[j], outward,
+                                                            backend)
+                    cnt["al" if mat is Mt.ALUMINIUM else "cf"] += int(j.size)
+                    cnt["reflected"] += int((~through & ~stop).sum())
+                    cnt["stopped"] += int(stop.sum())
+                    T[j], x[j], u[j] = T1, xn, un
+                    live[j[stop]] = False
+                    j, outward = j[through], outward[through]
+            pend[waiting] = 0
+            continue
+        i = np.flatnonzero(act)
+        xi, ui = x[i], u[i]
+        pi = np.sqrt(T[i] * (T[i] + 2 * eioni.ME))
+        near = xi[:, 2] > zf.min() - margin
+        h = np.where(near, h_near, h_far)
+        B0 = ehelix.field_at(field, xi)
+        Bm = ehelix.field_at(field, ehelix.helix(xi, ui, pi, -1.0, B0, 0.5 * h)[0])
+        xe = ehelix.helix(xi, ui, pi, -1.0, Bm, h)[0]
+        r0, r1 = cechain.radial(ax, xi), cechain.radial(ax, xe)
+        s_ev, kind = h.copy(), np.zeros(i.size, int)
+        for kd, rt, sel in ((1, wall.al_rin, (r0 < wall.al_rin) & (r1 >= wall.al_rin)),
+                            (2, wall.cf_rin, (r0 < wall.cf_rin) & (r1 >= wall.cf_rin)),
+                            (3, wall.cf_rout, (r0 > wall.cf_rout) & (r1 <= wall.cf_rout))):
+            if not sel.any():
+                continue
+            sv = cechain._bisect_radius(ax, xi[sel], ui[sel], pi[sel], Bm[sel], h[sel], lambda z, r=rt: r)
+            zh = ehelix.helix(xi[sel], ui[sel], pi[sel], -1.0, Bm[sel], sv)[0][:, 2]
+            ok = wall.in_case(zh) & (wall.in_al(zh) if kd == 1 else ~wall.in_al(zh) if kd == 2 else True)
+            k = np.flatnonzero(sel)[ok]
+            better = sv[ok] < s_ev[k]
+            s_ev[k[better]], kind[k[better]] = sv[ok][better], kd
+        for k in range(1, sub + 1):
+            hk = s_ev * k / sub
+            xk = ehelix.helix(xi, ui, pi, -1.0, Bm, hk)[0]
+            dx, dy = xk[:, 0] - calo.axis_x, xk[:, 1]
+            zin = ((xk[:, 2, None] >= zf) & (xk[:, 2, None] <= zb)).any(1)
+            r = np.hypot(dx, dy)
+            hit = zin & ((r >= calo.r_in) & (r <= calo.r_out) if annulus else in_crystal(calo, dx, dy))
+            path[i] += np.where(hit, s_ev / sub, 0.0)
+        xn, un = ehelix.helix(xi, ui, pi, -1.0, Bm, s_ev)
+        x[i], u[i] = xn, un
+        s[i] += s_ev
+        pend[i] = kind
+        rn = np.hypot(xn[:, 0] - calo.axis_x, xn[:, 1])
+        done = (path[i] >= goal) | (xn[:, 2] > zb.max()) | (xn[:, 2] < z_lo) | (rn > r_wall) | (s[i] > s_max)
+        live[i[done]] = False
+        pend[i[done]] = 0
+    if info is not None:
+        info.update(cnt)
+    return path >= goal
+
+
+def _calo_accept_vacuum(field, calo, x, u, T, h_far, h_near, sub, margin, r_wall, s_max, path_min, annulus):
     x, u = np.array(x, float), np.array(u, float)
     p = np.sqrt(T * (T + 2 * eioni.ME))
     n = x.shape[0]
@@ -312,6 +447,10 @@ def calo_accept(field, calo, x, u, T, h_far=50.0, h_near=10.0, sub=5, margin=60.
     return path >= goal
 
 
+CALO_MODELS = ("crystal", "wall")
+CALO_MODEL = "wall"
+
+
 # --- fast chain ------------------------------------------------------------------------------------------------------
 
 def _paths(geom, offline_root=None, maps=None, dio=None):
@@ -323,19 +462,22 @@ def _paths(geom, offline_root=None, maps=None, dio=None):
 
 def _ce_chunk(args):
     """One chunk of electrons from the stop table: transport to the tracker entry and the calorimeter flag."""
-    (stops, geom_file, root, maps, n, seed, chunk, backend) = args
+    (stops, geom_file, root, maps, n, seed, chunk, backend, calo_model) = args
     from . import simpleconfig
     rng = np.random.default_rng(np.random.SeedSequence([seed, chunk]))
     geom = cechain.from_offline(geom_file, root)
     path = geom_file if os.path.isabs(geom_file) else f"{root}/{geom_file}"
-    calo = calo_from_config(simpleconfig.read(path, root))
+    cfg = simpleconfig.read(path, root)
+    calo = calo_from_config(cfg)
+    wall = calo_wall_from_config(cfg, calo) if calo_model == "wall" else None
     field = cechain.field_maps(maps)
     x0, u0, p0, t0, idx = cechain.from_stops(rng, stops["x"], stops["t"], n)
     res = cechain.transport(rng, geom, field, x0, u0, p0, t0, backend=backend)
     plane = res.fate == cechain.PLANE
     acc, ann = np.zeros(n, bool), np.zeros(n, bool)
     if plane.any():
-        acc[plane] = calo_accept(field, calo, res.x[plane], res.u[plane], res.T[plane])
+        acc[plane] = calo_accept(field, calo, res.x[plane], res.u[plane], res.T[plane], wall=wall, rng=rng,
+                                 backend=backend)
         ann[plane] = calo_accept(field, calo, res.x[plane], res.u[plane], res.T[plane], annulus=True)
     e_front = np.where(plane, res.T + eioni.ME, np.nan)
     return dict(fate=res.fate.astype(np.int8), e_front=e_front, calo=acc, calo_annulus=ann,
@@ -352,7 +494,7 @@ def _single_thread():
 
 
 def run_ce(stops_npz, geom=None, electrons=100_000, seed=1, procs=1, chunks=None, offline_root=None, maps=None,
-           backend="jax", mu_minus_only=True):
+           backend="jax", mu_minus_only=True, calo_model=CALO_MODEL):
     """Electrons from the mu- stops of a stop table (``point --stops-out``), in `chunks` chunks over `procs`
     processes (spawned: the JAX backend does not survive fork). Returns per-electron arrays."""
     import time
@@ -364,7 +506,8 @@ def run_ce(stops_npz, geom=None, electrons=100_000, seed=1, procs=1, chunks=None
     geom_file, root, mp, _ = _paths(geom, offline_root, maps)
     k = chunks or max(16, procs)
     sizes = np.full(k, electrons // k) + (np.arange(k) < electrons % k)
-    jobs = [(stops, geom_file, root, mp, int(sizes[c]), seed, c, backend) for c in range(k) if sizes[c] > 0]
+    jobs = [(stops, geom_file, root, mp, int(sizes[c]), seed, c, backend, calo_model) for c in range(k)
+            if sizes[c] > 0]
     t0 = time.time()
     if procs > 1:
         import multiprocessing as mp_
@@ -399,7 +542,7 @@ def ce_metrics(ce, stops_per_gen, dio_pdf, upstream_eff=UPSTREAM_EFF, cosmic_per
 
 
 def cmd_ce(a):
-    out = run_ce(a.stops, a.geom, a.electrons, a.seed, a.procs, a.chunks, backend=a.backend)
+    out = run_ce(a.stops, a.geom, a.electrons, a.seed, a.procs, a.chunks, backend=a.backend, calo_model=a.calo)
     np.savez_compressed(a.out, **out)
     print(json.dumps(dict(electrons=int(out["fate"].size), accepted=int(out["calo"].sum()),
                           plane=int((out["fate"] == cechain.PLANE).sum()), wall_s=float(out["wall_s"]))))
@@ -410,6 +553,58 @@ def cmd_sob(a):
     m = ce_metrics(ce, a.stops_per_gen, dio_density(_paths(None, dio=a.dio)[3]), a.upstream_eff, a.cosmic)
     json.dump(m, open(a.out, "w"), indent=1)
     print(json.dumps(m))
+
+
+def _recalo_chunk(args):
+    """Calorimeter flags of one chunk of tracker-entry states under a calorimeter model."""
+    (x, u, T, geom_file, root, maps, seed, chunk, backend, calo_model) = args
+    from . import simpleconfig
+    path = geom_file if os.path.isabs(geom_file) else f"{root}/{geom_file}"
+    cfg = simpleconfig.read(path, root)
+    calo = calo_from_config(cfg)
+    wall = calo_wall_from_config(cfg, calo) if calo_model == "wall" else None
+    return calo_accept(cechain.field_maps(maps), calo, x, u, T, wall=wall,
+                       rng=np.random.default_rng(np.random.SeedSequence([seed, chunk, 7])), backend=backend)
+
+
+def recalo(ce, geom=None, calo_model=CALO_MODEL, seed=1, procs=1, backend="numpy", offline_root=None, maps=None):
+    """The calorimeter flag of a kept CE sample (``point --keep`` ce.npz) re-evaluated from its tracker-entry states
+    under another calorimeter model, chunk by chunk as the sample was made; returns the new flags."""
+    geom_file, root, mp, _ = _paths(geom, offline_root, maps)
+    plane = ce["fate"] == cechain.PLANE
+    T = ce["e_front"] - eioni.ME
+    jobs = []
+    for c in np.unique(ce["chunk"]):
+        m = plane & (ce["chunk"] == c)
+        jobs.append((ce["x_plane"][m].astype(float), ce["u_plane"][m].astype(float), T[m], geom_file, root, mp, seed,
+                     int(c), backend, calo_model))
+    if procs > 1:
+        import multiprocessing as mp_
+        with mp_.get_context("spawn").Pool(procs, initializer=_single_thread) as pool:
+            parts = pool.map(_recalo_chunk, jobs, chunksize=1)
+    else:
+        parts = [_recalo_chunk(j) for j in jobs]
+    out = np.zeros(plane.size, bool)
+    for c, f in zip(np.unique(ce["chunk"]), parts):
+        out[plane & (ce["chunk"] == c)] = f
+    return out
+
+
+def cmd_recalo(a):
+    """OUT/metrics.json and ce_hists.npz of a kept point (DIR) with the calorimeter flag under --calo."""
+    import time
+    ce = dict(np.load(os.path.join(a.dir, "ce.npz")))
+    old = json.load(open(os.path.join(a.dir, "metrics.json")))
+    t0 = time.time()
+    ce["calo"] = recalo(ce, a.geom, a.calo, a.seed, a.procs, a.backend)
+    m = ce_metrics(ce, old["stops_per_gen_event"], dio_density(_paths(a.geom, dio=a.dio)[3]), a.upstream_eff, a.cosmic)
+    m.update({k: v for k, v in old.items() if k not in m and not k.endswith("_err")})
+    m.update(calo_model=a.calo, recalo_s=time.time() - t0, ce_acceptance_previous=old["ce_acceptance"])
+    os.makedirs(a.out, exist_ok=True)
+    h = histograms(ce["e_front"], E_START, ce["calo"])
+    np.savez_compressed(os.path.join(a.out, "ce_hists.npz"), n_selected=int(ce["calo"].sum()), n_gen=ce["fate"].size, **h)
+    json.dump({k: (v if isinstance(v, str) else float(v)) for k, v in m.items()}, open(os.path.join(a.out, "metrics.json"), "w"))
+    print(json.dumps({k: m[k] for k in ("sensitivity", "ce_acceptance", "ce_acceptance_previous", "recalo_s")}))
 
 
 def cmd_point(a):
@@ -434,7 +629,7 @@ def cmd_point(a):
         raise ValueError(f"{a.g4}: the start table records no generated events (g4table --events)")
     muons_per_event = int(np.load(a.g4)["evt"].size) / float(events)
     stops_per_gen = bm["stop_frac"] * muons_per_event
-    ce = run_ce(stops, a.geom, a.electrons, a.seed, a.procs, a.chunks, backend=a.backend)
+    ce = run_ce(stops, a.geom, a.electrons, a.seed, a.procs, a.chunks, backend=a.backend, calo_model=a.calo)
     t_ce = float(ce["wall_s"])
     m = ce_metrics(ce, stops_per_gen, dio_density(_paths(a.geom, dio=a.dio)[3]), a.upstream_eff, a.cosmic)
     h = histograms(ce["e_front"], E_START, ce["calo"])
@@ -481,7 +676,8 @@ def reduce_edep(paths, tree="EDepAna/tree"):
                 e_start_mean=float(est.mean()), e_start_min=float(est.min()), e_start_max=float(est.max()))
 
 
-def calo_check(ref, nts, geom=None, offline_root=None, maps=None, tree="EDepAna/tree"):
+def calo_check(ref, nts, geom=None, offline_root=None, maps=None, tree="EDepAna/tree", vd=None, seed=1,
+               backend="numpy"):
     """The calorimeter proxy on Geant4 tracker-entry states (cereference table) against EdepAna's visible calorimeter
     energy of the same events (joined on subrun, event): per-electron flags and summary rates."""
     import uproot
@@ -498,7 +694,8 @@ def calo_check(ref, nts, geom=None, offline_root=None, maps=None, tree="EDepAna/
     plane = have & r["isvd_front"]
     geom_file, root, mp, _ = _paths(geom, offline_root, maps)
     path = geom_file if os.path.isabs(geom_file) else f"{root}/{geom_file}"
-    calo = calo_from_config(simpleconfig.read(path, root))
+    cfg = simpleconfig.read(path, root)
+    calo = calo_from_config(cfg)
     field = cechain.field_maps(mp)
     x = np.stack([r["xvd_front"], r["yvd_front"], r["zvd_front"]], 1)[plane].astype(float)
     pv = np.stack([r["pxvd_front"], r["pyvd_front"], r["pzvd_front"]], 1)[plane].astype(float)
@@ -507,6 +704,9 @@ def calo_check(ref, nts, geom=None, offline_root=None, maps=None, tree="EDepAna/
     T = np.sqrt(p ** 2 + eioni.ME ** 2) - eioni.ME
     proxy = calo_accept(field, calo, x, u, T)
     proxy_annulus = calo_accept(field, calo, x, u, T, annulus=True)
+    winfo = {}
+    proxy_wall = calo_accept(field, calo, x, u, T, wall=calo_wall_from_config(cfg, calo),
+                             rng=np.random.default_rng(seed), backend=backend, info=winfo)
     from dataclasses import replace
     disk = [calo_accept(field, replace(calo, z_front=(zf,), z_back=(zb,)), x, u, T)
             for zf, zb in zip(calo.z_front, calo.z_back)]
@@ -516,7 +716,8 @@ def calo_check(ref, nts, geom=None, offline_root=None, maps=None, tree="EDepAna/
     edges = np.arange(300.0, 760.0, 20.0)
     k = np.digitize(rmax, edges)
     bins = [dict(rmax_lo=float(edges[i - 1]), n=int((k == i).sum()), g4=float(g4[k == i].mean()),
-                 proxy=float(proxy[k == i].mean()), annulus=float(proxy_annulus[k == i].mean()))
+                 proxy=float(proxy[k == i].mean()), annulus=float(proxy_annulus[k == i].mean()),
+                 wall=float(proxy_wall[k == i].mean()))
             for i in range(1, edges.size) if (k == i).sum()]
     t = np.asarray(r["tvd_front"], float)[plane]
     tedges = np.array([0.0, 500.0, 1000.0, 1500.0, 2000.0, 3000.0, 5000.0, 1e9])
@@ -532,14 +733,72 @@ def calo_check(ref, nts, geom=None, offline_root=None, maps=None, tree="EDepAna/
                    proxy_only=int((proxy & ~g4).sum()), neither=int((~g4 & ~proxy).sum()),
                    g4_sel_no_plane=float(np.mean(vis[have & ~r["isvd_front"]] > CALO_EDEP_VIS_MEV))
                    if (have & ~r["isvd_front"]).any() else -1.0, rmax_bins=bins, t_bins=tbins)
-    return summary, dict(rmax=rmax, g4=g4, proxy=proxy, annulus=proxy_annulus, vis=vis[plane], p=p, x=x, u=u, t=t)
+    classes = (("disk0_only", disk[0] & ~disk[1]), ("disk1_only", disk[1] & ~disk[0]), ("both_disks", disk[0] & disk[1]),
+               ("none", ~disk[0] & ~disk[1]))
+    summary["wall"] = dict(sel=float(proxy_wall.mean()), both=int((g4 & proxy_wall).sum()),
+                           g4_only=int((g4 & ~proxy_wall).sum()), proxy_only=int((proxy_wall & ~g4).sum()),
+                           neither=int((~g4 & ~proxy_wall).sum()), crossings=winfo,
+                           by_disk={k: dict(n=int(m.sum()), g4=float(g4[m].mean()) if m.any() else -1.0,
+                                            wall=float(proxy_wall[m].mean()) if m.any() else -1.0) for k, m in classes})
+    rows = dict(rmax=rmax, g4=g4, proxy=proxy, annulus=proxy_annulus, wall=proxy_wall, vis=vis[plane], p=p, x=x, u=u, t=t,
+                disk0=disk[0], disk1=disk[1], subrun=np.asarray(r["subrun"])[plane], evt=np.asarray(r["evt"])[plane])
+    if vd is not None:
+        summary["vd"] = vd_diagnosis(rows, np.load(vd))
+    return summary, rows
+
+
+DS_AXIS_X = 3904.0   # minus the DS axis x in the Mu2e frame [mm] (diagnostic radii)
+
+
+def vd_diagnosis(rows, vd, p_lost=90.0, r_edges=np.array([0.0, 300.0, 335.0, 356.0, 374.0, 420.0, 500.0, 600.0, 660.0, 719.0, 2000.0]),
+                 flag=None, z_edges=np.array([0.0, 11844.0, 11880.875, 12082.875, 12228.6, 12544.0, 12580.875, 12782.875,
+                                              12928.6, 1e5])):
+    """Where the primary goes after the tracker entry, by proxy disk class and Geant4 outcome: fraction crossing each
+    extra virtual detector of the cereference table (suffixes *_d0in, *_d0edge, *_d1in, *_d1edge, ...), their median
+    momentum, and the fraction arriving below p_lost MeV/c (diagnostic; the table rows are joined on subrun, event)."""
+    key = {k: i for i, k in enumerate(zip(vd["subrun"].tolist(), vd["evt"].tolist()))}
+    j = np.array([key.get(k, -1) for k in zip(rows["subrun"].tolist(), rows["evt"].tolist())])
+    ok = j >= 0
+    sfx = sorted(k[5:] for k in vd.files if k.startswith("isvd_") and k != "isvd_front")
+    d0, d1, g4 = rows["disk0"], rows["disk1"], rows["g4"]
+    out = dict(joined=int(ok.sum()))
+    for cname, cls in (("disk0_only", d0 & ~d1), ("disk1_only", d1 & ~d0), ("both_disks", d0 & d1),
+                       ("none", ~d0 & ~d1)):
+        outs = (("g4_pass", g4), ("g4_fail", ~g4)) if flag is None else tuple(
+            (f"g4_{'pass' if gp else 'fail'}.{flag}_{'pass' if fp else 'fail'}", (g4 == gp) & (rows[flag] == fp))
+            for gp in (True, False) for fp in (True, False))
+        for oname, o in outs:
+            m = ok & cls & o
+            if not m.any():
+                continue
+            e = dict(n=int(m.sum()))
+            for s in sfx:
+                hit = np.asarray(vd[f"isvd_{s}"], bool)[j[m]]
+                pv = np.sqrt(sum(np.asarray(vd[f"p{a}vd_{s}"], float)[j[m]] ** 2 for a in "xyz"))
+                rv = np.hypot(np.asarray(vd[f"xvd_{s}"], float)[j[m]] + DS_AXIS_X, np.asarray(vd[f"yvd_{s}"], float)[j[m]])
+                e[s] = dict(frac=float(hit.mean()), p_median=float(np.median(pv[hit])) if hit.any() else -1.0,
+                            frac_below=float(np.mean(pv[hit] < p_lost)) if hit.any() else -1.0,
+                            r_q=[round(float(q), 1) for q in np.percentile(rv[hit], (10, 50, 90))] if hit.any() else [],
+                            r_hist=np.histogram(rv[hit], r_edges)[0].tolist() if hit.any() else [],
+                            z_hist=np.histogram(np.asarray(vd[f"zvd_{s}"], float)[j[m]][hit], z_edges)[0].tolist()
+                            if hit.any() else [])
+            e["r_edges"], e["z_edges"] = r_edges.tolist(), z_edges.tolist()
+            out[f"{cname}.{oname}"] = e
+    return out
 
 
 def cmd_calocheck(a):
-    summary, rows = calo_check(a.ref, a.nts, a.geom)
+    summary, rows = calo_check(a.ref, a.nts, a.geom, vd=a.vd, seed=a.seed, backend=a.backend)
     np.savez_compressed(a.out + ".npz", **rows)
     json.dump(summary, open(a.out + ".json", "w"), indent=1)
-    print(json.dumps({k: v for k, v in summary.items() if k not in ("rmax_bins", "t_bins")}))
+    print(json.dumps({k: v for k, v in summary.items() if k not in ("rmax_bins", "t_bins", "vd")}))
+
+
+def cmd_calodiag(a):
+    rows = dict(np.load(a.rows))
+    d = vd_diagnosis(rows, np.load(a.vd), flag=a.flag)
+    json.dump(d, open(a.out, "w"), indent=1)
+    print(json.dumps({k: v if not isinstance(v, dict) else v["n"] for k, v in d.items()}))
 
 
 def cmd_reduce(a):
@@ -599,6 +858,8 @@ def main(argv=None):
         s.add_argument("--procs", type=int, default=1)
         s.add_argument("--chunks", type=int, default=None, help="chunks (jackknife groups); default max(16, procs)")
         s.add_argument("--backend", choices=("numpy", "jax"), default="jax")
+        s.add_argument("--calo", choices=CALO_MODELS, default=CALO_MODEL,
+                       help="calorimeter proxy: crystal path in vacuum, or with the disks' inner wall")
     s = sp.add_parser("point")
     s.add_argument("--g4", required=True, help="start table with its generated events (g4table --events)")
     s.add_argument("--muons", type=int, default=0)
@@ -635,9 +896,26 @@ def main(argv=None):
     s.add_argument("--ref", required=True, help="cereference table of the dts files")
     s.add_argument("--nts", nargs="+", required=True, help="EdepAna trees of the same dts files")
     s.add_argument("--geom", default=None)
+    s.add_argument("--vd", default=None, help="cereference table with extra VDs (d0in, d1in, ...) for the diagnosis")
+    s.add_argument("--seed", type=int, default=1)
+    s.add_argument("--backend", choices=("numpy", "jax"), default="numpy")
     s.add_argument("--out", required=True, help="output stem (.json summary, .npz per electron)")
+    s = sp.add_parser("calodiag", help="extra-VD diagnosis of a calocheck per-electron file (diagnostic)")
+    s.add_argument("--rows", required=True, help="calocheck .npz (with disk flags)")
+    s.add_argument("--flag", default=None, help="also split by this per-electron proxy flag (e.g. wall)")
+    s.add_argument("--vd", required=True, help="cereference table with the extra VDs")
+    s.add_argument("--out", required=True)
+    s = sp.add_parser("recalo", help="a kept point's sob with the calorimeter flag under another proxy")
+    s.add_argument("--dir", required=True, help="point output with ce.npz and metrics.json (point --keep)")
+    s.add_argument("--geom", default=None)
+    s.add_argument("--calo", choices=CALO_MODELS, default=CALO_MODEL)
+    s.add_argument("--seed", type=int, default=1)
+    s.add_argument("--procs", type=int, default=1)
+    s.add_argument("--backend", choices=("numpy", "jax"), default="numpy")
+    s.add_argument("--out", required=True)
+    common(s)
     a = ap.parse_args(argv)
-    {"calocheck": cmd_calocheck, "hybrid": cmd_hybrid, "point": cmd_point, "ce": cmd_ce, "sob": cmd_sob, "reduce": cmd_reduce, "refsob": cmd_refsob}[a.cmd](a)
+    {"recalo": cmd_recalo, "calodiag": cmd_calodiag, "calocheck": cmd_calocheck, "hybrid": cmd_hybrid, "point": cmd_point, "ce": cmd_ce, "sob": cmd_sob, "reduce": cmd_reduce, "refsob": cmd_refsob}[a.cmd](a)
 
 
 if __name__ == "__main__":

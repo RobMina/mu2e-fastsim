@@ -14,7 +14,9 @@ CALO = {"mu2e.solenoidOffset": 3904.0, "calorimeter.caloMotherZ0": 11842.0, "cal
         "calorimeter.FEEBoxThickness": 0.7, "calorimeter.BPPipeZOffset": 43.0, "calorimeter.BPPipeRadiusHigh": 13.45,
         "calorimeter.FEBToDiskZOffset": 1.98, "calorimeter.diskZMotherShift": [0.0, 700.0],
         "calorimeter.diskCrystalRIn": 374.0, "calorimeter.diskCrystalROut": 660.0,
-        "calorimeter.crystalXYLength": 34.0, "calorimeter.wrapperThickness": 0.15}
+        "calorimeter.crystalXYLength": 34.0, "calorimeter.wrapperThickness": 0.15,
+        "calorimeter.diskInAlRingRIn": 336.0, "calorimeter.diskInAlRingZLength": 14.0,
+        "calorimeter.diskInCFRingRIn": 356.0, "calorimeter.diskInCFRingROut": 360.0}
 
 
 def test_calo_crystal_faces_follow_the_maker_arithmetic():
@@ -57,6 +59,39 @@ def test_calo_accept_in_a_uniform_field_hits_only_helices_that_reach_the_crystal
         for annulus in (False, True):
             hit = S.calo_accept([0.0, 0.0, 1.0], c, x, u, np.full(8, T), annulus=annulus)
             assert hit.all() == want and hit.any() == want
+
+
+def test_calo_wall_geometry_from_the_config():
+    c = S.calo_from_config(CALO)
+    w = S.calo_wall_from_config(CALO, c)
+    assert w.case_lo == pytest.approx((11880.875, 12580.875)) and w.case_hi == c.z_back
+    z = np.array([11881.0, 11894.8, 11895.0, 11981.875, 12075.0, 12100.0])
+    assert w.in_al(z).tolist() == [True, True, False, True, True, False]
+    assert w.in_case(z).tolist() == [True] * 5 + [False]
+
+
+def test_calo_wall_is_inert_inside_the_bore_and_stops_through_a_thick_wall():
+    c = S.calo_from_config(CALO)
+    w = S.calo_wall_from_config(CALO, c)
+    T = 103.0
+    p = math.sqrt(T * (T + 2 * 0.51099895))
+    cos = 0.15
+    R = math.sqrt(1 - cos ** 2) * p / (0.299792458 * 1.0)
+    x, u, _ = _helix_starts(0.0, R, n=8)                   # r_max = R < 336: never meets the wall
+    info = {}
+    hit = S.calo_accept([0.0, 0.0, 1.0], c, x, u, np.full(8, T), wall=w, info=info)
+    assert not hit.any() and info["al"] == info["cf"] == 0
+    # 8 e- born in the bore inside disk 0's case (r = 162 mm, moving outward to r_max = 520 mm within the case)
+    x, u, _ = _helix_starts(520.0 - R, R, n=2, cos=cos, z=11895.0)
+    x, u = np.repeat(x[1:], 8, 0), np.repeat(u[1:], 8, 0)
+    vac = S.calo_accept([0.0, 0.0, 1.0], c, x, u, np.full(8, T))
+    info = {}
+    S.calo_accept([0.0, 0.0, 1.0], c, x, u, np.full(8, T), wall=w, rng=np.random.default_rng(3), info=info)
+    thick = S.CaloWall(w.case_lo, w.case_hi, 200.0, 356.0, 360.0, 200.0)   # 156 mm of Al along each whole case
+    info2 = {}
+    hit2 = S.calo_accept([0.0, 0.0, 1.0], c, x, u, np.full(8, T), wall=thick, rng=np.random.default_rng(3),
+                         info=info2)
+    assert vac.all() and info["cf"] == 8 and info2["al"] == 8 and not hit2.any()
 
 
 def test_gaussian_kernel_and_density_kernel_keep_their_totals():
