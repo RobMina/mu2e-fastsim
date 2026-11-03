@@ -598,7 +598,7 @@ def cmd_recalo(a):
     t0 = time.time()
     ce["calo"] = recalo(ce, a.geom, a.calo, a.seed, a.procs, a.backend)
     m = ce_metrics(ce, old["stops_per_gen_event"], dio_density(_paths(a.geom, dio=a.dio)[3]), a.upstream_eff, a.cosmic)
-    m.update({k: v for k, v in old.items() if k not in m and not k.endswith("_err")})
+    m.update({k: v for k, v in old.items() if k not in m})
     m.update(calo_model=a.calo, recalo_s=time.time() - t0, ce_acceptance_previous=old["ce_acceptance"])
     os.makedirs(a.out, exist_ok=True)
     h = histograms(ce["e_front"], E_START, ce["calo"])
@@ -825,7 +825,7 @@ def cmd_hybrid(a):
     for mpath in sorted(glob.glob(os.path.join(a.fast_dir, "*", "metrics.json"))):
         c = os.path.basename(os.path.dirname(mpath))
         ref, hist = os.path.join(a.ref_dir, f"{c}.npz"), os.path.join(os.path.dirname(mpath), "ce_hists.npz")
-        if c not in g4_stops or not os.path.exists(ref) or not os.path.exists(hist):
+        if c not in g4_stops or c in (a.exclude or []) or not os.path.exists(ref) or not os.path.exists(hist):
             continue
         sides = {"g4": dict(np.load(ref)), "fast": dict(np.load(hist))}
         stops = {"g4": g4_stops[c], "fast": json.load(open(mpath))["stops_per_gen_event"]}
@@ -836,9 +836,19 @@ def cmd_hybrid(a):
                 m = sob_metrics(h, float(r["n_selected"]), float(r["n_gen"]), spg, dio, a.upstream_eff, a.cosmic)
                 out[c][f"ce_{ce_side}_stops_{st_side}"] = {k: m[k] for k in (
                     "sensitivity", "signal_box_low_mev", "signal_box_high_mev", "signal_rate", "total_background",
-                    "ce_acceptance", "box_frac_selected", "signal_mpv_mev", "signal_fwhm_mev")}
-    json.dump(out, open(a.out, "w"), indent=1, sort_keys=True)
-    print(f"{len(out)} points -> {a.out}")
+                    "ce_acceptance", "box_frac_selected", "signal_mpv_mev", "signal_fwhm_mev", "front_tail_0p5mev",
+                    "front_tail_1p0mev", "front_tail_2p0mev")}
+    summ = {}
+    if out:
+        ref = "ce_g4_stops_g4"
+        for combo in ("ce_fast_stops_g4", "ce_g4_stops_fast", "ce_fast_stops_fast"):
+            for key in ("sensitivity", "ce_acceptance", "box_frac_selected", "front_tail_0p5mev", "front_tail_1p0mev",
+                        "front_tail_2p0mev"):
+                v = np.array([o[combo][key] / o[ref][key] for o in out.values()])
+                summ[f"{combo}/{ref}.{key}"] = dict(mean=float(v.mean()), sem=float(v.std(ddof=1) / np.sqrt(v.size))
+                                                    if v.size > 1 else 0.0, rms=float(v.std(ddof=1)) if v.size > 1 else 0.0)
+    json.dump(dict(points=out, summary=summ), open(a.out, "w"), indent=1, sort_keys=True)
+    print(json.dumps(dict(points=len(out), **{k: v for k, v in summ.items() if k.startswith("ce_fast_stops_g4")}), indent=1))
 
 
 def main(argv=None):
@@ -890,6 +900,7 @@ def main(argv=None):
     s.add_argument("--ref-dir", dest="ref_dir", required=True, help="<config>.npz from reduce (Geant4)")
     s.add_argument("--fast-dir", dest="fast_dir", required=True, help="<config>/metrics.json, ce_hists.npz from point")
     s.add_argument("--g4-stops", dest="g4_stops", required=True, help="lines: config, Geant4 stops per generated event")
+    s.add_argument("--exclude", action="append", default=[], help="config left out (repeatable)")
     s.add_argument("--out", required=True)
     common(s)
     s = sp.add_parser("calocheck", help="calorimeter proxy on Geant4 tracker-entry states vs EdepAna (diagnostic)")

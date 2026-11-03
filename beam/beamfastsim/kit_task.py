@@ -31,7 +31,7 @@ tail -3 "$M2FS_OUT/point.txt"
 '''
 
 # Task beam_sob: the sob stand-in of the foils studies (beamfastsim.cesob point) for one target geometry, on CPU.
-# Start table: the boards' own beam sample at the Coll5_Out plane (MuBeamCat Run1Baa, with its generated events), so
+# Start table: the design studies' own beam sample at the Coll5_Out plane (MuBeamCat Run1Baa, with its generated events), so
 # stops per generated event need no scale. Params: geom, muons (0 = all), electrons (conversion electrons from the
 # stops), seed. Metrics: sensitivity (sob) and its factors, the stop metrics of beam_point, timings.
 SOB_TABLE = "g4ref_run1baa/g4ref_run1baa_vd8.npz"

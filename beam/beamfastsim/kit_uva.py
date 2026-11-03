@@ -1,6 +1,6 @@
 """beam_point (and beam_sob) on an endpoint without FNAL storage (UVA, Slurm over SSH): one job, inputs streamed in.
 
-beam_point is one one-GPU job; beam_sob (BeamSobStream) one CPU job on the same route with the boards' beam table.
+beam_point is one one-GPU job; beam_sob (BeamSobStream) one CPU job on the same route with the design studies' beam table.
 
 The Mu2e-internal input (the DS-entrance muon table g4ref.npz, made from MuBeamCat) is never stored on the endpoint:
 when the job starts it writes ``<job dir>/inbox`` (node, tmpfs dir) and the kit pipes the file from the FNAL host
@@ -342,7 +342,7 @@ tail -c 300 "$M2FS_OUT/point.txt"
 
 
 class BeamSobStream(BeamPointStream):
-    """beam_sob (beamfastsim.cesob point) on the streaming route: the boards' beam table streamed in, one CPU job
+    """beam_sob (beamfastsim.cesob point) on the streaming route: the design studies' beam table streamed in, one CPU job
     (stops on JAX-CPU, then the CE chain in one process per core)."""
     TASK = "beam_sob"
     TABLE = kit_task.SOB_TABLE
