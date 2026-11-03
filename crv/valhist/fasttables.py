@@ -24,7 +24,7 @@ import awkward as ak
 import numpy as np
 import uproot
 
-from crvfastsim import chain, geometry, tables
+from crvfastsim import chain, geometry, readout, tables
 from crvfastsim.validation import v2compare as V2
 from crvfastsim.reco import coinc as C
 from crvfastsim.reco import pulsefit
@@ -183,7 +183,7 @@ def configure(*, calib=None, deviation=None, counters=None, window="offspill", j
     cpath = geometry.find_counters(counters or V2.DEFAULT_COUNTERS)
     geom = geometry.from_offline_config(cpath)
     ccfg = geometry.parse_simpleconfig(open(cpath).read())
-    cond = chain.Conditions.from_csv(calib, deviation)
+    cond = readout.apply(chain.Conditions.from_csv(calib, deviation), geom, ccfg)
     finder = dataclasses.replace(C.FinderConfig(), add_opposite_side_pulses=not no_opposite_side)
     cfg = chain.ChainConfig(jax=jax, noise=noise, finder=finder)
     if window == "onspill":

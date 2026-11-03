@@ -133,6 +133,15 @@ on an A100-80GB byte-identical at seed 20261027.
 | `CRVFS_PREPARED_LIBRARY_CACHE` | GPU, float32 | identical | none warm (0.984x, overlapping); preparation 52.5 -> 19.9 s, first creation 70.9 s | kept: a site path |
 | `CRVFASTSIM_COMPACT_DISPATCH` | GPU, float32 and float64 | **not identical** (cluster PE, time, position, slope only; float32 `cl_pos` up to 0.07 mm, float64 5e-9 mm) | 1.05-1.11x warm; cold pass 1.2x slower (more shapes to compile) | `park/cpu-speed` |
 
+## Physical readout mask
+
+The mask of physically present SiPMs (Offline `hasCMB`, [readout-mask.md](readout-mask.md)) is applied by default
+since 2026-11-03. On the extracted configuration it changes nothing: every single-sided sector has its reflector on the
+missing side, so no photon reaches an absent SiPM (also Run 1A; `tests/test_readout_default.py`). Checked against the
+chain without the mask on three held-out shards (22, 24, 26; strict_v5, seed 22, e2e-bench output fingerprints of
+pulses, clusters, members, digis and charges): byte-identical on the NumPy chain (CPU), the JAX chain and the fused
+device response (MIG 1g.24gb, float32).
+
 ## Device precision
 
 The device kernels run in float32 by default since 2026-11-01 (`MU2EFS_DEVICE_FLOAT`; float64 one variable away).

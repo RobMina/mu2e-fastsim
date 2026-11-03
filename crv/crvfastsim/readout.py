@@ -1,8 +1,7 @@
-"""Opt-in physical SiPM presence, independent of calibration status and optical reflectors."""
+"""Physical SiPM presence (Offline CrvSiPMChargeGenerator: hasCMB(SiPM % 2)), independent of calibration status and
+optical reflectors. The runchain and fasttables loaders apply it to every configuration."""
 from collections.abc import Mapping
 from dataclasses import replace
-import hashlib
-import json
 
 import numpy as np
 
@@ -46,35 +45,14 @@ def sensor_mask(geom, counters_cfg):
 
 
 def apply(cond, geom, counters_cfg):
-    """Return unmutated conditions with a physical mask and JSON-safe execution-policy evidence."""
+    """Return unmutated conditions with the physical mask; channels beyond the bars stay present."""
     mask = sensor_mask(geom, counters_cfg)
-    masked = replace(cond, readout_mask=mask)
+    n = len(np.asarray(cond.status))
+    if n < len(mask):
+        raise ValueError(f"readout: conditions cover {n} channels, the geometry has {len(mask)}")
+    masked = replace(cond, readout_mask=np.concatenate([mask, np.ones(n - len(mask), bool)]))
     effective_status(masked)
-    digest = hashlib.sha256(json.dumps(mask.tolist(), separators=(",", ":")).encode()).hexdigest()
-    return masked, {"policy": "opt_in_counters_sipmsAtSide", "present": int(mask.sum()),
-                    "absent": int((~mask).sum()), "mask_sha256": digest}
-
-
-def validate_merge(records):
-    """Require identical explicit readout policy on every shard; legacy all-unmarked stays unmarked."""
-    if not records or not any("geometry_readout" in r for r in records):
-        return {}
-    expected = None
-    for record in records:
-        evidence = record.get("geometry_readout")
-        if not isinstance(evidence, Mapping) or set(evidence) != {"policy", "present", "absent", "mask_sha256"}:
-            raise ValueError("runchain merge: missing or malformed geometry_readout policy")
-        digest = evidence["mask_sha256"]
-        counts = (evidence["present"], evidence["absent"])
-        if (evidence["policy"] != "opt_in_counters_sipmsAtSide"
-                or any(type(n) is not int or n < 0 for n in counts) or sum(counts) % 4
-                or not isinstance(digest, str) or len(digest) != 64
-                or any(c not in "0123456789abcdef" for c in digest)):
-            raise ValueError("runchain merge: malformed geometry_readout policy")
-        if expected is not None and evidence != expected:
-            raise ValueError("runchain merge: incompatible geometry_readout policy")
-        expected = dict(evidence)
-    return {"geometry_readout": expected}
+    return masked
 
 
 def effective_status(cond):

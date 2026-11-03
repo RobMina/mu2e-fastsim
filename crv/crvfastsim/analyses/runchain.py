@@ -94,10 +94,8 @@ class PreparedContext:
 
 def prepare(library=None, calib=None, deviation=None, gdml=None, jax=False, counters=None,
             run_config=None, window=None, benchmark=None, fused_response=False,
-            below_margin=None, geometry_readout=False, tier1b_set=None, tier1b_dir=None):
-    """Load and seal reusable CSV setup; physical masks are not supported by reuse/benchmark."""
-    if geometry_readout:
-        raise ValueError("geometry readout is not supported with prepared contexts or benchmarks")
+            below_margin=None, tier1b_set=None, tier1b_dir=None):
+    """Load and seal reusable CSV setup."""
     if fused_response:
         raise ValueError("prepared context does not support memory-dependent fused response batching")
     from .context_audit import freeze_arrays, content_fingerprint
@@ -145,6 +143,7 @@ def _load_setup(rc, cfg, gdml_path, explicit_gdml, spec, calib, deviation, jax, 
     if len(cond.status) < 4 * geom.nbars:
         raise SystemExit(f"runchain: conditions cover {len(cond.status)} channels, {rc.name} has {4 * geom.nbars}; "
                          "pass the configuration's CRVCalib CSV or --calib nominal")
+    cond = readout.apply(cond, geom, ccfg)   # physically absent SiPMs make no charges (Offline hasCMB)
     tagger = rc.tagger_bar(geom) if rc.name != runconfig.DEFAULT else None
     bar_cut = rc.bar_cut(geom)
     timers = {"geometry_conditions_config_s": time.perf_counter() - geometry_start}
@@ -171,7 +170,7 @@ def _load_setup(rc, cfg, gdml_path, explicit_gdml, spec, calib, deviation, jax, 
 def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax=False, max_events=None, seed=1,
         compare=None, counters=None, reco_cpu=False, emit=None, run_config=None, window=None, benchmark=None,
         prepared=None,
-        geometry_readout=False, tier1b_set=None, tier1b_dir=None,
+        tier1b_set=None, tier1b_dir=None,
         transport_context=None, tier1b_context=None, tier1b_backend="numpy",
         gen="table", gen_events=None, gen_seed=None, gen_subrun=1, **kw):
     removed = sorted(set(kw) & {"msc_tail", "tail_k", "sliced_msc", "first_muon_only", "no_absorbers",
@@ -199,12 +198,6 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
     elif gen_events is not None or gen_seed is not None:
         raise ValueError("gen-events/gen-seed require --gen native")
     native_receipt = None
-    if geometry_readout:
-        if prepared is not None or benchmark is not None:
-            raise ValueError("geometry readout is not supported with prepared contexts or benchmarks")
-        name = run_config if isinstance(run_config, str) else getattr(run_config, "name", None)
-        if name not in ("run1a_v01", "run2_v10") or counters is not None:
-            raise ValueError("geometry readout requires Run1A/Run2 --run-config; no counters override")
     bench_start = time.perf_counter() if benchmark is not None else None
     rc, cfg, gdml_path, time_window, spec = _resolve(library, calib, deviation, gdml, jax, counters, run_config, window,
                                                      kw.get("fused_response", False), tier1b_set, tier1b_dir)
@@ -227,10 +220,6 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         T = {"setup_s": 0.0, "geometry_conditions_config_s": 0.0, "context_reused": True,
              "context_audit_s": time.perf_counter() - a}
     rc, cfg, geom, ccfg, cond = (payload[k] for k in ("rc", "cfg", "geom", "ccfg", "cond"))
-    readout_metadata = {}
-    if geometry_readout:
-        cond, evidence = readout.apply(cond, geom, ccfg)
-        readout_metadata["geometry_readout"] = evidence
     tagger, bar_cut, world, ab, below = (payload[k] for k in ("tagger", "bar_cut", "world", "ab", "below"))
     lib, tabs, pmap, stype_name = (payload[k] for k in ("lib", "tabs", "pmap", "stype_name"))
     conditions_metadata = payload.get("conditions_metadata",
@@ -372,7 +361,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         prepared.audit()
         T["context_audit_s"] += time.perf_counter() - a
     cl_type = np.concatenate([o["cl_type"] for o in out_cl]) if out_cl else np.zeros(0, int)
-    res = {"generated_events": n_gen, "timers": T, "conditions": conditions_metadata, **readout_metadata,
+    res = {"generated_events": n_gen, "timers": T, "conditions": conditions_metadata,
            "tier1b": spec.describe(),
            **({"transport_backend": "jax"} if device_transport is not None else {}), "range_out": bool(range_out),
            **({"tier1b_backend": "jax"} if device_tier1b is not None else {}),
@@ -409,7 +398,6 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
                        **({"native_generator": native_receipt, "live_seconds": native_receipt["live_seconds"]}
                           if native_receipt is not None else {}),
                        "tier1b": spec.describe(),
-                       **readout_metadata,
                        "cl_type_counts": {int(k): int((cl_type == k).sum()) for k in np.unique(cl_type)},
                        "run_config": rc.name, "window": list(cfg.window), "time_window": time_window,
                        "type_names": {int(k): v for k, v in stype_name.items()},
@@ -435,7 +423,6 @@ def merge(inputs, outdir, wall=None, **kw):
     time_metadata = validate_runchain_merge(J)
     from mu2efastsim.cry_receipts import merge_receipts
     generator_metadata = merge_receipts(J)
-    time_metadata.update(readout.validate_merge(J))
     if any(j.get("conditions") != J[0].get("conditions") for j in J[1:]):
         raise ValueError("runchain merge: incompatible conditions provenance")
     if J[0].get("conditions") is not None:
