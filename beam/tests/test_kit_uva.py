@@ -517,6 +517,7 @@ def test_beam_sob_device_backend_is_one_gpu_job_bound_to_its_backend(tmp_path, m
     body = site.body
     assert "--backend device" in body and "--procs" not in body and "JAX_PLATFORMS=cpu" not in body
     assert "apptainer exec --nv" in body and "JAX_COMPILATION_CACHE_DIR=/path/to/slurm/jaxcache," in body
+    assert "-B /path/to/slurm/jaxcache" in body and "mkdir -p /path/to/slurm/jaxcache" in body
     assert d.RESOURCES.gpus == 1 and d.RESOURCES.mem_gb <= 32 and d.RESOURCES.cores <= 4
     r = subprocess.run(["bash", "-n"], input=body.encode(), capture_output=True)
     assert r.returncode == 0, r.stderr.decode()

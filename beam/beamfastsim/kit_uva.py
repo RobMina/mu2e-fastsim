@@ -376,6 +376,9 @@ class BeamSobStream(BeamPointStream):
             self.RESOURCES = SOB_DEVICE_RESOURCES
             cache = site.setting("FASTSIMKIT_JAX_CACHE")
             body = SOB_DEVICE_BODY.replace("@jaxcache@", f"JAX_COMPILATION_CACHE_DIR={cache}," if cache else "")
+            if cache:
+                q = shlex.quote(cache)
+                body = body.replace('-B "$CODE"', f'-B "$CODE" -B {q}').replace("CODE=@code@", f"CODE=@code@\nmkdir -p {q}")
         self.BODY = body.replace("@zup@", str(kit_task.SOB_Z_UP)).replace(
             "@cores@", str(SOB_RESOURCES.cores)).replace("@dio@", cesob.DIO_TABLE)
 
