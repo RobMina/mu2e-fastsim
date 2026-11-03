@@ -2,7 +2,7 @@
 
   python3 -m beamfastsim g4table --nts F.root [...] --out g4ref.npz [--start-vd ID --events N]
   python3 -m beamfastsim run --g4 g4ref.npz --out fast.npz [--n N] [--seed S] [--ds MM] [--batch B] [--no-msc]
-  python3 -m beamfastsim point --g4 g4ref.npz --out DIR [--geom F] [--n N] [--repeat R]   (fastsimkit beam_point)
+  python3 -m beamfastsim point --g4 g4ref.npz --out DIR [--geom F] [--n N] [--repeat R] [--stops-out F]   (fastsimkit beam_point)
   python3 -m beamfastsim compare --g4 g4ref.npz --fast fast.npz --out DIR
   python3 -m beamfastsim fieldcheck            (field map lookups vs the text map at sampled grid points)
   python3 -m beamfastsim gunfile --g4 g4ref.npz --out particles.txt [--charge keep|plus|minus]
@@ -142,6 +142,9 @@ def cmd_point(a):
     json.dump(m, open(os.path.join(out_dir, "metrics.json"), "w"))
     json.dump(dict(meta, foil_profile=np.bincount(f["foil"][stop], minlength=nf).tolist()),
               open(os.path.join(out_dir, "point_meta.json"), "w"), indent=1)
+    if getattr(a, "stops_out", None):   # target stops for the CE chain (beamfastsim.cesob)
+        np.savez_compressed(a.stops_out, x=f["x"][stop], t=f["t"][stop], foil=f["foil"][stop], q=g["q"][:n][stop],
+                            muons=n)
     os.remove(fast)
     print(json.dumps(m))
 
@@ -211,6 +214,7 @@ def main(argv=None):
     s.add_argument("--n", type=int, default=0); s.add_argument("--seed", type=int, default=1)
     s.add_argument("--batch", type=int, default=131072); s.add_argument("--chunk", type=int, default=400)
     s.add_argument("--repeat", type=int, default=0)
+    s.add_argument("--stops-out", dest="stops_out", default=None, help="also write the target stops (npz)")
     _physics_args(s)
     s = sp.add_parser("reference-audit", help="certify persisted reference coverage and table identity")
     s.add_argument("--nts", nargs="+", required=True); s.add_argument("--g4")

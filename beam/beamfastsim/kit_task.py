@@ -30,6 +30,34 @@ A python -c "import jax, sys; print(jax.devices()); sys.exit(jax.default_backend
 tail -3 "$M2FS_OUT/point.txt"
 '''
 
+# Task beam_sob: the sob stand-in of the foils studies (beamfastsim.cesob point) for one target geometry, on CPU.
+# Start table: the boards' own beam sample at the Coll5_Out plane (MuBeamCat Run1Baa, with its generated events), so
+# stops per generated event need no scale. Params: geom, muons (0 = all), electrons (conversion electrons from the
+# stops), seed. Metrics: sensitivity (sob) and its factors, the stop metrics of beam_point, timings.
+SOB_TABLE = "g4ref_run1baa/g4ref_run1baa_vd8.npz"
+SOB_Z_UP = 3900.0
+SOB_CORES = 32
+SOB_PARAMS = ("geom", "muons", "electrons", "seed")
+SOB_METRICS = ("sensitivity", "sensitivity_err", "signal_box_low_mev", "signal_box_high_mev", "signal_rate",
+               "dio_background", "cosmic_background", "total_background", "total_background_err", "signal_mpv_mev",
+               "signal_fwhm_mev", "stops_per_gen_event", "stops_per_pot", "ce_acceptance", "ce_acceptance_err",
+               "box_eff_per_stop", "box_eff_per_stop_err", "electrons", "plane_frac", "stop_frac", "stop_frac_err",
+               "stops", "muons", "foils", "muons_per_event", "beam_s", "ce_s", "electrons_per_s")
+SOB_BODY = '''@runtime_a@G4T=@fnal_data@/../beam_fastsim/''' + SOB_TABLE + '''
+[ -r "$G4T" ] || { echo "missing $G4T"; exit 3; }
+case @p_geom@ in
+  nominal) GEOM="" ;;
+  /*) GEOM=@p_geom@ ;;
+  *) GEOM="$M2FS_CODE/beam/geom/"@p_geom@ ;;
+esac
+@geometry_setup@[ -z "$GEOM" ] || [ -r "$GEOM" ] || { echo "missing geometry $GEOM"; exit 3; }
+( cd "$M2FS_CODE" && PYTHONPATH="$M2FS_CODE/core:$M2FS_CODE/beam" JAX_PLATFORMS=cpu \\
+  "$M2FS_VENV/bin/python" -m beamfastsim.cesob point --g4 "$G4T" --z-up ''' + str(SOB_Z_UP) + ''' ${GEOM:+--geom "$GEOM"} \\
+  --muons @p_muons@ --electrons @p_electrons@ --seed @p_seed@ --procs ''' + str(SOB_CORES) + ''' --out "$M2FS_OUT" ) \\
+  > "$M2FS_OUT/point.txt" 2>&1 || { tail -20 "$M2FS_OUT/point.txt"; exit 6; }
+tail -c 300 "$M2FS_OUT/point.txt"
+'''
+
 
 def register(tasks, task_cls, resources_cls, fnal_tasks):
     """Add beam_point to a fastsimkit TASKS dict (and to its FNAL-only set)."""
@@ -37,6 +65,10 @@ def register(tasks, task_cls, resources_cls, fnal_tasks):
                                    resources=resources_cls(cores=4, mem_gb=24, gpus=1, gpu_type="a100", minutes=30),
                                    body=BODY)
     fnal_tasks.add("beam_point")
+    tasks["beam_sob"] = task_cls(params=SOB_PARAMS, metrics=SOB_METRICS,
+                                 resources=resources_cls(cores=SOB_CORES, mem_gb=64, gpus=0, gpu_type="", minutes=40),
+                                 body=SOB_BODY)
+    fnal_tasks.add("beam_sob")
 
 
 class _UVADelegate:
@@ -52,6 +84,16 @@ class _UVADelegate:
         return BeamPointStream(kit)
 
 
+class _UVASobDelegate(_UVADelegate):
+    """beam_sob on a Slurm-over-SSH endpoint: the same streaming route, one CPU job."""
+
+    @staticmethod
+    def make(kit):
+        from .kit_uva import BeamSobStream
+        return BeamSobStream(kit)
+
+
 def register_delegate(delegates):
-    """beam_point on endpoints without FNAL storage runs through kit_uva (inputs streamed into the job)."""
+    """beam_point and beam_sob on endpoints without FNAL storage run through kit_uva (inputs streamed into the job)."""
     delegates["beam_point"] = _UVADelegate
+    delegates["beam_sob"] = _UVASobDelegate
