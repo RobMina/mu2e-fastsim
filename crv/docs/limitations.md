@@ -61,7 +61,6 @@ PE tail above 2000 PE (0.923 +- 0.014 -> 0.991 +- 0.014), and the adjacent-layer
 - Device transport: single-scattering tails, sliced MSC and below-plane variants raise.
 - The out-of-time background is resampled from KPP data (`crvfastsim.reco.background`); it is not simulated.
 - Native and device CRY generation are opt-in; the default reads cached CRY primary tables (gen tables).
-- Fast reco on Intel PVC (Aurora) has opt-in kernels (`CRVFASTSIM_PVC_RECO`); not validated against real inputs.
 
 ## Not validated
 
@@ -86,6 +85,11 @@ PE tail above 2000 PE (0.923 +- 0.014 -> 0.991 +- 0.014), and the adjacent-layer
   [named-conditions.md](named-conditions.md)) are admission contracts, not physics validation.
 - The fast chain is validated on MC only. KPP data comparisons need the measured data offsets and are outside this
   repository.
+
+## Kept off main
+
+- Intel PVC (Aurora) reco kernels (`CRVFASTSIM_PVC_RECO`: Jacobi Hessian eigenvalues, label propagation, batch cap):
+  branch `park/pvc-reco`. Not validated on PVC hardware; identical output and no gain on an A100.
 
 ## Inputs
 

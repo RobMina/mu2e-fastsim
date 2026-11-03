@@ -132,7 +132,6 @@ on an A100-80GB byte-identical at seed 20261027.
 | `CRVFS_CONTEXT_HASH_WORKERS` | GPU, float32 | identical | 1.042x at 4, in `e2e-bench --reuse-context` only | default 4 |
 | `CRVFS_PREPARED_LIBRARY_CACHE` | GPU, float32 | identical | none warm (0.984x, overlapping); preparation 52.5 -> 19.9 s, first creation 70.9 s | kept: a site path |
 | `CRVFASTSIM_COMPACT_DISPATCH` | GPU, float32 and float64 | **not identical** (cluster PE, time, position, slope only; float32 `cl_pos` up to 0.07 mm, float64 5e-9 mm) | 1.05-1.11x warm; cold pass 1.2x slower (more shapes to compile) | `park/cpu-speed` |
-| `CRVFASTSIM_PVC_RECO` | GPU (A100), float32 | identical | 0.977x (separate processes) | opt-in; not measured on PVC (Aurora) |
 
 ## Device precision
 
