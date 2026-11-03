@@ -189,8 +189,9 @@ def test_fasttable_legacy_defaults(monkeypatch):
     monkeypatch.setattr(FT.geometry, "from_offline_config", lambda path: geom)
     monkeypatch.setattr(FT.geometry, "parse_simpleconfig", lambda text: ccfg)
     monkeypatch.setattr(FT.chain.Conditions, "from_csv", lambda *a: "legacy")
+    monkeypatch.setattr(FT.readout, "apply", lambda cond, g, cfg: (cond, g is geom, cfg is ccfg))
     _, _, cond, cfg = FT.configure(calib="calib.csv")
-    assert cond == "legacy"
+    assert cond == ("legacy", True, True)                 # the physical readout mask of the same counters
     assert cfg.response == FT.chain.ChainConfig().response
     assert cfg.finder == FT.C.FinderConfig() and cfg.window == (0.0, 100000.0)
     with pytest.raises(ValueError):
