@@ -43,8 +43,9 @@ items and the beam stage.
   0.9934 +- 0.0011 moved against refined steps). Against refined steps the moved target is 2.15 sigma out with the
   independent-sample error, just outside its 2-sigma threshold. Any study needing the fraction better than 1 % should
   take this as a bias.
-- The loss-model refinements on `park/beam-loss-studies` are not promoted: their slab comparison at the stopping edge
-  is indeterminate against refined steps (variance ratios 0.89 / 1.02).
+- The loss-model refinements on `park/beam-loss-studies` are not promoted, including the range-integrated layer physics
+  with Geant4 aluminium tables (`--physics g4`, `--mean`, `--law`, `--msc-path`): their slab comparison at the
+  stopping edge is indeterminate against refined steps (variance ratios 0.89 / 1.02).
 - Validated on the nominal 37-foil target and one 49-foil move; a broader Mu2eBO search space (per-foil holes, other
   materials) is not certified. Geometry changes outside the target-overlay keys are refused.
 - The nominal Geant4 reference covers 105,350 muons of the 214,310 MuBeamCat events: an `NO_SUBRUN` input fault stops
@@ -55,5 +56,5 @@ items and the beam stage.
 
 | Branch | Contents |
 |---|---|
-| `park/beam-loss-studies` | 39 beam loss diagnostics modules, their tests, closure/export/edge scripts |
+| `park/beam-loss-studies` | 39 beam loss diagnostics modules, their tests, closure/export/edge scripts; the `--physics g4` layer tables (`layerphys`, `g4tables`, `physics_tables`, shipped Geant4 Al tables) |
 | `park/flash-celeritas` | Celeritas image, adapter and probes (electron-flash feasibility) |

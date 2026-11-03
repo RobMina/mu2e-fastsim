@@ -98,13 +98,10 @@ thin-plane stop position. No within-foil slowing time is integrated; surviving c
 ordering, grazing paths and the low-energy model remain approximations requiring physics convergence checks.
 A shared seed is not layout-invariant: chunking and compaction affect random draws.
 
-## Layer physics presets
+## Layer physics
 
-`run` and `point` take `--physics legacy` (default: local dE/dx per slice with the fast Bethe law) or
-`--physics g4` (range-integrated slice mean with the Geant4 11.3.2 aluminium tables shipped in
-`beamfastsim/data/`, read by `g4tables.py`/`layerphys.py`; the tables' provenance is checked by
-`physics_tables.py`). `g4` is opt-in and not validated as a replacement for `legacy`.
-
-The loss-model studies behind these presets (numerical convergence, finer slicing, frozen-entry loss histories,
-single-foil closure against Geant4, slab and edge diagnostics) are kept on branch `park/beam-loss-studies`. Their
-outcome: refining the layer loss model did not improve agreement at the foil edges, so `legacy` stays the default.
+Layers lose energy in slices with the local restricted dE/dx (fast Bethe law, Urban fluctuations) and scatter with
+one Highland kick. The range-integrated alternative with Geant4 11.3.2 aluminium tables (`--physics g4`) and the
+loss-model studies behind it (numerical convergence, finer slicing, frozen-entry loss histories, single-foil closure
+against Geant4, slab and edge diagnostics) are kept on branch `park/beam-loss-studies`. Refining the layer loss model
+did not improve agreement at the foil edges.

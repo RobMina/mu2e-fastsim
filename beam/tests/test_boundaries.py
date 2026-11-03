@@ -27,7 +27,7 @@ def test_chunk_respects_exact_step_cap(cap, chunk):
 
 @pytest.mark.parametrize("direction", [-1.0, 1.0])
 def test_exact_plane_endpoint_counts_once(monkeypatch, direction):
-    def no_loss(key, mat, x0, p, u, length, active, n_slices, tcut, msc):
+    def no_loss(key, mat, x0, p, u, length, active, prm):
         return p, u, active & False
 
     monkeypatch.setattr(transport, "_layer", no_loss)
@@ -52,7 +52,7 @@ def test_invalid_chunk_rejected(chunk):
 @pytest.mark.parametrize("ds", [2.0, 5.0])
 @pytest.mark.parametrize("direction", [-1.0, 1.0])
 def test_foil_stop_time_matches_crossing_position(monkeypatch, ds, direction):
-    def stop_at_layer(key, mat, x0, p, u, length, active, n_slices, tcut, msc):
+    def stop_at_layer(key, mat, x0, p, u, length, active, prm):
         return p * ~active, u, active
 
     monkeypatch.setattr(transport, "_layer", stop_at_layer)
