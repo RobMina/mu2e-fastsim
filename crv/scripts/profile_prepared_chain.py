@@ -39,7 +39,7 @@ def chain_options(root, shards, cpu=False, max_events=50000, prefetch=False, rec
                 calib=str(root / "data/geometry/crvcalib_sim_best_v1_5_run1400.csv"),
                 deviation=str(root / "data/geometry/crvphoton_sim_best_v1_5_run1400.csv"),
                 gdml=str(root / "data/geometry/mu2e_extracted_v04.gdml"),
-                tier1b_set="strict_v4", tier1b_dir=str(root / "tier1b_strict_v2"),
+                tier1b_set="strict_v5", tier1b_dir=str(root / "tier1b_strict_v5"),
                 jax=not cpu, max_events=max_events, prefetch=prefetch, reco_cpu=reco_cpu)
 
 

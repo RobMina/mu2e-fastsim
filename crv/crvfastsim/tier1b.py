@@ -76,13 +76,6 @@ Two parts, both resampled from G4 CrvStep tables (CrvStepTableDumper) of trainin
      the next bars the muon crosses), while independent draws per crossing are not. In time order along each fast
      muon, a crossing takes the next crossing of the previous pick's library muon when that crossing lies in its own
      draw cell, else its own uniform draw (the same random numbers in both cases).
-   Hard muons (sample(hard); a template sidecar v3, attach_hard; the default asset set strict_v4): independent draws
-   per crossing also miss the correlation of a muon's descendants across its crossings (G4 adjacent-layer correlation
-   of muon-descendant energy 0.38, independent draws 0.12). A library muon whose descendants over all its crossings sum
-   to more than HARD_E_MEV is hard. Each fast muon is hard with the library rate of its key (|p| class at its first
-   crossing, and the sector group and layer rank of each crossing in time order), and a hard fast muon takes one hard
-   library muon of its key whole: its k-th crossing takes that muon's k-th crossing. The other crossings of muons whose
-   key has hard library muons draw from the rest of their cell, so the overall rate is unchanged.
    Root-coherent draws (sample(anchor, link); a library built with roots=True, a template sidecar v3, attach_anchors): one
    step tree (a delta ray and its cascade: all steps sharing the direct child of the muon) deposits in several layers
    along the muon, and the attachment above cuts it at the crossings, so independent draws lose what it shares.
@@ -722,120 +715,9 @@ def _follow_picks(fx, lx_xid, lo, hi, pick, nxt, pos):
     return pick, followed
 
 
-HARD_E_MEV = 30.0                                # a library muon is hard above this summed descendant energy [MeV]
-HARD_PCLASS = (400.0, 2000.0, 8000.0, 30000.0)   # |p| class edges [MeV/c] at a muon's first crossing
-HARD_MAX_CROSSINGS = 24                          # patterns of two 12-crossing halves, base 17 each (fits int64)
-HARD_MIN_KEY_MUONS = 50                          # fewer library muons with a (class, pattern): rate of (class, count)
-
-
-def _patterns(mu, rank, sym, nmu):
-    """Per muon (0..nmu-1): its crossing pattern as two base-17 codes of (symbol + 1) in time order (crossings 0-11,
-    12-23) and its crossing count. sym = library group x 4 + layer rank in the module (clipped to 3)."""
-    lo, hi = np.zeros(nmu, np.int64), np.zeros(nmu, np.int64)
-    a, b = rank < 12, (rank >= 12) & (rank < HARD_MAX_CROSSINGS)
-    np.add.at(lo, mu[a], (sym[a] + 1).astype(np.int64) * 17 ** rank[a].astype(np.int64))
-    np.add.at(hi, mu[b], (sym[b] + 1).astype(np.int64) * 17 ** (rank[b] - 12).astype(np.int64))
-    return lo, hi, np.bincount(mu, minlength=nmu)
-
-
 def _symbols(geom, bar):
-    """Crossing symbol of the hard-muon patterns: library group x 4 + layer rank in the module (clipped to 3)."""
+    """Crossing symbol of the anchored draws: library group x 4 + layer rank in the module (clipped to 3)."""
     return _group_index(geom, bar) * 4 + np.minimum(layer_rank(geom)[np.asarray(bar, np.int64)], 3)
-
-
-def attach_hard(lib, geom, e_hard=None):
-    """Hard-muon library (strict_v4; a template sidecar v3 with crossing muons and next crossings): a library muon is hard
-    when its descendants over all its crossings sum to more than e_hard. Keeps, per (momentum class, crossing pattern)
-    key (pattern = sector group and layer of each crossing in time order), the hard muons with their crossings in time
-    order, and the hard rate of each key (and of (class, crossing count) for sparse keys)."""
-    e_hard = HARD_E_MEV if e_hard is None else e_hard
-    g = lib["xgeo"]
-    if "mu" not in g:
-        raise ValueError("hard library needs a template sidecar v3 with crossing muons (attach_templates)")
-    nx = g["nxt"]
-    n = len(nx)
-    prv = np.full(n, -1, np.int64)
-    prv[nx[nx >= 0]] = np.flatnonzero(nx >= 0)
-    rank = np.zeros(n, np.int64)
-    cur, r = np.flatnonzero(prv < 0), 0
-    while len(cur):
-        rank[cur] = r
-        cur = nx[cur]
-        cur, r = cur[cur >= 0], r + 1
-    _, mu = np.unique(g["mu"], return_inverse=True)
-    nmu = int(mu.max()) + 1
-    lo, hi, ncross = _patterns(mu, rank, _symbols(geom, g["bar"]), nmu)
-    head = np.flatnonzero(prv < 0)
-    p_first = np.zeros(nmu); p_first[mu[head]] = g["p"][head]
-    ld = lib["libdesc"]
-    de = np.bincount(mu[ld.xid.to_numpy()], weights=ld.edep.to_numpy(), minlength=nmu)
-    m = pd.DataFrame({"pc": np.searchsorted(HARD_PCLASS, p_first), "lo": lo, "hi": hi, "n": ncross,
-                      "hard": (ncross <= HARD_MAX_CROSSINGS) & (de > e_hard)})
-    m = m[m.n <= HARD_MAX_CROSSINGS]
-    rate_key = m.groupby(["pc", "lo", "hi"]).hard.agg(nlib="size", nhard="sum").reset_index()
-    rate_pn = m.groupby(["pc", "n"]).hard.mean().rename("rate_pn").reset_index()
-    hm = m[m.hard].sort_values(["pc", "lo", "hi"], kind="stable")
-    cat = hm.reset_index().rename(columns={"index": "m"})
-    kcat = cat.groupby(["pc", "lo", "hi"], sort=False).agg(a=("m", lambda s: s.index[0]), cnt=("m", "size")).reset_index()
-    # crossings of the hard muons in time order, flat, each muon starting at its catalogue row's start
-    slot = np.full(nmu, -1, np.int64)
-    slot[cat.m.to_numpy()] = np.arange(len(cat))
-    xs = np.flatnonzero(slot[mu] >= 0)
-    xs = xs[np.lexsort((rank[xs], slot[mu[xs]]))]
-    lib = dict(lib)
-    lib["hard"] = {"e_hard": e_hard, "kcat": kcat, "start": np.r_[0, np.cumsum(cat.n.to_numpy())[:-1]], "xid": xs,
-                   "is_hard_xing": slot[mu] >= 0, "rate_key": rate_key, "rate_pn": rate_pn,
-                   "n_lib_muons": int(len(m)), "n_hard": int(len(cat)),
-                   "hard_energy_share": float(de[cat.m.to_numpy()].sum() / max(de.sum(), 1e-300))}
-    return lib
-
-
-def _hard_picks(fx, geom, lib, pick, lo, hi, lx_xid, rng):
-    """Hard-muon draw: each fast muon is hard with the G4 rate of its (momentum class, crossing pattern) key (else of
-    (class, crossing count)); a hard muon takes a uniform hard library muon of its key and its k-th crossing (time order)
-    takes that muon's k-th crossing. The other crossings of muons whose key has hard library muons redraw within their
-    own cell while their pick is a hard library crossing (the standard library is the complement); muons whose key has
-    none keep the full library. Returns the picks and counts."""
-    H = lib["hard"]
-    pick = pick.copy()
-    n = len(fx)
-    info = {"fast_muons": 0, "hard": 0, "expected": 0.0, "no_key": 0.0, "redrawn": 0, "left_hard": 0}
-    if n == 0:
-        return pick, info
-    mu = fx.groupby(KEY + (["sp"] if "sp" in fx.columns else []), sort=False).ngroup().to_numpy()
-    order = np.lexsort((fx.t0.to_numpy(), mu))
-    first = np.r_[True, mu[order][1:] != mu[order][:-1]]
-    rank = np.empty(n, np.int64)
-    rank[order] = np.arange(n) - np.maximum.accumulate(np.where(first, np.arange(n), 0))
-    nmu = int(mu.max()) + 1
-    plo, phi, ncross = _patterns(mu, rank, _symbols(geom, fx.bar.to_numpy()), nmu)
-    p = np.sqrt(fx.px0 ** 2 + fx.py0 ** 2 + fx.pz0 ** 2).to_numpy()
-    p_first = np.zeros(nmu); p_first[mu[order[first]]] = p[order[first]]
-    f = pd.DataFrame({"pc": np.searchsorted(HARD_PCLASS, p_first), "lo": plo, "hi": phi, "n": ncross})
-    f = f.merge(H["rate_key"], on=["pc", "lo", "hi"], how="left").merge(H["kcat"], on=["pc", "lo", "hi"], how="left")
-    f = f.merge(H["rate_pn"], on=["pc", "n"], how="left")
-    known = f.nlib.fillna(0).to_numpy() >= HARD_MIN_KEY_MUONS
-    rate = np.where(known, f.nhard.fillna(0).to_numpy() / np.maximum(f.nlib.fillna(1).to_numpy(), 1),
-                    f.rate_pn.fillna(0).to_numpy())
-    rate[ncross > HARD_MAX_CROSSINGS] = 0.0
-    have = f.cnt.fillna(0).to_numpy() > 0
-    u, v = rng.random(nmu), rng.random(nmu)
-    hard = (u < rate) & have
-    info.update(fast_muons=int(nmu), hard=int(hard.sum()), expected=float(rate.sum()), no_key=float(rate[~have].sum()))
-    a = f.a.fillna(0).to_numpy().astype(np.int64)
-    hmu = a + (v * f.cnt.fillna(0).to_numpy()).astype(np.int64)    # hard catalogue row per fast muon
-    rows = np.flatnonzero(hard[mu])
-    pick[rows] = H["xid"][H["start"][hmu[mu[rows]]] + rank[rows]]
-    isx = H["is_hard_xing"]
-    redo = np.flatnonzero(~hard[mu] & have[mu] & isx[pick])
-    info["redrawn"] = int(len(redo))
-    for _ in range(50):
-        if not len(redo):
-            break
-        pick[redo] = lx_xid[lo[redo] + (rng.random(len(redo)) * (hi[redo] - lo[redo])).astype(np.int64)]
-        redo = redo[isx[pick[redo]]]
-    info["left_hard"] = int(len(redo))
-    return pick, info
 
 
 def _next_crossing(fx, geom):
@@ -1053,7 +935,7 @@ def _support(fx, lib, geom, context, idx):
 
 def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=False, mirror=False,
                         translate=False, topology=False, trace=None, drop_unvisited=False, chord=False, follow=False,
-                        hard=False, anchor=False, link=False):
+                        anchor=False, link=False):
     """Descendant steps for the fast crossings fx (one row per crossing). Returns (steps, n_dropped, n_clamped, why).
     Opt-in (all off reproduces the earlier sampling bit for bit): context = draw within the crossing-context cell
     (library with a ctx column); contain = same-bar endpoints into the bar; point = other-bar steps whose target bar
@@ -1089,10 +971,6 @@ def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=
         pos = np.empty(len(lx), np.int64)
         pos[lx.xid.to_numpy()] = np.arange(len(lx))
         pick, nfollow = _follow_picks(fx, lx.xid.to_numpy(), lo, hi, pick, lib["xgeo"]["nxt"], pos)
-    if hard:
-        if "hard" not in lib:
-            raise ValueError("hard draw needs attach_hard")
-        pick, hinfo = _hard_picks(fx, geom, lib, pick, lo, hi, lx.xid.to_numpy(), rng)
     if link:
         pick, linfo = _link_picks(fx, geom, lib, pick, lo, hi, lx.xid.to_numpy(), fnxt, fsym, rng)
     if anchor:
@@ -1168,8 +1046,6 @@ def _desc_for_crossings(fx, lib, geom, rng, context=False, contain=False, point=
         why["chord"] = nchord
     if follow:
         why["follow"] = nfollow
-    if hard:
-        why.update({f"hard_{k}": v for k, v in hinfo.items()})
     if anchor:
         why.update({f"anchor_{k}": v for k, v in ainfo.items()})
         if free.any():
@@ -1607,19 +1483,18 @@ def _nearmiss_for_gen(fast_steps, gen, lib, geom, rng):
 
 def sample(fast_steps, fast_parts, gen, lib, geom, rng, showers=True, context=False, contain=False, point=False,
            mirror=False, translate=False, topology=False, unvisited=False, nearmiss=False, chord=False, follow=False,
-           hard=False, anchor=False, link=False):
+           anchor=False, link=False):
     """Fast tier-1a tables + tier 1b: (steps, particles, info). Muons keep their keys (1, or 1..n with all_muons);
     descendants follow them; showers k*1e7+sp. showers=False: descendants only (run configurations whose bars are not
     the library's: the showers carry absolute extracted v04 bar positions). unvisited / nearmiss (opt-in, a library
     with attach_templates): their random draws come after the showers', so every other component is unchanged.
     chord / follow (opt-in, a template sidecar with library chords): same-bar placement along the chord and the chain
-    draw of the main descendant draw (_desc_for_crossings); no random number changes. hard (a library with attach_hard):
-    whole-muon draws of hard library muons (_hard_picks); its random draws come after the main draw's. anchor / link (a
+    draw of the main descendant draw (_desc_for_crossings); no random number changes. anchor / link (a
     library with attach_anchors): root-coherent draws of the step trees, module docstring."""
     fx = fast_steps.copy()
     desc, n_drop, n_clamp, why = _desc_for_crossings(fx, lib, geom, rng, context, contain, point, mirror, translate,
                                                      topology, drop_unvisited=unvisited, chord=chord, follow=follow,
-                                                     hard=hard, anchor=anchor, link=link)
+                                                     anchor=anchor, link=link)
     sh = _showers_for_gen(gen, lib, rng) if showers else _showers_for_gen(gen.iloc[:0], lib, rng)
     sp_of = fx.sp.to_numpy() if "sp" in fx.columns else np.ones(len(fx), np.int64)
     desc["src"], desc["parent"] = 0, sp_of[desc.xi.to_numpy()]

@@ -2,7 +2,7 @@
 
     tier1b-build crvsteps.<train>.root [...] --gen gen.<train>.root [...] --out lib.root [--roots]
     tier1b-apply fastC.*.root --outdir DIR [--seed N]   (writes fast1b.<shard>.root; default set strict_v5)
-    tier1b-apply fastC.*.root --tier1b strict_v5|strict_v4 [--tier1b-dir DIR] --outdir DIR   (a named asset set)
+    tier1b-apply fastC.*.root --tier1b strict_v5 [--tier1b-dir DIR] --outdir DIR   (a named asset set)
     tier1b-apply fastC.*.root --library lib.root --outdir DIR   (a custom library, no placement unless flagged:)
         [--crossing-context --contain-steps --point-placement --topology-sidecar SIDE.npz]
         [--template-sidecar TEMPLATES.npz --unvisited-layers --near-miss]

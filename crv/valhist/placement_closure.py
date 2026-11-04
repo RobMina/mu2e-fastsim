@@ -32,7 +32,7 @@ from . import stephist as H
 from . import steplayers as S
 
 OPTIONS = ("context", "contain", "point", "mirror", "translate", "topology", "unvisited", "nearmiss", "chord", "follow",
-           "hard", "anchor", "link")
+           "anchor", "link")
 RESEED = 7
 REPORT_KEYS = list(H.TARGET) + ["SMom2", "posx"] + [f"{g}/{v}" for g in S.POS_GROUPS for v in ("y", "z")]
 
@@ -50,7 +50,7 @@ def parse_arm(spec):
 
 
 def run(library, transport, reference, shard_list, arms, out, sidecar=None, reseed=(), write=None, retained=None,
-        counters=None, templates=None, hard_e=None, anchor_scope="module"):
+        counters=None, templates=None, anchor_scope="module"):
     out = Path(out)
     if out.exists():
         raise FileExistsError(out)
@@ -70,11 +70,9 @@ def run(library, transport, reference, shard_list, arms, out, sidecar=None, rese
         from . import descendant_templates as DT
         lib = T.attach_templates(lib, DT.read_sidecar(templates, library), geom)
         hashes[str(templates)] = A.digest(templates)
-    if any(o.get("unvisited") or o.get("nearmiss") or o.get("chord") or o.get("follow") or o.get("hard")
+    if any(o.get("unvisited") or o.get("nearmiss") or o.get("chord") or o.get("follow")
            or o.get("anchor") or o.get("link") for _, o in arms) and not templates:
-        raise ValueError("unvisited / nearmiss / chord / follow / hard / anchor / link arms need --templates")
-    if any(o.get("hard") for _, o in arms):
-        lib = T.attach_hard(lib, geom, hard_e)
+        raise ValueError("unvisited / nearmiss / chord / follow / anchor / link arms need --templates")
     if any(o.get("anchor") or o.get("link") for _, o in arms):
         lib = T.attach_anchors(lib, geom, anchor_scope)
     edges = S.booking_edges()
@@ -315,7 +313,6 @@ def main():
     r.add_argument("--retained", action="append", default=[], metavar="ARM=PATTERN",
                    help="require this arm's steps to equal a retained table (exact)")
     r.add_argument("--counters")
-    r.add_argument("--hard-e", type=float, help="hard-muon threshold [MeV], default tier1b.HARD_E_MEV")
     r.add_argument("--anchor-scope", default="module", choices=("module", "muon"), help="tree scope of anchor / link")
     s = sub.add_parser("report")
     s.add_argument("runs", nargs="+")
@@ -330,7 +327,7 @@ def main():
             raise SystemExit("--reseed names an unknown arm")
         run(a.library, a.transport, a.reference, S.shards(a.shards), arms, a.out, a.sidecar, a.reseed,
             dict(x.split("=", 1) for x in a.write), dict(x.split("=", 1) for x in a.retained), a.counters,
-            a.templates, a.hard_e, a.anchor_scope)
+            a.templates, a.anchor_scope)
     else:
         sm = summary(a.runs)
         print_summary(sm)

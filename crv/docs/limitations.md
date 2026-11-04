@@ -62,6 +62,8 @@ PE tail above 2000 PE (0.923 +- 0.014 -> 0.991 +- 0.014), and the adjacent-layer
 - Device transport is ionisation-only: the NumPy transport adds the core's radiative muon losses (bremsstrahlung, pair
   production, photonuclear) in the world column and below-plane material, the device transport does not. The
   difference is below the noise of every deck histogram (validation.md); core `muradiative_jax` is the device draw.
+- The previous tier-1b default `strict_v4` (hard-muon draws, with its device sampler) is parked on branch
+  `park/tier1b-strict-v4`.
 - The out-of-time background is resampled from KPP data (`crvfastsim.reco.background`); it is not simulated.
 - Native and device CRY generation are opt-in; the default reads cached CRY primary tables (gen tables).
 

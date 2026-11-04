@@ -36,12 +36,12 @@ python3 -m crvfastsim runchain "$G" --tier1b-dir "$CRVFS_DATA/tier1b_strict_v5" 
 type) and the cost per stage; the resolved tier-1b set, its pinned hash and every input path are recorded there too.
 Remove `--max-events` for the whole shard. Even at 1,000 events the job peaks at about 9 GB (library and lookup
 tables), and the one-time setup takes about a minute; the whole shard takes longer. The `strict_v5` files
-live in the directory `tier1b_strict_v5`; those of the previous default `strict_v4` in `tier1b_strict_v2`.
+live in the directory `tier1b_strict_v5`.
 
 Timing, fingerprints and repeated passes on the same inputs:
 
 ```bash
-python3 -m crvfastsim e2e-bench "$G" --tier1b-dir "$CRVFS_DATA/tier1b_strict_v2" \
+python3 -m crvfastsim e2e-bench "$G" --tier1b-dir "$CRVFS_DATA/tier1b_strict_v5" \
   --gdml "$GEOM/mu2e_extracted_v04.gdml" --calib "$GEOM/crvcalib_sim_best_v1_5_run1400.csv" \
   --deviation "$GEOM/crvphoton_sim_best_v1_5_run1400.csv" \
   --max-events 1000 --seed 22 --repeat 2 --outdir "$M2FS_DATA/crv-smoke/bench"
@@ -61,7 +61,7 @@ more without one): run many shards per process and keep a persistent compilation
 
 | Option | Effect |
 |---|---|
-| `--tier1b strict_v5\|strict_v4` | the tier-1b set: `strict_v5` (default, root-coherent draws) or `strict_v4` (the previous default, hard-muon draws; `--tier1b-dir $CRVFS_DATA/tier1b_strict_v2`); earlier option combinations run with `tier1b-apply --library` and explicit flags ([tier1b-default.md](tier1b-default.md)) |
+| `--tier1b strict_v5` | the tier-1b set (the default and only set: root-coherent draws); the previous default `strict_v4` is on branch `park/tier1b-strict-v4`; other option combinations run with `tier1b-apply --library` and explicit flags ([tier1b-default.md](tier1b-default.md)) |
 | `--library LIB` | a custom tier-1b library without placement |
 | `--legacy-transport` | the stage-C transport before `range_out` ([transport-range-out.md](transport-range-out.md)) |
 | `--run-config NAME` | a named configuration (needs a tier-1b library that does not exist today) |

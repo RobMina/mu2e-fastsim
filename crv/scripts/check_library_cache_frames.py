@@ -22,7 +22,7 @@ def main():
     args = parser.parse_args()
     root = Path(args.inputs_root)
     geom = runconfig.get().geometry()
-    spec = tier1b_assets.resolve("strict_v4", directory=root / "tier1b_strict_v2")
+    spec = tier1b_assets.resolve("strict_v5", directory=root / "tier1b_strict_v5")
     start = time.perf_counter()
     reference = tier1b_assets._load_uncached(spec, geom)
     ref_s = time.perf_counter() - start

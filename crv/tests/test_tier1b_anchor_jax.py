@@ -100,8 +100,6 @@ def test_anchored_empty_and_refusals(geom):
     host = T.sample(fx, parts, gen, lib, geom, rr, **OPTS)
     got = DeviceTier1b(lib, geom).sample(fx, parts, gen, ReplayRandom(rr.draws), **OPTS)
     compare_frames(host[0], got[0])
-    with pytest.raises(ValueError, match="separate"):
-        DeviceTier1b(lib, geom).sample(fx, parts, gen, ReplayRandom(rr.draws), **dict(OPTS, hard=True))
     plain, _ = _lib3(geom)
     plain["libxing"] = plain["libxing"].assign(ctx=0)
     with pytest.raises(ValueError, match="attach_anchors"):

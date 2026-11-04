@@ -54,23 +54,7 @@ def check_metadata(dev, st):
                     last=T.last_crossing(st), mask=T.visit_mask(st, dev.geom))
     for c, a in expected.items():
         np.testing.assert_array_equal(np.asarray(meta[c])[:n], a, err_msg=c)
-    hard_info = None
-    if dev.hard is not None:
-        xx, _, _ = dev._metadata(st)
-        pat = dev.hard_patterns(xx, dev.metadata_constants, dev.hard)
-        nmu = int(pat["nmu"])
-        order = np.lexsort((st.t0.to_numpy(), mu))
-        first = np.r_[True, mu[order][1:] != mu[order][:-1]] if n else np.zeros(0, bool)
-        rank = np.empty(n, np.int64)
-        rank[order] = np.arange(n) - np.maximum.accumulate(np.where(first, np.arange(n), 0)) if n else np.zeros(0, np.int64)
-        plo, phi, counts = T._patterns(mu, rank, T._symbols(dev.geom, st.bar), nmu)
-        pp = np.zeros(nmu)
-        pp[mu[order[first]]] = p[order[first]]
-        np.testing.assert_array_equal(np.asarray(pat["pattern"])[:nmu], np.c_[np.searchsorted(T.HARD_PCLASS, pp), plo, phi])
-        np.testing.assert_array_equal(np.asarray(pat["count"])[:nmu], counts)
-        np.testing.assert_array_equal(np.asarray(pat["rank"])[:n], rank)
-        hard_info = dict(muons=nmu, exact=True)
-    return dict(crossings=n, visits=int(take.sum()), exact=True, hard=hard_info)
+    return dict(crossings=n, visits=int(take.sum()), exact=True)
 
 
 def replay_report(host, device):
@@ -126,9 +110,9 @@ def replay(dev, st, pa, gen, opts, seed, check="strict"):
         ht, dt = {}, {}
         hd = T._desc_for_crossings(st, dev.lib, dev.geom, ReplayRandom(rng.draws), context=True, contain=True,
                                    point=True, topology=True, trace=ht, drop_unvisited=True, chord=True,
-                                   hard=opts.get("hard", False), anchor=opts.get("anchor", False))[0]
+                                   anchor=opts.get("anchor", False))[0]
         dd, *rest = (dev.anchored(st, ReplayRandom(rng.draws), trace=dt) if opts.get("anchor")
-                     else dev.descendants(st, ReplayRandom(rng.draws), trace=dt, hard=opts.get("hard", False)))
+                     else dev.descendants(st, ReplayRandom(rng.draws), trace=dt))
         differences = {c: float(np.max(np.abs(hd[c].to_numpy() - dd[c].to_numpy()), initial=0))
                        for c in hd if hd[c].dtype.kind in "fiu"}
         print(json.dumps({"desc_max_abs": differences, "donor_exact": bool(np.array_equal(ht["xid"], dt["picks"][dt["ix"]])),
@@ -141,11 +125,6 @@ def replay(dev, st, pa, gen, opts, seed, check="strict"):
     hi, di = json.loads(json.dumps(host[2])), json.loads(json.dumps(device[2]))
     hi["templates"]["nearmiss"].pop("expected_reached")
     di["templates"]["nearmiss"].pop("expected_reached")
-    for c in ("hard_expected", "hard_no_key"):
-        if c in hi["other_bar"]:
-            np.testing.assert_allclose(hi["other_bar"][c], di["other_bar"][c], rtol=2e-14, atol=1e-13)
-            hi["other_bar"].pop(c)
-            di["other_bar"].pop(c)
     if hi != di:
         raise AssertionError(f"info differs: {host[2]} != {device[2]}")
     return dict(host_s=host_s, device_s=device_s, rows=len(host[0]), max_abs=error)
@@ -163,7 +142,7 @@ def run(args):
     load_s = time.perf_counter() - tick
     dev = DeviceTier1b(lib, geom, args.batch_size)
     hashes = {str(p): A.digest(p) for p in [*spec.paths(), T.__file__, __file__,
-                                         *[Path(T.__file__).with_name(f"tier1b{suffix}.py") for suffix in ("_jax", "_metadata_jax", "_csr_jax", "_hard_jax")]]}
+                                         *[Path(T.__file__).with_name(f"tier1b{suffix}.py") for suffix in ("_jax", "_metadata_jax", "_csr_jax")]]}
     edges = S.booking_edges()
     names = ("numpy", "jax") + (("numpy_reseed",) if args.floor_seed is not None else ())
     hist, pair, topo = {n: {} for n in names}, {}, {n: {} for n in names}
@@ -279,7 +258,7 @@ def main():
     for name in ("counters", "library-dir", "transport", "out"):
         p.add_argument("--" + name, required=True)
     p.add_argument("--shards", type=int, nargs="+", default=[22])
-    p.add_argument("--tier1b-set", choices=("strict_v5", "strict_v4"), default="strict_v5")
+    p.add_argument("--tier1b-set", choices=("strict_v5",), default="strict_v5")
     p.add_argument("--batch-size", type=int, default=2048)
     p.add_argument("--replay-only", action="store_true")
     p.add_argument("--replay-check", choices=("strict", "report"),

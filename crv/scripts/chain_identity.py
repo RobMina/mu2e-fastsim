@@ -96,8 +96,8 @@ def run(a):
                                    calib=str(root / "data/geometry/crvcalib_sim_best_v1_5_run1400.csv"),
                                    deviation=str(root / "data/geometry/crvphoton_sim_best_v1_5_run1400.csv"),
                                    gdml=str(root / "data/geometry/mu2e_extracted_v04.gdml"), jax=a.jax, seed=a.seed,
-                                   max_events=a.max_events, tier1b_set="strict_v4",
-                                   tier1b_dir=str(root / "tier1b_strict_v2"),
+                                   max_events=a.max_events, tier1b_set="strict_v5",
+                                   tier1b_dir=str(root / "tier1b_strict_v5"),
                                    transport_backend=a.transport_backend, tier1b_backend=a.tier1b_backend)
                 record[tag] = {"stages": dict(current), "generated_events": res["generated_events"],
                                "clusters_per_generated": res["clusters_per_generated"]}
