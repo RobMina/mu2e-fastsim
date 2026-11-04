@@ -44,7 +44,7 @@ Allocation charges depend on the site's rates and are not given here.
 
 | Chain | Validity (summary) | Fast rate | Grid slots replaced |
 |---|---|---|---|
-| CRV default chain (`range_out` transport, tier 1b `strict_v5`: root-coherent secondary draws) | V0, V1, V4, V-R1..V-R5 pass. 5 M held-out events, paired per-shard statistic: fast steps + stock response vs Geant4 + stock, cluster PE chi2/ndf 1.09 (3.28 with the previous tier 1b), end to end 1.50; clusters above 2000 PE 0.991 +- 0.014 (was 0.923); adjacent-layer correlation of secondaries 0.39-0.43 (Geant4 0.40); counts within 0.4 %. Open: clusters per event (NPc), wide-range multiplicities (events with more than 100 digis 0.83 +- 0.05 of Geant4), secondary steps at the bar ends; one tier-1b seed moves the yields by about 0.2 %. Float32 device output within the float64 seed spread (previous tier 1b) | one CPU core 860 generated/s; one GPU 7,900-18,300 generated/s (table below) | 40 per core; 370-860 per GPU; 1,100-1,360 per HPC node (older benchmark) |
+| CRV default chain (`range_out` transport, tier 1b `strict_v5`: root-coherent secondary draws) | V0, V1, V4, V-R1..V-R5 pass. 5 M held-out events, paired per-shard statistic: fast steps + stock response vs Geant4 + stock, cluster PE chi2/ndf 1.09 (3.28 with the previous tier 1b), end to end 1.50; clusters above 2000 PE 0.991 +- 0.014 (was 0.923); adjacent-layer correlation of secondaries 0.39-0.43 (Geant4 0.40); counts within 0.4 %. Open: clusters per event (NPc), wide-range multiplicities (events with more than 100 digis 0.83 +- 0.05 of Geant4), secondary steps at the bar ends; one tier-1b seed moves the yields by about 0.2 %. Float32 device output within the float64 seed spread (previous tier 1b) | one CPU core 860 generated/s; one GPU 5,900-17,200 generated/s (table below) | 40 per core; 280-810 per GPU; 1,100-1,360 per HPC node (older benchmark) |
 | tracker, extracted configuration | T-V0, T-V1 primary-muon steps pass; fast digis vs stock on the same steps 0 of 19 flagged; hits, clusters and seeds identical to stock; device chain vs NumPy 0 of 11 flagged. Open: T-V3 track yield -1.42 +- 0.37 % (default), -0.85 +- 0.37 % (opt-in `--scatter-in`); muon rate -0.82 +- 0.26 %; secondary placement; F1 fit 94.2 % vs 99.5 % | one CPU core 3,030 generated/s; 40-core node 111,500; one RTX PRO 6000 MIG 1g.24gb slice 22,160; one A100 14,270 | 149 per core; 5,480 per 40-core node; 1,090 per MIG slice; 700 per A100 |
 | beam stop fraction | fast / Geant4 on the same muons 0.9976 +- 0.0058 (nominal target), 0.9950 +- 0.0031 (49 foils); finer Geant4 steps do not move it (1.0016 +- 0.0020); with paired errors fast is 0.5-0.7 % low | one GPU 10,100-45,900 muons/s on the nominal target (table below); 9,640 (MIG slice) and 40,900 (A100-40GB) on a 49-foil design | 1,290 per MIG slice, 5,470 per A100 (49-foil design) |
 | Mu2eBO stopping stand-in (`beam_point` on each design point's target) | 65 Geant4-evaluated design points, no fitted scale (muons per event at the stopping-target region predicted from a Geant4 pass on the boards' own beam sample): Geant4 / fast 1.0045 +- 0.0005 (+- 0.0077 from the predicted scale), rms 0.42 % (0.73 % statistical, an upper bound: the points share the fast muons), chi2/ndf 0.76, rank correlation 0.998 +- 0.001 | as beam; one design point (105,350 muons) 3-5 min through the kit including compilation | as beam; per design point the stopping objective drops from about 4 h (grid chain) to 4-5 min |
@@ -60,21 +60,29 @@ setup and the first shard); grid slots at 21.2 generated events/s. Beam: `beam_p
 105,350 DS-entering muons, warm passes (a 49-foil design runs 4-6 % slower); no stock time per event exists for the
 nominal target on the grid at the same boundary, so the beam column gives rates only.
 
-The CRV rates were measured with the previous tier-1b set (`strict_v4`). The default `strict_v5` samples tier 1b at the
-same CPU rate (16.5 k against 16.3 k generated events/s on one core; the whole CPU chain is unchanged within its repeat
-spread) and adds about 13 s of one-time setup per process; the GPU rates have not been re-measured.
+CRV rates re-measured on 2026-11-03 with the default tier-1b set `strict_v5` and `runchain --jax`, which on main
+runs the transport and tier 1b on the host (NumPy) and the response and reco on the device; two jobs per card for
+the first three cards, one for the others. In the last column also the transport and tier 1b run on the device
+(opt-in `--transport-backend jax --tier1b-backend jax`, validated against the host chain: 0 of 133 end-to-end and 0
+of 155 stock-response histograms differ on 5 M events). Grid slots refer to the host-steps steady rate.
 
-| GPU | CRV generated events/s | CRV grid slots | Beam muons/s (nominal target) |
-|---|---:|---:|---:|
-| RTX PRO 6000 (full card) | 18,300 (7,210) | 862 | 31,560 |
-| RTX PRO 6000 MIG 1g.24gb slice | 16,790 (7,410) | 791 | 10,090 |
-| A40 | 12,270 (5,020) | 578 | 10,790 |
-| A100-SXM4-80GB | 10,710 (3,920) | 504 | 45,850 |
-| V100 | 7,930 (3,420) | 373 | 22,970 |
+| GPU | CRV generated events/s | CRV grid slots | CRV with device steps | Beam muons/s (nominal target) |
+|---|---:|---:|---:|---:|
+| RTX PRO 6000 (full card) | 16,000-17,200 (7,190-7,650) | 750-810 | 19,700-20,900 (6,790-7,060) | 31,560 |
+| RTX PRO 6000 MIG 1g.24gb slice | 13,600-14,800 (6,900-7,530) | 640-700 | 16,400-17,200 (6,640-7,010) | 10,090 |
+| B200 | 10,950-11,730 (5,020-5,080) | 520-550 | 12,850-14,830 (4,700-5,070) | not measured |
+| A40 | 10,560-10,680 (5,000) | 500 | 12,540-12,650 (4,620-4,690) | 10,790 |
+| A100-SXM4-80GB | 8,620-8,770 (3,730-3,870) | 410 | 10,130-10,790 (3,470-3,520) | 45,850 |
+| V100 | 5,930-6,180 (2,900-2,980) | 280-290 | 8,240-8,260 (2,860-3,020) | 22,970 |
+
+The device steps gain 12-27 % in steady state but cost about 10 s more per process (the device transport kernel
+loads from the persistent compilation cache in about 7 s and takes about a minute to compile without one), so at 11
+shards per process the whole job is 3-10 % slower; they pay off from about 20-25 shards per process.
 
 The CRV device kernels are float32 by default and the beam's float64, which is why the beam ranks the cards with
 full-rate FP64 (A100, V100) first and the CRV those with high FP32 throughput. Without a warm compilation cache the
-first shard takes 100-180 s and later shards 1.5-2x their steady time while new shapes compile. Other cards, from a
+first shard takes 27-55 s with host steps (100-190 s with device steps) and later shards 1.5-2x their steady time
+while new shapes compile. Other cards, from a
 benchmark that repeats one shard (it includes a per-pass integrity audit, so it runs at about half the production
 rate): B200 5,780 generated events/s, A100-40GB 4,600, A6000 4,120, RTX 3090 2,720, RTX 2080 Ti 2,110. Whole nodes
 from the same benchmark: ALCF Polaris (4 A100-40GB) 1,100 grid slots, ALCF Aurora (12 PVC tiles) 1,360. One job per
