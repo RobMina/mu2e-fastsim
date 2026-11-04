@@ -16,7 +16,7 @@ callers pick the set and pass its options down.
 | `strict_v4` | `tier1b_strict_v2/library.root`, sha256 `ebb015a7...7c7` (20 association-certified donors, generator-association-repair.md (branch `park/tier1b-library`)) | `topology_sidecar_strict_v2_v2.npz`, `templates_v3.npz` (library chords; near-miss census g4ref_v1 1-10 + odd g4ref_v2 21-219), each with its `.json` | `context`, `contain`, `point`, `topology`, `unvisited`, `nearmiss`, `chord`, `hard` | `extracted_v04` only |
 
 Paths are relative to `$CRVFS_DATA`. `--tier1b-dir DIR` points at a copy of the set's files, as the endpoints use.
-The device sampler (`--tier1b-backend jax`) implements `strict_v4` only and needs `--tier1b strict_v4`.
+The device sampler (`--tier1b-backend jax`) implements both sets ([device.md](device.md)).
 
 ## Evidence for root-coherent draws (2026-11-02)
 
@@ -48,8 +48,7 @@ Open with this default (limitations.md): NPc (coincidence clusters per event) is
 `strict_v4` 1.91); NDigis2 and NPulse2 (wide-range multiplicities) are worse (3.04 and 2.10, against 1.28 and 1.99);
 muon-descendant steps pile up at the bar ends (as with `strict_v4`). With one tier-1b seed the confirmation half showed
 digi, pulse and cluster yields +0.29 +- 0.16 % above `strict_v4`, flagging its occupancy histograms; a second seed gives
-+0.05 +- 0.15 %, so that was draw noise (two seeds differ by about 0.2 % on either half). Device tier 1b does not
-implement root-coherent draws.
++0.05 +- 0.15 %, so that was draw noise (two seeds differ by about 0.2 % on either half).
 
 **Library.** Rebuilt from the same 20 production donors with the step-tree root of every descendant row; its bins,
 crossings, descendant rows, showers and reach tables are identical row for row to the `strict_v4` library (only the
@@ -78,7 +77,7 @@ path reads the library and attaches the topology, then the template sidecar, in 
 | Caller | Default | Custom library |
 |---|---|---|
 | `tier1b-apply` | `strict_v5` (`--tier1b strict_v4`: the previous default) | `--library LIB` (placement only with the explicit flags `--crossing-context` ... `--chord-placement`) |
-| `runchain`, `e2e-bench` | `strict_v5` for extracted (`--tier1b strict_v4`; device tier 1b only with it); the named configurations have no set | `--library LIB` (no placement) |
+| `runchain`, `e2e-bench` | `strict_v5` for extracted (`--tier1b strict_v4`); the named configurations have no set | `--library LIB` (no placement) |
 | core `chain_point` | parameter `tier1b` 0 = `strict_v5`, 1 = `strict_v4`; named configurations are refused | - |
 | core kit `chain`, `regression` (EAF, in place) | `strict_v5` | - |
 | core `uva/chain_array_uva.sh`, `chain_node_uva.sh`, `aurora/chain_node_aurora.sh` | `T1B=strict_v5` (or `strict_v4`) | - |

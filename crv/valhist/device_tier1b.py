@@ -125,8 +125,10 @@ def replay(dev, st, pa, gen, opts, seed, check="strict"):
     except AssertionError:
         ht, dt = {}, {}
         hd = T._desc_for_crossings(st, dev.lib, dev.geom, ReplayRandom(rng.draws), context=True, contain=True,
-                                   point=True, topology=True, trace=ht, drop_unvisited=True, chord=True, hard=opts.get("hard", False))[0]
-        dd, *rest = dev.descendants(st, ReplayRandom(rng.draws), trace=dt, hard=opts.get("hard", False))
+                                   point=True, topology=True, trace=ht, drop_unvisited=True, chord=True,
+                                   hard=opts.get("hard", False), anchor=opts.get("anchor", False))[0]
+        dd, *rest = (dev.anchored(st, ReplayRandom(rng.draws), trace=dt) if opts.get("anchor")
+                     else dev.descendants(st, ReplayRandom(rng.draws), trace=dt, hard=opts.get("hard", False)))
         differences = {c: float(np.max(np.abs(hd[c].to_numpy() - dd[c].to_numpy()), initial=0))
                        for c in hd if hd[c].dtype.kind in "fiu"}
         print(json.dumps({"desc_max_abs": differences, "donor_exact": bool(np.array_equal(ht["xid"], dt["picks"][dt["ix"]])),
@@ -277,7 +279,7 @@ def main():
     for name in ("counters", "library-dir", "transport", "out"):
         p.add_argument("--" + name, required=True)
     p.add_argument("--shards", type=int, nargs="+", default=[22])
-    p.add_argument("--tier1b-set", choices=("strict_v4",), default="strict_v4")
+    p.add_argument("--tier1b-set", choices=("strict_v5", "strict_v4"), default="strict_v5")
     p.add_argument("--batch-size", type=int, default=2048)
     p.add_argument("--replay-only", action="store_true")
     p.add_argument("--replay-check", choices=("strict", "report"),

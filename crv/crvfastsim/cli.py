@@ -81,8 +81,7 @@ def build_parser():
                             help="stage C: world columns piece by piece (before 2026-10-24; the banded grid is the default)")
         if name in ("tier1b-apply", "runchain"):
             sp.add_argument("--tier1b-backend", choices=["numpy", "jax"], default="numpy",
-                            help="experimental device sampler of the strict_v4 set (pass --tier1b strict_v4); "
-                                 "NumPy remains the default")
+                            help="device sampler of the strict_v5 and strict_v4 sets; NumPy remains the default")
         if name in ("transport", "runchain"):
             sp.add_argument("--transport-backend", choices=["numpy", "jax"], default="numpy",
                             help="opt-in device transport (straight-line stages A/C, including extracted range_out)")

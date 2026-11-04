@@ -27,7 +27,6 @@ response or reco.
   +0.37 %, clusters +0.23 % against Geant4.
 - **Finite library**: about 3,100 effective donor trees carry the forward energy above 10 MeV on 2.5 M events
   (repeat rate 0.12); the library's finite size is not propagated into the errors.
-- The device tier 1b implements the previous default `strict_v4` only.
 
 Fixed by the root-coherent draws: the coincidence-cluster PE shape (A1 paired chi2/ndf 3.28 -> 1.09) and the cluster
 PE tail above 2000 PE (0.923 +- 0.014 -> 0.991 +- 0.014), and the adjacent-layer correlation of muon descendants
@@ -48,9 +47,9 @@ PE tail above 2000 PE (0.923 +- 0.014 -> 0.991 +- 0.014), and the adjacent-layer
 
 - Veto inefficiency: main keeps the C4 rule evaluation on a cached Run 1A selection (`crvfastsim.veto`). The full
   frame-level veto closure is on branch `park/veto-closure`; it came out about 21 % low and is not maintained.
-- Device tier 1b is opt-in; NumPy stays the default and the reference. Its independent-stream step shapes pass the deck
-  rule at float32 and float64 (0 of 21 flagged with a reseeded NumPy floor; bar passes through the floor), but
-  downstream of it there is only a 500 k diagnostic; see [`device.md`](device.md#validation-status).
+- Device tier 1b is opt-in; NumPy stays the default and the reference. For both strict sets its fixed-uniform replay
+  is exact at float64 and its independent-stream step shapes pass the deck rule at float32 and float64 (0 of 21 flagged
+  with a reseeded NumPy floor on 5 M events); see [`device.md`](device.md#validation-status).
 - The chain is hybrid (host tables between stages), not fully device resident: the tier-1b output and the response and
   SiPM preparation still go through the host, and full-residency throughput has not been measured.
 - Memory caps cover the NumPy chain only. With `CRVFS_PREPARED_LIBRARY_CACHE` set it completes under a 4 GB host cap
