@@ -66,7 +66,7 @@ device replaces at the same event rate (definitions, per-GPU tables and validity
 
 | Chain | One CPU core | One GPU (default precision) |
 |---|---:|---:|
-| CRV, cached CRY primaries to coincidence clusters | 40 | 370-860 (V100 to RTX PRO 6000; MIG slice 790) |
+| CRV, cached CRY primaries to coincidence clusters | 40 | 280-810 (V100 to RTX PRO 6000; MIG slice 640-700) |
 | tracker, cached CRY primaries to line fits | 149 | 700 (A100); 1,090 (MIG slice) |
 | beam, DS entrance to target stops (49-foil design; stock starts at TS3) | not measured | 1,290 (MIG slice), 5,470 (A100) |
 
