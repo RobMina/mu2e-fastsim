@@ -25,6 +25,7 @@ were agreed before the comparisons were run. What is open or not validated: [lim
 | beam | stop fraction under much finer Geant4 steps, same muons | refined / stock 1.0016 +- 0.0020 nominal, 1.0019 +- 0.0011 moved | pass |
 | beam | stop fraction vs refined-step Geant4 | ratio 0.9927 +- 0.0058 nominal; 0.9934 +- 0.0031 moved (2.15 sigma) | pass nominal, **fail** moved |
 | core | JAX loss sampler vs NumPy; device CRY vs stock CRY (5 M events each) | within criteria; accepted rate 1.00014 +- 0.00063, no spectrum flag in 2,534 bins | pass |
+| CRV | the chain on device-CRY primaries vs the same chain on the stock gen tables, 5 M events each, per live second | digis 1.0006 +- 0.0033, pulses 1.0004 +- 0.0033, clusters 0.9989 +- 0.0030; cluster PE shape chi2/ndf 0.98 | pass |
 | CRV | device transport + device tier 1b (`strict_v5`, float32) vs the host chain, 5 M held-out events, paired per-shard statistic | 0 of 133 histograms flagged end to end, 0 of 155 with stock response | pass |
 | electrons | dE/dx vs ESTAR | radiative 0.6 %, collision 1 % | pass |
 | electrons | 1 X0 tungsten, 105 MeV e-, vs Geant4 | loss chi2/ndf 1.0-1.3; exit angle 1.0-1.3; stopped 18.28 vs 18.41 +- 0.09 %; reflected 0.336 vs 0.347 +- 0.013 % (form factor only above 100 MeV, the core default) | pass |
