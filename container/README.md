@@ -5,7 +5,10 @@ JAX as the Polaris venv); `gpu` with the pip CUDA 12 wheels minus the ones no ke
 override with `TRIM=""`; cuDNN and cuFFT stay, the JAX CUDA plugin will not start without them), `cpu` without CUDA (FermiGrid,
 local, CI, CPU endpoints; 234 MB); the three packages installed from git-tracked sources, and the two public Offline files the code reads
 (`singlePEWaveform_v3.txt`, `crv_counters_extracted_v04.txt`, Offline v13_39_00) under `/opt/offline_data`
-(`MU2E_SEARCH_PATH`). No CVMFS. No Mu2e-internal data: inputs and outputs are bind-mounted at run time.
+(`MU2E_SEARCH_PATH`), and the public CRY 1.7 sea-level table `cosmics_0.data` that device CRY reads (`runchain --jax`
+without gen tables) under `/opt/cry/data`, with the CRY licence and the additional LLNL/DOE notice under
+`/opt/cry/share/licenses` (`fetch_cry_data.sh`: the source archive, the table and the notice are SHA256-pinned; nothing
+is compiled; 3.3 MB). No CVMFS. No Mu2e-internal data: inputs and outputs are bind-mounted at run time.
 
 ```bash
 container/build.sh /path/to/mu2efastsim.sif          # on a machine with apptainer + user namespaces (Mu2e GPVM)
