@@ -47,16 +47,17 @@ PE tail above 2000 PE (0.923 +- 0.014 -> 0.991 +- 0.014), and the adjacent-layer
 
 - Veto inefficiency: main keeps the C4 rule evaluation on a cached Run 1A selection (`crvfastsim.veto`). The full
   frame-level veto closure is on branch `park/veto-closure`; it came out about 21 % low and is not maintained.
-- Device tier 1b is opt-in; NumPy stays the default and the reference. For both strict sets its fixed-uniform replay
-  is exact at float64 and its independent-stream step shapes pass the deck rule at float32 and float64 (0 of 21 flagged
-  with a reseeded NumPy floor on 5 M events); see [`device.md`](device.md#validation-status).
+- With `--jax`, `runchain` runs the transport and tier 1b on the device by default (extracted configuration); NumPy
+  stays the reference and the default on the CPU. The device chain is validated against the NumPy chain and Geant4 on
+  the 5 M held-out events ([`device.md`](device.md#validation-status)); its throughput gain is steady-state only (fixed
+  cost about 10 s per process with a warm compilation cache).
 - The chain is hybrid (host tables between stages), not fully device resident: the tier-1b output and the response and
   SiPM preparation still go through the host, and full-residency throughput has not been measured.
 - Memory caps cover the NumPy chain only. With `CRVFS_PREPARED_LIBRARY_CACHE` set it completes under a 4 GB host cap
   (Slurm `--mem=4G`), identical per seed at every stage to the uncapped run on ten held-out shards, not on a full
   campaign. The device chain fits a 10.66 GB preallocated XLA pool (peak 7.64 GB, float32, three passes of one shard
-  on an RTX PRO 6000 MIG slice), but its host memory is not capped: RSS reaches 16 GB, partly a host copy of the
-  library in device mode (+2.3 GB).
+  on an RTX PRO 6000 MIG slice), but its host memory is not capped: MaxRSS 12-17 GB in production runs (11 shards, `strict_v5`), partly a host copy
+  of the library in device mode (+2.3 GB).
 - Device transport: single-scattering tails, sliced MSC and below-plane variants raise.
 - The out-of-time background is resampled from KPP data (`crvfastsim.reco.background`); it is not simulated.
 - Native and device CRY generation are opt-in; the default reads cached CRY primary tables (gen tables).

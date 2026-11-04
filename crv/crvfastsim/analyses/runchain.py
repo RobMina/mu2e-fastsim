@@ -167,6 +167,21 @@ def _load_setup(rc, cfg, gdml_path, explicit_gdml, spec, calib, deviation, jax, 
                 conditions_metadata=conditions_metadata), timers
 
 
+DEVICE_TIER1B_SETS = ("strict_v5", "strict_v4")
+
+
+def resolve_backends(jax, transport_backend, tier1b_backend, rc, spec, below, kw):
+    """Backends of transport and tier 1b. "auto" (the runchain CLI default) is the device backend when the chain runs
+    on JAX (--jax) and the device twin covers the configuration: the extracted run configuration with the straight-line
+    world (no below-plane material or MSC), a strict asset set for tier 1b and no prefetch; NumPy otherwise."""
+    device = bool(jax) and rc.name == runconfig.DEFAULT
+    if transport_backend == "auto":
+        transport_backend = "jax" if device and below is None and not kw.get("below_msc") else "numpy"
+    if tier1b_backend == "auto":
+        tier1b_backend = "jax" if device and spec.name in DEVICE_TIER1B_SETS and not kw.get("prefetch") else "numpy"
+    return transport_backend, tier1b_backend
+
+
 def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax=False, max_events=None, seed=1,
         compare=None, counters=None, reco_cpu=False, emit=None, run_config=None, window=None, benchmark=None,
         prepared=None,
@@ -225,6 +240,8 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
     conditions_metadata = payload.get("conditions_metadata",
                                       {"status": "unverified_legacy", "calib": calib, "deviation": deviation})
     out_cl, n_gen = [], 0
+    kw["transport_backend"], tier1b_backend = resolve_backends(jax, kw.get("transport_backend", "numpy"), tier1b_backend,
+                                                               rc, spec, below, kw)
     device_transport = None
     range_out = rc.range_out and not kw.get("legacy_transport")
     if kw.get("transport_backend", "numpy") == "jax":
@@ -245,7 +262,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         raise ValueError(f"unknown tier1b backend {tier1b_backend!r}")
     if tier1b_backend == "jax":
         from ..tier1b_jax import DeviceRandom, DeviceTier1b
-        if spec.name not in ("strict_v5", "strict_v4") or rc.name != runconfig.DEFAULT:
+        if spec.name not in DEVICE_TIER1B_SETS or rc.name != runconfig.DEFAULT:
             raise ValueError("device tier1b supports the extracted strict_v5 and strict_v4 sets only")
         if kw.get("prefetch"):
             raise ValueError("device tier1b prefetch is not certified")
@@ -362,8 +379,8 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
     cl_type = np.concatenate([o["cl_type"] for o in out_cl]) if out_cl else np.zeros(0, int)
     res = {"generated_events": n_gen, "timers": T, "conditions": conditions_metadata,
            "tier1b": spec.describe(),
-           **({"transport_backend": "jax"} if device_transport is not None else {}), "range_out": bool(range_out),
-           **({"tier1b_backend": "jax"} if device_tier1b is not None else {}),
+           "transport_backend": "jax" if device_transport is not None else "numpy", "range_out": bool(range_out),
+           "tier1b_backend": "jax" if device_tier1b is not None else "numpy",
            "run_config": rc.name, "window": list(cfg.window), "time_window": time_window,
            "clusters_per_generated": {stype_name.get(int(k), str(k)): float((cl_type == k).sum() / n_gen)
                                       for k in np.unique(cl_type)}}

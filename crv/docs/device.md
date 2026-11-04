@@ -1,16 +1,17 @@
 # Device (JAX) backends of the CRV chain
 
 The response (photons, SiPM charges), waveforms and reco have had JAX twins since the first port (`runchain --jax`).
-This page covers the two later opt-in device backends for the steps: **transport** (`--transport-backend jax`) and
-**tier 1b** (`--tier1b-backend jax`). NumPy stays the default for both;
-JAX is optional and imported only when one of them is requested. The transport implements the extracted default model
+This page covers the two later device backends for the steps: **transport** (`--transport-backend jax`) and
+**tier 1b** (`--tier1b-backend jax`). `runchain` uses both by default when it runs on JAX (`--jax`, backends `auto`)
+on the extracted configuration; `--transport-backend numpy --tier1b-backend numpy` keeps the host path, which stays
+the reference and the default without `--jax` and for `transport`, `tier1b-apply` and `e2e-bench`. JAX is imported
+only when a device backend is used. The transport implements the extracted default model
 (`range_out` stage C); the device tier 1b implements both strict sets, the default `strict_v5` (root-coherent draws)
 and the previous default `strict_v4` (hard-muon draws). Neither changes the reference physics or the asset sets.
 
 ```bash
 python3 -m crvfastsim transport gen.root --stage C --gdml world.gdml --transport-backend jax --outdir device_steps
-python3 -m crvfastsim runchain gen.root --gdml world.gdml --calib calib.csv \
-  --jax --transport-backend jax --tier1b-backend jax --outdir device_chain
+python3 -m crvfastsim runchain gen.root --gdml world.gdml --calib calib.csv --jax --outdir device_chain
 ```
 
 `e2e-bench` and `tier1b-apply` accept the same options.
@@ -74,6 +75,7 @@ python3 -m crvfastsim runchain gen.root --gdml world.gdml --calib calib.csv \
 | tier 1b `strict_v5`, fixed-uniform replay, float32 | same 100 shards | not exact by construction: 80 shards change a discrete outcome; 978 of 7.97 M steps change their (event, bar) cell | diagnostic |
 | tier 1b `strict_v5`, independent streams, float64 | same 100 shards | descendant steps +0.24 +- 0.25 % paired; 0 of 21 shapes flagged: bar 21.3, t 0.32, t2 0.40, lt 0.29, posx 0.41, NStep 0.96 (floor 19.9, 0.43, 0.38, 0.33, 0.59, 0.94); EX adjacent-layer descendant correlation 0.43 +- 0.03 (NumPy 0.42 +- 0.04) | pass (deck rule with floor) |
 | tier 1b `strict_v5`, independent streams, float32 | same 100 shards | descendant steps -0.11 +- 0.23 % paired; 0 of 21 flagged: bar 24.9, t 0.42, t2 0.44, lt 0.28, posx 0.64, NStep 1.04 (same floor); correlation 0.41 +- 0.03 | pass (deck rule with floor) |
+| downstream, both device backends, `strict_v5`, float32: device steps through the fast response (E2E) and the stock response (A1) | 100 held-out shards, 5 M generated | paired per-shard statistic (family-wise 1 % limits): against the NumPy chain 0 of 133 (E2E) and 0 of 155 (A1) histograms flagged on either half; cluster PE 0.95 / 1.16, NStep 1.24, step x 1.23, NDigis 0.79 / 1.03; above 2000 PE 0.994 +- 0.012 / 0.999 +- 0.012; digis -0.12 +- 0.13 %. Against Geant4 (A1): cluster PE 1.23 (NumPy 1.09), above 2000 PE 0.991 +- 0.015 (0.991 +- 0.014), NStep 2.33 (2.20), NDigis2 1.27 (3.04), NPc 1.84 (2.02); E2E cluster PE 1.05 (NumPy 1.50, a second NumPy tier-1b seed 0.99) | pass |
 | downstream, both device backends (`strict_v4`) | 500 k generated | clusters -0.40 +- 0.32 %, pulses -0.32 +- 0.39 % paired; PE, time and cluster y unflagged | diagnostic |
 
 The deck rule (`valhist/deck_rule.py`) is the one of the validation deck: errors scaled by the NStep multiplicity for
@@ -83,10 +85,28 @@ Poisson errors for every shape, which flagged t, t2, lt and posx at 14.6-41.3. b
 above 2, but NumPy against reseeded NumPy (13.87, threshold 41.61) is further apart than the device at float64, and at
 float32 the paired chi2/ndf is 0.95 against 0.69 for the floor, so no shape residual is seen.
 
-NumPy stays the default and the reference: the device tier 1b passes at the step level, and downstream of it the only
-comparison is the 500 k diagnostic above.
+The NumPy backends stay the reference. With `strict_v5` the device chain is indistinguishable from the NumPy chain
+under the deck's paired rule on 5 M events, and against Geant4 its histograms move within the spread of two NumPy
+tier-1b seeds.
 
-## Timing (one A100-80GB, warm)
+## Production rates, `strict_v5` (runchain, 11 shards of 50 k generated, warm compilation cache, float32)
+
+Steady = shards 2-11; whole = the 11-shard process including setup (about 35 s on these nodes) and the first shard. Two
+jobs per card; generated events per second.
+
+| GPU | NumPy steps (steady / whole) | device tier 1b only | device transport + tier 1b (default with `--jax`) |
+|---|---:|---:|---:|
+| RTX PRO 6000 (full card) | 16,000-17,200 / 7,200-7,650 | 18,600-19,300 / 7,600-7,700 | 19,700-20,900 / 6,800-7,100 |
+| RTX PRO 6000 MIG 1g.24gb | 13,600-14,800 / 6,900-7,500 | 15,400-15,700 / 7,100-7,300 | 16,400-17,200 / 6,600-7,000 |
+| A100-SXM4-80GB | 8,600-8,800 / 3,700-3,900 | 8,700-8,900 / 3,600 | 10,100-10,800 / 3,500 |
+
+The device steps gain 17-25 % in steady state (device tier 1b alone 6-15 %) but pay a fixed cost per process: the device transport kernel takes
+about 7 s to load from a warm persistent cache (57-60 s to compile without one) and the device tier 1b 2-3 s to
+prepare. At 11 shards per process the whole job is 0-10 % slower than with NumPy steps; it gains from about 20-25
+shards per process. Without a persistent compilation cache the first shard takes 100-190 s with device steps against
+30-55 s with NumPy steps. Host memory: MaxRSS 12-17 GB with the device steps against 9-11 GB.
+
+## Timing (one A100-80GB, warm, `strict_v4`)
 
 Ten 50 k-event shards, cold pass plus three warm passes per arm, both arms with GPU response and reco; only the
 transport and tier-1b backends differ. Medians for 500 k generated events, wall seconds including I/O, context audits

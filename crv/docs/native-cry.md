@@ -67,6 +67,14 @@ on-device even when downstream transport returns to NumPy. Core's
 `chain_point gen_set=5` selects it; `gen_set=4` stays the CPU reference. Device and
 CPU-native receipts are distinct and cannot be merged as one generator arm.
 
+Validation on 5 M events (2026-11-03): device CRY against the stock gen tables, accepted rate 1.00014 +- 0.00063
+with no spectrum flag (core `docs/device-cry.md`). Through the chain (device transport and tier 1b `strict_v5`, fast
+response), 100 device-CRY shards against the same chain on the 100 stock shards, independent samples per live
+second: digis 1.0006 +- 0.0033, pulses 1.0004 +- 0.0033, clusters 0.9989 +- 0.0030 (EX 1.003 +- 0.003, T1 0.988 +-
+0.008, T2 0.995 +- 0.007, M 0.985 +- 0.011); cluster PE shape chi2/ndf 0.98 (49 bins), clusters per event 2.16 (5
+bins). Device CRY stays opt-in: the production image carries no CRY table (`CRYDATAPATH` must point at the pinned
+`cosmics_0.data`), and one native invocation generates one chunk of at most 2**20-1 events.
+
 Cold JAX compilation can dominate small jobs. Report synchronized warm sampling,
 selected-buffer transfer/packing, cold initialization and whole-chain wall time
 separately; neither a cold small-N run nor a GPU allocation establishes speed-up.
