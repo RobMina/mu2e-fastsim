@@ -4,7 +4,7 @@ set -euo pipefail
 : "${CRV_TIER1B_ROOT:?}" "${CRV_TIER1B_CODE:?}" "${CRV_TIER1B_LABEL:?}"
 R=$CRV_TIER1B_ROOT
 C=$CRV_TIER1B_CODE
-H=${CRV_TIER1B_INPUTS:?input root with offline/, tier1b_strict_v2/ and the saved transport tables}
+H=${CRV_TIER1B_INPUTS:?input root with offline/, tier1b_strict_v5/ and the saved transport tables}
 module load apptainer
 cd "$C/crv"
 apptainer exec --nv --cleanenv \

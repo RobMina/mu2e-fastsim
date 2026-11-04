@@ -16,7 +16,7 @@ This repository holds code only: no Mu2e-internal conditions, tables, data or re
 | Part | Default | State |
 |---|---|---|
 | transport (tier 1a) | stage C with `range_out`, extracted_v04 | V0, V1 pass; device twin opt-in, validated |
-| tier 1b (secondaries) | asset set `strict_v5` (root-coherent draws; `strict_v4` selectable) | step yields within errors; layer correlation and cluster-PE shape closed; NPc and wide-range multiplicities open |
+| tier 1b (secondaries) | asset set `strict_v5` (root-coherent draws) | step yields within errors; layer correlation and cluster-PE shape closed; NPc and wide-range multiplicities open |
 | response (photons, SiPM) | NumPy; JAX with `--jax` | V4 pass on CPU and GPU (A100, PVC, B200, T4) |
 | waveforms, pulses, coincidences | NumPy; JAX with `--jax` | V-R1..V-R5 pass; fast response + reco on fast steps 0/133 histograms flagged vs stock |
 | whole chain vs Geant4 + stock | | 5 M held-out events, paired per-shard statistic: cluster PE chi2/ndf 1.09 (fast steps), 1.50 end to end; clusters above 2000 PE 0.991 +- 0.014; counts within 0.4 %; NPc, wide-range multiplicities and descendant steps at the bar ends open |
@@ -38,7 +38,7 @@ cp site.env.example site.env        # fill M2FS_INPUTS (verified input release),
 source site.env
 python3 -m pytest -q -p no:cacheprovider crv/tests          # JAX tests skip without JAX
 G="$CRVFS_DATA/g4ref_v2_tables/gen.001400_00000022.root"; GEOM="$CRVFS_DATA/geometry"
-python3 -m crvfastsim runchain "$G" --tier1b-dir "$CRVFS_DATA/tier1b_strict_v2" \
+python3 -m crvfastsim runchain "$G" --tier1b-dir "$CRVFS_DATA/tier1b_strict_v5" \
   --gdml "$GEOM/mu2e_extracted_v04.gdml" --calib "$GEOM/crvcalib_sim_best_v1_5_run1400.csv" \
   --deviation "$GEOM/crvphoton_sim_best_v1_5_run1400.csv" --max-events 1000 --seed 22 --outdir "$M2FS_DATA/crv-smoke"
 ```

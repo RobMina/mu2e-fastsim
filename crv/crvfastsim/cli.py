@@ -83,7 +83,7 @@ def build_parser():
             chain = name == "runchain"
             sp.add_argument("--tier1b-backend", choices=["numpy", "jax"] + (["auto"] if chain else []),
                             default="auto" if chain else "numpy",
-                            help="tier-1b sampler: jax = the device sampler of the strict_v5 and strict_v4 sets"
+                            help="tier-1b sampler: jax = the device sampler of the strict_v5 set"
                                  + ("; auto (default): jax with --jax on the extracted configuration, else numpy"
                                     if chain else " (default numpy)"))
         if name in ("transport", "runchain"):

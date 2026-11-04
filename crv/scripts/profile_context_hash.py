@@ -20,7 +20,7 @@ def main():
     context = prepare(calib=str(root / "data/geometry/crvcalib_sim_best_v1_5_run1400.csv"),
                       deviation=str(root / "data/geometry/crvphoton_sim_best_v1_5_run1400.csv"),
                       gdml=str(root / "data/geometry/mu2e_extracted_v04.gdml"),
-                      tier1b_set="strict_v4", tier1b_dir=str(root / "tier1b_strict_v2"))
+                      tier1b_set="strict_v5", tier1b_dir=str(root / "tier1b_strict_v5"))
     state = (context.signature, dict(context.payload), context.propagation,
              context.template, context.template_args)
     samples = {workers: [] for workers in (1, 2, 4, 8)}

@@ -6,8 +6,8 @@ This page covers the two later device backends for the steps: **transport** (`--
 on the extracted configuration; `--transport-backend numpy --tier1b-backend numpy` keeps the host path, which stays
 the reference and the default without `--jax` and for `transport`, `tier1b-apply` and `e2e-bench`. JAX is imported
 only when a device backend is used. The transport implements the extracted default model
-(`range_out` stage C); the device tier 1b implements both strict sets, the default `strict_v5` (root-coherent draws)
-and the previous default `strict_v4` (hard-muon draws). Neither changes the reference physics or the asset sets.
+(`range_out` stage C); the device tier 1b implements the default set `strict_v5` (root-coherent draws; the previous
+default `strict_v4` and its device hard-muon draws are on branch `park/tier1b-strict-v4`). Neither changes the reference physics or the asset sets.
 
 ```bash
 python3 -m crvfastsim transport gen.root --stage C --gdml world.gdml --transport-backend jax --outdir device_steps
@@ -39,8 +39,8 @@ python3 -m crvfastsim runchain gen.root --gdml world.gdml --calib calib.csv --ja
 
 ## Tier-1b contract
 
-- Sets `strict_v5` and `strict_v4` (context, contain, point, topology, unvisited, near-miss, chord, showers, plus the
-  root-coherent draws of `strict_v5` or the hard-muon draws of `strict_v4`). Mirror, translate, follow, link and
+- Set `strict_v5` (context, contain, point, topology, unvisited, near-miss, chord, showers and root-coherent draws).
+  Mirror, translate, follow, link and
   stop-product sampling are not ported.
 - Preparation builds immutable sorted support and CSR donor histories from the checked library and sidecars; every
   bound comes from the whole library, never from a validation shard. Missing positive-probability support raises;
@@ -49,10 +49,6 @@ python3 -m crvfastsim runchain gen.root --gdml world.gdml --calib calib.csv --ja
   fewer than 20 context donors; whole histories are kept. Unvisited rows are sampled separately on the finest of five
   position levels with at least 20 donors. Near-miss selection excludes whole events with a fast crossing; showers draw
   reach by |PDG| and kinetic energy, then a complete shower.
-- Hard draws (v4): each fast muon's ordered group/layer pattern is encoded in two base-17 integers with the momentum
-  class of its first crossing; exact lookup gives the catalogue and rate (sparse keys use the class/count rate, more
-  than 24 crossings have zero rate); other crossings redraw while their donor is hard, for at most 50 rounds, as the
-  NumPy sampler does. Residual hard picks are reported.
 - Root-coherent draws (`strict_v5`): each fast crossing draws in its (bin, context, next-crossing symbol) cell, else
   its (bin, context) cell, else its bin, as `tier1b._support_next`; the step trees anchored on the picks are expanded by
   CSR and each row goes to the fast crossing at its library distance along the muon, else the first one with its
@@ -67,10 +63,10 @@ python3 -m crvfastsim runchain gen.root --gdml world.gdml --calib calib.csv --ja
 | Check | Sample | Result | Verdict |
 |---|---|---|---|
 | transport, JAX vs NumPy | 100 held-out shards, 5 M generated | steps 1,330,469 vs 1,329,978, +0.037 +- 0.047 % (same-event clustered); 21 step shapes unflagged; crossings and repeats exact; V1 passes in EX/T1/T2/M against NumPy and stock | pass |
-| tier 1b `strict_v4`, fixed-uniform replay, float64 | same 100 shards | every step and ancestry exact (max field difference 3.6e-12) | pass |
-| tier 1b `strict_v4`, fixed-uniform replay, float32 | same 100 shards | not exact by construction: entry positions within 1e-3 mm; 10 shards change a discrete outcome | diagnostic |
-| tier 1b `strict_v4`, independent streams, float64 | same 100 shards | steps 7,977,547 vs 7,958,555, +0.24 +- 0.39 % paired; 0 of 21 shapes flagged: bar 8.85, t 0.49, t2 0.46, lt 0.42, posx 0.53 (floor 13.87, 0.43, 0.42, 0.22, 0.53) | pass (deck rule with floor) |
-| tier 1b `strict_v4`, independent streams, float32 | same 100 shards | steps +0.19 +- 0.40 % paired; 0 of 21 shapes flagged: bar 18.96, t 0.43, t2 0.38, lt 0.30, posx 0.47 (same floor) | pass (deck rule with floor) |
+| tier 1b `strict_v4` (parked), fixed-uniform replay, float64 | same 100 shards | every step and ancestry exact (max field difference 3.6e-12) | pass |
+| tier 1b `strict_v4` (parked), fixed-uniform replay, float32 | same 100 shards | not exact by construction: entry positions within 1e-3 mm; 10 shards change a discrete outcome | diagnostic |
+| tier 1b `strict_v4` (parked), independent streams, float64 | same 100 shards | steps 7,977,547 vs 7,958,555, +0.24 +- 0.39 % paired; 0 of 21 shapes flagged: bar 8.85, t 0.49, t2 0.46, lt 0.42, posx 0.53 (floor 13.87, 0.43, 0.42, 0.22, 0.53) | pass (deck rule with floor) |
+| tier 1b `strict_v4` (parked), independent streams, float32 | same 100 shards | steps +0.19 +- 0.40 % paired; 0 of 21 shapes flagged: bar 18.96, t 0.43, t2 0.38, lt 0.30, posx 0.47 (same floor) | pass (deck rule with floor) |
 | tier 1b `strict_v5`, fixed-uniform replay, float64 | same 100 shards | every step and ancestry exact (max field difference 3.6e-12) | pass |
 | tier 1b `strict_v5`, fixed-uniform replay, float32 | same 100 shards | not exact by construction: 80 shards change a discrete outcome; 978 of 7.97 M steps change their (event, bar) cell | diagnostic |
 | tier 1b `strict_v5`, independent streams, float64 | same 100 shards | descendant steps +0.24 +- 0.25 % paired; 0 of 21 shapes flagged: bar 21.3, t 0.32, t2 0.40, lt 0.29, posx 0.41, NStep 0.96 (floor 19.9, 0.43, 0.38, 0.33, 0.59, 0.94); EX adjacent-layer descendant correlation 0.43 +- 0.03 (NumPy 0.42 +- 0.04) | pass (deck rule with floor) |

@@ -59,7 +59,7 @@ def main():
     for name in ("counters", "library-dir", "transport", "out"):
         p.add_argument("--" + name, required=True)
     p.add_argument("--shards", type=int, nargs="+", default=[22])
-    p.add_argument("--tier1b-set", choices=("strict_v3", "strict_v4"), default="strict_v4")
+    p.add_argument("--tier1b-set", choices=("strict_v5",), default="strict_v5")
     p.add_argument("--seed", type=int, default=2000, help="second seed component of the reseeded arm")
     run(p.parse_args())
 

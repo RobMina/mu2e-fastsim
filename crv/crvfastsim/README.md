@@ -116,9 +116,8 @@ resampled from G4 CrvStep tables of **training** shards and checked on others.
   callers (`tier1b-apply`, `runchain`, `e2e-bench`, the endpoint kits) use `strict_v5`: the association-certified
   library with step-tree roots, crossing context, endpoint containment, point and topology placement,
   never-visited-layer and near-miss templates from the v3 sidecar, chord placement of the same-bar descendant steps,
-  and root-coherent draws (a delta ray and its cascade stay together along the fast muon within a module). `strict_v4`
-  (the previous default: whole-muon draws of hard library muons instead) stays selectable with `--tier1b strict_v4`;
-  other option combinations run with `tier1b-apply --library` and explicit placement flags (docs/tier1b-default.md). The named run configurations have no library of their own and need `--library`.
+  and root-coherent draws (a delta ray and its cascade stay together along the fast muon within a module). The previous
+  default `strict_v4` (whole-muon draws of hard library muons) is on branch `park/tier1b-strict-v4`; other option combinations run with `tier1b-apply --library` and explicit placement flags (docs/tier1b-default.md). The named run configurations have no library of their own and need `--library`.
 - *Build*: `tier1b-build crvsteps.*.root --gen gen.*.root --out lib.root`, one file at a time (a 5-file production
   build peaks at 5.2 GB). Production dts (`art/dump_prod_as.sh`) have no gen stream: pass `--generated N`
   (500 k per file, `dh.gencount`) and gen tables of the same CRY configuration for the reach denominator.

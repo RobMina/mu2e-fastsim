@@ -3,14 +3,13 @@ digis -> pulses -> clusters (crvfastsim/chain.py), with the cost of every stage.
 files of the stock chain on the same shards) it reports clusters per generated event per sector type, fast vs stock.
 
     runchain gen.<shard>.root [...] --calib crvcalib.csv [--deviation crvphoton.csv] [--jax]
-             [--tier1b strict_v5|strict_v4 [--tier1b-dir DIR] | --library lib.root]
+             [--tier1b strict_v5 [--tier1b-dir DIR] | --library lib.root]
              [--reco-cpu] [--max-events N] [--compare ref.<shard>.root ...] [--emit shard.json] --outdir DIR
     runchain-merge shard*.json --outdir DIR      (node totals: events, clusters per sector type, rates)
 
 Tier 1b (crvfastsim.tier1b_assets): default asset set strict_v5 for extracted_v04 (strict library with step-tree roots,
 crossing context, containment, point and topology placement, v3 templates, chord placement, root-coherent draws);
-strict_v4 (hard-muon draws instead of root-coherent ones) is the previous default; the named run configurations have no
-set and need --library, a custom library sampled without placement options.
+the named run configurations have no set and need --library, a custom library sampled without placement options.
 """
 import json
 import os
@@ -167,7 +166,7 @@ def _load_setup(rc, cfg, gdml_path, explicit_gdml, spec, calib, deviation, jax, 
                 conditions_metadata=conditions_metadata), timers
 
 
-DEVICE_TIER1B_SETS = ("strict_v5", "strict_v4")
+DEVICE_TIER1B_SETS = ("strict_v5",)
 
 
 def resolve_backends(jax, transport_backend, tier1b_backend, rc, spec, below, kw):
@@ -263,7 +262,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
     if tier1b_backend == "jax":
         from ..tier1b_jax import DeviceRandom, DeviceTier1b
         if spec.name not in DEVICE_TIER1B_SETS or rc.name != runconfig.DEFAULT:
-            raise ValueError("device tier1b supports the extracted strict_v5 and strict_v4 sets only")
+            raise ValueError("device tier1b supports the extracted strict_v5 set only")
         if kw.get("prefetch"):
             raise ValueError("device tier1b prefetch is not certified")
         if tier1b_context is not None and prepared is None:

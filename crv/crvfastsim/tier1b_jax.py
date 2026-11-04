@@ -1,5 +1,5 @@
-"""Device tier-1b sampler of the strict sets (strict_v4 hard-muon draws, strict_v5 root-coherent draws); the NumPy
-sampler in tier1b.py is the reference."""
+"""Device tier-1b sampler of the strict set strict_v5 (root-coherent draws); the NumPy sampler in tier1b.py is the
+reference."""
 from __future__ import annotations
 
 import functools
@@ -523,9 +523,6 @@ class DeviceTier1b:
         from . import tier1b_csr_jax as csr
         self.main_csr = csr.prepare(self.ld.xid.to_numpy(), len(self.lx), ~self.ld.uv.to_numpy())
         self.uv_csr = csr.prepare(self.uvd.xid.to_numpy(), len(lib["uvxing"]["entry"]))
-        from . import tier1b_hard_jax as hard
-        self.hard = hard.prepare(lib["hard"]) if "hard" in lib else None
-        self.hard_patterns, self.hard_choose, self.hard_redraw = dprec.jit(hard.patterns), dprec.jit(hard.choose), dprec.jit(hard.redraw)
         self.csr_layout = dprec.jit(csr.layout)
         self.main_block, self.uv_block = dprec.jit(_main_block), dprec.jit(_uv_block)
         self.main_select = dprec.jit(_main_select)
@@ -543,11 +540,11 @@ class DeviceTier1b:
             self.anchor_block = dprec.jit(functools.partial(_anchor_block, max_dk=max_dk))
             self.entered_block = dprec.jit(_entered_block)
         jax.block_until_ready((self.support, self.g, self.dld, self.dlx, self.duvd, self.xgeo, self.uvsupport,
-                               self.metadata_constants, self.main_csr, self.uv_csr, self.hard, self.anchor))
+                               self.metadata_constants, self.main_csr, self.uv_csr, self.anchor))
         self.preparation_s = time.perf_counter() - tick
         self.device_bytes = sum(a.nbytes for a in jax.tree.leaves((self.support, self.g, self.dld, self.dlx,
                                                                   self.duvd, self.xgeo, self.uvx, self.uvsupport, self.metadata_constants,
-                                                                  self.main_csr, self.uv_csr, self.hard, self.anchor)))
+                                                                  self.main_csr, self.uv_csr, self.anchor)))
         self.last = {}
 
     def device_metadata(self, arrays):
@@ -618,47 +615,18 @@ class DeviceTier1b:
                            for c in T.KEY + ["lsp", "pdg", "parent", "src", "t0", "t1", "p1", "len", "edep"]})
         return {c: np.concatenate(a)[:total] for c, a in chunks.items()}
 
-    def _hard_picks(self, selection, rng):
-        if self.hard is None:
-            raise ValueError("device hard draw needs attach_hard")
-        _, j = _jax()
-        x = selection["metadata"][0]
-        pat = self.hard_patterns(x, self.metadata_constants, self.hard)
-        nmu, size = int(pat["nmu"]), len(x["bar"])
-        if nmu == 0:
-            return selection, dict(fast_muons=0, hard=0, expected=0., no_key=0., redrawn=0, left_hard=0)
-        u = j.pad(j.asarray(rng.random(nmu)), (0, size - nmu))
-        v = j.pad(j.asarray(rng.random(nmu)), (0, size - nmu))
-        picks, redo, info = self.hard_choose(self.hard, x, pat, selection["picks"], u, v)
-        redrawn = int(redo.sum())
-        for _ in range(50):
-            active = int(redo.sum())
-            if not active:
-                break
-            u = j.pad(j.asarray(rng.random(active)), (0, _bucket(active) - active))
-            picks, redo = self.hard_redraw(self.hard, self.support["order"], picks,
-                                            selection["lo"], selection["hi"], redo, u, active)
-        selection = dict(selection, picks=picks, plan=self.csr_layout(self.main_csr, picks, x["valid"]))
-        info = {k: float(v) if k in ("expected", "no_key") else int(v) for k, v in info.items()}
-        info.update(redrawn=redrawn, left_hard=int(redo.sum()))
-        return selection, info
-
-    def descendants(self, fx, rng, trace=None, hard=False):
+    def descendants(self, fx, rng, trace=None):
         _, j = _jax()
         from .tier1b_metadata_jax import crossing_arrays
         arrays = crossing_arrays(fx)
         n = len(fx)
         uniforms = j.pad(j.asarray(rng.random(n)), (0, _bucket(n) - n))
         selection = self.plan_descendants(arrays, uniforms)
-        if hard:
-            selection, hinfo = self._hard_picks(selection, rng)
         val = self._collect_blocks(selection, "main")
         ix, rows = val["ix"], val["rows"]
         out = _block_frame(val)
         kept = val["bar"] >= 0
         why = {c: int(val.get(c, np.zeros(0)).sum()) for c in ("other", "no_bar", "axis", "off_end", "chord", "point", "topology")}
-        if hard:
-            why.update({f"hard_{k}": v for k, v in hinfo.items()})
         if trace is not None:
             trace.update(picks=np.asarray(selection["picks"])[:n], lo=np.asarray(selection["lo"])[:n],
                          hi=np.asarray(selection["hi"])[:n], rows=rows, ix=ix, values=val, kept=kept)
@@ -808,12 +776,10 @@ class DeviceTier1b:
             raise ValueError("device sampler currently supports only strict_v3 options")
         if options.get("showers", True) is not True:
             raise ValueError("device sampler currently requires strict_v3 showers")
-        unknown = set(options) - set(required) - {"showers", "mirror", "translate", "follow", "hard", "anchor"}
+        unknown = set(options) - set(required) - {"showers", "mirror", "translate", "follow", "anchor"}
         if unknown:
             raise ValueError(f"unknown device options: {sorted(unknown)}")
         anchor = bool(options.get("anchor", False))
-        if anchor and options.get("hard", False):
-            raise ValueError("device sampler: anchored draws and hard-muon draws are separate sets")
         if anchor and self.anchor is None:
             raise ValueError("device anchored draws need a library with attach_anchors (strict_v5)")
         tick = time.perf_counter()
@@ -821,7 +787,7 @@ class DeviceTier1b:
         if anchor:
             desc, n_drop, n_clamp, why, metadata = self.anchored(fx, rng)
         else:
-            desc, n_drop, n_clamp, why, metadata = self.descendants(fx, rng, hard=options.get("hard", False))
+            desc, n_drop, n_clamp, why, metadata = self.descendants(fx, rng)
         desc_done = time.perf_counter()
         sh = self.showers(gen, rng)
         shower_done = time.perf_counter()
