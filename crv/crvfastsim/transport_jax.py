@@ -15,6 +15,7 @@ import jax.numpy as jnp
 from jax import lax
 
 from mu2efastsim import eloss, eloss_jax as ej, materials, transport as ct, world as wm
+from mu2efastsim import muradiative_jax as RJ
 from . import tables
 from . import transport as nt
 from .crossings_jax import crossings, slab
@@ -22,6 +23,7 @@ from . import eloss_transport_jax as sampling
 from mu2efastsim import precision as dprec
 
 dprec.register(__name__)   # JAX creators/samplers here follow MU2EFS_DEVICE_FLOAT
+RAD_FOLD = 0x52414401      # radiative stream of a world slab: fold_in(slab key, RAD_FOLD)
 
 jax.config.update("jax_enable_x64", True)
 
@@ -175,7 +177,10 @@ class DeviceTransport:
             for j, name in enumerate(order):
                 mat = materials.BY_NAME[name]
                 c = col[:, names.index(name)]
-                dl = slab_loss(jax.random.fold_in(key, k * 100 + j), ej.consts(mat), p_after(p, loss), c)
+                kj = jax.random.fold_in(key, k * 100 + j)
+                pin = p_after(p, loss)
+                dl = slab_loss(kj, ej.consts(mat), pin, c)
+                dl = RJ.after_ionisation(jax.random.fold_in(kj, RAD_FOLD), RJ.table(mat), pin, c, dl)  # core default
                 loss += jnp.where(c > 0., dl, 0.)
                 solid += c
                 xx += c / float(eloss.radiation_length_mm(mat))

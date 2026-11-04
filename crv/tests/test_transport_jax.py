@@ -138,3 +138,19 @@ def test_slab_loss_distribution():
     se = np.sqrt(ref.var()/n + cand.var()/n)
     assert abs(ref.mean()-cand.mean()) < 5*se
     assert np.isfinite(cand).all() and (cand >= 0).all()
+
+
+def test_world_slab_with_radiative_matches_numpy_default():
+    from mu2efastsim import muradiative_jax as RJ
+    n = 60000
+    p, length = np.full(n, 50000.), np.full(n, 2000.)
+    ref = ct.slab_loss(np.random.default_rng(9), materials.CONCRETE_MARS, p, length)
+    k = jax.random.key(9)
+    ion = jt.slab_loss(k, ej.consts(materials.CONCRETE_MARS), p, length)
+    cand = np.asarray(RJ.after_ionisation(jax.random.fold_in(k, jt.RAD_FOLD), RJ.table(materials.CONCRETE_MARS),
+                                          jax.numpy.asarray(p), jax.numpy.asarray(length), ion))
+    se = np.sqrt(ref.var()/n + cand.var()/n)
+    assert abs(ref.mean()-cand.mean()) < 5*se and (cand >= np.asarray(ion) - 1e-9).all()
+    for x in np.quantile(ref, [0.9, 0.99, 0.999]):
+        fd, fr = (cand > x).mean(), (ref > x).mean()
+        assert abs(fd - fr) < 5*np.sqrt((fd + fr)/n) + 1e-4
