@@ -166,6 +166,25 @@ def _load_setup(rc, cfg, gdml_path, explicit_gdml, spec, calib, deviation, jax, 
                 conditions_metadata=conditions_metadata), timers
 
 
+def resolve_generator(gen, inputs, jax):
+    """Generator backend and inputs. "auto" (the runchain CLI default): the gen tables given as inputs (the CPU path and
+    the reference); with no inputs, or the placeholder 'native', device CRY when the chain runs on JAX (--jax)."""
+    inputs = list(inputs)
+    if gen not in ("auto", "table", "native", "device"):
+        raise ValueError("gen must be auto, table, native or device")
+    if gen in ("native", "device") and not inputs:
+        inputs = ["native"]
+    if gen == "auto":
+        if inputs and inputs != ["native"]:
+            return "table", inputs
+        if not jax:
+            raise SystemExit("runchain: give gen tables (the CPU path), or --jax for device CRY, or --gen native")
+        return "device", ["native"]
+    if not inputs:
+        raise SystemExit("runchain: gen tables needed with --gen table")
+    return gen, inputs
+
+
 DEVICE_TIER1B_SETS = ("strict_v5",)
 
 
@@ -181,23 +200,36 @@ def resolve_backends(jax, transport_backend, tier1b_backend, rc, spec, below, kw
     return transport_backend, tier1b_backend
 
 
+def _add_receipt(total, part):
+    """One receipt for consecutive chunks of one source: counts and live time summed, the event range spanned."""
+    if total is None:
+        return dict(part, chunks=1)
+    out = dict(part)
+    out["accepted_events"] = total["accepted_events"] + part["accepted_events"]
+    out["live_seconds"] = total["live_seconds"] + part["live_seconds"]
+    out["event_range"] = dict(part["event_range"], first_event=total["event_range"]["first_event"])
+    out["chunks"] = total["chunks"] + 1
+    return out
+
+
 def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax=False, max_events=None, seed=1,
         compare=None, counters=None, reco_cpu=False, emit=None, run_config=None, window=None, benchmark=None,
         prepared=None,
         tier1b_set=None, tier1b_dir=None,
         transport_context=None, tier1b_context=None, tier1b_backend="numpy",
-        gen="table", gen_events=None, gen_seed=None, gen_subrun=1, **kw):
+        gen="table", gen_events=None, gen_seed=None, gen_subrun=1, gen_chunk=50000, **kw):
     removed = sorted(set(kw) & {"msc_tail", "tail_k", "sliced_msc", "first_muon_only", "no_absorbers",
                                 "unbanded_world", "no_below_world"})
     if removed:
         raise ValueError(f"runchain: options {removed} were removed (the transport subcommand keeps them)")
+    gen, inputs = resolve_generator(gen, inputs, jax)
     native = gen in ("native", "device")
     generator_backend = gen
-    if gen not in ("table", "native", "device"):
-        raise ValueError("gen must be table, native or device")
     if native:
         if list(inputs) != ["native"]:
             raise ValueError("--gen native requires exactly one placeholder input: native")
+        if not isinstance(gen_chunk, int) or isinstance(gen_chunk, bool) or gen_chunk < 1:
+            raise ValueError("--gen-chunk must be a positive integer")
         if not isinstance(gen_events, int) or isinstance(gen_events, bool) or not 0 < gen_events < 2**20:
             raise ValueError("--gen native needs --gen-events in [1,2**20-1] for packed event keys")
         if not isinstance(gen_subrun, int) or isinstance(gen_subrun, bool) or not 0 <= gen_subrun < 2**28:
@@ -276,23 +308,28 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         if tier1b_context is not None:
             tier1b_context["device"] = device_tier1b
 
+    source = None
+
     def host_stage(i, f):
         """CPU part of file i (read, transport, tier 1b) with its own rng and timers: the same draws whether it runs
         inline or in the prefetch thread."""
         rng = np.random.default_rng([int(seed), i])
         t = {}
         a = time.perf_counter() if benchmark is not None else None
-        nonlocal native_receipt
-        if native:
+        nonlocal native_receipt, source
+        if native:   # chunk i of gen_events, from one source opened at the first chunk
             from mu2efastsim.cosmic_cry import CosmicConfig, CosmicSource
-            if generator_backend == "device":
-                from mu2efastsim.cry_device import DeviceCosmicSource
-                Source = DeviceCosmicSource
-            else:
-                Source = CosmicSource
             started = time.perf_counter()
-            with Source(CosmicConfig.extracted(gdml_path), seed=seed if gen_seed is None else gen_seed) as source:
-                gen, _, native_receipt = source.generate(gen_events, subrun=gen_subrun)
+            if source is None:
+                if generator_backend == "device":
+                    from mu2efastsim.cry_device import DeviceCosmicSource as Source
+                else:
+                    Source = CosmicSource
+                source = Source(CosmicConfig.extracted(gdml_path), seed=seed if gen_seed is None else gen_seed).__enter__()
+            n = min(gen_chunk, gen_events - i * gen_chunk)
+            gen, _, receipt = (source.generate(n, subrun=gen_subrun) if i == 0 else
+                               source.generate(n, subrun=gen_subrun, first_event=1 + i * gen_chunk))
+            native_receipt = _add_receipt(native_receipt, receipt)
             t["generation_s"] = time.perf_counter() - started
         else:
             gen = tables.read(f, "gen")
@@ -321,7 +358,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         t["tier1b_s"] = time.perf_counter() - a
         return ngen, st, pa, rng, t, keys
 
-    files = list(tables.expand(inputs))
+    files = list(tables.expand(inputs)) if not native else [f"native:{k}" for k in range(-(-gen_events // gen_chunk))]
     pool = None
     if kw.get("prefetch") and len(files) > 1:   # file i+1's host stage runs while the device works on file i
         from concurrent.futures import ThreadPoolExecutor
@@ -371,6 +408,8 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
     finally:
         if pool is not None:
             pool.shutdown()
+        if source is not None:
+            source.__exit__(None, None, None)
     if prepared is not None:
         a = time.perf_counter()
         prepared.audit()

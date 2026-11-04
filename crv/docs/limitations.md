@@ -65,7 +65,9 @@ PE tail above 2000 PE (0.923 +- 0.014 -> 0.991 +- 0.014), and the adjacent-layer
 - The previous tier-1b default `strict_v4` (hard-muon draws, with its device sampler) is parked on branch
   `park/tier1b-strict-v4`.
 - The out-of-time background is resampled from KPP data (`crvfastsim.reco.background`); it is not simulated.
-- Native and device CRY generation are opt-in; the default reads cached CRY primary tables (gen tables).
+- With `--jax` and no gen tables, `runchain` generates device CRY primaries; gen tables given as inputs (the CPU path
+  and the reference) are read. The C++ CPU CRY backend is opt-in. Core's `chain_point` still streams gen tables by
+  default (`gen_set` 0; 5 selects device CRY).
 
 ## Not validated
 

@@ -45,7 +45,8 @@ def build_parser():
     for name, (fn, help_) in ANALYSES.items():
         sp = sub.add_parser(name, help=help_, description=sys.modules[fn.__module__].__doc__,
                             formatter_class=argparse.RawDescriptionHelpFormatter)
-        sp.add_argument("inputs", nargs="+", help="input files (globs allowed, quote them)")
+        sp.add_argument("inputs", nargs="*" if name == "runchain" else "+",
+                        help="input files (globs allowed, quote them)" + ("; none with device CRY" if name == "runchain" else ""))
         sp.add_argument("--outdir", default=None, help="output dir (default plots/<cmd>)")
         sp.add_argument("--counters", default=None,
                         help="Offline CRV counters file (default Offline/Mu2eG4/geom/crv_counters_extracted_v04.txt)")
@@ -127,11 +128,14 @@ def build_parser():
             sp.add_argument("--tier1b-dir", default=None, metavar="DIR",
                             help="directory with the set's files (default $CRVFS_DATA/<set directory>)")
         if name == "runchain":
-            sp.add_argument("--gen", choices=("table", "native", "device"), default="table",
-                            help="generator backend; native CPU/device JAX take placeholder input 'native'")
+            sp.add_argument("--gen", choices=("auto", "table", "native", "device"), default="auto",
+                            help="generator backend. auto (default): the gen tables given as inputs; without inputs (or the "
+                                 "placeholder 'native') device CRY with --jax. native = CPU CRY, device = JAX CRY")
             sp.add_argument("--gen-events", type=int, default=None, help="accepted native CRY events (required with --gen native)")
             sp.add_argument("--gen-seed", type=int, default=None, help="native CRY seed (default --seed; independent chain RNG)")
             sp.add_argument("--gen-subrun", type=int, default=1, help="native event subrun (default 1)")
+            sp.add_argument("--gen-chunk", type=int, default=50000,
+                            help="native/device CRY: accepted events per chain pass (default 50000); one source for all")
             sp.add_argument("--library", default=None, metavar="ROOT",
                             help="custom tier-1b library, sampled without placement options (instead of --tier1b)")
             sp.add_argument("--calib", default=None, metavar="CSV", help="CRVCalib + channel map CSV")
