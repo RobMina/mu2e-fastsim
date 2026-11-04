@@ -51,8 +51,10 @@ Two passes with the same seed must give identical fingerprints.
 
 ## On a GPU
 
-Add `--jax` (response, waveforms, reco on the device) and optionally `--transport-backend jax --tier1b-backend jax`
-([device.md](device.md); the device tier 1b is a speed option, see [limitations.md](limitations.md)). Set
+Add `--jax`: response, waveforms and reco run on the device, and on the extracted configuration so do the transport
+and tier 1b (backends `auto`; `--transport-backend numpy --tier1b-backend numpy` keeps them on the host, see
+[device.md](device.md)). Device steps pay a fixed cost per process (about 10 s with a warm compilation cache, a minute
+more without one): run many shards per process and keep a persistent compilation cache (`JAX_COMPILATION_CACHE_DIR`). Set
 `XLA_PYTHON_CLIENT_PREALLOCATE=false` on a shared card. Device precision is float32 by default (`MU2EFS_DEVICE_FLOAT=float64` for float64; see `device-precision.md`).
 
 ## Options that change the physics
