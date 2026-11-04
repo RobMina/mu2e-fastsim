@@ -60,11 +60,12 @@ setup and the first shard); grid slots at 21.2 generated events/s. Beam: `beam_p
 105,350 DS-entering muons, warm passes (a 49-foil design runs 4-6 % slower); no stock time per event exists for the
 nominal target on the grid at the same boundary, so the beam column gives rates only.
 
-CRV rates re-measured on 2026-11-03 with the default tier-1b set `strict_v5` and `runchain --jax`, which on main
-runs the transport and tier 1b on the host (NumPy) and the response and reco on the device; two jobs per card for
-the first three cards, one for the others. In the last column also the transport and tier 1b run on the device
-(opt-in `--transport-backend jax --tier1b-backend jax`, validated against the host chain: 0 of 133 end-to-end and 0
-of 155 stock-response histograms differ on 5 M events). Grid slots refer to the host-steps steady rate.
+CRV rates measured on 2026-11-03 with the tier-1b set `strict_v5` on 11 gen-table shards; two jobs per card for the
+first three cards, one for the others. The first column runs the transport and tier 1b on the host
+(`--transport-backend numpy --tier1b-backend numpy`), the response and reco on the device; the column "with device
+steps" is the default of `runchain --jax` (transport and tier 1b on the device as well; validated against the host
+chain: 0 of 133 end-to-end and 0 of 155 stock-response histograms differ on 5 M events). Grid slots refer to the
+host-steps steady rate.
 
 | GPU | CRV generated events/s | CRV grid slots | CRV with device steps | Beam muons/s (nominal target) |
 |---|---:|---:|---:|---:|
@@ -78,6 +79,12 @@ of 155 stock-response histograms differ on 5 M events). Grid slots refer to the 
 The device steps gain 12-27 % in steady state but cost about 10 s more per process (the device transport kernel
 loads from the persistent compilation cache in about 7 s and takes about a minute to compile without one), so at 11
 shards per process the whole job is 3-10 % slower; they pay off from about 20-25 shards per process.
+
+Without gen tables, `runchain --jax` generates its primaries with device CRY (the CRY table is in the image; accepted
+rate against the stock tables 1.00014 +- 0.00063 on 5 M events). From the image, 550,000 accepted events in 11 passes
+of 50,000 against the 11 gen-table shards in the same job, warm cache: MIG slice whole job 5,650-6,570 events/s (gen
+tables 5,890), steady 12,500-13,000; A100 3,380-3,400 (3,310), steady 8,650-8,680. Generation takes 6.8 s (MIG) and
+10.8 s (A100) per 550,000 events.
 
 The CRV device kernels are float32 by default and the beam's float64, which is why the beam ranks the cards with
 full-rate FP64 (A100, V100) first and the CRV those with high FP32 throughput. Without a warm compilation cache the
