@@ -69,11 +69,8 @@ def cmd_run(a):
     g = g4ref.load(a.g4)
     n = min(a.n or len(g["evt"]), len(g["evt"]))
     geom = _geom(a.geom, target_contract=True)
-    over = {k: v for k, v in (("mean", getattr(a, "mean", None)), ("law", getattr(a, "law", None)),
-                              ("msc_path", getattr(a, "msc_path", None)), ("z_up", getattr(a, "z_up", None)))
-            if v is not None}
-    prm = transport.params(getattr(a, "physics", transport.DEFAULT_PHYSICS), ds=a.ds, msc=not a.no_msc,
-                           decay=not a.no_decay, n_slices=a.slices, tcut=a.tcut,
+    over = {"z_up": a.z_up} if getattr(a, "z_up", None) is not None else {}
+    prm = transport.Params(ds=a.ds, msc=not a.no_msc, decay=not a.no_decay, n_slices=a.slices, tcut=a.tcut,
                            max_steps=getattr(a, "max_steps", 3000), **over)
     t0 = time.time()
     fm = fieldmap.to_device(fieldmap.load(f"{MAPS}/{MAP}.header"))
@@ -176,15 +173,8 @@ def cmd_fieldcheck(a):
 
 
 def _physics_args(s):
-    from .presets import DEFAULT_PHYSICS, PHYSICS
     s.add_argument("--z-up", dest="z_up", type=float, default=None,
                    help="upstream exit plane [mm] (default 4100); lower it for tables that start upstream, e.g. at VD 8")
-    s.add_argument("--physics", choices=sorted(PHYSICS), default=DEFAULT_PHYSICS,
-                   help="layer physics preset (transport.PHYSICS); the options below override single fields")
-    s.add_argument("--mean", choices=["local", "range"], default=None)
-    s.add_argument("--law", choices=["fast", "g4"], default=None)
-    s.add_argument("--msc-path", dest="msc_path", action="store_true", default=None)
-    s.add_argument("--no-msc-path", dest="msc_path", action="store_false")
 
 
 def main(argv=None):

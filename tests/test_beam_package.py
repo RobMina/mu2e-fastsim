@@ -9,7 +9,7 @@ PROJECT = tomllib.loads((BEAM / "pyproject.toml").read_text())
 
 
 def test_package_data_exists():
-    for package, globs in PROJECT["tool"]["setuptools"]["package-data"].items():
+    for package, globs in PROJECT["tool"]["setuptools"].get("package-data", {}).items():
         for pattern in globs:
             assert list((BEAM / package.replace(".", "/")).glob(pattern)), (package, pattern)
 

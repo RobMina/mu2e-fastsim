@@ -27,9 +27,9 @@ No Mu2e-internal data or results are stored here; the field maps, geometry and r
 | `beamfastsim/transport.py` | RK4 stepping, layer energy loss (G4 Urban via `mu2efastsim.eloss_jax`) and Highland scattering, range-out, decay, lane compaction |
 | `beamfastsim/g4ref.py`, `compare.py` | per-muon G4 reference table and fast-vs-G4 metrics/plots |
 | `beamfastsim/bench.py` | throughput on synthetic muons (no inputs needed) |
-| `beamfastsim/cechain.py` | conversion electrons (opt-in) from target stops or given starts to the tracker entry plane: helix steps in the field maps, foils / IPA / OPA crossed with the core `eslab` or `eslab_jax` slab physics; per-electron plane state in an npz |
+| `beamfastsim/cechain.py` | conversion electrons from target stops or given starts to the tracker entry plane: helix steps in the field maps, foils / IPA / OPA crossed with the core `eslab` or `eslab_jax` slab physics; per-electron plane state in an npz |
 | `beamfastsim/cechain_jax.py` | the same chain as one device loop (`cechain --backend device`): slab steps of every layer type in one kernel (core `eslab_jax.lane_step`), helix steps with the maps on the device, surface crossings solved for the gathered lanes whose step reaches a surface, lane refill and compaction between launches; float64 or float32 |
-| `beamfastsim/cesob.py` | sob stand-in of the stopping-target design studies (opt-in): beam stops -> conversion electrons -> calorimeter-acceptance proxy (crystal map, disks' inner Al and carbon-fibre rings crossed with the slab physics) -> the studies' approximate sensitivity; the same estimate on a Geant4 EdepAna tree (`reduce`, `refsob`, bit-identical to the design studies), proxy checks against Geant4 (`calocheck`, `calodiag`), `hybrid` and `recalo`; fastsimkit task `beam_sob` |
+| `beamfastsim/cesob.py` | sob stand-in of the stopping-target design studies: beam stops -> conversion electrons -> calorimeter-acceptance proxy (crystal map, disks' inner Al and carbon-fibre rings crossed with the slab physics) -> the studies' approximate sensitivity; the same estimate on a Geant4 EdepAna tree (`reduce`, `refsob`, bit-identical to the design studies), proxy checks against Geant4 (`calocheck`, `calodiag`), `hybrid` and `recalo`; fastsimkit task `beam_sob` |
 | `beamfastsim/cereference.py`, `cecompare.py` | Geant4 CeEndpoint reference table from `ReadVirtualDetector` trees; fast vs Geant4 at the entry plane (filter-implying selection, energy MPV/FWHM/tail fractions); `--mode pair`: two fast runs of the same starts (e.g. device vs NumPy) with paired errors |
 | `fcl/g4ref_mubeam_ntpart.fcl`, `art/run_g4ref.sh` | stock DS stage of SimJob MDC2025ac with a per-muon tree |
 | `art/run_fast_cpu.sh` | g4table + field check + fast run + comparison on a GPVM core |
@@ -39,7 +39,7 @@ No Mu2e-internal data or results are stored here; the field maps, geometry and r
 # GPVM: G4 reference (stock DS stage, ~12 ms/muon), then the fast arm on the same muons
 bash beam/art/run_g4ref.sh $M2FS_DATA/beam_fastsim/g4ref_full 214310 1
 bash beam/art/run_fast_cpu.sh $M2FS_DATA/beam_fastsim/g4ref_full $M2FS_DATA/beam_fastsim/fast_v1_20k 20000
-# conversion electrons (opt-in): starts of a Geant4 reference table, or isotropic CE from a stop table
+# conversion electrons: starts of a Geant4 reference table, or isotropic CE from a stop table
 PYTHONPATH=core:beam python3 -m beamfastsim.cechain --offline-root $OFFLINE --maps DSMap.header TSdMap.header \
   --stops g4ref.npz --n 8000 --backend jax --out ce_fast.npz
 # the same on a GPU in one device loop (float32; lanes refilled from the starts)
@@ -48,7 +48,7 @@ PYTHONPATH=core:beam python3 -m beamfastsim.cechain --offline-root $OFFLINE --ma
   --out ce_fast_dev.npz
 PYTHONPATH=core:beam python3 -m beamfastsim.cecompare --ref ce_g4ref.npz --fast "ce_fast*.npz" --mode stops \
   --offline-root $OFFLINE --maps DSMap.header TSdMap.header --out compare.json
-# sob stand-in for one target geometry (opt-in): stops, CE, calorimeter proxy and the approximate sensitivity
+# sob stand-in for one target geometry: stops, CE, calorimeter proxy and the approximate sensitivity
 PYTHONPATH=core:beam python3 -m beamfastsim.cesob point --g4 g4ref_run1baa_vd8.npz --z-up 3900 --geom overlay.txt \
   --electrons 100000 --procs 32 --out sob_point
 # laptop/any: unit tests and benchmark
@@ -103,13 +103,10 @@ thin-plane stop position. No within-foil slowing time is integrated; surviving c
 ordering, grazing paths and the low-energy model remain approximations requiring physics convergence checks.
 A shared seed is not layout-invariant: chunking and compaction affect random draws.
 
-## Layer physics presets
+## Layer physics
 
-`run` and `point` take `--physics legacy` (default: local dE/dx per slice with the fast Bethe law) or
-`--physics g4` (range-integrated slice mean with the Geant4 11.3.2 aluminium tables shipped in
-`beamfastsim/data/`, read by `g4tables.py`/`layerphys.py`; the tables' provenance is checked by
-`physics_tables.py`). `g4` is opt-in and not validated as a replacement for `legacy`.
-
-The loss-model studies behind these presets (numerical convergence, finer slicing, frozen-entry loss histories,
-single-foil closure against Geant4, slab and edge diagnostics) are kept on branch `park/beam-loss-studies`. Their
-outcome: refining the layer loss model did not improve agreement at the foil edges, so `legacy` stays the default.
+Layers lose energy in slices with the local restricted dE/dx (fast Bethe law, Urban fluctuations) and scatter with
+one Highland kick. The range-integrated alternative with Geant4 11.3.2 aluminium tables (`--physics g4`) and the
+loss-model studies behind it (numerical convergence, finer slicing, frozen-entry loss histories, single-foil closure
+against Geant4, slab and edge diagnostics) are kept on branch `park/beam-loss-studies`. Refining the layer loss model
+did not improve agreement at the foil edges.
