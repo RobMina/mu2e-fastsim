@@ -1,4 +1,8 @@
-# Opt-in native CRY primaries
+# Native and device CRY primaries
+
+On a GPU, `runchain --jax` without gen tables generates its primaries with device CRY (`--gen auto`, the default; see
+[Device backend](#device-backend)). The gen tables stay the CPU path and the reference: given as inputs, they are read.
+The C++ CPU backend below (`--gen native`) is opt-in.
 
 The ordinary chain can generate extracted-configuration primaries in-process,
 without a gen-table file. This requires core's `cosmic_cry` module and the
@@ -57,8 +61,15 @@ conditional on the measured exposure; it is not a production certificate.
 
 ## Device backend
 
-`--gen device` uses core's JAX CRY sampler and Mu2e selection on the GPU, rather
-than the C++ sampler. It uses the same positional `native` placeholder,
+```bash
+python3 -m crvfastsim runchain --jax --gen-events 550000 --gen-seed 11 --gen-subrun 3 --seed 5678 \
+  --gdml mu2e_extracted_v04.gdml --calib crvcalib.csv --deviation crvphoton.csv --outdir chain
+```
+
+`--gen device` (the `auto` default with `--jax` and no inputs) uses core's JAX CRY sampler and Mu2e selection on the
+GPU, rather than the C++ sampler. `--gen-events` accepted events are generated in passes of `--gen-chunk` (default
+50,000) from one source, with consecutive event numbers in one subrun and one summed receipt. It accepts the optional
+positional `native` placeholder,
 `--gen-events`, `--gen-seed`, `--gen-subrun` and emitted exposure contract. It
 requires a GPU explicitly and fails rather than silently selecting CPU. Add
 `--jax` for the existing GPU photon/reco path; generation is independently
@@ -72,8 +83,13 @@ with no spectrum flag (core `docs/device-cry.md`). Through the chain (device tra
 response), 100 device-CRY shards against the same chain on the 100 stock shards, independent samples per live
 second: digis 1.0006 +- 0.0033, pulses 1.0004 +- 0.0033, clusters 0.9989 +- 0.0030 (EX 1.003 +- 0.003, T1 0.988 +-
 0.008, T2 0.995 +- 0.007, M 0.985 +- 0.011); cluster PE shape chi2/ndf 0.98 (49 bins), clusters per event 2.16 (5
-bins). Device CRY stays opt-in: the production image carries no CRY table (`CRYDATAPATH` must point at the pinned
-`cosmics_0.data`), and one native invocation generates one chunk of at most 2**20-1 events.
+bins). The production image carries the pinned table at `/opt/cry/data/cosmics_0.data` (umbrella
+`container/fetch_cry_data.sh`); elsewhere `CRYDATAPATH` points at it. One invocation generates at most 2**20-1 events.
+
+Production check (2026-11-04, the image alone, 550,000 accepted events in 11 passes, warm compilation cache): the
+default and an explicit `--gen device` give identical clusters per sector type and live time, on a MIG slice and on an
+A100. MIG slice: whole job 90-103 s, 5,650-6,570 events/s (the 11 gen-table shards in the same job 5,890), steady
+12,500-13,000/s, generation 6.8 s in all; A100: 172 s, 3,380-3,400/s (gen tables 3,310), steady 8,650-8,680/s.
 
 Cold JAX compilation can dominate small jobs. Report synchronized warm sampling,
 selected-buffer transfer/packing, cold initialization and whole-chain wall time
