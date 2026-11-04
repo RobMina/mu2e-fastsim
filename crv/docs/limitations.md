@@ -59,6 +59,9 @@ PE tail above 2000 PE (0.923 +- 0.014 -> 0.991 +- 0.014), and the adjacent-layer
   on an RTX PRO 6000 MIG slice), but its host memory is not capped: MaxRSS 12-17 GB in production runs (11 shards, `strict_v5`), partly a host copy
   of the library in device mode (+2.3 GB).
 - Device transport: single-scattering tails, sliced MSC and below-plane variants raise.
+- Device transport is ionisation-only: the NumPy transport adds the core's radiative muon losses (bremsstrahlung, pair
+  production, photonuclear) in the world column and below-plane material, the device transport does not. The
+  difference is below the noise of every deck histogram (validation.md); core `muradiative_jax` is the device draw.
 - The out-of-time background is resampled from KPP data (`crvfastsim.reco.background`); it is not simulated.
 - Native and device CRY generation are opt-in; the default reads cached CRY primary tables (gen tables).
 
