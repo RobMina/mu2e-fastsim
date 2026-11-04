@@ -80,11 +80,19 @@ def build_parser():
             sp.add_argument("--unbanded-world", action="store_true",
                             help="stage C: world columns piece by piece (before 2026-10-24; the banded grid is the default)")
         if name in ("tier1b-apply", "runchain"):
-            sp.add_argument("--tier1b-backend", choices=["numpy", "jax"], default="numpy",
-                            help="device sampler of the strict_v5 and strict_v4 sets; NumPy remains the default")
+            chain = name == "runchain"
+            sp.add_argument("--tier1b-backend", choices=["numpy", "jax"] + (["auto"] if chain else []),
+                            default="auto" if chain else "numpy",
+                            help="tier-1b sampler: jax = the device sampler of the strict_v5 and strict_v4 sets"
+                                 + ("; auto (default): jax with --jax on the extracted configuration, else numpy"
+                                    if chain else " (default numpy)"))
         if name in ("transport", "runchain"):
-            sp.add_argument("--transport-backend", choices=["numpy", "jax"], default="numpy",
-                            help="opt-in device transport (straight-line stages A/C, including extracted range_out)")
+            chain = name == "runchain"
+            sp.add_argument("--transport-backend", choices=["numpy", "jax"] + (["auto"] if chain else []),
+                            default="auto" if chain else "numpy",
+                            help="transport: jax = the device transport (straight-line stages A/C, extracted range_out)"
+                                 + ("; auto (default): jax with --jax on the extracted configuration, else numpy"
+                                    if chain else " (default numpy)"))
             sp.add_argument("--legacy-transport", action="store_true",
                             help="stage C without range_out (one bar loss at the entry momentum, restricted loss only, "
                                  "mean absorber dE/dx; the extracted_v04 default before 2026-10-30)")
