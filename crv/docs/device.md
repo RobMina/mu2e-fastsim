@@ -96,13 +96,15 @@ jobs per card; generated events per second.
 
 | GPU | NumPy steps (steady / whole) | device tier 1b only | device transport + tier 1b (default with `--jax`) |
 |---|---:|---:|---:|
+| RTX PRO 6000 (full card) | 16,000-17,200 / 7,200-7,650 | 18,600-19,300 / 7,600-7,700 | 19,700-20,900 / 6,800-7,100 |
 | RTX PRO 6000 MIG 1g.24gb | 13,600-14,800 / 6,900-7,500 | 15,400-15,700 / 7,100-7,300 | 16,400-17,200 / 6,600-7,000 |
 | A100-SXM4-80GB | 8,600-8,800 / 3,700-3,900 | 8,700-8,900 / 3,600 | 10,100-10,800 / 3,500 |
 
-The device steps gain 17-25 % in steady state but pay a fixed cost per process: the device transport kernel takes
+The device steps gain 17-25 % in steady state (device tier 1b alone 6-15 %) but pay a fixed cost per process: the device transport kernel takes
 about 7 s to load from a warm persistent cache (57-60 s to compile without one) and the device tier 1b 2-3 s to
 prepare. At 11 shards per process the whole job is 0-10 % slower than with NumPy steps; it gains from about 20-25
-shards per process. Host memory: MaxRSS 12-17 GB with the device steps against 9-11 GB.
+shards per process. Without a persistent compilation cache the first shard takes 100-190 s with device steps against
+30-55 s with NumPy steps. Host memory: MaxRSS 12-17 GB with the device steps against 9-11 GB.
 
 ## Timing (one A100-80GB, warm, `strict_v4`)
 
