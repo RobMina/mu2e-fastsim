@@ -12,7 +12,7 @@ items and the beam stage.
   the stopping target to the tracker entry plane only (`beam/beamfastsim/cechain.py`, below).
 - **Conversion-electron chain (`cechain`, `cecompare`).** Not modelled: foil and IPA support wires, OPA slots and supports, the TS4
   bend and the collimators upstream of COL5, field variation inside a layer, re-crossing of a surface within one
-  10 mm helix step, exits through the z faces of the IPA end rings (the loss between the target exit and the tracker
+  10 mm helix step, exits through the z faces of the IPA end rings; the end rings sit radially against the IPA, and a track leaving one starts its next step on the other's face, where the strict crossing test misses that shell about half the time (both backends) (the loss between the target exit and the tracker
   entry is 0.53 vs 0.49 MeV in Geant4 on average, with the same fractions above 0.5 and 1 MeV). Layers are flat in the
   local frame, with the IPA / OPA curvature as an equivalent field. Secondaries are not transported. The vacuum
   stepping runs in NumPy on the host.
