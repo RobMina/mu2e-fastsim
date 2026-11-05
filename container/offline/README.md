@@ -66,7 +66,9 @@ The runner checks `MUSE_WORK_DIR`, expands FCL before running, records `mu2e --v
 
 A long art job needs `SQLITE_TMPDIR` and `TMPDIR` on node-local disk. Inside `--containall` the session `/tmp` is small
 and art's per-event SQLite tables end the job after about 85,000 events (`SQLExecutionError: database or disk is full`).
-Setting both fixed it on a 105,000-event G4 job. The runner does not set them yet.
+Setting both fixed it on a 105,000-event G4 job. The runner sets both to an `art-tmp` directory beside its
+private node-local CVMFS cache, with the same bind and exit cleanup. Dense multi-path trigger replays hit the same
+limit sooner (about 21,000 CE events), since the threshold depends on per-event provenance volume.
 
 One invocation has one cache manager. Parallel invocations **must not share a cache**; the wrapper allocates a
 unique local directory for each. Two concurrent art jobs on two cores are validated below; shared pilot/prewarming

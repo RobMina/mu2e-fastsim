@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "release": "mu2e-fastsim-inputs-vN",
+  "files": [
+    {
+      "path": "crv_fastsim/geometry/mu2e_extracted_v04.gdml",
+      "provenance": "what the file is and how it was made (dataset, tool, version)",
+      "redistribution": "mu2e-internal",
+      "size_bytes": 0,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ]
+}

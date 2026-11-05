@@ -1,37 +1,58 @@
 # Input release and verification
 
-The fast chains read Mu2e-internal inputs that are not in these repositories. This page says what a release must
-contain and how to verify one; [`docs/running.md`](../docs/running.md) says how to run once you have it.
+The fast chains read Mu2e-internal inputs that are not in these repositories. This page says what the input release
+contains and how to verify it; [`docs/running.md`](../docs/running.md) says how to run once you have it.
 
 ## Availability
 
-A fresh clone is not a data release. **No collaboration-readable input release is published yet**, and where it
-will be published is still to be decided. Until then, obtain an approved, versioned manifest and source from the input
-publisher. Do not link another user's private data area, assume its permissions, or use a scratch cache as the
-canonical release. The Apache-2.0 code licence does not grant rights to conditions, simulation-derived banks, detector
-data, CRY data, or an image's third-party dependencies.
+A fresh clone is not a data release. **Input release v1** (`mu2e-fastsim-inputs-v1`, 69 files, about 2.3 GB) is on
+Fermilab shared storage. Members of the Mu2e group can read it from a Mu2e GPVM and from an EAF server, which mounts
+the same storage. Point `M2FS_INPUTS` at the release root and verify it against its manifest (below) before the
+first run. The maintainers give out the release root and manifest path through Mu2e-internal channels. They are not
+in this public repository, because the manifest's provenance names internal storage. Nothing is published on CVMFS
+or dCache, and the release must not be copied outside Mu2e: every file is marked `redistribution: mu2e-internal`.
+The Apache-2.0 code licence does not grant rights to conditions, simulation-derived banks, detector data, CRY data,
+or an image's third-party dependencies.
 
-Proposed release layout (paths relative to `$M2FS_INPUTS`):
+The format of the manifest is shown, with placeholder values, in [`RELEASE.example.json`](RELEASE.example.json).
 
-| Path | Needed by | Reproduction/provenance |
+## Release v1 layout
+
+Paths are relative to `$M2FS_INPUTS`. `site.env.example` derives `CRVFS_DATA`, `CRVFS_LOOKUP_DIR`,
+`FASTSIMKIT_*_DATA` and `MU2E_SEARCH_PATH` from it.
+
+| Path | Read by | Provenance |
 |---|---|---|
-| `crv_fastsim/tier1b_strict_v5/{library.root,topology.npz,topology.npz.json,templates_v3.npz,templates_v3.npz.json}` | default CRV tier1b-apply, runchain, e2e-bench, kit (set `strict_v5`) | crv `docs/tier1b-default.md` (pinned SHA-256 per file); the `strict_v2` donors rebuilt with step-tree roots, versioned builders |
-| `crv_fastsim/tier1b_strict_v2/{library.root,topology_sidecar_strict_v2_v2.npz,topology_sidecar_strict_v2_v2.npz.json,templates_v3.npz,templates_v3.npz.json}` | opt-in previous default (`--tier1b strict_v4`, kit `tier1b=1`), device tier 1b | crv `docs/tier1b-default.md` (pinned SHA-256 per file); donor G4 production and versioned builders |
-| `crv_fastsim/geometry/mu2e_extracted_v04.gdml` | CRV and tracker transport | CRV geometry/ Offline export; pin release and configuration |
-| `crv_fastsim/geometry/{crvcalib_sim_best_v1_5_run1400.csv,crvphoton_sim_best_v1_5_run1400.csv}` | CRV response/reco | simulation run-1400 conditions; CRV docs/response-configuration.md; export needs conditions access |
-| `crv_fastsim/lookup_v6_0/{LookupTable_6000_0,LookupTable_2370_1,LookupTable_3200_0,photonMap.root}` | CRV response (not tier1b-apply alone) | CVMFS DataFiles/CRVConditions/v6_0; names from extracted response configuration; Mu2e-internal, publisher approval needed |
-| `offline/Offline/Mu2eG4/geom/crv_counters_extracted_v04.txt` and `offline/Offline/CRVResponse/data/singlePEWaveform_v3.txt` | CRV geometry and waveform | public Mu2e/Offline tag v13_39_00; container/fetch_offline_data.sh; included in standard image |
-| `crv_fastsim/g4ref_v2_tables/gen.001400_00000022.root` | one-shard CRV/tracker smoke | extracted CRY reference shard 22, 50000 generated events; crv/grid and art/dump_g4ref.sh; use only a manifest-selected shard |
-| `trk_fastsim/lib/trklib_mdc2025as_20f_v2.root` (+ metadata) | optional tracker secondaries | tracker buildlib format 2; G4 production donors; not read by primary-only steps |
-| `trkfs_digi_20261026/v2/digicond.npz` | tracker_point digi | tracker digi-cond from FHiCL/conditions/GDML; geometry/release must match |
-| `trk_fastreco/cond_mc_au.json` and `trk_fastreco/trk_sa2/tracks_ref_mc_saveall.001400_00000000.root` (conditions tree only) | tracker_point reco/drift | tracker reco-conditions from matched dumper; kit_task.INPUT_PATHS is authoritative; no stock event conditioning |
-| `beam_fastsim/g4ref_full/g4ref.npz` | beam point | MuBeamCat input and beam/art/run_g4ref.sh, beamfastsim g4ref and reference audit; no public redistributable source established |
-| beam `offline/` geometry include tree, `maps/DSMap.{header,bin}` | beam point | beamfastsim.stage: Offline v10_47_00 and DataFiles/BFieldMaps/Mau13; pin every fetched file |
+| `crv_fastsim/tier1b_strict_v5/{library.root,topology.npz,topology.npz.json,templates_v3.npz,templates_v3.npz.json}` | default CRV chain (`runchain`, `tier1b-apply`, `e2e-bench`), kit `chain_point`, EAF `chain` and `regression` | crv `docs/tier1b-default.md`; library SHA-256 pinned in `crvfastsim.tier1b_assets` |
+| `crv_fastsim/geometry/mu2e_extracted_v04.gdml` | CRV and tracker transport (default `extracted_v04`) | GDML world export, crv `geometry/README.md` |
+| `crv_fastsim/geometry/{mu2e_run1a_v01.gdml,mu2e_run2_v10.gdml}` | named run configurations (`crvfastsim.runconfig`) | GDML world exports |
+| `crv_fastsim/geometry/{crvcalib,crvphoton}_sim_best_v1_5_run1400.csv` | CRV response and reco | simulation conditions `sim_best_v1_5`, run 1400 |
+| `crv_fastsim/lookup_v6_0/{LookupTable_6000_0,LookupTable_2370_1,LookupTable_3200_0,photonMap.root}` | CRV response (`CRVFS_LOOKUP_DIR`), kit `response_bench`, `v4_response` | CVMFS `DataFiles/CRVConditions/v6_0` |
+| `crv_fastsim/g4ref_v1_tables/gen.001400_000000{01..20}.root` | kit `chain_point` (`gen_set` 0), EAF `chain` (held-out 11-20), `tracker_point` (default shard 11) | CRY primaries in the extracted world, 50,000 generated events each |
+| `crv_fastsim/g4ref_v1_tables/crvsteps.001400_00000012.root` | EAF `regression` (V4 SiPM on Geant4 steps) | Geant4 CrvSteps of subrun 12 |
+| `crv_fastsim/v2_fastC_v1/ref.001400_000000{11..20}.root` | optional `--compare` of EAF `chain` | stock chain on the same primaries (V2) |
+| `crv_fastsim/g4ref_v2_tables/gen.001400_00000022.root` | one-shard CRV/tracker smoke | extracted CRY reference shard 22 |
+| `crv_fastsim/prod_as_tables/crvsteps.001400_{00000990,00001023,00001056,00001089,00001122}.root` | kit `crv_response` (`tables=vr5`) | Geant4 production CrvSteps, MDC2025as |
+| `crv_fastsim/background/fit_v1/bg.npz`, `crv_fastsim/timecal/corr_{P4,P3}_v2mod.json`, `crv_fastsim/r3/dataref/dataref_{P4,P3,3runs}.json` | kit `crv_response` (background model, period time calibration, data reference) | fits to KPP data |
+| `crv_fastsim/veto_ve1/run1a_dev_sel.parquet`, `crv_fastsim/deadtime_run1a/ce_mix1bb_dev_sel.parquet` | kit `veto_c4` | cached Run 1A selections (`crvfastsim.veto`) |
+| `trkfs_digi_20261026/v2/digicond.npz` | `tracker_point` digitisation | tracker digi conditions from FHiCL, conditions and GDML |
+| `trk_fastsim/lib/trklib_mdc2025as_20f_v2.{root,json,meta.json}` | optional tracker secondaries | buildlib format 2, 20 Geant4 donor files |
+| `beam_fastsim/g4ref_full/g4ref.npz` | kit `beam_point` | DS-entrance muons from MuBeamCat MDC2025ac |
+| `beam_fastsim/g4ref_run1baa/g4ref_run1baa_vd8.npz` | kit `beam_sob` | Coll5_Out-plane beam sample from MuBeamCat Run1Baa |
+| `offline/Offline/Mu2eG4/geom/crv_counters_{extracted_v04,run1a_v01,v10}.txt`, `offline/Offline/CRVResponse/data/singlePEWaveform_v3.txt` | CRV geometry and waveform (`MU2E_SEARCH_PATH`) | public Mu2e/Offline v13_39_00 |
+
+**Not in v1:**
+- The two `tracker_point` reco-condition files, `trk_fastreco/cond_mc_au.json` and the conditions tree of
+  `trk_fastreco/trk_sa2/tracks_ref_mc_saveall.001400_00000000.root` (`trkfastsim.kit.kit_task.INPUT_PATHS`), no
+  longer exist. Until a later release adds them, `tracker_point` stops on the missing input.
+- No Run 1A tier-1b library has been built yet, so the named run configurations run only with `--library`.
+- The beam field maps and the Offline geometry include tree are public. `beamfastsim` reads them from CVMFS, or
+  `python3 -m beamfastsim.stage` fetches them where there is no CVMFS mount (`docs/running.md`).
+- The optional gen sets `crygen_*_tables` (`chain_point` `gen_set` 1-3) are not included.
 
 Native CRY is **opt-in**, not the default. It removes the gen tables only, not the secondary bank, geometry, optics
 or conditions; it needs the CRY-enabled runtime and licensed data (`core/docs/native-cry.md`). Geant4 comparisons
-still need matching reference tables. The named (non-extracted) configurations need a tier-1b library that does not
-exist today; do not substitute the extracted bank.
+still need matching reference tables.
 
 ## Verify before use; fetch is explicit and dry-run by default
 
@@ -50,6 +71,10 @@ python3 -m mu2efastsim.inputs fetch-inputs --manifest "$MANIFEST" --root "$M2FS_
 python3 -m mu2efastsim.inputs fetch-inputs --manifest "$MANIFEST" --root "$M2FS_INPUTS" \
   --source-dir "$APPROVED_SOURCE" --execute
 ```
+
+`check-inputs` reads every file once; for v1 that takes under 10 s on a GPVM or an EAF server. Read the v1 release
+in place on FNAL storage: its
+files are marked `mu2e-internal`, so `fetch-inputs --execute` refuses to copy them.
 
 Alternatively use `--base-url https://publisher.example/release` for approved
 HTTPS objects. This tool does not mint credentials or implement Rucio/dCache

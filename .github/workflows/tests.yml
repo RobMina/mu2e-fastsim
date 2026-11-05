@@ -36,6 +36,9 @@ jobs:
           - suite: umbrella
             dir: .
             path: beam:core:tracker
+          - suite: calo
+            dir: calo
+            path: calo:core
     env:
       JAX_PLATFORMS: cpu
       PYTHONDONTWRITEBYTECODE: "1"
@@ -91,6 +94,9 @@ jobs:
           - suite: umbrella
             dir: .
             path: beam:core:tracker
+          - suite: calo
+            dir: calo
+            path: calo:core
     env:
       JAX_PLATFORMS: cpu
       PYTHONDONTWRITEBYTECODE: "1"

@@ -83,3 +83,12 @@ def test_node_cache_and_no_builds():
     assert "apptainer exec --userns" in runner
     for script in SCRIPTS:
         assert not re.search(r"^\s*muse\s+(build|tarball)\b", script.read_text(), re.MULTILINE)
+
+
+def test_sqlite_temp_uses_bound_private_node_local_directory():
+    runner = (HERE / 'offline_uva.sh').read_text()
+    assert 'export TMPDIR="$(dirname "${OFFLINE_CACHE_PATH:?}")/art-tmp"' in runner
+    assert 'export SQLITE_TMPDIR="$TMPDIR"' in runner
+    assert runner.index('export SQLITE_TMPDIR=') < runner.index('fhicl-dump -c')
+    assert '-B "$LOCAL:$LOCAL"' in runner
+    assert "trap 'rm -rf \"$LOCAL\"' EXIT" in runner
