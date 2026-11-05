@@ -121,8 +121,10 @@ def plane_quantities(table, stock=False, axis_x=-3904.):
     return dict(ok=ok, p=p, cos=cos, r=np.hypot(x[:, 0] - axis_x, x[:, 1]))
 
 
-def compare(ref_path, fast_path, members, *, starts_path=None, axis_x=-3904., pmin=60.):
+def compare(ref_path, fast_path, members, *, starts_path=None, axis_x=-3904., pmin=60., vd_radius=850.1):
     """Compare either exact saved starts or matched-stop-window source draws."""
+    if not np.isfinite([axis_x, pmin, vd_radius]).all() or pmin < 0 or vd_radius <= 0:
+        raise ValueError("finite plane geometry and nonnegative momentum cut required")
     members = np.sort(np.asarray(members, int))
     if members.size < 1 or np.unique(members).size != members.size:
         raise ValueError("need distinct shard IDs")
@@ -152,7 +154,8 @@ def compare(ref_path, fast_path, members, *, starts_path=None, axis_x=-3904., pm
                 expected_x = np.column_stack([st[k][idx] for k in ("x", "y", "z")])
                 expected_p = np.column_stack([st[k][idx] for k in ("px", "py", "pz")])
                 if not (np.allclose(f["x0"], expected_x, atol=1e-8, rtol=0)
-                        and np.allclose(f["p0"][:, None] * f["u0"], expected_p, atol=1e-8, rtol=1e-10)):
+                        and np.allclose(f["p0"][:, None] * f["u0"], expected_p, atol=1e-8, rtol=1e-10)
+                        and np.allclose(f["t0"], st["time"][idx], atol=1e-8, rtol=0)):
                     raise ValueError("fast output does not match generated starts")
             exposure = np.asarray(r["gencount"], int)[members]
             fast_n = np.array([np.sum(fs == k) for k in members])
@@ -162,9 +165,10 @@ def compare(ref_path, fast_path, members, *, starts_path=None, axis_x=-3904., pm
             scope = "same pion-stop windows; independent pair draws; saved-stock yield, not inclusive Geant4 acceptance"
         out = dict(scope=scope, members=members.tolist(), fast_total_rows=int(len(idx)),
                    stock_total_rows=int(len(gs)), stock_total_generated=int(np.sum(r["gencount"])),
-                   fast_wall_s=float(f["wall"]), selections={})
+                   fast_wall_s=float(f["wall"]), vd_radius_mm=vd_radius, selections={})
         for name, threshold in (("vd13", 0.), ("vd13_pmin", pmin)):
-            sa, sb = g["ok"] & (g["p"] > threshold), b["ok"] & (b["p"] > threshold)
+            sa = g["ok"] & (g["p"] > threshold) & (g["r"] < vd_radius)
+            sb = b["ok"] & (b["p"] > threshold) & (b["r"] < vd_radius)
             ks = np.array([np.sum(sa & (gs == k)) for k in members])
             kf = np.array([np.sum(sb & (fs == k)) for k in members]) * scale
             report = dict(yield_=clustered_ratio(ks, kf, exposure), pmin=threshold, shapes={})
@@ -219,13 +223,15 @@ def main(argv=None):
     c.add_argument("--shards", type=int, nargs="+", required=True)
     c.add_argument("--axis-x", type=float, default=-3904.)
     c.add_argument("--pmin", type=float, default=60.)
+    c.add_argument("--vd-radius", type=float, default=850.1, help="Run 1A TT_FrontHollow disk radius [mm]")
     c.add_argument("--out", required=True)
     c.add_argument("--png")
     a = ap.parse_args(argv)
     if a.command == "starts":
         starts(a.window, a.out, a.repeats, a.seed)
     else:
-        report = compare(a.ref, a.fast, a.shards, starts_path=a.starts, axis_x=a.axis_x, pmin=a.pmin)
+        report = compare(a.ref, a.fast, a.shards, starts_path=a.starts, axis_x=a.axis_x, pmin=a.pmin,
+                         vd_radius=a.vd_radius)
         Path(a.out).write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
         if a.png:
             plot(report, a.png)

@@ -98,6 +98,16 @@ def test_missing_fast_rows_are_not_silently_removed(tmp_path):
         R.compare(ref, fast, [0, 1])
 
 
+def test_tracker_front_disk_radius_applies_to_fast_crossings(tmp_path):
+    ref, fast, _, data = fixtures(tmp_path)
+    data["x"] = data["x"].copy()
+    data["x"][0, 1] = 900.
+    np.savez(fast, **data)
+    report = R.compare(ref, fast, [0, 1])
+    assert report["selections"]["vd13"]["yield_"]["fast_count"] == 2
+    assert report["vd_radius_mm"] == 850.1
+
+
 def test_plot(tmp_path):
     ref, fast, _, _ = fixtures(tmp_path)
     report = R.compare(ref, fast, [0, 1])
