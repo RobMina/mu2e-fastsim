@@ -45,10 +45,12 @@ def main(argv=None):
     ap.add_argument("roots", nargs="+")
     ap.add_argument("--out", required=True)
     ap.add_argument("--gencount", type=int, required=True, help="generated events per input file (SAM dh.gencount)")
+    ap.add_argument("--code", type=int, default=CE_CODE,
+                    help="creation code of the primaries (default mu2eCeMinusEndpoint; 166 mu2eMuonDecayAtRest for DIO)")
     ap.add_argument("--extra-vd", nargs=2, action="append", default=[], metavar=("ID", "SUFFIX"),
                     help="also keep the first hit in this virtual detector (e.g. 10 stout for ST_Out)")
     a = ap.parse_args(argv)
-    out, rows = read(a.roots, extra=[(int(i), sfx) for i, sfx in a.extra_vd])
+    out, rows = read(a.roots, code=a.code, extra=[(int(i), sfx) for i, sfx in a.extra_vd])
     np.savez_compressed(a.out, gencount=np.full(len(a.roots), a.gencount), rows=np.array(rows), **out)
     print(json.dumps(dict(files=len(a.roots), rows=int(sum(rows)), front=int(out["isvd_front"].sum()),
                           inputs=[Path(p).name for p in a.roots]), indent=1))
