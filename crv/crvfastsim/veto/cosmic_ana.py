@@ -38,7 +38,7 @@ NARROWER = {"wide": ("within_ext_win", "within_sig_win"), "ext": ("within_sig_wi
 GATE = ("within_coinc_start_time", "within_coinc_end_time")   # flash gate: kept out of the selection for deadtime
 
 
-def select_file(path, analyse, CutManager, location="tape", drop=NARROWER["wide"]):
+def select_file(path, analyse, CutManager, location="tape", drop=NARROWER["wide"], include_lineage=False):
     """One file -> awkward record per selected track (all active cuts but 'unvetoed'). A bare file name is resolved by
     pyutils through mdh at `location` (as mu2e_cosmic_ana does); a path or URL is opened as given."""
     from pyutils.pyprocess import Processor
@@ -56,11 +56,23 @@ def select_file(path, analyse, CutManager, location="tape", drop=NARROWER["wide"
     keep = ak.any(mask, axis=-1)
     ev = data["evt"][keep]
     co = data["crv"][keep]
-    return ak.zip({
+    fields = {
         "run": ev["run"], "subrun": ev["subrun"], "event": ev["event"],
         "t_mid": t_mid[keep][mask[keep]], "p_mid": p_mid[keep][mask[keep]],
         "coincs": ak.zip({k.split(".", 1)[1]: co[k] for k in BRANCHES["crv"]}),
-    }, depth_limit=1)
+    }
+    if include_lineage:
+        fields.update(selected_lineage(data, mask, keep))
+    return ak.zip(fields, depth_limit=1)
+
+
+def selected_lineage(data, mask, keep):
+    """Carry original track indices and aligned MC genealogy through the selection mask."""
+    genealogy = data["trkmc"]["trkmcsim"]
+    if not ak.all(ak.num(genealogy, axis=1) == ak.num(mask, axis=1)):
+        raise ValueError("track MC genealogy is not aligned with original track collection")
+    index = ak.local_index(mask, axis=1)
+    return dict(track_index=index[keep][mask[keep]], trkmcsim=genealogy[keep][mask[keep]])
 
 
 def main(argv=None):
