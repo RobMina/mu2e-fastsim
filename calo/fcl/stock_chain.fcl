@@ -1,11 +1,15 @@
 # Stock calorimeter digitization and reco on saved CaloShowerSteps, in three arms:
-#   det: PE statistics, travel time and noise off (deterministic); noi: det readouts plus noise; prd: production settings.
+#   det: PE statistics, travel time and noise off (deterministic); noi: det readouts plus noise;
+#   prd: the production digitization and reco configuration.
+# Calo conditions (CalSimParams, CalCalib) and EventTiming are the Offline prolog defaults (text files, useDb false),
+# which is what production uses. The EWM is the production CommonMC table (reco PBT smeared by 0.5 ns) with the
+# per-job random initial phase fixed to one draw (0) so that the fast arm can use the same bunch times.
 #include "Offline/fcl/minimalMessageService.fcl"
 #include "Offline/fcl/standardServices.fcl"
 #include "Offline/fcl/standardProducers.fcl"
 #include "EventNtuple/fcl/prolog.fcl"
 
-process_name : CAL1Stock
+process_name : CaloStock
 source : { module_type : RootInput }
 services : { @table::Services.SimAndReco }
 services.SeedService.baseSeed : 20261105
@@ -13,27 +17,16 @@ services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_run1_a.txt"
 services.GeometryService.bFieldFile : "Offline/Mu2eG4/geom/bfgeom_no_tsu_ps_v01.txt"
 services.DbService.purpose : Sim_best
 services.DbService.version : v1_1
-services.ProditionsService.calSimParams.useDb : false
-services.ProditionsService.calSimParams.fileName : "Offline/CaloConditions/data/Sim_crystal.txt"
-services.ProditionsService.calCalib.useDb : false
-services.ProditionsService.eventTiming.useDb : false
-services.ProditionsService.eventTiming.TimeFromProtonsToDRMarker : 200
 services.TFileService.fileName : "calo_stock.root"
 
-CAL1Steps : [ "CaloShowerStepMaker::CaloLibraryCE" ]
+CaloStepTags : [ "CaloShowerStepMaker::CaloLibraryCE" ]
 
 physics : {
   producers : {
-    EWMProducer : {
-      module_type : EventWindowMarkerProducer
-      SpillType : 1
-      InitialPhaseShift : 0
-      RecoFromMCTruth : true
-      RecoFromMCTruthErr : 0
-    }
-    detRO : { @table::CaloMC.CaloShowerROMaker caloShowerStepCollection : @local::CAL1Steps
+    EWMProducer : { @table::CommonMC.DigiProducers.EWMProducer SpillType : 1 InitialPhaseShift : 0 }
+    detRO : { @table::CaloMC.CaloShowerROMaker caloShowerStepCollection : @local::CaloStepTags
               PEStatCorrection : false addTravelTime : false }
-    prdRO : { @table::CaloMC.CaloShowerROMaker caloShowerStepCollection : @local::CAL1Steps }
+    prdRO : { @table::CaloMC.CaloShowerROMaker caloShowerStepCollection : @local::CaloStepTags }
     detDigi : { @table::CaloMC.CaloDigiMaker caloShowerROCollection : detRO addNoise : false }
     noiDigi : { @table::CaloMC.CaloDigiMaker caloShowerROCollection : detRO }
     prdDigi : { @table::CaloMC.CaloDigiMaker caloShowerROCollection : prdRO }
@@ -66,7 +59,7 @@ physics : {
 }
 outputs : {
   out : { module_type : RootOutput fileName : "calo_stock.art"
-          outputCommands : [ "drop *_*_*_*", "keep *_*_*_CAL1Stock" ] }
+          outputCommands : [ "drop *_*_*_*", "keep *_*_*_CaloStock" ] }
 }
 
 physics.analyzers.det.trk.fill : false

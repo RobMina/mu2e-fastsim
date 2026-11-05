@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from calofastsim.digi import DigiConfig, digitize, sample_times, build_waveforms, noise_pedestal
-from calofastsim.pulse import N_STEPS, PulseCache
+from calofastsim.pulse import N_STEPS, PulseCache, _th1_interpolate
 
 
 def _shape():
@@ -26,10 +26,10 @@ def _reference_digis(ro_times, scale, pb, pulse, cfg, noise=None):
     for t_pe in ro_times:
         t = f(f(f(f(f(t_pe) + f(pb)) - f(cfg.digitization_start)) + f(cfg.time_from_protons_to_dr_marker))
               + cfg.start_time_buffer)
-        if t < 0:
+        start = int(t / f(cfg.digi_sampling))   # C++ unsigned(): truncation toward zero
+        if start < 0:
             continue
-        start = int(t / f(cfg.digi_sampling))
-        shift = N_STEPS - int(float(t) / pulse.digi_step) % N_STEPS
+        shift = N_STEPS - int(math.fmod(int(float(t) / pulse.digi_step), N_STEPS))
         shape = [pulse.pulse_vec[shift + i * N_STEPS] for i in range(pulse.n_bin_shape)]
         for s in range(start, min(start + len(shape), size)):
             wave[s] += shape[s - start] * scale
@@ -168,8 +168,46 @@ def test_pulse_cache_shape(pulse):
     np.testing.assert_allclose(pulse.evaluate(0.0), pulse.pulse_vec[N_STEPS + int(pulse.delta_t / pulse.digi_step)])
 
 
-def test_negative_digitizer_time_is_dropped(pulse):
+def test_negative_digitizer_time(pulse):
+    """t <= -digiSampling adds nothing; -digiSampling < t < 0 starts at sample 0, as the source's unsigned cast."""
     cfg = DigiConfig()
-    t = sample_times(np.array([-1000.0], np.float32), 0.0, cfg)
-    w = build_waveforms(np.array([0]), t, np.array([1.0]), 1, pulse, cfg)
+    w = build_waveforms(np.array([0]), np.array([-5.0], np.float32), np.array([1.0]), 1, pulse, cfg)
     assert not w.any()
+    t = np.float32(-2.5)
+    w = build_waveforms(np.array([0]), np.array([t]), np.array([1.0]), 1, pulse, cfg)
+    shift = N_STEPS - int(math.fmod(int(float(t) / pulse.digi_step), N_STEPS))
+    np.testing.assert_array_equal(w[0, :pulse.n_bin_shape], pulse.pulse_vec[shift + N_STEPS * np.arange(pulse.n_bin_shape)])
+
+
+def test_weights_equal_repeated_pes(pulse):
+    cfg = DigiConfig()
+    times = np.array([300.0, 300.0, 300.0, 712.3, 712.3], np.float32)
+    rep = build_waveforms(np.zeros(5, np.int64), times, np.full(5, 0.5), 1, pulse, cfg)
+    grp = build_waveforms(np.zeros(2, np.int64), times[[0, 3]], np.full(2, 0.5), 1, pulse, cfg, weight=[3, 2])
+    np.testing.assert_allclose(grp, rep, rtol=1e-15, atol=0)
+
+
+def test_th1_interpolate_matches_linear_interpolation():
+    rng = np.random.default_rng(2)
+    contents = rng.uniform(0, 1, 50).astype(np.float32)
+    centers = (np.arange(50) + 0.5) * 0.2
+    x = rng.uniform(-1.0, 11.0, 500)
+    np.testing.assert_allclose(_th1_interpolate(contents, 0.0, 10.0, x),
+                               np.interp(x, centers, contents.astype(np.float64)), rtol=1e-12, atol=1e-12)
+
+
+def test_offspill_waveform_size_and_x64_guard():
+    assert DigiConfig().waveform_size == 285
+    assert DigiConfig(event_length=100000.0).waveform_size == int((100000.0 - 450.0 + 80.0) / 5.0)
+    jax = pytest.importorskip("jax")
+    previous = jax.config.x64_enabled
+    jax.config.update("jax_enable_x64", False)
+    try:
+        with pytest.raises(ValueError, match="x64"):
+            digitize(np.zeros(1, np.int64), np.array([500.0]), 0.0, np.ones(1), 1, None, backend="jax")
+    finally:
+        jax.config.update("jax_enable_x64", previous)
+
+
+def test_pedestal_is_sequential_truncated_mean():
+    assert noise_pedestal(np.full(10000, 12.6)) == 12.0

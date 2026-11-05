@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Fast (JAX/NumPy) vs stock CaloDigis on the same saved CaloShowerSteps.
 
-Noise off (arm ``det``): digis must agree sample by sample. Noise on (arm ``noi``, same deterministic readouts):
-distributions of digi count, length, peak value, t0 and summed ADC, with chi2/ndf and a paired per-RO comparison.
+Noise off (arm ``det``): digis matched by (event, SiPM, t0) must agree sample by sample. Noise on (arm ``noi``,
+same deterministic readouts): the per-event digi count difference and the length, peak, t0 and summed-ADC shapes
+(chi2/ndf), optionally against a second stock seed as the stock-vs-stock reference.
+``--steps`` is the stock art file itself or a table export (see ``calofastsim.stockio.load_steps``).
 """
 from __future__ import annotations
 
@@ -33,7 +35,7 @@ def fast_digis(steps, timing, sim, pulse, *, noise=None, rng=None, ro_cfg=None, 
             return np.trunc(rng.random(len(length)) * (noise.size - np.asarray(length))).astype(np.int64)
         noise_arg = (noise, noise_pedestal(noise), offsets)
     d = digitize(row, t, timing["pbtime"][ev], stockio.adc_per_pe(sim, sipm), ukey.size, pulse, DigiConfig(),
-                 weight=count, noise=noise_arg, backend=backend)
+                 weight=count, noise=noise_arg, marker=timing["marker"][ev], backend=backend)
     d["event"], d["sipm"] = ukey[d["row"]] // 10000, ukey[d["row"]] % 10000
     return d
 
@@ -109,7 +111,7 @@ def git_sha(path):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--steps", required=True, help="response table export with CaloShowerSteps")
+    p.add_argument("--steps", required=True, help="stock art file with CaloShowerSteps, or a table export")
     p.add_argument("--ntuple", required=True, help="stock_chain EventNtuple file")
     p.add_argument("--sim-crystal", required=True)
     p.add_argument("--pulse", required=True)
@@ -122,8 +124,8 @@ def main(argv=None):
     if args.backend == "jax":
         import jax
         jax.config.update("jax_enable_x64", True)
-    events, timing, steps = stockio.load_steps(args.steps)
     sim = stockio.load_sim_crystal(args.sim_crystal)
+    events, timing, steps = stockio.load_steps(args.steps, sim)
     pulse = stockio.load_pulse(args.pulse)
     noise = stockio.load_noise(args.noise)
     report = {"events": int(events.size), "backend": args.backend, "seed": args.seed,

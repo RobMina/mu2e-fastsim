@@ -32,10 +32,15 @@ def test_deterministic_counts_and_times():
                                       time_from_protons_to_dr_marker=200.0)
     e = response.corrected_energy(steps["energy_g4"], steps["energy_birks"], steps["z_local"], 200.0, 0.05)
     n = response.nonnegative_lround(response.photoelectron_mean(e, steps["yields"]))
-    assert count.sum() == n[ok].sum()
-    assert set(np.unique(t)) <= set(hit[ok].astype(np.float32))
-    assert set(np.unique(sipm // 2)) <= set(steps["crystal"][ok])
-    assert np.all(sipm >= 0) and np.all(sipm < 2 * 674)
+    a = np.flatnonzero(ok)
+    exp_step = np.repeat(a, 2)
+    exp_sipm = 2 * steps["crystal"][exp_step] + np.tile([0, 1], a.size)
+    exp_count = n[a].ravel().astype(np.int64)
+    keep = exp_count > 0
+    np.testing.assert_array_equal(ev, ev_s[exp_step][keep])
+    np.testing.assert_array_equal(sipm, exp_sipm[keep])
+    np.testing.assert_array_equal(count, exp_count[keep])
+    np.testing.assert_array_equal(t, hit[exp_step][keep].astype(np.float32))
 
 
 def test_poisson_and_travel_expand_to_single_pes():

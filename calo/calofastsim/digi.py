@@ -7,7 +7,9 @@ double-precision waveform). Variable-length digi lists are gathered on the host.
 Exactness: with noise off the arithmetic follows the source types (float32 PE-time shift, double waveform, ``int``
 truncation). Summation order of the double waveform may differ from the source at roundoff level, which can flip a
 truncated ADC count when a sample lies within ~1e-12 of an integer. With noise on the source draws CLHEP uniforms;
-here the noise offsets come from the caller's generator, so only distributions can agree.
+here the noise offsets come from the caller's generator, so only distributions can agree. Noise segments come
+from the stored noise histogram (``generate: false``); the generated-noise cache is not implemented. Off spill,
+set ``DigiConfig.event_length`` (the waveform then spans the event length, as in the source).
 """
 from __future__ import annotations
 
@@ -28,7 +30,8 @@ class DigiConfig:
     min_peak_adc: int = 16
     n_bins_peak: int = 2
     min_noise_amp: float = 2.0
-    time_from_protons_to_dr_marker: float = 200.0
+    time_from_protons_to_dr_marker: float = 200.0   # default when no per-event marker is passed
+    event_length: float | None = None               # None: on spill; else the off-spill event length (ns)
 
     @property
     def start_time_buffer(self):
@@ -36,8 +39,12 @@ class DigiConfig:
 
     @property
     def waveform_size(self):
-        return int(np.float32((np.float32(self.digitization_end) - np.float32(self.digitization_start)
-                               + self.start_time_buffer)) / np.float32(self.digi_sampling))
+        """Samples per waveform: float arithmetic on spill, double with the event length off spill."""
+        if self.event_length is None:
+            return int(np.float32((np.float32(self.digitization_end) - np.float32(self.digitization_start)
+                                   + self.start_time_buffer)) / np.float32(self.digi_sampling))
+        return int((float(self.event_length) - float(np.float32(self.digitization_start))
+                    + float(self.start_time_buffer)) / float(np.float32(self.digi_sampling)))
 
     @property
     def max_adc(self):
@@ -47,7 +54,10 @@ class DigiConfig:
 def _xp(backend):
     if backend == "numpy":
         return np
+    import jax
     import jax.numpy as jnp
+    if not jax.config.x64_enabled:
+        raise ValueError("the double-precision waveform requires caller-enabled JAX x64")
     return jnp
 
 
@@ -59,12 +69,16 @@ def _scatter_add(xp, target, index, values):
     return target.at[index].add(values)
 
 
-def sample_times(pe_time, pbtime, cfg: DigiConfig):
-    """Float32 PE time in the digitizer frame, in the source's left-to-right order."""
+def sample_times(pe_time, pbtime, cfg: DigiConfig, marker=None):
+    """Float32 PE time in the digitizer frame, in the source's left-to-right order.
+
+    ``marker`` is the per-PE (or scalar) EventTiming timeFromProtonsToDRMarker; default from ``cfg``.
+    """
     f = np.float32
+    marker = cfg.time_from_protons_to_dr_marker if marker is None else marker
     t = np.asarray(pe_time, dtype=f) + np.asarray(pbtime, dtype=f)
     t = t - f(cfg.digitization_start)
-    t = t + f(cfg.time_from_protons_to_dr_marker)
+    t = t + np.asarray(marker, dtype=f)
     return (t + cfg.start_time_buffer).astype(f)
 
 
@@ -72,23 +86,31 @@ def build_waveforms(row, time32, scale, n_rows, pulse: PulseCache, cfg: DigiConf
     """Return ``(n_rows, waveform_size)`` float64 waveforms (ADC units, no noise, no pedestal).
 
     ``row`` maps each PE (or PE group) to its waveform row, ``time32`` comes from :func:`sample_times`, ``scale`` is
-    ADCPerMeV/pePerMeV of that row's SiPM (float32 division) and ``weight`` an optional PE multiplicity. PEs with a
-    negative digitizer time are dropped (the source's unsigned conversion makes them a no-op).
+    ADCPerMeV/pePerMeV of that row's SiPM (float32 division) and ``weight`` an optional PE multiplicity.
+    The source's ``unsigned(time/digiSampling)`` truncates toward zero, so a PE with ``-digiSampling < t < 0`` still
+    starts at sample 0 (with its fractional phase); PEs at ``t <= -digiSampling`` wrap to a huge start and add nothing.
+    PEs sharing row, start sample and fine phase add the same pulse, so they are merged with summed weights first.
     """
     xp = _xp(backend)
     size = cfg.waveform_size
     time32 = np.asarray(time32, dtype=np.float32)
-    keep = time32 >= 0
-    row = np.asarray(row)[keep]
-    time32 = time32[keep]
-    w = np.ones(time32.shape) if weight is None else np.asarray(weight, dtype=np.float64)[keep]
     start = np.trunc(time32 / np.float32(cfg.digi_sampling)).astype(np.int64)
+    keep = start >= 0
+    row, time32, start = np.asarray(row)[keep], time32[keep], start[keep]
+    w = np.ones(time32.shape) if weight is None else np.asarray(weight, dtype=np.float64)[keep]
+    w = w * np.asarray(scale, dtype=np.float64)[keep]
     first = pulse.shift_bin(time32.astype(np.float64))
+    key = (row.astype(np.int64) * (size + 1) + np.minimum(start, size)) * (2 * N_STEPS + 1) + first
+    ukey, inv = np.unique(key, return_inverse=True)
+    w = np.bincount(inv, weights=w, minlength=ukey.size)
+    pick = np.zeros(ukey.size, np.int64)
+    pick[inv] = np.arange(inv.size)
+    row, start, first = row[pick], start[pick], first[pick]
     k = np.arange(pulse.n_bin_shape)
     sample = start[:, None] + k
     ok = sample < size
     amp = xp.asarray(pulse.pulse_vec)[xp.asarray(first[:, None] + N_STEPS * k)]
-    amp = amp * xp.asarray((np.asarray(scale, dtype=np.float64)[keep] * w)[:, None])
+    amp = amp * xp.asarray(w[:, None])
     flat = np.where(ok, row[:, None] * size + sample, n_rows * size)
     out = xp.zeros(n_rows * size + 1, dtype=xp.float64)
     out = _scatter_add(xp, out, xp.asarray(flat.ravel()), amp.ravel())
@@ -180,11 +202,12 @@ def _cummin_reverse(xp, a):
     return lax.cummin(a, axis=1, reverse=True)
 
 
-def extract_digis(waveform, wf, first, run_end, cfg: DigiConfig):
+def extract_digis(waveform, wf, first, run_end, cfg: DigiConfig, row_marker=None):
     """Gather digis on the host: merge peaks whose buffered start overlaps the previous stop, then cut samples.
 
     Returns a dict with ``row``, ``t0``, ``peakpos``, ``offsets`` and flat ``samples`` (``int(waveform)`` clipped
-    to the ADC range, without pedestal subtraction, as stored by the source).
+    to the ADC range, without pedestal subtraction, as stored by the source). ``row_marker`` is the per-row
+    timeFromProtonsToDRMarker (default from ``cfg``).
     """
     waveform = np.asarray(waveform)
     first = np.asarray(first)
@@ -194,22 +217,22 @@ def extract_digis(waveform, wf, first, run_end, cfg: DigiConfig):
     stop = run_end[p_row, p_pos]
     new = np.ones(p_row.size, dtype=bool)
     new[1:] = (p_row[1:] != p_row[:-1]) | (start[1:] > stop[:-1])
-    gid = np.cumsum(new) - 1
     g_first = np.flatnonzero(new)
     g_last = np.r_[g_first[1:] - 1, p_row.size - 1].astype(np.int64)
     row, g_start, g_stop = p_row[g_first], start[g_first], stop[g_last]
     f = np.float32
+    marker = (np.full(waveform.shape[0], cfg.time_from_protons_to_dr_marker, f) if row_marker is None
+              else np.asarray(row_marker, f))[row]
     t0 = np.trunc(g_start.astype(f) * f(cfg.digi_sampling) + f(cfg.digitization_start)
-                  - f(cfg.time_from_protons_to_dr_marker) - cfg.start_time_buffer).astype(np.int64)
+                  - marker - cfg.start_time_buffer).astype(np.int64)
     length = g_stop - g_start
     offsets = np.r_[0, np.cumsum(length)].astype(np.int64)
     member = np.repeat(np.arange(row.size), length)
     local = np.arange(offsets[-1]) - offsets[:-1][member]
     samples = np.minimum(np.trunc(waveform[row[member], g_start[member] + local]), cfg.max_adc).astype(np.int64)
-    ok = (t0[member].astype(f) + local.astype(f) * f(cfg.digi_sampling) + f(cfg.time_from_protons_to_dr_marker)
+    ok = (t0[member].astype(f) + local.astype(f) * f(cfg.digi_sampling) + marker[member]
           >= f(cfg.digitization_start))
     peakpos = _peak_positions(samples, ok, member, local, offsets, row.size)
-    del gid
     return {"row": row, "t0": t0, "peakpos": peakpos, "offsets": offsets, "samples": samples}
 
 
@@ -226,9 +249,17 @@ def _peak_positions(samples, ok, member, local, offsets, n):
 
 
 def digitize(row, pe_time, pbtime, scale, n_rows, pulse, cfg=DigiConfig(), *, weight=None, noise=None,
-             backend="numpy"):
-    """Full stock digitisation for the given PEs. ``noise=(noise_wf, pedestal, offsets)`` enables noise."""
-    time32 = sample_times(pe_time, pbtime, cfg)
+             marker=None, backend="numpy"):
+    """Full stock digitisation for the given PEs. ``noise=(noise_wf, pedestal, offsets)`` enables noise.
+
+    ``pbtime`` and ``marker`` (timeFromProtonsToDRMarker) are per PE or scalar; a row's PEs share one event.
+    """
+    _xp(backend)
+    time32 = sample_times(pe_time, pbtime, cfg, marker)
+    row_marker = None
+    if marker is not None:
+        row_marker = np.full(n_rows, cfg.time_from_protons_to_dr_marker, np.float32)
+        row_marker[np.asarray(row)] = np.broadcast_to(np.asarray(marker, np.float32), np.shape(row))
     wave = build_waveforms(row, time32, scale, n_rows, pulse, cfg, weight=weight, backend=backend)
     pedestal = 0.0
     if noise is not None:
@@ -236,10 +267,15 @@ def digitize(row, pe_time, pbtime, scale, n_rows, pulse, cfg=DigiConfig(), *, we
         wave = add_noise(wave, noise_wf, offsets, cfg, backend)
     wf = adc_waveform(wave, pedestal, cfg, backend)
     first, run_end = first_peaks(wf, cfg, backend)
-    return extract_digis(wave, wf, first, run_end, cfg)
+    return extract_digis(wave, wf, first, run_end, cfg, row_marker)
 
 
 def noise_pedestal(noise_wf):
-    """``CaloNoiseUtil::fillCache`` pedestal: truncated mean of the stored noise histogram."""
+    """``CaloNoiseUtil::fillCache`` pedestal: truncated mean of the stored noise histogram (sequential double sum).
+
+    Only the stored-histogram noise (``CaloNoiseCache.generate: false``, the production setting) is supported;
+    the generated-noise cache (``generate: true``) is not implemented.
+    """
     noise = np.asarray(noise_wf, dtype=np.float32).astype(np.float64)
-    return float(np.trunc(noise.sum() / noise.size))
+    total = np.add.accumulate(noise)[-1] if noise.size else 0.0
+    return float(np.trunc(total / noise.size))

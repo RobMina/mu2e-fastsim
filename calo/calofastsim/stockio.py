@@ -11,8 +11,26 @@ from .pulse import PulseCache
 from .readout import PropagationTable
 
 
-def load_steps(path):
-    """CaloShowerSteps and per-event timing from a ``response`` table export (one row per step / event)."""
+def load_steps(path, sim_crystal=None, **timing_kw):
+    """CaloShowerSteps and per-event timing as ``(events, timing, steps)``.
+
+    ``path`` is either a stock art file (read with :mod:`calofastsim.artsteps`; needs ``sim_crystal`` for LRU and
+    yields, and takes the on-spill EWM settings in ``timing_kw``) or a ROOT table export with this schema:
+
+    - ``response/events``, one row per event: ``event`` (art event number), ``pbtime`` (ProtonBunchTimeMC, ns),
+      ``mbtime`` (nominal DR period), ``event_length``, ``spill`` (1 = on spill), ``marker``
+      (timeFromProtonsToDRMarker), ``crystal_length`` (mm);
+    - ``response/steps``, one row per CaloShowerStep in collection order: ``event``, ``crystal`` (volumeG4ID),
+      ``energy_g4``, ``energy_birks`` (MeV), ``time`` (ns, double), ``z`` (crystal-frame depth, mm),
+      ``lru``, ``yield0``, ``yield1`` (PE/MeV of the two SiPMs).
+
+    Events are returned sorted by event number; ``steps["event"]`` indexes them.
+    """
+    if str(path).endswith(".art"):
+        from .artsteps import steps_from_art
+        if sim_crystal is None:
+            raise ValueError("reading steps from art needs the Sim_crystal table")
+        return steps_from_art(path, sim_crystal, **timing_kw)
     with uproot.open(path) as f:
         ev = f["response/events"].arrays(library="np")
         st = f["response/steps"].arrays(["event", "crystal", "energy_g4", "energy_birks", "time", "z", "lru",
