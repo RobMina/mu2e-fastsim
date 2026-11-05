@@ -64,6 +64,15 @@ def adc_per_pe(sim, sipm):
     return (sim["adc_per_mev"][c, i] / sim["pe_per_mev"][c, i]).astype(np.float64)
 
 
+CAPHRI_CRYSTALS = (582, 609, 610, 637)
+
+
+def adc_to_mev(sipm, csi=0.0625, lyso=0.00375):
+    """Nominal ``CalCalib`` (fromFcl): ADC2MeV per SiPM, LYSO for the CAPHRI crystals."""
+    crystal = np.asarray(sipm) // 2
+    return np.where(np.isin(crystal, CAPHRI_CRYSTALS), lyso, csi)
+
+
 def load_pulse(path, digi_sampling=5.0, hist="h_waveform"):
     with uproot.open(path) as f:
         h = f[hist]

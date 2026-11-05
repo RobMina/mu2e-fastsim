@@ -75,3 +75,17 @@ def test_invalid_identifiers_and_fit_errors_refused():
     with pytest.raises(ValueError, match="positive"):
         make_hits([0, 0], [0, 1], [1., 2.], [0., 1.], [1., 2.], [1., 1.],
                   n_events=1, n_crystals=2, time4merge=6.)
+
+
+def test_jax_rounds_match_numpy():
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    rng = np.random.default_rng(9)
+    n = 400
+    args = (rng.integers(0, 5, n), rng.integers(0, 40, n), rng.uniform(0, 40, n).astype(np.float32),
+            rng.uniform(0.1, 1, n), rng.uniform(1, 50, n), rng.uniform(0.1, 2, n))
+    kw = dict(n_events=5, n_crystals=20, time4merge=6.0)
+    a = make_hits(*args, **kw)
+    b = make_hits(*args, **kw, backend="jax")
+    for k in a:
+        np.testing.assert_array_equal(a[k], b[k])
