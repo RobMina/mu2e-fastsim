@@ -9,23 +9,25 @@ needs the matching released Offline runtime and stock digis; no C++ build, new G
 | `replay.py` | parses the `config_dumper -P` output, writes `inventory.json` (every scheduled path, its modules, prescales, output selection, geometry, conditions), `replay.fcl` and `manifest.json` |
 | `replay.sbatch` | runs `replay.fcl` through `container/offline/offline_uva.sh`, then `compare.py` (or `timing.py` with `TRIGGER_MODE=timing`) |
 | `compare.py` | per-path comparison of the stored (`TriggerResults::Digitize`) and replayed decisions printed by the job, keyed by run/subrun/event |
-| `event_count.py` | finished-event count from the highest-cycle `Events` tree of `decisions.art` |
 | `menu_diff.py` | module-setting differences between two inventories (e.g. CE and cosmic eras) |
 | `timing.py` | trigger-module wall time per event from an art TimeTracker table |
-| `paired.py` | paired per-shard efficiency differences between two comparison reports |
 
 ## Use
 
 ```bash
 config_dumper -P "$INPUT" > "$OUT/input.config.txt"
 python3 trigger/replay.py "$OUT/input.config.txt" --output "$OUT/prepared"
-sbatch -A ldmxuva -p standard --export=ALL,TRIGGER_CODE=$PWD,TRIGGER_PREPARED=$OUT/prepared,\
+sbatch -p <partition> --export=ALL,TRIGGER_CODE=$PWD,TRIGGER_PREPARED=$OUT/prepared,\
 TRIGGER_INPUT=$INPUT,TRIGGER_OUTPUT=$OUT/run,TRIGGER_AREA=$RELEASE,TRIGGER_PYTHON=python3,OFFLINE_EVENTS=$N,\
 CVMFSEXEC_DIST=$CVMFSEXEC \
   trigger/replay.sbatch
 ```
 
-`$RELEASE` is the released Offline area on CVMFS (or a muse area) that made the input file. `--quiet` prepares a timing configuration without the per-event decision printer. `--straw-digi-tag` and
+The account comes from `-A` or Slurm's `SBATCH_ACCOUNT` (see `docs/running.md`). `$RELEASE` is the released Offline
+area on CVMFS (or a muse area) that made the input file. `OFFLINE_EVENTS=0` replays the whole file and takes the
+expected count from `TRIGGER_EVENT_LIST` (`file_info_dumper --event-list` output). `compare.py` exits 0 when every
+non-stateful path matches; `--strict` requires all paths. `TRIGGER_FORCE=1` lets a run reuse an output directory.
+`--quiet` prepares a timing configuration without the per-event decision printer. `--straw-digi-tag` and
 `--calo-digi-tag` rebind the trigger to other digi collections in the same events (fast digis).
 
 What `replay.py` changes in the production configuration: it removes `DigitizePath` modules from the trigger paths
@@ -35,7 +37,7 @@ process name. Services, conditions, geometry and every filter threshold are the 
 process must be the release that made the file: the CE and cosmic productions differ (13_41 vs 13_33, 17 module
 settings, calorimeter digi time units).
 
-## Results (R7, 2026-11-04)
+## Results (2026-11-04)
 
 | Sample | Events | Paths exact | Differences |
 |---|---|---|---|
@@ -51,7 +53,7 @@ the stored file does not contain, so they cannot match exactly on selected digis
   `_nevt % evalIPAPresc(phi)`, not on the art event number.
 
 `manifest.json` lists both as `stateful_paths`; `compare.py` reports `nonstateful_mismatches` separately but still
-counts them in `mismatches`. The 52/52 rows replayed every event the digitization job processed (regenerated from its
+counts them in `mismatches` and `equal`. The 52/52 rows replayed every event the digitization job processed (regenerated from its
 dts parents with the production seed), so both counters evolve as in production; the regeneration tooling is not
 in this package.
 
@@ -59,4 +61,5 @@ in this package.
 cosmics (two production logs each, TimeTracker). A quiet CE replay on UVA: 9.54 ms of trigger work per stored
 event, 11.22 ms per event with I/O.
 
-The comparison is accepted/rejected per path; it does not distinguish rejected from not run or exception.
+The comparison uses the accepted/rejected bit per path. A decision line in any other state (not run, exception) is
+an error, not a rejection.

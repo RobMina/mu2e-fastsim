@@ -1,17 +1,14 @@
-"""Compare two PRIVATE replay.py inventories from embedded productions.
+"""Compare two replay.py inventories from embedded production configurations.
 
-Use: python3 trigger/menu_diff.py REFERENCE CANDIDATE --output PRIVATE_REPORT
-Stdlib only; never reads art products or runs production/replay. Reports exact
-JSON settings (including module_label), not physics equivalence or efficiency.
+Use: python3 trigger/menu_diff.py REFERENCE CANDIDATE --output REPORT
+Reports exact JSON settings (including module_label), not physics equivalence.
 Object key order is immaterial; array order and JSON scalar types are retained.
 Shared module definitions and their changes are recorded once, with path users.
-Reports can contain private conditions/geometry/settings: keep them private.
-Exit 0 means comparison completed (even if different); invalid inputs exit 1.
+Exit 0 means the comparison completed (even if different); invalid inputs exit 1.
 """
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import re
@@ -26,10 +23,6 @@ def canonical(value):
     """Canonical JSON: sorted object keys; preserve arrays and scalar types."""
     return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True,
                       allow_nan=False)
-
-
-def digest(value):
-    return hashlib.sha256(canonical(value).encode('utf-8')).hexdigest()
 
 
 def changes(reference, candidate, pointer=''):
@@ -155,37 +148,32 @@ def compare(reference, candidate):
         if fields:
             local_changes[name] = fields
     ref_labels, new_labels = set(ref_modules), set(new_modules)
-    hashes = _pair({label: digest(ref_modules[label]) for label in sorted(ref_labels)},
-                   {label: digest(new_modules[label]) for label in sorted(new_labels)})
     module_changes = []
     affected = set(local_changes)
     for label in sorted(ref_labels & new_labels):
-        if hashes['reference'][label] == hashes['candidate'][label]:
+        if canonical(ref_modules[label]) == canonical(new_modules[label]):
             continue
         affected_paths = sorted(ref_users[label] | new_users[label])
         affected.update(common_paths & set(affected_paths))
         module_changes.append({
             'label': label,
             'type': _pair(ref_modules[label]['module_type'], new_modules[label]['module_type']),
-            'hashes': _pair(hashes['reference'][label], hashes['candidate'][label]),
             'reference_paths': sorted(ref_users[label]), 'candidate_paths': sorted(new_users[label]),
             'affected_paths': affected_paths,
             **_pair(ref_modules[label], new_modules[label]),
             'changes': changes(ref_modules[label], new_modules[label]),
         })
     added_modules = [{'label': label, 'type': new_modules[label]['module_type'],
-                      'hash': hashes['candidate'][label], 'paths': sorted(new_users[label]),
+                      'paths': sorted(new_users[label]),
                       'settings': new_modules[label]} for label in sorted(new_labels - ref_labels)]
     removed_modules = [{'label': label, 'type': ref_modules[label]['module_type'],
-                        'hash': hashes['reference'][label], 'paths': sorted(ref_users[label]),
+                        'paths': sorted(ref_users[label]),
                         'settings': ref_modules[label]} for label in sorted(ref_labels - new_labels)]
     contexts = {key: {'equal': canonical(reference[key]) == canonical(candidate[key]),
                       'changes': changes(reference[key], candidate[key])} for key in CONTEXT_FIELDS}
-    inventory_hashes = _pair(digest(reference), digest(candidate))
     return {
         'schema_version': 1,
-        'equal': inventory_hashes['reference'] == inventory_hashes['candidate'],
-        'inventory_hashes': inventory_hashes,
+        'equal': canonical(reference) == canonical(candidate),
         'summary': {
             'paths_reference': len(ref_paths), 'paths_candidate': len(new_paths),
             'paths_added': len(new_names - ref_names), 'paths_removed': len(ref_names - new_names),
@@ -205,7 +193,7 @@ def compare(reference, candidate):
                       **_pair(list(ref_paths), list(new_paths))},
         },
         'modules': {'added': added_modules, 'removed': removed_modules,
-                    'changed': module_changes, 'hashes': hashes},
+                    'changed': module_changes},
         **contexts,
         'metadata_changes': changes(_extras(reference, ('paths', *CONTEXT_FIELDS)),
                                     _extras(candidate, ('paths', *CONTEXT_FIELDS))),
@@ -233,7 +221,7 @@ def main():
     parser.add_argument('reference', type=Path)
     parser.add_argument('candidate', type=Path)
     parser.add_argument('--output', type=Path, required=True,
-                        help='private JSON report (contains original parameter values)')
+                        help='JSON report (contains the original parameter values)')
     args = parser.parse_args()
     try:
         if args.output.resolve() in {args.reference.resolve(), args.candidate.resolve()}:
@@ -241,9 +229,8 @@ def main():
         report = compare(_load(args.reference), _load(args.candidate))
         rendered = json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + '\n'
         args.output.write_text(rendered)
-    except (OSError, ValueError, TypeError, RecursionError):
-        # Input/error strings can contain private storage paths or configuration values.
-        parser.exit(1, 'menu comparison failed: invalid inventory or inaccessible private file\n')
+    except (OSError, ValueError, TypeError, RecursionError) as error:
+        parser.exit(1, f'menu comparison failed: {error}\n')
     counts = report['summary']
     print(f"equal={str(report['equal']).lower()} "
           f"paths +{counts['paths_added']} -{counts['paths_removed']} changed={counts['paths_changed']} "
@@ -261,7 +248,6 @@ def main():
                 module_type = f"{module_type['reference']} -> {module_type['candidate']}"
             keys = (sorted({change['pointer'].split('/')[1] for change in row['changes']})
                     if kind == 'changed' else sorted(row['settings']))
-            # Escape controls; never print settings, input filenames or report location.
             text = f"module {kind}: {row['label']} type={module_type} keys={','.join(keys[:12])}"
             if len(keys) > 12:
                 text += f",... (+{len(keys) - 12})"
@@ -269,7 +255,7 @@ def main():
             previewed += 1
     total = counts['modules_changed'] + counts['modules_added'] + counts['modules_removed']
     if total > previewed:
-        print(f'{total - previewed} additional module change records in private JSON report')
+        print(f'{total - previewed} additional module change records in the JSON report')
 
 
 if __name__ == '__main__':

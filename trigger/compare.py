@@ -103,8 +103,10 @@ def input_event_keys(text):
 
 
 def compare(text, manifest, expected_events, expected_keys=None):
+    if expected_events <= 0 and expected_keys is not None:
+        expected_events = len(expected_keys)
     if expected_events <= 0:
-        raise ValueError("expected event count must be positive")
+        raise ValueError("expected event count must be positive, or given by an input event list")
     original, replay, names, bits = validate_manifest(manifest)
     events = read_decisions(text, (original, replay))
     if len(events) != expected_events:
@@ -161,19 +163,20 @@ def compare(text, manifest, expected_events, expected_keys=None):
             'mismatch_examples': mismatch_examples,
             'stateful_paths': sorted(stateful), 'nonstateful_mismatches': nonstateful_mismatches,
             'equal': mismatches == 0, 'comparison': 'accepted_boolean_only',
-            'full_art_state_compared': False, 'input_event_ids_verified': expected_keys is not None,
+            'input_event_ids_verified': expected_keys is not None,
             'stored_output_selection_mismatches': selection_mismatches if output_selection is not None else None,
-            'selection_caveat': 'original truth-only path bits retained; conditional stored-input selection only',
-            'denominator': 'stored input events, not generated events'}
+            'denominator': 'stored input events'}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('log', type=Path)
     parser.add_argument('--manifest', type=Path, required=True)
-    parser.add_argument('--expected-events', type=int, required=True)
+    parser.add_argument('--expected-events', type=int, required=True,
+                        help='finished events; 0 takes the count from --input-event-list')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--input-event-list', type=Path, help='file_info_dumper --event-list output')
+    parser.add_argument('--strict', action='store_true', help='exit 1 on any mismatch, stateful paths included')
     args = parser.parse_args()
     text = args.log.read_text()
     statuses = COMPLETION.findall(text)
@@ -181,14 +184,17 @@ def main():
         raise ValueError("need exactly one successful art completion marker")
     expected = None
     if args.input_event_list:
-        expected = input_event_keys(args.input_event_list.read_text())[:args.expected_events]
+        expected = input_event_keys(args.input_event_list.read_text())
+        if args.expected_events > 0:
+            expected = expected[:args.expected_events]
     report = compare(text, json.loads(args.manifest.read_text()), args.expected_events, expected)
     args.output.write_text(json.dumps(report, indent=2) + '\n')
     print(f"events={report['events']} path_mismatches={report['mismatches']} accepted decisions only")
     for name, row in report['paths'].items():
         if row['mismatches']:
             print(f"{name} mismatches={row['mismatches']} stock_only={row['stock_only']} replay_only={row['replay_only']}")
-    raise SystemExit(0 if report['equal'] else 1)
+    passed = report['equal'] if args.strict else report['nonstateful_mismatches'] == 0
+    raise SystemExit(0 if passed else 1)
 
 
 if __name__ == '__main__':

@@ -126,7 +126,7 @@ os.execv(args[5], args[5:])
     executable(code / 'container' / 'offline' / 'offline_uva.sh', '''#!/bin/bash
 set -euo pipefail
 printf 'art\n' >> "$FAKE_TRACE"
-printf '%s\n' "$PWD" "$@" "$OFFLINE_EVENTS" "$OFFLINE_LOG_PREFIX" "$OFFLINE_BINDS" > "$FAKE_ART_CALL"
+printf '%s\n' "$PWD" "$@" "${OFFLINE_EVENTS:-all}" "$OFFLINE_LOG_PREFIX" "$OFFLINE_BINDS" > "$FAKE_ART_CALL"
 [[ $# == 3 && $1 == "$TRIGGER_AREA" && $2 == "$TRIGGER_PREPARED/replay.fcl" && $3 == "$TRIGGER_INPUT" ]]
 cat "$FAKE_ART_LOG"
 exit "${FAKE_ART_STATUS:-0}"
@@ -188,6 +188,18 @@ def test_refuses_to_overwrite_either_previous_artifact(batch, previous):
     assert sentinel.read_bytes() == b'previous replay must survive\n'
     assert {path.name for path in batch.output.iterdir()} == {previous}
     assert not batch.art_call.exists()
+    batch.env['TRIGGER_FORCE'] = '1'
+    result = run_batch(batch)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (batch.output / 'art.exit').read_text() == '0\n'
+
+
+def test_zero_events_replays_whole_file_and_counts_from_event_list(batch):
+    batch.env['OFFLINE_EVENTS'] = '0'
+    result = run_batch(batch)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert batch.art_call.read_text().splitlines()[4] == 'all'
+    assert json.loads((batch.output / 'comparison.json').read_text())['events'] == 1
 
 
 def test_success_runs_real_comparator_with_event_ids(batch):

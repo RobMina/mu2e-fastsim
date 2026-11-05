@@ -279,13 +279,11 @@ def prepare(config, original_process='Digitize', replay_process='TriggerReplay',
                 'paths': [p['path'] for p in inv['paths']], 'bits': [p['bit'] for p in inv['paths']],
                 'removed_digitizers': sorted(digitizers), 'removed_mc_matching': sorted(removed_mc),
                 'external_bindings': bindings, 'digi_substitutions': substitutions,
-                'dependency_audit': 'known digi/timing fields and removed/old-process references only',
                 'comparison': 'accepted_boolean_only', 'denominator': 'all stored input events',
                 'stock_output_selection': inv['output_selection'],
                 'stateful_modules': stateful,
-                'stateful_paths': [name for _, name, sequence in paths(config)
-                    if any(label in stateful for label in sequence)],
-                'stateful_warning': 'Selected input may omit events that advanced buffering counters.'}
+                'stateful_paths': [row['path'] for row in inv['paths']
+                    if any(label in stateful for label in row['sequence'])]}
     manifest['mode'] = 'quiet_timing' if quiet else 'decision_comparison'
     if quiet:
         replay['physics']['analyzers'] = {}
@@ -301,7 +299,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('config', type=Path, help='config_dumper -P output')
     parser.add_argument('--process', default='Digitize')
-    parser.add_argument('--output', type=Path, required=True, help='private output directory')
+    parser.add_argument('--output', type=Path, required=True, help='output directory')
     parser.add_argument('--quiet', action='store_true', help='no per-event printer; timing mode, not decision comparison')
     parser.add_argument('--straw-digi-tag', help='injected digi label:instance:process in the same input events')
     parser.add_argument('--calo-digi-tag', help='injected digi label:instance:process in the same input events')

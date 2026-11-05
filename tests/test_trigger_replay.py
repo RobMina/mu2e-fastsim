@@ -120,7 +120,6 @@ def manifest():
 def test_exact_and_mismatch():
     report = comparison.compare(log() + log('fail', 'fail', 4), manifest(), 2)
     assert report['equal'] and report['events'] == 2
-    assert not report['full_art_state_compared']
     report = comparison.compare(log(candidate='fail'), manifest(), 1)
     assert not report['equal']
     assert report['paths']['calo_cluster']['mismatches'] == 1
@@ -130,7 +129,7 @@ def test_exact_and_mismatch():
     log().replace('425 calo_cluster', '426 calo_cluster'),
     log().replace('pass 425 calo_cluster', 'pass 425 other'),
     log() + '  pass 425 calo_cluster\n'])
-def test_incomplete_duplicate_or_wrong_paths_fail_closed(text):
+def test_incomplete_duplicate_or_wrong_paths_rejected(text):
     with pytest.raises(ValueError):
         comparison.compare(text, manifest(), 1)
 
@@ -138,6 +137,9 @@ def test_incomplete_duplicate_or_wrong_paths_fail_closed(text):
 def test_expected_count_required():
     with pytest.raises(ValueError, match='finished event count'):
         comparison.compare(log(), manifest(), 2)
+    with pytest.raises(ValueError, match='positive'):
+        comparison.compare(log(), manifest(), 0)
+    assert comparison.compare(log(), manifest(), 0, [(1, 2, 3)])['events'] == 1
     with pytest.raises(ValueError, match='positive'):
         comparison.compare(log(), manifest(), 0)
 
@@ -160,7 +162,7 @@ def test_printer_fixed_width_event_boundary(event):
 @pytest.mark.parametrize('extra', ['  exception 425 calo_cluster', '  pass abc calo_cluster',
     '  fail 425', '  notrun 425 calo_cluster', '  pass 0425 calo_cluster',
     'ProductPrint art::TriggerResults_BROKEN'])
-def test_unsupported_records_fail_closed(extra):
+def test_unsupported_records_rejected(extra):
     with pytest.raises(ValueError, match='decision|TriggerResults'):
         comparison.compare(log() + extra + '\n', manifest(), 1)
 
@@ -238,24 +240,29 @@ def test_compare_cli_needs_successful_art_completion(tmp_path, monkeypatch):
     assert json.loads(output.read_text())['equal']
 
 
-paired = load('paired')
-
-
-def test_paired_migrations_and_per_shard_error():
-    a = comparison.compare(log('pass', 'fail') + log('pass', 'pass', 4), manifest(), 2, [(1, 2, 3), (1, 2, 4)])
-    b = comparison.compare(log('fail', 'pass') + log('pass', 'pass', 4), manifest(), 2, [(1, 2, 3), (1, 2, 4)])
-    assert a['paths']['calo_cluster']['stock_only'] == 1
-    assert a['paths']['calo_cluster']['paired_efficiency_difference'] == -0.5
-    summary = paired.summarize([a, b])
-    row = summary['paths']['calo_cluster']
-    assert row['mean_paired_difference'] == 0
-    assert row['paired_shard_sem'] == pytest.approx(0.5)
-    assert row['mismatches'] == 2
-    with pytest.raises(ValueError, match='two independent'):
-        paired.summarize([a])
-    a['input_event_ids_verified'] = False
-    with pytest.raises(ValueError, match='IDs'):
-        paired.summarize([a, b])
+def test_compare_cli_exit_code_ignores_stateful_paths_unless_strict(tmp_path, monkeypatch):
+    import json
+    source, prepared, output, events = [tmp_path / name for name in
+                                        ('art.log', 'manifest.json', 'report.json', 'input.events')]
+    item = manifest()
+    item['stateful_paths'] = ['calo_cluster']
+    prepared.write_text(json.dumps(item))
+    source.write_text(log(candidate='fail') + '\nArt has completed and will exit with status 0.\n')
+    events.write_text('1 2 3\n')
+    base = ['compare.py', str(source), '--manifest', str(prepared), '--output', str(output)]
+    for extra, code in ((['--expected-events', '1'], 0), (['--expected-events', '1', '--strict'], 1),
+                        (['--expected-events', '0', '--input-event-list', str(events)], 0)):
+        monkeypatch.setattr(sys, 'argv', base + extra)
+        with pytest.raises(SystemExit) as exc:
+            comparison.main()
+        assert exc.value.code == code
+        report = json.loads(output.read_text())
+        assert report['events'] == 1 and report['mismatches'] == 1 and report['nonstateful_mismatches'] == 0
+    prepared.write_text(json.dumps(manifest()))
+    monkeypatch.setattr(sys, 'argv', base + ['--expected-events', '1'])
+    with pytest.raises(SystemExit) as exc:
+        comparison.main()
+    assert exc.value.code == 1
 
 
 def test_direct_digi_count_bindings_are_not_missed():
@@ -321,25 +328,6 @@ def test_output_selection_is_not_the_full_menu_or():
     item['stock_output_selection'] = ['missing_*']
     with pytest.raises(ValueError, match='matches no original'):
         comparison.compare(source, item, 1)
-
-
-def test_finished_art_event_count_highest_cycle_and_failures(tmp_path):
-    import numpy as np
-    import uproot
-    counter = load('event_count')
-    path = tmp_path / 'decisions.art'
-    with uproot.recreate(path) as root:
-        root.mktree('Events', {'event': 'int64'})
-        root['Events'].extend({'event': np.arange(2, dtype=np.int64)})
-    with uproot.update(path) as root:
-        root.mktree('Events', {'event': 'int64'})
-        root['Events'].extend({'event': np.arange(3, dtype=np.int64)})
-    report = counter.verify(path, 3)
-    assert report['highest_cycle'] == 2 and report['events'] == 3
-    with pytest.raises(ValueError, match='entries'):
-        counter.verify(path, 2)
-    with pytest.raises(ValueError, match='positive'):
-        counter.verify(path, 0)
 
 
 def test_mismatch_examples_are_bounded_and_identified():

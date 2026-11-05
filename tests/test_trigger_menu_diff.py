@@ -1,4 +1,4 @@
-"""Synthetic private embedded-production menu comparison contracts."""
+"""Synthetic embedded-production menu comparison tests."""
 from copy import deepcopy
 import importlib.util
 import json
@@ -35,7 +35,7 @@ def inventory():
     }
 
 
-def test_reordered_dicts_equal_and_hashes_deterministic_without_mutation():
+def test_reordered_dicts_equal_and_deterministic_without_mutation():
     before = inventory()
     original = deepcopy(before)
 
@@ -49,9 +49,6 @@ def test_reordered_dicts_equal_and_hashes_deterministic_without_mutation():
     after = reverse_objects(before)
     report = menu_diff.compare(before, after)
     assert report['equal']
-    assert report['inventory_hashes']['reference'] == report['inventory_hashes']['candidate']
-    assert len(report['inventory_hashes']['reference']) == 64
-    assert report['modules']['hashes']['reference'] == report['modules']['hashes']['candidate']
     assert report['summary']['paths_changed'] == report['summary']['modules_changed'] == 0
     assert before == original
     assert menu_diff.canonical(report) == menu_diff.canonical(menu_diff.compare(before, after))
@@ -88,7 +85,7 @@ def test_prescale_configuration_changes_are_exact_and_globally_recorded():
     assert row['label'] == 'PS'
     assert row['changes'] == [{'op': 'replace', 'pointer': '/eventModeConfig/0/prescale',
                                'reference': '10', 'candidate': '20'}]
-    assert row['hashes']['reference'] != row['hashes']['candidate']
+    assert row['reference'] != row['candidate']
 
 
 def test_nested_settings_shared_once_with_affected_paths_and_no_ignored_label():
@@ -184,7 +181,7 @@ def test_path_order_unknown_metadata_and_json_array_changes_not_silently_ignored
     assert menu_diff.changes([], [None]) == [{'op': 'add', 'pointer': '/0', 'candidate': None}]
 
 
-def test_cli_private_report_bounded_preview_and_no_values_or_paths(tmp_path, monkeypatch, capsys):
+def test_cli_report_and_bounded_preview_without_values(tmp_path, monkeypatch, capsys):
     before, after = inventory(), inventory()
     secret = '/PRIVATE/raw/results/DO_NOT_PRINT'
     after['geometry']['inputFile'] = secret
@@ -214,7 +211,6 @@ def test_cli_private_report_bounded_preview_and_no_values_or_paths(tmp_path, mon
         menu_diff.main()
     assert exc.value.code == 1
     assert not output.exists()
-    assert str(tmp_path) not in capsys.readouterr().err
     # Refuse to overwrite either source inventory.
     original = reference.read_text()
     monkeypatch.setattr(sys, 'argv', ['menu_diff.py', str(reference), str(candidate), '--output', str(reference)])

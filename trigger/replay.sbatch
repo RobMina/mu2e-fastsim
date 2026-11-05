@@ -7,7 +7,7 @@ set -eo pipefail
 : "${TRIGGER_CODE:?set the umbrella snapshot}"
 : "${TRIGGER_PREPARED:?set the prepared configuration directory}"
 : "${TRIGGER_INPUT:?set the staged stock digi file}"
-: "${TRIGGER_OUTPUT:?set a private output directory}"
+: "${TRIGGER_OUTPUT:?set an output directory}"
 : "${TRIGGER_AREA:?set the matching already-built Offline release}"
 : "${CVMFSEXEC_DIST:?set the existing CVMFS client}"
 : "${TRIGGER_PYTHON:?set a Python 3.10+ interpreter or use TRIGGER_ANALYSIS_IMAGE}"
@@ -21,10 +21,13 @@ if [[ -n ${TRIGGER_ANALYSIS_IMAGE:-} ]]; then
   fi
   analysis_python=(apptainer exec --cleanenv -B "$analysis_binds" "$TRIGGER_ANALYSIS_IMAGE" "$TRIGGER_PYTHON")
 fi
-[[ ! -e $TRIGGER_OUTPUT/art.exit && ! -e $TRIGGER_OUTPUT/replay.log ]] || { echo 'refuse to overwrite a previous replay' >&2; exit 2; }
+[[ ${TRIGGER_FORCE:-0} == 1 || ( ! -e $TRIGGER_OUTPUT/art.exit && ! -e $TRIGGER_OUTPUT/replay.log ) ]] ||
+  { echo 'refuse to overwrite a previous replay (set TRIGGER_FORCE=1)' >&2; exit 2; }
 "${analysis_python[@]}" -c 'import sys; assert sys.version_info >= (3, 10), "Python 3.10+ required"'
 cd "$TRIGGER_OUTPUT"
-export OFFLINE_EVENTS=${OFFLINE_EVENTS:-100}
+# OFFLINE_EVENTS=0 replays the whole file; compare.py then takes the count from TRIGGER_EVENT_LIST.
+expected=${OFFLINE_EVENTS:-100}
+if (( expected > 0 )); then export OFFLINE_EVENTS=$expected; else unset OFFLINE_EVENTS; expected=0; fi
 export OFFLINE_LOG_PREFIX=trigger
 export OFFLINE_BINDS="${OFFLINE_BINDS:+$OFFLINE_BINDS,}$TRIGGER_PREPARED:$TRIGGER_PREPARED"
 set +e
@@ -36,10 +39,10 @@ printf '%s\n' "$status" > art.exit
 [[ $status == 0 ]] || { tail -100 replay.log; exit "$status"; }
 if [[ ${TRIGGER_MODE:-decisions} == timing ]]; then
   "${analysis_python[@]}" "$TRIGGER_CODE/trigger/timing.py" replay.log \
-    --inventory "$TRIGGER_PREPARED/replay_inventory.json" --output timing.json --top 10 --expected-events "$OFFLINE_EVENTS"
+    --inventory "$TRIGGER_PREPARED/replay_inventory.json" --output timing.json --top 10 ${OFFLINE_EVENTS:+--expected-events "$OFFLINE_EVENTS"}
   exit 0
 fi
-comparison_args=(--manifest "$TRIGGER_PREPARED/manifest.json" --expected-events "$OFFLINE_EVENTS" --output comparison.json)
+comparison_args=(--manifest "$TRIGGER_PREPARED/manifest.json" --expected-events "$expected" --output comparison.json)
 if [[ -n ${TRIGGER_EVENT_LIST:-} ]]; then
   comparison_args+=(--input-event-list "$TRIGGER_EVENT_LIST")
 fi
