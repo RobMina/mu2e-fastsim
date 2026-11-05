@@ -1,0 +1,28 @@
+# Read saved filter-passed primaries without re-running the filter or transport.
+#include "Offline/fcl/minimalMessageService.fcl"
+#include "Offline/fcl/standardProducers.fcl"
+#include "Offline/fcl/standardServices.fcl"
+process_name : R1PassedRead
+source : { module_type : RootInput }
+services : @local::Services.Core
+services.TFileService.fileName : "passed.root"
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_run1_a.txt"
+services.GeometryService.bFieldFile : "Offline/Mu2eG4/geom/bfgeom_no_tsu_ps_v01.txt"
+physics : {
+  analyzers : {
+    passed : {
+      module_type : ReadVirtualDetector
+      vdStepPoints : "g4run:virtualdetector"
+      tvdStepPoints : "g4run:timeVD"
+      simParticleColl : "g4run"
+      physicsVolumeColl : "g4run"
+      savePDG : [ "e_minus" ]
+      navigateToParent : false
+      writeNTVD : false
+      writeNTTVD : false
+      writeNTPART1 : false
+    }
+  }
+  read : [ passed ]
+  end_paths : [ read ]
+}

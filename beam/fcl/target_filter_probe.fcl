@@ -1,0 +1,52 @@
+# Replay only the detector-step filter on an existing unfiltered transport file.
+#include "Offline/fcl/minimalMessageService.fcl"
+#include "Offline/fcl/standardProducers.fcl"
+#include "Offline/fcl/standardServices.fcl"
+process_name : R1FilterProbe
+source : { module_type : RootInput }
+services : @local::Services.Core
+services.TFileService.fileName : "filter_probe.root"
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_run1_a.txt"
+services.GeometryService.bFieldFile : "Offline/Mu2eG4/geom/bfgeom_no_tsu_ps_v01.txt"
+physics : {
+  filters : {
+    replayFilter : {
+      module_type : DetectorStepFilter
+      StrawGasSteps : [ "StrawGasStepMaker" ]
+      CaloShowerSteps : [ "CaloShowerStepMaker" ]
+      CrvSteps : []
+      KeepPDG : []
+      MinimumPartMom : 50
+      MaximumPartMom : 1e6
+      MinimumTrkStepEnergy : 1e-6
+      MinimumCaloStepEnergy : 0
+      MinimumTrkSteps : 12
+      MinimumSumCaloStepE : 45
+      ORRequirements : true
+    }
+  }
+  analyzers : {
+    all : {
+      module_type : ReadVirtualDetector
+      vdStepPoints : "g4run:virtualdetector"
+      tvdStepPoints : "g4run:timeVD"
+      simParticleColl : "g4run"
+      physicsVolumeColl : "g4run"
+      savePDG : [ "e_minus" ]
+      navigateToParent : false
+      writeNTVD : false
+      writeNTTVD : false
+      writeNTPART1 : false
+    }
+  }
+  filtered : [ replayFilter ]
+  allEvents : [ all, selected ]
+  trigger_paths : [ filtered ]
+  end_paths : [ allEvents ]
+}
+outputs.selected : {
+  module_type : RootOutput
+  fileName : "filter_passed.art"
+  SelectEvents : [ "filtered" ]
+  outputCommands : [ "keep *_*_*_*" ]
+}

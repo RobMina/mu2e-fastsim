@@ -1,0 +1,50 @@
+# Fresh Run1A beam parents for a private stopped-muon library.
+#include "Production/JobConfig/beam/POT.fcl"
+process_name : R1LibraryPOT
+source.maxEvents : 0
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_run1_a.txt"
+services.TFileService.fileName : "pot.hist.root"
+physics : {
+  producers : {
+    generate : @local::physics.producers.generate
+    genCounter : @local::physics.producers.genCounter
+    g4run : @local::physics.producers.g4run
+    compressPVBeam : @local::physics.producers.compressPVBeam
+  }
+  filters : {
+    g4consistentFilter : @local::physics.filters.g4consistentFilter
+    BeamFilter : @local::physics.filters.BeamFilter
+    muonSelector : {
+      module_type : ParticleCodeFilter
+      SimParticles : BeamFilter
+      ParticleCodes : [ [13, "uninitialized", "mu2eKillerVolume"], [-13, "uninitialized", "mu2eKillerVolume"] ]
+      PrintLevel : 0
+    }
+  }
+  analyzers : {
+    genCountLogger : @local::physics.analyzers.genCountLogger
+    count : { module_type : RunSubrunEvent printSam : true printEvent : true }
+    status : {
+      module_type : PrintModule
+      PrintSubRun : false
+      statusG4Printer : { verbose : 1 inputTags : [ "g4run::R1LibraryPOT" ] }
+    }
+  }
+  PrimaryPath : [ generate, genCounter, g4run, g4consistentFilter, BeamFilter, compressPVBeam, muonSelector ]
+  EndPath : [ genCountLogger, count, status, BeamOutput, AllOutput ]
+  trigger_paths : [ PrimaryPath ]
+  end_paths : [ EndPath ]
+}
+outputs : {
+  BeamOutput : {
+    @table::outputs.BeamOutput
+    SelectEvents : [ PrimaryPath ]
+    fileName : "mubeam.art"
+  }
+  AllOutput : {
+    module_type : RootOutput
+    SelectEvents : []
+    outputCommands : [ "keep *_*_*_*" ]
+    fileName : "pot_all.art"
+  }
+}

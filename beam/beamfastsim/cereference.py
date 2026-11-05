@@ -44,12 +44,17 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="python3 -m beamfastsim.cereference", description=__doc__)
     ap.add_argument("roots", nargs="+")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--gencount", type=int, required=True, help="generated events per input file (SAM dh.gencount)")
+    ap.add_argument("--gencount", type=int, required=True, help="generated primary events per input file (metacat gen.count)")
+    ap.add_argument("--code", type=int, default=CE_CODE,
+                    help="Offline creation ProcessCode (default CE 167; DIO 166; internal RPC 179)")
     ap.add_argument("--extra-vd", nargs=2, action="append", default=[], metavar=("ID", "SUFFIX"),
                     help="also keep the first hit in this virtual detector (e.g. 10 stout for ST_Out)")
     a = ap.parse_args(argv)
-    out, rows = read(a.roots, extra=[(int(i), sfx) for i, sfx in a.extra_vd])
-    np.savez_compressed(a.out, gencount=np.full(len(a.roots), a.gencount), rows=np.array(rows), **out)
+    if a.gencount <= 0:
+        ap.error("--gencount must be positive")
+    out, rows = read(a.roots, code=a.code, extra=[(int(i), sfx) for i, sfx in a.extra_vd])
+    np.savez_compressed(a.out, gencount=np.full(len(a.roots), a.gencount), rows=np.array(rows),
+                        creation_code=a.code, **out)
     print(json.dumps(dict(files=len(a.roots), rows=int(sum(rows)), front=int(out["isvd_front"].sum()),
                           inputs=[Path(p).name for p in a.roots]), indent=1))
 

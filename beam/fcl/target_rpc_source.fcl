@@ -1,0 +1,20 @@
+# Stock internal-RPC generator audit with no transport or production acceptance filter.
+#include "Production/JobConfig/primary/RPCInternalPhysical.fcl"
+physics.producers : { generate : @local::physics.producers.generate }
+physics.filters : {
+  TargetPiStopResampler : @local::physics.filters.TargetPiStopResampler
+  StopSelector : @local::physics.filters.StopSelector
+}
+physics.analyzers : {
+  count : { module_type : RunSubrunEvent printSam : true }
+}
+physics.PrimaryPath : [ TargetPiStopResampler, StopSelector, generate ]
+physics.trigger_paths : [ PrimaryPath ]
+physics.EndPath : [ count ]
+physics.end_paths : [ EndPath ]
+outputs : {}
+source.maxEvents : 40000
+services.SeedService.baseSeed : 147
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_run1_a.txt"
+physics.filters.TargetPiStopResampler.mu2e.MaxEventsToSkip : 0
+physics.producers.generate.doHistograms : true

@@ -56,6 +56,17 @@ PYTHONPATH=core:beam python3 -m pytest -q beam/tests
 PYTHONPATH=core:beam python3 -m beamfastsim.bench --n 2000
 ```
 
+## Target-born backgrounds (opt-in)
+
+`beamfastsim.target_sources` samples Offline-style tabulated DIO electrons and
+Bistirlich RPC sources at target stops; `cechain --source` transports explicit
+electron starts with the existing host or device loop. Internal RPC keeps its
+correlated positron but transports only the electron marginal. External RPC
+emits a photon: material conversion is not implemented and the electron adapter
+rejects it. These sources are not yet validated against Geant4, and existing CE
+defaults are unchanged. Schema, normalization and reproduction commands:
+[`docs/target_sources.md`](docs/target_sources.md).
+
 ## Persisted reference audit
 
 Audit existing outputs before reusing a partial reference; this does not run transport or require JAX/CVMFS:

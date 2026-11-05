@@ -1,0 +1,23 @@
+# Stock DIO generator audit with a pass-all energy plotter and no transport.
+#include "Production/JobConfig/primary/DIOtail.fcl"
+physics.producers : { generate : @local::physics.producers.generate }
+physics.filters : {
+  TargetStopResampler : @local::physics.filters.TargetStopResampler
+  GenFilter : @local::physics.filters.GenFilter
+}
+physics.analyzers : { count : { module_type : RunSubrunEvent printSam : true } }
+physics.PrimaryPath : [ TargetStopResampler, generate, GenFilter ]
+physics.trigger_paths : [ PrimaryPath ]
+physics.EndPath : [ count ]
+physics.end_paths : [ EndPath ]
+outputs : {}
+source.maxEvents : 40000
+services.SeedService.baseSeed : 149
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_run1_a.txt"
+physics.filters.TargetStopResampler.mu2e.MaxEventsToSkip : 0
+physics.producers.generate.decayProducts.spectrum.elow : 95
+physics.producers.generate.decayProducts.spectrum.ehi : 1000
+physics.filters.GenFilter.filterEnergy : true
+physics.filters.GenFilter.emin : 0
+physics.filters.GenFilter.emax : 1.e10
+physics.filters.GenFilter.makeplots : true

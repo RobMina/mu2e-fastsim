@@ -1,0 +1,55 @@
+# Fresh target stops from newly generated beam parents, without a stop prescale.
+#include "Production/JobConfig/pileup/MuBeamResampler.fcl"
+process_name : R1LibraryStops
+source.maxEvents : 0
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_run1_a.txt"
+services.GeometryService.bFieldFile : "Offline/Mu2eG4/geom/bfgeom_no_tsu_ps_v01.txt"
+services.TFileService.fileName : "stops.hist.root"
+physics : {
+  producers : {
+    genCounter : @local::physics.producers.genCounter
+    protonTimeOffset : @local::physics.producers.protonTimeOffset
+    g4run : @local::physics.producers.g4run
+    TargetMuonFinder : @local::physics.producers.TargetMuonFinder
+    compressPVTargetStops : @local::physics.producers.compressPVTargetStops
+  }
+  filters : {
+    beamResampler : @local::physics.filters.beamResampler
+    g4consistentFilter : @local::physics.filters.g4consistentFilter
+    TargetStopFilter : @local::physics.filters.TargetStopFilter
+    muminusSelector : {
+      module_type : ParticleCodeFilter
+      SimParticles : TargetStopFilter
+      ParticleCodes : [ [13, "uninitialized", "muMinusCaptureAtRest"] ]
+      PrintLevel : 0
+    }
+  }
+  analyzers : {
+    genCountLogger : @local::physics.analyzers.genCountLogger
+    count : { module_type : RunSubrunEvent printSam : true printEvent : true }
+    status : {
+      module_type : PrintModule
+      PrintSubRun : false
+      statusG4Printer : { verbose : 1 inputTags : [ "g4run::R1LibraryStops" ] }
+    }
+  }
+  PrimaryPath : [ genCounter, protonTimeOffset, beamResampler, g4run, g4consistentFilter, TargetMuonFinder, TargetStopFilter, compressPVTargetStops, muminusSelector ]
+  EndPath : [ genCountLogger, count, status, TargetStopOutput, AllOutput ]
+  trigger_paths : [ PrimaryPath ]
+  end_paths : [ EndPath ]
+}
+physics.producers.TargetMuonFinder.verbosityLevel : 0
+physics.filters.beamResampler.mu2e.MaxEventsToSkip : 0
+outputs : {
+  TargetStopOutput : {
+    @table::outputs.TargetStopOutput
+    SelectEvents : [ PrimaryPath ]
+    fileName : "muminus_stops.art"
+  }
+  AllOutput : {
+    module_type : RootOutput
+    SelectEvents : []
+    outputCommands : [ "keep *_*_*_*" ]
+    fileName : "stops_all.art"
+  }
+}

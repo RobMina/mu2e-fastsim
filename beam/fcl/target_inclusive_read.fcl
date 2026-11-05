@@ -1,0 +1,35 @@
+# Read all saved raw primaries and integer status/trigger identities without transport.
+#include "Offline/fcl/minimalMessageService.fcl"
+#include "Offline/fcl/standardProducers.fcl"
+#include "Offline/fcl/standardServices.fcl"
+process_name : R1InclusiveRead
+source : { module_type : RootInput }
+services : @local::Services.Core
+services.TFileService.fileName : "inclusive_read.root"
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_run1_a.txt"
+services.GeometryService.bFieldFile : "Offline/Mu2eG4/geom/bfgeom_no_tsu_ps_v01.txt"
+physics : {
+  analyzers : {
+    count : { module_type : RunSubrunEvent printSam : true printEvent : true }
+    audit : {
+      module_type : PrintModule
+      PrintSubRun : false
+      statusG4Printer : { verbose : 1 inputTags : [ "g4run::R1Inclusive" ] }
+      triggerResultsPrinter : { verbose : 1 inputTags : [ "TriggerResults::R1Inclusive" ] }
+    }
+    cetree : {
+      module_type : ReadVirtualDetector
+      vdStepPoints : "g4run:virtualdetector:R1Inclusive"
+      tvdStepPoints : "g4run:timeVD:R1Inclusive"
+      simParticleColl : "g4run::R1Inclusive"
+      physicsVolumeColl : "g4run::R1Inclusive"
+      savePDG : [ "e_minus", "e_plus" ]
+      navigateToParent : false
+      writeNTVD : false
+      writeNTTVD : false
+      writeNTPART1 : false
+    }
+  }
+  read : [ count, audit, cetree ]
+  end_paths : [ read ]
+}

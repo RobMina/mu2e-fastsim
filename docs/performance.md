@@ -52,6 +52,85 @@ Allocation charges depend on the site's rates and are not given here.
 | electrons, conversion-electron chain to the tracker entry (opt-in) | slab physics vs Geant4 pass (loss chi2/ndf 0.5-1.4; 1 X0 W stopped 18.41 vs 18.29 +- 0.09 %; reflected 0.347 +- 0.013 vs 0.336 % with the opt-in form-factor threshold). CE chain vs Geant4 CeEndpoint at the tracker entry, inside a selection that implies the production filter: yield per generated electron 1.004 +- 0.003; momentum, angle, radius and time-of-flight chi2/ndf 0.8-1.3; E - E_CE MPV -0.37 vs -0.35 +- 0.02 MeV, FWHM 0.675 vs 0.677 +- 0.024 MeV, 0.25 MeV tail bins to -2 MeV within 1-2 sigma Device chain (`--backend device`, one JAX loop) vs the NumPy chain on the same starts (400k target stops and the 108k Geant4 starts, r_max > 450): yield per start 0.9999 +- 0.0007 / 1.0005 +- 0.0010 (float64), 1.0010 +- 0.0007 / 1.0000 +- 0.0010 (float32); E - E_CE 0.25 MeV bins from -2 to 0 MeV within 2.4 sigma (paired); same-start momentum +0.001 +- 0.008 MeV/c (float64), +0.012 +- 0.008 MeV/c (float32); against Geant4 the device yield is 1.0043 +- 0.0028 (float64) / 1.0054 +- 0.0028 (float32) | device chain, one RTX PRO 6000 MIG 1g.24gb slice with 4 cores: float32 about 70,000 electrons/s steady (whole process with 1.6 M electrons: 24,900/s, fixed cost about 17 s plus a 10 s tail of slow electrons), float64 8,600/s (process with 400k: 3,900/s); one CPU core: float32 170-240/s (process with 40k: 116-135/s), float64 106-110/s. NumPy chain with JAX layers: 37/s per core, 132/s per MIG slice. A stock event (24 electrons/s per grid slot) simulates every particle in the whole detector; the fast chain carries the primary electron to the tracker entry | device: about 2,900 per MIG slice (float32), 360 (float64); 7-10 per CPU core (float32), 4.4-4.6 (float64) |
 | tracker with the DS field (opt-in, in development) | first passage of Geant4 tracker-entry states, field-on chord transport: straws per track +0.017 +- 0.070 (muons), +0.055 +- 0.019 (CE); ionisation mean +0.29 +- 0.18 %; momentum above 1 GeV/c biased (no radiative losses yet) | one CPU core 6 muons/s, 4 CE/s (transport only) | stock field-on reference not yet timed |
 
+## Target-born backgrounds (opt-in, not physics-certified)
+
+DIO and internal-RPC source adapters use the existing device CE loop to the
+tracker-entry plane; external RPC supplies only a photon source, not material
+conversion. Synthetic source tests pass, and CE regression evidence is inherited
+from its tested snapshot rather than rerun by every later audit-only snapshot.
+The new background chains are **not validated substitutes for production**.
+Four-file same-start pilots have conditional yield fast/Geant4
+0.9600 +- 0.0025 (DIO) and 0.9618 +- 0.0052 (internal RPC), with
+momentum differences +0.040 +- 0.036 and +0.038 +- 0.042 MeV/c on
+electrons selected in both arms (file-cluster errors; four clusters each).
+This is conditional on kept Geant4 events; stochastic production acceptance can
+bias it, so it is not an unbiased generated-yield comparison. Rare multi-electron
+events prevent treating the production generated-event count as the
+generated-electron denominator. An exact parent census and production-window
+identity audit recover 20,020 generated electrons for the four DIO files.
+An independent 100,000-electron run from the exact four production windows,
+using the current pinned core, gives fast/Geant4 1.0007 +- 0.0135,
+1.0133 +- 0.0151 and 1.0034 +- 0.0378 at the three radius cuts.
+The internal-RPC reference's four exact pion-parent windows are also recovered;
+all 21,315 retained electron births match their phase-implied stop positions and
+times. An independent 200,000-electron-marginal pilot gives 0.9915 +- 0.0093,
+0.9853 +- 0.0170 and 1.0273 +- 0.0426 (file-cluster G4 plus independent fast
+uncertainty). These remain exposure-corrected diagnostics: production-filter
+implication is not established, and four reference-file clusters provide limited precision.
+An existing inclusive CE control provides concrete counterexamples to a guaranteed
+p/rmax implication: the detector-step filter misses 2 of 1,016 proxy-selected
+primaries at 450 mm, and 1 of 748 / 1 of 415 at 500 / 550 mm. This bounded control
+has a different source energy/population and release; its miss fractions are not
+DIO/RPC efficiency corrections or uncertainty bounds. A new matching-release,
+all-event DIO control independently reconciles 2,000 generated events and
+2,002 emitted electrons, all with status-zero transport and exact parent-window
+exposure. It finds one actual production-filter miss among 771 proxy-selected
+electrons at 450 mm, the same miss among 431 at 500 mm, and zero among 129 at
+550 mm. Thus the proxy is not a guaranteed filter implication for DIO itself.
+A matching-release internal-RPC control retains 2,000 captures, 2,000 electrons
+and 2,000 correlated positrons with independently reconciled status-zero event
+ledgers and exact parent-window support. It observes zero filter misses among
+140 / 75 / 34 proxy-selected electrons; descriptive event-binomial 95% upper
+limits are 2.12% / 3.92% / 8.43%, before parent-library uncertainty.
+These are finite-pilot observations, not corrections to the earlier production
+windows; zero observed misses are not a completeness proof. On all emitted
+electrons in those inclusive controls, same-start fast/Geant4 is
+1.0195 +- 0.0135 / 1.0441 +- 0.0226 / 0.9457 +- 0.0506 (DIO) and
+1.0571 +- 0.0375 / 1.0533 +- 0.0581 / 1.0588 +- 0.0856 (internal RPC),
+at 450 / 500 / 550 mm. These uncertainties use paired within-pilot event
+influences; source-library uncertainty is not included. Four-file RPC influence
+errors are separately 0.0066 / 0.0661 / 0.0343 and can be unstable with so few
+clusters; DIO has only one inclusive file. No equivalence has been established.
+User-approved development engineering margins are documented in the
+[confirmation design](../beam/docs/target_confirmation.md); simultaneous statistics,
+grids, weighting and calibration remain prelaunch blockers. As a diagnostic,
+the DIO own-selection central-68% loss half-width difference is +0.0616 MeV,
+compared with the 0.03 MeV engineering margin, without confirmatory quantile bounds.
+This is not a confirmatory failure decision. Generated-yield closure remains
+uncertified. No correction is fitted to the conditional comparison.
+More than 92% of the lost reference selections still reach the fast plane;
+most fail the helix-radius selection. This localizes migration but does not
+establish its cause. An unbiased source-only pilot of 40,000 stock internal-RPC
+captures finds no significant discrepancy in 12 predeclared one-dimensional
+kinematic marginals after Holm correction (familywise alpha 0.05). This tests
+binned generator marginals, not transport, joint pair response or VD yield.
+
+At 40,000 DIO electrons per batch, float32/4096 lanes with fixed-trip loop
+unrolling, two repeated warm passes give 3,322–3,340 electrons/s on an RTX PRO
+6000 MIG slice and 1,736–1,742/s on an A100-80GB. First-pass rates including
+map/input setup and compilation are 281/s and 149/s respectively. Each device's
+repeats are identical; cross-device fates differ slightly. These are complete
+small-batch primary-transport rates, **not** large-input refill rates, source
+setup time, reconstruction, or an external-conversion chain.
+
+Existing production logs give DIO G4 27.01 ms/generated **event** (three jobs,
+21.08–30.80 ms node range), internal RPC 32.58 ms/event (one job), external RPC
+9.71 ms/event (one job). Whole-art wall times are 63.43, 43.28 and 11.07 ms/event
+respectively. The stock simulates all particles and detectors. No grid-slot
+multiplier is certified until electron/event multiplicity and stage boundaries
+are reconciled. Source schema and validation limits:
+[`beam/docs/target_sources.md`](../beam/docs/target_sources.md).
+
 ## Per GPU: CRV default chain and beam stop fraction
 
 One GPU per job, the defaults of `main` (2026-11-02). CRV: production `runchain` over 11 shards of 50,000 generated

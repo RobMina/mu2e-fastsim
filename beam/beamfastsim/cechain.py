@@ -469,6 +469,12 @@ def helix_rmax(geom, x, u, p, Bz):
 
 def _starts(args, rng):
     """Start states for one chunk: paired with a Geant4 reference table, or drawn from a stop table."""
+    if getattr(args, "source", None):
+        from .target_sources import electron_starts
+        with np.load(args.source) as source:
+            x, u, p, t = electron_starts(source)
+        i = np.arange(p.size)[args.chunk::args.nchunks]
+        return x[i], u[i], p[i], t[i], i
     if args.ref:
         r = np.load(args.ref)
         i = np.arange(r["x"].size)[args.chunk::args.nchunks]
@@ -494,6 +500,7 @@ def main(argv=None):
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--ref", help="Geant4 reference table (cereference): transport its starts")
     src.add_argument("--stops", help="stop table (beam g4ref npz): isotropic CE from target mu- stops")
+    src.add_argument("--source", help="explicit electron source table (target_sources); photons are rejected")
     ap.add_argument("--n", type=int, default=100_000, help="electrons per chunk with --stops")
     ap.add_argument("--chunk", type=int, default=0)
     ap.add_argument("--nchunks", type=int, default=1)
@@ -520,6 +527,16 @@ def main(argv=None):
     rng = np.random.default_rng(np.random.SeedSequence([a.seed, a.chunk]))
     geom = from_offline(a.geom, a.offline_root)
     x, u, p, t0, idx = _starts(a, rng)
+    source_info = {}
+    if a.source:
+        import hashlib
+        from pathlib import Path
+        source_info["source_sha256"] = hashlib.sha256(Path(a.source).read_bytes()).hexdigest()
+        with np.load(a.source) as source:
+            if "metadata" in source:
+                source_info["source_metadata"] = source["metadata"]
+            if "stop_idx" in source:
+                source_info["stop_idx"] = source["stop_idx"][idx]
     field = None if a.backend == "device" else field_maps(a.maps)
     tic = time.time()
     extra = {}
@@ -529,7 +546,7 @@ def main(argv=None):
         res = transport(rng, geom, field, x, u, p, t0, h=a.step, msc=not a.no_msc, layer_field=not a.no_layer_field,
                         backend=a.backend, z_record=a.z_record, shell_curvature=not a.flat_shells)
     wall = time.time() - tic
-    np.savez_compressed(a.out, idx=idx, x0=x, u0=u, p0=p, t0=t0, wall=wall,
+    np.savez_compressed(a.out, idx=idx, x0=x, u0=u, p0=p, t0=t0, wall=wall, **source_info,
                         **{k: v for k, v in res._asdict().items() if v is not None})
     print(json.dumps(dict(n=int(idx.size), wall_s=round(wall, 1), us_per_e=round(1e6 * wall / max(idx.size, 1), 1),
                           fates={f: int((res.fate == k).sum()) for k, f in enumerate(FATES)}, **extra), indent=1))

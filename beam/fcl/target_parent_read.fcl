@@ -1,0 +1,29 @@
+# Read existing parent SimParticles without resampling, generation or transport.
+#include "Offline/fcl/minimalMessageService.fcl"
+#include "Offline/fcl/standardProducers.fcl"
+#include "Offline/fcl/standardServices.fcl"
+process_name : r1parentaudit
+source : { module_type : RootInput }
+services : @local::Services.Core
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_run1_a.txt"
+services.GeometryService.bFieldFile : "Offline/Mu2eG4/geom/bfgeom_no_tsu_ps_v01.txt"
+physics : {
+  analyzers : {
+    count : { module_type : RunSubrunEvent printSam : true }
+    cetree : {
+      module_type : ReadVirtualDetector
+      vdStepPoints : "TargetStopFilter:virtualdetector"
+      tvdStepPoints : "TargetStopFilter:timeVD"
+      simParticleColl : "TargetStopFilter"
+      physicsVolumeColl : "compressPVTargetStops"
+      savePDG : [ "mu_minus" ]
+      navigateToParent : false
+      writeNTVD : false
+      writeNTTVD : false
+      writeNTPART1 : false
+    }
+  }
+  read : [ count, cetree ]
+  end_paths : [ read ]
+}
+services.TFileService.fileName : "parent.root"

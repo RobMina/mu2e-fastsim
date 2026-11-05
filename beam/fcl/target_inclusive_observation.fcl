@@ -1,0 +1,21 @@
+# Add unfiltered observation to an audited released primary configuration.
+process_name : R1Inclusive
+source.maxEvents : 0
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_run1_a.txt"
+services.GeometryService.bFieldFile : "Offline/Mu2eG4/geom/bfgeom_no_tsu_ps_v01.txt"
+services.TFileService.fileName : "inclusive.hist.root"
+outputs.PrimaryOutput.SelectEvents : []
+outputs.PrimaryOutput.outputCommands : [ "keep *_*_*_*" ]
+outputs.PrimaryOutput.fileName : "inclusive.art"
+physics.analyzers.inclusiveCount : {
+  module_type : RunSubrunEvent
+  printSam : true
+  printEvent : true
+}
+physics.analyzers.inclusiveStatus : {
+  module_type : PrintModule
+  PrintSubRun : false
+  statusG4Printer : { verbose : 1 inputTags : [ "g4run::R1Inclusive" ] }
+}
+physics.EndPath : [ genCountLogger, inclusiveCount, inclusiveStatus, PrimaryOutput ]
+physics.end_paths : [ EndPath ]
