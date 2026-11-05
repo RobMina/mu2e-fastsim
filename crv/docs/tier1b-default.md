@@ -13,6 +13,7 @@ callers pick the set and pass its options down.
 | Set | Library | Sidecars | `tier1b.sample` options | Run configurations |
 |---|---|---|---|---|
 | `strict_v5` (default) | `tier1b_strict_v5/library.root`, sha256 `fc6e1518...5f4` (the 20 donors of `strict_v4` with step-tree roots; same bins, showers and reach) | `topology.npz`, `templates_v3.npz` (library chords; near-miss templates and census of `strict_v4`), each with its `.json` | `context`, `contain`, `point`, `topology`, `unvisited`, `nearmiss`, `chord`, `anchor` | `extracted_v04` only |
+| `run1a_v01` (opt-in) | `tier1b_run1a_v01/library.root`, sha256 `75da97ef...3cd`: per-primary build on the Run 1A geometry from the development half of the Run 1A Geant4 reference (odd subruns 101-119, 500k generated, field off) | `topology.npz`, `templates_v3.npz` built on it (census = the same odd subruns) | those of `strict_v5` plus `per_primary` and `showers` (the library's showers sit at Run 1A bar positions) | `run1a_v01` only |
 
 Paths are relative to `$CRVFS_DATA`. `--tier1b-dir DIR` points at a copy of the set's files, as the endpoints use.
 The device sampler (`--tier1b-backend jax`) implements it ([device.md](device.md)).

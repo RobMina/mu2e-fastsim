@@ -5,11 +5,14 @@ files of the stock chain on the same shards) it reports clusters per generated e
     runchain gen.<shard>.root [...] --calib crvcalib.csv [--deviation crvphoton.csv] [--jax]
              [--tier1b strict_v5 [--tier1b-dir DIR] | --library lib.root]
              [--reco-cpu] [--max-events N] [--compare ref.<shard>.root ...] [--emit shard.json] --outdir DIR
+             [--steps-input] [--save-reco reco.npz]   (CrvStep tables in: no transport or tier 1b; clusters, members
+                                                       and pulses of one input file out, for validation)
     runchain-merge shard*.json --outdir DIR      (node totals: events, clusters per sector type, rates)
 
 Tier 1b (crvfastsim.tier1b_assets): default asset set strict_v5 for extracted_v04 (strict library with step-tree roots,
 crossing context, containment, point and topology placement, v3 templates, chord placement, root-coherent draws);
-the named run configurations have no set and need --library, a custom library sampled without placement options.
+run1a_v01 has its own set (--tier1b run1a_v01, opt-in); the other named configurations need --library, a custom
+library sampled without placement options. A set may switch the non-muon showers on (options['showers']).
 """
 import json
 import os
@@ -166,6 +169,35 @@ def _load_setup(rc, cfg, gdml_path, explicit_gdml, spec, calib, deviation, jax, 
                 conditions_metadata=conditions_metadata), timers
 
 
+def _save_reco(path, outs, n_events, run_config):
+    """Clusters (cl_*), their member pulses (mem_cl, mem_idx: pulse index in its event) and the pulses (p_ev, p_idx,
+    p_bar, p_sipm, p_pe, p_time) of one runchain input, as an .npz (the validation input of the reco comparison)."""
+    cl = {k: [] for k in ("cl_event", "cl_type", "cl_pe", "cl_start", "cl_end", "cl_avgtime")}
+    mem = {k: [] for k in ("mem_cl", "mem_idx")}
+    pul = {k: [] for k in ("ev", "idx", "bar", "sipm", "pe", "time")}
+    ncl = 0
+    for o in outs:
+        for k in cl:
+            cl[k].append(np.asarray(o.get(k, [])))
+        # Cluster indices are chunk-local; pulse indices remain local to their event.
+        mem["mem_cl"].append(np.asarray(o.get("mem_cl", []), np.int64) + ncl)
+        mem["mem_idx"].append(np.asarray(o.get("mem_idx", []), np.int64))
+        p = o.get("pulses", {})
+        for k in pul:
+            pul[k].append(np.asarray(p.get(k, [])))
+        ncl += len(cl["cl_event"][-1])
+
+    def cat(parts, dtype=None):
+        # Untyped empty chunks must not promote populated integer or float32 columns.
+        populated = [p for p in parts if len(p)]
+        return np.concatenate(populated or parts) if parts else np.empty(0, dtype=dtype)
+
+    np.savez_compressed(path, **{k: cat(v) for k, v in cl.items()},
+                        **{k: cat(v, np.int64) for k, v in mem.items()},
+                        **{f"p_{k}": cat(v) for k, v in pul.items()},
+                        n_events=np.int64(n_events), run_config=np.str_(run_config))
+
+
 def resolve_generator(gen, inputs, jax):
     """Generator backend and inputs. "auto" (the runchain CLI default): the gen tables given as inputs (the CPU path and
     the reference); with no inputs, or the placeholder 'native', device CRY when the chain runs on JAX (--jax)."""
@@ -215,7 +247,7 @@ def _add_receipt(total, part):
 def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax=False, max_events=None, seed=1,
         compare=None, counters=None, reco_cpu=False, emit=None, run_config=None, window=None, benchmark=None,
         prepared=None,
-        tier1b_set=None, tier1b_dir=None,
+        tier1b_set=None, tier1b_dir=None, steps_input=False, save_reco=None,
         transport_context=None, tier1b_context=None, tier1b_backend="numpy",
         gen="table", gen_events=None, gen_seed=None, gen_subrun=1, gen_chunk=50000, **kw):
     removed = sorted(set(kw) & {"msc_tail", "tail_k", "sliced_msc", "first_muon_only", "no_absorbers",
@@ -243,6 +275,10 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
             raise ValueError("native CRY is currently configured only for extracted_v04")
     elif gen_events is not None or gen_seed is not None:
         raise ValueError("gen-events/gen-seed require --gen native")
+    if (steps_input or save_reco) and (native or benchmark is not None or prepared is not None or kw.get("prefetch")):
+        raise ValueError("--steps-input / --save-reco run on table inputs without benchmark, prepared context or prefetch")
+    if save_reco and len(list(tables.expand(inputs))) != 1:
+        raise ValueError("--save-reco takes one input file")
     native_receipt = None
     bench_start = time.perf_counter() if benchmark is not None else None
     rc, cfg, gdml_path, time_window, spec = _resolve(library, calib, deviation, gdml, jax, counters, run_config, window,
@@ -309,6 +345,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
             tier1b_context["device"] = device_tier1b
 
     source = None
+    tier1b_options = {"showers": rc.showers, **spec.options}
 
     def host_stage(i, f):
         """CPU part of file i (read, transport, tier 1b) with its own rng and timers: the same draws whether it runs
@@ -317,6 +354,12 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         t = {}
         a = time.perf_counter() if benchmark is not None else None
         nonlocal native_receipt, source
+        if steps_input:   # G4 or tier-1b step tables: the response and reco only
+            st, pa = tables.read(f, "steps"), tables.read(f, "particles")
+            if max_events:
+                ev = np.sort(st.event.unique())[:int(max_events)]
+                st, pa = st[st.event.isin(ev)].reset_index(drop=True), pa[pa.event.isin(ev)].reset_index(drop=True)
+            return int(st[tables.KEY].drop_duplicates().shape[0]), st, pa, rng, t, None
         if native:   # chunk i of gen_events, from one source opened at the first chunk
             from mu2efastsim.cosmic_cry import CosmicConfig, CosmicSource
             started = time.perf_counter()
@@ -351,10 +394,10 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         t["transport_s"] = time.perf_counter() - a
         a = time.perf_counter()
         if device_tier1b is None:
-            st, pa, _ = tier1b.sample(st, pa, gen, lib, geom, rng, showers=rc.showers, **spec.options)
+            st, pa, _ = tier1b.sample(st, pa, gen, lib, geom, rng, **tier1b_options)
         else:
             device_rng = DeviceRandom(int(rng.integers(0, 2**32, dtype=np.uint32)))
-            st, pa, _ = device_tier1b.sample(st, pa, gen, device_rng, showers=rc.showers, **spec.options)
+            st, pa, _ = device_tier1b.sample(st, pa, gen, device_rng, **tier1b_options)
         t["tier1b_s"] = time.perf_counter() - a
         return ngen, st, pa, rng, t, keys
 
@@ -387,7 +430,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
             if benchmark is not None:
                 file_timers["waveform_pack_s"] = time.perf_counter() - a
             a = time.perf_counter()
-            detail_kw = {"detail": True} if benchmark is not None else {}
+            detail_kw = {"detail": True} if benchmark is not None or save_reco else {}
             if reco_cpu and jax:   # response on the accelerator, reco with the JAX CPU backend (oneAPI: reco kernels slow)
                 import jax as _jax
                 with _jax.default_device(_jax.devices("cpu")[0]):
@@ -414,6 +457,8 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         a = time.perf_counter()
         prepared.audit()
         T["context_audit_s"] += time.perf_counter() - a
+    if save_reco:
+        _save_reco(save_reco, out_cl, n_gen, rc.name)
     cl_type = np.concatenate([o["cl_type"] for o in out_cl]) if out_cl else np.zeros(0, int)
     res = {"generated_events": n_gen, "timers": T, "conditions": conditions_metadata,
            "tier1b": spec.describe(),

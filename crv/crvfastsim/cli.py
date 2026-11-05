@@ -164,6 +164,10 @@ def build_parser():
             sp.add_argument("--fused-response", action="store_true",
                             help="with --jax: photons -> SiPM charges in one device pass (response.device, as reco-r3)")
             sp.add_argument("--emit", default=None, metavar="JSON", help="per-shard accumulators for runchain-merge")
+            sp.add_argument("--steps-input", action="store_true",
+                            help="inputs are CrvStep tables (Geant4 or tier1b-apply): response and reco only")
+            sp.add_argument("--save-reco", default=None, metavar="NPZ",
+                            help="one input: write its clusters, cluster members and pulses (validation input)")
         if name == "runchain-merge":
             sp.add_argument("--wall", type=float, default=None, help="node job wall time [s] (default: slowest shard)")
         if name == "v4sipm":
