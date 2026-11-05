@@ -31,11 +31,17 @@ Input NPZ columns are equal-length arrays:
 | `pdg`, `at_rest`, `foil`, `codestop` | Species, boolean rest flag, target-foil index, stopping process |
 | `xstop`, `ystop`, `zstop`, `tstop` | Position in the Mu2e frame [mm], physical time [ns] |
 
-The caller supplies an already extracted physical-pion table. Muon stops are
-not interchangeable with pion stops. Decay-disabled weighted pion samples are
-not supported. Times are copied, with no muon decay delay or additional pion
-lifetime factor. Sampling is conditional on an event surviving the stop
-selection; it does not predict stop yields or an absolute RPC rate.
+The caller supplies an already extracted pool of physical pion stops in the
+stopping-target foils. The sampler retains only rows with `at_rest == True` and
+`foil >= 0`, in addition to the stock species, stopping-process and minimum-time
+selection above. These two conditions define this sampler's target-stop input
+scope; they are not additional cuts in stock `RPCGun`/`StopSelector`. It is not a
+generator for captures outside the target foils.
+
+Muon stops are not interchangeable with pion stops. Decay-disabled weighted
+pion samples are not supported. Times are copied, with no muon decay delay or
+additional pion lifetime factor. Sampling is conditional on an event having an
+eligible target stop; it does not predict stop yields or an absolute RPC rate.
 
 ```bash
 python3 -m beamfastsim.rpcspec --stops physical_pion_stops.npz \
