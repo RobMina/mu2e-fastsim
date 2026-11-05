@@ -20,6 +20,8 @@ def response_inputs(path):
         events = source["response/events"].arrays(list(EVENT) + ["pbtime", "mbtime", "event_length", "marker", "spill", "crystal_length"], library="np")
         steps = source["response/steps"].arrays(["crystal", "lru"], library="np")
     ids = np.unique(steps["crystal"])
+    if not len(ids):
+        return events, np.empty(0, dtype=float)
     lo = np.full(int(ids.max()) + 1, np.inf)
     hi = np.full(len(lo), -np.inf)
     np.minimum.at(lo, steps["crystal"], steps["lru"])
@@ -50,8 +52,10 @@ def apply_response(backend, steps, query, event_conditions, lru, *, start, end, 
 
 
 def paired_mean(fast, stock, group):
-    """Paired block-jackknife error; blocks are not production shards."""
+    """Paired block-jackknife error; empty means and unavailable errors are None."""
     fast, stock = np.asarray(fast, float), np.asarray(stock, float)
+    if not len(fast):
+        return dict(fast=None, stock=None, difference=None, error=None)
     unique, inverse = np.unique(group, return_inverse=True)
     total = np.bincount(inverse)
     delta = fast - stock
@@ -176,6 +180,7 @@ def main():
     histograms["E/p at disk front (truth diagnostic)"] = paired_hist(
         f["energy"] / momentum, s["energy"] / momentum, group, np.linspace(0, 1.2, 25))
     missing = ~placed["mapped"]
+    drawn_energy = float(draw["energy_birks"].sum())
     result = dict(arm=args.arm, seed=args.seed, entries=len(query["energy"]), source_events=census["events"],
                   split=metadata["split"], statistic="paired 100-source-event block jackknife; not independent production shards",
                   model="Deterministic response + one energy-weighted cluster sum; not stock cluster reconstruction",
@@ -185,21 +190,21 @@ def main():
                   truth_ep_mean=paired_mean(f["energy"] / momentum, s["energy"] / momentum, group),
                   fallback_entries=int(draw["fallback"].sum()), unsupported_entries=int((~draw["supported"]).sum()),
                   unmapped_css=int(missing.sum()),
-                  unmapped_visible_energy_fraction=float(draw["energy_birks"][missing].sum() / draw["energy_birks"].sum()),
-                  mean_time_difference_ns=float(np.mean(f["time"][positive] - s["time"][positive])),
-                  mean_position_distance_mm=float(np.mean(np.linalg.norm(f["position"][positive] - s["position"][positive], axis=1))),
+                  unmapped_visible_energy_fraction=float(draw["energy_birks"][missing].sum() / drawn_energy) if drawn_energy else None,
+                  mean_time_difference_ns=float(np.mean(f["time"][positive] - s["time"][positive])) if positive.any() else None,
+                  mean_position_distance_mm=float(np.mean(np.linalg.norm(f["position"][positive] - s["position"][positive], axis=1))) if positive.any() else None,
                   sample_and_place_seconds=draw_seconds, sample_and_place_entries_per_second=len(query["energy"]) / draw_seconds,
                   stock_rate_comparison=None, histograms=histograms,
                   non_front_positive_events=census["non_front_entry_positive_events"],
                   total_source_visible_positive_events=int(np.sum(total > 0)))
     args.out.mkdir(parents=True, exist_ok=True)
-    (args.out / "numbers.json").write_text(json.dumps(result, indent=2) + "\n")
+    (args.out / "numbers.json").write_text(json.dumps(result, indent=2, allow_nan=False) + "\n")
     np.savez_compressed(args.out / "clusters.npz", event_row=query["event_row"], fast_energy=f["energy"], stock_energy=s["energy"],
                         fast_time=f["time"], stock_time=s["time"], fast_position=f["position"], stock_position=s["position"],
                         donor=draw["donor"], fallback=draw["fallback"])
     plot({"Cluster-sum energy [MeV]": histograms["Cluster-sum energy [MeV]"]}, args.out / "calo_ce.png",
          f"CE {args.arm}: direct-electron disk-front entries; simple cluster sum")
-    print(json.dumps({k: v for k, v in result.items() if k != "histograms"}, indent=2))
+    print(json.dumps({k: v for k, v in result.items() if k != "histograms"}, indent=2, allow_nan=False))
 
 
 if __name__ == "__main__":
