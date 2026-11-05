@@ -58,7 +58,7 @@ count differs by -0.001 +- 0.014 per event and the length, peak, t0 and summed-A
   secondary peak seeding, the source objective `sum (y-f)^2 / b` with parameter limits, component selection and
   refit), vmapped over digis. Damped Newton steps replace TMinuit, so values agree to tolerance. The second pass for
   `chi2/ndf > 1` digis is not implemented (about 0.1 % of digis; flagged `refit_skipped`).
-- `hits.make_hits` (above) builds `CaloHit`s; reco-digi energies use the nominal `CalCalib` (0.0625 MeV/ADC, 0.00375
+- `hits.make_hits` (above, `backend="jax"` for the grouping rounds) builds `CaloHit`s; reco-digi energies use the nominal `CalCalib` (0.0625 MeV/ADC, 0.00375
   for the CAPHRI LYSO crystals).
 - `cluster.make_clusters`: `CaloProtoClusterMaker` + `ClusterFinder` + `CaloClusterMaker` + `ClusterAssociator`
   (main and split clusters, split association, main merging, energy-weighted position in the disk front-face
@@ -73,8 +73,8 @@ Status (2,000 CE, production settings, against stock Offline v13_39_00 on the sa
   for all 9,598 paired, time within 0.1 ns for 99.96 %); hits from the stock reco digis are bit-exact (4,596);
   clusters from the stock hits are identical (837: energy, time, size, split flag; position within 3e-5 mm);
 - full fast chain from the steps, paired by event against a second stock seed as reference: leading-cluster
-  energy difference 0.03 +- 0.07 MeV with RMS 2.10 MeV (stock vs stock 2.15), time RMS 0.115 ns (0.108), position
-  RMS 2.3 mm (2.4); CE peak 87.6 vs 87.3 MeV (+0.31 +- 0.34), core width 4.25 vs 3.90 MeV (+0.35 +- 0.42), low-tail
+  energy difference 0.03 +- 0.07 MeV with RMS 2.10 MeV (stock vs stock 2.15), time RMS 0.72 ns (0.71, dominated by
+  the production 0.5 ns reco-PBT smearing), position RMS 2.3 mm (2.4); CE peak 87.6 vs 87.3 MeV (+0.31 +- 0.34), core width 4.25 vs 3.90 MeV (+0.35 +- 0.42), low-tail
   fraction 30.5 % vs 30.6 % (0.0 +- 0.8 %).
 
 `scripts/compare_reco.py` runs the stage-by-stage comparison, `scripts/compare_chain.py` the full chain (figures and

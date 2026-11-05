@@ -159,7 +159,7 @@ def plot(out_dir, fast_lead, s1_lead, fast_hits, s1_hits, pairs):
 
     fig, axes = plt.subplots(1, 3, figsize=(12, 3.4))
     spec = [("leading cluster $\\Delta E$ [MeV]", "dE", np.arange(-6, 6.01, 0.25)),
-            ("leading cluster $\\Delta t$ [ns]", "dt", np.arange(-0.6, 0.601, 0.025)),
+            ("leading cluster $\\Delta t$ [ns]", "dt", np.arange(-2.5, 2.501, 0.1)),
             ("leading cluster $\\Delta$position [mm]", "dr", np.arange(0, 12.01, 0.25))]
     for ax, (label, key, bins) in zip(axes, spec):
         f, s = pairs[key]
