@@ -2,9 +2,9 @@
 
 Total energies and momenta are MeV, positions mm and times ns. The Bistirlich
 photon spectrum is midpoint-binned as in BinnedSpectrum; the correlated pair
-uses the Kroll-Wada-Joseph density. Input stops must be physical negative pion
-stops, not decay-disabled weighted pions or stopped muons. This module generates
-both particles but performs no transport and makes no absolute-rate prediction.
+uses the Kroll-Wada-Joseph density. Input is a pool of physical negative pion
+stops in target foils, not decay-disabled weighted pions or stopped muons. This
+module generates both particles but performs no transport or absolute-rate prediction.
 """
 import argparse
 from dataclasses import dataclass
@@ -123,6 +123,8 @@ def internal_pair(rng, energy, nuclear_mass=M_AL):
 def from_stops(rng, stops, n, spectrum=None, *, tmin=350.0, stopping_code=78):
     """Resample an eligible event uniformly, then one of its selected pion stops.
 
+    Input is a target-stop pool: at_rest and foil >= 0 restrict that scope,
+    beyond the stock species, stopping-process and minimum-time selection.
     StopSelector has already conditioned the production on an eligible stop.
     Times are copied directly: physical pions get neither a muon lifetime delay
     nor an extra pion-survival weight. Output normalisation is per generated
@@ -171,7 +173,7 @@ def from_stops(rng, stops, n, spectrum=None, *, tmin=350.0, stopping_code=78):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--stops", required=True, help="NPZ of event-keyed physical pion stops")
+    ap.add_argument("--stops", required=True, help="NPZ of event-keyed physical pion stops in target foils")
     ap.add_argument("--n", type=int, required=True, help="generated captures, one pair each")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--elow", type=float, default=50.0)
