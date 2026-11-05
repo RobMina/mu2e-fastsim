@@ -52,6 +52,24 @@ Allocation charges depend on the site's rates and are not given here.
 | electrons, conversion-electron chain to the tracker entry | slab physics vs Geant4 pass (loss chi2/ndf 0.6-1.4; 1 X0 W stopped 18.41 +- 0.09 vs 18.28 %; reflected 0.347 +- 0.013 vs 0.336 %). CE chain vs Geant4 CeEndpoint at the tracker entry, inside a selection that implies the production filter: yield per generated electron 1.004 +- 0.003; momentum, angle, radius and time-of-flight chi2/ndf 0.8-1.3; E - E_CE MPV -0.37 vs -0.35 +- 0.02 MeV, FWHM 0.675 vs 0.677 +- 0.024 MeV, 0.25 MeV tail bins to -2 MeV within 1-2 sigma Device chain (`--backend device`, one JAX loop) vs the NumPy chain on the same starts (400k target stops and the 108k Geant4 starts, r_max > 450): yield per start 0.9999 +- 0.0007 / 1.0005 +- 0.0010 (float64), 1.0010 +- 0.0007 / 1.0000 +- 0.0010 (float32); E - E_CE 0.25 MeV bins from -2 to 0 MeV within 2.4 sigma (paired); same-start momentum +0.001 +- 0.008 MeV/c (float64), +0.012 +- 0.008 MeV/c (float32); against Geant4 the device yield is 1.0043 +- 0.0028 (float64) / 1.0054 +- 0.0028 (float32) | device chain, one RTX PRO 6000 MIG 1g.24gb slice with 4 cores: float32 about 70,000 electrons/s steady (whole process with 1.6 M electrons: 24,900/s, fixed cost about 17 s plus a 10 s tail of slow electrons), float64 8,600/s (process with 400k: 3,900/s); one CPU core: float32 170-240/s (process with 40k: 116-135/s), float64 106-110/s. NumPy chain with JAX layers: 37/s per core, 132/s per MIG slice. A stock event (24 electrons/s per grid slot) simulates every particle in the whole detector; the fast chain carries the primary electron to the tracker entry | device: about 2,900 per MIG slice (float32), 360 (float64); 7-10 per CPU core (float32), 4.4-4.6 (float64) |
 | tracker with the DS field (opt-in, in development) | first passage of Geant4 tracker-entry states, field-on chord transport: straws per track +0.017 +- 0.070 (muons), +0.055 +- 0.019 (CE); straw ionisation with the Geant4 gas density-effect branch and muon radiative losses (both default): conversion electrons -0.06 +- 0.06 %, cosmic muons above 10 GeV/c within 0.2 %; stock CentralHelix reco on the fast steps agrees with Geant4 above 300 MeV/c | one CPU core 6 muons/s, 4 CE/s (transport only) | stock field-on reference not yet timed |
 
+## CE shower-library diagnostic (opt-in)
+
+This separate route carries generated CE primaries through cechain, vacuum propagation to a disk front, sampled
+whole-event showers, and calorimeter response/digitisation/reconstruction. It does **not** replace the cesob proxy.
+On 1,000 held-out generated events from a single 2,000-event production shard, leading-cluster acceptance above
+10 MeV is **390/410 = 0.9512 +- 0.0224** relative to Geant4 plus stock reconstruction; the all-event mean energy
+difference is **-1.47 +- 0.82 MeV**, with energy chi2/ndf **28.96/19**. Both-selected transverse position separation
+averages **251 mm**, so spatial agreement is poor. The conditional front-entry energy shape also fails closure
+(52.1/21); paired jackknife errors use ten 100-source-event blocks and exclude library-training uncertainty.
+
+Single-call warm timing from CE birth through reconstructed clusters, in 1,000-event batches with float64 JAX
+transport: **10.24 generated CE/s on one CPU core**, **70.61/s on an RTX PRO 6000 MIG 1g.24GB slice plus four allocated
+host cores**. At the 23.9 CE/s stock-slot basis these are **0.428 and 2.954 stock-slot rates**, not validated grid-slot
+replacements: the fast route omits tracker/passive material and side-entry interactions, while stock covers the full
+CE production simulation stage. Synchronization and all fast stages are included; imports, input loading and cold
+compilation are excluded. These small-batch timings do not establish device saturation. Full selections, timing
+boundaries, commands and limitations: [CE shower library](../calo/SHOWERS.md).
+
 ## Per GPU: CRV default chain and beam stop fraction
 
 One GPU per job, the defaults of `main` (2026-11-02). CRV: production `runchain` over 11 shards of 50,000 generated
