@@ -1,0 +1,128 @@
+# Stock calorimeter digitization and reco on saved CaloShowerSteps, in three arms:
+#   det: PE statistics, travel time and noise off (deterministic); noi: det readouts plus noise; prd: production settings.
+#include "Offline/fcl/minimalMessageService.fcl"
+#include "Offline/fcl/standardServices.fcl"
+#include "Offline/fcl/standardProducers.fcl"
+#include "EventNtuple/fcl/prolog.fcl"
+
+process_name : CAL1Stock
+source : { module_type : RootInput }
+services : { @table::Services.SimAndReco }
+services.SeedService.baseSeed : 20261105
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_run1_a.txt"
+services.GeometryService.bFieldFile : "Offline/Mu2eG4/geom/bfgeom_no_tsu_ps_v01.txt"
+services.DbService.purpose : Sim_best
+services.DbService.version : v1_1
+services.ProditionsService.calSimParams.useDb : false
+services.ProditionsService.calSimParams.fileName : "Offline/CaloConditions/data/Sim_crystal.txt"
+services.ProditionsService.calCalib.useDb : false
+services.ProditionsService.eventTiming.useDb : false
+services.ProditionsService.eventTiming.TimeFromProtonsToDRMarker : 200
+services.TFileService.fileName : "calo_stock.root"
+
+CAL1Steps : [ "CaloShowerStepMaker::CaloLibraryCE" ]
+
+physics : {
+  producers : {
+    EWMProducer : {
+      module_type : EventWindowMarkerProducer
+      SpillType : 1
+      InitialPhaseShift : 0
+      RecoFromMCTruth : true
+      RecoFromMCTruthErr : 0
+    }
+    detRO : { @table::CaloMC.CaloShowerROMaker caloShowerStepCollection : @local::CAL1Steps
+              PEStatCorrection : false addTravelTime : false }
+    prdRO : { @table::CaloMC.CaloShowerROMaker caloShowerStepCollection : @local::CAL1Steps }
+    detDigi : { @table::CaloMC.CaloDigiMaker caloShowerROCollection : detRO addNoise : false }
+    noiDigi : { @table::CaloMC.CaloDigiMaker caloShowerROCollection : detRO }
+    prdDigi : { @table::CaloMC.CaloDigiMaker caloShowerROCollection : prdRO }
+    detRecoDigi : { @table::CaloReco.CaloRecoDigiMaker caloDigiCollection : detDigi }
+    noiRecoDigi : { @table::CaloReco.CaloRecoDigiMaker caloDigiCollection : noiDigi }
+    prdRecoDigi : { @table::CaloReco.CaloRecoDigiMaker caloDigiCollection : prdDigi }
+    detHit : { @table::CaloReco.CaloHitMaker caloRecoDigiCollection : detRecoDigi }
+    noiHit : { @table::CaloReco.CaloHitMaker caloRecoDigiCollection : noiRecoDigi }
+    prdHit : { @table::CaloReco.CaloHitMaker caloRecoDigiCollection : prdRecoDigi }
+    detProto : { @table::CaloCluster.CaloProtoClusterMaker caloHitCollection : detHit }
+    noiProto : { @table::CaloCluster.CaloProtoClusterMaker caloHitCollection : noiHit }
+    prdProto : { @table::CaloCluster.CaloProtoClusterMaker caloHitCollection : prdHit }
+    detCluster : { @table::CaloCluster.CaloClusterMaker
+                   caloClusterMainCollection : "detProto:main" caloClusterSplitCollection : "detProto:split" }
+    noiCluster : { @table::CaloCluster.CaloClusterMaker
+                   caloClusterMainCollection : "noiProto:main" caloClusterSplitCollection : "noiProto:split" }
+    prdCluster : { @table::CaloCluster.CaloClusterMaker
+                   caloClusterMainCollection : "prdProto:main" caloClusterSplitCollection : "prdProto:split" }
+  }
+  analyzers : {
+    det : { @table::EventNtupleMaker }
+    noi : { @table::EventNtupleMaker }
+    prd : { @table::EventNtupleMaker }
+  }
+  p1 : [ EWMProducer, detRO, prdRO, detDigi, noiDigi, prdDigi, detRecoDigi, noiRecoDigi, prdRecoDigi,
+         detHit, noiHit, prdHit, detProto, noiProto, prdProto, detCluster, noiCluster, prdCluster ]
+  e1 : [ det, noi, prd, out ]
+  trigger_paths : [ p1 ]
+  end_paths : [ e1 ]
+}
+outputs : {
+  out : { module_type : RootOutput fileName : "calo_stock.art"
+          outputCommands : [ "drop *_*_*_*", "keep *_*_*_CAL1Stock" ] }
+}
+
+physics.analyzers.det.trk.fill : false
+physics.analyzers.det.trk.fits : []
+physics.analyzers.det.crv.fill : false
+physics.analyzers.det.mc.fill : false
+physics.analyzers.det.lumistream.fill : false
+physics.analyzers.det.FillTriggerInfo : false
+physics.analyzers.det.RecoCountTag : ""
+physics.analyzers.det.subruns.makeNtuple : false
+physics.analyzers.det.subruns.makeTotalsHistograms : false
+physics.analyzers.det.calo.mc.fill : false
+physics.analyzers.det.calo.fillClusters : true
+physics.analyzers.det.calo.fillHits : true
+physics.analyzers.det.calo.fillRecoDigis : true
+physics.analyzers.det.calo.fillDigis : true
+physics.analyzers.det.subruns.cosmicLivetime.include : false
+physics.analyzers.det.calo.clustersTag : detCluster
+physics.analyzers.det.calo.hitsTag : detHit
+physics.analyzers.det.calo.recoDigisTag : detRecoDigi
+physics.analyzers.det.calo.digisTag : detDigi
+physics.analyzers.noi.trk.fill : false
+physics.analyzers.noi.trk.fits : []
+physics.analyzers.noi.crv.fill : false
+physics.analyzers.noi.mc.fill : false
+physics.analyzers.noi.lumistream.fill : false
+physics.analyzers.noi.FillTriggerInfo : false
+physics.analyzers.noi.RecoCountTag : ""
+physics.analyzers.noi.subruns.makeNtuple : false
+physics.analyzers.noi.subruns.makeTotalsHistograms : false
+physics.analyzers.noi.calo.mc.fill : false
+physics.analyzers.noi.calo.fillClusters : true
+physics.analyzers.noi.calo.fillHits : true
+physics.analyzers.noi.calo.fillRecoDigis : true
+physics.analyzers.noi.calo.fillDigis : true
+physics.analyzers.noi.subruns.cosmicLivetime.include : false
+physics.analyzers.noi.calo.clustersTag : noiCluster
+physics.analyzers.noi.calo.hitsTag : noiHit
+physics.analyzers.noi.calo.recoDigisTag : noiRecoDigi
+physics.analyzers.noi.calo.digisTag : noiDigi
+physics.analyzers.prd.trk.fill : false
+physics.analyzers.prd.trk.fits : []
+physics.analyzers.prd.crv.fill : false
+physics.analyzers.prd.mc.fill : false
+physics.analyzers.prd.lumistream.fill : false
+physics.analyzers.prd.FillTriggerInfo : false
+physics.analyzers.prd.RecoCountTag : ""
+physics.analyzers.prd.subruns.makeNtuple : false
+physics.analyzers.prd.subruns.makeTotalsHistograms : false
+physics.analyzers.prd.calo.mc.fill : false
+physics.analyzers.prd.calo.fillClusters : true
+physics.analyzers.prd.calo.fillHits : true
+physics.analyzers.prd.calo.fillRecoDigis : true
+physics.analyzers.prd.calo.fillDigis : true
+physics.analyzers.prd.subruns.cosmicLivetime.include : false
+physics.analyzers.prd.calo.clustersTag : prdCluster
+physics.analyzers.prd.calo.hitsTag : prdHit
+physics.analyzers.prd.calo.recoDigisTag : prdRecoDigi
+physics.analyzers.prd.calo.digisTag : prdDigi

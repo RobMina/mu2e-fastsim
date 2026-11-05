@@ -27,6 +27,23 @@ both arms, the NumPy and JAX (eager and jit) primitives reproduce every stock re
 exactly (47,267 steps, 61,312 readouts, 4.43 M photoelectrons), and the stock propagation lookup matches on 6,390
 prescribed draws.
 
+## Readout and digitisation (`calofastsim.readout`, `calofastsim.pulse`, `calofastsim.digi`)
+
+- `readout.make_readouts`: `CaloShowerStep`s to per-SiPM photoelectrons (`CaloShowerROMaker`), all events at once,
+  with photon statistics and travel time on or off.
+- `pulse.PulseCache`: the `CaloPulseUtil` cache (TH1 interpolation to digiSampling/100, float32, unit maximum).
+- `digi.digitize`: the `CaloDigiMaker` waveform, noise segments, pedestal, 12-bit ADC and peak/digi extraction,
+  on the active readouts only, in NumPy or JAX (`backend="jax"`, x64).
+
+`fcl/stock_chain.fcl` runs the stock chain on saved steps in three arms (deterministic; deterministic readouts with
+noise; production settings) and writes one EventNtuple per arm; `scripts/stock_chain.sbatch` runs it with
+`container/offline/offline_uva.sh` and an existing runtime. `scripts/compare_digis.py` compares fast and stock digis.
+
+Status (2,000 CE, stock Offline v13_39_00): with photon statistics, travel time and noise off, all 11,204 stock
+digis are reproduced exactly (every ADC sample, t0 and peak position) by both backends. With noise on, the digi
+count differs by -0.001 +- 0.014 per event and the length, peak, t0 and summed-ADC shapes agree (chi2/ndf 12/27,
+23/51, 10/53, 9/39; a second stock seed gives 16/27, 13/51, 6/53, 12/39).
+
 ## Tests
 
 ```bash

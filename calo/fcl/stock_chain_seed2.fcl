@@ -1,0 +1,3 @@
+# Same stock chain with an independent seed: the stock-vs-stock spread of the stochastic arms.
+#include "stock_chain.fcl"
+services.SeedService.baseSeed : 20261106
