@@ -1,0 +1,45 @@
+name: shower tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: showers-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  showers:
+    name: showers (${{ matrix.backend }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [cpu, no-jax]
+    env:
+      JAX_PLATFORMS: cpu
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPATH: calo:beam:core
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: core/ci/requirements.txt
+      - name: Python packages
+        shell: bash
+        run: |
+          if [ "${{ matrix.backend }}" = no-jax ]; then
+            grep -v -E '^(jax|jaxlib)==' core/ci/requirements.txt > "$RUNNER_TEMP/requirements-nojax.txt"
+            python3 -m pip install -q -r "$RUNNER_TEMP/requirements-nojax.txt"
+            if python3 -c 'import jax' 2>/dev/null; then echo 'JAX is installed'; exit 1; fi
+          else
+            python3 -m pip install -q -r core/ci/requirements.txt
+          fi
+      - name: Shower and public-path tests
+        run: python3 -m pytest -q -p no:cacheprovider calo/tests/test_showers*.py tests/test_no_site_paths.py
