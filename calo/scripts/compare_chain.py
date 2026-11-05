@@ -215,6 +215,12 @@ def headline(r, args):
         h["clusters_on_stock_hits"] = {"n": [cl["n_fast"], cl["n_stock"]], "energy_equal": cl["energy_exact_frac"],
                                        "size_equal": cl["size_equal_frac"], "time_rms_ns": cl["time_ns"]["rms"],
                                        "position_max_mm": cl["position_mm"]["q01_16_50_84_99"][-1]}
+    for item in args.timing:
+        name, path = item.split("=", 1)
+        t = json.loads(Path(path).read_text())
+        h.setdefault("throughput_events_per_s", {})[name] = t["events_per_s_warm_median"]
+    if args.stock_ms_per_event:
+        h.setdefault("throughput_events_per_s", {})["stock_cpu_slot"] = 1000.0 / args.stock_ms_per_event
     return h
 
 
@@ -232,6 +238,9 @@ def main(argv=None):
     p.add_argument("--arm", default="prd")
     p.add_argument("--digi-report", help="compare_digis.py JSON to fold into the headline numbers")
     p.add_argument("--reco-report", help="compare_reco.py JSON to fold into the headline numbers")
+    p.add_argument("--timing", action="append", default=[], metavar="NAME=JSON",
+                   help="time_chain.py output to fold in (repeatable)")
+    p.add_argument("--stock-ms-per-event", type=float, help="stock calo digi+reco CPU time per event (TimeTracker)")
     p.add_argument("--out-dir", required=True)
     args = p.parse_args(argv)
     import jax
@@ -279,8 +288,8 @@ def main(argv=None):
                                    for k in pairs},
         "paired_single_hits": {"energy": {"fast_minus_stock": paired(hfe, hse), "stock2_minus_stock": paired(h2e, h1e)},
                                "time": {"fast_minus_stock": paired(hft, hst), "stock2_minus_stock": paired(h2t, h1t)}},
-        "shapes": {"leading_cluster_energy": {"fast": shape(lf["energy"], l1["energy"], np.arange(40, 110.5, 1.0)),
-                                              "stock2": shape(l2["energy"], l1["energy"], np.arange(40, 110.5, 1.0))},
+        "shapes": {"leading_cluster_energy": {"fast": shape(lf["energy"], l1["energy"], np.arange(40, 111, 2.0)),
+                                              "stock2": shape(l2["energy"], l1["energy"], np.arange(40, 111, 2.0))},
                    "hit_energy": {"fast": shape(np.asarray(fast["hits"]["e"], float), np.asarray(s1["hits"]["e"], float),
                                                 np.geomspace(0.3, 110, 41)),
                                   "stock2": shape(np.asarray(s2["hits"]["e"], float), np.asarray(s1["hits"]["e"], float),

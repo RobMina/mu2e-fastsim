@@ -59,24 +59,46 @@ def make_evaluate(pulse: PulseCache):
 def fit_digis(t0, samples, length, pulse: PulseCache, cfg: FitConfig = FitConfig()):
     """Fit padded digis. Returns per-digi, per-slot arrays ``amp, amp_err, time (t0 convention), time_err, valid``
     plus ``chi2``, ``ndf`` and ``refit_skipped``. ``time`` is ``fromPeakToT0(peak time)``, before the PBT offset."""
-    import jax
     jnp = _jnp()
-    evaluate = make_evaluate(pulse)
-    K, W = cfg.max_peaks, cfg.window_peak
-    t0 = jnp.asarray(t0, dtype=jnp.float64)
-    y = jnp.asarray(samples, dtype=jnp.float64)
-    length = jnp.asarray(length, dtype=jnp.int64)
+    n_digis = len(t0)
+    rows = max(1024, 1 << int(np.ceil(np.log2(max(n_digis, 1)))))   # fixed shape buckets: no recompilation
+    width = max(32, 32 * int(np.ceil(np.asarray(samples).shape[1] / 32)))
+    pad_y = np.zeros((rows, width), np.float64)
+    pad_y[:n_digis, :np.asarray(samples).shape[1]] = samples
+    pad_l = np.zeros(rows, np.int64)
+    pad_l[:n_digis] = length
+    pad_t = np.zeros(rows, np.float64)
+    pad_t[:n_digis] = t0
+    t0 = jnp.asarray(pad_t)
+    y = jnp.asarray(pad_y)
+    length = jnp.asarray(pad_l)
     L = y.shape[1]
     idx = jnp.arange(L)
     x = t0[:, None] + (idx + 0.5) * cfg.digi_sampling
     mask = idx[None, :] < length[:, None]
 
-    def one(x, y, mask, n):
-        return _fit_one(x, y, mask, n, evaluate, cfg, K, W, L)
-
-    out = jax.jit(jax.vmap(one))(x, y, mask, length)
+    out = _compiled(pulse, cfg, L)(x, y, mask, length)
+    out = {k: np.asarray(v)[:n_digis] for k, v in out.items()}
     out["time"] = out["peak_time"] - pulse.delta_t - 0.5 * pulse.digi_step * N_STEPS
-    return {k: np.asarray(v) for k, v in out.items()}
+    return out
+
+
+_CACHE = {}
+
+
+def _compiled(pulse, cfg, L):
+    """The jitted, vmapped per-digi fit for one pulse cache and configuration, built once and reused."""
+    import jax
+    key = (id(pulse), cfg, L)
+    if key not in _CACHE:
+        evaluate = make_evaluate(pulse)
+        K, W = cfg.max_peaks, cfg.window_peak
+
+        def one(x, y, mask, n):
+            return _fit_one(x, y, mask, n, evaluate, cfg, K, W, L)
+
+        _CACHE[key] = (jax.jit(jax.vmap(one)), pulse)
+    return _CACHE[key][0]
 
 
 def _window_sums(evaluate, x, y, x0, i0, i1, L):
