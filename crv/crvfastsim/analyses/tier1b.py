@@ -1,6 +1,6 @@
 """tier1b-build / tier1b-apply -- the G4 library of muon descendants and non-muon primaries (crvfastsim/tier1b.py).
 
-    tier1b-build crvsteps.<train>.root [...] --gen gen.<train>.root [...] --out lib.root [--roots]
+    tier1b-build crvsteps.<train>.root [...] --gen gen.<train>.root [...] --out lib.root [--roots] [--run-config NAME]
     tier1b-apply fastC.*.root --outdir DIR [--seed N]   (writes fast1b.<shard>.root; default set strict_v5)
     tier1b-apply fastC.*.root --tier1b strict_v5 [--tier1b-dir DIR] --outdir DIR   (a named asset set)
     tier1b-apply fastC.*.root --library lib.root --outdir DIR   (a custom library, no placement unless flagged:)
@@ -9,7 +9,9 @@
         [--chord-placement --follow-muon]   (same-bar placement and chain draw; template sidecar v3)
 
 Build on training shards and apply to others (the library never sees the events it is compared with). The fast
-tables carry their gen tree, which supplies the non-muon CRY primaries.
+tables carry their gen tree, which supplies the non-muon CRY primaries. A named run configuration (--run-config
+run1a_v01, ...) builds and samples on its geometry with per-primary crossings (tier1b.build per_primary): its events
+can hold several primary muons.
 """
 import hashlib
 import json
@@ -23,18 +25,38 @@ from .. import geometry, tables, tier1b, tier1b_assets
 DEFAULT_COUNTERS = "Offline/Mu2eG4/geom/crv_counters_extracted_v04.txt"
 
 
-def _geom(counters):
+def named(run_config):
+    """True for a named run configuration (not the extracted default): per-primary library identity."""
+    return bool(run_config) and run_config != tier1b_assets.EXTRACTED
+
+
+def _geom(counters, run_config=None):
+    """Extracted geometry from the counters file, or a named run configuration's geometry (with its lib_group)."""
+    if named(run_config):
+        from dataclasses import replace
+        from .. import runconfig
+        rc = runconfig.get(run_config)
+        return (replace(rc, counters=counters) if counters else rc).geometry()
     return geometry.from_offline_config(geometry.find_counters(counters or DEFAULT_COUNTERS))
 
 
-def build(inputs, outdir, gen=None, out=None, generated=None, counters=None, roots=False, **kw):
+def library_per_primary(library):
+    """True when the library's manifest (LIB.json next to LIB.root) says it was built per primary (tier1b-build
+    --run-config): only then do near-miss draws go per generated muon."""
+    manifest = os.path.splitext(str(library))[0] + ".json"
+    return os.path.exists(manifest) and bool(json.loads(open(manifest).read()).get("per_primary"))
+
+
+def build(inputs, outdir, gen=None, out=None, generated=None, counters=None, roots=False, run_config=None, **kw):
     if not gen or not out:
         raise SystemExit("tier1b-build needs --gen and --out")
-    lib, info = tier1b.build(tables.expand(inputs), tables.expand(gen), _geom(counters), generated=generated,
-                             roots=roots)
+    per = {"per_primary": True} if named(run_config) else {}
+    lib, info = tier1b.build(tables.expand(inputs), tables.expand(gen), _geom(counters, run_config),
+                             generated=generated, roots=roots, **per)
     tier1b.write_library(out, lib)
     with open(os.path.splitext(out)[0] + ".json", "w") as fh:
-        json.dump({"inputs": tables.expand(inputs), "gen": tables.expand(gen), **info}, fh, indent=2)
+        json.dump({"inputs": tables.expand(inputs), "gen": tables.expand(gen),
+                   **({"run_config": run_config, "per_primary": True} if per else {}), **info}, fh, indent=2)
     print(info)
 
 
@@ -84,7 +106,7 @@ def read_template_sidecar(path, library=None, library_sha256=None):
 def apply(inputs, outdir, library=None, seed=1, counters=None, crossing_context=False, contain_steps=False,
           point_placement=False, mirror_offsets=False, translate_offsets=False, topology_sidecar=None,
           template_sidecar=None, unvisited_layers=False, near_miss=False, chord_placement=False, follow_muon=False,
-          tier1b_set=None, tier1b_dir=None, **kw):
+          tier1b_set=None, tier1b_dir=None, run_config=None, **kw):
     """Without --library: the asset set --tier1b (default strict_v5, tier1b_assets) with its own placement options.
     With --library: that library and only the placement flags given (no flag: no placement, the legacy sampling)."""
     given = dict(crossing_context=crossing_context, contain_steps=contain_steps, point_placement=point_placement,
@@ -96,8 +118,8 @@ def apply(inputs, outdir, library=None, seed=1, counters=None, crossing_context=
         if flags:
             raise SystemExit(f"tier1b-apply: placement flags ({', '.join(sorted(flags))}) need a custom --library; "
                              "an asset set (--tier1b) brings its own options")
-        geom = _geom(counters)
-        spec = tier1b_assets.resolve(tier1b_set, directory=tier1b_dir)
+        geom = _geom(counters, run_config)
+        spec = tier1b_assets.resolve(tier1b_set, directory=tier1b_dir, run_config=run_config)
         print(f"# tier 1b: {json.dumps(spec.describe())}", flush=True)
         lib, opts = tier1b_assets.load(spec, geom), spec.options
     else:
@@ -113,7 +135,9 @@ def apply(inputs, outdir, library=None, seed=1, counters=None, crossing_context=
             raise SystemExit("--chord-placement / --follow-muon need --template-sidecar (with library chords)")
         if chord_placement or follow_muon:
             opts.update(chord=bool(chord_placement), follow=bool(follow_muon))
-        geom = _geom(counters)
+        if near_miss and library_per_primary(library):
+            opts["per_primary"] = True
+        geom = _geom(counters, run_config)
         lib = tier1b.read_library(library)
         if topology_sidecar:
             lib = tier1b.attach_topology(lib, *read_topology_sidecar(topology_sidecar, library), geom)

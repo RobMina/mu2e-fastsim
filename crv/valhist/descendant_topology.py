@@ -33,11 +33,25 @@ VIEWS = {"topo": ["grp", "topo"], "lay_topo": ["grp", "lay", "topo"]}
 
 
 # ----------------------------------------------------------------------------------------------------------- sidecar
-def donor_crossings(path, geom):
+def manifest_geometry(man, counters=None):
+    """(geometry, counters path, per_primary) of a library manifest: a named run configuration's geometry when the
+    library was built on one (tier1b-build --run-config), else the extracted counters."""
+    rc = man.get("run_config")
+    if rc:
+        from dataclasses import replace
+        from crvfastsim import runconfig
+        r = runconfig.get(rc)
+        r = replace(r, counters=counters) if counters else r
+        return r.geometry(), r.counters_path(), bool(man.get("per_primary"))
+    path = geometry.find_counters(counters or S.COUNTERS)
+    return geometry.from_offline_config(path), path, False
+
+
+def donor_crossings(path, geom, per_primary=False):
     """Library crossings of one donor table, in library order, with muon visits (muon ids local to the file)."""
     steps, parts = S._read(path)
     s = classify(steps, parts, geom.sector)
-    x = T._crossings(s.loc[s.cls.eq("mu_primary")])
+    x = T._crossings(s.loc[s.cls.eq("mu_primary")], per_primary)
     mu, vis, visits = T.muon_visits(x, geom)
     return x, mu, vis, visits
 
@@ -49,7 +63,7 @@ def sidecar(manifest, out, counters=None):
     tick = time.monotonic()
     m = json.loads(Path(manifest).read_text())
     library = str(Path(manifest).with_suffix(".root"))
-    geom = geometry.from_offline_config(geometry.find_counters(counters or S.COUNTERS))
+    geom, counters_path, per_primary = manifest_geometry(m, counters)
     from mu2efastsim import tables as core_tables
     lx = core_tables.read(library, "libxing")
     bins = core_tables.read(library, "libbins")
@@ -58,7 +72,7 @@ def sidecar(manifest, out, counters=None):
     cross, visits, offset, muoff, records = [], [], 0, 0, []
     for f in m["inputs"]:
         start = time.monotonic()
-        x, mu, vis, v = donor_crossings(f, geom)
+        x, mu, vis, v = donor_crossings(f, geom, per_primary)
         z = lx.iloc[offset:offset + len(x)]
         np.testing.assert_array_equal(z.bin, T._bin(bins, T._group_index(geom, x.bar), x.p.to_numpy(), x.len.to_numpy()))
         if "ctx" in z.columns:
@@ -88,7 +102,7 @@ def sidecar(manifest, out, counters=None):
     np.savez_compressed(out, **{f"crossings_{k}": c[k].to_numpy() for k in c.columns},
                         **{f"visits_{k}": v[k].to_numpy() for k in v.columns})
     result = {"library": library, "library_sha256": A.digest(library), "manifest": str(manifest),
-              "geometry_sha256": A.digest(geometry.find_counters(counters or S.COUNTERS)),
+              "geometry_sha256": A.digest(counters_path),
               "code_sha256": {p: A.digest(p) for p in (__file__, T.__file__)}, "donors": records,
               "other_bar_rows": int(other.sum()), "with_topology_rows": int(has.sum()),
               "other_bar_energy": float(ld.edep.to_numpy()[other].sum()),
