@@ -13,6 +13,7 @@ dependencies = ["mu2efastsim", "numpy", "scipy", "uproot", "jax"]
 [project.optional-dependencies]
 plots = ["matplotlib"]
 test = ["pytest"]
+tracker = ["trkfastsim", "pandas"]   # cetracker: hand-off to the field-on tracker
 
 [project.scripts]
 beamfastsim = "beamfastsim.__main__:main"

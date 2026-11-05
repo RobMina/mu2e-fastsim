@@ -35,7 +35,7 @@ jobs:
             path: beam:core
           - suite: umbrella
             dir: .
-            path: beam:core
+            path: beam:core:tracker
           - suite: calo
             dir: calo
             path: calo:core
@@ -93,7 +93,7 @@ jobs:
             path: beam:core
           - suite: umbrella
             dir: .
-            path: beam:core
+            path: beam:core:tracker
           - suite: calo
             dir: calo
             path: calo:core
