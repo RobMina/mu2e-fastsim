@@ -32,6 +32,7 @@ def reco_numbers(report):
 
 
 def figure(reports, out, reco=None):
+    """Keep unavailable estimates distinct from measured zeros in saved reports."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -52,19 +53,40 @@ def figure(reports, out, reco=None):
     fig, axes = plt.subplots(1, 2, figsize=(13, 5.4), gridspec_kw={"width_ratios": [1.8, 1]})
     y = np.arange(len(labels))
     axes[0].axvline(1, color="gray", lw=1)
-    axes[0].errorbar(values, y, xerr=errors, fmt="o", color="#0072B2", capsize=3)
+    values, errors = np.asarray(values, float), np.asarray(errors, float)
+    finite = np.isfinite(values)
+    measured = finite & np.isfinite(errors)
+    unknown = finite & ~np.isfinite(errors)
+    if measured.any():
+        axes[0].errorbar(values[measured], y[measured], xerr=errors[measured], fmt="o", color="#0072B2", capsize=3)
+    if unknown.any():
+        axes[0].plot(values[unknown], y[unknown], "o", color="#0072B2", linestyle="none")
+    for i in y[unknown]:
+        labels[i] += " (error unavailable)"
+    for i in y[~finite]:
+        axes[0].text(.98, i, "undefined", transform=axes[0].get_yaxis_transform(), ha="right", va="center", fontsize=8)
     axes[0].set_yticks(y, labels, fontsize=8)
     axes[0].invert_yaxis()
     axes[0].set_xlabel("Acceptance ratio (>10 MeV); paired event-block error")
     speed = reco if reco else reports
     names = list(speed)
     key = "generated_per_second" if reco else "warm_generated_per_second"
-    rates = [speed[k]["timing"][key] for k in names]
-    bars = axes[1].bar(names, rates, color=["#0072B2", "#D55E00"][:len(names)])
-    for bar, value in zip(bars, rates):
-        axes[1].text(bar.get_x() + bar.get_width() / 2, value, f"{value:.1f}", ha="center", va="bottom")
+    rates = np.asarray([speed[k]["timing"][key] for k in names], float)
+    available = np.isfinite(rates)
+    positions = np.arange(len(names))
+    colors = np.asarray(["#0072B2", "#D55E00"][:len(names)])
+    if available.any():
+        bars = axes[1].bar(positions[available], rates[available], color=colors[available])
+        for bar, value in zip(bars, rates[available]):
+            axes[1].text(bar.get_x() + bar.get_width() / 2, value, f"{value:.1f}", ha="center", va="bottom")
+    for i in positions[~available]:
+        axes[1].text(i, .03, "unavailable", transform=axes[1].get_xaxis_transform(), ha="center", va="bottom")
+    axes[1].set_xticks(positions, names)
+    if names:
+        axes[1].set_xlim(-.5, len(names) - .5)
     axes[1].set_ylabel("Generated CE / s (warm 1,000-event batch)")
-    axes[1].set_ylim(0, max(rates) * 1.25)
+    upper = max(rates[available]) * 1.25 if available.any() else 1.
+    axes[1].set_ylim(0, upper if upper > 0 else 1.)
     fig.suptitle("CE birth → calorimeter; held-out generated-event denominator", fontsize=11)
     fig.text(.5, .015, "Timing through reconstructed clusters. Primary-only fast transport; the shower model remains diagnostic." if reco else
              "Primary-only fast route to response sum; not stock cluster reconstruction. Shower model remains diagnostic.",

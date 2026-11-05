@@ -62,7 +62,11 @@ def stock_clusters(path, event_ids):
     import awkward as ak
 
     with uproot.open(path) as source:
-        data = source["prd/ntuple"].arrays(filter_name=["evtinfo", "evtinfo.*", "caloclusters", "caloclusters.*"])
+        tree = source["prd/ntuple"]
+        if tree.classname == "ROOT::RNTuple":
+            data = tree.arrays(filter_name=["evtinfo", "evtinfo.*", "caloclusters", "caloclusters.*"])
+        else:
+            data = tree.arrays(["evtinfo", "caloclusters"])
     evt = data["evtinfo"]
     fields = {k: ak.to_numpy(evt[k]) for k in EVENT}
     rows = join(event_ids, keys(fields, EVENT))
