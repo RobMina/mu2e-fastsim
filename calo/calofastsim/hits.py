@@ -9,7 +9,7 @@ from .response import weighted_reco_digis
 
 
 def make_hits(event_index, sipm_id, time, time_error, energy, energy_error, *,
-              n_events, n_crystals, time4merge):
+              n_events, n_crystals, time4merge, backend="numpy"):
     """Return hits ordered by event/crystal/start time and original member indices.
 
     This mirrors the inspected CaloHitMaker algorithm, not TemplateFit: discard
@@ -21,6 +21,8 @@ def make_hits(event_index, sipm_id, time, time_error, energy, energy_error, *,
     Stable equal-time ordering is a deterministic convention, not C++ std::sort
     parity. The result flags affected hits; exact numeric closure needs an
     order-invariant fixture or the actual stock member order for those hits.
+    ``backend="jax"`` runs the time-group rounds as a jitted ``lax.while_loop``
+    (x64 required); sorting and the final reductions stay on the host.
     """
     n_events, n_crystals = operator.index(n_events), operator.index(n_crystals)
     if n_events < 0 or n_crystals <= 0:
@@ -58,23 +60,11 @@ def make_hits(event_index, sipm_id, time, time_error, energy, energy_error, *,
     _, cell = np.unique(cell, return_inverse=True)
     n_cells = int(np.max(cell, initial=-1)) + 1
     m = len(order)
-    anchor = np.full(n_cells, m, dtype=np.int64)
-    np.minimum.at(anchor, cell, np.arange(m))
-    group_round = np.full(m, -1, dtype=np.int64)
-    pending = np.ones(m, dtype=bool)
-    round_index = 0
-    while np.any(pending):
-        current = np.flatnonzero(pending)
-        active_cell = cell[current]
-        with np.errstate(over="ignore"):
-            delta = times[order[current]] - times[order[anchor[active_cell]]]
-        take = current[delta.astype(np.float64) <= threshold]
-        group_round[take] = round_index
-        pending[take] = False
-        anchor.fill(m)
-        remaining = np.flatnonzero(pending)
-        np.minimum.at(anchor, cell[remaining], remaining)
-        round_index += 1
+    sorted_times = times[order]
+    if backend == "jax":
+        group_round = _rounds_jax(cell, sorted_times, n_cells, float(threshold))
+    else:
+        group_round = _rounds_numpy(cell, sorted_times, n_cells, threshold)
     group_keys = np.rec.fromarrays([cell, group_round], names="cell,round")
     _, group, members_per_hit = np.unique(group_keys, return_inverse=True, return_counts=True)
     n_hits = len(members_per_hit)
@@ -91,3 +81,68 @@ def make_hits(event_index, sipm_id, time, time_error, energy, energy_error, *,
             "energy": hit_energy, "energy_error": hit_energy_error,
             "member_offsets": offsets, "member_index": order[member_order],
             "equal_time_order_unspecified": tied}
+
+
+def _rounds_numpy(cell, times, n_cells, threshold):
+    """Round r takes, in every cell, the pending members within ``threshold`` of the first pending member."""
+    m = len(cell)
+    anchor = np.full(n_cells, m, dtype=np.int64)
+    np.minimum.at(anchor, cell, np.arange(m))
+    group_round = np.full(m, -1, dtype=np.int64)
+    pending = np.ones(m, dtype=bool)
+    round_index = 0
+    while np.any(pending):
+        current = np.flatnonzero(pending)
+        with np.errstate(over="ignore"):
+            delta = times[current] - times[anchor[cell[current]]]
+        take = current[delta.astype(np.float64) <= threshold]
+        group_round[take] = round_index
+        pending[take] = False
+        anchor.fill(m)
+        remaining = np.flatnonzero(pending)
+        np.minimum.at(anchor, cell[remaining], remaining)
+        round_index += 1
+    return group_round
+
+
+_ROUNDS = {}
+
+
+def _rounds_jax(cell, times, n_cells, threshold):
+    """The same rounds as a jitted ``lax.while_loop``, padded to power-of-two shapes to reuse compilations."""
+    import jax
+    import jax.numpy as jnp
+    if not jax.config.x64_enabled:
+        raise ValueError("hit grouping on JAX requires caller-enabled JAX x64")
+    m = len(cell)
+    if m == 0:
+        return np.zeros(0, np.int64)
+    size = 1 << int(np.ceil(np.log2(m)))
+    cells = 1 << int(np.ceil(np.log2(n_cells + 1)))
+    pad_cell = np.full(size, cells - 1, np.int64)
+    pad_cell[:m] = cell
+    pad_t = np.zeros(size, np.float32)
+    pad_t[:m] = times
+    key = (size, cells)
+    if key not in _ROUNDS:
+        def run(cell, t, valid, thr):
+            idx = jnp.arange(size)
+
+            def anchor_of(pending):
+                a = jax.ops.segment_min(jnp.where(pending, idx, size), cell, num_segments=cells)
+                return jnp.minimum(a[cell], size - 1)
+
+            def body(state):
+                pending, rnd, r = state
+                delta = (t - t[anchor_of(pending)]).astype(jnp.float64)
+                take = pending & (delta <= thr)
+                return pending & ~take, jnp.where(take, r, rnd), r + 1
+
+            pending, rnd, _ = jax.lax.while_loop(lambda s: jnp.any(s[0]), body,
+                                                 (valid, jnp.full(size, -1, jnp.int64), jnp.int64(0)))
+            return rnd
+
+        _ROUNDS[key] = jax.jit(run)
+    valid = np.arange(size) < m
+    out = _ROUNDS[key](jnp.asarray(pad_cell), jnp.asarray(pad_t), jnp.asarray(valid), threshold)
+    return np.asarray(out)[:m]
