@@ -93,9 +93,9 @@ def run_cechain(g, geom, maps, seed=1, backend="numpy", step=10.0, device_float=
     return cechain.transport(rng, geom, cechain.field_maps(maps), x, u, p, t0, h=step)
 
 
-def tracker_steps(start, gdml, maps, seed=1, origin=ORIGIN, chord_mm=10.0, gas_state="solid"):
+def tracker_steps(start, gdml, maps, seed=1, origin=ORIGIN, chord_mm=10.0):
     """Field-on tracker StrawGasSteps of the hand-off starts (trkfastsim.sim.fieldsteps, electron loss model, the
-    tracker support from the GDML). Returns (steps, final)."""
+    tracker support from the GDML). Uses the tracker default StrawGas material (gas state). Returns (steps, final)."""
     from mu2efastsim import ehelix
     from trkfastsim import geometry
     from trkfastsim.sim import fieldsteps as fs
@@ -105,10 +105,9 @@ def tracker_steps(start, gdml, maps, seed=1, origin=ORIGIN, chord_mm=10.0, gas_s
     support = fs.interior(gdml, geom, env, origin=org)
     field = ehelix.grid_field(*ehelix.read_g4bl(maps[0]))
     bnom = ehelix.field_at(field, org[None])[0]
-    gas = fs.STRAW_GAS_G4STATE if gas_state == "gas" else None
     return fs.transport(np.random.default_rng(np.random.SeedSequence([seed, 1])), start, geom, field, support,
                         chord_mm=chord_mm, sagitta_mm=0.02, envelope=env, origin=org, bnom=bnom,
-                        loss=fs.electron_loss, tail=False, gas=gas)
+                        loss=fs.electron_loss, tail=False)
 
 
 def write_injector(path, steps, entries):
@@ -134,7 +133,6 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--max-events", type=int)
     ap.add_argument("--chord-mm", type=float, default=10.0)
-    ap.add_argument("--gas-state", choices=("solid", "gas"), default="solid")
     ap.add_argument("--origin", nargs=3, type=float, default=ORIGIN)
     a = ap.parse_args(argv)
     out = Path(a.outdir)
@@ -151,8 +149,7 @@ def main(argv=None):
     np.savez_compressed(out / "cechain.npz", **{k: v for k, v in r._asdict().items() if v is not None},
                         **{k: g[k].to_numpy() for k in KEY})
     tic = time.perf_counter()
-    steps, final = tracker_steps(ent, a.gdml, a.maps, seed=a.seed, origin=a.origin, chord_mm=a.chord_mm,
-                                 gas_state=a.gas_state)
+    steps, final = tracker_steps(ent, a.gdml, a.maps, seed=a.seed, origin=a.origin, chord_mm=a.chord_mm)
     t_trk = time.perf_counter() - tic
     write_injector(out / "fasttrk_field.root", steps, ent)
     fin = final.reset_index(drop=True)

@@ -57,6 +57,12 @@ PYTHONPATH=core:beam python3 -m pytest -q beam/tests
 PYTHONPATH=core:beam python3 -m beamfastsim.bench --n 2000
 ```
 
+## CE tracker hand-off
+
+`beamfastsim.cetracker` uses the tracker's default `steps.STRAW_GAS` material (`state="gas"`, the Geant4 gas
+density-effect branch), with the electron loss model. There is no gas-state selector in its Python or CLI API.
+The hand-off remains opt-in, first passage only, without secondaries; it needs `tracker` on `PYTHONPATH`.
+
 ## Persisted reference audit
 
 Audit existing outputs before reusing a partial reference; this does not run transport or require JAX/CVMFS:

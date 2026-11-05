@@ -56,6 +56,30 @@ def test_handoff_states_of_1000_ce_equal_the_cechain_plane_states():
     assert (ent.pz > 0).all()                                     # crossing the entry plane downstream
 
 
+def test_cli_help_has_no_gas_selector(capsys):
+    with pytest.raises(SystemExit) as error:
+        H.main(["--help"])
+    assert error.value.code == 0
+    assert "--gas-state" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("state", ["solid", "gas"])
+def test_tracker_steps_rejects_a_gas_selector(state):
+    with pytest.raises(TypeError, match="unexpected keyword argument 'gas_state'"):
+        H.tracker_steps(None, "tracker.gdml", ["DS.header"], gas_state=state)
+
+
+@pytest.mark.parametrize("state", ["solid", "gas"])
+def test_cli_rejects_a_gas_selector(state, capsys, tmp_path):
+    out = tmp_path / "out"
+    with pytest.raises(SystemExit) as error:
+        H.main(["starts.root", "--outdir", str(out), "--gdml", "tracker.gdml", "--maps", "DS.header",
+                "--offline-root", "offline", "--gas-state", state])
+    assert error.value.code == 2
+    assert f"unrecognized arguments: --gas-state {state}" in capsys.readouterr().err
+    assert not out.exists()
+
+
 def test_handoff_refuses_a_result_of_another_length():
     rng = np.random.default_rng(12)
     g = _starts(10, rng)
