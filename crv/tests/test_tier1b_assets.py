@@ -16,7 +16,7 @@ DEFAULT = dict(STRICT, chord=True, anchor=True)          # strict_v5: chord plac
 
 def test_default_per_run_configuration():
     s = T.resolve(data="/D")
-    assert s.name == "strict_v5" and s.options == DEFAULT and sorted(T.SETS) == ["strict_v5"]
+    assert s.name == "strict_v5" and s.options == DEFAULT and sorted(T.SETS) == ["run1a_v01", "strict_v5"]
     assert s.library == "/D/tier1b_strict_v5/library.root" and s.library_sha256 == T._ROOTS_LIB
     assert s.paths() == ["/D/tier1b_strict_v5/library.root", "/D/tier1b_strict_v5/topology.npz",
                          "/D/tier1b_strict_v5/topology.npz.json",
@@ -26,9 +26,20 @@ def test_default_per_run_configuration():
         with pytest.raises(ValueError, match="no tier-1b asset set"):
             T.resolve(run_config=rc, data="/D")
         for name in T.SETS:
+            if rc in T.SETS[name].run_configs:
+                continue
             with pytest.raises(ValueError, match="no library for run configuration"):
                 T.resolve(name, run_config=rc, data="/D")
         assert T.resolve(library="lib.root", run_config=rc).name is None
+
+
+def test_run1a_set_is_opt_in_with_its_own_options():
+    s = T.resolve("run1a_v01", run_config="run1a_v01", data="/D")
+    assert s.library == "/D/tier1b_run1a_v01/library.root" and len(s.library_sha256) == 64
+    assert s.options == dict(DEFAULT, per_primary=True, showers=True)
+    assert T.default_for("run1a_v01") is None
+    with pytest.raises(ValueError, match="no library for run configuration"):
+        T.resolve("run1a_v01", data="/D")
     assert T.resolve("strict_v5", directory="/shm/x").templates == "/shm/x/templates_v3.npz"
 
 
@@ -53,10 +64,11 @@ def test_custom_library_and_refusals(monkeypatch):
 
 def test_sets_match_the_endpoint_registry():
     cp = pytest.importorskip("mu2efastsim.endpoints.chainpoint")
-    for name, s in T.SETS.items():
+    extracted = {n: s for n, s in T.SETS.items() if T.EXTRACTED in s.run_configs}   # the endpoints run extracted only
+    for name, s in extracted.items():
         directory, files, _ = cp.TIER1B_SETS[name]
         assert directory == s.directory and list(files) == s.files()
-    assert sorted(cp.TIER1B_SETS) == sorted(T.SETS)
+    assert sorted(cp.TIER1B_SETS) == sorted(extracted)
 
 
 def _fake_set(tmp_path, monkeypatch, library=b"library bytes", name=None):

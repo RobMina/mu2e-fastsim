@@ -8,10 +8,12 @@ no default library. docs/tier1b-default.md has the provenance and the evidence b
              / near-miss templates (v3 sidecar), chord placement and root-coherent draws: a delta ray and its cascade
              stay together along the fast muon within a module (tier1b.attach_anchors, sample(anchor)).
   The previous default strict_v4 (hard-muon draws) is on branch park/tier1b-strict-v4.
+  run1a_v01  opt-in, run1a_v01 only: the same builder and options on the Run 1A geometry, per primary muon
+             (tier1b-build --run-config), from the development half of the Run 1A Geant4 reference (odd subruns
+             101-119, 500k generated); non-muon showers on (the library's own bar positions), near-miss per muon.
 
 Other option combinations run with a custom library and explicit placement flags (tier1b-apply --library ...
---crossing-context ...; docs/tier1b-default.md). The named run configurations (run1a_v01, run1b_v01, run2_v10) have
-no set: no library has been built on their geometry, so they need --library.
+--crossing-context ...; docs/tier1b-default.md). run1b_v01 and run2_v10 have no set: they need --library.
 
     spec = resolve(run_config="extracted_v04")            # the configuration's default set under $CRVFS_DATA
     spec = resolve("strict_v5", directory="/dev/shm/x")   # the default set, files staged elsewhere
@@ -52,6 +54,10 @@ SETS = {
     "strict_v5": AssetSet(
         "tier1b_strict_v5", "library.root", "topology.npz", "templates_v3.npz", _ROOTS_LIB,
         dict(_STRICT, chord=True, anchor=True)),
+    "run1a_v01": AssetSet(
+        "tier1b_run1a_v01", "library.root", "topology.npz", "templates_v3.npz",
+        "75da97efbdc593bbed4831d7c427199d3842e487702b272138e0a97e19cc83cd",
+        dict(_STRICT, chord=True, anchor=True, per_primary=True, showers=True), ("run1a_v01",)),
 }
 
 
