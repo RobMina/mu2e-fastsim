@@ -30,6 +30,7 @@ No Mu2e-internal data or results are stored here; the field maps, geometry and r
 | `beamfastsim/cechain.py` | conversion electrons from target stops or given starts to the tracker entry plane: helix steps in the field maps, foils / IPA / OPA crossed with the core `eslab` or `eslab_jax` slab physics; per-electron plane state in an npz |
 | `beamfastsim/cechain_jax.py` | the same chain as one device loop (`cechain --backend device`): slab steps of every layer type in one kernel (core `eslab_jax.lane_step`), helix steps with the maps on the device, surface crossings solved for the gathered lanes whose step reaches a surface, lane refill and compaction between launches; float64 or float32 |
 | `beamfastsim/cesob.py` | sob stand-in of the stopping-target design studies: beam stops -> conversion electrons -> calorimeter-acceptance proxy (crystal map, disks' inner Al and carbon-fibre rings crossed with the slab physics) -> the studies' approximate sensitivity; the same estimate on a Geant4 EdepAna tree (`reduce`, `refsob`, bit-identical to the design studies), proxy checks against Geant4 (`calocheck`, `calodiag`), `hybrid` and `recalo`; fastsimkit task `beam_sob` |
+| `beamfastsim/diospec.py` | DIO electrons as the stock DIO primary production makes them: the tabulated spectrum restricted and sampled as Offline `BinnedSpectrum` / `DIOGenerator`, one electron per stopped mu- of each resampled stops event, isotropic, stop time plus the mu- lifetime in Al. The stops windows of stock files are recovered from their kept electrons (stops file events in tree-entry order, as the sequential `ResamplingMixer` reads them), so fast shards use the same stops events; starts in the `cechain --ref` format |
 | `beamfastsim/cereference.py`, `cecompare.py` | Geant4 CeEndpoint reference table from `ReadVirtualDetector` trees; fast vs Geant4 at the entry plane (filter-implying selection, energy MPV/FWHM/tail fractions); `--mode pair`: two fast runs of the same starts (e.g. device vs NumPy) with paired errors |
 | `fcl/g4ref_mubeam_ntpart.fcl`, `art/run_g4ref.sh` | stock DS stage of SimJob MDC2025ac with a per-muon tree |
 | `art/run_fast_cpu.sh` | g4table + field check + fast run + comparison on a GPVM core |
@@ -48,6 +49,14 @@ PYTHONPATH=core:beam python3 -m beamfastsim.cechain --offline-root $OFFLINE --ma
   --out ce_fast_dev.npz
 PYTHONPATH=core:beam python3 -m beamfastsim.cecompare --ref ce_g4ref.npz --fast "ce_fast*.npz" --mode stops \
   --offline-root $OFFLINE --maps DSMap.header TSdMap.header --out compare.json
+# DIO: stop table (ReadVirtualDetector tree of the stops file, events in tree-entry order), starts paired with the
+# stock reference files (cereference --code 166), then the device chain
+PYTHONPATH=core:beam python3 -m beamfastsim.diospec stops stops_ntpart.root --art stops.art --out stops.npz
+PYTHONPATH=core:beam python3 -m beamfastsim.cereference nts.readvddio.*.root --code 166 --gencount 4000 --out dio_ref.npz
+PYTHONPATH=core:beam python3 -m beamfastsim.diospec starts --stops stops.npz --ref dio_ref.npz \
+  --table $OFFLINE/Offline/EventGenerator/data/heeck_finer_binning_2016_szafron.tbl --out dio_starts.npz
+PYTHONPATH=core:beam python3 -m beamfastsim.cechain --offline-root $OFFLINE --maps DSMap.header TSdMap.header \
+  --ref dio_starts.npz --backend device --device-float float32 --lanes 131072 --shrink 32 --unroll --out dio_fast.npz
 # sob stand-in for one target geometry: stops, CE, calorimeter proxy and the approximate sensitivity
 PYTHONPATH=core:beam python3 -m beamfastsim.cesob point --g4 g4ref_run1baa_vd8.npz --z-up 3900 --geom overlay.txt \
   --electrons 100000 --procs 32 --out sob_point
