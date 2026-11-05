@@ -1,0 +1,4 @@
+# Local muse work-area state
+.sconsign.dblite
+backing
+build/
