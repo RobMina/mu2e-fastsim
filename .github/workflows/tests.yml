@@ -35,7 +35,7 @@ jobs:
             path: beam:core
           - suite: umbrella
             dir: .
-            path: beam:core
+            path: beam:core:tracker
     env:
       JAX_PLATFORMS: cpu
       PYTHONDONTWRITEBYTECODE: "1"
@@ -90,7 +90,7 @@ jobs:
             path: beam:core
           - suite: umbrella
             dir: .
-            path: beam:core
+            path: beam:core:tracker
     env:
       JAX_PLATFORMS: cpu
       PYTHONDONTWRITEBYTECODE: "1"
