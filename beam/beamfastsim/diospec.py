@@ -28,6 +28,11 @@ STOP_CODE = 32                 # ProcessCode muMinusCaptureAtRest (Geant4 end co
 TABLE = "Offline/EventGenerator/data/heeck_finer_binning_2016_szafron.tbl"
 
 
+def event_key(run, subrun, evt):
+    """One int64 per art EventID (run < 2^21, subrun < 2^21, event < 2^21)."""
+    return (np.asarray(run, np.int64) << 42) | (np.asarray(subrun, np.int64) << 21) | np.asarray(evt, np.int64)
+
+
 class Spectrum:
     """A tabulated spectrum restricted as Offline BinnedSpectrum::initialize(Table, binCentered, elo, ehi).
 
@@ -102,7 +107,7 @@ def stops_table(paths, tree="mutree/ntpart"):
         for k in cols:
             cols[k].append(a[k])
     a = {k: np.concatenate(v) for k, v in cols.items()}
-    key = (a["run"].astype(np.int64) << 40) | (a["subrun"].astype(np.int64) << 20) | a["evt"].astype(np.int64)
+    key = event_key(a["run"], a["subrun"], a["evt"])
     new = np.ones(key.size, bool)
     new[1:] = key[1:] != key[:-1]
     iev = np.cumsum(new) - 1
@@ -137,10 +142,9 @@ def art_event_ids(path):
 def entry_order(stops, run, subrun, event):
     """Replace the stop table's event ordinals by tree-entry ordinals (from art_event_ids); keep the read order in
     iev_read."""
-    key = lambda r, s, e: (np.asarray(r, np.int64) << 42) | (np.asarray(s, np.int64) << 21) | np.asarray(e, np.int64)
-    ek = key(run, subrun, event)
+    ek = event_key(run, subrun, event)
     order = np.argsort(ek)
-    sk = key(stops["run"], stops["subrun"], stops["evt"])
+    sk = event_key(stops["run"], stops["subrun"], stops["evt"])
     pos = np.clip(np.searchsorted(ek[order], sk), 0, ek.size - 1)
     if not np.array_equal(ek[order][pos], sk):
         raise ValueError("entry_order: stops not found among the art file's events")
@@ -191,32 +195,35 @@ def _starts_cli(a):
     shards = []
     if a.ref:
         r = np.load(a.ref)
-        for i in np.unique(r["ifile"]):
+        for i in range(r["gencount"].size):
             m = r["ifile"] == i
             s0, nm, cons = recover_window(st, r["x"][m], r["y"][m], r["z"][m], r["evt"][m])
-            shards.append(dict(shard=int(i), start=s0, matched=nm, rows=int(m.sum()), consistent=cons))
+            shards.append(dict(shard=i, start=s0, events=int(r["gencount"][i]), matched=nm, rows=int(m.sum()),
+                               consistent=cons))
     else:
         for i, s0 in enumerate(a.window_starts):
-            shards.append(dict(shard=i, start=int(s0), matched=0, rows=0, consistent=1.0))
+            shards.append(dict(shard=i, start=int(s0), events=a.events, matched=0, rows=0, consistent=1.0))
     parts = []
     for sh in shards:
         if sh["start"] is None:
             sh["generated"] = 0
             continue
-        rows = window(st, sh["start"], a.events)
+        rows = window(st, sh["start"], sh["events"])
         sh["generated"] = int(rows.size)
         rng = np.random.default_rng(np.random.SeedSequence([a.seed, sh["shard"]]))
         g = generate(rng, spec, st, rows, a.tau)
         g["shard"] = np.full(rows.size, sh["shard"])
         parts.append(g)
-    cat = {k: np.concatenate([g[k] for g in parts]) for k in parts[0]} if parts else {}
+    if not parts:
+        raise SystemExit("diospec starts: no shard has a stops window (no stock electron matched the stop table)")
+    cat = {k: np.concatenate([g[k] for g in parts]) for k in parts[0]}
     pv = cat["u"] * cat["p"][:, None]
     np.savez_compressed(a.out, x=cat["x"][:, 0], y=cat["x"][:, 1], z=cat["x"][:, 2], px=pv[:, 0], py=pv[:, 1],
                         pz=pv[:, 2], time=cat["t"], E=cat["E"], shard=cat["shard"], stop_row=cat["row"],
                         shard_id=np.array([s["shard"] for s in shards]),
                         shard_generated=np.array([s["generated"] for s in shards]),
                         shard_start=np.array([-1 if s["start"] is None else s["start"] for s in shards]),
-                        events_per_shard=a.events, elow=a.elow, ehi=a.ehi, tau=a.tau)
+                        shard_events=np.array([s["events"] for s in shards]), elow=a.elow, ehi=a.ehi, tau=a.tau)
     bad = [s for s in shards if s["start"] is None or s["consistent"] < 0.999]
     print(json.dumps(dict(shards=len(shards), electrons=int(cat["p"].size), spectrum=dict(
         bins=int(spec.pdf.size), xmin=spec.xmin, xmax=spec.xmax), inconsistent=bad[:10], n_inconsistent=len(bad)),
@@ -235,9 +242,10 @@ def main(argv=None):
     g.add_argument("--stops", required=True, help="stop table from the stops subcommand")
     g.add_argument("--table", required=True, help=f"spectrum table, e.g. <Offline root>/{TABLE}")
     g.add_argument("--elow", type=float, default=95.0)
-    g.add_argument("--ehi", type=float, default=1000.0)
+    g.add_argument("--ehi", type=float, default=1000.0, help="as the MDC2025ba DIOtail95 job configuration (config_dumper)")
     g.add_argument("--tau", type=float, default=TAU_MU_AL)
-    g.add_argument("--events", type=int, default=4000, help="stops events per shard (generated events per stock file)")
+    g.add_argument("--events", type=int, default=4000,
+                   help="stops events per shard with --window-starts (with --ref: each file's generated count)")
     src = g.add_mutually_exclusive_group(required=True)
     src.add_argument("--ref", help="stock reference table (cereference, DIO code): one shard per file, same window")
     src.add_argument("--window-starts", type=int, nargs="+", help="explicit window start ordinals, one per shard")

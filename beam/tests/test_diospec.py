@@ -141,3 +141,26 @@ def test_entry_order_reorders_events_to_tree_entries():
     assert np.array_equal(out["iev_read"], st["iev"])
     with pytest.raises(ValueError):
         D.entry_order(st, np.full(6, 1430), np.zeros(6, int), entries + 1000)
+
+
+def test_starts_cli_uses_each_file_gencount_and_fails_cleanly(tmp_path):
+    st = _stops()
+    np.savez_compressed(tmp_path / "stops.npz", **st)
+    x, y = _table()
+    np.savetxt(tmp_path / "t.tbl", np.stack([x, y], axis=1), fmt="%.2f\t%.17g")
+    rows0, rows1 = D.window(st, 0, 30), D.window(st, 600, 50)
+    ref = dict(ifile=np.r_[np.zeros(rows0.size, int), np.ones(rows1.size, int)], gencount=np.array([30, 50]),
+               x=st["x"][np.r_[rows0, rows1]], y=st["y"][np.r_[rows0, rows1]], z=st["z"][np.r_[rows0, rows1]],
+               evt=np.r_[st["iev"][rows0] + 1, st["iev"][rows1] - 600 + 1])
+    np.savez_compressed(tmp_path / "ref.npz", **ref)
+    out = tmp_path / "starts.npz"
+    D.main(["starts", "--stops", str(tmp_path / "stops.npz"), "--table", str(tmp_path / "t.tbl"),
+            "--ref", str(tmp_path / "ref.npz"), "--out", str(out)])
+    r = np.load(out)
+    assert list(r["shard_start"]) == [0, 600] and list(r["shard_events"]) == [30, 50]
+    assert list(r["shard_generated"]) == [rows0.size, rows1.size]
+    bad = dict(ref, x=ref["x"] + 1.0)
+    np.savez_compressed(tmp_path / "bad.npz", **bad)
+    with pytest.raises(SystemExit):
+        D.main(["starts", "--stops", str(tmp_path / "stops.npz"), "--table", str(tmp_path / "t.tbl"),
+                "--ref", str(tmp_path / "bad.npz"), "--out", str(tmp_path / "x.npz")])
