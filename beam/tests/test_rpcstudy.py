@@ -46,6 +46,23 @@ def test_identical_shapes_have_zero_pulls_or_undefined_errors():
     assert r["zero_variance_nonzero_difference"] == 0
 
 
+def test_identical_paired_histograms_have_zero_variance():
+    s = np.array([[0., 30, 40, 0], [1., 45, 15, 1]])
+    joint = np.diag(s.sum(axis=0))
+    r = R.shape_report(s, s, np.array([0., 1., 2.]), joint=joint)
+    assert r["chi2"] == 0 and r["ndf"] == 0
+    assert np.allclose(r["difference_error"], 0, atol=1e-6)
+
+
+def test_shape_variance_contains_source_draw_noise_with_identical_shards():
+    s = np.array([[0., 20, 40, 0], [0., 20, 40, 0]])
+    f = np.array([[0., 30, 30, 0], [0., 30, 30, 0]])
+    r = R.shape_report(s, f, np.array([0., 1., 2.]))
+    assert r["shard_difference_error"][1] == 0
+    assert r["difference_error"][1] > 0
+    assert r["chi2"] > 0
+
+
 def fixtures(tmp_path, source=False):
     n = 8
     ids = np.repeat(np.arange(4), 2)

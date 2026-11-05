@@ -81,8 +81,8 @@ def hist_by_shard(values, selected, shard, members, edges):
                        minlength=len(members) * (len(edges) + 1)).reshape(len(members), len(edges) + 1)
 
 
-def shape_report(stock, fast, edges):
-    """Normalised shape differences with paired-shard errors and marginal chi2."""
+def shape_report(stock, fast, edges, *, fast_sumw2=None, joint=None):
+    """Normalised shape pulls with per-primary variance, retaining pair covariance."""
     stock, fast = np.asarray(stock, float), np.asarray(fast, float)
     m = len(stock)
     ns, nf = stock.sum(), fast.sum()
@@ -93,17 +93,27 @@ def shape_report(stock, fast, edges):
     s, f = stock.sum(axis=0), fast.sum(axis=0)
     pooled = (s + scale * f) / (2 * ns)
     residual = scale * fast - stock - pooled * (scale * fast.sum(axis=1) - stock.sum(axis=1))[:, None]
-    variance = m * residual.var(axis=0, ddof=1) if m > 1 else np.full_like(s, np.nan)
+    shard_variance = m * residual.var(axis=0, ddof=1) if m > 1 else np.full_like(s, np.nan)
+    vfast = f if fast_sumw2 is None else np.asarray(fast_sumw2).sum(axis=0)
+    variance = (1 - 2 * pooled) * s + pooled ** 2 * ns
+    variance += scale ** 2 * ((1 - 2 * pooled) * vfast + pooled ** 2 * vfast.sum())
+    if joint is not None:
+        cross = np.diag(joint) - pooled * (joint.sum(axis=0) + joint.sum(axis=1)) + pooled ** 2 * joint.sum()
+        variance -= 2 * scale * cross
+    variance = np.maximum(variance, 0)
     delta = scale * f - s
-    valid = (s + scale * f >= 20) & (variance > 0) & np.isfinite(variance)
-    pulls = np.divide(delta, np.sqrt(variance), out=np.full_like(s, np.nan), where=variance > 0)
+    valid = (s + scale * f >= 20) & (variance > 1e-10)
+    pulls = np.divide(delta, np.sqrt(variance), out=np.full_like(s, np.nan), where=variance > 1e-10)
     ratio = np.divide(scale * f, s, out=np.full_like(s, np.nan), where=s > 0)
     finite = lambda x: [float(v) if np.isfinite(v) else None for v in x]
     return dict(edges=edges.tolist(), stock=s.tolist(), fast=(scale * f).tolist(), scale=float(scale),
                 pulls=finite(pulls), ratio=finite(ratio), difference_error=finite(np.sqrt(variance)),
+                shard_difference_error=finite(np.sqrt(shard_variance)),
                 chi2=float(np.sum(pulls[valid] ** 2)), ndf=max(int(valid.sum()) - 1, 0),
-                zero_variance_nonzero_difference=int(np.sum((variance == 0) & (delta != 0))),
-                chi2_scope="sum of marginal paired-shard pulls squared; bin covariance ignored, descriptive with few shards")
+                zero_variance_nonzero_difference=int(np.sum((variance <= 1e-10) & (np.abs(delta) > 1e-10))),
+                error_method="normalisation delta method; per-primary sumw2; " +
+                             ("same-primary bin covariance included" if joint is not None else "independent pair draws"),
+                chi2_scope="sum of marginal pulls squared; bin covariance ignored; paired-shard yield error reported separately")
 
 
 def plane_quantities(table, stock=False, axis_x=-3904.):
@@ -194,14 +204,23 @@ def compare(ref_path, fast_path, members, *, starts_path=None, axis_x=-3904., pm
             report = dict(yield_=clustered_ratio(ks, kf, exposure), pmin=threshold, rmax_min=radius_min, shapes={})
             for key, edges in BINS.items():
                 hs = hist_by_shard(g[key], sa, gs, members, edges)
-                hf = hist_by_shard(b[key], sb, fs, members, edges) * scale[:, None]
-                report["shapes"][key] = shape_report(hs, hf, edges)
+                hf_raw = hist_by_shard(b[key], sb, fs, members, edges)
+                hf = hf_raw * scale[:, None]
+                joint = None
+                if starts_path is None:
+                    both = sa[idx] & sb & np.isin(fs, members)
+                    ib = np.searchsorted(edges, g[key][idx][both], side="right")
+                    jb = np.searchsorted(edges, b[key][both], side="right")
+                    nb = len(edges) + 1
+                    joint = np.bincount(ib * nb + jb, minlength=nb * nb).reshape(nb, nb)
+                report["shapes"][key] = shape_report(hs, hf, edges, fast_sumw2=hf_raw * scale[:, None] ** 2,
+                                                     joint=joint)
             out["selections"][name] = report
         return out
 
 
 def plot(report, output):
-    """VD13 momentum, angle and radius overlays with unclipped paired-shard pulls."""
+    """VD13 momentum, angle and radius overlays with unclipped statistical pulls."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -217,7 +236,7 @@ def plot(report, output):
         ax[0, j].set_ylabel("Electrons / bin")
         ax[1, j].plot((edges[:-1] + edges[1:]) / 2, h["pulls"][1:-1], ".", color="#D55E00")
         ax[1, j].axhline(0, color="black", linewidth=.7)
-        ax[1, j].set_ylabel("Shard pull")
+        ax[1, j].set_ylabel("Pull")
         ax[1, j].set_xlabel(label)
     y = panel["yield_"]
     ax[0, 0].legend(fontsize=9)
