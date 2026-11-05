@@ -242,3 +242,26 @@ def test_very_late_finite_times_keep_double_fmod_not_float_or_clipping(backend):
     np.testing.assert_array_equal(folded, expected)
     np.testing.assert_array_equal(accepted, expected >= corrected_start)
     assert np.all(np.isfinite(folded))
+
+
+def test_hand_derived_golden_values():
+    """Values worked out by hand from the source formulas, independent of the implementation."""
+    # Birks 9 MeV at z = 150 of 200 mm, LRU 0.05: 9 * (0.05 * (0.75 - 0.5) + 1) = 9.1125
+    e = numpy_response.corrected_energy(10.0, 9.0, 150.0, 200.0, 0.05)
+    assert e == np.float32(9.1125)
+    # 30 PE/MeV on both SiPMs: 273.375 -> 273 PE; 0.5 rounds up (lround), 2.5 -> 3
+    mean = numpy_response.photoelectron_mean(e, [30.0, 30.0])
+    np.testing.assert_array_equal(mean, np.float32(273.375))
+    np.testing.assert_array_equal(numpy_response.nonnegative_lround([273.375, 0.5, 2.5, 2.4999]), [273, 1, 3, 2])
+    # pb -200, period 1695, window 450-1795, buffer 10, marker 200: corrected start 440, max hit time 1795
+    # t = 1000: fmod(800, 1695) + 200 = 1000, accepted; t = 2000: fmod(1800, 1695) + 200 = 305 < 440, rejected;
+    # t = 50: fmod(-150, 1695) + 200 = 50 < 1795 - 1695, shifted to 1745, accepted
+    hit, ok = numpy_response.fold_step_time(np.array([1000.0, 2000.0, 50.0]), pbtime=-200.0, mbtime=1695.0,
+                                            event_length=1700.0, onspill=True, digitization_start=450.0,
+                                            digitization_end=1795.0, digitization_buffer=10.0,
+                                            time_from_protons_to_dr_marker=200.0)
+    np.testing.assert_array_equal(hit, [1000.0, 305.0, 1745.0])
+    np.testing.assert_array_equal(ok, [True, False, True])
+    # inverse-variance pair: values 10, 20 with errors 1, 2 -> (10 + 20/4) / 1.25 = 12, error 1/sqrt(1.25)
+    v, err = numpy_response.weighted_reco_digis([10.0, 20.0], [1.0, 2.0], np.array([0, 0]), 1)
+    np.testing.assert_allclose([v[0], err[0]], [12.0, 1.0 / np.sqrt(1.25)], rtol=1e-7)
