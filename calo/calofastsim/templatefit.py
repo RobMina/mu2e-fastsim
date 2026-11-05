@@ -31,7 +31,7 @@ class FitConfig:
     chi_threshold: float = 1.0
     digi_sampling: float = 5.0
     max_peaks: int = 4
-    iterations: int = 60
+    iterations: int = 15
 
 
 def _jnp():
@@ -140,22 +140,25 @@ def _fit_one(x, y, mask, n, evaluate, cfg, K, W, L):
     noise = noise.astype(jnp.float64)
     yw = jnp.where(mask, y - noise, -1e30)
 
-    # primary peaks (setPrimaryPeakPar1): independent local maxima of the baseline-subtracted waveform
-    def primary(carry, i):
-        par, active, k = carry
-        inside = (i >= W) & (i + W < n)
-        ok = inside & _local_max(yw, i, W, L)
-        ok = ok & (yw[jnp.clip(i - 1, 0, L - 1)] >= amp_min) & (yw[i] >= amp_min) & (yw[jnp.clip(i + 1, 0, L - 1)] >= amp_min)
-        ok = ok & (k < K)
-        tx = _estimate_time(evaluate, x, yw, i, W, L)
-        ty = _peak_norm(evaluate, x, yw, tx, i - W, i + W, L)
-        slot = jnp.clip(k, 0, K - 1)
-        par = jnp.where(ok, par.at[1 + 2 * slot].set(ty).at[2 + 2 * slot].set(tx), par)
-        active = jnp.where(ok, active.at[slot].set(True), active)
-        return (par, active, k + ok), None
+    pos = jnp.arange(L)
 
-    par0 = jnp.zeros(1 + 2 * K).at[0].set(noise)
-    (par, active, k), _ = lax.scan(primary, (par0, jnp.zeros(K, bool), jnp.int64(0)), jnp.arange(L))
+    def candidates(w):
+        """Source peak test at every sample: local maximum in +-W, three samples above threshold, inside."""
+        ok = (pos >= W) & (pos + W < n)
+        pad = jnp.concatenate([jnp.full(W, -1e30), w, jnp.full(W, -1e30)])
+        for d in range(1, W + 1):
+            ok = ok & (w > pad[W - d:W - d + L]) & (w >= pad[W + d:W + d + L])
+        return ok & (pad[W - 1:W - 1 + L] >= amp_min) & (w >= amp_min) & (pad[W + 1:W + 1 + L] >= amp_min)
+
+    # primary peaks (setPrimaryPeakPar1): independent local maxima of the baseline-subtracted waveform
+    prim = candidates(yw)
+    (sel,) = jnp.nonzero(prim, size=K, fill_value=0)
+    use = jnp.arange(K) < jnp.sum(prim)
+    tx = jax.vmap(lambda i: _estimate_time(evaluate, x, yw, i, W, L))(sel)
+    ty = jax.vmap(lambda i, t: _peak_norm(evaluate, x, yw, t, i - W, i + W, L))(sel, tx)
+    par = jnp.zeros(1 + 2 * K).at[0].set(noise).at[1::2].set(jnp.where(use, ty, 0.0)).at[2::2].set(jnp.where(use, tx, 0.0))
+    active = use
+    k = jnp.sum(use).astype(jnp.int64)
 
     # fallback: first sample above threshold with the next one at least 0.8 of it
     alt_ok = mask & (yw >= amp_min) & (jnp.roll(yw, -1) >= 0.8 * yw) & (jnp.arange(L) + 1 < n)
@@ -170,24 +173,23 @@ def _fit_one(x, y, mask, n, evaluate, cfg, K, W, L):
     yfull = jnp.where(mask, y, 0.0)
     res0 = jnp.where(mask, yfull - _model(evaluate, x, par, active), -1e30)
 
-    def secondary(carry, i):
-        par, active, k, res = carry
-        inside = (i >= W) & (i + W < n)
-        ok = inside & _local_max(res, i, W, L)
-        ok = ok & (res[jnp.clip(i - 1, 0, L - 1)] >= amp_min) & (res[i] >= amp_min) & (res[jnp.clip(i + 1, 0, L - 1)] >= amp_min)
-        near = jnp.any(active & (jnp.abs(par[2::2] - x[i]) < cfg.min_dt_peaks))
-        ok = ok & ~near & ~((yfull[i] > 0) & (res[i] / jnp.where(yfull[i] > 0, yfull[i], 1.0) < cfg.psd_threshold))
-        ok = ok & (k < K) & has_peak
+    def secondary(state, _):
+        par, active, k, res, last = state
+        ok = candidates(res) & (pos > last)
+        near = jnp.any(active[None, :] & (jnp.abs(par[2::2][None, :] - x[:, None]) < cfg.min_dt_peaks), axis=1)
+        ok = ok & ~near & ~((yfull > 0) & (res / jnp.where(yfull > 0, yfull, 1.0) < cfg.psd_threshold))
+        i = jnp.argmax(ok)
+        add = jnp.any(ok) & (k < K) & has_peak
         tx = _estimate_time(evaluate, x, res, i, W, L)
         slot = jnp.clip(k, 0, K - 1)
         new_par = par.at[1 + 2 * slot].set(res[i]).at[2 + 2 * slot].set(tx)
-        sub = res[i] * evaluate(x - tx)
-        res = jnp.where(ok, jnp.where(mask, res - sub, res), res)
-        par = jnp.where(ok, new_par, par)
-        active = jnp.where(ok, active.at[slot].set(True), active)
-        return (par, active, k + ok, res), None
+        res = jnp.where(add, jnp.where(mask, res - res[i] * evaluate(x - tx), res), res)
+        par = jnp.where(add, new_par, par)
+        active = jnp.where(add, active.at[slot].set(True), active)
+        return (par, active, k + add, res, jnp.where(add, i, last)), None
 
-    (par, active, k, _), _ = lax.scan(secondary, (par, active, k, res0), jnp.arange(L))
+    # secondary peaks (setSecondaryPeakPar): each accepted peak is the first candidate after the previous one
+    (par, active, k, _, _), _ = lax.scan(secondary, (par, active, k, res0, jnp.int64(-1)), None, length=K)
 
     def objective(p, act):
         f = _model(evaluate, x, p, act)

@@ -91,9 +91,9 @@ def resid_stats(a, b, rel=False):
                 float(np.mean(np.abs(d) < (0.01 if rel else 0.1))) if d.size else None}
 
 
-def compare_reco_digis(digis, reco, pbt, pos, pulse):
+def compare_reco_digis(digis, reco, pbt, pos, pulse, cfg=FitConfig()):
     pbt_digi = pbt[np.searchsorted(pos, digis["event"])] if pos.size else np.zeros(0)
-    fast, fit = fast_reco_digis(digis, pbt_digi.astype(np.float64), pulse)
+    fast, fit = fast_reco_digis(digis, pbt_digi.astype(np.float64), pulse, cfg=cfg)
     i_f, i_s, n_common = pair_by_digi(fast, reco)
     nf = np.bincount(fast["digi"], minlength=digis["t0"].size)
     ns = np.bincount(reco["digi"], minlength=digis["t0"].size)
@@ -162,6 +162,7 @@ def main(argv=None):
     p.add_argument("--pulse", required=True)
     p.add_argument("--geometry", required=True, help="R6 export with dump/crystals and dump/disks")
     p.add_argument("--arms", default="noi,prd")
+    p.add_argument("--iterations", type=int, default=FitConfig().iterations)
     p.add_argument("--out", required=True)
     args = p.parse_args(argv)
     import jax
@@ -174,7 +175,7 @@ def main(argv=None):
         geom = load_geometry(args.geometry)
         fast_cl = make_clusters({"event": hits["event"], "crystal": hits["crystal"], "time": hits["t"],
                                  "energy": hits["e"]}, events.size, geom)
-        report[arm] = {"reco_digis": compare_reco_digis(digis, reco, pbt, pos, pulse)[0],
+        report[arm] = {"reco_digis": compare_reco_digis(digis, reco, pbt, pos, pulse, FitConfig(iterations=args.iterations))[0],
                        "hits_from_stock_recodigis": compare_hits(reco, hits, events.size),
                        "clusters_from_stock_hits": compare_clusters(fast_cl, hits["clusters"], events.size)}
         print(arm, json.dumps(report[arm], indent=1))
