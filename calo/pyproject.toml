@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "calofastsim"
+version = "0.0.1"
+description = "Deterministic calorimeter response primitives for Mu2e (prototype)"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+jax = ["jax"]
+analysis = ["awkward", "uproot", "scipy"]
+test = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["calofastsim*"]
