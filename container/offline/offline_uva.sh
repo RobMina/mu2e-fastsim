@@ -32,6 +32,10 @@ if [[ ${1:-} == --inside ]]; then
   command -v mu2e
   printf 'MUSE_WORK_DIR=%s MUSE_ENVSET=%s MUSE_STUB=%s\n' "$MUSE_WORK_DIR" "$MUSE_ENVSET" "$MUSE_STUB"
   cd "$OFFLINE_WORK_DIR"
+  export TMPDIR="$(dirname "${OFFLINE_CACHE_PATH:?}")/art-tmp"
+  export SQLITE_TMPDIR="$TMPDIR"
+  mkdir -p "$TMPDIR"
+  printf 'TMPDIR=%s SQLITE_TMPDIR=%s\n' "$TMPDIR" "$SQLITE_TMPDIR"
   mu2e --version
   fhicl-dump -c "$FCL" > "${OFFLINE_LOG_PREFIX}.expanded.fcl"
   args=(-c "$FCL")
