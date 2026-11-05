@@ -155,7 +155,9 @@ def main(argv=None):
                                  gas_state=a.gas_state)
     t_trk = time.perf_counter() - tic
     write_injector(out / "fasttrk_field.root", steps, ent)
-    fin = pd.concat([ent[KEY].reset_index(drop=True), final.reset_index(drop=True)], axis=1)
+    fin = final.reset_index(drop=True)
+    if not set(KEY) <= set(fin.columns):
+        fin = pd.concat([ent[KEY].reset_index(drop=True), fin], axis=1)
     tables.write(str(out / "states.root"), {"gen": g, "entries": ent, "final": fin}, as_ttree=True)
     report = dict(inputs=[Path(p).name for p in paths], events=len(g), seed=a.seed, backend=a.backend,
                   geom=a.geom, maps=[Path(m).name for m in a.maps], gdml=Path(a.gdml).name,
