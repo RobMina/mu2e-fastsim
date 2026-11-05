@@ -90,6 +90,29 @@ showers are off. A named set with a named configuration is refused. The topology
 describe the extracted v04 layer structure and the strict library's crossings, so they do not carry over to other
 geometries.
 
+## Libraries on a named geometry: one crossing per primary muon
+
+`tier1b-build --run-config NAME` builds on a named configuration's geometry (its `lib_group` map) with
+`tier1b.build(per_primary=True)`. Cosmic events there can hold several primary muons (Run 1A reference: about 1 %
+of the crossing events), so the build follows the multi-muon rule:
+
+- a crossing is one (event, bar, primary muon), not one (event, bar);
+- every descendant step attaches through its SimParticle parent chain to its own primary, and only to that primary's
+  crossings (same bar first, else the nearest entry; `tier1b.attach_descendants`); descendants of a primary without a
+  crossing stay unattached and become its near-miss template;
+- steps without a primary through the parent chain form the unattached bin; the strict donor gate
+  (`genassoc.validate_donor`) refuses broken parent chains, so the bin is empty for admitted donors. The library
+  manifest's `identity` block gives its energy, and that of the descendants of non-crossing primaries, per sector;
+- the sidecars read `run_config` and `per_primary` from the manifest. The near-miss census marks a generated muon as
+  crossed when its own primary crosses: donor primary -> donor gen row -> the full-stream gen row with the same event,
+  pdg and momentum (the donor gen collection is a compressed copy, its indices differ from the stream's);
+- sampling with `per_primary=True` draws near-miss templates for every generated muon without a fast crossing of its
+  own (fast step `sp` = the muon's key).
+
+`scripts/audit_native_primary_identity.py` compares the historical (event, bar) build with the per-primary one on donor
+tables (merged crossings, wrong-ancestor rows, the identity census). Without `--run-config` nothing changes: the
+extracted build and the `strict_v5` sampling are identical (`scripts/library_identity.py`, `scripts/chain_identity.py`).
+
 ## Provenance and hashing
 
 - `tier1b_assets.load` reads the library and attaches the topology sidecar, then the template sidecar, in the same

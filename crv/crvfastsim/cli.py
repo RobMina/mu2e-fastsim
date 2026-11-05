@@ -114,6 +114,10 @@ def build_parser():
                             help="generated events behind the inputs when --gen is not their own gen stream (production)")
             sp.add_argument("--roots", action="store_true",
                             help="keep the step-tree root of every descendant row (root-coherent draws, strict_v5)")
+        if name in ("tier1b-build", "tier1b-apply"):
+            sp.add_argument("--run-config", default=None,
+                            help="named CRV run configuration (crvfastsim.runconfig): its geometry and library groups; "
+                                 "a named one builds per-primary crossings (several muons per event)")
         if name == "v4photons":
             sp.add_argument("--deviation", default=None, metavar="CSV", help="CRVPhoton table, channel,deviation (default 0)")
             sp.add_argument("--max-steps", type=int, default=None, help="first N steps only (the stock arm is a Python loop)")

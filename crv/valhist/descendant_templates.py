@@ -33,29 +33,33 @@ from crvfastsim import genassoc, geometry, tables, tier1b as T
 from crvfastsim.analyses.census import classify
 from . import descendant_audit as A
 from . import steplayers as S
+from .descendant_topology import manifest_geometry
 
 KEY = tables.KEY
 PART_COLS = KEY + ["key", "parent", "pdg", "isprim", "genidx"]
 
 
-def donor_pass(path, geom):
-    """Crossings (library order), muon visits and near-miss templates of one donor table."""
+def donor_pass(path, geom, per_primary=False):
+    """Crossings (library order), muon visits and near-miss templates of one donor table. per_primary (a library built
+    per primary): the near-miss templates are the descendants of every primary muon without a crossing of its own."""
     steps = tables.read(path, "steps")
     parts = tables.read(path, "particles", PART_COLS)
     gen = tables.read(path, "gen", KEY + ["idx", "pdg", "x", "y", "z", "px", "py", "pz", "e", "t"])
     s = classify(steps, parts, geom.sector)
     mus = s.loc[s.cls.eq("mu_primary")]
-    x = T._crossings(mus)
+    x = T._crossings(mus, per_primary)
     # exit point of each crossing (last step end, the order of _crossings) for the opt-in chord placement
-    ex = mus.sort_values(KEY + ["bar", "t0"], kind="stable").groupby(KEY + ["bar"], sort=False)[["x1", "y1", "z1"]].last()
+    by = T.crossing_by(per_primary)
+    ex = mus.sort_values(by + ["t0"], kind="stable").groupby(by, sort=False)[["x1", "y1", "z1"]].last()
     ex = ex.reset_index()
-    if not (ex[KEY + ["bar"]].to_numpy() == x[KEY + ["bar"]].to_numpy()).all():
+    if not (ex[by].to_numpy() == x[by].to_numpy()).all():
         raise ValueError(f"{path}: crossing exits out of the crossing order")
     x["qx"], x["qy"], x["qz"] = ex.x1.to_numpy(), ex.y1.to_numpy(), ex.z1.to_numpy()
     mu, vis, visits = T.muon_visits(x, geom)
-    crossed = pd.MultiIndex.from_frame(x[KEY].drop_duplicates().astype(np.int64))
+    own = ["sp"] if per_primary else []
+    crossed = pd.MultiIndex.from_frame(x[KEY + own].drop_duplicates().astype(np.int64))
     d = s.loc[s.cls.eq("mu_descendant")]
-    d = d[~pd.MultiIndex.from_frame(d[KEY].astype(np.int64)).isin(crossed)].copy()
+    d = d[~pd.MultiIndex.from_frame(d[KEY + (["prim_key"] if per_primary else [])].astype(np.int64)).isin(crossed)].copy()
     m = d[KEY + ["prim_key"]].drop_duplicates().reset_index(drop=True)
     pr = parts.rename(columns={"key": "prim_key"})[KEY + ["prim_key", "genidx", "pdg"]]
     m = m.merge(pr, on=KEY + ["prim_key"], how="left", validate="one_to_one")
@@ -89,14 +93,34 @@ def next_crossing(mu, t0, offset=0):
     return nxt
 
 
-def census_pass(steps_path, gen_path, geom):
-    """Generated muons of the events without a G4 primary-muon crossing: (group, dist, ke) per muon, and events."""
+def crossed_generator_rows(steps_path, s, gen):
+    """Rows of the full generator stream gen (muon_rays) whose own primary muon has a G4 crossing in the donor table:
+    donor primary -> its donor gen row (genidx) -> the full-stream row with the same event, pdg and momentum (exact
+    equality; the donor's gen collection is a compressed copy, so its idx is not the full stream's)."""
+    parts = tables.read(steps_path, "particles", KEY + ["key", "genidx"])
+    dgen = tables.read(steps_path, "gen", KEY + ["idx", "pdg", "px", "py", "pz"])
+    prim = s.loc[s.cls.eq("mu_primary"), KEY + ["sp"]].drop_duplicates()
+    prim = prim.merge(parts.rename(columns={"key": "sp"}), on=KEY + ["sp"], how="left", validate="one_to_one")
+    pay = KEY + ["pdg", "px", "py", "pz"]
+    prim = prim.merge(dgen.rename(columns={"idx": "genidx"}), on=KEY + ["genidx"], how="left", validate="one_to_one")
+    hit = prim[pay].merge(gen[pay].assign(row=np.arange(len(gen))), on=pay, how="left", validate="one_to_one")
+    if hit.row.isna().any():
+        raise ValueError(f"{steps_path}: crossing primary muon without its full-stream generator row")
+    return hit.row.to_numpy().astype(np.int64)
+
+
+def census_pass(steps_path, gen_path, geom, per_primary=False):
+    """Generated muons of the events without a G4 primary-muon crossing (per_primary: every generated muon without a
+    crossing of its own): (group, dist, ke) per muon, and events."""
     steps, parts = S._read(steps_path, KEY + ["bar", "sp", "edep"])
     s = classify(steps, parts, geom.sector)
-    crossed = pd.MultiIndex.from_frame(s.loc[s.cls.eq("mu_primary"), KEY].drop_duplicates().astype(np.int64))
     gen = tables.read(gen_path, "gen", KEY + ["idx", "pdg", "x", "y", "z", "px", "py", "pz", "e", "t"])
     mu = T.muon_rays(gen)
-    nc = mu[~pd.MultiIndex.from_frame(mu[KEY].astype(np.int64)).isin(crossed)]
+    if per_primary:
+        nc = mu[~np.isin(np.arange(len(mu)), crossed_generator_rows(steps_path, s, mu))]
+    else:
+        crossed = pd.MultiIndex.from_frame(s.loc[s.cls.eq("mu_primary"), KEY].drop_duplicates().astype(np.int64))
+        nc = mu[~pd.MultiIndex.from_frame(mu[KEY].astype(np.int64)).isin(crossed)]
     g, dist, _ = T.closest_approach(nc[["x", "y", "z"]].to_numpy(), nc[["px", "py", "pz"]].to_numpy(), geom)
     events = len(genassoc.generator_event_keys(gen_path))
     return pd.DataFrame({"group": g, "dist": dist, "ke": nc.ke.to_numpy()}), events, len(mu)
@@ -109,7 +133,7 @@ def sidecar(manifest, census_steps, census_gen, census_shards, out, counters=Non
     tick = time.monotonic()
     man = json.loads(Path(manifest).read_text())
     library = str(Path(manifest).with_suffix(".root"))
-    geom = geometry.from_offline_config(geometry.find_counters(counters or S.COUNTERS))
+    geom, counters_path, per_primary = manifest_geometry(man, counters)
     from mu2efastsim import tables as core_tables
     lx = core_tables.read(library, "libxing")
     bins = core_tables.read(library, "libbins")
@@ -119,7 +143,7 @@ def sidecar(manifest, census_steps, census_gen, census_shards, out, counters=Non
     offset = muoff = toff = 0
     for f in man["inputs"]:
         start = time.monotonic()
-        x, mu, vis, v, nmt, nms = donor_pass(f, geom)
+        x, mu, vis, v, nmt, nms = donor_pass(f, geom, per_primary)
         z = lx.iloc[offset:offset + len(x)]
         np.testing.assert_array_equal(z.bin, T._bin(bins, T._group_index(geom, x.bar), x.p.to_numpy(),
                                                      x.len.to_numpy()))
@@ -182,7 +206,7 @@ def sidecar(manifest, census_steps, census_gen, census_shards, out, counters=Non
         raise ValueError("repeated census table")
     for cs, cg, k in sources:
         sp, gp = (p.format(s=S.shard(k), k=k) for p in (cs, cg))
-        c, ev, nm = census_pass(sp, gp, geom)
+        c, ev, nm = census_pass(sp, gp, geom, per_primary)
         cens.append(c)
         cev += ev
         cmu += nm
@@ -200,7 +224,7 @@ def sidecar(manifest, census_steps, census_gen, census_shards, out, counters=Non
                **{f"nmc_{k}": nmc[k].to_numpy() for k in nmc.columns}}
     np.savez_compressed(out, **payload)
     result = {"library": library, "library_sha256": A.digest(library), "manifest": str(manifest),
-              "geometry_sha256": A.digest(geometry.find_counters(counters or S.COUNTERS)),
+              "geometry_sha256": A.digest(counters_path),
               "code_sha256": {p: A.digest(p) for p in (__file__, T.__file__)}, "donors": records, "census": crec,
               "generated": int(generated), "census_events": int(cev), "census_muons": int(cmu),
               "census_no_crossing_muons": int(len(nmc)), "nearmiss_templates": int(len(nmt)),

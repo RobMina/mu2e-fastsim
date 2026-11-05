@@ -154,7 +154,7 @@ def test_tier1b_apply_default_and_custom(tmp_path, monkeypatch):
     empty = pd.DataFrame({"run": [], "subrun": [], "event": []})
     monkeypatch.setattr(A.tables, "read", lambda f, tree: empty)
     monkeypatch.setattr(A.tables, "write", lambda *a, **kw: None)
-    monkeypatch.setattr(A, "_geom", lambda counters: None)
+    monkeypatch.setattr(A, "_geom", lambda counters, run_config=None: None)
     monkeypatch.setattr(A.tier1b, "sample", lambda *a, **kw: seen.append(kw) or (empty, empty, {}))
     monkeypatch.setattr(A.tier1b, "read_library", lambda p: {"custom": p})
     monkeypatch.setattr(A.tier1b_assets, "load", lambda spec, geom: loaded.append(spec) or {})

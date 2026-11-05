@@ -380,11 +380,18 @@ def _unit(a):
 
 
 # ----------------------------------------------------------------------------------------------------------- build
-def _crossings(mu):
-    """Primary-muon crossings with their first step's entry point, direction and |p|; summed edep and path."""
-    mu = mu.sort_values(KEY + ["bar", "t0"], kind="stable")
-    g = mu.groupby(KEY + ["bar"], sort=False)
-    x = g.first()[["sp", "t0", "x0", "y0", "z0", "px0", "py0", "pz0"]]
+def crossing_by(per_primary=False):
+    """Group key of a crossing: (event, bar), or (event, bar, primary muon) with per_primary (several muons per event)."""
+    return KEY + (["bar", "sp"] if per_primary else ["bar"])
+
+
+def _crossings(mu, per_primary=False):
+    """Primary-muon crossings with their first step's entry point, direction and |p|; summed edep and path.
+    per_primary: one crossing per (event, bar, primary muon) instead of per (event, bar)."""
+    by = crossing_by(per_primary)
+    mu = mu.sort_values(by + ["t0"], kind="stable")
+    g = mu.groupby(by, sort=False)
+    x = g.first()[(["sp"] if not per_primary else []) + ["t0", "x0", "y0", "z0", "px0", "py0", "pz0"]]
     x["len"] = g.len.sum()
     x["edep"] = g.edep.sum()
     x = x.reset_index()
@@ -392,21 +399,23 @@ def _crossings(mu):
     return x
 
 
-def _bin_edges(step_paths, geom):
+def _bin_edges(step_paths, geom, per_primary=False):
     """Per-group momentum and path-length quantile edges of the primary-muon crossings over all step_paths (one file at
-    a time: crossings only, so memory stays small)."""
+    a time: crossings only, so memory stays small). Groups without crossings get no edges."""
     xs = []
     for f in step_paths:
         steps = tables.read(f, "steps", KEY + ["bar", "sp", "t0", "edep", "len", "x0", "y0", "z0", "px0", "py0", "pz0"])
         parts = tables.read(f, "particles", KEY + ["key", "pdg", "isprim"])
         prim = parts[(parts.isprim == 1) & (parts.pdg.abs() == tables.PRIMARY_MUON_PDG)]  # every primary muon, as classify
         mu = steps.merge(prim[KEY + ["key"]].rename(columns={"key": "sp"}), on=KEY + ["sp"])
-        x = _crossings(mu)
+        x = _crossings(mu, per_primary)
         xs.append(pd.DataFrame({"group": _group_index(geom, x.bar), "p": x.p.to_numpy(), "len": x.len.to_numpy()}))
     x = pd.concat(xs, ignore_index=True)
     edges = []
     for gi in range(len(GROUPS)):
         xg = x[x.group == gi]
+        if xg.empty:
+            continue
         edges += [(0, gi, e) for e in np.quantile(xg.p, P_QUANTILES)]
         edges += [(1, gi, e) for e in np.quantile(xg.len, L_QUANTILES)]
     return pd.DataFrame(edges, columns=["kind", "group", "edge"]).astype({"kind": np.int64, "group": np.int64})
@@ -427,12 +436,14 @@ def step_roots(parts):
         cur = np.where(up, nxt, cur)
 
 
-def build(step_paths, gen_paths, geom, generated=None, roots=False):
+def build(step_paths, gen_paths, geom, generated=None, roots=False, per_primary=False):
     """Library from G4 CrvStep tables, one file at a time (a GPVM holds ~5 production files at once, not 20).
 
     Bin edges come from all files first; each file's crossings, descendants and showers get ids offset past the previous
     files'; the reach probability uses the showers of all files over the scaled gen-table counts. roots: libdesc also
-    carries the step-tree root of each row (attach_anchors).
+    carries the step-tree root of each row (attach_anchors). per_primary (events with several primary muons): one
+    crossing per (event, bar, primary muon), descendants attach only to their own primary's crossings, and info gets
+    the 'identity' energy census (parentless steps per sector).
     """
     step_paths = list(step_paths)
     gen_paths = list(gen_paths)
@@ -442,13 +453,17 @@ def build(step_paths, gen_paths, geom, generated=None, roots=False):
         validated[f] = genassoc.validate_donor(f)
     generator_streams = [genassoc.validate_generator_stream(f)
                          for f in dict.fromkeys(str(Path(p).resolve()) for p in gen_paths)]
-    libbins = _bin_edges(step_paths, geom)
+    libbins = _bin_edges(step_paths, geom, per_primary)
     parts_out = {k: [] for k in ("libxing", "libdesc", "libshower", "libshowersteps")}
     info = {"crossings": 0, "desc_steps": 0, "desc_steps_unattached": 0, "showers": 0, "shower_steps": 0,
             "max_shower_sp": 0}
     xoff = soff = 0
+    ident = None
     for f in step_paths:
-        lib, inf = _build_one([f], geom, libbins, _already_validated=validated, **({"roots": True} if roots else {}))
+        lib, inf = _build_one([f], geom, libbins, _already_validated=validated, **({"roots": True} if roots else {}),
+                              **({"per_primary": True} if per_primary else {}))
+        if per_primary:
+            ident = _merge_identity(ident, inf["identity"])
         lib["libxing"]["xid"] += xoff
         lib["libdesc"]["xid"] += xoff
         lib["libshower"]["shid"] += soff
@@ -466,7 +481,62 @@ def build(step_paths, gen_paths, geom, generated=None, roots=False):
     info["files"] = len(step_paths)
     info["generator_associations"] = list(validated.values())
     info["generator_streams"] = generator_streams
+    if per_primary:
+        info["identity"] = _identity_summary(ident)
     return lib, info
+
+
+def parentless(s, parts):
+    """Steps of s (classify) without a primary through the SimParticle parent chain: unknown class, or a chain that ends
+    on a particle that is not a generator primary (a missing parent)."""
+    prim = pd.MultiIndex.from_frame(parts.loc[parts.isprim == 1, KEY + ["key"]].astype(np.int64))
+    k = s[KEY + ["prim_key"]].fillna(-1).astype(np.int64)
+    return s[(s.cls == "unknown").to_numpy() | ~pd.MultiIndex.from_frame(k).isin(prim)]
+
+
+def _identity_census(s, no_own, geom, parts=None):
+    """Per sector [steps, edep] of all CRV steps, the parentless steps (parentless(); the unattached bin) and the muon
+    descendants whose own primary has no crossing (no_own; near-miss material)."""
+    names = np.asarray(geom.sector_names, dtype=object)
+    out = {}
+    lost = parentless(s, parts) if parts is not None else s[s.cls == "unknown"]
+    for name, f in (("all", s), ("parentless", lost), ("no_own_crossing", no_own)):
+        sec = names[geom.sector[f.bar.to_numpy().astype(np.int64)]]
+        g = pd.Series(f.edep.to_numpy(np.float64)).groupby(sec)
+        for k, n, e in zip(g.size().index, g.size().to_numpy(), g.sum().to_numpy()):
+            out.setdefault(str(k), {})[name] = [int(n), float(e)]
+    return out
+
+
+def _merge_identity(tot, one):
+    tot = {} if tot is None else tot
+    for sector, d in one.items():
+        for name, (n, e) in d.items():
+            a = tot.setdefault(sector, {}).setdefault(name, [0, 0.0])
+            a[0] += n
+            a[1] += e
+    return tot
+
+
+def _identity_summary(tot):
+    """Rows, energy and energy fraction of the parentless and no-own-crossing steps per sector and overall."""
+    out = {"sectors": {}}
+    total = {}
+    for sector, d in sorted((tot or {}).items()):
+        row = {}
+        for name in ("all", "parentless", "no_own_crossing"):
+            n, e = d.get(name, [0, 0.0])
+            row[name] = {"steps": n, "edep": e}
+            t = total.setdefault(name, [0, 0.0])
+            t[0] += n
+            t[1] += e
+        for name in ("parentless", "no_own_crossing"):
+            row[name]["edep_fraction"] = row[name]["edep"] / row["all"]["edep"] if row["all"]["edep"] > 0 else 0.0
+        out["sectors"][sector] = row
+    a = total.get("all", [0, 0.0])[1]
+    out["overall"] = {name: {"steps": n, "edep": e, "edep_fraction": e / a if a > 0 else 0.0}
+                      for name, (n, e) in total.items()}
+    return out
 
 
 def _reach(libshower, gen_paths, generated):
@@ -486,7 +556,26 @@ def _reach(libshower, gen_paths, generated):
     return lg.astype({"apdg": np.int64, "kebin": np.int64, "ngen": np.int64, "nshower": np.int64}), int(len(g))
 
 
-def _build_one(step_paths, geom, libbins, *, _already_validated=None, roots=False):
+def attach_descendants(d, x, per_primary=False):
+    """Crossing of each muon-descendant step (d: did, bar, endpoints; x: _crossings with xid): a crossing of the same bar,
+    else the one whose entry is nearest the step midpoint, among the event's crossings, or with per_primary among the
+    crossings of the step's own primary muon (d.prim_key). Steps without a candidate are left out. Returns (did, xid,
+    score)."""
+    on, dcols, xcols = KEY, [], []
+    dd = d[KEY + ["did", "bar", "x0", "y0", "z0", "x1", "y1", "z1"]]
+    if per_primary:
+        dd = dd.assign(prim_key=d.prim_key.to_numpy().astype(np.int64))
+        on, dcols, xcols = KEY + ["prim_key"], ["prim_key"], ["sp"]
+    m = dd[KEY + dcols + ["did", "bar", "x0", "y0", "z0", "x1", "y1", "z1"]].merge(
+        x[KEY + xcols + ["xid", "bar", "x0", "y0", "z0"]].rename(
+            columns={"sp": "prim_key", "bar": "xbar", "x0": "ex", "y0": "ey", "z0": "ez"}), on=on)
+    mid = 0.5 * (m[["x0", "y0", "z0"]].to_numpy() + m[["x1", "y1", "z1"]].to_numpy())
+    dist = np.linalg.norm(mid - m[["ex", "ey", "ez"]].to_numpy(), axis=1)
+    m["score"] = np.where(m.bar.to_numpy() == m.xbar.to_numpy(), -1.0, dist)
+    return m.loc[m.groupby("did").score.idxmin(), ["did", "xid", "score"]]
+
+
+def _build_one(step_paths, geom, libbins, *, _already_validated=None, roots=False, per_primary=False):
     """Library trees {name: DataFrame} of the given G4 CrvStep tables with the given bin edges (libgen not included).
 
 
@@ -506,19 +595,13 @@ def _build_one(step_paths, geom, libbins, *, _already_validated=None, roots=Fals
     s = classify(steps, parts, geom.sector)
     lib = {}
     # 1. muon descendants per crossing
-    x = _crossings(s[s.cls == "mu_primary"])
+    x = _crossings(s[s.cls == "mu_primary"], per_primary)
     x["group"] = _group_index(geom, x.bar)
     x["bin"] = _bin(libbins, x.group.to_numpy(), x.p.to_numpy(), x.len.to_numpy())
     x["xid"] = np.arange(len(x))
     d = s[s.cls == "mu_descendant"].reset_index(drop=True)
     d["did"] = np.arange(len(d))
-    m = d[KEY + ["did", "bar", "x0", "y0", "z0", "x1", "y1", "z1"]].merge(
-        x[KEY + ["xid", "bar", "x0", "y0", "z0"]].rename(columns={"bar": "xbar", "x0": "ex", "y0": "ey", "z0": "ez"}),
-        on=KEY)
-    mid = 0.5 * (m[["x0", "y0", "z0"]].to_numpy() + m[["x1", "y1", "z1"]].to_numpy())
-    dist = np.linalg.norm(mid - m[["ex", "ey", "ez"]].to_numpy(), axis=1)
-    m["score"] = np.where(m.bar.to_numpy() == m.xbar.to_numpy(), -1.0, dist)
-    best = m.loc[m.groupby("did").score.idxmin(), ["did", "xid", "score"]]
+    best = attach_descendants(d, x, per_primary)
     d = d.merge(best, on="did")
     d = d.merge(x[["xid", "t0", "x0", "y0", "z0", "bar"]].rename(
         columns={"t0": "xt0", "x0": "ex", "y0": "ey", "z0": "ez", "bar": "xbar"}), on="xid")
@@ -543,6 +626,9 @@ def _build_one(step_paths, geom, libbins, *, _already_validated=None, roots=Fals
                                    "ux": x.px0 / x.p, "uy": x.py0 / x.p, "uz": x.pz0 / x.p,
                                    "ctx": crossing_context(x, geom).astype(np.int64)})
     n_unattached = int(len(s[s.cls == "mu_descendant"]) - len(d))
+    if per_primary:
+        sd = s[s.cls == "mu_descendant"].reset_index(drop=True)
+        ident = _identity_census(s, sd[~np.isin(np.arange(len(sd)), d.did.to_numpy())], geom, parts)
     # 2. non-muon showers, keyed by primary
     gen = tables.read_many(step_paths, "gen", KEY + ["idx", "pdg", "e", "t"])
     prim = parts[(parts.isprim == 1) & (parts.pdg.abs() != tables.PRIMARY_MUON_PDG)]
@@ -568,6 +654,8 @@ def _build_one(step_paths, geom, libbins, *, _already_validated=None, roots=Fals
     info = {"crossings": len(x), "desc_steps": len(d), "desc_steps_unattached": n_unattached,
             "showers": len(sh), "shower_steps": len(nm), "max_shower_sp": int(nm.sp.max()) if len(nm) else 0,
             "generator_associations": [validated[f] for f in donor_keys]}
+    if per_primary:
+        info["identity"] = ident
     return lib, info
 
 
@@ -1258,11 +1346,11 @@ def uv_cells(bar, entry, p, last, mask, geom):
 
 
 def group_boxes(geom):
-    """Axis-aligned box (lo [4, 3], hi [4, 3]) of every library group's bars."""
+    """Axis-aligned box (lo [4, 3], hi [4, 3]) of every library group's bars; an empty group gets lo = +inf, hi = -inf."""
     g = _group_index(geom, np.arange(geom.nbars))
     lo, hi = geom.center - geom.halflen, geom.center + geom.halflen
-    return (np.array([lo[g == i].min(0) for i in range(len(GROUPS))]),
-            np.array([hi[g == i].max(0) for i in range(len(GROUPS))]))
+    return (np.array([lo[g == i].min(0) if np.any(g == i) else np.full(3, np.inf) for i in range(len(GROUPS))]),
+            np.array([hi[g == i].max(0) if np.any(g == i) else np.full(3, -np.inf) for i in range(len(GROUPS))]))
 
 
 def closest_approach(pos, u, geom):
@@ -1272,9 +1360,11 @@ def closest_approach(pos, u, geom):
     pos, u = np.asarray(pos, float), _unit(np.asarray(u, float))
     lo, hi = group_boxes(geom)
     n, ng = len(pos), len(GROUPS)
-    dist, tbest = np.zeros((n, ng)), np.zeros((n, ng))
+    dist, tbest = np.full((n, ng), np.inf), np.full((n, ng), np.inf)
     with np.errstate(divide="ignore", invalid="ignore"):
         for gi in range(ng):
+            if np.any(lo[gi] > hi[gi]):
+                continue
             t1, t2 = (lo[gi] - pos) / u, (hi[gi] - pos) / u
             par = u == 0
             inside_slab = (pos >= lo[gi]) & (pos <= hi[gi])
@@ -1438,13 +1528,16 @@ def _unvisited_for_crossings(fx, lib, geom, rng):
     return out, info
 
 
-def _nearmiss_for_gen(fast_steps, gen, lib, geom, rng):
-    """Near-miss templates for the generated muons of events without a fast crossing (fast_steps: tier-1a). Each muon
+def _nearmiss_for_gen(fast_steps, gen, lib, geom, rng, per_primary=False):
+    """Near-miss templates for the generated muons of events without a fast crossing (fast_steps: tier-1a), or with
+    per_primary for every generated muon without a fast crossing of its own (fast step sp = the muon's key). Each muon
     reaches the CRV with its cell's probability (lib['nmreach']) and takes a uniform template of that cell. Returns
     (steps with mukey = the muon's key, xi = the muon's row, lsp = template particle; info)."""
     mu = muon_rays(gen)
-    crossed = pd.MultiIndex.from_frame(fast_steps[KEY].drop_duplicates().astype(np.int64))
-    cand = mu[~pd.MultiIndex.from_frame(mu[KEY].astype(np.int64)).isin(crossed)].reset_index(drop=True)
+    by = KEY + (["sp"] if per_primary else [])
+    crossed = pd.MultiIndex.from_frame(fast_steps[by].drop_duplicates().astype(np.int64))
+    mine = mu[KEY].assign(sp=mu.mukey.to_numpy())[by]
+    cand = mu[~pd.MultiIndex.from_frame(mine.astype(np.int64)).isin(crossed)].reset_index(drop=True)
     g, dist, _ = closest_approach(cand[["x", "y", "z"]].to_numpy(), cand[["px", "py", "pz"]].to_numpy(), geom)
     cell = nearmiss_cell(cand.ke.to_numpy(), g, dist)
     r = lib["nmreach"]
@@ -1483,14 +1576,15 @@ def _nearmiss_for_gen(fast_steps, gen, lib, geom, rng):
 
 def sample(fast_steps, fast_parts, gen, lib, geom, rng, showers=True, context=False, contain=False, point=False,
            mirror=False, translate=False, topology=False, unvisited=False, nearmiss=False, chord=False, follow=False,
-           anchor=False, link=False):
+           anchor=False, link=False, per_primary=False):
     """Fast tier-1a tables + tier 1b: (steps, particles, info). Muons keep their keys (1, or 1..n with all_muons);
     descendants follow them; showers k*1e7+sp. showers=False: descendants only (run configurations whose bars are not
     the library's: the showers carry absolute extracted v04 bar positions). unvisited / nearmiss (opt-in, a library
     with attach_templates): their random draws come after the showers', so every other component is unchanged.
     chord / follow (opt-in, a template sidecar with library chords): same-bar placement along the chord and the chain
     draw of the main descendant draw (_desc_for_crossings); no random number changes. anchor / link (a
-    library with attach_anchors): root-coherent draws of the step trees, module docstring."""
+    library with attach_anchors): root-coherent draws of the step trees, module docstring. per_primary (a library
+    built with per_primary): near-miss templates for every generated muon without a crossing of its own."""
     fx = fast_steps.copy()
     desc, n_drop, n_clamp, why = _desc_for_crossings(fx, lib, geom, rng, context, contain, point, mirror, translate,
                                                      topology, drop_unvisited=unvisited, chord=chord, follow=follow,
@@ -1503,7 +1597,7 @@ def sample(fast_steps, fast_parts, gen, lib, geom, rng, showers=True, context=Fa
         uvd, tinfo["unvisited"] = _unvisited_for_crossings(fx, lib, geom, rng)
         extra.append(uvd.assign(src=1, parent=sp_of[uvd.xi.to_numpy()]))
     if nearmiss:
-        nmd, tinfo["nearmiss"] = _nearmiss_for_gen(fast_steps, gen, lib, geom, rng)
+        nmd, tinfo["nearmiss"] = _nearmiss_for_gen(fast_steps, gen, lib, geom, rng, per_primary)
         extra.append(nmd.drop(columns="mukey").assign(src=2, parent=nmd.mukey.to_numpy()))
     if len(extra) > 1:
         desc = pd.concat(extra, ignore_index=True)
