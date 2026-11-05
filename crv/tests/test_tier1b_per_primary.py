@@ -145,11 +145,13 @@ def test_named_build_sidecars_and_per_primary_sampling(tmp_path, rc):
     opts = dict(context=True, contain=True, point=True, topology=True, unvisited=True, nearmiss=True, chord=True,
                 anchor=True)
     g = tables.read(gen, "gen")
-    for per in (False, True):
+    fast = fast[fast.sp != 2].reset_index(drop=True)    # event 1's second muon misses the CRV in the fast arm
+    for per, n in ((False, 1), (True, 2)):
         out_steps, _, info = tier1b.sample(fast, fparts, g, lib, geom, np.random.default_rng(1), per_primary=per,
                                            **opts)
         assert len(out_steps) >= len(fast)
-        assert info["templates"]["nearmiss"]["candidates"] == 1     # event 4's muon; both event-1 muons cross
+        # event 5's muon; per primary also event 1's uncrossed second muon (its event has a crossing)
+        assert info["templates"]["nearmiss"]["candidates"] == n
 
 
 def test_nearmiss_candidates_per_muon():
@@ -179,3 +181,12 @@ def test_group_boxes_with_empty_groups(rc):
     assert np.all(lo[0] <= hi[0]) and np.all(lo[1:] > hi[1:])
     g, dist, _ = tier1b.closest_approach(np.array([[0., 5000., 0.]]), np.array([[0., -1., 0.]]), geom)
     assert g.tolist() == [0] and np.isfinite(dist).all()
+
+
+def test_apply_takes_per_primary_from_the_library_manifest(tmp_path):
+    lib = tmp_path / "library.root"
+    assert T1B.library_per_primary(lib) is False                     # no manifest
+    (tmp_path / "library.json").write_text(json.dumps({"run_config": "run1a_v01"}))
+    assert T1B.library_per_primary(lib) is False                     # a default build on a named geometry
+    (tmp_path / "library.json").write_text(json.dumps({"run_config": "run1a_v01", "per_primary": True}))
+    assert T1B.library_per_primary(lib) is True

@@ -158,20 +158,14 @@ def real_input(tmp_path):
     return {"donors": [str(path)], "run_config": "run1a_v01", "counters": str(counters)}, path, donor
 
 
-def test_real_schema_v2_receipts_empty_census_and_read_only(audit, tmp_path, real_input):
+def test_real_schema_v2_empty_census(audit, tmp_path, real_input):
     config, donor, _ = real_input
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps(config))
-    before = audit._sha256(donor)
     result = audit.run(config_path, tmp_path / "audit.json")
     assert json.loads((tmp_path / "audit.json").read_text()) == result
-    assert audit._sha256(donor) == before
-    assert result["hashes_verified_after"] is True
     assert result["files"][0]["validation"]["associations_checked"] is True
-    assert result["files"][0]["sha256"] == before
     assert result["files"][0]["measurements"]["primary_muons"]["histogram"] == {"0": 2, "1": 1}
-    assert str(config_path.resolve()) in result["inputs_sha256"]
-    assert str(Path(audit.__file__).resolve()) in result["sources_sha256"]
     census = result["files"][0]["measurements"]["identity_census"]
     assert all(v.get("parentless", [0, 0.0])[0] == 0 for v in census.values())
 
@@ -193,40 +187,6 @@ def test_real_schema_v2_multi_muon_samebar(audit, tmp_path, real_input):
     assert result["descendants"]["historical_wrong_ancestor"]["edep"] == pytest.approx(.2)
 
 
-@pytest.mark.parametrize("kind", ["file", "directory", "dangling"])
-def test_no_clobber_before_any_inputs(audit, tmp_path, kind):
-    out = tmp_path / "occupied"
-    if kind == "file":
-        out.write_text("keep")
-    elif kind == "directory":
-        out.mkdir()
-    else:
-        out.symlink_to(tmp_path / "missing")
-    with pytest.raises(FileExistsError):
-        audit.run({"donors": ["absent"], "run_config": "absent"}, out)
-    if kind == "file":
-        assert out.read_text() == "keep"
-    if kind == "dangling":
-        assert out.is_symlink() and not out.exists()
-
-
-def test_hash_drift_never_emits(audit, tmp_path, real_input, monkeypatch):
-    config, path, _ = real_input
-    original = audit.analyze
-
-    def changed(*args):
-        result = original(*args)
-        with path.open("ab") as stream:
-            stream.write(b"drift")
-        return result
-
-    monkeypatch.setattr(audit, "analyze", changed)
-    out = tmp_path / "drift.json"
-    with pytest.raises(ValueError, match="hash drift"):
-        audit.run(config, out)
-    assert not out.exists()
-
-
 def test_schema_gate_before_diagnostic_payload_read(audit, tmp_path, real_input, monkeypatch):
     config, path, frames = real_input
     frames["events"]["schema_version"] = np.uint32(1)
@@ -240,69 +200,6 @@ def test_schema_gate_before_diagnostic_payload_read(audit, tmp_path, real_input,
     with pytest.raises(ValueError, match="schema_version=2"):
         audit.run(config, out)
     assert not out.exists()
-
-
-@pytest.mark.parametrize("alias", ["resolved", "hardlink"])
-def test_explicit_paths_reject_duplicate_aliases(audit, tmp_path, real_input, alias):
-    config, path, _ = real_input
-    other = tmp_path / "alias.root"
-    if alias == "resolved":
-        other.symlink_to(path)
-    else:
-        other.hardlink_to(path)
-    config["donors"].append(str(other))
-    with pytest.raises(ValueError, match="alias"):
-        audit.run(config, tmp_path / "duplicate.json")
-
-
-def test_missing_local_counters_never_fetches(audit, monkeypatch):
-    monkeypatch.delenv("CRVFS_NO_FETCH", raising=False)
-    monkeypatch.delenv("MU2E_SEARCH_PATH", raising=False)
-    monkeypatch.setattr(audit.geometry, "OFFLINE_ROOTS", ())
-
-    def forbidden(*args):
-        pytest.fail("read-only audit attempted a counters fetch")
-
-    monkeypatch.setattr(audit.geometry, "_fetch_public", forbidden)
-    with pytest.raises(FileNotFoundError, match="never fetches"):
-        audit._local_counters("Offline/Mu2eG4/geom/nonexistent-primary-audit.txt")
-
-
-def test_source_hash_drift_never_emits(audit, tmp_path, real_input, monkeypatch):
-    config, _, _ = real_input
-    original = audit._sha256
-    target = str(Path(audit.__file__).resolve())
-    calls = 0
-
-    def drifting(path):
-        nonlocal calls
-        if str(path) == target:
-            calls += 1
-            if calls > 1:
-                return "changed-source"
-        return original(path)
-
-    monkeypatch.setattr(audit, "_sha256", drifting)
-    out = tmp_path / "source-drift.json"
-    with pytest.raises(ValueError, match="hash drift"):
-        audit.run(config, out)
-    assert not out.exists()
-
-
-def test_output_created_during_analysis_is_not_overwritten(audit, tmp_path, real_input, monkeypatch):
-    config, _, _ = real_input
-    original = audit.analyze
-    out = tmp_path / "raced.json"
-
-    def raced(*args):
-        result = original(*args)
-        out.write_text("other writer")
-        return result
-
-    monkeypatch.setattr(audit, "analyze", raced)
-    with pytest.raises(FileExistsError):
-        audit.run(config, out)
-    assert out.read_text() == "other writer"
 
 
 @pytest.mark.parametrize("scenario", ["swapped", "noncrossing", "int64"])

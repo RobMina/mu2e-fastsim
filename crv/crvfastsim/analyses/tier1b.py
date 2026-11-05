@@ -40,6 +40,13 @@ def _geom(counters, run_config=None):
     return geometry.from_offline_config(geometry.find_counters(counters or DEFAULT_COUNTERS))
 
 
+def library_per_primary(library):
+    """True when the library's manifest (LIB.json next to LIB.root) says it was built per primary (tier1b-build
+    --run-config): only then do near-miss draws go per generated muon."""
+    manifest = os.path.splitext(str(library))[0] + ".json"
+    return os.path.exists(manifest) and bool(json.loads(open(manifest).read()).get("per_primary"))
+
+
 def build(inputs, outdir, gen=None, out=None, generated=None, counters=None, roots=False, run_config=None, **kw):
     if not gen or not out:
         raise SystemExit("tier1b-build needs --gen and --out")
@@ -128,7 +135,7 @@ def apply(inputs, outdir, library=None, seed=1, counters=None, crossing_context=
             raise SystemExit("--chord-placement / --follow-muon need --template-sidecar (with library chords)")
         if chord_placement or follow_muon:
             opts.update(chord=bool(chord_placement), follow=bool(follow_muon))
-        if named(run_config) and near_miss:
+        if near_miss and library_per_primary(library):
             opts["per_primary"] = True
         geom = _geom(counters, run_config)
         lib = tier1b.read_library(library)

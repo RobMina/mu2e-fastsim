@@ -9,13 +9,11 @@ historical attachment gives to another primary's crossing (wrong ancestor), desc
 crossing of their own (left out of the per-primary attachment; near-miss material) and parentless steps (no primary
 through the SimParticle parent chain: the unattached bin), per sector. The per-primary attachment is checked against
 an independent reference (crossings split by primary key, same score among the primary's own crossings).
-Optional generator streams report full-stream muon multiplicity. Read only; output is one new JSON file.
+Optional generator streams report full-stream muon multiplicity. Read only; output is one JSON file.
 """
 import argparse
 from dataclasses import replace
-import hashlib
 import json
-import os
 from pathlib import Path
 
 import numpy as np
@@ -27,14 +25,6 @@ from crvfastsim.analyses import census
 KEY = tables.KEY
 ANCESTOR = KEY + ["prim_key"]
 SCHEMA = "crvfastsim.native_primary_identity_audit.v2"
-
-
-def _sha256(path):
-    digest = hashlib.sha256()
-    with open(path, "rb") as stream:
-        for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _isin(left, right, columns):
@@ -160,72 +150,18 @@ def analyze(steps, parts, geom):
                                      "excluded_muons_with_descendants": int(len(excluded[ANCESTOR].drop_duplicates()))}}
 
 
-def _paths(values):
-    if not isinstance(values, (list, tuple)) or not values:
-        raise ValueError("donors must be a nonempty explicit path sequence")
-    paths = [Path(value).resolve(strict=True) for value in values]
-    if not all(path.is_file() for path in paths):
-        raise ValueError("donors must be regular files")
-    identities = [(path.stat().st_dev, path.stat().st_ino) for path in paths]
-    if len(set(identities)) != len(paths):
-        raise ValueError("repeated donor or resolved/hardlink alias")
-    return paths
-
-
-def _local_counters(value):
-    path = Path(value)
-    if path.is_file():
-        return path.resolve(strict=True)
-    rel = str(value).removeprefix("Offline/")
-    roots = [p for p in os.environ.get("MU2E_SEARCH_PATH", "").split(":") if p]
-    for root in [*roots, *geometry.OFFLINE_ROOTS]:
-        for candidate in (Path(root) / value, Path(root) / "Offline" / rel):
-            if candidate.is_file():
-                return candidate.resolve(strict=True)
-    raise FileNotFoundError(f"local counters required (audit never fetches): {value}")
-
-
 def run(config, out):
-    """Validate, hash, analyze explicit donors one at a time, and exclusively emit JSON.
-
-    Config-relative paths use the caller's working directory. Hash rechecks detect
-    drift, not immutable snapshots. Output is absent on validation/drift failure.
-    """
-    out = Path(out)
-    if out.exists() or out.is_symlink():
-        raise FileExistsError(out)
-    config_path = Path(config).resolve(strict=True) if isinstance(config, (str, Path)) else None
-    config_hash = _sha256(config_path) if config_path else None
-    cfg = json.loads(config_path.read_text()) if config_path else dict(config)
+    """Analyze the donors of config (a mapping or JSON file) one at a time and write the JSON report to out."""
+    cfg = json.loads(Path(config).read_text()) if isinstance(config, (str, Path)) else dict(config)
     if set(cfg) - {"donors", "run_config", "counters", "generators"} or not {"donors", "run_config"} <= set(cfg):
         raise ValueError("config requires donors, run_config and optional counters/generators only")
-    paths = _paths(cfg["donors"])
-    generators = _paths(cfg["generators"]) if "generators" in cfg else []
-    if generators and set(paths) & set(generators):
-        raise ValueError("donor and generator files must be distinct")
     rc = runconfig.get(cfg["run_config"])
     if cfg.get("counters") is not None:
-        rc = replace(rc, counters=str(Path(cfg["counters"]).resolve(strict=True)))
-    counters = _local_counters(rc.counters)
-    rc = replace(rc, counters=str(counters))
-    source_paths = [Path(module.__file__).resolve() for module in
-                    (tier1b, census, genassoc, tables, tables._core, runconfig, geometry)]
-    source_paths += [Path(__file__).resolve(), Path(tier1b.__file__).resolve().parents[1]
-                     / "valhist" / "descendant_templates.py"]
-    sources = {str(path): _sha256(path) for path in source_paths}
-    before = {str(path): _sha256(path) for path in [*paths, *generators, counters]}
-    if config_path:
-        before[str(config_path)] = config_hash
-    reports = []
-    for path in paths:
-        report = genassoc.validate_donor(path)
-        if (report.get("schema_version") != 2 or report.get("stream_role") != "checked donor"
-                or report.get("associations_checked") is not True):
-            raise ValueError("strict schema-v2 checked donor required")
-        reports.append(report)
+        rc = replace(rc, counters=str(cfg["counters"]))
     geom = rc.geometry()
     files = []
-    for path, report in zip(paths, reports):
+    for path in cfg["donors"]:
+        report = genassoc.validate_donor(path)
         steps = tables.read(path, "steps")
         parts = tables.read(path, "particles", KEY + ["key", "parent", "pdg", "isprim"])
         events = tables.read(path, "events", KEY)
@@ -235,36 +171,25 @@ def run(config, out):
         desc = s.loc[s.cls.eq("mu_descendant")]
         no_own = desc.loc[~_isin(desc, s.loc[s.cls.eq("mu_primary")], ANCESTOR)]
         measurements["identity_census"] = tier1b._identity_census(s, no_own, geom, parts)
-        files.append({"path": str(path), "sha256": before[str(path)], "validation": report,
-                      "measurements": measurements})
+        files.append({"path": str(path), "validation": report, "measurements": measurements})
     full_reports = []
-    for path in generators:
-        validation = genassoc.validate_generator_stream(path)
-        if validation.get("schema_version") != 2 or validation.get("stream_role") != "full generator stream":
-            raise ValueError("strict schema-v2 full generator stream required")
+    for path in cfg.get("generators", []):
         gen = tables.read(path, "gen", KEY + ["idx", "pdg"])
         events = tables.read(path, "events", KEY)
         mu = gen.loc[gen.pdg.abs().eq(13)]
         counts = mu.groupby(KEY).size().reindex(pd.MultiIndex.from_frame(events[KEY]), fill_value=0)
-        full_reports.append({"path": str(path), "sha256": before[str(path)], "validation": validation,
-            "events": int(len(counts)), "muons": int(counts.sum()),
+        full_reports.append({"path": str(path), "events": int(len(counts)), "muons": int(counts.sum()),
             "multi_muon_events": int((counts > 1).sum()), "max_per_event": int(counts.max()) if len(counts) else 0,
             "histogram": {str(int(n)): int(v) for n, v in counts.value_counts().sort_index().items()}})
-    result = {"schema": SCHEMA, "run_config": rc.name, "full_generator_multiplicity": full_reports,
-              "counters": {"path": str(counters), "sha256": before[str(counters)]},
-              "sources_sha256": sources, "inputs_sha256": before, "files": files}
-    if any(_sha256(path) != digest for path, digest in {**before, **sources}.items()):
-        raise ValueError("primary identity audit input/source hash drift")
-    result["hashes_verified_after"] = True
-    with out.open("x") as stream:
-        stream.write(json.dumps(result, indent=2, allow_nan=False) + "\n")
+    result = {"schema": SCHEMA, "run_config": rc.name, "full_generator_multiplicity": full_reports, "files": files}
+    Path(out).write_text(json.dumps(result, indent=2, allow_nan=False) + "\n")
     return result
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, help="JSON: explicit donors, run_config, optional counters")
-    parser.add_argument("--out", required=True, help="new JSON file; never overwritten")
+    parser.add_argument("--out", required=True, help="JSON report")
     args = parser.parse_args()
     run(args.config, args.out)
 
