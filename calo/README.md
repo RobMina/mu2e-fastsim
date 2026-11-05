@@ -27,6 +27,31 @@ both arms, the NumPy and JAX (eager and jit) primitives reproduce every stock re
 exactly (47,267 steps, 61,312 readouts, 4.43 M photoelectrons), and the stock propagation lookup matches on 6,390
 prescribed draws.
 
+## Readout and digitisation (`calofastsim.readout`, `calofastsim.pulse`, `calofastsim.digi`)
+
+- `artsteps.steps_from_art`: reads `CaloShowerStep`s and event ids straight from a stock art file (uproot plus a
+  NumPy decoder of art's memberwise `vector<CaloShowerStep>` blob) and applies the on-spill `EventWindowMarkerProducer`
+  timing rule. `stockio.load_steps` accepts that art file or a table export (schema in its docstring).
+- `readout.make_readouts`: `CaloShowerStep`s to per-SiPM photoelectrons (`CaloShowerROMaker`), all events at once,
+  with photon statistics and travel time on or off.
+- `pulse.PulseCache`: the `CaloPulseUtil` cache (TH1 interpolation to digiSampling/100, float32, unit maximum).
+- `digi.digitize`: the `CaloDigiMaker` waveform, noise segments, pedestal, 12-bit ADC and peak/digi extraction,
+  on the active readouts only, in NumPy or JAX (`backend="jax"`, x64 required), with the per-event DR-marker offset.
+  Off spill, set `DigiConfig.event_length`. Noise comes from the stored noise histogram (`generate: false`, the
+  production setting); the generated-noise cache is not implemented.
+
+`fcl/stock_chain.fcl` runs the stock chain on saved steps in three arms and writes one EventNtuple per arm:
+`det` (photon statistics, travel time and noise off), `noi` (the `det` readouts plus noise) and `prd` (the
+production digitisation and reco configuration). Calo conditions and event timing are the Offline prolog defaults,
+which production uses; the event-window marker is the production table with its per-job random phase fixed to one
+draw. `scripts/stock_chain.sbatch` runs it with `container/offline/offline_uva.sh` and an existing runtime.
+`scripts/compare_digis.py` compares fast and stock digis, reading the steps from the same art file.
+
+Status (2,000 CE, stock Offline v13_39_00): with photon statistics, travel time and noise off, all 11,204 stock
+digis are reproduced exactly (every ADC sample, t0 and peak position) by both backends. With noise on, the digi
+count differs by -0.001 +- 0.014 per event and the length, peak, t0 and summed-ADC shapes agree (chi2/ndf 12/27,
+23/51, 10/53, 9/39; a second stock seed gives 16/27, 13/51, 6/53, 12/39).
+
 ## Tests
 
 ```bash
