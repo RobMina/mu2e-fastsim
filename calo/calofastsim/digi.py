@@ -134,12 +134,15 @@ def add_noise(waveform, noise_wf, offsets, cfg: DigiConfig, backend="numpy"):
 
     Each maximal covered range gets one contiguous segment of ``noise_wf`` starting at a random offset in
     ``[0, len(noise_wf) - length)``, as ``CaloNoiseUtil::noiseSegment``.
+    With no covered ranges, return the original waveform without requesting offsets.
     """
     xp = _xp(backend)
     cover = np.asarray(noise_coverage(waveform, cfg, backend))
     prev = np.concatenate([np.zeros((cover.shape[0], 1), bool), cover[:, :-1]], axis=1)
     nxt = np.concatenate([cover[:, 1:], np.zeros((cover.shape[0], 1), bool)], axis=1)
     r_row, r_start = np.nonzero(cover & ~prev)
+    if not r_start.size:
+        return waveform
     _, r_last = np.nonzero(cover & ~nxt)
     length = r_last - r_start + 1
     start_noise = np.asarray(offsets(length), dtype=np.int64)
@@ -207,12 +210,15 @@ def extract_digis(waveform, wf, first, run_end, cfg: DigiConfig, row_marker=None
 
     Returns a dict with ``row``, ``t0``, ``peakpos``, ``offsets`` and flat ``samples`` (``int(waveform)`` clipped
     to the ADC range, without pedestal subtraction, as stored by the source). ``row_marker`` is the per-row
-    timeFromProtonsToDRMarker (default from ``cfg``).
+    timeFromProtonsToDRMarker (default from ``cfg``). No accepted peaks gives empty int64 arrays and offsets [0].
     """
     waveform = np.asarray(waveform)
     first = np.asarray(first)
     run_end = np.asarray(run_end)
     p_row, p_pos = np.nonzero(first)
+    if not p_row.size:
+        return {"row": np.empty(0, np.int64), "t0": np.empty(0, np.int64), "peakpos": np.empty(0, np.int64),
+                "offsets": np.zeros(1, np.int64), "samples": np.empty(0, np.int64)}
     start = p_pos - cfg.buffer_digi
     stop = run_end[p_row, p_pos]
     new = np.ones(p_row.size, dtype=bool)
