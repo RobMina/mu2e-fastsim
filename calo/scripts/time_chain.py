@@ -24,8 +24,8 @@ def main(argv=None):
     args = p.parse_args(argv)
     import jax
     jax.config.update("jax_enable_x64", True)
-    events, timing, steps = stockio.load_steps(args.steps)
     sim = stockio.load_sim_crystal(args.sim_crystal)
+    events, timing, steps = stockio.load_steps(args.steps, sim)
     pulse, noise = stockio.load_pulse(args.pulse), stockio.load_noise(args.noise)
     table, geom = stockio.load_propagation(args.propagation), Geometry.load(args.geometry)
 

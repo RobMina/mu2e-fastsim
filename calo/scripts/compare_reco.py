@@ -157,7 +157,8 @@ def compare_clusters(fast, stock, n_events):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--steps", required=True)
+    p.add_argument("--steps", required=True, help="stock art file with CaloShowerSteps, or a table export")
+    p.add_argument("--sim-crystal", help="Sim_crystal.txt (needed when --steps is an art file)")
     p.add_argument("--ntuple", required=True)
     p.add_argument("--pulse", required=True)
     p.add_argument("--geometry", required=True, help="R6 export with dump/crystals and dump/disks")
@@ -167,7 +168,7 @@ def main(argv=None):
     args = p.parse_args(argv)
     import jax
     jax.config.update("jax_enable_x64", True)
-    events, _, _ = stockio.load_steps(args.steps)
+    events, _, _ = stockio.load_steps(args.steps, stockio.load_sim_crystal(args.sim_crystal) if args.sim_crystal else None)
     pulse = stockio.load_pulse(args.pulse)
     report = {"inputs": vars(args)}
     for arm in args.arms.split(","):

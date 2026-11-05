@@ -248,8 +248,8 @@ def main(argv=None):
     import compare_reco
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    events, timing, steps = stockio.load_steps(args.steps)
     sim = stockio.load_sim_crystal(args.sim_crystal)
+    events, timing, steps = stockio.load_steps(args.steps, sim)
     pulse, noise = stockio.load_pulse(args.pulse), stockio.load_noise(args.noise)
     table = stockio.load_propagation(args.propagation)
     geom = compare_reco.load_geometry(args.geometry)
