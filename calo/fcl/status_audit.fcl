@@ -1,0 +1,16 @@
+# Print exact integer G4 status per retained event, never rounded shower data.
+#include "Offline/fcl/minimalMessageService.fcl"
+process_name : CaloStatusAudit
+source : { module_type : RootInput }
+services : { message : @local::default_message }
+physics : {
+  analyzers : {
+    status : {
+      module_type : PrintModule
+      PrintSubRun : false
+      statusG4Printer : { verbose : 1 inputTags : [ "g4run::CaloLibraryCE" ] }
+    }
+  }
+  e1 : [ status ]
+  end_paths : [ e1 ]
+}

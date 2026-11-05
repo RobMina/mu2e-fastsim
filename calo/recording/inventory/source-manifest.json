@@ -1,0 +1,26 @@
+{
+  "format": 1,
+  "new_files": [
+    "Mu2eG4/inc/Mu2eG4PlacementInventory.hh"
+  ],
+  "no_config_patch": true,
+  "patch_sha256": "d7009754faa1c6501ee758a2a054b4574d2e5c2d827459df990033ae7edc06d1",
+  "patched": {
+    "Mu2eG4/inc/Mu2eG4PlacementInventory.hh": "ceec79bf5c604a4632e73cbecefb7922c39bf9410a8bfd801b4d04d3f67515d6",
+    "Mu2eG4/src/Mu2eG4RunAction.cc": "e2bc690ca988bbbce062024f8f6257ad3cedfdaa04487ad14fc5245ca9520b3b"
+  },
+  "requires_external_boundary_debug_contract": {
+    "boundaryRecorderMaxBytes": "fhicl::Atom<unsigned long long> boundaryRecorderMaxBytes {Name(\"boundaryRecorderMaxBytes\"), 1073741824ULL};",
+    "boundaryRecorderMaxRows": "fhicl::Atom<unsigned long long> boundaryRecorderMaxRows {Name(\"boundaryRecorderMaxRows\"), 1000000ULL};",
+    "boundaryRecorderPrefix": "fhicl::Atom<std::string> boundaryRecorderPrefix {Name(\"boundaryRecorderPrefix\"), \"\"};",
+    "boundaryRecorderRoots": "fhicl::Sequence<std::string> boundaryRecorderRoots {Name(\"boundaryRecorderRoots\"), {}};"
+  },
+  "sources": {
+    "Mu2eG4/CMakeLists.txt": "1ad2bc77d02e071a813e40996d1ee769594ad8cfcbef440aba3b959e0d8f7f5f",
+    "Mu2eG4/inc/Mu2eG4Config.hh": "7c5abf8455e8701f89a1f6490e9fed3bc62fd2e3e5d7c510446e3f3eac19428d",
+    "Mu2eG4/inc/Mu2eG4RunAction.hh": "8eb4f1117b448ee7409dd7058226c1a0bb4caa88ebe6c34dbaeb63e7de9025b6",
+    "Mu2eG4/src/Mu2eG4RunAction.cc": "96ab343c973fbe7859bcb07b5d6aa41cb2258f74545fc6dff79fd15f3161728d",
+    "Mu2eG4/src/SConscript": "f9b358138b63b64dca99552cc8a000f03d5bc9ff8b7fd307ace4378ba2f224c2"
+  },
+  "status": "audited-baseline compact-v2 source proposal; v2 compile/native validation pending"
+}

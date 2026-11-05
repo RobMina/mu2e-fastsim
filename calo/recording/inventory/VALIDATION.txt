@@ -1,0 +1,36 @@
+Compact v2 source-only validation receipt (2026-11-04)
+
+Status: compact header source reviewed/prepared; v2 C++ compilation/native execution pending user build.
+Prior v1 compiled and reached zero-transport initialization, then failed cumulative 256 MiB serialization cap;
+no completed inventory. Those historical results do not validate this representation or its allocator.
+
+Exact baseline patch/source guards, guard-deletion mutations, disposable apply/reverse/drift rejection and
+boundary-patch coexistence: 5 passed. No C++ compiler/linker or native geometry execution in these tests.
+Explicit selected baseline checkout is read-only; artifacts use relative logical paths.
+Command: PYTHONDONTWRITEBYTECODE=1 "$PROJECT_VENV/bin/python3" calo/recording/inventory/check_patch.py --offline "$OFFLINE_CHECKOUT"
+
+Compact source API/allocator/topology review: no unresolved must-fix found; not compilation or native validation.
+Serialization file/row/geometry caps unchanged; additional requested-live helper allocation guard is not RSS bound.
+Independent Python reader: 136 focused synthetic tests pass (including first-encounter/reachability and repeated
+logical-volume daughter consistency); all native/library flags remain false.
+Final standard source/Python suite: 728 passed in 10.65 s. Separate exact baseline patch suite: 5 passed in 0.09 s.
+
+Payload SHA256: ceec79bf5c604a4632e73cbecefb7922c39bf9410a8bfd801b4d04d3f67515d6
+Baseline patch SHA256: d7009754faa1c6501ee758a2a054b4574d2e5c2d827459df990033ae7edc06d1
+Baseline source manifest SHA256: 4e6d6b518031efd8ea7f403d952a390be27dee4b9a82994ff2d036f5e48f89f8
+Assembled source manifest and actual completed-build verification are separate receipts.
+
+Later user-build/native evidence (2026-11-04; does not rewrite source-preparation pins):
+User incremental v2 build completed; exact source/overlay/seven binary/linkage checks pass.
+All four module descriptions load. One rejected art event initializes native run; G4 processes zero events.
+Closed job and checked writer fsync/close bound to exact inventory/config/source/binary hashes.
+Independent compact reader accepts 167623 placements, 80 materials, 3910 solids, 4382 logical volumes,
+175997 whole-file rows, 49035617 bytes; 13 unique candidate roots, 14623 union-selected placements,
+1143 unsupported-solid placement occurrences, deepest level 9. CalorimeterMother is unresolved G4UnionSolid.
+Observed VmHWM 1695.52 decimal MB / VmPeak 1868.78 MB; not a memory bound or equal-work benchmark.
+Inventory SHA256: 213d4f1818cfa7bdba4bfe39461d3cbed5c958aef03983390db27860a234ee6c
+Build verification SHA256: 6328610710be316ead8f874dadce64447c47c6750da30a8bfdaeabf59850432c
+Config-bound structural audit SHA256: bc614e25bb22137dd9cb273c71f04988d0ee1161388cda0c6342a96c317bdf78
+Tracked auditor: recording/audit_inventory.py; 18 synthetic execution/config refusal tests.
+Final Python/source suite including calo/tests, manifest/tests and compression patch tests: 798 passed in 11.46 s.
+No new C++ source, agent build or G4 event. Native containment/composition/transitions/membership/library false.

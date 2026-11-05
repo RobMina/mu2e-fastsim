@@ -1,0 +1,29 @@
+# REVIEW SOURCE ONLY. Include after calo/fcl/unfiltered_ce_library.fcl.
+# Replace ALL four review tokens using an external audited launcher before expansion.
+# sourceArtifact identifies the immutable upstream stop-pool artifact (not output art).
+# For this pilot the primary EventIDs are EmptyEvent-generated, not stop-pool entry IDs.
+services.TFileService.fileName : "incident_manifest.root"
+services.scheduler.num_threads : 1
+services.scheduler.num_schedules : 1
+physics.filters.inputEventManifest : {
+  module_type : CaloInputEventManifest
+  sourceArtifact : "REVIEW_STOP_POOL_LOGICAL_ID"
+  sourceSha256 : "REPLACE_WITH_STOP_POOL_SHA256"
+  sourceSnapshotSha256 : "REPLACE_WITH_SOURCE_MANIFEST_JSON_SHA256"
+  expandedFclSha256 : "REPLACE_WITH_NORMALIZED_EXPANDED_FCL_SHA256"
+}
+physics.filters.incidentManifest : {
+  module_type : CaloIncidentManifest
+  sourceArtifact : @local::physics.filters.inputEventManifest.sourceArtifact
+  sourceSha256 : @local::physics.filters.inputEventManifest.sourceSha256
+  sourceSnapshotSha256 : @local::physics.filters.inputEventManifest.sourceSnapshotSha256
+  expandedFclSha256 : @local::physics.filters.inputEventManifest.expandedFclSha256
+  incidentTag : "generate::CaloLibraryCE"
+  rootMode : "record_all" # all roots retained; single_root_supported false unless count==1
+}
+# This single ordered path is essential: no end_path, no earlier filter.
+# Manifest after generate but BEFORE genCounter, GenFilter, Mu2eG4/status/response.
+physics.PrimaryPath : [ inputEventManifest, TargetStopResampler, generate, incidentManifest,
+  genCounter, GenFilter, @sequence::Common.g4Sequence, @sequence::Primary.PrimarySequence ]
+physics.trigger_paths : [ PrimaryPath ]
+# Keep the original end path/output separately; do not put the manifests on it.

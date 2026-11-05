@@ -1,0 +1,29 @@
+{
+  "kind": "review-source-api-snapshot-not-runtime-build-pin",
+  "origins": {
+    "Offline/": "local reviewed Offline source copy; no runtime pin",
+    "Production/": "local reviewed Production source copy; no runtime pin",
+    "calo/": "existing CaloFastSim dumper source; TFileService idiom only"
+  },
+  "files": {
+    "Offline/EventGenerator/src/CeEndpoint_module.cc": "390912155695bd51aa93275b5dc15c0c0780e35a08c6f322ec926e863ac90d97",
+    "Offline/LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "Offline/MCDataProducts/inc/GenParticle.hh": "e242da0b6a82a2d5aaac0cfc457d9787ebf915c390f425a7c100bb54dc6f2b3a",
+    "Offline/MCDataProducts/inc/StageParticle.hh": "a8372c46b0da6c8f283c26c244969b423327fc4409976743fbae08f10cea0164",
+    "Production/JobConfig/common/prolog.fcl": "01d6b6c6b911a68fe975fc9b3a8ef199149176e8b6c37c014826b722107ac96a",
+    "Production/JobConfig/primary/CeEndpoint.fcl": "4d99b8ca2c61733bac54a6fb9469568083490bd7d19bb2a26fcab940ffc5a952",
+    "Production/JobConfig/primary/TargetStopParticle.fcl": "2d273ede406bfa77afbdecfaa32a992d2ada51396a73ebd62d0b3c67dfa494b5",
+    "calo/art/CaloFastSim/src/CaloLibraryDumper_module.cc": "ffba465d98ca924260989ea8a883f4d57ad85665efcc9e26d751ca3c0518a076"
+  },
+  "proposal_files": {
+    "CMakeLists.txt": "ded8b713dac79085fa9603733db656f13224a15fea05badaf7a1e634ba9961c8",
+    "README.md": "5d1adc98e853347682a5a243f6fcdb33b9610189f6d585325b78a858b8eb20dc",
+    "fcl/manifest_ce_review.fcl": "32e3fe95c977538d3b2f02a88db629845459c65482e1ae57162dc187b7ea615e",
+    "src/CaloIncidentManifest_module.cc": "74e4b3ec04bf3c7fe7686903ddf9ad830b7c7372bea7ea1a4fa74c03880cb22f",
+    "src/CaloInputEventManifest_module.cc": "c2ccc69c951c9f140461ac7ae182cbd07da4eeb41b80b3cf9f70f3893a70a224",
+    "src/ManifestMetadata.hh": "902f9c6cce33f1c8d74a2b927086dda8b0e175b3f6a91048b8a1ce42011696e5",
+    "src/SConscript": "58ca902dfc39683b2795d24aa41f74de9c9f4d0d404c8bbf307b86f9fd30e6e5",
+    "tests/test_manifest_source.py": "edce0aec9a2591b04edd455db7c75287e2f998cf7e47c4ec4c90ada19e604105",
+    "validate_review.py": "4cd82bdd2b781b5572815b12fd9eae5725c34b6df221d1e4e8510123f5a54733"
+  }
+}

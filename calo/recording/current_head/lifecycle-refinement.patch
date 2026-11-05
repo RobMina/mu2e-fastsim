@@ -1,0 +1,63 @@
+--- a/Mu2eG4/inc/Mu2eG4BoundaryRecorder.hh
++++ b/Mu2eG4/inc/Mu2eG4BoundaryRecorder.hh
+@@ -43,6 +43,9 @@
+       bool active = false;
+       bool birthUnknown = false;
+       bool saved = false;
++      bool running = false;
++      bool terminal = false;
++      G4TrackStatus lastEnd = fAlive;
+     };
+     std::ofstream out_;
+     std::vector<std::string> roots_;
+@@ -235,9 +238,17 @@
+       auto inserted = tracks_.emplace(t.GetTrackID(), TrackInfo{});
+       auto& i = inserted.first->second;
+       if (!inserted.second) {
++        if (i.running || i.terminal || (i.lastEnd != fSuspend && i.lastEnd != fSuspendAndWait))
++          fail("invalid tracking resume lifecycle");
++        const int resumedMembership = member(t.GetTouchable());
++        if (resumedMembership < 0 || bool(resumedMembership) != i.active)
++          fail("resume membership discontinuity or unavailable touchable");
++        i.running = true;
+         row("tracking_resume", trackFields(t, i) + ",\"state\":" + state(t));
+         return;
+       }
++      if (t.GetCurrentStepNumber() != 0) fail("initial tracking start has nonzero step");
++      i.running = true;
+       i.saved = saved != nullptr;
+       if (!i.saved) ++missingSaved_;
+       const int m = member(t.GetTouchable());
+@@ -259,12 +270,14 @@
+       checkEvent();
+       const auto& t = *s.GetTrack();
+       auto& i = info(t);
++      if (!i.running || i.terminal || t.GetCurrentStepNumber() < 1) fail("step outside running lifecycle");
+       const auto& pre = *s.GetPreStepPoint();
+       const auto& post = *s.GetPostStepPoint();
+       const bool worldNull = post.GetStepStatus() == fWorldBoundary && post.GetPhysicalVolume() == nullptr;
+       const int a = member(pre.GetTouchable());
+       const int b = member(post.GetTouchable(), worldNull);
+       if (i.birthUnknown) {
++        if (t.GetCurrentStepNumber() != 1) fail("unresolved birth must appear at first step");
+         i.birthUnknown = false;
+         if (a == 1) { ++i.visit; i.active = true; }
+         row("birth_membership_unresolved", trackFields(t, i) + ",\"first_observed_pre\":" + state(pre));
+@@ -289,6 +302,7 @@
+       if (!enabled_) return;
+       checkEvent();
+       auto& i = info(t);
++      if (!i.running || i.terminal) fail("tracking end outside running lifecycle");
+       const bool terminal = t.GetTrackStatus() == fStopAndKill || t.GetTrackStatus() == fKillTrackAndSecondaries;
+       const auto* s = t.GetStep();
+       const auto* post = s && t.GetCurrentStepNumber() > 0 ? s->GetPostStepPoint() : nullptr;
+@@ -303,6 +317,9 @@
+           + ",\"endpoint_phase\":" + q(post ? "last_post_step" : "track_no_step")
+           + ",\"state\":" + (post ? state(*post, worldNull) : state(t)));
+       if (terminal) i.active = false;
++      i.running = false;
++      i.terminal = terminal;
++      i.lastEnd = t.GetTrackStatus();
+     }
+     void end(const G4Event& e, bool accepted, unsigned nTracks, bool overflow, unsigned killedStep, unsigned killedField) {
+       if (!enabled_) return;

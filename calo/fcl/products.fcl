@@ -1,0 +1,2 @@
+#include "Offline/Print/fcl/fileDumper.fcl"
+source.maxEvents : 1

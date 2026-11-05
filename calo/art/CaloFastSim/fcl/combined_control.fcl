@@ -1,0 +1,4 @@
+# Same saved CSS and branch labels as the baseline; PE statistics and travel on.
+#include "CaloFastSim/fcl/response_control.fcl"
+physics.producers.deterministicRO.PEStatCorrection : true
+physics.producers.deterministicRO.addTravelTime : true

@@ -1,0 +1,425 @@
+#ifndef Mu2eG4_inc_Mu2eG4PlacementInventory_hh
+#define Mu2eG4_inc_Mu2eG4PlacementInventory_hh
+
+#include "Offline/Mu2eG4/inc/Mu2eG4Config.hh"
+#include "Geant4/G4TransportationManager.hh"
+#include "Geant4/G4Navigator.hh"
+#include "Geant4/G4VPhysicalVolume.hh"
+#include "Geant4/G4PVPlacement.hh"
+#include "Geant4/G4ThreeVector.hh"
+#include "Geant4/G4RotationMatrix.hh"
+#include "Geant4/G4PhysicalVolumeStore.hh"
+#include "Geant4/G4LogicalVolume.hh"
+#include "Geant4/G4Material.hh"
+#include "Geant4/G4VSolid.hh"
+#include "Geant4/G4Box.hh"
+#include "Geant4/G4Tubs.hh"
+#include "Geant4/G4Polycone.hh"
+#include "Geant4/G4PolyconeHistorical.hh"
+#include "Geant4/G4Threading.hh"
+#include <algorithm>
+#include <array>
+#include <cerrno>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <iomanip>
+#include <limits>
+#include <locale>
+#include <map>
+#include <memory_resource>
+#include <set>
+#include <stdexcept>
+#include <streambuf>
+#include <ostream>
+#include <string>
+#include <type_traits>
+#include <utility>
+#include <vector>
+#include <fcntl.h>
+#include <unistd.h>
+
+namespace mu2e {
+// Observational diagnostic; an inventory is not a containment/navigation certificate.
+class Mu2eG4PlacementInventory {
+  using Count = std::uint64_t;
+  static constexpr Count none = std::numeric_limits<Count>::max();
+  static constexpr unsigned depthLimit = 128;
+  static constexpr Count placementLimit = 1000000;
+  static constexpr Count byteLimit = 1073741824;
+  static constexpr Count textLimit = 65536;
+  static constexpr Count memoryLimit = 268435456;
+  static constexpr int planeLimit = 16384;
+
+  [[noreturn]] static void fail(const std::string& why) {
+    throw std::runtime_error("Mu2eG4PlacementInventory: " + why);
+  }
+  // Tracks allocator-requested live bytes, including transient container reallocations.
+  class Budget : public std::pmr::memory_resource {
+    std::size_t used_ = 0, limit_;
+    void* do_allocate(std::size_t n, std::size_t alignment) override {
+      if (n > limit_ - used_) fail("helper allocation cap used=" + std::to_string(used_)
+                                  + " limit=" + std::to_string(limit_) + " attempted=" + std::to_string(n));
+      void* p = std::pmr::new_delete_resource()->allocate(n, alignment);
+      used_ += n;
+      return p;
+    }
+    void do_deallocate(void* p, std::size_t n, std::size_t alignment) override {
+      std::pmr::new_delete_resource()->deallocate(p, n, alignment);
+      used_ -= n;
+    }
+    bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override { return this == &other; }
+  public:
+    explicit Budget(std::size_t limit) : limit_(limit) {}
+  };
+  class Buffer : public std::streambuf {
+    Count limit_;
+    std::string context_;
+  public:
+    std::pmr::string data;
+    Buffer(Count limit, const std::string& context, Budget& memory)
+      : limit_(limit), context_(context), data(&memory) {}
+  protected:
+    std::streamsize xsputn(const char* p, std::streamsize n) override {
+      if (n < 0 || Count(n) > limit_ - data.size())
+        fail("serialization byte cap stage=" + context_ + " buffer_used=" + std::to_string(data.size())
+             + " buffer_limit=" + std::to_string(limit_) + " attempted_write=" + std::to_string(n));
+      data.append(p, static_cast<std::size_t>(n));
+      return n;
+    }
+    int_type overflow(int_type c) override {
+      if (traits_type::eq_int_type(c, traits_type::eof())) return traits_type::not_eof(c);
+      const char x = traits_type::to_char_type(c);
+      xsputn(&x, 1);
+      return c;
+    }
+  };
+  class Text : public std::ostream {
+    Buffer buffer_;
+  public:
+    Text(Count limit, const std::string& context, Budget& memory)
+      : std::ostream(nullptr), buffer_(limit, context, memory) {
+      rdbuf(&buffer_);
+      exceptions(std::ios::badbit | std::ios::failbit);
+      imbue(std::locale::classic());
+      *this << std::setprecision(std::numeric_limits<double>::max_digits10);
+    }
+    const std::pmr::string& str() const { return buffer_.data; }
+  };
+  template<class String> static void q(std::ostream& o, const String& s) {
+    static constexpr char hex[] = "0123456789abcdef";
+    o.put('"');
+    for (unsigned char c : s) {
+      if (c == '"' || c == '\\') { o.put('\\'); o.put(char(c)); }
+      else if (c < 32 || c >= 127) { o << "\\u00"; o.put(hex[c >> 4]); o.put(hex[c & 15]); }
+      else o.put(char(c));
+    }
+    o.put('"');
+  }
+  static double number(double x) {
+    if (!std::isfinite(x)) fail("nonfinite native parameter");
+    return x;
+  }
+  bool solid(std::ostream& o, const G4VSolid* s) {
+    o << "\"name\":"; q(o, s->GetName());
+    o << ",\"entity_type\":"; q(o, s->GetEntityType());
+    bool supported = false;
+    if (const auto* b = dynamic_cast<const G4Box*>(s)) {
+      if (s->GetEntityType() == "G4Box") {
+        supported = true;
+        o << ",\"parameters\":{\"half_x\":" << number(b->GetXHalfLength())
+          << ",\"half_y\":" << number(b->GetYHalfLength()) << ",\"half_z\":" << number(b->GetZHalfLength()) << '}';
+      }
+    } else if (const auto* t = dynamic_cast<const G4Tubs*>(s)) {
+      if (s->GetEntityType() == "G4Tubs") {
+        supported = true;
+        o << ",\"parameters\":{\"rmin\":" << number(t->GetInnerRadius())
+          << ",\"rmax\":" << number(t->GetOuterRadius()) << ",\"half_z\":" << number(t->GetZHalfLength())
+          << ",\"start_phi\":" << number(t->GetStartPhiAngle()) << ",\"delta_phi\":" << number(t->GetDeltaPhiAngle()) << '}';
+      }
+    } else if (const auto* p = dynamic_cast<const G4Polycone*>(s)) {
+      if (s->GetEntityType() == "G4Polycone") {
+        const auto* h = p->GetOriginalParameters();
+        if (!h || h->Num_z_planes < 2 || h->Num_z_planes > planeLimit || !h->Z_values || !h->Rmin || !h->Rmax)
+          fail("unavailable/oversized native polycone original parameters");
+        supported = true;
+        o << ",\"parameters\":{\"representation\":\"native_original_z_planes\",\"start_phi\":" << number(h->Start_angle)
+          << ",\"delta_phi\":" << number(h->Opening_angle) << ",\"planes\":[";
+        for (int i = 0; i < h->Num_z_planes; ++i) {
+          if (i) o << ',';
+          o << '[' << number(h->Z_values[i]) << ',' << number(h->Rmin[i]) << ',' << number(h->Rmax[i]) << ']';
+        }
+        o << "]}";
+      }
+    }
+    if (supported) {
+      Text native(std::min(maxBytes_, textLimit), "native_stream_info solid=" + s->GetName().substr(0, 80), memory_);
+      s->StreamInfo(native);
+      o << ",\"parameter_status\":\"native_parameters\",\"native_stream_info\":"; q(o, native.str());
+    } else {
+      o << ",\"parameter_status\":\"unsupported_metadata_only\",\"parameters\":null,"
+           "\"native_stream_info\":null,\"reason\":\"not_allowlisted; boolean operands/transforms and other solid topology not resolved\"";
+    }
+    return supported;
+  }
+  struct Placement {
+    Count parent, logical, root;
+    unsigned depth;
+    int copy;
+    bool selected;
+    std::array<double, 12> transform;
+    std::pmr::string name;
+    Placement(Count p, Count l, Count r, unsigned d, int c, bool s, const std::array<double, 12>& t,
+              const G4String& n, Budget& memory)
+      : parent(p), logical(l), root(r), depth(d), copy(c), selected(s), transform(t), name(n.data(), n.size(), &memory) {}
+  };
+  struct Solid { std::pmr::string row; bool supported; };
+  struct Logical { std::pmr::string row; Count solid; };
+  struct Root { std::pmr::string name; Count count = 0, placement = none; };
+  static_assert(std::is_nothrow_move_constructible<Placement>::value, "placement growth must preserve PMR resource");
+  static_assert(std::is_nothrow_move_constructible<Solid>::value, "solid growth must preserve PMR resource");
+  static_assert(std::is_nothrow_move_constructible<Logical>::value, "logical growth must preserve PMR resource");
+  static_assert(std::is_nothrow_move_constructible<Root>::value, "root growth must preserve PMR resource");
+  struct Totals { Count rows = 0, bytes = 0; };
+  const Mu2eG4Config::Debug& debug_;
+  Count maxBytes_, maxRows_, maxMemory_, candidates_ = 0, unsupported_ = 0;
+  unsigned deepest_ = 0;
+  Budget memory_;
+  std::pmr::vector<Placement> placements_;
+  std::pmr::vector<std::pmr::string> materials_;
+  std::pmr::vector<Solid> solids_;
+  std::pmr::vector<Logical> logicals_;
+  std::pmr::vector<Root> roots_;
+  std::pmr::map<const G4Material*, Count> materialIds_;
+  std::pmr::map<const G4VSolid*, Count> solidIds_;
+  std::pmr::map<const G4LogicalVolume*, Count> logicalIds_;
+  std::pmr::set<const G4VPhysicalVolume*> active_;
+
+  explicit Mu2eG4PlacementInventory(const Mu2eG4Config::Debug& d)
+    : debug_(d), maxBytes_(std::min<Count>(d.boundaryRecorderMaxBytes(), byteLimit)), maxRows_(d.boundaryRecorderMaxRows()),
+      maxMemory_(std::min(maxBytes_, memoryLimit)), memory_(maxMemory_), placements_(&memory_), materials_(&memory_),
+      solids_(&memory_), logicals_(&memory_), roots_(&memory_), materialIds_(&memory_), solidIds_(&memory_),
+      logicalIds_(&memory_), active_(&memory_) {
+    if (!maxBytes_ || maxRows_ < 3) fail("positive byte cap and at least three rows required");
+    for (const auto& name : d.boundaryRecorderRoots()) {
+      if (name.empty()) fail("empty configured root");
+      for (const auto& root : roots_)
+        if (root.name.size() == name.size() && std::equal(root.name.begin(), root.name.end(), name.begin()))
+          fail("duplicate configured root");
+      roots_.push_back(Root{std::pmr::string(name.data(), name.size(), &memory_)});
+    }
+    if (roots_.empty()) fail("explicit nonempty candidate roots required");
+  }
+  std::string context(const char* stage) const {
+    return std::string(stage) + " placements=" + std::to_string(placements_.size())
+      + " file_cap=" + std::to_string(maxBytes_);
+  }
+  void captureRow() const {
+    const Count rows = 2 + materials_.size() + solids_.size() + logicals_.size() + placements_.size();
+    if (rows >= maxRows_) fail("captured whole-file row cap including dictionaries/footer");
+  }
+  Count materialId(const G4Material* material) {
+    auto found = materialIds_.find(material);
+    if (found != materialIds_.end()) return found->second;
+    captureRow();
+    const Count id = materials_.size();
+    Text row(maxBytes_, context("material"), memory_);
+    row << "{\"type\":\"material\",\"id\":" << id << ",\"name\":"; q(row, material->GetName());
+    row << ",\"native_index\":" << material->GetIndex() << "}\n";
+    materials_.push_back(row.str());
+    materialIds_.emplace(material, id);
+    return id;
+  }
+  Count solidId(const G4VSolid* shape) {
+    auto found = solidIds_.find(shape);
+    if (found != solidIds_.end()) return found->second;
+    captureRow();
+    const Count id = solids_.size();
+    Text row(maxBytes_, context("solid"), memory_);
+    row << "{\"type\":\"solid\",\"id\":" << id << ',';
+    const bool supported = solid(row, shape);
+    row << "}\n";
+    solids_.push_back(Solid{std::pmr::string(row.str(), &memory_), supported});
+    solidIds_.emplace(shape, id);
+    return id;
+  }
+  Count logicalId(const G4LogicalVolume* lv) {
+    auto found = logicalIds_.find(lv);
+    if (found != logicalIds_.end()) return found->second;
+    const Count material = materialId(lv->GetMaterial()), shape = solidId(lv->GetSolid());
+    captureRow();
+    const Count id = logicals_.size();
+    Text row(maxBytes_, context("logical_volume"), memory_);
+    row << "{\"type\":\"logical_volume\",\"id\":" << id << ",\"name\":"; q(row, lv->GetName());
+    row << ",\"material_id\":" << material << ",\"solid_id\":" << shape << "}\n";
+    logicals_.push_back(Logical{std::pmr::string(row.str(), &memory_), shape});
+    logicalIds_.emplace(lv, id);
+    return id;
+  }
+  void walk(const G4VPhysicalVolume* pv, Count parent, unsigned depth, bool selected) {
+    if (depth > depthLimit) fail("physical depth cap");
+    if (!pv) fail("null physical placement");
+    if (pv->IsReplicated() || pv->IsParameterised() || !dynamic_cast<const G4PVPlacement*>(pv))
+      fail("unresolved physical topology (replica/parameterisation/non-placement): " + pv->GetName().substr(0, 80));
+    if (!active_.insert(pv).second) fail("physical daughter cycle");
+    if (placements_.size() >= placementLimit || placements_.size() >= maxRows_ - 2) fail("placement cap");
+    const Count id = placements_.size();
+    Count rootId = none;
+    for (std::size_t i = 0; i < roots_.size(); ++i) {
+      auto& root = roots_[i];
+      if (root.name.size() == pv->GetName().size() && std::equal(root.name.begin(), root.name.end(), pv->GetName().begin())) {
+        if (++root.count != 1) fail("candidate root occurs on multiple physical paths");
+        root.placement = id;
+        rootId = i;
+        selected = true;
+      }
+    }
+    const auto* lv = pv->GetLogicalVolume();
+    if (!lv || !lv->GetMaterial() || !lv->GetSolid()) fail("null logical/material/solid");
+    const Count logical = logicalId(lv);
+    const auto t = pv->GetObjectTranslation();
+    const auto r = pv->GetObjectRotationValue();
+    const std::array<double, 12> transform = {number(t.x()), number(t.y()), number(t.z()),
+      number(r.xx()), number(r.xy()), number(r.xz()), number(r.yx()), number(r.yy()), number(r.yz()),
+      number(r.zx()), number(r.zy()), number(r.zz())};
+    captureRow();
+    placements_.emplace_back(parent, logical, rootId, depth, pv->GetCopyNo(), selected, transform, pv->GetName(), memory_);
+    if (selected) ++candidates_;
+    if (!solids_[logicals_[logical].solid].supported) ++unsupported_;
+    deepest_ = std::max(deepest_, depth);
+    const auto daughters = lv->GetNoDaughters();
+    {
+      std::pmr::set<std::pair<std::pmr::string, int>> siblings(&memory_);
+      for (std::size_t i = 0; i < daughters; ++i) {
+        const auto* child = lv->GetDaughter(i);
+        if (!child) fail("null daughter");
+        const auto& name = child->GetName();
+        if (!siblings.emplace(std::pmr::string(name.data(), name.size(), &memory_), child->GetCopyNo()).second)
+          fail("ambiguous duplicate native sibling path");
+      }
+    }
+    for (std::size_t i = 0; i < daughters; ++i) walk(lv->GetDaughter(i), id, depth + 1, selected);
+    active_.erase(pv);
+  }
+  void capture() {
+    if (G4Threading::IsMultithreadedApplication()) fail("MT application unsupported");
+    const auto* store = G4PhysicalVolumeStore::GetInstance();
+    if (!store) fail("native physical store unavailable");
+    for (const auto& root : roots_) {
+      Count matches = 0;
+      for (const auto* pv : *store) {
+        if (pv && root.name.size() == pv->GetName().size()
+            && std::equal(root.name.begin(), root.name.end(), pv->GetName().begin())) ++matches;
+      }
+      if (matches != 1) fail("candidate root missing/duplicate in physical store");
+    }
+    auto* manager = G4TransportationManager::GetTransportationManager();
+    auto* navigator = manager ? manager->GetNavigatorForTracking() : nullptr;
+    const auto* world = navigator ? navigator->GetWorldVolume() : nullptr;
+    if (!world) fail("native tracking world unavailable");
+    walk(world, none, 0, false);
+    for (const auto& root : roots_) if (root.count != 1) fail("candidate root missing/duplicate in world paths");
+  }
+  void emit(const std::pmr::string& row, Totals& totals, int fd) const {
+    if (totals.rows >= maxRows_ || row.size() > maxBytes_ - totals.bytes) fail("whole-file row/byte cap");
+    if (fd >= 0) {
+      std::size_t done = 0;
+      while (done < row.size()) {
+        const auto n = ::write(fd, row.data() + done, row.size() - done);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) fail("write failed; incomplete inventory");
+        done += static_cast<std::size_t>(n);
+      }
+    }
+    ++totals.rows;
+    totals.bytes += row.size();
+  }
+  std::pmr::string footer(Count bytes, Count rows) {
+    Text end(maxBytes_, context("footer"), memory_);
+    end << "{\"type\":\"inventory_end\",\"complete_physical_tree\":true,\"resolved_all_solids\":"
+        << (unsupported_ ? "false" : "true") << ",\"placements\":" << placements_.size()
+        << ",\"unique_paths\":" << placements_.size() << ",\"materials\":" << materials_.size()
+        << ",\"solids\":" << solids_.size() << ",\"logical_volumes\":" << logicals_.size()
+        << ",\"candidate_placements\":" << candidates_ << ",\"unsupported_solid_placements\":" << unsupported_
+        << ",\"deepest\":" << deepest_ << ",\"rows_including_footer\":" << rows
+        << ",\"bytes_including_footer_decimal\":\"" << std::setw(20) << std::setfill('0') << bytes
+        << "\",\"root_placements\":[";
+    for (std::size_t i = 0; i < roots_.size(); ++i) {
+      if (i) end << ',';
+      end << "{\"root_id\":" << i << ",\"name\":"; q(end, roots_[i].name);
+      end << ",\"count\":" << roots_[i].count << ",\"placement_id\":" << roots_[i].placement << '}';
+    }
+    end << "]}\n";
+    return std::pmr::string(end.str(), &memory_);
+  }
+  Totals serialize(int run, int fd, const Totals* expected = nullptr) {
+    Totals totals;
+    {
+      Text begin(maxBytes_, context("begin"), memory_);
+      begin << "{\"type\":\"inventory_begin\",\"schema\":\"mu2e-placement-inventory-v2\",\"g4_run\":" << run
+            << ",\"scope\":\"all_world_physical_placements\",\"units\":\"native_G4_mm_rad\","
+               "\"frame\":\"local_object_to_parent; world row has no parent\","
+               "\"name_encoding\":\"JSON U+00xx escapes preserve native bytes, not UTF-8 decoding\","
+               "\"identity\":\"zero-based inventory-local first-encounter dictionaries and expanded preorder placements\","
+               "\"certificate\":false,\"max_depth\":" << depthLimit << ",\"max_placements\":" << placementLimit
+            << ",\"max_bytes\":" << maxBytes_ << ",\"max_rows\":" << maxRows_
+            << ",\"helper_allocator_max_bytes\":" << maxMemory_ << ",\"stream_info_max_bytes\":" << textLimit
+            << ",\"polycone_max_planes\":" << planeLimit << ",\"candidate_roots\":[";
+      for (std::size_t i = 0; i < roots_.size(); ++i) { if (i) begin << ','; q(begin, roots_[i].name); }
+      begin << "]}\n";
+      emit(begin.str(), totals, fd);
+    }
+    for (const auto& row : materials_) emit(row, totals, fd);
+    for (const auto& shape : solids_) emit(shape.row, totals, fd);
+    for (const auto& lv : logicals_) emit(lv.row, totals, fd);
+    for (std::size_t i = 0; i < placements_.size(); ++i) {
+      const auto& p = placements_[i];
+      Text row(maxBytes_ - totals.bytes, context("placement"), memory_);
+      row << "{\"type\":\"placement\",\"id\":" << i << ",\"parent_id\":";
+      if (p.parent == none) row << "null"; else row << p.parent;
+      row << ",\"depth\":" << p.depth << ",\"pv\":"; q(row, p.name);
+      row << ",\"copy\":" << p.copy << ",\"logical_volume_id\":" << p.logical
+          << ",\"selected\":" << (p.selected ? "true" : "false") << ",\"candidate_root_id\":";
+      if (p.root == none) row << "null"; else row << p.root;
+      row << ",\"local_translation\":[";
+      for (unsigned j = 0; j < 3; ++j) { if (j) row << ','; row << p.transform[j]; }
+      row << "],\"local_object_rotation\":[";
+      for (unsigned j = 0; j < 3; ++j) {
+        if (j) row << ',';
+        row << '[' << p.transform[3 + 3*j] << ',' << p.transform[4 + 3*j] << ',' << p.transform[5 + 3*j] << ']';
+      }
+      row << "]}\n";
+      emit(row.str(), totals, fd);
+    }
+    const auto draft = footer(0, totals.rows + 1);
+    if (draft.size() > maxBytes_ - totals.bytes) fail("footer byte cap");
+    const auto end = footer(totals.bytes + draft.size(), totals.rows + 1);
+    if (end.size() != draft.size()) fail("footer size mismatch");
+    if (expected && (totals.bytes + end.size() != expected->bytes || totals.rows + 1 != expected->rows))
+      fail("captured serialization differs from preflight; no completion footer");
+    emit(end, totals, fd);
+    return totals;
+  }
+  void writeExclusive(int run, const Totals& expected) {
+    const auto file = debug_.boundaryRecorderPrefix() + ".inventory.run" + std::to_string(run)
+      + ".pid" + std::to_string(::getpid()) + ".worker" + std::to_string(G4Threading::G4GetThreadId()) + ".jsonl";
+    int fd = ::open(file.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (fd < 0) fail("exclusive create failed: " + std::string(std::strerror(errno)));
+    try {
+      serialize(run, fd, &expected);
+      if (::fsync(fd) != 0) fail("flush/fsync failed; reject inventory");
+    } catch (...) { ::close(fd); throw; }
+    if (::close(fd) != 0) fail("close failed; reject inventory");
+  }
+public:
+  static void write(const Mu2eG4Config::Debug& debug, int g4Run) {
+    if (debug.boundaryRecorderPrefix().empty()) return;
+    Mu2eG4PlacementInventory inventory(debug);
+    inventory.capture();
+    const auto expected = inventory.serialize(g4Run, -1);
+    inventory.writeExclusive(g4Run, expected);
+  }
+};
+} // namespace mu2e
+#endif

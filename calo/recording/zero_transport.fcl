@@ -1,0 +1,30 @@
+# One art event rejected before Mu2eG4; run transitions initialize native geometry only.
+#include "Offline/fcl/standardServices.fcl"
+#include "Offline/Mu2eG4/fcl/prolog.fcl"
+process_name : CaloRecordingInit
+source : { module_type : EmptyEvent maxEvents : 1 firstRun : 1430 firstSubRun : 6100 firstEvent : 1 }
+services : { @table::Services.Sim }
+services.SeedService.baseSeed : 20261104
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_run1_a.txt"
+services.GeometryService.bFieldFile : "Offline/Mu2eG4/geom/bfgeom_no_tsu_ps_v01.txt"
+services.GeometryService.printConfig : true
+services.scheduler : { num_threads : 1 num_schedules : 1 }
+physics : {
+  producers : { g4run : { @table::mu2eg4runDefaultSingleStage } }
+  filters : { rejectTransport : { module_type : FixedFilter ReturnValue : false } }
+  init : [ rejectTransport, g4run ]
+  trigger_paths : [ init ]
+  end_paths : []
+}
+physics.producers.g4run.g4Macro : ""
+physics.producers.g4run.visualization : { initMacro : "" GUIMacro : "" }
+physics.producers.g4run.debug.diagLevel : 1
+physics.producers.g4run.debug.boundaryRecorderPrefix : "REVIEW_OUTPUT_PREFIX"
+physics.producers.g4run.debug.boundaryRecorderRoots : [
+  "CalorimeterMother", "CalCableRun", "calCableRunFall",
+  "CalIFBCableRun1", "CalIFBCableRun2", "CalIFBCableRunEnd1", "CalIFBCableRunEnd2",
+  "CalIFBCableRunBottom1", "CalIFBCableRunBottom2", "CalIFBCablePanelIn1", "CalIFBCablePanelIn2",
+  "CalIFBCablePanelPOut1", "CalIFBCablePanelPOut2"
+]
+physics.producers.g4run.debug.boundaryRecorderMaxRows : 1000000
+physics.producers.g4run.debug.boundaryRecorderMaxBytes : 268435456

@@ -1,0 +1,1 @@
+# Isolated calorimeter export adapters; build only in a dedicated work area.

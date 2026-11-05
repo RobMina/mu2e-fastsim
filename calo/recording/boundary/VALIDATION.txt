@@ -1,0 +1,30 @@
+Portable source-only validation receipt
+=======================================
+Scope: review artifact only; no Offline edits, C++ build, or native transport.
+Interpreter: project virtual environment, Python 3.11.15.
+Checkout identity: exact source SHA-256 set in source-manifest.json; no pathname or git revision claim.
+
+PASS: both scripts reject invocation without explicit --offline (argparse exit 2).
+PASS: no user/site absolute paths in delivered boundary files.
+PASS: numeric ProductID::value(), G4_world, mm_MeV_ns and art_ProductID_value_uint32 labels.
+PASS: exact source hashes and reproducible patch/payload recipe.
+PASS: patch dry-run, apply without offset/fuzz, reverse in disposable copied tree.
+PASS: patched hashes, structural lifecycle/output contracts, deliberate drift rejection.
+PASS: structural guard mutations rejected for missing root, duplicate root, replicated/parameterised root,
+      and removal of validation before event activation/begin marker.
+PASS: original Offline source hashes unchanged after validation.
+
+These structural tests do not execute the new C++ root checks. They do not establish native
+G4 API compatibility, store inventory correctness, or replicated-ancestor path uniqueness.
+Selected replicated/parameterised roots are rejected; repeated ancestors remain a documented limitation.
+NOT TESTED: C++ compile/link, FHiCL/G4 runtime compatibility, native lifecycle or geometry containment,
+physics equivalence, RNG/stock-output identity, build-system header installation.
+No compilation or execution claim is inferred from a successful source-only check.
+
+SHA-256 (receipt intentionally excludes itself)
+64507392671c896304a57bd06791eb2d8a744be8da087f157e671cd4d5bec83a  boundary-recorder.patch
+6644f0e858ac02ed17ba1a3fe80ab37e8bd8e88e833c8d78b9f2c2ec19b5b018  source-manifest.json
+ef2ee22db37b492e1ad7d1add78ae475a9b55cfe83f0aadeb4f695c7dac33670  payload/Mu2eG4BoundaryRecorder.hh
+dc6989804571a9f976a02ee42f01e96e0dea5aa5ddefc8950544f583afca8cf6  make_patch.py
+14492377aac32f1736ead41a42c196da769850487b29a95dd8f1155f03b5f12f  check_patch.py
+9d9e1cc7366113a2a1e558bae930c84b1884dc5cd8d01a232163ea96cb57cd78  README.md

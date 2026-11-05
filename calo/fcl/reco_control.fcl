@@ -1,0 +1,40 @@
+#include "Offline/fcl/minimalMessageService.fcl"
+#include "Offline/fcl/standardServices.fcl"
+#include "Offline/fcl/standardProducers.fcl"
+#include "EventNtuple/fcl/prolog.fcl"
+
+process_name : CaloControl
+source : { module_type : RootInput }
+services : { @table::Services.SimAndReco }
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_run1_a.txt"
+services.DbService.purpose : Sim_best
+services.DbService.version : v1_1
+services.SeedService.baseSeed : 20261103
+
+physics : {
+  producers : {
+    CaloRecoDigiMaker : { @table::CaloReco.CaloRecoDigiMaker }
+    CaloHitMaker : { @table::CaloReco.CaloHitMaker }
+  }
+  analyzers : {
+    EventNtuple : { @table::EventNtupleMaker }
+  }
+  p1 : [ CaloRecoDigiMaker, CaloHitMaker ]
+  e1 : [ EventNtuple ]
+  trigger_paths : [ p1 ]
+  end_paths : [ e1 ]
+}
+physics.analyzers.EventNtuple.trk.fill : false
+physics.analyzers.EventNtuple.trk.fits : []
+physics.analyzers.EventNtuple.crv.fill : false
+physics.analyzers.EventNtuple.mc.fill : false
+physics.analyzers.EventNtuple.lumistream.fill : false
+physics.analyzers.EventNtuple.FillTriggerInfo : false
+physics.analyzers.EventNtuple.RecoCountTag : ""
+physics.analyzers.EventNtuple.calo.fillClusters : false
+physics.analyzers.EventNtuple.calo.fillHits : true
+physics.analyzers.EventNtuple.calo.fillRecoDigis : true
+physics.analyzers.EventNtuple.calo.fillDigis : true
+physics.analyzers.EventNtuple.calo.digisTag : "CaloDigiMaker"
+physics.analyzers.EventNtuple.calo.mc.fill : false
+physics.analyzers.EventNtuple.subruns.cosmicLivetime.include : false

@@ -1,0 +1,19 @@
+# Keep all generated events and raw truth independently of detector response.
+#include "Production/JobConfig/primary/CeEndpoint.fcl"
+
+process_name : CaloLibraryCE
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_run1_a.txt"
+services.GeometryService.printConfig : true
+services.TFileService.fileName : "pilot.hist.root"
+services.SeedService.baseSeed : 20261104
+source.firstRun : 1430
+source.firstSubRun : 6000
+physics.filters.GenFilter : { module_type : FixedFilter ReturnValue : true }
+physics.filters.PrimaryFilter : { module_type : FixedFilter ReturnValue : true }
+outputs.PrimaryOutput.SelectEvents : []
+outputs.PrimaryOutput.outputCommands : [ "keep *_*_*_*" ]
+outputs.PrimaryOutput.fileName : "calo_library_ce.art"
+
+# Failed G4 status stops step making but must not suppress its raw output record.
+physics.producers.compressDetStepMCs.compressionOptions : @local::DetStepCompression.noCompression
+physics.filters.TargetStopResampler.mu2e.MaxEventsToSkip : 0

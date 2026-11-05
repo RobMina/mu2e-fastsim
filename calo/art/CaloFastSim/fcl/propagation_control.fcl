@@ -1,0 +1,22 @@
+# Isolated public stock propagation calls; new analyzer needs a user build.
+#include "Offline/fcl/standardServices.fcl"
+process_name : CaloPropagationControl
+source : { module_type : EmptyEvent maxEvents : 1 }
+services : { @table::Services.Sim }
+services.SeedService.baseSeed : 20261104
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_run1_a.txt"
+services.GeometryService.bFieldFile : "Offline/Mu2eG4/geom/bfgeom_no_tsu_ps_v01.txt"
+services.GeometryService.printConfig : true
+services.GlobalConstantsService.inputFile : "Offline/GlobalConstantsService/data/globalConstants_01.txt"
+services.TFileService.fileName : "calo_propagation_tables.root"
+physics : {
+  analyzers : {
+    propagation : {
+      module_type : CaloPropagationDumper
+      file : "OfflineData/ConditionsService/CsI-propag-2020-07-29.root"
+      histogram : "h_zposTime"
+    }
+  }
+  e1 : [ propagation ]
+  end_paths : [ e1 ]
+}

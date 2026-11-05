@@ -1,0 +1,21 @@
+{
+  "kind": "paused-source-snapshot-not-runtime-build-pin",
+  "files": {
+    "CaloMC/src/CaloShowerStepMaker_module.cc": "18ad4ccf05fcd31fdeed362d3485e681d1f97e31f500ee91fd18775626fbbf2a",
+    "CaloMC/inc/ShowerStepUtil.hh": "0aa42848ddc17037f945a9c2df46060f916deb57a514a841dfb698826ba5b1c6",
+    "CaloMC/src/ShowerStepUtil.cc": "bab3badd03ce38b11defd14eef27ea96d8eb946a942474ad6c250317749b803c",
+    "CaloMC/CMakeLists.txt": "96289a82e5b4af9c72d83e4b25ed99b36da5c5bce688586da555fece5584f592",
+    "CaloMC/src/SConscript": "94b1cd5321e3adb3edbe4cb02e55eef0e536ed3f4d707fae5139a015c291186f"
+  },
+  "context_documents": {
+    "BOUNDARY_RECORDING.md": "d8970ad48dbd41a9ff5a3b536fec8e9ed7b05c38988d0a3131ae7fa9add536a3",
+    "README.md": "d479baa4cebcda54f02e28786cf0e3753c7e964370802860b8ba49832174daea"
+  },
+  "proposal_artifacts": {
+    "membership.patch": "03d754d3d519e72f43372a97b04a9bc1180537d9bb1fdeb0e405b4a5bcc5e05b",
+    "check_applicability.py": "c7cb8bc64759b7a9f14d40c48f46857e5f491af4669a15df7b8398ffbafd905c",
+    "test_membership_patch.py": "ff13e58c1ff1ed522dbc64029c9acc9798629d7b154d607bc7e5e3ba0d23c1ba",
+    "README.md": "e5a47d079e6844a9b2c09784a2b33ae8227dfe392478bec5635d865cd7148c58"
+  },
+  "patched_producer_sha256": "d41a0800a0b9b4166d7a68779ee6269953b592e1a4f783f3e93c0e3051d800ec"
+}

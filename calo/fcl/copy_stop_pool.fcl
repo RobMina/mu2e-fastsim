@@ -1,0 +1,14 @@
+# Preserve a bounded upstream stop-pool subset without detector selection.
+process_name : CaloLibraryPool
+source : { module_type : RootInput }
+outputs : {
+  pool : {
+    module_type : RootOutput
+    fileName : "stop_pool.art"
+    outputCommands : [ "keep *_*_*_*" ]
+  }
+}
+physics : {
+  e1 : [ pool ]
+  end_paths : [ e1 ]
+}

@@ -1,0 +1,208 @@
+--- a/CaloRecording/fcl/manifest_ce_review.fcl
++++ b/CaloRecording/fcl/manifest_ce_review.fcl
+@@ -5,19 +5,19 @@
+ services.TFileService.fileName : "incident_manifest.root"
+ services.scheduler.num_threads : 1
+ services.scheduler.num_schedules : 1
+-physics.analyzers.inputEventManifest : {
++physics.filters.inputEventManifest : {
+   module_type : CaloInputEventManifest
+   sourceArtifact : "REVIEW_STOP_POOL_LOGICAL_ID"
+   sourceSha256 : "REPLACE_WITH_STOP_POOL_SHA256"
+   sourceSnapshotSha256 : "REPLACE_WITH_SOURCE_MANIFEST_JSON_SHA256"
+   expandedFclSha256 : "REPLACE_WITH_NORMALIZED_EXPANDED_FCL_SHA256"
+ }
+-physics.analyzers.incidentManifest : {
++physics.filters.incidentManifest : {
+   module_type : CaloIncidentManifest
+-  sourceArtifact : @local::physics.analyzers.inputEventManifest.sourceArtifact
+-  sourceSha256 : @local::physics.analyzers.inputEventManifest.sourceSha256
+-  sourceSnapshotSha256 : @local::physics.analyzers.inputEventManifest.sourceSnapshotSha256
+-  expandedFclSha256 : @local::physics.analyzers.inputEventManifest.expandedFclSha256
++  sourceArtifact : @local::physics.filters.inputEventManifest.sourceArtifact
++  sourceSha256 : @local::physics.filters.inputEventManifest.sourceSha256
++  sourceSnapshotSha256 : @local::physics.filters.inputEventManifest.sourceSnapshotSha256
++  expandedFclSha256 : @local::physics.filters.inputEventManifest.expandedFclSha256
+   incidentTag : "generate::CaloLibraryCE"
+   rootMode : "record_all" # all roots retained; single_root_supported false unless count==1
+ }
+--- a/CaloRecording/src/CaloIncidentManifest_module.cc
++++ b/CaloRecording/src/CaloIncidentManifest_module.cc
+@@ -1,5 +1,5 @@
+ // REVIEW SOURCE ONLY: explicit StageParticle input, never response-derived.
+-#include "art/Framework/Core/EDAnalyzer.h"
++#include "art/Framework/Core/EDFilter.h"
+ #include "art/Framework/Principal/Event.h"
+ #include "art/Framework/Principal/Handle.h"
+ #include "art/Framework/Principal/Provenance.h"
+@@ -11,10 +11,10 @@
+ #include <array>
+ #include <cstdint>
+ namespace mu2e {
+-class CaloIncidentManifest : public art::EDAnalyzer {
++class CaloIncidentManifest : public art::EDFilter {
+  public:
+   explicit CaloIncidentManifest(fhicl::ParameterSet const& p)
+-    : art::EDAnalyzer(p), metadata_(p), tag_(p.get<std::string>("incidentTag")),
++    : art::EDFilter(p), metadata_(p), tag_(p.get<std::string>("incidentTag")),
+       mode_(p.get<std::string>("rootMode")) {
+     if (tag_.label().empty() || tag_.process().empty())
+       throw cet::exception("MANIFEST_CONFIG") << "incidentTag requires explicit module and process";
+@@ -24,7 +24,7 @@
+     tagText_ = tag_.encode();
+   }
+   void beginJob() override;
+-  void analyze(art::Event const&) override;
++  bool filter(art::Event&) override;
+  private:
+   void ids(TTree* t) {
+     t->Branch("ordinal", &ordinal_); t->Branch("run", &run_);
+@@ -71,7 +71,7 @@
+   for (unsigned i = 0; i < 4; ++i)
+     roots_->Branch((std::string("momentum_") + std::array<char const*,4>{"px","py","pz","e"}[i]).c_str(), &momentum_[i]);
+ }
+-void CaloIncidentManifest::analyze(art::Event const& e) {
++bool CaloIncidentManifest::filter(art::Event& e) {
+   run_ = e.run(); subrun_ = e.subRun(); event_ = e.event();
+   art::Handle<StageParticleCollection> h;
+   present_ = e.getByLabel(tag_, h);
+@@ -96,6 +96,7 @@
+   if (!present_) throw cet::exception("MANIFEST_MISSING") << "designated StageParticle product missing: " << tagText_;
+   if (mode_ == "require_one" && !supported_)
+     throw cet::exception("MANIFEST_MULTIPLICITY") << "expected exactly one root, got " << count_;
++  return true;
+ }
+ }
+ DEFINE_ART_MODULE(mu2e::CaloIncidentManifest)
+--- a/CaloRecording/src/CaloInputEventManifest_module.cc
++++ b/CaloRecording/src/CaloInputEventManifest_module.cc
+@@ -1,14 +1,14 @@
+ // REVIEW SOURCE ONLY. Schedule first, before any resampler/generator/filter.
+-#include "art/Framework/Core/EDAnalyzer.h"
++#include "art/Framework/Core/EDFilter.h"
+ #include "art/Framework/Principal/Event.h"
+ #include "art/Framework/Services/Registry/ServiceHandle.h"
+ #include "art_root_io/TFileService.h"
+ #include "ManifestMetadata.hh"
+ #include <cstdint>
+ namespace mu2e {
+-class CaloInputEventManifest : public art::EDAnalyzer {
++class CaloInputEventManifest : public art::EDFilter {
+  public:
+-  explicit CaloInputEventManifest(fhicl::ParameterSet const& p) : art::EDAnalyzer(p), metadata_(p) {}
++  explicit CaloInputEventManifest(fhicl::ParameterSet const& p) : art::EDFilter(p), metadata_(p) {}
+   void beginJob() override {
+     art::ServiceHandle<art::TFileService> fs;
+     auto* m = fs->make<TTree>("metadata", "externally verified input artifact claims");
+@@ -17,8 +17,9 @@
+     events_->Branch("ordinal", &ordinal_); events_->Branch("run", &run_);
+     events_->Branch("subrun", &subrun_); events_->Branch("event", &event_);
+   }
+-  void analyze(art::Event const& e) override {
++  bool filter(art::Event& e) override {
+     run_ = e.run(); subrun_ = e.subRun(); event_ = e.event(); events_->Fill(); ++ordinal_;
++    return true;
+   }
+  private:
+   manifest_review::Metadata metadata_;
+--- a/Mu2eG4/inc/Mu2eG4PlacementInventory.hh
++++ b/Mu2eG4/inc/Mu2eG4PlacementInventory.hh
+@@ -52,12 +52,15 @@
+   // Bounds native StreamInfo and every serialized row *during* formatting.
+   class Buffer : public std::streambuf {
+     Count limit_;
++    std::string context_;
+   public:
+     std::string data;
+-    explicit Buffer(Count limit) : limit_(limit) {}
++    Buffer(Count limit, const std::string& context) : limit_(limit), context_(context) {}
+   protected:
+     std::streamsize xsputn(const char* p, std::streamsize n) override {
+-      if (n < 0 || Count(n) > limit_ - data.size()) fail("serialization byte cap");
++      if (n < 0 || Count(n) > limit_ - data.size())
++        fail("serialization byte cap stage=" + context_ + " buffer_used=" + std::to_string(data.size())
++             + " buffer_limit=" + std::to_string(limit_) + " attempted_write=" + std::to_string(n));
+       data.append(p, static_cast<std::size_t>(n));
+       return n;
+     }
+@@ -71,7 +74,7 @@
+   class Text : public std::ostream {
+     Buffer buffer_;
+   public:
+-    explicit Text(Count limit) : std::ostream(nullptr), buffer_(limit) {
++    Text(Count limit, const std::string& context) : std::ostream(nullptr), buffer_(limit, context) {
+       rdbuf(&buffer_);
+       exceptions(std::ios::badbit | std::ios::failbit);
+       imbue(std::locale::classic());
+@@ -138,7 +141,8 @@
+       }
+     }
+     if (supported) {
+-      Text native(std::min(remaining, textLimit));
++      Text native(std::min(remaining, textLimit), "native_stream_info solid=" + s->GetName().substr(0, 80)
++                  + " entity=" + s->GetEntityType().substr(0, 80) + " remaining_file_bytes=" + std::to_string(remaining));
+       s->StreamInfo(native); // allowlist only: no recursive unknown/boolean StreamInfo
+       o << ",\"parameter_status\":\"native_parameters\",\"native_stream_info\":" << q(native.str());
+     } else {
+@@ -166,6 +170,12 @@
+       if (r.empty() || !rootCounts_.emplace(r, 0).second) fail("empty/duplicate configured root");
+     }
+     if (rootCounts_.empty()) fail("explicit nonempty candidate roots required");
++  }
++  std::string context(const char* stage, unsigned depth, const G4VPhysicalVolume* pv = nullptr) const {
++    return std::string(stage) + " placements=" + std::to_string(placements_) + " rows=" + std::to_string(rows_.size())
++      + " committed_bytes=" + std::to_string(bytes_) + " file_cap=" + std::to_string(maxBytes_)
++      + " depth=" + std::to_string(depth) + (pv ? " pv=" + pv->GetName().substr(0, 80)
++                                            + " copy=" + std::to_string(pv->GetCopyNo()) : "");
+   }
+   void append(const std::string& row) {
+     if (rows_.size() >= maxRows_ || row.size() > maxBytes_ - bytes_) fail("whole-file cap");
+@@ -181,7 +191,7 @@
+     if (!active_.insert(pv).second) fail("physical daughter cycle");
+     if (++placements_ > placementLimit || placements_ > maxRows_ - 2) fail("placement cap");
+     deepest_ = std::max(deepest_, depth);
+-    Text pathText(maxBytes_ - bytes_);
++    Text pathText(maxBytes_ - bytes_, context("path", depth, pv));
+     pathText << ancestors << (depth ? "," : "") << "{\"pv\":" << q(pv->GetName()) << ",\"copy\":" << pv->GetCopyNo() << '}';
+     const auto chain = pathText.str();
+     const auto path = '[' + chain + ']';
+@@ -195,7 +205,7 @@
+     if (!selected.empty()) ++candidates_;
+     const auto* lv = pv->GetLogicalVolume();
+     if (!lv || !lv->GetMaterial() || !lv->GetSolid()) fail("null logical/material/solid");
+-    Text row(maxBytes_ - bytes_);
++    Text row(maxBytes_ - bytes_, context("placement", depth, pv));
+     row << "{\"type\":\"placement\",\"path\":" << path << ",\"parent_path\":" << parent
+         << ",\"depth\":" << depth << ",\"pv\":" << q(pv->GetName()) << ",\"copy\":" << pv->GetCopyNo()
+         << ",\"lv\":" << q(lv->GetName()) << ",\"material\":{\"name\":" << q(lv->GetMaterial()->GetName())
+@@ -207,7 +217,11 @@
+     row << ",\"local_object_rotation\":";
+     rotation(row, pv->GetObjectRotationValue());
+     row << ",\"solid\":";
+-    if (!solid(row, lv->GetSolid(), maxBytes_ - bytes_)) ++unsupported_;
++    try {
++      if (!solid(row, lv->GetSolid(), maxBytes_ - bytes_)) ++unsupported_;
++    } catch (const std::runtime_error& error) {
++      fail(context("solid", depth, pv) + " " + error.what());
++    }
+     row << "}\n";
+     append(row.str());
+     const auto daughters = lv->GetNoDaughters();
+@@ -228,7 +242,7 @@
+     auto* navigator = manager ? manager->GetNavigatorForTracking() : nullptr;
+     const auto* world = navigator ? navigator->GetWorldVolume() : nullptr;
+     if (!world) fail("native tracking world unavailable");
+-    Text begin(maxBytes_);
++    Text begin(maxBytes_, context("begin", 0));
+     begin << "{\"type\":\"inventory_begin\",\"schema\":\"mu2e-placement-inventory-v1\",\"g4_run\":" << run
+           << ",\"scope\":\"all_world_physical_placements\",\"units\":\"native_G4_mm_rad\","
+              "\"frame\":\"local_object_to_parent; world row has no parent\","
+@@ -246,7 +260,7 @@
+       if (root.second != 1) fail("candidate root missing/duplicate in world paths: " + root.first);
+     // Fixed-width decimal string makes total byte count self-consistent, including footer.
+     auto footer = [&](Count total) {
+-      Text end(maxBytes_ - bytes_);
++      Text end(maxBytes_ - bytes_, context("footer", 0));
+       end << "{\"type\":\"inventory_end\",\"complete_physical_tree\":true,\"resolved_all_solids\":"
+           << (unsupported_ ? "false" : "true") << ",\"placements\":" << placements_
+           << ",\"unique_paths\":" << paths_.size() << ",\"candidate_placements\":" << candidates_

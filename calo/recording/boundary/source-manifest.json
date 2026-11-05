@@ -1,0 +1,33 @@
+{
+  "format": 1,
+  "new_files": [
+    "Mu2eG4/inc/Mu2eG4BoundaryRecorder.hh"
+  ],
+  "patch_sha256": "64507392671c896304a57bd06791eb2d8a744be8da087f157e671cd4d5bec83a",
+  "patched": {
+    "Mu2eG4/inc/Mu2eG4BoundaryRecorder.hh": "ef2ee22db37b492e1ad7d1add78ae475a9b55cfe83f0aadeb4f695c7dac33670",
+    "Mu2eG4/inc/Mu2eG4Config.hh": "f3845ae726fcf7bef0de1c24fd9b1a797dbc793dc764065dec2e26586cfc9e26",
+    "Mu2eG4/inc/Mu2eG4SteppingAction.hh": "9aa51907d1dec9f8a33caccd70d2f718e431d9a701d430043b8e2bb269c05181",
+    "Mu2eG4/src/Mu2eG4EventAction.cc": "b1ecf2b3dd437dfdd8249195972d571156dcc060783c4b571ea971bfb8b39af7",
+    "Mu2eG4/src/Mu2eG4SteppingAction.cc": "c2e331c6a389887f952a47a26cd970c1455adf0abaca079a0dabd844745389f4",
+    "Mu2eG4/src/Mu2eG4TrackingAction.cc": "db1dce24791f92bb1a463c07bc0db8824aba32b5d1eb574a999f07e6db06e914"
+  },
+  "sources": {
+    "MCDataProducts/inc/SimParticle.hh": "017dd8c242f76c806d1ab4cdb9f2bdf089163f32e5236797194bdf586ec86bea",
+    "Mu2eG4/CMakeLists.txt": "1ad2bc77d02e071a813e40996d1ee769594ad8cfcbef440aba3b959e0d8f7f5f",
+    "Mu2eG4/inc/Mu2eG4Config.hh": "7c5abf8455e8701f89a1f6490e9fed3bc62fd2e3e5d7c510446e3f3eac19428d",
+    "Mu2eG4/inc/Mu2eG4EventAction.hh": "827651a52072374365320a0add2528d6a7b12f103c8703ad1132d486b9e4abe6",
+    "Mu2eG4/inc/Mu2eG4PerThreadStorage.hh": "c897952c2411a468bb17f53f9672a74eaed33b6e017662b9d2ff215bccc0e4d9",
+    "Mu2eG4/inc/Mu2eG4SteppingAction.hh": "6e97ac4b07a0f1cd2fc53ec4608929838bd9cc068b1490661044bd51d170adde",
+    "Mu2eG4/inc/Mu2eG4TrackingAction.hh": "04b0de2eddbe823e8c0b71ce0816825b05b5b286be4b0d1d1798261fa41f7b6b",
+    "Mu2eG4/inc/SimParticleHelper.hh": "1dd9fe813e6d6f3c2d9885ec7b2e3280fbb54c0a8bc66a5365fa9052e9d682d5",
+    "Mu2eG4/src/Mu2eG4Config.cc": "55c129a8c3967b270c775748ff6cf27b6732f071b13a53a6dda5a2626ee60ad2",
+    "Mu2eG4/src/Mu2eG4EventAction.cc": "4af6a2ad9d42b8afa7b867a3614edc0daea755e3f7c78f7665354eeb9dd418b1",
+    "Mu2eG4/src/Mu2eG4SteppingAction.cc": "bcaac31fbf84bd6bf6bcf9c8c1b9614415a71e6cf2e4b4e06a008cbd03c7b045",
+    "Mu2eG4/src/Mu2eG4TrackingAction.cc": "d641b9f8e988be8c89f3119f7a9228f96e288e4aa19f6e3558a0462e787773f6",
+    "Mu2eG4/src/SConscript": "f9b358138b63b64dca99552cc8a000f03d5bc9ff8b7fd307ace4378ba2f224c2",
+    "Mu2eG4/src/SimParticleHelper.cc": "efa69e62c84b8560a57f5bbf60f22ecf9123a9a5bc85c63d54d2136e127a9fca",
+    "Mu2eG4/src/constructDiskCalorimeter.cc": "2bd783d35c7d8879e3550d10854dc6d9e23267eb76747bfff97b9a4114f0a1a1"
+  },
+  "status": "paused source snapshot, not current-head/build/runtime verified"
+}

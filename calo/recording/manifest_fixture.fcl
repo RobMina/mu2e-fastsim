@@ -1,0 +1,40 @@
+# Existing stopped-muon pool -> StageParticles -> manifests; no Geant4 or resampler.
+#include "Offline/fcl/standardServices.fcl"
+process_name : CaloManifestFixture
+source : { module_type : RootInput }
+services : { @table::Services.Sim }
+services.SeedService.baseSeed : 20261104
+services.TFileService.fileName : "REVIEW_ROOT_OUTPUT"
+services.scheduler : { num_threads : 1 num_schedules : 1 }
+physics : {
+  producers : {
+    generate : {
+      module_type : CeEndpoint
+      inputSimParticles : "TargetStopFilter::MuBeamResampler"
+      stoppingTargetMaterial : "Al"
+      pdgId : 11
+      verbosity : 0
+    }
+  }
+  filters : {
+    inputEventManifest : {
+      module_type : CaloInputEventManifest
+      sourceArtifact : "REVIEW_SOURCE_ID"
+      sourceSha256 : "REVIEW_SOURCE_SHA256"
+      sourceSnapshotSha256 : "REVIEW_SNAPSHOT_SHA256"
+      expandedFclSha256 : "REVIEW_NORMALIZED_SHA256"
+    }
+    incidentManifest : {
+      module_type : CaloIncidentManifest
+      sourceArtifact : "REVIEW_SOURCE_ID"
+      sourceSha256 : "REVIEW_SOURCE_SHA256"
+      sourceSnapshotSha256 : "REVIEW_SNAPSHOT_SHA256"
+      expandedFclSha256 : "REVIEW_NORMALIZED_SHA256"
+      incidentTag : "generate::CaloManifestFixture"
+      rootMode : "record_all"
+    }
+  }
+  fixture : [ inputEventManifest, generate, incidentManifest ]
+  trigger_paths : [ fixture ]
+  end_paths : []
+}

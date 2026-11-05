@@ -1,0 +1,3 @@
+# Same saved CSS and branch labels as the deterministic baseline; travel only.
+#include "CaloFastSim/fcl/response_control.fcl"
+physics.producers.deterministicRO.addTravelTime : true

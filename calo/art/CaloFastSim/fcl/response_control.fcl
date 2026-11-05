@@ -1,0 +1,55 @@
+# Existing saved shower steps only; new analyzer requires a completed user build.
+#include "Offline/fcl/standardServices.fcl"
+#include "Offline/CaloMC/fcl/prolog.fcl"
+process_name : CaloResponseControl
+source : { module_type : RootInput }
+services : { @table::Services.Sim }
+services.SeedService.baseSeed : 20261104
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_run1_a.txt"
+services.GeometryService.bFieldFile : "Offline/Mu2eG4/geom/bfgeom_no_tsu_ps_v01.txt"
+services.GeometryService.printConfig : true
+services.ProditionsService.calSimParams.useDb : false
+services.ProditionsService.calSimParams.fileName : "Offline/CaloConditions/data/Sim_crystal.txt"
+services.ProditionsService.eventTiming.useDb : false
+services.ProditionsService.eventTiming.TimeFromProtonsToDRMarker : 200
+services.GlobalConstantsService.inputFile : "Offline/GlobalConstantsService/data/globalConstants_01.txt"
+services.GlobalConstantsService.printConfig : true
+services.ProditionsService.calSimParams.verbose : 1
+services.TFileService.fileName : "calo_response_tables.root"
+physics : {
+  producers : {
+    controlEWM : {
+      module_type : EventWindowMarkerProducer
+      SpillType : 1
+      InitialPhaseShift : 0
+      RecoFromMCTruth : true
+      RecoFromMCTruthErr : 0
+    }
+    deterministicRO : { @table::CaloMC.CaloShowerROMaker
+      caloShowerStepCollection : [ "CaloShowerStepMaker::CaloLibraryCE" ]
+      eventWindowMarker : "controlEWM::CaloResponseControl"
+      protonBunchTimeMC : "controlEWM::CaloResponseControl"
+      digitizationStart : 450
+      digitizationEnd : 1795
+      digitizationBuffer : 10
+      BirksCorrection : true
+      LRUCorrection : true
+      PEStatCorrection : false
+      addTravelTime : false
+    }
+  }
+  analyzers : {
+    response : {
+      module_type : CaloResponseDumper
+      steps : "CaloShowerStepMaker::CaloLibraryCE"
+      readouts : "deterministicRO::CaloResponseControl"
+      summaries : "deterministicRO::CaloResponseControl"
+      eventWindowMarker : "controlEWM::CaloResponseControl"
+      protonBunchTimeMC : "controlEWM::CaloResponseControl"
+    }
+  }
+  p1 : [ controlEWM, deterministicRO ]
+  e1 : [ response ]
+  trigger_paths : [ p1 ]
+  end_paths : [ e1 ]
+}
