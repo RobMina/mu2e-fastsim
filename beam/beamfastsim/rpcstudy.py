@@ -232,7 +232,8 @@ def plot(report, output):
         edges = np.asarray(h["edges"])
         ax[0, j].stairs(h["stock"][1:-1], edges, label="Saved stock", color="#0072B2")
         ax[0, j].stairs(h["fast"][1:-1], edges, label="Fast (equal area)", color="#D55E00")
-        ax[0, j].set_title(f"Marginal $\\chi^2$/ndf = {h['chi2']:.1f}/{h['ndf']}")
+        chi_label = f"{h['chi2']:.1f}/{h['ndf']}" if h["chi2"] is not None else "undefined (empty arm)"
+        ax[0, j].set_title(f"Marginal $\\chi^2$/ndf = {chi_label}")
         ax[0, j].set_ylabel("Electrons / bin")
         ax[1, j].plot((edges[:-1] + edges[1:]) / 2, h["pulls"][1:-1], ".", color="#D55E00")
         ax[1, j].axhline(0, color="black", linewidth=.7)
@@ -241,8 +242,10 @@ def plot(report, output):
     y = panel["yield_"]
     ax[0, 0].legend(fontsize=9)
     radius_label = f", helix rmax > {panel['rmax_min']:g} mm" if panel["rmax_min"] is not None else ""
+    ratio_label = f"{y['ratio']:.4f}" if y["ratio"] is not None else "undefined"
+    error_label = f" ± {y['ratio_error']:.4f}" if y["ratio_error"] is not None else " (no shard error)"
     fig.suptitle(f"RPC electron marginal, p > {panel['pmin']:g} MeV/c{radius_label}: fast/saved-stock "
-                 f"{y['ratio']:.4f} ± {y['ratio_error']:.4f}\n{report['scope']}", fontsize=9)
+                 f"{ratio_label}{error_label}\n{report['scope']}", fontsize=9)
     fig.tight_layout()
     fig.savefig(output, dpi=170)
     plt.close(fig)

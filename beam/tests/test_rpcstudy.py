@@ -136,6 +136,16 @@ def test_helix_cut_is_optional_and_keeps_denominators(tmp_path, monkeypatch):
     assert report["selections"]["fiducial"]["rmax_min"] == 450.
 
 
+def test_plot_empty_fast_arm_and_single_shard(tmp_path):
+    ref, fast, _, data = fixtures(tmp_path)
+    data["fate"] = np.zeros(8, int)
+    np.savez(fast, **data)
+    report = R.compare(ref, fast, [0])
+    assert report["selections"]["vd13"]["yield_"]["exposure"] == 2
+    R.plot(report, tmp_path / "empty.png")
+    assert (tmp_path / "empty.png").is_file()
+
+
 def test_plot(tmp_path):
     ref, fast, _, _ = fixtures(tmp_path)
     report = R.compare(ref, fast, [0, 1])
