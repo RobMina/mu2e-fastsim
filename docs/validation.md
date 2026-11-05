@@ -35,6 +35,80 @@ were agreed before the comparisons were run. What is open or not validated: [lim
 | sob stand-in (opt-in `cesob`): the design studies' approximate CE sensitivity | the studies' own estimate on 66 Geant4 EdepAna ntuples | the port reproduces the studies' sob on all 66 (relative difference 0) | pass |
 | sob stand-in (opt-in `cesob`) on 65 Geant4-evaluated design points of the stopping-target study (stops on the study's beam sample with no fitted scale, 200,000 CE per point) | the points' full-simulation sob (FTFP_BERT, EM option 0) | Geant4 / fast 0.9920 +- 0.0006 (+- 0.0077 common, from the stops normalisation), rms 0.46 % (0.77 % expected), chi2/ndf 0.40, rank correlation 0.993 +- 0.003; factors: stops per event 1.0045, CE acceptance 0.9832 (the proxy residual), signal per stop in the window over acceptance 1.004 (same window on 60 of 65 points). Option 0 vs the option-4 fast chain: the design points' selected electrons lose less (fractions more than 1 / 2 MeV below the birth energy at the tracker entry 0.8 +- 0.1 % / 1.4 +- 0.1 % lower, relative), worth +0.4 % on sob; not corrected | pass (offset stated) |
 
+## Trigger replay (opt-in diagnostic)
+
+**Paused — 2026-11-05 06:10 EST:** no R7 jobs are running. The first C imported-full-stock-SGS
+response-control parent completed (exit 0, about 10 min 32 s): 2,811 events, 138,045 SGS rows,
+11 zero-SGS events, exact ordered SGS/generator numerical round trip, and preservation of the six
+original products, 56 statuses and retained original serialized SGS. This is not physics validation
+or electronics-only isolation. The nine remaining parents and full-history C trigger have not launched;
+see [pause/resume assignments and gates](../trigger/PAUSE_RESUME.md).
+
+**Complete-history CE stock control:** all 52 physics paths agree over 28,044 events
+(1,458,288 event-path comparisons), with zero accepted-bit, retained-state, `wasrun`, or mapped-endpoint
+differences. Original first-pass packed statuses and independently decoded event identities/source traversal
+order are preserved. Six serialized digi/waveform/timing products and all 56 original packed path words match
+on all 21,078 original-production selected events within the regenerated complete source. All 1,458,288 replay
+raw indices/packed words differ after deliberate path shortening; this is not full-art serialization identity.
+The original 56-path and replay 52-path schedule IDs additionally resolve to exact ordered bit:path lists in
+the embedded SQLite registry, read without a ROOT runtime. This binds schedule identity, not all recursive
+module configuration.
+
+**Frozen independent CE confirmation:** another 28,148 events and 1,463,696 event-path comparisons have zero
+accepted/state/`wasrun`/mapped-endpoint differences under the unchanged procedure. All 21,140 original selected
+events have exact six-product/56-status overlap and exact original-selector event set. Original words, ROOT
+IDs/order and schedule registry bindings pass; all replay raw indices remain different. The two disjoint jobs
+total 56,192 preselection events / 2,921,984 comparisons. No held-out decisions were used for candidate tuning.
+Cosmic-era control and independent fast-digi confirmation remain open.
+
+**Production-era digi adapter:** an existing user-built importer/dumper pair, used with the released CE runtime,
+round-trips all 2,811 events of the first development parent. The in-event C++ comparison checks every StrawDigi
+field, flag and ADC sample exactly. Independent retained-product checks preserve all six original stock detector/
+timing products and all 56 original status words, event identities and schedule registry. This certifies that
+bounded unchanged-digi adapter, not fast transport, arbitrary binary compatibility or complete-history triggering.
+The first primary-only CE transport plus released stock digitization trigger diagnostic has also completed on
+those 2,811 events: 8,790 accepted/state migrations across all 52 paths, zero `wasrun` differences or exceptions.
+All nine calorimeter-only paths are unchanged; representative tracker-only CE paths shift about -0.8 to -0.9
+percentage points and calorimeter-seeded CE track paths about -5.8 to -5.9 points. Original stock calorimeter,
+timing and reference statuses remain exact. This is not physics closure: secondaries/returns are absent, stock
+calo response belongs to the reference history, and tracker electronics use a separate random stream. One-parent
+counter history is not the full production history, and no generated-efficiency or independent-shard error follows.
+
+**Complete stored-history CE tracker-fast/stock-calorimeter arm:** all ten original parents, 28,044 finished
+events, 740 explicit zero-step events, one continuously evolving trigger invocation and all 52 paths are measured.
+There are 84,291 accepted/state migrations and zero `wasrun` differences or Ready/Exception paths. Representative
+TPR CE acceptance shifts -1.24091 percentage points; CPR CE shifts -5.80516 points and CPR upstream helix -6.63600.
+All nine calorimeter-only paths have zero migrations. Luminosity decisions match; equal five-event totals on the
+phi-prescaled helix path conceal five losses and five gains. Parent partitions are correlated by seed resets;
+no independent-parent SEM is quoted. Saved-stage diagnostics show CPR CE final-filter reach 14,964 stock versus
+13,474 fast, so the discrepancy is not confined to final track cuts. Endpoint/stage counts are descriptive,
+not causal attribution. Primary-only steps, absent secondaries/returns, separately seeded tracker electronics
+and retained original G4 calorimeter history remain physics limits. This is stored-input coverage, not generated
+efficiency, closure, threshold tuning or independent fast confirmation.
+
+**Measured JAX final selections:** a separately declared analyzer run preserves exact saved hybrid decisions
+for all 52 replay and 56 original paths. Full source/preparation/executed-configuration and worker-library gates
+pass over 28,044 events; actual std::vector features include 18,038 tracks and 10,006 zero-track events. Both eager
+and JIT have zero selected-track identity/count, reached-filter-return and composed-path-bit differences for
+`tpr_TrkDe_80m70p_D0200` (17,931 reached events / 17,929 tracks) and `tpr_TrkDe_80m70p` (17,988 / 17,981).
+The measured raw-status predicates additionally agree with exact released source definitions on every track.
+Actual upstream fast reach is retained, not emulated. Product identity is exporter-checked; independent derived
+feature extraction, loaded-plugin attestation, released-C++ numerical-boundary tests and nonoverlapping-history
+confirmation remain open. This validates the development array comparison, not a complete trigger/reconstruction
+emulator or physics agreement. See [the selection scope](../trigger/JAX_SELECTION.md).
+
+The earlier selected-stream diagnostic below explains the need for authentic complete history.
+Stock CE digis, original embedded production settings and compatible released Offline: 21,078 finished events
+with input identities/order independently checked. Of 52 physics paths, 50 match exactly; four accepted-bit
+differences are confined to the two history-dependent paths (three luminosity-buffer, one phi-prescaled helix).
+The original production output selection has zero differences. The shorter 100-event smoke matched all paths.
+A retained-TriggerResults metadata check also finds four state differences, zero `wasrun` differences and four
+mapped endpoint differences. All 1,096,056 raw indices differ after deliberate path shortening; raw serialization
+identity is false. Decoded manifest-path acceptance is crosschecked against every printed bit; independently
+decoded ROOT event IDs/order match the original input event list. This is not bit-for-bit all-menu closure: selected digis omit original module-call history. Unbiased
+efficiency, fast-digi substitutions and independent confirmation were not certified by that earlier
+selected-stream diagnostic; the later complete-history results above have separate scope. See [trigger replay](../trigger/README.md) and its [input contract](../trigger/HANDOFF.md).
+
 ## Beam stage
 
 Reference: the stock DS stage of SimJob MDC2025ac (`Production/JobConfig/pileup/MuBeamResampler.fcl`) run with a

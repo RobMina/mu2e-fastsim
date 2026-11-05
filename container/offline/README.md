@@ -35,6 +35,11 @@ The Python fast-simulation image is not an Offline runtime. The runtime image mu
 
 ## Example
 
+**R7 campaign boundary (2026-11-05 06:10 EST):** R7 is paused by user with no jobs
+running. Its first C response-control parent completed, but the other nine and
+complete-history C trigger remain unlaunched. The generic runner example below
+is not permission to resume R7; see [its pause/resume gates](../../trigger/PAUSE_RESUME.md).
+
 Submit from the site login node with explicit account and partition. Set the paths for your site; no home or
 personal data-area defaults are embedded in the runner.
 
@@ -66,7 +71,9 @@ The runner checks `MUSE_WORK_DIR`, expands FCL before running, records `mu2e --v
 
 A long art job needs `SQLITE_TMPDIR` and `TMPDIR` on node-local disk. Inside `--containall` the session `/tmp` is small
 and art's per-event SQLite tables end the job after about 85,000 events (`SQLExecutionError: database or disk is full`).
-Setting both fixed it on a 105,000-event G4 job. The runner does not set them yet.
+Setting both fixed it on a 105,000-event G4 job. The runner now sets both to an `art-tmp` directory beside its
+private node-local CVMFS cache, inside the same bind and exit-cleanup lifetime. This also prevents SQLite
+flush failures in dense multi-path trigger replays; the threshold depends on per-event provenance volume.
 
 One invocation has one cache manager. Parallel invocations **must not share a cache**; the wrapper allocates a
 unique local directory for each. Two concurrent art jobs on two cores are validated below; shared pilot/prewarming

@@ -132,3 +132,15 @@ A smoke run tests the setup, not physics closure or throughput; do not extrapola
 Tasks and the `kits.toml` entry: `core/docs/running.md` and `core/uva/README.md`. The EAF CRV task is `chain`
 (inputs read in place); `chain_point` (inputs streamed) runs on Slurm sites only. Art jobs (stock Offline) run on a
 Slurm cluster without host CVMFS through `container/offline/` ([README](../container/offline/README.md)).
+
+## 8. Trigger replay diagnostics (opt-in)
+
+**R7 is paused by user as of 2026-11-05 06:10 EST; no R7 jobs are running.** Only the
+first response-control parent has completed. The remaining nine and full-history C
+trigger have not launched. The commands and procedures linked below are not launch
+authorization: follow the [pause/resume assignments and gates](../trigger/PAUSE_RESUME.md)
+and reuse completed S/F and first-parent C outputs rather than rerunning them.
+
+[`trigger/README.md`](../trigger/README.md) describes inventorying a stock digi file's embedded production menu
+and comparing original versus replayed accepted decisions by event and path. It does not certify fast digis or
+replace the stock trigger with an emulator. Selected-input and stateful-buffering caveats are explicit.

@@ -52,6 +52,61 @@ Allocation charges depend on the site's rates and are not given here.
 | electrons, conversion-electron chain to the tracker entry (opt-in) | slab physics vs Geant4 pass (loss chi2/ndf 0.5-1.4; 1 X0 W stopped 18.41 vs 18.29 +- 0.09 %; reflected 0.347 +- 0.013 vs 0.336 % with the opt-in form-factor threshold). CE chain vs Geant4 CeEndpoint at the tracker entry, inside a selection that implies the production filter: yield per generated electron 1.004 +- 0.003; momentum, angle, radius and time-of-flight chi2/ndf 0.8-1.3; E - E_CE MPV -0.37 vs -0.35 +- 0.02 MeV, FWHM 0.675 vs 0.677 +- 0.024 MeV, 0.25 MeV tail bins to -2 MeV within 1-2 sigma Device chain (`--backend device`, one JAX loop) vs the NumPy chain on the same starts (400k target stops and the 108k Geant4 starts, r_max > 450): yield per start 0.9999 +- 0.0007 / 1.0005 +- 0.0010 (float64), 1.0010 +- 0.0007 / 1.0000 +- 0.0010 (float32); E - E_CE 0.25 MeV bins from -2 to 0 MeV within 2.4 sigma (paired); same-start momentum +0.001 +- 0.008 MeV/c (float64), +0.012 +- 0.008 MeV/c (float32); against Geant4 the device yield is 1.0043 +- 0.0028 (float64) / 1.0054 +- 0.0028 (float32) | device chain, one RTX PRO 6000 MIG 1g.24gb slice with 4 cores: float32 about 70,000 electrons/s steady (whole process with 1.6 M electrons: 24,900/s, fixed cost about 17 s plus a 10 s tail of slow electrons), float64 8,600/s (process with 400k: 3,900/s); one CPU core: float32 170-240/s (process with 40k: 116-135/s), float64 106-110/s. NumPy chain with JAX layers: 37/s per core, 132/s per MIG slice. A stock event (24 electrons/s per grid slot) simulates every particle in the whole detector; the fast chain carries the primary electron to the tracker entry | device: about 2,900 per MIG slice (float32), 360 (float64); 7-10 per CPU core (float32), 4.4-4.6 (float64) |
 | tracker with the DS field (opt-in, in development) | first passage of Geant4 tracker-entry states, field-on chord transport: straws per track +0.017 +- 0.070 (muons), +0.055 +- 0.019 (CE); ionisation mean +0.29 +- 0.18 %; momentum above 1 GeV/c biased (no radiative losses yet) | one CPU core 6 muons/s, 4 CE/s (transport only) | stock field-on reference not yet timed |
 
+## Trigger stock basis (replay diagnostic)
+
+R7 is paused as of 2026-11-05 06:10 EST; no R7 jobs are running. The first C parent
+completed, but its roughly 10 min 32 s runtime is a bounded compatibility observation,
+not a response/trigger acceleration benchmark. The other nine parents and full C
+trigger are unlaunched. See [pause/resume scope](../trigger/PAUSE_RESUME.md).
+
+Finished Run 1A production digitization logs give trigger-module wall work of **8.17-8.32 ms per processed CE dts
+event** and **9.55-10.24 ms per processed cosmic dts event** over two jobs each. Shared labels are counted by
+`sum(average * invocations)` across first-execution paths, excluding original digitization, MC truth decoration,
+source and output. Full-event wall means including those other costs are 29.88 ms (CE) and 52.65-53.32 ms (cosmic).
+The separately recovered production job matching the complete-history CE control has 28,044 processed events:
+8.12998 ms trigger work per input event, 29.9453 ms full-event wall mean, 886.946 s total CPU and 957.627 s real.
+The complete-history replay's verbose validation run uses 545.344 s CPU / 562.661 s real; PrintModule I/O and
+startup/end costs are included, so it is not a quiet timing comparison or a fast-trigger throughput claim.
+These ranges are observations, not uncertainty estimates or isolated trigger CPU latency; input dts events differ
+from generated events and trigger/truth-selected stored digis. The five CE LoopHelix fits account for about 71%
+of trigger work; the cosmic robust multi-helix finder alone accounts for 28-29%. These stock-production
+attributions alone supply no fast-trigger rate or grid-slot multiplier; the measured hybrid quiet pair below
+also does not establish an end-to-end fast-chain multiplier.
+
+A complete stored-history quiet comparison processes 28,044 events in each arm, stock then tracker-fast with
+stock calorimeter, on one CPU allocation. Both arms exactly preserve their respective saved verbose-baseline
+original and replay packed decisions. Attributed trigger wall work is **12.986762 → 12.427416 ms/event (-4.307%)**;
+full-event wall mean **15.2450 → 14.7262 ms (-3.403%)**. However, total art real time is
+**559.837428 → 563.486789 s (+0.652%)**, and cold-cache launcher elapsed also increases. Thus **no whole-job
+acceleration is measured**. This is one fixed-order pair, not randomized replication or a timing-significance
+bound; source layouts, fit workload/acceptance and fresh per-invocation CVMFS caches differ. The production
+log hardware/population/digitization basis prevents a direct production speedup ratio. It is not full fast-chain,
+JAX or SU/event timing. Five shared fits account for 71.17% stock / 70.38% hybrid trigger work; the two BO-final
+selections together account for 0.1523% / 0.1597%. Per-path module attribution is not independent path latency,
+and full-event maximum/median are not isolated trigger p99.
+
+A quiet same-stock CE replay of 21,078 stored selected digi events measures 11.22 ms per event in the event loop
+(89.1 stored events/s), of which 9.54 ms is trigger-module work. Total art real time is 309.62 s (68.1 stored
+events/s including startup/end). These are a selected denominator on a different CPU, not a speedup relative to
+the production dts basis or a fast-digi result. [Replay and timing tools](../trigger/README.md).
+
+## Measured BO final-selection CPU batch
+
+Both unchanged measured TPR final selections together evaluate all 28,044 stored events (18,038 tracks,
+padding width one, explicit zero/absent collections) in **0.120646 ms median warm batch time** over 30 repeats
+after three warmups on an arm64 laptop CPU with JAX 0.11.2/x64. Observed batch range is 0.107250–0.139208 ms,
+batch p95 0.133913 ms. All outputs are synchronized. Compilation is separate: lowering 28.365 ms, compile
+65.507 ms, first execution 0.321 ms, device placement 0.849 ms. Input validation 18.500 s and additional
+load/padding/target checks 9.302 s are excluded from warm time. JAX caches are cleared after validation;
+persistent compilation caching is disabled for compile, but backend initialization is already paid.
+
+This is a fixed-reconstruction selection microbenchmark, with actual upstream fast reach supplied rather than
+emulated, and composed outputs checked against measured targets. The CPU process is not core-pinned or
+thread-limited; no single-core rate follows. The amortized 0.004302 microseconds/input-event is **not** an
+individual-event latency. There is no same-hardware C++ comparison, full-trigger acceleration, GPU or SU claim.
+These cuts account for about 0.15% of measured quiet trigger work; dominant reconstruction remains unported.
+See [selection details](../trigger/JAX_SELECTION.md).
+
 ## Per GPU: CRV default chain and beam stop fraction
 
 One GPU per job, the defaults of `main` (2026-11-02). CRV: production `runchain` over 11 shards of 50,000 generated

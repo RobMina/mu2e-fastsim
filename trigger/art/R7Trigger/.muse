@@ -1,0 +1,2 @@
+# R7Trigger: measured selection features against the explicit MDC2025ba backing.
+ENVSET p109
