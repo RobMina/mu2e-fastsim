@@ -1,0 +1,48 @@
+# Diagnostic preparation only; running Mu2eG4 requires separate approval.
+#include "Production/JobConfig/beam/POT.fcl"
+
+process_name : targetLibraryDiagnostic
+source.firstRun : 1430
+source.firstSubRun : 900000
+source.maxEvents : 100
+services.SeedService.baseSeed : 900001
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_run1_a.txt"
+services.GeometryService.bFieldFile : "Offline/Mu2eG4/geom/bfgeom_no_ds_v01.txt"
+
+# Preserve every attempted event rather than a downstream-selected stream.
+physics.TargetLibraryPath : [ generate, genCounter, g4run ]
+physics.trigger_paths : [ TargetLibraryPath ]
+physics.TargetLibraryOutputPath : [ TargetLibraryOutput ]
+physics.end_paths : [ TargetLibraryOutputPath, LogPath ]
+
+# This observer returns false and records steps without imposing a new cut.
+physics.producers.g4run.Mu2eG4SteppingOnlyCut : {
+  type : constant
+  value : false
+  write : targetLibraryDiagnosticSteps
+}
+physics.producers.g4run.ResourceLimits.maxStepPointCollectionSize : 1000000
+physics.producers.g4run.SDConfig.enableAllSDs : false
+physics.producers.g4run.SDConfig.enableSD : [
+  virtualdetector,
+  ProductionTargetCoreSection,
+  ProductionTargetStartingCoreSection,
+  ProductionTargetFinStartingSection,
+  ProductionTargetNegativeEndRing,
+  ProductionTargetPositiveEndRing,
+  ProductionTargetFinSection,
+  ProductionTargetFinTopSection,
+  ProductionTargetFinTopStartingSection
+]
+
+# Raw products retain identities and internal steps, not a certified exit table.
+outputs.TargetLibraryOutput : {
+  module_type : RootOutput
+  outputCommands : [
+    "drop *_*_*_*",
+    "keep *_generate_*_*",
+    "keep *_genCounter_*_*",
+    "keep *_g4run_*_*"
+  ]
+  fileName : "target_library_diagnostic.art"
+}

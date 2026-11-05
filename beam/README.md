@@ -1,5 +1,15 @@
 # beam/: Geant4-free muon beam transport to the stopping target (prototype)
 
+Upstream reference-preparation tools are described in [UPSTREAM.md](UPSTREAM.md).
+They are opt-in census, field, retained-row and numerical prerequisites, not validated PS/TS transport or an
+inclusive production-target model; the default chain below is unchanged.
+
+**Upstream development is paused at a source-only checkpoint.** Unapplied recording and standalone
+original-product readback proposals remain uncompiled and uninstalled. No verified target-exit library,
+qualified POT, causal launch frontier, material-aware PS/TS closure or upstream throughput result exists.
+See the [checkpoint and resumption guide](UPSTREAM_CHECKPOINT.md), [library contract](TARGET_LIBRARY.md),
+[native recording proposal](TARGET_RECORDING.md) and [readback proposal](TARGET_READBACK.md).
+
 ## Collaborator inputs
 
 The umbrella [input inventory and setup](../setup/README.md) lists the MuBeamCat-derived
@@ -13,12 +23,15 @@ scripts take `M2FS_CODE`, `VENV` or `FASTSIMKIT_EAF_VENV` (a Python/JAX venv), `
 site.env; each stops with a message naming a missing variable.
 
 Package `beamfastsim` (imports `mu2efastsim` from `core/`; installable with `pip install ./beam`, metadata in
-`beam/pyproject.toml`). Replaces the DS stage of the stock beam chain
+`beam/pyproject.toml`). Implements an experimental alternative to the DS stage of the stock beam chain
 (`Production/JobConfig/pileup/MuBeamResampler.fcl`) for the target-stop question: muons from the DS entrance (as
 written by the POT stage, `MuBeamCat`) are carried through the field map, the stopping-target foils and the IPA in
 batched JAX lanes (CPU or GPU) to their stop, decay or exit.
 
-No Mu2e-internal data or results are stored here; the field maps, geometry and reference samples are read at FNAL.
+Reference event samples, field maps and detector geometry are external inputs; no approved distributable
+beam-input release is bundled. The legacy physics tables described below do not by themselves establish
+provenance qualification or input redistribution approval. An implemented transport path is not a blanket
+physics-closure or validated replacement claim; compare the exact configuration and boundary.
 
 | Path | What |
 |---|---|
@@ -29,14 +42,14 @@ No Mu2e-internal data or results are stored here; the field maps, geometry and r
 | `beamfastsim/bench.py` | throughput on synthetic muons (no inputs needed) |
 | `beamfastsim/cechain.py` | conversion electrons (opt-in) from target stops or given starts to the tracker entry plane: helix steps in the field maps, foils / IPA / OPA crossed with the core `eslab` or `eslab_jax` slab physics; per-electron plane state in an npz |
 | `beamfastsim/cechain_jax.py` | the same chain as one device loop (`cechain --backend device`): slab steps of every layer type in one kernel (core `eslab_jax.lane_step`), helix steps with the maps on the device, surface crossings solved for the gathered lanes whose step reaches a surface, lane refill and compaction between launches; float64 or float32 |
-| `beamfastsim/cesob.py` | sob stand-in of the stopping-target design studies (opt-in): beam stops -> conversion electrons -> calorimeter-acceptance proxy (crystal map, disks' inner Al and carbon-fibre rings crossed with the slab physics) -> the studies' approximate sensitivity; the same estimate on a Geant4 EdepAna tree (`reduce`, `refsob`, bit-identical to the design studies), proxy checks against Geant4 (`calocheck`, `calodiag`), `hybrid` and `recalo`; fastsimkit task `beam_sob` |
+| `beamfastsim/cesob.py` | sob stand-in of the stopping-target design studies (opt-in): beam stops -> conversion electrons -> calorimeter-acceptance proxy (crystal map, disks' inner Al and carbon-fibre rings crossed with the slab physics) -> the studies' approximate sensitivity; the same estimate on a Geant4 EdepAna tree (`reduce`/`refsob`, implementing the design-study reduction convention), proxy checks against Geant4 (`calocheck`, `calodiag`), `hybrid` and `recalo`; fastsimkit task `beam_sob` |
 | `beamfastsim/cereference.py`, `cecompare.py` | Geant4 CeEndpoint reference table from `ReadVirtualDetector` trees; fast vs Geant4 at the entry plane (filter-implying selection, energy MPV/FWHM/tail fractions); `--mode pair`: two fast runs of the same starts (e.g. device vs NumPy) with paired errors |
 | `fcl/g4ref_mubeam_ntpart.fcl`, `art/run_g4ref.sh` | stock DS stage of SimJob MDC2025ac with a per-muon tree |
 | `art/run_fast_cpu.sh` | g4table + field check + fast run + comparison on a GPVM core |
 | `art/eaf_beam.sh` | the same plus a benchmark on an EAF A100 slice (`core/eaf/eafhub.py run`) |
 
 ```bash
-# GPVM: G4 reference (stock DS stage, ~12 ms/muon), then the fast arm on the same muons
+# GPVM: prepare the stock DS reference, then the fast arm on the same input muons
 bash beam/art/run_g4ref.sh $M2FS_DATA/beam_fastsim/g4ref_full 214310 1
 bash beam/art/run_fast_cpu.sh $M2FS_DATA/beam_fastsim/g4ref_full $M2FS_DATA/beam_fastsim/fast_v1_20k 20000
 # conversion electrons (opt-in): starts of a Geant4 reference table, or isotropic CE from a stop table
@@ -106,9 +119,10 @@ A shared seed is not layout-invariant: chunking and compaction affect random dra
 ## Layer physics presets
 
 `run` and `point` take `--physics legacy` (default: local dE/dx per slice with the fast Bethe law) or
-`--physics g4` (range-integrated slice mean with the Geant4 11.3.2 aluminium tables shipped in
-`beamfastsim/data/`, read by `g4tables.py`/`layerphys.py`; the tables' provenance is checked by
-`physics_tables.py`). `g4` is opt-in and not validated as a replacement for `legacy`.
+`--physics g4` (range-integrated slice mean with the legacy aluminium NPZ tables in
+`beamfastsim/data/`, loaded by `g4tables.py`/`layerphys.py`). Loading validates table structure and
+reports provenance qualification; it does not retroactively qualify the shipped tables.
+`g4` is opt-in and not validated as a replacement for `legacy`.
 
 The loss-model studies behind these presets (numerical convergence, finer slicing, frozen-entry loss histories,
 single-foil closure against Geant4, slab and edge diagnostics) are kept on branch `park/beam-loss-studies`. Their

@@ -1,0 +1,27 @@
+# Retained survivor-conditioned beam rows only; no simulation or transmission denominator.
+#include "Offline/fcl/standardServices.fcl"
+process_name : tsretained
+source : { module_type : RootInput }
+services : @local::Services.Core
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_run1_a.txt"
+services.GeometryService.bFieldFile : "Offline/Mu2eG4/geom/bfgeom_no_ds_v01.txt"
+physics : {
+  analyzers : {
+    mutree : {
+      module_type : ReadVirtualDetector
+      vdStepPoints : "BeamFilter:virtualdetector"
+      tvdStepPoints : "BeamFilter:timeVD"
+      simParticleColl : "BeamFilter"
+      physicsVolumeColl : "compressPVBeam"
+      savePDG : [ "mu_minus", "mu_plus", "pi_minus", "pi_plus" ]
+      navigateToParent : false
+      writeNTVD : false
+      writeNTTVD : false
+      writeNTPART : true
+      writeNTPART1 : false
+    }
+  }
+  e1 : [ mutree ]
+  end_paths : [ e1 ]
+}
+services.TFileService.fileName : "retained.root"

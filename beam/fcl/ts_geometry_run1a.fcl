@@ -1,0 +1,5 @@
+# Geometry-only export; Minimal physics and one transport-only event are inherited.
+#include "Offline/Mu2eG4/fcl/gdmldump.fcl"
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_run1_a.txt"
+services.GeometryService.bFieldFile : "Offline/Mu2eG4/geom/bfgeom_no_ds_v01.txt"
+physics.producers.g4run.debug.GDMLFileName : "ts_geometry_run1a.gdml"

@@ -1,0 +1,52 @@
+{
+  "schema": "target-recording-source-proposal-v1",
+  "offline_revision": "b24d4163e5e8f5ed2b5f72fccb25e4980fec64e2",
+  "library_eligible": false,
+  "source_sha256": {
+    "MCDataProducts/inc/GenId.hh": "16f89dcdd642d45b05995c7a4c5c945a83d3360ff49c1ac03ce2ed778d5fd85b",
+    "MCDataProducts/inc/GenParticle.hh": "e242da0b6a82a2d5aaac0cfc457d9787ebf915c390f425a7c100bb54dc6f2b3a",
+    "MCDataProducts/inc/ProcessCode.hh": "2971bcddf9906fb511fb4066aff39ef876fa2adac31fb3a63dcf581225c7d0ee",
+    "MCDataProducts/inc/SimParticle.hh": "017dd8c242f76c806d1ab4cdb9f2bdf089163f32e5236797194bdf586ec86bea",
+    "Mu2eG4/CMakeLists.txt": "b698e1d65b30ddb10b1ad933804a2625586c1024d0bd35a80e9c4da8dab13151",
+    "Mu2eG4/inc/Mu2eG4Config.hh": "962a32bb7cd7f3ed7258122730bb8b70dd1ebc68f81b34e30a93119211043bbe",
+    "Mu2eG4/inc/Mu2eG4Inputs.hh": "d23d2cd4cfbf8b7d279c6e75f2f348963ac967923b9a390bf1d0c46aae5ce1ae",
+    "Mu2eG4/inc/Mu2eG4PerThreadStorage.hh": "c897952c2411a468bb17f53f9672a74eaed33b6e017662b9d2ff215bccc0e4d9",
+    "Mu2eG4/inc/Mu2eG4StackingAction.hh": "f634a3ffb7501c10f7c4e58446810e05ae55ed21982e538116271ba1d9ec6a46",
+    "Mu2eG4/inc/Mu2eG4SteppingAction.hh": "6e97ac4b07a0f1cd2fc53ec4608929838bd9cc068b1490661044bd51d170adde",
+    "Mu2eG4/inc/SimParticleHelper.hh": "1dd9fe813e6d6f3c2d9885ec7b2e3280fbb54c0a8bc66a5365fa9052e9d682d5",
+    "Mu2eG4/inc/SimParticlePrimaryHelper.hh": "0dde3b3e80de459dd5564a9595ffc2c7163577516c95c166794bd15228b0924e",
+    "Mu2eG4/src/Mu2eG4_module.cc": "266b3a393f2718fde9269f11fd6cad9c439721f99750fd6030fe6e91e1783272",
+    "Mu2eG4/src/Mu2eG4ActionInitialization.cc": "8e4ac1335ab6f76945349938875923f858b3923abfba68f1057cf3d02e2e79ed",
+    "Mu2eG4/src/Mu2eG4EventAction.cc": "4af6a2ad9d42b8afa7b867a3614edc0daea755e3f7c78f7665354eeb9dd418b1",
+    "Mu2eG4/src/Mu2eG4Inputs.cc": "6719c334f6def79e5ebbfba5f3b6a4925ed3b4188cfeb1f3f30fec3fcac18718",
+    "Mu2eG4/src/Mu2eG4MT_module.cc": "b2d2695b8d248833ba45993ab95d5272ae185f988ddb3c4c795d33fec2f38aca",
+    "Mu2eG4/src/Mu2eG4PerThreadStorage.cc": "f68d279bbec9265aa7b57036d8973b7d10ff6d2d8313ca0705b144dabf3055db",
+    "Mu2eG4/src/Mu2eG4PrimaryGeneratorAction.cc": "456615251ed96e49fe226b2799257c8ca2b1136df3a2379af0305e2f56415c44",
+    "Mu2eG4/src/Mu2eG4StackingAction.cc": "a1ac4505d1f5a3aaabcdd6aef611ef522d68364caaa67472acaff91358530eb5",
+    "Mu2eG4/src/Mu2eG4SteppingAction.cc": "bcaac31fbf84bd6bf6bcf9c8c1b9614415a71e6cf2e4b4e06a008cbd03c7b045",
+    "Mu2eG4/src/Mu2eG4TrackingAction.cc": "d641b9f8e988be8c89f3119f7a9228f96e288e4aa19f6e3558a0462e787773f6",
+    "Mu2eG4/src/SConscript": "f9b358138b63b64dca99552cc8a000f03d5bc9ff8b7fd307ace4378ba2f224c2",
+    "Mu2eG4/src/SimParticleHelper.cc": "efa69e62c84b8560a57f5bbf60f22ecf9123a9a5bc85c63d54d2136e127a9fca",
+    "Mu2eG4/src/SimParticlePrimaryHelper.cc": "4d4b4dacfa6a3aa9b221e964bc5d0190bf537ddd36d0373f47706141ca8228cb"
+  },
+  "patched_sha256": {
+    "Mu2eG4/CMakeLists.txt": "0bae9bf5f329c6a005e48bfb1ea493ff2d7a88071dc623748f14b2a2ab27564c",
+    "Mu2eG4/inc/Mu2eG4Config.hh": "8f561d804047f47fa024e5ebdd34335806a04cee6f308f389ea12c7deb5654ce",
+    "Mu2eG4/inc/Mu2eG4PerThreadStorage.hh": "ab8c267dd54287e60ff8b8a081ee9f8d20009082e0b955f34b985fcda597ebfb",
+    "Mu2eG4/inc/Mu2eG4StackingAction.hh": "a6ea973f6b9f14c92bdd45d28ab5b9d2761dd6f8bea9f7afbcc62daf9c587e48",
+    "Mu2eG4/inc/Mu2eG4SteppingAction.hh": "8cb997c7620663f4dccfd97e662a3b767879d40014a7c8cf437ad8e28e8f080c",
+    "Mu2eG4/src/Mu2eG4_module.cc": "1560632e5d120e686bd46b8f8911833e11b1626a0b56cfef22f39e7916e63f3b",
+    "Mu2eG4/src/Mu2eG4ActionInitialization.cc": "7bf2e13dcfc07a699dcf478b820412ca80930b895bd685841426113239f0b304",
+    "Mu2eG4/src/Mu2eG4EventAction.cc": "ed87b74f83fdb6e7485e6dd77cabe5b163f44058462e92981b1debf27402d967",
+    "Mu2eG4/src/Mu2eG4MT_module.cc": "8bb9a14918144ff5d88780bbb6f8a55644bb6f3742c878a5a15b735029fe44bd",
+    "Mu2eG4/src/Mu2eG4StackingAction.cc": "aa329132df646ec4e3ac6dfd82a4b619cd4184b17f567dd7c73ec94774c4940d",
+    "Mu2eG4/src/Mu2eG4SteppingAction.cc": "a26f9e2406752c2c1f0df1d02ca061b6dd21c77b0a44fb78161c522c0c6a7b69",
+    "Mu2eG4/src/Mu2eG4TrackingAction.cc": "e6b0a704313f60e3a369c3019baf15e7fbae4a8aad385bf4011ccaae26943b03"
+  },
+  "proposal_sha256": {
+    "target_recording.patch": "df7ffcb22f21b0d0c681041796d678364b653a48089cefe6a293d64c9d1d6eac",
+    "TargetRecording.hh": "94e8da15e06582bdba1a85187ccba57f8c255b89ff015fed93332217461c713a",
+    "TargetRecording.cc": "d0186ebf94891c73a28cdd6dcb2597c99814a518e1d2df71f81696f20cd37d77",
+    "README.md": "35cb81d5b2b727ce0e4452336161e43f9cada6150a9c067658a5fc169a147f90"
+  }
+}

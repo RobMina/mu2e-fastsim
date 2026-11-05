@@ -1,0 +1,27 @@
+# Read-only COL1 entrance/ancestry audit of existing Run 1B TS1Beam inputs.
+#include "Offline/fcl/standardServices.fcl"
+process_name : ts1reference
+source : { module_type : RootInput }
+services : @local::Services.Core
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_run1_b_v40.txt"
+services.GeometryService.bFieldFile : "Offline/Mu2eG4/geom/bfgeom_DSOff.txt"
+physics : {
+  analyzers : {
+    mutree : {
+      module_type : ReadVirtualDetector
+      vdStepPoints : "BeamFilter:virtualdetector"
+      tvdStepPoints : "BeamFilter:timeVD"
+      simParticleColl : "BeamFilter"
+      physicsVolumeColl : "compressPVBeam"
+      savePDG : [ "mu_minus", "mu_plus", "pi_minus", "pi_plus" ]
+      navigateToParent : false
+      writeNTVD : true
+      writeNTTVD : false
+      writeNTPART : true
+      writeNTPART1 : false
+    }
+  }
+  e1 : [ mutree ]
+  end_paths : [ e1 ]
+}
+services.TFileService.fileName : "ts1_reference.root"

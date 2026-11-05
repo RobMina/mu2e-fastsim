@@ -1,0 +1,348 @@
+--- a/Mu2eG4/CMakeLists.txt
++++ b/Mu2eG4/CMakeLists.txt
+@@ -133,6 +133,7 @@
+       src/setBirksConstant.cc
+       src/SimParticleHelper.cc
+       src/SimParticlePrimaryHelper.cc
++      src/TargetRecording.cc
+       src/StrawSD.cc
+       src/toggleProcesses.cc
+       src/TrackerPlaneSupportSD.cc
+@@ -179,6 +180,9 @@
+       Geant4::G4physicslists
+       ${G4LIBSUBSET}
+       Geant4::G4error_propagation
++      art::Framework_Principal
++      canvas::canvas
++      fhiclcpp::fhiclcpp
+       CLHEP::CLHEP
+ )
+ 
+--- a/Mu2eG4/inc/Mu2eG4Config.hh
++++ b/Mu2eG4/inc/Mu2eG4Config.hh
+@@ -251,12 +251,23 @@
+ 
+ 
+ 
++    struct TargetRecording_ {
++      using Name = fhicl::Name;
++      fhicl::Atom<std::string> outputDirectory {Name("outputDirectory")};
++      fhicl::Sequence<std::string> targetPhysicalVolumeNames {Name("targetPhysicalVolumeNames")};
++      fhicl::Atom<std::string> targetMaterialName {Name("targetMaterialName")};
++      fhicl::Atom<unsigned long long> maxRows {Name("maxRows")};
++      fhicl::Atom<unsigned long long> maxVolumes {Name("maxVolumes")};
++      fhicl::Atom<unsigned long long> maxBytes {Name("maxBytes")};
++    };
++
+     struct Top {
+       using Name = fhicl::Name;
+       using Comment = fhicl::Comment;
+       using DelegatedParameter = fhicl::DelegatedParameter;
+ 
+       fhicl::Table<Inputs_> inputs { Name("inputs") };
++      fhicl::OptionalTable<TargetRecording_> TargetRecording {Name("TargetRecording")};
+ 
+       fhicl::Table<Limits> ResourceLimits { Name("ResourceLimits") };
+       fhicl::Table<TrajectoryControl_> TrajectoryControl { Name("TrajectoryControl") };
+--- a/Mu2eG4/inc/Mu2eG4PerThreadStorage.hh
++++ b/Mu2eG4/inc/Mu2eG4PerThreadStorage.hh
+@@ -11,6 +11,7 @@
+ //Mu2e includes
+ #include "Offline/Mu2eG4/inc/Mu2eG4IOConfigHelper.hh"
+ #include "Offline/Mu2eG4/inc/SimParticleHelper.hh"
++#include "Offline/Mu2eG4/inc/TargetRecording.hh"
+ #include "Offline/Mu2eG4/inc/SimParticlePrimaryHelper.hh"
+ #include "Offline/Mu2eG4/inc/IMu2eG4Cut.hh"
+ #include "Offline/MCDataProducts/inc/GenParticle.hh"
+@@ -78,6 +79,7 @@
+     art::RunNumber_t currentRunNumber = 0;
+ 
+     bool runTerminated = false;
++    std::unique_ptr<TargetRecording> targetRecording;
+ 
+     // event-level data members
+     art::Event* artEvent = nullptr;
+--- a/Mu2eG4/inc/Mu2eG4StackingAction.hh
++++ b/Mu2eG4/inc/Mu2eG4StackingAction.hh
+@@ -9,10 +9,13 @@
+ 
+ namespace mu2e {
+ 
++  class TargetRecording;
++
+   class Mu2eG4StackingAction: public G4UserStackingAction{
+   public:
+     Mu2eG4StackingAction(IMu2eG4Cut& stackingCuts,
+-                         IMu2eG4Cut& commonCuts);
++                         IMu2eG4Cut& commonCuts,
++                         TargetRecording* targetRecording = nullptr);
+ 
+     G4ClassificationOfNewTrack ClassifyNewTrack(const G4Track* aTrack) override;
+ 
+@@ -20,6 +23,7 @@
+     // owned by Mu2eG4 module.
+     IMu2eG4Cut* stackingCuts_ = nullptr;
+     IMu2eG4Cut* commonCuts_ = nullptr;
++    TargetRecording* targetRecording_ = nullptr;
+   };
+ 
+ } // end namespace mu2e
+--- a/Mu2eG4/inc/Mu2eG4SteppingAction.hh
++++ b/Mu2eG4/inc/Mu2eG4SteppingAction.hh
+@@ -30,6 +30,7 @@
+ 
+   // Forward declarations in mu2e namespace
+   class SimParticleHelper;
++  class TargetRecording;
+   class PhysicsProcessInfo;
+   class Mu2eG4ResourceLimits;
+   class Mu2eG4TrajectoryControl;
+@@ -43,7 +44,8 @@
+                          IMu2eG4Cut& steppingCuts,
+                          IMu2eG4Cut& commonCuts,
+                          const Mu2eG4TrajectoryControl& tc,
+-                         const Mu2eG4ResourceLimits& mu2elimits);
++                         const Mu2eG4ResourceLimits& mu2elimits,
++                         TargetRecording* targetRecording = nullptr);
+ 
+     void UserSteppingAction(const G4Step*);
+ 
+@@ -79,6 +81,7 @@
+     // owned by Mu2eG4 module.
+     IMu2eG4Cut* steppingCuts_ = nullptr;
+     IMu2eG4Cut* commonCuts_ = nullptr;
++    TargetRecording* targetRecording_ = nullptr;
+ 
+     const Mu2eG4ResourceLimits *mu2elimits_ = nullptr;
+ 
+--- a/Mu2eG4/src/Mu2eG4_module.cc
++++ b/Mu2eG4/src/Mu2eG4_module.cc
+@@ -443,6 +443,10 @@
+       seedG4EngineFromEventID(event.id(), conf_.salt());
+     }
+ 
++    if (perThreadStore.targetRecording) {
++      perThreadStore.targetRecording->prepareEvent(event, perThreadStore.ioconf.inputs().primaryTag(),
++                                                  perThreadStore.simParticleHelper.value());
++    }
+     // Run G4 for this event and access the completed event.
+     BeamOnDoOneArtEvent( event.id().event() );
+ 
+--- a/Mu2eG4/src/Mu2eG4ActionInitialization.cc
++++ b/Mu2eG4/src/Mu2eG4ActionInitialization.cc
+@@ -24,6 +24,7 @@
+ 
+ //C++ includes
+ #include <iostream>
++#include <stdexcept>
+ 
+ namespace mu2e {
+ 
+@@ -60,15 +61,31 @@
+     Mu2eG4PrimaryGeneratorAction* genAction = new Mu2eG4PrimaryGeneratorAction(conf_.debug(), perThreadStorage_);
+     SetUserAction(genAction);
+ 
++    if (conf_.TargetRecording.hasValue()) {
++      if (conf_.debug().ionToGenerate.hasValue()) {
++        throw std::runtime_error("TargetRecording refuses extra debug-ion primaries");
++      }
++      if (conf_.inputs().primaryType() != "GenParticles" || conf_.G4InteralFiltering()) {
++        throw std::runtime_error("TargetRecording requires GenParticles and no internal filtering");
++      }
++      auto const spec = conf_.TargetRecording().value();
++      perThreadStorage_->targetRecording = std::make_unique<TargetRecording>(
++        spec.outputDirectory(), spec.targetPhysicalVolumeNames(), spec.targetMaterialName(),
++        spec.maxRows(), spec.maxVolumes(), spec.maxBytes(), originInWorld_);
++    }
++
+     Mu2eG4SteppingAction* steppingAction = new Mu2eG4SteppingAction(conf_.debug(),
+                                                                     timeVDtimes_,
+                                                                     *perThreadStorage_->steppingCuts,
+                                                                     *perThreadStorage_->commonCuts,
+                                                                     perThreadStorage_->ioconf.trajectoryControl(),
+-                                                                    perThreadStorage_->ioconf.mu2elimits());
++                                                                    perThreadStorage_->ioconf.mu2elimits(),
++                                                                    perThreadStorage_->targetRecording.get());
+     SetUserAction(steppingAction);
+ 
+-    SetUserAction( new Mu2eG4StackingAction(*perThreadStorage_->stackingCuts, *perThreadStorage_->commonCuts) );
++    SetUserAction( new Mu2eG4StackingAction(*perThreadStorage_->stackingCuts,
++                                         *perThreadStorage_->commonCuts,
++                                         perThreadStorage_->targetRecording.get()) );
+ 
+     Mu2eG4TrackingAction* trackingAction = new Mu2eG4TrackingAction(conf_,
+                                                         steppingAction,
+--- a/Mu2eG4/src/Mu2eG4EventAction.cc
++++ b/Mu2eG4/src/Mu2eG4EventAction.cc
+@@ -18,6 +18,7 @@
+ 
+ //G4 includes
+ #include "Geant4/G4Timer.hh"
++#include "Geant4/G4Event.hh"
+ #include "Geant4/G4SDManager.hh"
+ #include "Geant4/G4EventManager.hh"
+ 
+@@ -86,6 +87,11 @@
+   {
+     art::Event *_artEvent = perThreadObjects_->artEvent;
+     SimParticleHelper *_spHelper = &perThreadObjects_->simParticleHelper.value();
++    if (perThreadObjects_->targetRecording) {
++      auto const id = _artEvent->id();
++      perThreadObjects_->targetRecording->beginEvent(id.run(), id.subRun(), id.event(), *_spHelper,
++                                                     perThreadObjects_->simParticlePrimaryHelper.value());
++    }
+ 
+     // local Mu2e timer, almost equal to time of G4EventManager::ProcessOneEvent()
+     _timer->Start();
+@@ -167,6 +173,12 @@
+                                                              );
+ 
+       _sensitiveDetectorHelper->insertSDDataIntoPerThreadStorage(perThreadObjects_);
++      if (perThreadObjects_->targetRecording) {
++        perThreadObjects_->targetRecording->endEvent(
++          status, evt->IsAborted(), _trackingAction->overflowSimParticles(),
++          _trackingAction->nKilledStepLimit(), _trackingAction->nKilledByFieldPropagator(),
++          *perThreadObjects_->simPartCollection);
++      }
+ 
+     }//event_passes cuts
+ 
+--- a/Mu2eG4/src/Mu2eG4MT_module.cc
++++ b/Mu2eG4/src/Mu2eG4MT_module.cc
+@@ -57,6 +57,7 @@
+ #include <iostream>
+ #include <memory>
+ #include <mutex>
++#include <stdexcept>
+ #include <string>
+ #include <thread>
+ #include <utility>
+@@ -186,6 +187,9 @@
+ 
+       // This statement requires that the external libraries the module uses are thread-safe,
+       // and that the data member members are used in a thread-safe manner
++      if (conf_.TargetRecording.hasValue()) {
++        throw std::runtime_error("TargetRecording proposal supports sequential Mu2eG4 only");
++      }
+       async<art::InEvent>();
+ 
+       if (num_schedules>1) {
+--- a/Mu2eG4/src/Mu2eG4StackingAction.cc
++++ b/Mu2eG4/src/Mu2eG4StackingAction.cc
+@@ -1,6 +1,7 @@
+ // Andrei Gaponenko, 2015
+ 
+ #include "Offline/Mu2eG4/inc/Mu2eG4StackingAction.hh"
++#include "Offline/Mu2eG4/inc/TargetRecording.hh"
+ 
+ #include <vector>
+ #include <string>
+@@ -9,18 +10,23 @@
+ namespace mu2e {
+ 
+   Mu2eG4StackingAction::Mu2eG4StackingAction(IMu2eG4Cut& stackingCuts,
+-                                             IMu2eG4Cut& commonCuts)
++                                             IMu2eG4Cut& commonCuts,
++                                             TargetRecording* targetRecording)
+     : stackingCuts_(&stackingCuts)
+     , commonCuts_(&commonCuts)
++    , targetRecording_(targetRecording)
+   {}
+ 
+   G4ClassificationOfNewTrack Mu2eG4StackingAction::ClassifyNewTrack(const G4Track* trk){
+     if(stackingCuts_->stackingActionCut(trk)) {
++      if (targetRecording_) targetRecording_->stacking(*trk, static_cast<int>(fKill), true, false);
+       return fKill;
+     }
+     if(commonCuts_->stackingActionCut(trk)) {
++      if (targetRecording_) targetRecording_->stacking(*trk, static_cast<int>(fKill), false, true);
+       return fKill;
+     }
++    if (targetRecording_) targetRecording_->stacking(*trk, static_cast<int>(fUrgent), false, false);
+     return fUrgent;
+   }
+ 
+--- a/Mu2eG4/src/Mu2eG4SteppingAction.cc
++++ b/Mu2eG4/src/Mu2eG4SteppingAction.cc
+@@ -15,6 +15,7 @@
+ 
+ // Mu2e includes
+ #include "Offline/Mu2eG4/inc/Mu2eG4SteppingAction.hh"
++#include "Offline/Mu2eG4/inc/TargetRecording.hh"
+ #include "Offline/Mu2eG4/inc/Mu2eG4UserHelpers.hh"
+ #include "Offline/DataProducts/inc/PDGCode.hh"
+ #include "Offline/Mu2eG4/inc/getPhysicalVolumeOrThrow.hh"
+@@ -33,10 +34,12 @@
+                                              IMu2eG4Cut& steppingCuts,
+                                              IMu2eG4Cut& commonCuts,
+                                              const Mu2eG4TrajectoryControl& trajectoryControl,
+-                                             const Mu2eG4ResourceLimits& lim) :
++                                             const Mu2eG4ResourceLimits& lim,
++                                             TargetRecording* targetRecording) :
+ 
+     steppingCuts_(&steppingCuts),
+     commonCuts_(&commonCuts),
++    targetRecording_(targetRecording),
+     mu2elimits_(&lim),
+     numTrackSteps_(),
+     stepLimitKillerVerbose_(debug.stepLimitKillerVerbose()),
+@@ -151,10 +154,17 @@
+       }
+     }
+ 
++    if (targetRecording_) {
++      targetRecording_->step(*step);
++    }
+     if(steppingCuts_->steppingActionCut(step)) {
+       killTrack(track, ProcessCode::mu2eKillerVolume, fStopAndKill);
++      if (targetRecording_) targetRecording_->cuts(*track, true, false);
+     } else if(commonCuts_->steppingActionCut(step)) {
+       killTrack(track, ProcessCode::mu2eKillerVolume, fStopAndKill);
++      if (targetRecording_) targetRecording_->cuts(*track, false, true);
++    } else if (targetRecording_) {
++      targetRecording_->cuts(*track, false, false);
+     }
+ 
+     //----------------------------------------------------------------
+--- a/Mu2eG4/src/Mu2eG4TrackingAction.cc
++++ b/Mu2eG4/src/Mu2eG4TrackingAction.cc
+@@ -295,6 +295,9 @@
+     // but after attaching the  user track information
+ 
+     saveSimParticleStart(trk);
++    if (perThreadObjects_->targetRecording) {
++      perThreadObjects_->targetRecording->beginTrack(*trk);
++    }
+ 
+     Mu2eG4UserHelpers::controlTrajectorySaving(trk, _sizeLimit, _currentSize,
+                                                _saveTrajectoryMomentumCut);
+@@ -318,6 +321,9 @@
+     _timer.stop();
+ 
+     // Finalize the SimParticle
++    if (perThreadObjects_->targetRecording) {
++      perThreadObjects_->targetRecording->endTrack(*trk);
++    }
+     saveSimParticleEnd(trk);
+ 
+     // If this particle passes the cuts, add the trajectory
+@@ -418,6 +424,9 @@
+         mf::LogWarning("G4") << "Maximum number of particles reached in Mu2eG4TrackingAction: "
+                              << _currentSize << endl;
+         _overflowSimParticles = true;
++      }
++      if (perThreadObjects_->targetRecording) {
++        perThreadObjects_->targetRecording->simParticleOmitted(*trk);
+       }
+       return;
+     }
+@@ -601,6 +610,9 @@
+       //                                      _timer, _mu2eOrigin);
+       // }
+     }
++    if (perThreadObjects_->targetRecording) {
++      perThreadObjects_->targetRecording->simParticleInserted(*trk, _transientMap.at(kid));
++    }
+   }//saveSimParticleStart
+ 
+ 

@@ -1,0 +1,8 @@
+# Read-only survivor/continuation audit of existing Run 1B TS1ToTS5 outputs.
+#include "ts1_run1b_readvd.fcl"
+process_name : ts5reference
+physics.analyzers.mutree.vdStepPoints : "TS5Filter:virtualdetector"
+physics.analyzers.mutree.tvdStepPoints : "TS5Filter:timeVD"
+physics.analyzers.mutree.simParticleColl : "TS5Filter"
+physics.analyzers.mutree.physicsVolumeColl : "compressPVTS5"
+services.TFileService.fileName : "ts5_reference.root"

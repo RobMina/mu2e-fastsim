@@ -13,6 +13,7 @@ dependencies = ["mu2efastsim", "numpy", "scipy", "uproot", "jax"]
 [project.optional-dependencies]
 plots = ["matplotlib"]
 test = ["pytest"]
+catalog = ["metacat"]
 
 [project.scripts]
 beamfastsim = "beamfastsim.__main__:main"

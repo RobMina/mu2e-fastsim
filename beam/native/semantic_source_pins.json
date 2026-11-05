@@ -1,0 +1,33 @@
+{
+  "schema": "target-recording-semantic-review-v1",
+  "library_eligible": false,
+  "native_execution_performed": false,
+  "installed_manager_implementation_matched": false,
+  "offline_revision": "b24d4163e5e8f5ed2b5f72fccb25e4980fec64e2",
+  "offline_source_sha256": {
+    "EventGenerator/src/GenEventCounter_module.cc": "9cea60d5af5d165994f81e4b73f279d12652541c67b9b0d9b34cdca98e8c75fb",
+    "Mu2eG4/inc/Mu2eG4Inputs.hh": "d23d2cd4cfbf8b7d279c6e75f2f348963ac967923b9a390bf1d0c46aae5ce1ae",
+    "Mu2eG4/inc/SimParticlePrimaryHelper.hh": "0dde3b3e80de459dd5564a9595ffc2c7163577516c95c166794bd15228b0924e",
+    "Mu2eG4/src/Mu2eG4Inputs.cc": "6719c334f6def79e5ebbfba5f3b6a4925ed3b4188cfeb1f3f30fec3fcac18718",
+    "Mu2eG4/src/Mu2eG4PrimaryGeneratorAction.cc": "456615251ed96e49fe226b2799257c8ca2b1136df3a2379af0305e2f56415c44",
+    "Mu2eG4/src/Mu2eG4PerThreadStorage.cc": "f68d279bbec9265aa7b57036d8973b7d10ff6d2d8313ca0705b144dabf3055db",
+    "Mu2eG4/src/SimParticlePrimaryHelper.cc": "4d4b4dacfa6a3aa9b221e964bc5d0190bf537ddd36d0373f47706141ca8228cb",
+    "MCDataProducts/inc/GenParticle.hh": "e242da0b6a82a2d5aaac0cfc457d9787ebf915c390f425a7c100bb54dc6f2b3a",
+    "MCDataProducts/inc/SimParticle.hh": "017dd8c242f76c806d1ab4cdb9f2bdf089163f32e5236797194bdf586ec86bea",
+    "MCDataProducts/inc/GenEventCount.hh": "50730758950fdfcf3d6487721914acb5bd4e3dac2f72e61b9d61a82bfbffd91e"
+  },
+  "geant4_tag": "v11.3.2",
+  "geant4_tag_object": "1b1ba3154688256fe92c44fecc455050f00f64c9",
+  "geant4_commit": "62f62ecae238a7c304c52af4affbe70795475590",
+  "geant4_upstream_sha256": {
+    "G4Event.hh": "9cb02dab1f376bf9eeb1e1fd2e0b643e386ec3451dc69ae02dee1a35d4e015b7",
+    "G4EventManager.cc": "0141e693dd3f171190387af7adf773631ec27231603765ed6d2ba58046b6106d",
+    "G4ParticleChangeForTransport.cc": "044b898026070fb93c91fe2cb900ebbfc8d1a5ce0638edb5295e0f4554b415f3",
+    "G4RunManager.cc": "7c458acbb1f283aeb2b2e53c4a4c780aa5a99c6e5e0b9152fa7137d7a5779ba4",
+    "G4StackManager.cc": "2ec035874c2c6732484caf8044ecddad18b867fb8e5d20e8885894bf64af03dd",
+    "G4Step.cc": "ca56d31e0289dce536f8a65ff04e2c8cbfef61e851c9fde369757bc4d55caccb",
+    "G4SteppingManager.cc": "3aadeebb2d37c9d4bff670b841916311446a5351b7b8c98f11300cb7aa8ccac5",
+    "G4TrackingManager.cc": "6aecd2d48b59585ff02e5c04f02fdcfd90fd31b75161d0f82f48983efbd66864"
+  },
+  "installed_event_header_sha256": "9cb02dab1f376bf9eeb1e1fd2e0b643e386ec3451dc69ae02dee1a35d4e015b7"
+}

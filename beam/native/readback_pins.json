@@ -1,0 +1,28 @@
+{
+  "schema": "target-written-products-source-proposal-v1",
+  "offline_revision": "b24d4163e5e8f5ed2b5f72fccb25e4980fec64e2",
+  "library_eligible": false,
+  "build_performed": false,
+  "native_execution_performed": false,
+  "original_art_read_performed": false,
+  "installed_module": false,
+  "proposal_sha256": {
+    "native/TargetReadback_module.cc": "cb4cbe6b300e125e5f9ed9bc92850f96784cfe8bb8afa76f1e947ecbe41f0f88",
+    "beamfastsim/tsrecordreadback.py": "ef334022cabd0ca381264626014135079bccaf436a17f0104b8192e7cd7fbded",
+    "TARGET_READBACK.md": "80b5779e46b6282c896644fd7d25439bfefabbce80738850c38f2949aaf56226"
+  },
+  "offline_source_sha256": {
+    "MCDataProducts/inc/GenParticle.hh": "e242da0b6a82a2d5aaac0cfc457d9787ebf915c390f425a7c100bb54dc6f2b3a",
+    "MCDataProducts/inc/SimParticle.hh": "017dd8c242f76c806d1ab4cdb9f2bdf089163f32e5236797194bdf586ec86bea",
+    "MCDataProducts/inc/GenEventCount.hh": "50730758950fdfcf3d6487721914acb5bd4e3dac2f72e61b9d61a82bfbffd91e",
+    "MCDataProducts/inc/StatusG4.hh": "82be27e44e8fcd36bfe309a287c55c256ed1e6452257dfdb1d2e470fcfe5ca81"
+  },
+  "installed_header_sha256": {
+    "art/Framework/Core/FileBlock.h": "bc11e87de9837cdc8a7904e5d5d6c99f65a8127d233ca390c265f085d94f9521",
+    "art/Framework/Core/EDAnalyzer.h": "cb8eeec40655401cd2efb4c779b6a7847d9871b27d4d6562b00a105493bf4046",
+    "art/Framework/Principal/SubRun.h": "887265554e1fe522d0237603bd8bda54d3741f2f1ca1fc9a208c50acaf61854c",
+    "art/Framework/Core/ModuleBase.h": "9022da25167f244ccced1c8b1840ca7c367928c48ea2e819d0db6cfcd8f7be44"
+  },
+  "callback_order_qualified": false,
+  "original_file_registry_authenticated": false
+}
