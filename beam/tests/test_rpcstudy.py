@@ -108,6 +108,17 @@ def test_tracker_front_disk_radius_applies_to_fast_crossings(tmp_path):
     assert report["vd_radius_mm"] == 850.1
 
 
+def test_helix_cut_is_optional_and_keeps_denominators(tmp_path, monkeypatch):
+    ref, fast, _, _ = fixtures(tmp_path)
+    def radius(q, geom, field):
+        q["rmax"] = np.tile([400., 500.], 4)
+    monkeypatch.setattr(R, "add_helix_radius", radius)
+    report = R.compare(ref, fast, [0, 1], geom=object(), field=object())
+    y = report["selections"]["fiducial"]["yield_"]
+    assert y["exposure"] == 4 and y["stock_count"] == 2 and y["fast_count"] == 1
+    assert report["selections"]["fiducial"]["rmax_min"] == 450.
+
+
 def test_plot(tmp_path):
     ref, fast, _, _ = fixtures(tmp_path)
     report = R.compare(ref, fast, [0, 1])

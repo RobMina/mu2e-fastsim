@@ -118,10 +118,22 @@ def plane_quantities(table, stock=False, axis_x=-3904.):
         p = np.sqrt(table["T"] * (table["T"] + 2 * 0.51099895))
         x, cos = table["x"], table["u"][:, 2]
         ok = table["fate"] == 1
-    return dict(ok=ok, p=p, cos=cos, r=np.hypot(x[:, 0] - axis_x, x[:, 1]))
+    u = np.divide(pvec, p[:, None], out=np.zeros_like(pvec), where=p[:, None] > 0) if stock else table["u"]
+    return dict(ok=ok, p=p, cos=cos, r=np.hypot(x[:, 0] - axis_x, x[:, 1]), x=x, u=u)
 
 
-def compare(ref_path, fast_path, members, *, starts_path=None, axis_x=-3904., pmin=60., vd_radius=850.1):
+def add_helix_radius(quantities, geom, field):
+    """Maximum radius of the local helix; a fiducial cut, not a detector-filter guarantee."""
+    from . import cechain as C
+    ok = quantities["ok"]
+    rmax = np.full(ok.size, np.nan)
+    rmax[ok] = C.helix_rmax(geom, quantities["x"][ok], quantities["u"][ok], quantities["p"][ok],
+                           field(quantities["x"][ok])[:, 2])[0]
+    quantities["rmax"] = rmax
+
+
+def compare(ref_path, fast_path, members, *, starts_path=None, axis_x=-3904., pmin=60., vd_radius=850.1,
+            geom=None, field=None, rmax_min=450.):
     """Compare either exact saved starts or matched-stop-window source draws."""
     if not np.isfinite([axis_x, pmin, vd_radius]).all() or pmin < 0 or vd_radius <= 0:
         raise ValueError("finite plane geometry and nonnegative momentum cut required")
@@ -163,15 +175,23 @@ def compare(ref_path, fast_path, members, *, starts_path=None, axis_x=-3904., pm
                 raise ValueError("generated source shard is missing")
             scale = exposure / fast_n
             scope = "same pion-stop windows; independent pair draws; saved-stock yield, not inclusive Geant4 acceptance"
+        selections = [("vd13", 0., None), ("vd13_pmin", pmin, None)]
+        if geom is not None and field is not None:
+            add_helix_radius(g, geom, field)
+            add_helix_radius(b, geom, field)
+            selections.append(("fiducial", pmin, rmax_min))
         out = dict(scope=scope, members=members.tolist(), fast_total_rows=int(len(idx)),
                    stock_total_rows=int(len(gs)), stock_total_generated=int(np.sum(r["gencount"])),
                    fast_wall_s=float(f["wall"]), vd_radius_mm=vd_radius, selections={})
-        for name, threshold in (("vd13", 0.), ("vd13_pmin", pmin)):
+        for name, threshold, radius_min in selections:
             sa = g["ok"] & (g["p"] > threshold) & (g["r"] < vd_radius)
             sb = b["ok"] & (b["p"] > threshold) & (b["r"] < vd_radius)
+            if radius_min is not None:
+                sa &= g["rmax"] > radius_min
+                sb &= b["rmax"] > radius_min
             ks = np.array([np.sum(sa & (gs == k)) for k in members])
             kf = np.array([np.sum(sb & (fs == k)) for k in members]) * scale
-            report = dict(yield_=clustered_ratio(ks, kf, exposure), pmin=threshold, shapes={})
+            report = dict(yield_=clustered_ratio(ks, kf, exposure), pmin=threshold, rmax_min=radius_min, shapes={})
             for key, edges in BINS.items():
                 hs = hist_by_shard(g[key], sa, gs, members, edges)
                 hf = hist_by_shard(b[key], sb, fs, members, edges) * scale[:, None]
@@ -185,7 +205,7 @@ def plot(report, output):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    panel = report["selections"]["vd13_pmin"]
+    panel = report["selections"].get("fiducial", report["selections"]["vd13_pmin"])
     fig, ax = plt.subplots(2, 3, figsize=(13, 5.5), sharex="col", height_ratios=(3, 1))
     labels = {"p": "Momentum at VD13 [MeV/c]", "cos": r"cos $\theta$ at VD13", "r": "Radius at VD13 [mm]"}
     for j, (key, label) in enumerate(labels.items()):
@@ -201,8 +221,9 @@ def plot(report, output):
         ax[1, j].set_xlabel(label)
     y = panel["yield_"]
     ax[0, 0].legend(fontsize=9)
-    fig.suptitle(f"RPC electron marginal, p > {panel['pmin']:g} MeV/c: fast/saved-stock "
-                 f"{y['ratio']:.4f} ± {y['ratio_error']:.4f}\n{report['scope']}", fontsize=10)
+    radius_label = f", helix rmax > {panel['rmax_min']:g} mm" if panel["rmax_min"] is not None else ""
+    fig.suptitle(f"RPC electron marginal, p > {panel['pmin']:g} MeV/c{radius_label}: fast/saved-stock "
+                 f"{y['ratio']:.4f} ± {y['ratio_error']:.4f}\n{report['scope']}", fontsize=9)
     fig.tight_layout()
     fig.savefig(output, dpi=170)
     plt.close(fig)
@@ -224,14 +245,24 @@ def main(argv=None):
     c.add_argument("--axis-x", type=float, default=-3904.)
     c.add_argument("--pmin", type=float, default=60.)
     c.add_argument("--vd-radius", type=float, default=850.1, help="Run 1A TT_FrontHollow disk radius [mm]")
+    c.add_argument("--offline-root", help="with --maps: add the existing CE helix-radius fiducial cut")
+    c.add_argument("--geom", default="Offline/Mu2eG4/geom/geom_run1_a.txt")
+    c.add_argument("--maps", nargs="+")
+    c.add_argument("--rmax-min", type=float, default=450.)
     c.add_argument("--out", required=True)
     c.add_argument("--png")
     a = ap.parse_args(argv)
     if a.command == "starts":
         starts(a.window, a.out, a.repeats, a.seed)
     else:
+        geom = field = None
+        if bool(a.offline_root) != bool(a.maps):
+            ap.error("--offline-root and --maps are required together")
+        if a.offline_root:
+            from . import cechain as C
+            geom, field = C.from_offline(a.geom, a.offline_root), C.field_maps(a.maps)
         report = compare(a.ref, a.fast, a.shards, starts_path=a.starts, axis_x=a.axis_x, pmin=a.pmin,
-                         vd_radius=a.vd_radius)
+                         vd_radius=a.vd_radius, geom=geom, field=field, rmax_min=a.rmax_min)
         Path(a.out).write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
         if a.png:
             plot(report, a.png)
