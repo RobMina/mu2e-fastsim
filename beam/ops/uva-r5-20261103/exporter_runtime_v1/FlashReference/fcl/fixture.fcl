@@ -1,0 +1,31 @@
+# Synthetic products for extraction tests only; no Geant4 or detector services.
+#include "FlashReference/fcl/export.fcl"
+process_name: flashReferenceFixture
+services.TFileService: { fileName: "flash_reference_fixture.root" }
+physics.analyzers.export: @local::flashReferenceExport
+physics.read: [export]
+source: {
+  module_type: EmptyEvent
+  maxEvents: 4
+  firstRun: 1
+  firstSubRun: 1
+  firstEvent: 1
+  numberEventsInSubRun: 2
+}
+physics.producers.fixture: { module_type: FlashReferenceFixture }
+physics.analyzers.export.steps: ["fixture:source", "fixture:photon", "fixture:tracker"]
+physics.analyzers.export.requiredParticles: ["fixture:input", "fixture:continued"]
+physics.analyzers.export.requiredGenerators: ["fixture"]
+physics.analyzers.export.statuses: ["fixture"]
+physics.analyzers.export.volumes: ["fixture"]
+physics.analyzers.export.expectedEvents: 4
+physics.make: [fixture]
+physics.trigger_paths: [make]
+outputs.saved: {
+  module_type: RootOutput
+  fileName: "flash_reference_fixture_%#.art"
+  outputCommands: ["keep *_*_*_*"]
+  fileProperties: { granularity: "Job" }
+}
+physics.out: [saved]
+physics.end_paths: [read, out]

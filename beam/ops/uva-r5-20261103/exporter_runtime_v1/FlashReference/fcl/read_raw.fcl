@@ -1,0 +1,10 @@
+# Read saved raw art only; no transport, selection, aggregation or compression.
+#include "FlashReference/fcl/export.fcl"
+process_name: flashReferenceRead
+source: { module_type: RootInput maxEvents: 0 }
+services.TFileService: { fileName: "flash_reference_export.root" }
+physics: {
+  analyzers: { export: @local::flashReferenceExport }
+  read: [export]
+  end_paths: [read]
+}

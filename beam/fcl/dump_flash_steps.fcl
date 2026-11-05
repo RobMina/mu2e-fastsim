@@ -1,0 +1,7 @@
+# Dump compressed beam-flash steps with the existing tracker truth-table analyzer.
+#include "TrkFastSim/fcl/dump_sgsteps.fcl"
+physics.analyzers.dump.genParticles: "compressDetStepMCs"
+physics.analyzers.dump.writeTrajectories: false
+physics.analyzers.genCount: { module_type: GenEventCountReader makeHistograms: false }
+physics.analyzers.eventCount: { module_type: RunSubrunEvent printSam: false }
+physics.e1: [ dump, genCount, eventCount ]

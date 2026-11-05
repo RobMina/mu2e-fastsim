@@ -1,0 +1,4 @@
+# Local muse area state is never part of the source package.
+/backing
+/build/
+*.dblite

@@ -1,0 +1,5 @@
+# Supply the same four-event input twice; the exporter must reject its repeated ID.
+#include "FlashReference/fcl/read_fixture.fcl"
+source.maxEvents: 8
+source.duplicateCheckMode: "noDuplicateCheck"
+physics.analyzers.export.expectedEvents: 8

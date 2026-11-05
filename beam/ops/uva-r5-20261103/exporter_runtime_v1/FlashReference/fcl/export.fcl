@@ -1,0 +1,12 @@
+BEGIN_PROLOG
+flashReferenceExport: {
+  module_type: FlashReferenceExporter
+  steps: ["BeamFilter:Beam", "g4run:r5PhotonSteps", "g4run:tracker", "g4run:calorimeter", "g4run:CRV", "g4run:virtualdetector"]
+  requiredParticles: ["BeamFilter", "g4run"]
+  requiredGenerators: ["generate"]
+  statuses: ["g4run"]
+  volumes: ["compressPVBeam", "g4run"]
+  ordinalBase: 0
+  expectedEvents: 0
+}
+END_PROLOG

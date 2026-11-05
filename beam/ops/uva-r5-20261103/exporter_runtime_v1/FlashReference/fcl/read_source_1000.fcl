@@ -1,0 +1,5 @@
+# Explicit 1000-event existing-source extraction control; input path is supplied separately.
+#include "FlashReference/fcl/read_source.fcl"
+source.maxEvents: 1000
+source.reportFrequency: 100
+physics.analyzers.export.expectedEvents: 1000

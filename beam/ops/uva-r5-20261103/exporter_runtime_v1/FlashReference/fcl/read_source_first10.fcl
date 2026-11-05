@@ -1,0 +1,4 @@
+# Existing-source partition control only; no transport.
+#include "FlashReference/fcl/read_source_1000.fcl"
+source.maxEvents: 10
+physics.analyzers.export.expectedEvents: 10

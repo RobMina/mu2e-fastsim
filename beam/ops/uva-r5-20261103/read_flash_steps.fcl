@@ -1,0 +1,32 @@
+# Inspect cut-generated beam StepPointMCs without interpreting copy numbers as VD IDs.
+#include "Offline/fcl/standardServices.fcl"
+process_name: flashStepRead
+source: { module_type: RootInput }
+services: {
+  @table::Services.Core
+  TFileService: { fileName: "beam_steps.root" }
+}
+physics: {
+  analyzers: {
+    input: {
+      module_type: StepPointMCDumper
+      hitsInputTag: "BeamFilter:Beam"
+      writeVDHit: true
+      writeParticleState: true
+      detectorSystem: false
+    }
+    identities: {
+      module_type: StepPointsPrinter
+      inputCollection: "BeamFilter:Beam"
+    }
+    ancestry: {
+      module_type: SimParticleAnalyzer
+      g4ModuleLabel: "BeamFilter"
+      maxPrint: 0
+      verbosityLevel: 0
+    }
+    eventCount: { module_type: RunSubrunEvent printSam: true }
+  }
+  e1: [input, identities, ancestry, eventCount]
+  end_paths: [e1]
+}

@@ -1,0 +1,6 @@
+# Existing-source disjoint remainder control; ordinalBase labels, skipEvents skips.
+#include "FlashReference/fcl/read_source_1000.fcl"
+source.maxEvents: 990
+source.skipEvents: 10
+physics.analyzers.export.expectedEvents: 990
+physics.analyzers.export.ordinalBase: 10

@@ -1,0 +1,27 @@
+# Legacy diagnostic only: ReadVirtualDetector assumes real VD IDs, not cut-volume copy numbers.
+#include "Offline/fcl/standardServices.fcl"
+process_name: flashInputRead
+source: { module_type: RootInput }
+services: {
+  @table::Services.Core
+  TFileService: { fileName: "beam_input.root" }
+}
+physics: {
+  analyzers: {
+    input: {
+      module_type: ReadVirtualDetector
+      vdStepPoints: "BeamFilter:Beam"
+      simParticleColl: "BeamFilter"
+      generatorModuleLabel: "generate"
+      saveAllPDG: true
+      navigateToParent: false
+      writeNTVD: true
+      writeNTVDEXT: true
+      writeNTTVD: false
+      writeNTPART: true
+      writeNTPART1: false
+    }
+  }
+  e1: [input]
+  end_paths: [e1]
+}

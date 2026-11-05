@@ -1,0 +1,7 @@
+# Existing catalog export only; no transport and no invented downstream status.
+#include "FlashReference/fcl/read_raw.fcl"
+physics.analyzers.export.steps: ["BeamFilter:Beam"]
+physics.analyzers.export.requiredParticles: ["BeamFilter"]
+physics.analyzers.export.requiredGenerators: ["generate"]
+physics.analyzers.export.statuses: []
+physics.analyzers.export.volumes: ["compressPVBeam"]

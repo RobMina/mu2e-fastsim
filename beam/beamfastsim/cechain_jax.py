@@ -97,14 +97,15 @@ def _dot(a, b):
 _BUILT = {}
 
 
-def _build(geom, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unroll, const_field):
+def _build(geom, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unroll, const_field,
+           positron=False, photon_capacity=None):
     key = (id(geom), np.dtype(dt).name, h, s_max, msc, layer_field, shell_curvature, z_record, unroll,
-           None if const_field is None else tuple(np.asarray(const_field, float)))
+           None if const_field is None else tuple(np.asarray(const_field, float)), bool(positron), photon_capacity)
     if key in _BUILT:
         return _BUILT[key]
     b = geom.beam
     specs, Lf, t_ipa, t_opa, t_ring, counter = layer_types(geom)
-    lt = SJ.lane_tables(specs, msc=msc)
+    lt = SJ.lane_tables(specs, positron=positron, msc=msc)
     Ltype = jnp.asarray(lt.length, dt)
     counter_d = jnp.asarray(counter)
     ftype = jnp.asarray(np.searchsorted(Lf, 2 * b.foil_ht).astype(np.int32))
@@ -116,7 +117,7 @@ def _build(geom, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unro
     eps = 1e-7 if np.dtype(dt) == np.float64 else 2e-3       # foil-face search offset (a few ulp of z in float32)
     ztsda = float(b.tsda_z + b.tsda_hl)
     zr = [(float(z), float(z + 2 * geom.ring_hl)) for z in (b.ipa_z0, b.ipa_z1)]
-    q = -1.0
+    q = 1.0 if positron else -1.0
     cms = C.C_MM_NS
 
     def W(c, a, b_):
@@ -168,7 +169,7 @@ def _build(geom, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unro
         if shell_curvature:
             sgn = W(outward, 1.0, -1.0)
             dBz = sgn * _dot(u, se2) * _mom(T) / (SJ.K_FIELD * jnp.maximum(radial(x), 1e-30))
-            B = B.at[:, 2].add(W(foil, 0.0, dBz))
+            B = B.at[:, 2].add(W(foil, 0.0, -q * dBz))
 
         def loc(v):
             return jnp.stack([_dot(v, e1), _dot(v, e2), _dot(v, nn)], axis=1)
@@ -176,18 +177,18 @@ def _build(geom, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unro
 
     def reset_slab(sl, enter, keep, T, d, ty):
         """Slab state: a fresh one (depth 0) for entering lanes, unchanged for lanes still inside, exited otherwise."""
-        new = SJ.lane_state(T, d, jnp.zeros_like(T), Ltype[ty])
+        new = SJ.lane_state(T, d, jnp.zeros_like(T), Ltype[ty], positron=positron)
         out = {k: (v if k == "it" else jnp.where(enter.reshape((-1,) + (1,) * (v.ndim - 1)), new[k], v))
                for k, v in sl.items()}
         out["exited"] = jnp.where(enter, new["exited"], keep & sl["exited"] | ~keep)
         return out
 
-    def init(maps, x, u, T, t, k0, zl):
+    def init(maps, x, u, T, t, k0, zl, key=None):
         n = x.shape[0]
         born = k0 >= 0
         ty = jnp.where(born, ftype[jnp.clip(k0, 0, nf - 1)], 0)
         e1, e2, nn, entry, dloc, Bl = frames(maps, x, u, T, ty, k0)
-        sl = SJ.lane_state(T, dloc, jnp.where(born, zl, 0.0), Ltype[ty])
+        sl = SJ.lane_state(T, dloc, jnp.where(born, zl, 0.0), Ltype[ty], positron=positron)
         sl["exited"] = sl["exited"] | ~born
         st = dict(x=x, u=u, T=T, t=t, s=jnp.zeros(n, dt), fate=jnp.zeros(n, jnp.int32), inl=born, lty=ty,
                   e1=e1, e2=e2, en=nn, xent=entry, Tin=T, Bl=Bl, cnt=jnp.zeros((n, NCOUNT), jnp.int32), slab=sl,
@@ -195,7 +196,43 @@ def _build(geom, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unro
         if z_record is not None:
             st.update(rec_ok=jnp.zeros(n, bool), rec_x=jnp.zeros((n, 3), dt), rec_u=jnp.zeros((n, 3), dt),
                       rec_T=jnp.zeros(n, dt), rec_t=jnp.zeros(n, dt))
+        if photon_capacity is not None:
+            st.update(records=dict(energy=jnp.zeros((n, photon_capacity), dt),
+                                   position=jnp.zeros((n, photon_capacity, 3), dt),
+                                   direction=jnp.zeros((n, photon_capacity, 3), dt),
+                                   path=jnp.zeros((n, photon_capacity), dt),
+                                   time=jnp.zeros((n, photon_capacity), dt),
+                                   valid=jnp.zeros((n, photon_capacity), bool),
+                                   mechanism=jnp.zeros((n, photon_capacity), jnp.int32)),
+                      count=jnp.zeros(n, jnp.int32), nadapt=jnp.zeros(n, jnp.int32))
+            st.update({name: sl[name] for name in ("nph", "eph", "nde", "ede", "nan", "ean", "cont")})
+            st["fate"] = jnp.where(sl["stopped"], C.STOPPED, st["fate"])
+            st["T"] = jnp.where(sl["stopped"], 0.0, T)
+            st["xent"] = jnp.where(born[:, None], entry, x)
+            emitted = SJ.initial_annihilation_photons(jax.random.PRNGKey(0) if key is None else key, sl)
+            st = append_births(st, emitted, jnp.arange(n), jnp.arange(n), jnp.ones(n, bool), sl["T"])
         return st
+
+    def append_births(st, emitted, idx, ic, ok, Tbirth):
+        """Append gathered local births before slab counters or frames can be reset."""
+        n = st["T"].shape[0]
+        valid = emitted.valid & ok[:, None]
+        slots = st["count"][ic, None] + jnp.cumsum(valid, axis=1) - 1
+        rows = jnp.broadcast_to(idx[:, None], valid.shape)
+        rows = jnp.where(valid & (slots < photon_capacity), rows, n)
+        lp, dn = emitted.position, emitted.direction
+        e1, e2, en = (st[k][ic, None, :] for k in ("e1", "e2", "en"))
+        position = st["xent"][ic, None, :] + lp[:, :, :1] * e1 + lp[:, :, 1:2] * e2 + lp[:, :, 2:3] * en
+        direction = dn[:, :, :1] * e1 + dn[:, :, 1:2] * e2 + dn[:, :, 2:3] * en
+        bm = jnp.maximum(0.5 * (_beta(st["Tin"][ic]) + _beta(Tbirth)), 1e-6)
+        values = dict(energy=emitted.energy, position=position, direction=direction,
+                      path=st["s"][ic, None] + emitted.path,
+                      time=st["t"][ic, None] + emitted.path / (cms * bm[:, None]),
+                      valid=valid, mechanism=emitted.mechanism)
+        records = {name: old.at[rows, jnp.clip(slots, 0, photon_capacity - 1)].set(values[name], mode="drop")
+                   for name, old in st["records"].items()}
+        count = st["count"].at[idx].add(valid.sum(axis=1).astype(jnp.int32), mode="drop")
+        return dict(st, records=records, count=count)
 
     def gather(mask, m):
         """Indices of the first m lanes in mask (n where fewer), validity and the chosen-lane mask."""
@@ -217,7 +254,7 @@ def _build(geom, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unro
         s_ev, kind = h_, jnp.zeros(m, jnp.int32)
 
         def take(sel, sv, kd, s_ev, kind):
-            better = sel & jnp.isfinite(sv) & (sv < s_ev)
+            better = sel & jnp.isfinite(sv) & ((sv < s_ev) if photon_capacity is None else (sv <= s_ev))
             return jnp.where(better, sv, s_ev), jnp.where(better, kd, kind)
         s_ev, kind = take(sel_p, sz, 1, s_ev, kind)
         s_ev, kind = take(sel_f & ~sel_p & (rz >= frin[kc]) & (rz <= frout[kc]), sz, 2, s_ev, kind)
@@ -249,8 +286,14 @@ def _build(geom, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unro
         n = x.shape[0]
         p = _mom(T)
         B0 = _field(maps, const_field, x)
-        Bm = _field(maps, const_field, SJ.helix(x, u, p, q, B0, jnp.full(n, 0.5 * h, dt))[0])
-        hh = jnp.full(n, h, dt)
+        if photon_capacity is None:
+            Bm = _field(maps, const_field, SJ.helix(x, u, p, q, B0, jnp.full(n, 0.5 * h, dt))[0])
+            hh = jnp.full(n, h, dt)
+        else:
+            # Limit each optional-source vacuum turn to 0.05 rad; field variation remains a midpoint approximation.
+            hh = jnp.minimum(h, 0.05 * p / jnp.maximum(SJ.K_FIELD * jnp.linalg.norm(B0, axis=1), 1e-30))
+            Bm = _field(maps, const_field, SJ.helix(x, u, p, q, B0, 0.5 * hh)[0])
+            hh = jnp.minimum(hh, 0.05 * p / jnp.maximum(SJ.K_FIELD * jnp.linalg.norm(Bm, axis=1), 1e-30))
         xe = SJ.helix(x, u, p, q, Bm, hh)[0]
         z0, z1 = x[:, 2], xe[:, 2]
         zlo, zhi = jnp.minimum(z0, z1), jnp.maximum(z0, z1)
@@ -313,6 +356,8 @@ def _build(geom, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unro
         new["x"], new["u"] = xn, un
         new["s"] = st["s"] + s_ev
         new["t"] = st["t"] + s_ev / (cms * jnp.maximum(_beta(T), 1e-6))
+        if photon_capacity is not None:
+            new["nadapt"] = st["nadapt"] + (moved & (hh < h))
         new["nvac"] = st["nvac"] + moved
         new["nstall"] = st["nstall"] + stall
         fate = st["fate"]
@@ -339,9 +384,28 @@ def _build(geom, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unro
         idx, ic, ok, chosen = gather(act, m_slab)
         sub = {k: (v if k == "it" else v[ic]) for k, v in sl.items()}
         sub["exited"] = sub["exited"] | ~ok
-        sub = lax.cond(jnp.any(act), lambda s: SJ.lane_step(key, lt, st["lty"][ic], s, st["Bl"][ic], msc=msc,
-                                                            unroll=unroll),
-                       lambda s: {**s, "it": s["it"] + 1}, sub)
+        if photon_capacity is None:
+            sub = lax.cond(jnp.any(act), lambda s: SJ.lane_step(key, lt, st["lty"][ic], s, st["Bl"][ic],
+                                                                positron=positron, msc=msc, unroll=unroll),
+                           lambda s: {**s, "it": s["it"] + 1}, sub)
+        else:
+            def full_em(carry):
+                sub, st = carry
+                before = sub
+                sub, emitted = SJ.lane_step_emissions(key, lt, st["lty"][ic], sub, st["Bl"][ic],
+                                                       positron=positron, msc=msc, unroll=unroll)
+                st = append_births(st, emitted, idx, ic, ok & act[ic], sub["T"])
+                for name in ("nph", "eph", "nde", "ede", "nan", "ean", "cont"):
+                    delta = jnp.where(ok & act[ic], sub[name] - before[name], 0)
+                    st[name] = st[name].at[idx].add(delta, mode="drop")
+                return sub, st
+
+            def idle_em(carry):
+                sub, st = carry
+                # Finished core lanes only advance the shared RNG iteration; no births or counter deltas.
+                return {**sub, "it": sub["it"] + 1}, st
+
+            sub, st = lax.cond(jnp.any(act), full_em, idle_em, (sub, st))
         sl = {k: (sub[k] if k == "it" else sl[k].at[idx].set(sub[k], mode="drop")) for k in sl}
         stepped = act & chosen
         done = stepped & (sl["stopped"] | sl["exited"])
@@ -359,7 +423,7 @@ def _build(geom, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unro
                   fate=jnp.where(done & stop, C.STOPPED, st["fate"]), inl=st["inl"] & ~done,
                   nslab=st["nslab"] + stepped)
         st, enter, dloc = vacuum(maps, st, m_cand)
-        new = SJ.lane_state(st["T"], dloc, jnp.zeros_like(st["T"]), Ltype[st["lty"]])
+        new = SJ.lane_state(st["T"], dloc, jnp.zeros_like(st["T"]), Ltype[st["lty"]], positron=positron)
         sl = st["slab"]
         sl = {k: (v if k == "it" else jnp.where(enter.reshape((-1,) + (1,) * (v.ndim - 1)), new[k], v))
               for k, v in sl.items()}

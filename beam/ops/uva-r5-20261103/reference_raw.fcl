@@ -1,0 +1,56 @@
+# Unfiltered DS continuation; a site wrapper supplies input, geometry, seed and event limit.
+#include "Offline/fcl/standardServices.fcl"
+#include "Offline/Mu2eG4/fcl/prolog.fcl"
+
+process_name: flashReference
+source: { module_type: RootInput maxEvents: 0 }
+services: @local::Services.Sim
+
+physics: {
+  producers: {
+    g4run: @local::mu2eg4runDefaultSingleStage
+  }
+  analyzers: {
+    eventCount: { module_type: RunSubrunEvent printSam: false }
+    status: { module_type: StatusG4Analyzer input: "g4run" }
+  }
+  transport: [g4run]
+  audit: [eventCount, status]
+  out: [raw]
+  trigger_paths: [transport]
+  end_paths: [audit, out]
+}
+outputs.raw: {
+  module_type: RootOutput
+  fileName: "flash_reference.art"
+  outputCommands: ["keep *_*_*_*"]
+}
+
+physics.producers.g4run.inputs: {
+  primaryType: "StepPoints"
+  primaryTag: "BeamFilter:Beam"
+  inputMCTrajectories: ""
+  inputPhysVolumeMultiInfo: "compressPVBeam"
+}
+physics.producers.g4run.SDConfig.preSimulatedHits: []
+physics.producers.g4run.SDConfig.enableSD: [tracker, calorimeter, CRV, virtualdetector]
+physics.producers.g4run.G4InteralFiltering: false
+physics.producers.g4run.TrajectoryControl.produce: false
+physics.producers.g4run.Mu2eG4StackingOnlyCut: {}
+physics.producers.g4run.Mu2eG4CommonCut: {}
+physics.producers.g4run.Mu2eG4SteppingOnlyCut: {
+  type: intersection
+  pars: [
+    { type: pdgId pars: [22] },
+    { type: constant value: false write: "r5PhotonSteps" }
+  ]
+}
+physics.producers.g4run.ResourceLimits: {
+  maxStepsPerTrack: 100000
+  maxStepPointCollectionSize: 1000000
+  maxSimParticleCollectionSize: 1000000
+}
+physics.producers.g4run.physics.minRangeCut: 0.010
+services.TFileService.fileName: "flash_reference_audit.root"
+services.TimeTracker.printSummary: true
+services.scheduler.wantSummary: true

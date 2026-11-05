@@ -1,0 +1,9 @@
+# Re-read the saved synthetic art products without running the fixture producer.
+#include "FlashReference/fcl/read_raw.fcl"
+physics.analyzers.export.steps: ["fixture:source", "fixture:photon", "fixture:tracker"]
+physics.analyzers.export.requiredParticles: ["fixture:input", "fixture:continued"]
+physics.analyzers.export.requiredGenerators: ["fixture"]
+physics.analyzers.export.statuses: ["fixture"]
+physics.analyzers.export.volumes: ["fixture"]
+physics.analyzers.export.expectedEvents: 4
+source.maxEvents: 4

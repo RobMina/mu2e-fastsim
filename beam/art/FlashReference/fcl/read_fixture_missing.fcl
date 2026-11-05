@@ -1,0 +1,3 @@
+# This extraction control must refuse a missing mandatory source collection.
+#include "FlashReference/fcl/read_fixture.fcl"
+physics.analyzers.export.steps: ["fixture:missing", "fixture:photon", "fixture:tracker"]
