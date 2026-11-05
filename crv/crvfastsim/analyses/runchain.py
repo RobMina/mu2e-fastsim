@@ -172,12 +172,30 @@ def _load_setup(rc, cfg, gdml_path, explicit_gdml, spec, calib, deviation, jax, 
 def _save_reco(path, outs, n_events, run_config):
     """Clusters (cl_*), their member pulses (mem_cl, mem_idx: pulse index in its event) and the pulses (p_ev, p_idx,
     p_bar, p_sipm, p_pe, p_time) of one runchain input, as an .npz (the validation input of the reco comparison)."""
-    o = outs[0] if outs else {}
-    cl = {k: np.asarray(o.get(k, [])) for k in ("cl_event", "cl_type", "cl_pe", "cl_start", "cl_end", "cl_avgtime")}
-    mem = {k: np.asarray(o.get(k, []), np.int64) for k in ("mem_cl", "mem_idx")}
-    p = o.get("pulses", {})
-    pul = {f"p_{k}": np.asarray(p.get(k, [])) for k in ("ev", "idx", "bar", "sipm", "pe", "time")}
-    np.savez_compressed(path, **cl, **mem, **pul, n_events=np.int64(n_events), run_config=np.str_(run_config))
+    cl = {k: [] for k in ("cl_event", "cl_type", "cl_pe", "cl_start", "cl_end", "cl_avgtime")}
+    mem = {k: [] for k in ("mem_cl", "mem_idx")}
+    pul = {k: [] for k in ("ev", "idx", "bar", "sipm", "pe", "time")}
+    ncl = 0
+    for o in outs:
+        for k in cl:
+            cl[k].append(np.asarray(o.get(k, [])))
+        # Cluster indices are chunk-local; pulse indices remain local to their event.
+        mem["mem_cl"].append(np.asarray(o.get("mem_cl", []), np.int64) + ncl)
+        mem["mem_idx"].append(np.asarray(o.get("mem_idx", []), np.int64))
+        p = o.get("pulses", {})
+        for k in pul:
+            pul[k].append(np.asarray(p.get(k, [])))
+        ncl += len(cl["cl_event"][-1])
+
+    def cat(parts, dtype=None):
+        # Untyped empty chunks must not promote populated integer or float32 columns.
+        populated = [p for p in parts if len(p)]
+        return np.concatenate(populated or parts) if parts else np.empty(0, dtype=dtype)
+
+    np.savez_compressed(path, **{k: cat(v) for k, v in cl.items()},
+                        **{k: cat(v, np.int64) for k, v in mem.items()},
+                        **{f"p_{k}": cat(v) for k, v in pul.items()},
+                        n_events=np.int64(n_events), run_config=np.str_(run_config))
 
 
 def resolve_generator(gen, inputs, jax):
