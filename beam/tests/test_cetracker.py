@@ -121,3 +121,17 @@ def test_starts_fall_back_per_event(tmp_path):
     s = H.starts([str(f)])
     assert list(s.event) == [5, 6]
     assert list(s.x) == [7.0, 1.0] and list(s.t) == [50.0, 100.0]
+
+
+def test_births_from_stops_follow_the_ceendpoint_generator():
+    rng = np.random.default_rng(31)
+    n = 20000
+    stops = {"x": np.full(5, AXIS + 30.0), "y": np.zeros(5), "z": np.linspace(5800, 5900, 5), "t": np.full(5, 300.0)}
+    keys = pd.DataFrame({"run": np.uint64(1430), "subrun": np.uint64(9), "event": np.arange(n, dtype=np.uint64)})
+    g = H.births_from_stops(rng, stops, keys)
+    assert list(g.event) == list(keys.event) and (g.pdg == 11).all()
+    p = np.sqrt(g.px ** 2 + g.py ** 2 + g.pz ** 2)
+    np.testing.assert_allclose(p, C.P_CE_AL, rtol=1e-12)
+    assert abs((g.pz / p).mean()) < 0.02 and abs((g.pz / p).var() - 1 / 3) < 0.01      # isotropic
+    assert set(np.round(g.z, 6)) <= set(np.round(stops["z"], 6))
+    assert (g.t > 300.0).all() and abs((g.t - 300.0).mean() - C.TAU_MU_AL) < 0.03 * C.TAU_MU_AL

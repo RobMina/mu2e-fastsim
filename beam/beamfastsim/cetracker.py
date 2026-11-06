@@ -64,6 +64,21 @@ def starts(paths):
     return g.sort_values(KEY).reset_index(drop=True)
 
 
+def births_from_stops(rng, stops, keys):
+    """One conversion electron per row of `keys` (KEY columns of carrier events), drawn as the CeEndpoint generator
+    does: a stop resampled with replacement from `stops` (npz with x, y, z [mm, Mu2e frame] and t, the stop time [ns]),
+    isotropic direction, |p| = cechain.P_CE_AL, time = stop time + Exp(cechain.TAU_MU_AL). Not filtered by any
+    detector selection, so every row is a generated electron."""
+    xs = np.stack([np.asarray(stops[c], float) for c in ("x", "y", "z")], axis=1)
+    x, u, p, t, _ = cechain.from_stops(rng, xs, np.asarray(stops["t"], float), len(keys))
+    g = keys[KEY].reset_index(drop=True).copy()
+    g["pdg"] = PDG_E
+    g[["x", "y", "z"]] = x
+    g[["px", "py", "pz"]] = u * p[:, None]
+    g["t"] = t
+    return g
+
+
 def handoff(keys, result, plane_fate=cechain.PLANE):
     """fieldsteps start rows (KEY, sp, pdg, x, y, z, px, py, pz, t) of the electrons that reached the entry plane.
 
@@ -147,11 +162,15 @@ def main(argv=None):
     ap.add_argument("--max-events", type=int)
     ap.add_argument("--chord-mm", type=float, default=10.0)
     ap.add_argument("--origin", nargs=3, type=float, default=ORIGIN)
+    ap.add_argument("--stops", help="stop table npz (x, y, z, t): fresh unfiltered CE births, one per event of the "
+                                    "tables, which then only carry the event identities")
     a = ap.parse_args(argv)
     out = Path(a.outdir)
     out.mkdir(parents=True, exist_ok=True)
     paths = tables.expand(a.tables)
     g = starts(paths)
+    if a.stops:
+        g = births_from_stops(np.random.default_rng(np.random.SeedSequence([a.seed, 2])), np.load(a.stops), g)
     if a.max_events is not None:
         g = g.iloc[:a.max_events].reset_index(drop=True)
     cg = cechain.from_offline(a.geom, a.offline_root)
@@ -170,6 +189,7 @@ def main(argv=None):
         fin = pd.concat([ent[KEY].reset_index(drop=True), fin], axis=1)
     tables.write(str(out / "states.root"), {"gen": g, "entries": ent, "final": fin}, as_ttree=True)
     report = dict(inputs=[Path(p).name for p in paths], events=len(g), seed=a.seed, backend=a.backend,
+                  births="stops " + Path(a.stops).name if a.stops else "tables",
                   geom=a.geom, maps=[Path(m).name for m in a.maps], gdml=Path(a.gdml).name,
                   ce_fates={f: int((r.fate == k).sum()) for k, f in enumerate(cechain.FATES)},
                   entries=len(ent), steps=len(steps), events_with_steps=int(len(steps[KEY].drop_duplicates())),
