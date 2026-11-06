@@ -21,6 +21,10 @@ C4_CRV=${C4_CRV:-$C4_WORK/code/crv}
 extra=()
 if [[ -n ${C4_LIBRARY:-} ]]; then extra+=(--library-dir "$C4_LIBRARY"); fi
 extra+=(--split "${C4_SPLIT:-all}")
+extra+=(--input-kind "${C4_INPUT_KIND:-represented}")
+if [[ ${C4_INPUT_KIND:-represented} == retained ]]; then
+  extra+=(--generator-events "$C4_INPUTS/generator_events.parquet")
+fi
 cd "$C4_CRV"
 apptainer exec --cleanenv -B "$(dirname "$C4_WORK")" \
   --env "PYTHONPATH=$C4_CRV:$C4_WORK/code/core:$C4_PARQUET,PYTHONDONTWRITEBYTECODE=1,JAX_PLATFORMS=cpu,OPENBLAS_NUM_THREADS=1,OMP_NUM_THREADS=1,MKL_NUM_THREADS=1,XLA_PYTHON_CLIENT_PREALLOCATE=false,CRVFS_NO_FETCH=1,CRVFS_LOOKUP_DIR=$C4_LOOKUP,MU2E_SEARCH_PATH=$C4_OFFLINE" \

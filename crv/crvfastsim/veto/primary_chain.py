@@ -1,4 +1,4 @@
-"""Primary-only C4 placeholder on represented muons and the cached stock selection."""
+"""C4 response on the fixed stock selection with represented muons or retained generators."""
 from __future__ import annotations
 
 import argparse
@@ -13,17 +13,32 @@ import pandas as pd
 from .paired import KEY
 
 
-def rekey(selection, primaries):
+def rekey(selection, primaries, input_kind="represented"):
     """Use dense internal event IDs so labels cannot alias across runs or subruns."""
     events = pd.DataFrame({k: ak.to_numpy(selection[k]) for k in KEY})
+    if input_kind == "retained":
+        from .generators import integer_columns, validate_generators
+        integer_columns(events, KEY, "selection")
+        validate_generators(primaries)
     events["dense"] = np.arange(1, len(events) + 1)
     gen = primaries.merge(events, on=list(KEY), how="left", validate="many_to_one")
     if gen.dense.isna().any():
         raise ValueError("primary event absent from cached selection")
+    if input_kind == "retained":
+        for field in (*KEY, "idx"):
+            gen["source_" + field] = gen[field]
+        gen = gen.sort_values(["dense", "gen_product_id", "idx"], kind="stable")
+        if "e" not in gen or not np.isfinite(gen.e).all():
+            raise ValueError("retained generators require finite stored total energy")
+    elif input_kind == "represented":
+        if (gen.pdg.abs() != 13).any():
+            raise ValueError("represented-input route accepts muons only; use retained inputs for other species")
+        from mu2efastsim.eloss import MMU
+        gen["e"] = np.sqrt(gen.px**2 + gen.py**2 + gen.pz**2 + MMU**2)
+    else:
+        raise ValueError("unknown input kind: " + input_kind)
     gen["run"], gen["subrun"], gen["event"] = 1, 0, gen.pop("dense").to_numpy(np.int64)
     gen["idx"] = gen.groupby(list(KEY)).cumcount()
-    from mu2efastsim.eloss import MMU
-    gen["e"] = np.sqrt(gen.px**2 + gen.py**2 + gen.pz**2 + MMU**2)
     return gen
 
 
@@ -99,8 +114,18 @@ def reconstruct(charges, cond, cfg, rng, geom, ccfg, selection, timers):
     return coincidence_rows(outs, geom, selection)
 
 
-def run(selection, primaries, gdml, calib, deviation, seed=20261105, period=1695., library_dir=None):
-    """Compose existing transport/response/reco without tier-1b or regenerated primaries."""
+def run(selection, primaries, gdml, calib, deviation, seed=20261105, period=1695., library_dir=None,
+        input_kind="represented", census=None):
+    """Compose the fixed response chain with represented muons or independently retained generators."""
+    input_report = {}
+    if input_kind == "retained":
+        from .generators import prepare
+        if census is None:
+            raise ValueError("retained inputs require an independent event census")
+        primaries, input_report = prepare(selection, primaries, census)
+        if (primaries.pdg.abs() != 13).any() and not library_dir:
+            raise ValueError("non-muon retained inputs require the shower library; cannot silently omit their response")
+    gen = rekey(selection, primaries, input_kind)
     from .. import chain, readout, runconfig, transport
     from ..response import photons, sipm
     start = time.perf_counter()
@@ -124,24 +149,28 @@ def run(selection, primaries, gdml, calib, deviation, seed=20261105, period=1695
                                       str(directory / "topology.npz"), str(directory / "templates_v3.npz"),
                                       options=options)
         lib = tier1b_assets.load(spec, geom)
+        if input_kind == "retained":
+            from .generators import shower_support
+            input_report["shower_support"] = shower_support(gen, lib)
     timers = {"setup_s": time.perf_counter() - start}
-    gen = rekey(selection, primaries)
     rng = np.random.default_rng(seed)
     begin = time.perf_counter()
     steps, parts = transport.transport(gen, geom, rng, stage="C", world=world, below=below,
                                        tagger_bar=rc.tagger_bar(geom), bar_cut=rc.bar_cut(geom),
                                        range_out=True, below_msc=rc.below_msc)
     timers["transport_s"] = time.perf_counter() - begin
+    library_report = None
     if lib is not None:
         begin = time.perf_counter()
-        steps, parts, _ = tier1b.sample(steps, parts, gen, lib, geom, rng, showers=True, **spec.options)
+        steps, parts, library_report = tier1b.sample(steps, parts, gen, lib, geom, rng, showers=True, **spec.options)
         timers["tier1b_s"] = time.perf_counter() - begin
     steps = bunch_frame(steps, selection)
     charges = onspill_charges(steps, parts, geom, cond, cfg, rng, tabs, pmap, timers, period)
     fast = reconstruct(charges, cond, cfg, rng, geom, ccfg, selection, timers)
     elapsed = time.perf_counter() - start
     report = dict(label="run1a_v01 library on represented primaries" if library_dir else "primary-only placeholder",
-                  library_dir=library_dir, selected_events=len(selection), primary_muons=len(gen),
+                  library_dir=library_dir, selected_events=len(selection), primary_muons=int((gen.pdg.abs() == 13).sum()),
+                  primary_particles=len(gen), nonmuon_primaries=int((gen.pdg.abs() != 13).sum()), input_kind=input_kind,
                   steps=len(steps), clusters=int(ak.sum(ak.num(fast.coincs))), elapsed_s=elapsed, timers=timers,
                   selected_events_per_s=len(selection) / elapsed, seed=seed, microbunch_period_ns=period,
                   limitations=["Represented genealogy muons, not a complete generated-primary census.",
@@ -150,6 +179,12 @@ def run(selection, primaries, gdml, calib, deviation, seed=20261105, period=1695
                                "Run 1A named response and saved reference calibration, not the production-era response.",
                                "Onspill photon folding and bunch-frame transform; not a digitisation validation.",
                                "SiPM pre-window history uses the existing chain approximation, not the stock start margin."])
+    if input_kind == "retained":
+        report["label"] = "run1a_v01 library on retained upstream generators" if library_dir else "retained-muon transport placeholder"
+        report["inputs"] = input_report
+        report["library_sampling"] = library_report
+        report["limitations"][0] = "Retained compressed generators, not a complete original generated stream."
+        report["limitations"].append("Non-muon showers use species/energy donor sampling, not input position/direction conditioning.")
     return fast, report
 
 
@@ -157,6 +192,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     for key in ("selection", "primaries", "gdml", "calib", "deviation", "outdir"):
         parser.add_argument("--" + key, required=True)
+    parser.add_argument("--input-kind", choices=("represented", "retained"), default="represented")
+    parser.add_argument("--generator-events", help="independent event census required for retained generators")
     parser.add_argument("--seed", type=int, default=20261105)
     parser.add_argument("--period", type=float, default=1695.)
     parser.add_argument("--library-dir", help="optional run1a_v01 library and sidecars; requires per-primary sampler")
@@ -164,17 +201,28 @@ def main(argv=None):
     parser.add_argument("--split-at", type=int, default=22, help="first held-out source-file shard")
     args = parser.parse_args(argv)
     selection, primaries = ak.from_parquet(args.selection), pd.read_parquet(args.primaries)
+    if args.input_kind == "retained" and not args.generator_events:
+        parser.error("--input-kind retained requires --generator-events")
+    census = pd.read_parquet(args.generator_events) if args.generator_events else None
     if args.split != "all":
         use = selection.shard < args.split_at
-        keep = primaries.shard < args.split_at
-        selection, primaries = (selection[use], primaries[keep]) if args.split == "dev" else (selection[~use], primaries[~keep])
+        selection = selection[use] if args.split == "dev" else selection[~use]
+        if args.input_kind == "represented":
+            keep = primaries.shard < args.split_at
+            primaries = primaries[keep] if args.split == "dev" else primaries[~keep]
+    if args.input_kind == "retained":
+        from .generators import prepare
+        primaries, _ = prepare(selection, primaries, census)
     fast, report = run(selection, primaries, args.gdml, args.calib, args.deviation,
-                       args.seed, args.period, args.library_dir)
+                       args.seed, args.period, args.library_dir, args.input_kind, census)
     report["split"] = args.split
     out = Path(args.outdir)
     out.mkdir(parents=True, exist_ok=True)
     ak.to_parquet(selection, out / "selection.parquet")
     ak.to_parquet(fast, out / "fast.parquet")
+    if args.input_kind == "retained":
+        primaries.to_parquet(out / "generators.parquet", index=False)
+        rekey(selection, primaries, "retained").to_parquet(out / "generator_map.parquet", index=False)
     (out / "chain.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report), flush=True)
 
