@@ -48,3 +48,18 @@ def test_flat_digi_has_no_peak(pulse):
     samples = np.full((1, 30), 12, np.int64)
     fit = fit_digis(np.array([500]), samples, np.array([30]), pulse)
     assert not fit["valid"].any()
+
+
+@pytest.mark.parametrize("amp", [150.0, 250.0, 900.0])
+def test_truncated_digi_keeps_its_pulse(pulse, amp):
+    """A digi cut by the window end (peak near the last sample) must not collapse to a baseline-only fit."""
+    rng = np.random.default_rng(int(amp))
+    t0, n = 1500, 19
+    peak = t0 + 5.0 * n - 4.0
+    samples = np.zeros((1, 32), np.int64)
+    samples[0, :n] = _digi(pulse, t0, n, [(amp, peak)], 11.0, rng, sigma=0.7)
+    fit = fit_digis(np.array([t0]), samples, np.array([n]), pulse, FitConfig())
+    assert fit["valid"][0].sum() == 1
+    a = fit["amp"][0][fit["valid"][0]][0]
+    assert abs(a - amp) < 0.1 * amp
+    assert fit["chi2"][0] / fit["ndf"][0] < 2.0
