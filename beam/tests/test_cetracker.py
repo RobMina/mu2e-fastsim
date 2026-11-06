@@ -104,3 +104,20 @@ def test_starts_take_the_primary_electron_birth_when_gen_has_no_electron(tmp_pat
     s = H.starts([str(f)])
     assert list(s.event) == [5, 6]
     assert list(s.x) == [2.0, 1.0] and list(s.t) == [200.0, 100.0]
+
+
+def test_starts_fall_back_per_event(tmp_path):
+    """An event with a generated electron keeps it; only the event without one takes its SimParticle birth."""
+    from mu2efastsim import tables
+    gen = pd.DataFrame({"run": [1, 1], "subrun": [0, 0], "event": [5, 6], "pdg": [11, 13], "x": [7.0, 0.0],
+                        "y": [0.0, 0.0], "z": [5800.0, 0.0], "px": [0.0, 0.0], "py": [0.0, 0.0], "pz": [104.97, 0.0],
+                        "t": [50.0, 0.0]})
+    part = pd.DataFrame({"run": [1, 1], "subrun": [0, 0], "event": [6, 5], "key": [2, 2], "pdg": [11, 11],
+                         "isprim": [0, 0], "ismcprim": [1, 1], "sx": [1.0, 9.0], "sy": [0.0, 0.0],
+                         "sz": [5822.0, 5822.0], "spx": [0.0, 0.0], "spy": [0.0, 0.0], "spz": [104.97, 104.97],
+                         "st": [100.0, 999.0]})
+    f = tmp_path / "t.root"
+    tables.write(str(f), {"gen": gen, "particles": part}, as_ttree=True)
+    s = H.starts([str(f)])
+    assert list(s.event) == [5, 6]
+    assert list(s.x) == [7.0, 1.0] and list(s.t) == [50.0, 100.0]
