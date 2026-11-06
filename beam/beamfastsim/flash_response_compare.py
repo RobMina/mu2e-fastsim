@@ -183,7 +183,7 @@ def compare(lowdict, highdict, *, cross_predict=True):
         raise ValueError("Exact ordered (run, subrun, event, ordinal) alignment required; no missing-event zeros")
     cluster = _identities(lowdict, EVENT_FIELDS[:2], len(event))
     unique, group = np.unique(cluster, return_inverse=True)
-    result = dict(scope="FL1 development-anchor resolved-subset diagnostics; NOT inclusive response or physics closure",
+    result = dict(scope="Flash development-anchor resolved-subset diagnostics; NOT inclusive response or physics closure",
                   uncertainty="Conditional on fixed G4 inputs; event/cluster sampling SEs, NOT full systematics",
                   caveats=["Both anchors informed development; this is NOT design holdout.",
                            "Few-subrun cluster SEs are fragile; fewer than two units gives null SE.",
