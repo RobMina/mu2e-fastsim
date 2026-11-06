@@ -22,3 +22,6 @@ beamfastsim = "beamfastsim.__main__:main"
 [tool.setuptools.packages.find]
 include = ["beamfastsim*"]
 
+[tool.setuptools.package-data]
+beamfastsim = ["data/*.csv"]
+

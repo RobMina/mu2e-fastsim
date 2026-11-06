@@ -1,0 +1,25 @@
+# Read saved DS boundary states without transport or source-time selection.
+#include "Offline/fcl/standardServices.fcl"
+process_name: flashStepRead
+source: { module_type: RootInput }
+services: {
+  @table::Services.Core
+  TFileService: { fileName: "beam_steps.root" }
+}
+physics: {
+  analyzers: {
+    input: {
+      module_type: StepPointMCDumper
+      hitsInputTag: "BeamFilter:Beam"
+      writeVDHit: true
+      writeParticleState: true
+      detectorSystem: false
+    }
+    identities: {
+      module_type: StepPointsPrinter
+      inputCollection: "BeamFilter:Beam"
+    }
+  }
+  e1: [input, identities]
+  end_paths: [e1]
+}
