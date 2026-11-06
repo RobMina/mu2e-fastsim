@@ -22,6 +22,11 @@ It does not change the CE or beam defaults.
    untuned aluminium [NIST XCOM table](flash-attenuation.md). Every interaction
    removes a photon from this component; scattered/secondary photons are absent.
 
+Initial charged starts and photon births are classified by actual closed axial
+interval and radial-annulus containment, not the nearest foil centre. Unequal
+foil thicknesses are supported without moving a birth or enlarging a foil. This
+flash-only classification leaves CE defaults unchanged.
+
 The charged-particle navigator still uses planar infinite transverse layers
 once a foil is entered, local flat shells and frozen layer fields. A finite
 photon exit does **not** repair this charged-particle geometry approximation.
@@ -67,6 +72,30 @@ only. No source is rejected for being late, and no bunch offset is added here.
 `--source-events` includes the whole extracted input-event prefix, including
 zero-hit and zero-photon events. It is neither generated POT nor a selected
 tracker-event denominator. The compared arm event arrays must agree exactly.
+
+The CLI reads the extractor's complete `source_states_events.npz` sidecar
+alongside `--states source_states.npz` when present. Use
+`--event-ledger /path/to/source_states_events.npz` to select it explicitly,
+including when postprocessing older saved births. It must contain unique,
+nonnegative exact-integer `(run, subrun, event)` rows under `event`, contain every
+source-row identity, and have exactly `--source-events` rows. Floating identities,
+duplicate rows, missing source IDs and denominator mismatches are errors.
+
+New saved births embed a supplied ledger as `source_event_ledger`, so subsequent
+`--births` postprocessing retains zero-source events automatically. An explicit
+ledger must agree with an embedded one. Event totals include all verified ledger
+identities, zero photon/energy contributions for absent e-/e+ source rows, and
+`source_parents` counts distinguishing zero-source from zero-photon events.
+The report retains `represented_source_events` as the number of events with
+source parents, and records `complete_event_ledger` and `zero_source_events`.
+With no ledger, legacy processing still emits only source-represented identities:
+a larger scalar denominator does not invent missing IDs or prove their zero
+contribution. The matched G4 comparator continues to reject an incomplete or
+mismatched event universe. No G4 events are dropped or denominator reduced.
+An entirely empty `--states` file remains outside the charged-source API's
+nonempty-batch contract; zero-parent saved-birth postprocessing with a complete
+ledger is supported. This is distinct from zero-source events within a nonempty
+source batch.
 Paired errors are calculated on event contributions; a separate cluster error
 uses sums by run/subrun. A few subruns give a fragile cluster error. Shape pulls
 include the fitted count-ratio covariance but are diagnostics, not independent

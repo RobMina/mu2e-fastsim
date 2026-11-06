@@ -99,3 +99,44 @@ def test_source_keeps_precision_and_identity(tmp_path):
     np.savez(path, **source)
     with pytest.raises(ValueError, match="integer"):
         read_states(path)
+
+
+def test_unequal_thickness_containing_foil_not_nearest_centre():
+    payload, beam = fixture()
+    beam.foil_z = np.array([5800., 5804.])
+    beam.foil_ht = np.array([.05, 3.])
+    payload["photon_position"][0, 0] = [2., 0., 5801.5]
+    out = exit_records(payload, beam)
+    assert out["foil_index"][0] == 1
+    assert out["path_in_foil_mm"][0] == 5.5
+    assert 0 < out["weight"][0] < 1
+
+
+def test_containment_closed_annuli_gaps_and_empty():
+    from beamfastsim.flash_containment import containing_foil
+    _, beam = fixture()
+    beam.axis_x = -10.
+    points = np.array([[2., 0., -.05], [2., 0., .05], [1., 0., 0.],
+                       [5., 0., 0.], [.99, 0., 0.], [5.01, 0., 0.],
+                       [2., 0., 2.], [2., 0., .051], [6., 0., 4.]])
+    points[:, 0] += beam.axis_x
+    np.testing.assert_array_equal(containing_foil(beam, points), [0, 0, 0, 0, -1, -1, -1, -1, 1])
+    assert containing_foil(beam, np.empty((0, 3))).shape == (0,)
+
+
+@pytest.mark.parametrize("base", [2**53, 2**63, 2**64 - 2])
+def test_mixed_signed_uint64_grouping_keeps_exact_event_identity(base):
+    payload, beam = fixture()
+    payload["source_event"] = np.array([base, base + 1, base], np.uint64)
+    report, events = summarize(payload, exit_records(payload, beam), source_events=3)
+    assert report["represented_source_events"] == 3
+    np.testing.assert_array_equal(events["event"][:, 2], np.array([base, base + 1, base], np.uint64))
+    np.testing.assert_array_equal(events["transparent_photons"], [1., 1., 0.])
+
+
+@pytest.mark.parametrize("identity", [np.array([1., 1., 2.]), np.array([-1, 1, 2]), np.ones(3, bool)])
+def test_grouping_rejects_noninteger_or_negative_identities(identity):
+    payload, beam = fixture()
+    payload["source_event"] = identity
+    with pytest.raises(ValueError, match="integer"):
+        summarize(payload, exit_records(payload, beam), source_events=3)

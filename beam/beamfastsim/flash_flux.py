@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .flash_containment import containing_foil
 from .flash_exit import foil_exit, stock_time_selection
 
 ENERGY_EDGES = np.geomspace(0.001, 100.0, 41)
@@ -62,9 +63,10 @@ def exit_records(payload, beam):
             np.isfinite(energy).all() and (energy > 0).all() and np.isfinite(relative_time).all()):
         raise ValueError("Nonfinite or nonpositive valid photon payload")
     z, ht = np.asarray(beam.foil_z), np.asarray(beam.foil_ht)
-    k = np.argmin(np.abs(xyz[:, 2, None] - z), axis=1)
+    containing = containing_foil(beam, xyz)
+    k = np.maximum(containing, 0)
     result = foil_exit(xyz, direction, z[k], ht[k], beam.foil_rin[k], beam.foil_rout[k], beam.axis_x)
-    foil = result["valid"]
+    foil = (containing >= 0) & result["valid"]
     distance = result["distance"]
     attenuation = uncollided_weight(energy, distance)
     weight, supported = attenuation["weight"], attenuation["supported"]
@@ -80,18 +82,72 @@ def exit_records(payload, beam):
                 time_predicate_diagnostic=foil & stock_time_selection(absolute_time))
 
 
+def _identity_rows(columns):
+    """Exact nonnegative integer rows, never NumPy's signed/uint float promotion."""
+    values = [np.asarray(v) for v in columns]
+    if any(v.ndim != 1 or v.dtype.kind not in "iu" or np.any(v < 0) for v in values):
+        raise ValueError("Source identities must be nonnegative integer columns")
+    if any(v.shape != values[0].shape for v in values):
+        raise ValueError("Source identity columns must have equal lengths")
+    return np.column_stack([v.astype(np.uint64, copy=False) for v in values])
+
+
 def _groups(payload, fields):
-    rows = np.column_stack([payload["source_" + k] for k in fields])
+    rows = _identity_rows([payload["source_" + k] for k in fields])
     return np.unique(rows, axis=0, return_inverse=True)
 
 
-def summarize(payload, photons, *, source_events, energy_edges=ENERGY_EDGES):
-    """All primaries stay in denominators; empty-response events contribute zero."""
-    n = len(payload["source_pdg"])
+def _validated_ledger(ledger):
+    ledger = np.asarray(ledger)
+    if ledger.ndim != 2 or ledger.shape[1] != 3:
+        raise ValueError("Event ledger must have shape (events, 3)")
+    ledger = _identity_rows(ledger.T)
+    unique = np.unique(ledger, axis=0)
+    if len(unique) != len(ledger):
+        raise ValueError("Duplicate source event identity in event ledger")
+    return unique
+
+
+def _event_groups(payload, source_events, event_ledger):
     event, event_id = _groups(payload, ("run", "subrun", "event"))
-    if isinstance(source_events, bool) or int(source_events) != source_events or source_events < len(event):
-        raise ValueError("source_events must include all represented source events")
-    shard, shard_id = _groups(payload, ("run", "subrun"))
+    represented = len(event)
+    if (isinstance(source_events, (bool, np.bool_)) or not isinstance(source_events, (int, np.integer))
+            or source_events < max(1, represented)):
+        raise ValueError("source_events must be a positive integer including all represented source events")
+    saved = payload.get("source_event_ledger")
+    if event_ledger is not None:
+        event_ledger = _validated_ledger(event_ledger)
+    if saved is not None:
+        saved = _validated_ledger(saved)
+        if event_ledger is not None and not np.array_equal(saved, event_ledger):
+            raise ValueError("Explicit event ledger disagrees with saved source event ledger")
+        event_ledger = saved
+    if event_ledger is not None:
+        if len(event_ledger) != source_events:
+            raise ValueError("Event ledger size must equal source_events; do not change the denominator")
+        # The exact-integer union maps source rows to the sorted complete ledger.
+        complete, inverse = np.unique(np.concatenate((event_ledger, event)), axis=0, return_inverse=True)
+        if len(complete) != len(event_ledger):
+            raise ValueError("Source event absent from event ledger")
+        event_id = inverse[len(event_ledger):][event_id]
+        event = complete
+    return event, event_id, represented, event_ledger is not None
+
+
+def summarize(payload, photons, *, source_events, event_ledger=None, energy_edges=ENERGY_EDGES):
+    """Keep the scalar denominator; zero-fill only identities in a verified ledger.
+
+    ``event_ledger`` is the extractor's complete integer (run, subrun, event)
+    array, including events without e-/e+ source rows. Saved births may embed it
+    as ``source_event_ledger``. Without a ledger, only represented events are
+    emitted, so matched comparisons still reject any unverified missing inputs.
+    """
+    n = len(payload["source_pdg"])
+    event, event_id, represented, complete_ledger = _event_groups(payload, source_events, event_ledger)
+    if event_id.shape != (n,):
+        raise ValueError("Source identity columns must align with source parents")
+    shard, event_shard = np.unique(event[:, :2], axis=0, return_inverse=True)
+    shard_id = event_shard[event_id]
     p = photons["parent"]
     foil, supported = photons["foil_exit"], photons["attenuation_supported"]
     energy, weight = photons["energy"], photons["weight"]
@@ -105,7 +161,9 @@ def summarize(payload, photons, *, source_events, energy_edges=ENERGY_EDGES):
     hist = {}
     for name, w in (("transparent", foil.astype(float)), ("uncollided", weight)):
         hist[name] = np.histogram(energy, bins=energy_edges, weights=w)[0].tolist()
-    report = dict(parents=n, source_events=int(source_events), represented_source_events=len(event),
+    report = dict(parents=n, source_events=int(source_events), represented_source_events=represented,
+                  complete_event_ledger=complete_ledger,
+                  zero_source_events=len(event) - represented if complete_ledger else None,
                   source_species={str(k): int(np.count_nonzero(payload["source_pdg"] == k)) for k in (11, -11)},
                   all_recorded_photons=int(np.count_nonzero(payload["photon_valid"])),
                   recorded_brems=len(p), finite_foil_births=int(foil.sum()),
@@ -134,12 +192,21 @@ def summarize(payload, photons, *, source_events, energy_edges=ENERGY_EDGES):
         report["unfinished_kinetic_energy_mev"] = float(np.asarray(payload["state_T"])[unfinished].sum())
         report["unfinished_energy_scope"] = "Upper bound on future primary brems energy only; not missing cascades or annihilation energy"
     event_totals = {k: np.bincount(event_id, weights=v, minlength=len(event)) for k, v in totals.items()}
-    return report, dict(event=event, **event_totals)
+    return report, dict(event=event, source_parents=np.bincount(event_id, minlength=len(event)), **event_totals)
 
 
 def run(args):
     from .flash_geometry import from_offline
     geom = from_offline(str(args.geom), str(args.offline_root))
+    ledger_path = args.event_ledger
+    if ledger_path is None and args.states is not None:
+        sidecar = args.states.with_name(args.states.stem + "_events.npz")
+        if sidecar.exists():
+            ledger_path = sidecar
+    event_ledger = None
+    if ledger_path is not None:
+        with np.load(ledger_path, allow_pickle=False) as archive:
+            event_ledger = _validated_ledger(archive["event"])
     args.out.mkdir(parents=True, exist_ok=False)
     elapsed = None
     if args.births is not None:
@@ -150,6 +217,10 @@ def run(args):
         from . import cechain_jax as CJ
         from .flash_target_jax import target_source
         source = read_states(args.states)
+        payload = {"source_" + k: v for k, v in source.items()}
+        _event_groups(payload, args.source_events, event_ledger)  # fail before charged transport
+        if event_ledger is not None:
+            payload["source_event_ledger"] = event_ledger
         maps = CJ.device_maps([str(p) for p in args.maps], dtype=np.float64)
         p = np.linalg.norm(source["p"], axis=1)
         if np.any(p <= 0):
@@ -161,17 +232,18 @@ def run(args):
                                unroll=args.unroll, cpu_vacuum=args.cpu_vacuum, cpu_adaptive=args.cpu_adaptive)
         result = jax.tree_util.tree_map(np.asarray, result)
         elapsed = time.perf_counter() - start
-        payload = {"source_" + k: v for k, v in source.items()}
         payload.update({"state_" + k: v for k, v in result["state"].items()})
         payload.update({"photon_" + k: v for k, v in result["records"].items()})
         payload.update({k: result[k] for k in ("overflow", "capped", "loopers")})
         np.savez_compressed(args.out / "births.npz", **payload)
     photons = exit_records(payload, geom.beam)
-    report, event_totals = summarize(payload, photons, source_events=args.source_events)
+    report, event_totals = summarize(payload, photons, source_events=args.source_events, event_ledger=event_ledger)
     np.savez_compressed(args.out / "foil_exit.npz", **photons)
     np.savez_compressed(args.out / "event_totals.npz", **event_totals)
     report.update(source=str(args.states if args.births is None else args.births), geometry=str(args.geom),
-                  offline_root=str(args.offline_root), cold_transport_seconds=elapsed)
+                  offline_root=str(args.offline_root), cold_transport_seconds=elapsed,
+                  event_ledger=str(ledger_path) if ledger_path is not None else
+                  "embedded in births" if "source_event_ledger" in payload else None)
     if args.births is None:
         report.update(maps=list(map(str, args.maps)), seed=args.seed, h_mm=args.h,
                       max_steps=args.max_steps, capacity=args.capacity, s_max_mm=args.s_max,
@@ -194,6 +266,8 @@ def main(argv=None):
     p.add_argument("--offline-root", type=Path, required=True)
     p.add_argument("--maps", type=Path, nargs="+")
     p.add_argument("--source-events", type=int, required=True)
+    p.add_argument("--event-ledger", type=Path,
+                   help="Complete extractor *_events.npz; defaults to --states sidecar or ledger embedded in --births")
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--capacity", type=int, default=256)

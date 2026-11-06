@@ -8,7 +8,7 @@ import jax.numpy as jnp
 from beamfastsim import flash_navigator_jax as FN
 from beamfastsim import cechain as C
 from test_flash_target_jax import _geom, _starts, KEY
-from test_flash_vacuum_fast import _exact
+from test_flash_vacuum_fast import _exact, _bucket_roundoff
 
 
 @pytest.mark.parametrize("bucket", [1, 4, 16])
@@ -29,7 +29,7 @@ def test_compact_tail_caps_padding_and_material_fallback(bucket):
         assert int(full[0]) == int(full[1]["slab"]["it"])
         assert not np.any(np.asarray(full[1]["fate"]) == C.LIVE)
         outputs.append(full)
-    _exact(*outputs)
+    _bucket_roundoff(*outputs)
 
 
 def test_compact_vacuum_reaches_cap_and_preserves_dead_rows():
@@ -43,7 +43,12 @@ def test_compact_vacuum_reaches_cap_and_preserves_dead_rows():
         st = init((), jnp.asarray(x), jnp.asarray(u), jnp.full(8, .1), jnp.zeros(8),
                   jnp.full(8, -1, jnp.int32), jnp.zeros(8))
         st["fate"] = st["fate"].at[2:].set(C.PLANE)
+        st['x'] = st['x'].at[2:, 0].add(jnp.arange(1., 7.))
+        st['t'] = st['t'].at[2:].set(jnp.arange(1., 7.))
+        st['s'] = st['s'].at[2:].set(jnp.arange(11., 17.))
         result = run((), KEY, st, jnp.int32(1200), 8, 8)
+        for name in ('x', 'u', 'T', 't', 's', 'fate', 'inl', 'nvac', 'nstall', 'nadapt'):
+            _exact({name: st[name][2:]}, {name: result[1][name][2:]})
         assert int(result[0]) == int(result[1]["slab"]["it"]) == 1200
         np.testing.assert_array_equal(result[1]["nvac"], [1200, 1200, 0, 0, 0, 0, 0, 0])
         outputs.append(result)

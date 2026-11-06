@@ -216,3 +216,29 @@ def test_step_time_uses_continuous_loss_not_end_step_recoil():
     np.testing.assert_allclose(got, expected)
     after["T"][:] = 0.
     np.testing.assert_array_equal(_slab_elapsed(before, after), got)
+
+
+def test_initial_containing_foil_unequal_thickness_and_radial_exclusion():
+    # The nearest centre is foil 0, but these axial coordinates lie in foil 1.
+    g = _geom(foil_z=(5800., 5804.), ht=np.array([.05, 3.]), plane=5810.)
+    x, u = _starts(4, z=5801.5)
+    x[2, 0] = AXIS + 20.  # hole, not material
+    x[3, 0] = AXIS + 76.  # outside the rim
+    u[1, 2] = -1.
+    r = target_source(KEY, g, [0., 0., 0.], x, u, 105., 0., [11, -11, 11, -11],
+                      h=.5, max_steps=1, msc=False, capacity=1)
+    np.testing.assert_array_equal(r["state"]["nslab"], [1, 1, 0, 0])
+    # The backward lane may already exit its nearby face and take a vacuum step.
+    np.testing.assert_array_equal(np.asarray(r["state"]["nvac"])[[0, 2, 3]], [0, 1, 1])
+    assert r["state"]["x"][0, 2] > x[0, 2]
+    assert r["state"]["x"][1, 2] < x[1, 2]
+
+
+def test_absent_tsda_nominal_plane_does_not_reject_start():
+    from dataclasses import replace
+    from beamfastsim.flash_target_jax import _geometry
+    g = _geom()
+    x = np.array([[AXIS + 240., 0., g.beam.tsda_z]])
+    _geometry(replace(g, beam=replace(g.beam, tsda_hl=0.)), x, .5, np.dtype(np.float64))
+    with pytest.raises(ValueError, match="absorbers"):
+        _geometry(g, x, .5, np.dtype(np.float64))

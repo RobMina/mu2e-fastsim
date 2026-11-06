@@ -16,6 +16,7 @@ from . import cechain as C
 from . import flash_navigator_jax as FN
 from . import fieldmap as FM
 from . import geometry as G
+from .flash_containment import containing_foil
 
 
 def _positive_integer(value, name):
@@ -55,7 +56,8 @@ def _geometry(geom, x, h, dt):
     if geom.ring_t > 0:
         for za in (b.ipa_z0, b.ipa_z1):
             unsupported |= (r >= b.ipa_r - geom.ring_t) & (r <= b.ipa_r) & (z >= za) & (z <= za + 2 * geom.ring_hl)
-    unsupported |= ((np.abs(z - b.tsda_z) <= b.tsda_hl) & (r >= b.tsda_rin) & (r <= b.tsda_rout))
+    if b.tsda_hl > 0:
+        unsupported |= ((np.abs(z - b.tsda_z) <= b.tsda_hl) & (r >= b.tsda_rin) & (r <= b.tsda_rout))
     unsupported |= ((z <= geom.z_up) | (z >= geom.z_plane) | (r >= geom.r_wall) |
                     ((z < geom.z_ds) & (r >= geom.r_ts)) |
                     ((z >= geom.coll5_z0) & (z <= geom.coll5_z1) & (r >= geom.coll5_rin)))
@@ -161,7 +163,7 @@ def target_source(key, geom, field, x, u, p, t, pdg, *, capacity=128, max_steps=
     maps, const = _field(field, dt)
     if not hasattr(SJ, "lane_step_photons"):
         raise RuntimeError("Core lane_step_photons is required for brems births")
-    k0 = G.foil_index(geom.beam, x[:, 0], x[:, 1], x[:, 2], tol=0.0).astype(np.int32)
+    k0 = containing_foil(geom.beam, x).astype(np.int32)
     kc = np.clip(k0, 0, geom.beam.foil_z.size - 1)
     zl = np.where(u[:, 2] >= 0, x[:, 2] - (geom.beam.foil_z[kc] - geom.beam.foil_ht[kc]),
                   geom.beam.foil_z[kc] + geom.beam.foil_ht[kc] - x[:, 2])

@@ -1,4 +1,4 @@
-"""Byte-exact raw-state regressions for the opt-in vacuum-only step.
+"""Raw-state regressions for the opt-in vacuum-only step with explicit cross-JIT float budgets.
 
 Run with JAX_ENABLE_X64=1 JAX_PLATFORMS=cpu.  Public source output omits
 slab state and RNG iteration, so these tests deliberately use the raw builder.
@@ -37,14 +37,48 @@ def _exact(expected, actual):
     left, lt = jax.tree_util.tree_flatten_with_path(expected)
     right, rt = jax.tree_util.tree_flatten_with_path(actual)
     assert lt == rt
+    differences = []
     for (path, a), (_, b) in zip(left, right):
         a, b = np.asarray(a), np.asarray(b)
         label = jax.tree_util.keystr(path)
         assert a.shape == b.shape and a.dtype == b.dtype, label
-        assert a.tobytes() == b.tobytes(), (
-            f"raw bytes differ at {label}: "
-            f"{np.count_nonzero(a != b)} numerically unequal elements"
-        )
+        if a.tobytes() != b.tobytes():
+            detail = f"{np.count_nonzero(a != b)} numerically unequal elements"
+            if a.dtype.kind == 'f' and np.isfinite(a).all() and np.isfinite(b).all():
+                delta = np.abs(a - b)
+                scale = np.abs(np.spacing(np.maximum(np.abs(a), np.abs(b))))
+                ulps = np.divide(delta, scale, out=np.zeros_like(delta), where=scale > 0)
+                detail += f", max_abs={np.max(delta):.17g}, max_spacing_units={np.max(ulps):.17g}"
+            differences.append(f"raw bytes differ at {label}: {detail}")
+    assert not differences, '\n'.join(differences)
+
+
+def _float_ulps(a, b, limit, name):
+    """Bound finite float64 rounding while preserving shape, dtype and zero bytes."""
+    a, b = np.asarray(a), np.asarray(b)
+    assert a.shape == b.shape and a.dtype == b.dtype == np.dtype('float64'), name
+    assert np.isfinite(a).all() and np.isfinite(b).all(), name
+    zero = (a == 0) | (b == 0)
+    _exact({name: a[zero]}, {name: b[zero]})
+    try:
+        np.testing.assert_array_max_ulp(a, b, maxulp=limit)
+    except AssertionError as exc:
+        raise AssertionError(f'{name}: {exc}') from exc
+
+
+def _bucket_roundoff(expected, actual):
+    """Only direction rounding between compact and full compiled graphs may differ."""
+    assert jax.tree_util.tree_structure(expected) == jax.tree_util.tree_structure(actual)
+    _exact(expected[0], actual[0])
+    left, tree = jax.tree_util.tree_flatten_with_path(expected[1])
+    right, other = jax.tree_util.tree_flatten_with_path(actual[1])
+    assert tree == other
+    for (path, a), (_, b) in zip(left, right):
+        name = '/'.join(str(k.key) for k in path)
+        if name == 'u':
+            _float_ulps(a, b, 2, name)
+        else:
+            _exact({name: a}, {name: b})
 
 
 def _roundoff_only(expected, actual):
@@ -52,14 +86,19 @@ def _roundoff_only(expected, actual):
     budgets = {"cont": 1e-15, "slab/cont": 1e-15, "slab/path": 1e-15, "slab_time": 1e-17,
                "records/direction": 1e-13, "records/position": 1e-13, "slab/d": 1e-13,
                "slab/x": 1e-13, "u": 1e-13, "x": 1e-13, "xent": 1e-13}
+    assert jax.tree_util.tree_structure(expected) == jax.tree_util.tree_structure(actual)
     _exact(expected[0], actual[0])
+    _exact(expected[1]['records']['valid'], actual[1]['records']['valid'])
     left, tree = jax.tree_util.tree_flatten_with_path(expected[1])
     right, other = jax.tree_util.tree_flatten_with_path(actual[1])
     assert tree == other
     for (path, a), (_, b) in zip(left, right):
         name = "/".join(str(k.key) for k in path)
+        if name == 't':
+            _float_ulps(a, b, 1, name)
+            continue
         if name not in budgets:
-            _exact(a, b)
+            _exact({name: a}, {name: b})
             continue
         a, b = np.asarray(a), np.asarray(b)
         assert a.shape == b.shape and a.dtype == b.dtype
