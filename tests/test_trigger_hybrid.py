@@ -87,6 +87,46 @@ def test_stage_counts_attached_beyond_two_sigma(arms, tmp_path):
     assert row['stages'][0] == {'module': 'HelixFilter', 'g4_passed': 200, 'fast_passed': 170, 'difference': -30}
 
 
+def test_common_subset_omits_whole_log_stage_counts(tmp_path):
+    reference = [(e, 'pass' if e < 180 else 'fail') for e in range(200)]
+    candidate = [(e, 'pass' if e < 160 or e >= 200 else 'fail') for e in range(300)]
+    ref = ('g4', pair.read_arm([write_log(tmp_path / 'r.log', reference, 180, 180)], MANIFEST))
+    cand = ('fast', pair.read_arm([write_log(tmp_path / 'c.log', candidate, 260, 260)], MANIFEST))
+    common = pair.pair(ref, cand, MANIFEST, INVENTORY, common=True)
+    row = common['paths']['tpr_Trk']
+    assert common['events'] == 200
+    assert common['events_in_logs'] == {'g4': 200, 'fast': 300, 'union': 300}
+    assert row['paired_difference'] == pytest.approx(-0.1)
+    assert row['pull'] < -2
+    assert 'stages' not in row
+    assert 'omitted' in common['stages_basis']
+    union = pair.pair(ref, cand, MANIFEST, INVENTORY)
+    assert union['paths']['tpr_Trk']['stages'][0]['difference'] == 80
+    assert 'whole-log' in union['stages_basis']
+
+
+@pytest.mark.parametrize('disabled', [False, True])
+def test_plot_all_paths_untested(tmp_path, disabled):
+    pytest.importorskip('matplotlib')
+    import matplotlib.pyplot as plt
+
+    manifest = MANIFEST if not disabled else {**MANIFEST, 'paths': ['off_path'], 'bits': ['600']}
+    events = {(1, 2, e): {name: disabled for name in manifest['paths']} for e in range(10)}
+    arm = (events, {})
+    report = pair.pair(('g4', arm), ('fast', arm), manifest, INVENTORY, 'OffSpill')
+    assert all(row['status'].startswith('not tested:') for row in report['paths'].values())
+    png = tmp_path / 'untested.png'
+    plot_paired.plot(report, png)
+    figure = plt.gcf()
+    top, bottom = figure.axes
+    assert png.stat().st_size > 0
+    assert top.get_yscale() == 'log' and 0 < top.get_ylim()[0] < top.get_ylim()[1]
+    assert all(len(line.get_xdata()) == 0 for line in top.lines)
+    assert len(top.patches) == len(bottom.patches) == len(manifest['paths'])
+    assert all(tick.get_color() == '0.55' for tick in bottom.get_xticklabels())
+    plt.close(figure)
+
+
 def test_duplicate_events_and_small_denominator_rejected(arms):
     with pytest.raises(ValueError, match='two logs'):
         pair.read_arm([arms[0], arms[0]], MANIFEST)

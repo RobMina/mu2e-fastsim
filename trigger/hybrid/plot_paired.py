@@ -38,7 +38,9 @@ def plot(report, output, title=None, names=None):
     top.plot(x[tested] + 0.15, np.maximum(c, floor)[tested], 's', color=CANDIDATE, ms=6, ls='none',
              label=f'{cand_name} digis')
     top.set_yscale('log')
-    top.set_ylim(max(floor, 0.5 * min(v for v in np.concatenate([r[tested], c[tested]]) if v > 0)), 1.5)
+    positive = np.concatenate([r[tested], c[tested]])
+    positive = positive[positive > 0]
+    top.set_ylim(max(floor, 0.5 * positive.min()) if positive.size else floor, 1.5)
     top.set_ylabel(f'acceptance\n({report["events"]:,} events)')
     head = title or f'{cand_name} vs {ref_name} digis, same events, {report.get("event_mode") or ""} trigger replay'
     top.legend(fontsize=8, loc='lower left', bbox_to_anchor=(0, 1.0), ncol=3, frameon=False, title=head,

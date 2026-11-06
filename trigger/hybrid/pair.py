@@ -4,6 +4,7 @@ Use: python3 trigger/hybrid/pair.py --reference g4=a.log,b.log --candidate fast=
          --prepared PREPARED_DIR [--event-mode OffSpill] [--total-events N] --output paired.json
 Each log is a replay.sbatch decision log (PrintModule records plus the art TrigReport). Events present in only one
 arm count as rejected by every path in the other arm; --total-events adds events absent from both arms.
+--common uses only shared events and omits whole-log module counts, which cannot be restricted to that subset.
 """
 from __future__ import annotations
 
@@ -74,7 +75,8 @@ def mode_prescale(row, event_mode):
 
 def pair(reference, candidate, manifest, inventory, event_mode=None, total_events=None, common=False):
     (ref_label, ref), (cand_label, cand) = reference, candidate
-    events = sorted(set(ref[0]) & set(cand[0]) if common else set(ref[0]) | set(cand[0]))
+    union = set(ref[0]) | set(cand[0])
+    events = sorted(set(ref[0]) & set(cand[0]) if common else union)
     if common and total_events:
         raise ValueError('--total-events does not apply to the events common to both arms')
     n = total_events or len(events)
@@ -104,10 +106,12 @@ def pair(reference, candidate, manifest, inventory, event_mode=None, total_event
                        f'{cand_label}_only': c_only, f'{ref_label}_only': r_only,
                        'paired_difference': diff, 'paired_error': error,
                        'pull': diff / error if error > 0 else (0.0 if c_only == r_only else None)}
-        if status == 'tested' and paths[name]['pull'] is not None and abs(paths[name]['pull']) > 2:
+        if not common and status == 'tested' and paths[name]['pull'] is not None and abs(paths[name]['pull']) > 2:
             paths[name]['stages'] = stages(name, ref[1], cand[1], ref_label, cand_label)
     return {'reference': ref_label, 'candidate': cand_label, 'events': n,
-            'events_in_logs': {ref_label: len(ref[0]), cand_label: len(cand[0]), 'union': len(events)},
+            'events_in_logs': {ref_label: len(ref[0]), cand_label: len(cand[0]), 'union': len(union)},
+            'stages_basis': ('omitted: whole-log module counts cannot be restricted to common events' if common
+                             else 'whole-log module counts for each arm, not event-paired'),
             'event_mode': event_mode, 'events_used': 'common to both arms' if common else 'union of both arms',
             'difference': f'{cand_label} - {ref_label}, per event, paired',
             'paths': paths}

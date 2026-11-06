@@ -39,6 +39,14 @@ process name. Services, conditions, geometry and every filter threshold are the 
 process must be the release that made the file: the CE and cosmic productions differ (13_41 vs 13_33, 17 module
 settings, calorimeter digi time units).
 
+## Comparing two replay arms
+
+`hybrid/pair.py --common` measures acceptance only on events present in both arms. Its report keeps the actual
+union size in `events_in_logs.union`; `events` is the selected denominator. Module pass counts are omitted in this
+mode: the aggregate TrigReport cannot identify which module counts belong to common events. Without `--common`,
+attached `stages` are whole-log totals for each arm, not event-paired module decisions; `stages_basis` states this
+scope. Keep the all-event comparison alongside conditional results to expose losses before digitisation.
+
 ## Results (2026-11-04)
 
 | Sample | Events | Paths exact | Differences |
