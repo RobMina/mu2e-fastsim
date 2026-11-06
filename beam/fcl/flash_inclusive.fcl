@@ -1,0 +1,63 @@
+# Inclusive DS continuation; the runner supplies geometry, seed, count and output paths.
+#include "Offline/fcl/standardServices.fcl"
+#include "Offline/Mu2eG4/fcl/prolog.fcl"
+
+process_name: flashInclusive
+source: { module_type: RootInput maxEvents: 0 }
+services: @local::Services.Sim
+physics: {
+  producers: { g4run: @local::mu2eg4runDefaultSingleStage }
+  analyzers: {
+    eventCount: { module_type: RunSubrunEvent printSam: false }
+    status: { module_type: StatusG4Analyzer input: "g4run" }
+    export: {
+      module_type: FlashReferenceExporter
+      steps: ["BeamFilter:Beam", "g4run:photonSteps", "g4run:tracker", "g4run:calorimeter", "g4run:CRV", "g4run:virtualdetector"]
+      requiredParticles: ["BeamFilter", "g4run"]
+      requiredGenerators: ["generate"]
+      statuses: ["g4run"]
+      volumes: ["compressPVBeam", "g4run"]
+      ordinalBase: 0
+      expectedEvents: 0
+    }
+  }
+  transport: [g4run]
+  record: [eventCount, status, export]
+  out: [raw]
+  trigger_paths: [transport]
+  end_paths: [record, out]
+}
+outputs.raw: {
+  module_type: RootOutput
+  fileName: "inclusive.art"
+  outputCommands: ["keep *_*_*_*"]
+}
+physics.producers.g4run.inputs: {
+  primaryType: "StepPoints"
+  primaryTag: "BeamFilter:Beam"
+  inputMCTrajectories: ""
+  inputPhysVolumeMultiInfo: "compressPVBeam"
+}
+physics.producers.g4run.SDConfig.preSimulatedHits: []
+physics.producers.g4run.SDConfig.enableSD: [tracker, calorimeter, CRV, virtualdetector]
+physics.producers.g4run.G4InteralFiltering: false
+physics.producers.g4run.TrajectoryControl.produce: false
+physics.producers.g4run.Mu2eG4StackingOnlyCut: {}
+physics.producers.g4run.Mu2eG4CommonCut: {}
+physics.producers.g4run.Mu2eG4SteppingOnlyCut: {
+  type: intersection
+  pars: [
+    { type: pdgId pars: [22] },
+    { type: constant value: false write: "photonSteps" }
+  ]
+}
+physics.producers.g4run.ResourceLimits: {
+  maxStepsPerTrack: 100000
+  maxStepPointCollectionSize: 1000000
+  maxSimParticleCollectionSize: 1000000
+}
+physics.producers.g4run.physics.minRangeCut: 0.010
+physics.producers.g4run.physics.physicsListName: "FTFP_BERT"
+services.TFileService.fileName: "inclusive.root"
+services.TimeTracker.printSummary: true
+services.scheduler.wantSummary: true
