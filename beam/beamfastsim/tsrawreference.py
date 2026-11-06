@@ -170,8 +170,10 @@ def root_lineages(a):
     return out
 
 
-def combine(paths, *, root_cohort=False):
-    """Merge small development references, optionally projecting known root lineages."""
+def combine(paths, *, root_cohort=False, cohort="development"):
+    """Merge explicitly selected references, optionally projecting known root lineages."""
+    if cohort not in ("development", "heldout"):
+        raise ValueError("cohort must be development or explicitly heldout")
     tables = [load(p) for p in paths]
     reports = [json.loads(Path(p).with_suffix(".json").read_text()) for p in paths]
     recorded_tracks = sum(len(a["id"]) for a in tables)
@@ -190,9 +192,10 @@ def combine(paths, *, root_cohort=False):
     lookup(out["id"], out["id"])
     lookup(out["event_id"], out["event_id"])
     lookup(out["parent_shard_ids"], out["parent_shard_ids"])
-    if np.any((out["parent_shard_ids"][:, 1] < 920000) | (out["parent_shard_ids"][:, 1] >= 920100)):
-        raise ValueError("development Run1A subruns only")
-    report = {"cohort": "development", "files": list(map(str, paths)), "source_tracks": len(out["id"]),
+    first = 920000 if cohort == "development" else 920100
+    if np.any((out["parent_shard_ids"][:, 1] < first) | (out["parent_shard_ids"][:, 1] >= first + 100)):
+        raise ValueError(f"{cohort} Run1A subruns only")
+    report = {"cohort": cohort, "files": list(map(str, paths)), "source_tracks": len(out["id"]),
               "events": len(out["event_id"]), "shards": len(out["parent_shard_ids"]),
               "stock_reached": int(out["stock_reached"].sum()),
               "recorded_source_tracks": recorded_tracks,
@@ -224,6 +227,8 @@ def main():
     parser.add_argument("--ntuple")
     parser.add_argument("--combine", nargs="+")
     parser.add_argument("--root-lineages", action="store_true", help="represent known nested entrances once by their ancestor")
+    parser.add_argument("--cohort", choices=("development", "heldout"), default="development",
+                        help="explicit cohort for combining references; default never accepts held-out subruns")
     parser.add_argument("--out", required=True)
     parser.add_argument("--gdml", help="check source and endpoint coverage in the matching saved geometry")
     args = parser.parse_args()
@@ -233,7 +238,7 @@ def main():
         print(json.dumps(report, indent=2, allow_nan=False))
         return
     if args.combine:
-        arrays, report = combine(args.combine, root_cohort=args.root_lineages)
+        arrays, report = combine(args.combine, root_cohort=args.root_lineages, cohort=args.cohort)
     elif args.ntuple:
         arrays, report = read(args.ntuple)
     else:

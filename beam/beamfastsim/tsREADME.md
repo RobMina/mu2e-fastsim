@@ -3,60 +3,41 @@
 `tsreference`, `tsfield`, `tsgeometry`, `tsphysics`, `tstransport` and `tscompare`
 are an independent charged-muon/pion development route. Nothing imports them from
 the default beam or CE chains. Inputs must use the same geometry and field as the
-stock sample. Run1B development and a Run1A development comparison exist; Run1A
-held-out validation and a matched stock TS-only performance comparison remain open.
+stock sample. Run1B and Run1A development comparisons and one frozen Run1A
+held-out comparison are complete. Held-out is consumed, not a fresh tuning test;
+a matched stock TS-only performance comparison remains unmeasured.
 
-## Review-corrected development checkpoint (2026-11-06)
+## Run1A development result (2026-11-06)
 
-On the same 25,078 entrances / 100 development shards / 500,000 parent Events:
-mu-minus **1,088/1,098 = 0.9909 +/- 0.0219**, mu-plus **8/15 = 0.5333 +/- 0.1633**.
-Transport takes **187.215 s / 133.953 entrances/s**, one laptop CPU worker excluding
-field loading. Settings/seed are unchanged, not fitted to yields. All inputs remain;
-1,099 DS, 18,538 range-out, 210 mu-decay, 5,225 wall, 6 upstream, no path caps or
-missing field. Positive deficit and 2,696 compact-ancestry gaps remain explicit.
+The corrected comparison uses 25,078 known-root entrances across 100 development
+shards and 500,000 counted parent Events. All zero-output entrances and empty-source
+events are retained. Two nested entrances are represented by their pion ancestors;
+2,696 upstream compact-ancestry gaps remain, so this is not complete primary-root
+closure. All 1,118 stock DS mu/pi records resolve to the cohort.
+
+| Quantity | Corrected, fixed-seed development result |
+|---|---|
+| DS mu-minus, fast / stock | 1,088 / 1,098; ratio 0.9909 +/- 0.0219 |
+| DS mu-plus, fast / stock | 8 / 15; ratio 0.5333 +/- 0.1633; sparse deficit |
+| Transport cost | 187.215 s for 25,078 entrances; 133.953 entrances/s |
+| Performance scope | One CPU worker; field loading excluded; no matched stock TS-only, GPU or SU benchmark |
+
+Fast fates are 1,099 DS, 18,538 range-out, 210 muon decay, 5,225 wall and 6 upstream;
+there are no live, path-cap or missing-field outcomes. Settings and seed are
+unchanged, not fitted to yields: RK4 `--step 2.5 --seed 20261105 --max-path 100000`,
+0.1 rad angular cap, 0.25 mm material cap and 5% fractional mean-loss cap.
+The CLI step default remains 5 mm.
 
 Material bounds are rechecked through convergence and after boundary truncation;
 unresolved proposals raise rather than sample over-cap columns. Entrance exits use
-the bracketed plane intersection/aperture. Details: [transport guide](../docs/ts-transport.md).
-Changed step sequences change RNG consumption; the saved outputs below are not
-numerically identical to this run. The 12-run study predates the cap correction and
-has not been rerun; do not use it as corrected-code convergence evidence. Local
-TS suite: **409 passed**, both saved geometry fixtures supplied. Held-out untouched.
-
-## Historical pre-review checkpoint (2026-11-06)
-
-The completed Run1A development comparison uses 100 independent shards, 500,000
-finished parent Events and 25,078 known-root mu/pi entrances. All zero-output
-entrances and empty-source events are retained. Two nested entrances are represented
-by their pion ancestors; 2,696 upstream compact-ancestry gaps remain, so this is not
-complete primary-root closure. All 1,118 stock DS mu/pi records resolve to the cohort.
-
-| Quantity | Fixed-seed, all-charge development result |
-|---|---|
-| DS mu-minus, fast / stock | 1,095 / 1,098; ratio 0.9973 +/- 0.0230 |
-| DS mu-plus, fast / stock | 8 / 15; ratio 0.5333 +/- 0.1458; sparse deficit, not agreement |
-| Transport cost | 188.811 s for 25,078 entrances; 132.820 entrances/s |
-| Performance scope | One laptop CPU worker; field loading excluded; no matched stock TS-only or GPU benchmark |
-| Regression evidence | Publication local TS suite: 344 passed, with both saved Run1A and Run1B GDML fixtures; not CI |
-
-The measured transport improvement is 8.362x over the initial 1,578.929 s run and
-2.880x over the first optimized 543.821 s run. All saved numerical arrays except
-seconds agree exactly with the first optimized output. They are **not** all identical
-to the initial output: preserving DS-plane snapping corrected five mu-minus wall
-fates to DS; six terminal z coordinates changed by at most 2.27e-8 mm.
-
-The explicit Run1A settings are RK4 `--step 2.5 --seed 20261105 --max-path 100000`,
-0.1 rad angular cap, 0.25 mm material cap and 5% fractional mean-loss cap. The CLI
-step default remains 5 mm. This historical checkpoint requires the pre-review code.
-Rates use the appropriate source-charge cohort, not POT. Errors are paired-shard
+the bracketed plane intersection/aperture. See the [transport guide](../docs/ts-transport.md).
+Changed step sequences change RNG consumption; equal seeds do not imply paired
+trajectories. Rates use the source-charge cohort, not POT. Errors are paired-shard
 estimates; diagonal shape chi2 includes yield and ignores bin covariance.
 
-The bounded positive-source study below is complete and did not justify changing
-these settings. Run1A held-out shards 100–199 remain unexamined. Positive-charge
-losses, two study path-cap outcomes, compact upstream ancestry and matched stock
-TS-only timing remain open. Run1B delivery assets must not be relabelled as Run1A.
-The Run1A comparison is still a private development result, not a delivered
-held-out validation. The route is opt-in; local tests do not imply CI success.
+The historical pre-review output was 1,095/1,098 mu-minus (0.9973 +/- 0.0230),
+8/15 mu-plus (0.5333 +/- 0.1458), and 188.811 s / 132.820 entrances/s.
+Its optimization comparisons do not validate the corrected transport.
 
 ## Reference and transport (two-stage Run1B)
 
@@ -101,8 +82,8 @@ selection. Raw art retains all species and full ancestry. The compact stock
 `ReadVirtualDetector` diagnostic keeps mu+/mu-/pi+/pi-/proton particles and VD
 hits; protons retain empty-source event bookkeeping. Actual DS-boundary Beam
 StepPoints remain all-species. No custom recorder is used.
-`tsrun1a_smoke.sbatch` takes site paths from environment variables; explicitly
-approve simulation before submitting it. It does not build or install software.
+`tsrun1a_smoke.sbatch` takes site paths from environment variables and does not
+build or install software.
 
 After successful job completion, inspect the saved products with:
 
@@ -124,69 +105,24 @@ losses are unambiguous. This is not a physics comparison.
 A same-stage raw reference must not be passed to the two-stage restart reader
 without an explicit adapter; source recrossings and branching need interpretation.
 
-## Run 1A reference campaign
+## Run1A reference campaign and cohorts
 
-`tsrun1a_campaign.sbatch` is an explicitly approved 1,000,000-POT campaign:
-200 independent 5,000-POT shards, at most 32 concurrent, one CPU/12 GB/24 h limit
-per shard. Indices 0–99 are development; 100–199 are held out before looking at
-outcomes. Run1430, subrun920000+index, baseSeed920001+1000*index; seed spacing
-exceeds the stock autoIncrement maxUniqueEngines100 range. The smoke is excluded.
+The Run1A raw campaign has 200 independent 5,000-POT shards, with indices 0–99
+for development and 100–199 held out. Requested POT is not finished exposure;
+census counts come from completed art Events trees, including empty-source events.
+Both generation launchers disable warm repeats. See the [Run1A reference guide](../docs/ts-run1a.md)
+for campaign, census, explicit cohort selection and the stock status reader.
 
-Create a fresh `TS_CAMPAIGN_ROOT` with `config/`, `shards/`, `logs/`; freeze copies
-of `tsrun1a_raw.fcl`, this batch script, and the tested `offline_uva.sh` in `config/`
-before submission. Set `CVMFSEXEC_DIST` to the existing EL8 client and
-`SBATCH_ACCOUNT` / `SBATCH_PARTITION` for the approved site allocation. Then:
+`tsrawreference` is a same-stage adapter, not the Run1B restart reader. It keeps
+first forward VD1 mu/pi states, all crossing records and actual DS2Vacuum Beam
+StepPoints. Exact event/parent-key joins preserve branching and zero-output inputs.
+Explicit `--root-lineages` projects nested entrances onto known ancestor entrances;
+nested states remain saved. Unresolved DS ancestry or multiple endpoints raise,
+rather than dropping rows. Compact upstream omissions can hide additional nesting:
+known-root projection is not proof of full primary-root closure. Full ancestry
+requires the raw art products.
 
-```bash
-sbatch --parsable -A "$SBATCH_ACCOUNT" -p "$SBATCH_PARTITION" \
-  -o "$TS_CAMPAIGN_ROOT/logs/%A_%a.log" \
-  "$TS_CAMPAIGN_ROOT/config/tsrun1a_campaign.sbatch"
-```
-
-Each task creates a new shard directory, appends only subrun/event-count/seed/art
-filename overrides to its frozen FCL, and records the requested POT in shard.tsv.
-The runner exit code propagates; automatic requeue and existing-output overwrite
-are disabled. Both generation launchers force `OFFLINE_WARM_REPEAT=0`. Requested counts are not finished counts: inspect highest-cycle art
-Events after successful completion, retain empty-source events, and report failed
-or partial shards separately. Keep large raw outputs on UVA scratch, not in the
-laptop mirror. Full ancestry remains in art; the compact diagnostic alone is not
-a complete same-stage reference adapter. Runtime is measured, not extrapolated
-from the smoke; the wall limit is a resource cap, not an ETA.
-
-## Development-only Run 1A analysis
-
-`python3 -m beamfastsim.tscampaign --root CAMPAIGN --generation-job JOB_ID
---index 0 --out census-000.json` checks a finished
-5,000-POT shard with the compact census; indices outside 0..99 are rejected.
-`python3 -m beamfastsim.tscampaign --combine census-*.json --out summary.json`
-adds finished tree counts and keeps
-unknown ancestry as null, not a false loss. Production files remain on UVA.
-The direct uproot StatusG4 reader reports undecodable streamer values explicitly;
-`tsstatus.fcl` is a stock analyzer-only re-read alternative, with no Geant4 producer.
-Its batch wrapper requires `TS_GENERATION_JOB` for the same completion-log prefix;
-no campaign job ID is built into either reader.
-
-`python3 -m beamfastsim.tsrawreference --ntuple SHARD/tsrun1a_raw.root --gdml RUN1A.gdml --out reference.npz`
-is the same-stage adapter, not the Run1B restart reader. It retains every forward
-VD1 mu/pi track, first crossing state, all crossing records and all DS mu/pi rows.
-Exact parent keys attach endpoints; flat tables preserve branching and unresolved
-ancestry. An aligned one-endpoint reference is available only without unresolved
-DS links, multiple endpoints or nested source tracks. Omitted ancestry upstream
-of an already identified entrance remains explicitly reported. Full ancestry can
-be recovered by stock all-species ReadVirtualDetector on the saved raw art, not by
-setting navigateToParent (which only follows stage restarts).
-
-`python3 -m beamfastsim.tsrawreference --combine reference-*.npz --out development.npz` merges the small
-aligned references from development subruns920000..920099 and rejects duplicate
-particle/event/shard keys. Check their census reports against finished art first.
-For a one-lineage comparison use explicit `--root-lineages`: each known ancestor
-entrance appears once, nested entrance states/root IDs remain in the output, and
-DS descendants are attached to that ancestor. The saved per-track files are not
-changed. All event IDs and zero-output roots remain. Multiple endpoints per root
-or unresolved DS ancestry still raise; no endpoint is silently dropped. This is a
-known-root projection, not proof of complete primary ancestry: compact omissions
-upstream of an entrance can hide additional nesting and are counted separately.
-Use the saved MDC2025ac/Offlinev10_47_00 Run1A GDML and fetch the matching maps:
+Use the saved MDC2025ac / Offline v10_47_00 Run1A GDML and matching field maps:
 
 ```bash
 python3 -m beamfastsim.tsfield field-run1a --release v10_47_00 \
@@ -194,8 +130,10 @@ python3 -m beamfastsim.tsfield field-run1a --release v10_47_00 \
 ```
 
 The fetch follows release includes before choosing maps. Run1B DSOff maps are not
-a substitute. `python3 -m beamfastsim.tscompare --geometry-label Run1A` labels the new comparison without
-changing the statistics or the default Run1B behavior. Do not tune on held-out data.
+a substitute. `tscompare --geometry-label Run1A` changes the comparison label, not
+the statistics or default Run1B behavior. Cohort merges default to development;
+held-out indices require explicit `--cohort heldout` and cannot be mixed with it.
+The completed held-out sample is consumed, not a fresh tuning test.
 
 ## Saved-output diagnosis and performance
 
@@ -236,26 +174,78 @@ the boundary proposal and flags before any material sampling.
 
 ## Bounded positive-source development study
 
-`python3 -m beamfastsim.tsstudy --reference development.npz --gdml matching.gdml --field-config config.txt
---offline-root offline --maps maps --variant baseline --seeds --out fresh-directory`
-uses all 12,832 positive-charge inputs from the full 100-shard development reference,
-including stock losses; full parent-event exposure remains saved. The fixed seed
-list is 20261111..20261114; pass an explicit subset after `--seeds` if needed.
-`half_material` jointly halves the material chord cap and fractional-loss cap;
+This development study uses all 12,832 positive-charge inputs, including stock
+losses, from the 100-shard reference; all 500,000 parent-event IDs remain saved.
+`half_material` jointly halves the material chord and fractional-loss caps;
 `half_step` halves the field step alone. Neither changes the default settings.
-
-Each setting/seed writes an NPZ and a JSON with yields, overlaps, paired-shard
-errors and momentum/time histograms. `python3 -m beamfastsim.tsstudy --summarize run-files.json ...
---out summary.json` reports seed mean/SD/range and matched-seed setting differences.
 Changing step size changes RNG consumption: matching seed labels are not common
 random trajectories. Positive-only batching also changes the RNG stream relative
-to the historical all-charge 8/15 result, so use the study's fresh baseline. Four
-seeds diagnose variability; they do not establish significance or convergence.
-Optional `--reference development.npz --gdml matching.gdml` with `--summarize`
-adds per-ID fate/material tables for stock mu-plus survivors across saved NPZs.
-Those survivor-selected rows are diagnostics, not a replacement rate denominator.
+to the all-charge 8/15 result, so comparisons use the study's own baseline.
+Four seeds diagnose variability; they do not establish significance or convergence.
 
-Historical pre-review yields for seeds 20261111, 20261112, 20261113 and 20261114:
+### Corrected transport (2026-11-06)
+
+All 12 runs use the same inputs, four seeds and variants, with the enforced
+material caps and boundary corrections. Counts for seeds 20261111 through 20261114:
+
+| Variant | DS mu-plus counts | Mean / sample SD |
+|---|---|---|
+| `baseline` | 12, 11, 15, 10 | 12.00 / 2.1602 |
+| `half_material` | 10, 9, 10, 10 | 9.75 / 0.5000 |
+| `half_step` | 14, 14, 12, 11 | 12.75 / 1.5000 |
+
+Every run retains 12,832 positive inputs and 500,000 parent-event IDs, with zero
+live, path-limit or missing-field outcomes. Stock has 15 mu-plus endpoints; no
+stock or fast pi-plus endpoint.
+Halving material controls does not remove the deficit. Halving the field step
+changes counts by +2, +3, -3, +1 relative to the baseline seed labels, not a
+convergent sequence. The shared-stock-survivor mean is 10.25 baseline / 10.00
+half-step; fast-only mean is 1.75 / 2.75. The small total-yield gain is not evidence
+of recovering missed stock survivors. Do not substitute the 15/15 seed for the
+fixed all-charge result or choose settings by proximity to stock.
+
+Survivor-selected terminal material labels are diagnostics, not stock material
+histories or proof of excessive energy loss. Keep the documented
+2.5 mm / 0.25 mm / 5% development point; numerical/model convergence remains open.
+
+### All-charge joint-tightening sensitivity (2026-11-06)
+
+One full-development candidate halves field/material/loss caps to
+1.25 mm / 0.125 mm / 2.5%, retaining all 25,078 inputs in original order, 500,000
+parent event IDs and seed 20261105. The corrected baseline is reused, not rerun.
+DS mu-minus changes 1,088 -> 1,073 (stock 1,098); mu-plus 8 -> 9 (stock 15).
+Tighter/baseline ratios are 0.98621 +/- 0.01985 and 1.125 +/- 0.437 respectively.
+Mu-minus source-fraction change is -0.12249 +/- 0.17769 percentage points.
+Paired-shard setting-difference momentum/time diagonal chi2 are 4.643/11 and
+22.352/21 for mu-minus; 3.347/3 and 6.351/8 for mu-plus. Maximum absolute bin pull
+is 1.56; no significance from scanning bins. Both fast settings have zero muon
+histogram flows, live/path-limit/missing-field outcomes and DS pi-plus; 3 DS pi-minus.
+
+No clear population instability is resolved at this sample size. This supports
+keeping the baseline for the subsequently completed frozen held-out test, not
+convergence or precision agreement of sparse positives. Equal seeds are not common-random
+histories: 267 mu-minus baseline-only / 252 tighter-only endpoints. Joint controls
+cannot isolate a numerical cause; no setting is selected by closeness to stock.
+Tighter transport cost is 398.133 s (62.989 entrances/s), one CPU worker,
+excluding field load; concurrent tests ran during part of this measurement. Keep the original
+baseline benchmark and development headline. Held-out was unopened at this checkpoint.
+
+`tssensitivity` compares saved baseline and candidate outputs against a shared
+reference; it does not run transport or choose settings. The CLI requires
+`--reference`, `--baseline`, `--candidate` and `--out`. See the
+[saved-output comparison guide](../docs/ts-sensitivity.md) for usage and statistics.
+
+### Optional history diagnostics
+
+Reusable selected-lane trace collection, explicit-target stock crossing extraction
+and material/x-plane analysis helpers are documented in the
+[history guide](../docs/ts-history.md). Sparse stock crossings are not material
+histories; fast x-plane samples are not validated VD hits. These diagnostics do
+not establish numerical convergence or justify retuning.
+
+### Historical pre-review study
+
+Historical yields for seeds 20261111, 20261112, 20261113 and 20261114:
 
 | Variant | Field / material / fractional-loss caps | DS mu-plus counts | Mean / sample SD |
 |---|---|---|---|
@@ -272,26 +262,48 @@ Two inputs reach the 100 m path cap: `baseline` seed 20261113 and `half_step` se
 20261112 each have one. Both are stock non-survivors. They remain in the denominator
 with explicit `path_limit` fates, not physical-absorption labels; a later fast DS
 endpoint remains possible for each. All 12 runs have zero live or missing-field
-outcomes. Saved summaries include capped IDs and their stock outcomes.
+outcomes.
 
-## Reproducing the local test coverage
+## Frozen Run1A held-out comparison (2026-11-06)
 
-From the umbrella checkout, use the project venv with the pinned core and this
-`beam/` on `PYTHONPATH`. Both saved geometry fixtures must be supplied to reproduce
-the recorded full TS coverage; without them the four geometry-dependent tests skip.
+The held-out comparison followed the development sensitivity check and baseline
+freeze. All 100 held-out shards have 500,000 finished Events and 500,000
+primary-proton events; 476,156 empty-source events remain in exposure.
+25,339 recorded forward entrance tracks become 25,334 known-root inputs, retaining
+5 nested states. Repeated forward crossings use the earliest-state rule.
+The exact held-out event/source sets are disjoint from development. All 1,171 stock
+DS mu/pi links resolve; 2,665 upstream compact-ancestry gaps remain. No geometry exclusions.
+Stock statuses are all zero, with no overflow/step-limit events including flow bins.
 
-```bash
-export PYTHONPATH=/path/to/pinned-core:$PWD/beam
-export TS1_GDML=/path/to/ts_geometry_run1b.gdml
-export TS1_RUN1A_GDML=/path/to/ts_geometry_run1a.gdml
-/path/to/project/.venv/bin/python3 -m pytest -q beam/tests/test_ts*.py
-```
+| Endpoint | Stock | Fast | Fast/stock, paired-shard SE |
+|---|---:|---:|---:|
+| mu-minus, 12,515 negative inputs | 1,153 | 1,164 | 1.00954 +/- 0.02371 |
+| mu-plus, 12,819 positive inputs | 11 | 9 | 0.81818 +/- 0.16529 |
 
-The affected-suite selector also needs the umbrella `calo/` and the pinned tracker
-on `PYTHONPATH`, plus `MU2E_OFFLINE_ROOT` for the optional stock DIO-table test.
-Run it against the intended PR base with `python3 -m mu2efastsim.testselect
---also /path/to/pinned-core --run --isolate`. Test each final PR slice; local test
-results and saved physics comparisons do not substitute for CI.
+Input-fraction differences are +0.087895 +/- 0.217615 and -0.015602 +/- 0.015615
+percentage points. Momentum/time diagonal chi2 are 14.2826/11 and 12.1275/21
+(mu-minus), 4.0147/4 and 10.0299/11 (mu-plus). Mu-minus time overflow above 500 ns
+is 5 stock/1 fast, included in yields but outside displayed bins/chi2; other muon
+flows are zero. Positive precision is limited; no calibrated p-value/equivalence
+claim. Stock has 7 DS pi-minus versus fast 0, separate from the muon headline.
+
+Frozen seed 20261105, 2.5 mm / 0.25 mm / 5%, 100 m max path; no post-inspection
+adjustments. Fast fates: 1,173 DS, 18,567 range-out, 220 muon decay, 5,369 wall,
+5 upstream; zero live/path-cap/missing-field. One CPU worker: 174.989 s,
+144.775 entrances/s excluding field load; not a speedup claim against the
+different development cohort. No matched stock TS-only/GPU/SU benchmark.
+Development results remain separate and unchanged.
+
+The opt-in charge-separated yield/momentum/time comparison is complete. Held-out
+assets are separately labeled; no default promotion, new simulation or continued
+tail tuning. The held-out set is now consumed, not reusable as a fresh tuning test.
+
+## Tests
+
+Run the TS tests under `beam/tests/` with the pinned core and `beam/` on
+`PYTHONPATH`. Set `TS1_GDML` and `TS1_RUN1A_GDML` to matching saved geometries
+for the four geometry-dependent tests; synthetic tests need no collaboration data.
+Local results and saved physics comparisons do not substitute for CI.
 
 ## Model and limitations
 
