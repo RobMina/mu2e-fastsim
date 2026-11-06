@@ -1,0 +1,42 @@
+name: FL1 roundoff diagnosis
+on:
+  push:
+    branches: [FL1-ci-diagnosis]
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      JAX_PLATFORMS: cpu
+      JAX_ENABLE_X64: "1"
+      MU2EFS_DEVICE_FLOAT: float64
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: core/ci/requirements.txt
+      - name: Pinned packages
+        run: python3 -m pip install -q -r core/ci/requirements.txt
+      - name: CPU environment
+        run: lscpu
+      - name: Every raw-state difference
+        run: |
+          export PYTHONPATH="$GITHUB_WORKSPACE/beam:$GITHUB_WORKSPACE/core"
+          python3 beam/tests/flash_mode_differences.py | tee "$RUNNER_TEMP/fl1-modes.jsonl"
+      - name: Focused regression tests
+        run: |
+          export PYTHONPATH="$GITHUB_WORKSPACE/beam:$GITHUB_WORKSPACE/core"
+          cd beam
+          python3 -m pytest -q -p no:cacheprovider tests/test_flash_vacuum_bucket.py tests/test_flash_vacuum_fast.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fl1-modes
+          path: ${{ runner.temp }}/fl1-modes.jsonl

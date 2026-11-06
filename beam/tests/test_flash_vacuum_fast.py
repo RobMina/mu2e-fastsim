@@ -37,14 +37,20 @@ def _exact(expected, actual):
     left, lt = jax.tree_util.tree_flatten_with_path(expected)
     right, rt = jax.tree_util.tree_flatten_with_path(actual)
     assert lt == rt
+    differences = []
     for (path, a), (_, b) in zip(left, right):
         a, b = np.asarray(a), np.asarray(b)
         label = jax.tree_util.keystr(path)
         assert a.shape == b.shape and a.dtype == b.dtype, label
-        assert a.tobytes() == b.tobytes(), (
-            f"raw bytes differ at {label}: "
-            f"{np.count_nonzero(a != b)} numerically unequal elements"
-        )
+        if a.tobytes() != b.tobytes():
+            detail = f"{np.count_nonzero(a != b)} numerically unequal elements"
+            if a.dtype.kind == 'f' and np.isfinite(a).all() and np.isfinite(b).all():
+                delta = np.abs(a - b)
+                scale = np.abs(np.spacing(np.maximum(np.abs(a), np.abs(b))))
+                ulps = np.divide(delta, scale, out=np.zeros_like(delta), where=scale > 0)
+                detail += f", max_abs={np.max(delta):.17g}, max_spacing_units={np.max(ulps):.17g}"
+            differences.append(f"raw bytes differ at {label}: {detail}")
+    assert not differences, '\n'.join(differences)
 
 
 def _roundoff_only(expected, actual):
@@ -59,7 +65,7 @@ def _roundoff_only(expected, actual):
     for (path, a), (_, b) in zip(left, right):
         name = "/".join(str(k.key) for k in path)
         if name not in budgets:
-            _exact(a, b)
+            _exact({name: a}, {name: b})
             continue
         a, b = np.asarray(a), np.asarray(b)
         assert a.shape == b.shape and a.dtype == b.dtype
