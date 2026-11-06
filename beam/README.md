@@ -1,5 +1,10 @@
 # beam/: Geant4-free muon beam transport to the stopping target (prototype)
 
+## Opt-in TS source comparison
+
+The independent TS mu/pi route starts with [stock reference joins and paired
+comparisons](docs/ts-reference.md); it does not change the default DS/CE chains.
+
 ## Collaborator inputs
 
 The umbrella [input inventory and setup](../setup/README.md) lists the MuBeamCat-derived

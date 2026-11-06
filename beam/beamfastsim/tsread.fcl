@@ -1,0 +1,27 @@
+#include "Offline/fcl/standardServices.fcl"
+process_name: TSReference
+source: { module_type: RootInput fileNames: [] }
+services: @local::Services.Sim
+services.SeedService.baseSeed: 1
+services.GeometryService.inputFile: "Offline/Mu2eG4/geom/geom_run1_b_v40.txt"
+services.GeometryService.bFieldFile: "Offline/Mu2eG4/geom/bfgeom_DSOff.txt"
+services.TFileService.fileName: "tsreference.root"
+physics: {
+  analyzers: {
+    mutree: {
+      module_type: ReadVirtualDetector
+      simParticleColl: "BeamFilter"
+      physicsVolumeColl: "compressPVBeam"
+      vdStepPoints: "BeamFilter:virtualdetector"
+      tvdStepPoints: "BeamFilter:Beam"
+      savePDG: [mu_minus, mu_plus, pi_minus, pi_plus]
+      navigateToParent: false
+      writeNTPART: true
+      writeNTPART1: false
+      writeNTVD: false
+      writeNTTVD: true
+    }
+  }
+  end_paths: [read]
+  read: [mutree]
+}
