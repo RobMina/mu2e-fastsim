@@ -1,0 +1,8 @@
+# Existing older dumpers use an independent all-event census from EventLister.
+#include "dump_frames.fcl"
+physics.analyzers.crv: {
+  module_type: CrvStepTableDumper
+  genParticles: "compressDetStepMCs"
+}
+physics.analyzers.events: { module_type: EventLister }
+physics.e1: [tracker, crv, events]
