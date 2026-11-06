@@ -1,4 +1,4 @@
-"""FL1 geometry for the fixed known aluminium/material and DS-source setup.
+"""Flash-source geometry for the fixed known aluminium/material and DS-source setup.
 
 This scoped reader supplies CEGeometry without changing the shared beam or CE
 loaders. It checks represented coaxial, untilted foil arrays, not the complete
@@ -40,7 +40,7 @@ def _foils(c):
     if "stoppingTarget.materials" in c:
         raise ValueError("stoppingTarget.materials is rejected by Offline StoppingTargetMaker")
     if c.get("stoppingTarget.overrideMaterial", "") not in ("", "StoppingTarget_Al", "G4_Al"):
-        raise ValueError("Unsupported stoppingTarget.overrideMaterial: FL1 assumes aluminium")
+        raise ValueError("Unsupported stoppingTarget.overrideMaterial: the flash geometry assumes aluminium")
     if c.get("hasTarget", True) is not True:
         raise ValueError("Unsupported target type: hasTarget=false builds a dummy target")
     rout = _vector(c, "stoppingTarget.radii")
@@ -50,7 +50,7 @@ def _foils(c):
     for name in ("xVars", "yVars", "xCos", "yCos"):
         key = "stoppingTarget." + name
         if np.any(_repeat(c, key, n, [0.0]) != 0):
-            raise ValueError(f"Unsupported {key}: FL1 requires coaxial, untilted foils")
+            raise ValueError(f"Unsupported {key}: the flash geometry requires coaxial, untilted foils")
     dz = _scalar(c, "stoppingTarget.deltaZ")
     z0 = _scalar(c, "stoppingTarget.z0InMu2e")
     if dz <= 0:
@@ -89,7 +89,7 @@ def _foils(c):
 
 
 def from_offline(geom_file, offline_root, z_plane=8539.9, source_files=None):
-    """Read the represented FL1 geometry; paths/includes follow SimpleConfig.
+    """Read the represented flash geometry; paths/includes follow SimpleConfig.
 
     StoppingTargetMaker repeats final array entries and encloses first/last foil
     centres with 5 mm clearance. MECOStyleProtonAbsorberMaker adds the VD thickness

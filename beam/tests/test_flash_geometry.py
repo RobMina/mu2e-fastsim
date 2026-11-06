@@ -1,4 +1,4 @@
-"""Synthetic SimpleConfig checks of scoped FL1 geometry, not full Offline coverage."""
+"""Synthetic SimpleConfig checks of scoped flash geometry, not full Offline coverage."""
 import numpy as np
 import pytest
 
