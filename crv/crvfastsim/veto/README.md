@@ -54,3 +54,59 @@ This is a diagnostic: represented genealogy muons are not an all-primary census;
 no magnetic-field deflection, and no production-era response validation. The existing SiPM pre-window approximation
 also differs from the stock start margin. Zero represented-muon events remain in the response file. Do not use its
 throughput per selected event as a rate per generated cosmic or as a stock-grid speedup.
+
+## Retained-generator inputs (opt-in)
+
+Use independently extracted upstream generator collections when the track genealogy omits other particles in the
+same event. Establish the source-file ancestry and event/state conventions before preparing inputs; never construct
+these tables from vetoing-cluster truth or by matching particles to reconstructed coincidences.
+
+Input parquet schemas:
+
+- Selection: the cached selection above, including integer `run`, `subrun`, `event`, `shard` and bunch times.
+- Generators: integer `run`, `subrun`, `event`, `gen_product_id`, `idx`, `pdg`, `genid`; numerical
+  `x`, `y`, `z` (mm), `px`, `py`, `pz` (MeV/c), `e` (total MeV), `t` (global ns), in upstream Mu2e coordinates.
+- Event census: integer `run`, `subrun`, `event`, `n_gen` for every selected event, including empty collections.
+  If present, `gen_product_id` identifies the single collection and must match the payload. Without it, `n_gen`
+  counts the explicitly supplied collection union; ProductID/index pairs distinguish particles within each event.
+
+Keys must have integer storage, be nonnegative and fit signed 64-bit; particle PDG/genid may be signed. Floating
+identity columns are rejected, not rounded. ProductIDs must be positive. Sparse source indices are retained;
+identical states with different identities are not deduplicated. Missing events/rows, duplicate identities,
+nonfinite states and energy below momentum magnitude beyond storage roundoff are errors. The relative energy-check
+tolerance is the larger of 1e-9 and four epsilons of the least precise stored momentum/energy dtype; stored values
+are never rounded or repaired. Counts establish retained-collection coverage, not completeness of the original
+generated stream or upstream physics selection.
+
+```bash
+python3 -m crvfastsim.veto.generators --selection selection.parquet \
+  --generators upstream_generators.parquet --events upstream_events.parquet --outdir retained_dev
+python3 -m crvfastsim.veto.primary_chain --selection retained_dev/selection.parquet \
+  --primaries retained_dev/primaries.parquet --input-kind retained \
+  --generator-events retained_dev/generator_events.parquet --split dev \
+  --gdml run1a.gdml --calib calib.csv --deviation photon.csv --library-dir library --outdir response
+```
+
+Preparation selects development shards <22 by default (`--split-at` changes the boundary). Use preparation
+`--split heldout` or `--split all` explicitly for other populations. `inputs.json` records `prepared_split` and
+`split_at`; the retained response CLI reads it beside `selection.parquet` and rejects a conflicting named split or
+boundary. Response `--split all` means all supplied events, not recovery of omitted shards. Legacy inputs without
+this metadata are supported, but preparation and response both reject an empty event selection after splitting,
+before transport or output writing. Nonempty selections whose generator collections are empty remain valid.
+The response chain preserves every selected event, including empty responses. It retains source states/total energies
+and assigns unique dense internal event/particle keys; `generators.parquet` and `generator_map.parquet` preserve the original
+`source_run/subrun/event`, `source_idx` and `gen_product_id`. These GenParticle identities are not SimParticle IDs.
+The existing muon transport still calculates its kinetic quantities from momentum and the muon mass; preserving
+input `e` does not change that transport model. The represented-muon default retains its existing energy calculation.
+
+All non-muons are passed to the existing library sampler; non-muon input without a library is rejected. The report
+includes sampler counts and `inputs.shower_support`: counts by signed PDG/KE bin of supported, missing-cell,
+zero-denominator, zero-shower and unknown-mass inputs, plus out-of-grid counts. This reporting makes library gaps
+explicit without changing RNG consumption or the response model. A missing cell or zero observed donors is not
+proof of a physical zero response. The existing sampler clips to endpoint energy bins and does not condition
+non-muon response on supplied position/direction or charge sign; these remain diagnostic predictions, not closure.
+
+The Slurm wrapper takes `C4_INPUT_KIND=retained` and `C4_INPUTS=<prepared directory>`; invalid input-kind values
+are rejected by the Python CLI. No simulation, library rebuilding or response tuning is performed by preparation.
+Keep held-out results frozen while developing this route: changing input count/order and stored precision changes
+random-number consumption, so a changed veto decision cannot be attributed solely to an added particle.
