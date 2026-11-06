@@ -19,7 +19,8 @@ Subcommands:
 - `reduce`: the per-event frame of other EventNtuple files (e.g. the production reco of the same dts events), for use
   as an arm of `compare`;
   `shift_check` recounts the reference with its selected momenta shifted by the same-event mean difference, to test
-  whether that shift alone explains the yield ratios on a steep spectrum;
+  whether that shift alone explains the yield ratios on a steep spectrum; a missing shift or zero reference yield
+  gives a null prediction, displayed as unavailable;
 - `plot`: the reco momentum spectrum above P_PLOT with a fast / Geant4 ratio panel.
 """
 import argparse
@@ -210,8 +211,13 @@ def compare(den, arm, ref, drop_outside=False):
                                 median=float(np.median(dp)) if dp.size else np.nan)
     # does that mean shift alone explain the yield ratios? the reference's selected momenta shifted by it, recounted
     delta = out["same_event_dp"]["mean"]
-    out["shift_check"] = dict(shift=delta, ratio_predicted={
-        f"{c:g}": float((zr + delta > c).sum() / max((zr > c).sum(), 1)) for c in P_CUTS})
+    delta = delta if np.isfinite(delta) else None
+    p_ref = pr[sr]
+    out["shift_check"] = dict(shift=delta, ratio_predicted={})
+    for c in P_CUTS:
+        nref = int((p_ref > c).sum())
+        out["shift_check"]["ratio_predicted"][f"{c:g}"] = (
+            float((p_ref + delta > c).sum() / nref) if delta is not None and nref > 0 else None)
     return out
 
 
@@ -237,6 +243,9 @@ def plot(rep, path, lo=P_PLOT):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    def fmt(value, spec):
+        return format(value, spec) if value is not None and np.isfinite(value) else "unavailable"
+
     b = rep["bins"]
     e = np.array(b["edges"])
     i0 = int(np.searchsorted(e, lo - 1e-9))
@@ -255,24 +264,25 @@ def plot(rep, path, lo=P_PLOT):
     y = rep["above"]["100"]
     s = rep["efficiency_selected"]
     ax[0].set_title(f"DIO, stock digitisation + LoopHelix reco ({rep['events']:,} events)\n"
-                    f"selected: fast / G4 = {s['ratio']:.4f} +- {s['ratio_err']:.4f};  above 100 MeV/c: "
-                    f"{y['ratio']:.3f} +- {y['ratio_err']:.3f}", fontsize=9.5)
+                    f"selected: fast / G4 = {fmt(s['ratio'], '.4f')} +- {fmt(s['ratio_err'], '.4f')};  above 100 MeV/c: "
+                    f"{fmt(y['ratio'], '.3f')} +- {fmt(y['ratio_err'], '.3f')}", fontsize=9.5)
     x1, x2 = b["chi2_paired_above_95"], b["chi2_paired_above_100"]
     ax[0].text(0.03, 0.04, rf"paired $\chi^2$/ndf above 95: {x1['chi2']:.1f}/{x1['ndf']}, above 100: "
                rf"{x2['chi2']:.1f}/{x2['ndf']}", transform=ax[0].transAxes, fontsize=8.5)
     ax[0].legend(fontsize=9, loc="upper right")
     rr, re = np.array(b["ratio"], float)[k], np.array(b["ratio_err"], float)[k]
-    ok = (fr > 0) & (fa > 0)
+    ok = (fr > 0) & np.isfinite(rr)
     ax[1].errorbar(c[ok], rr[ok], yerr=re[ok], xerr=w[ok] / 2, fmt="o", ms=3, color="#0072B2")
     ax[1].axhline(1, color="black", lw=0.8)
     ax[1].axvline(100.0, color="grey", lw=0.8, ls=":")
     ax[0].axvline(100.0, color="grey", lw=0.8, ls=":")
-    ax[1].set_ylim(0.0, 2.0)
+    ax[1].set_ylim(-0.1, 2.0)
     ax[1].set_ylabel("fast / G4")
     sc = rep.get("shift_check")
     if sc:
-        ax[0].text(0.03, 0.12, f"same-event shift {sc['shift']:+.3f} MeV/c predicts\n"
-                   f"{sc['ratio_predicted']['95']:.3f} above 95, {sc['ratio_predicted']['100']:.3f} above 100",
+        ax[0].text(0.03, 0.12, f"same-event shift {fmt(sc['shift'], '+.3f')} MeV/c predicts\n"
+                   f"{fmt(sc['ratio_predicted']['95'], '.3f')} above 95, "
+                   f"{fmt(sc['ratio_predicted']['100'], '.3f')} above 100",
                    transform=ax[0].transAxes, fontsize=8.5)
     ax[1].set_xlabel("reco momentum at the tracker front [MeV/c]")
     fig.savefig(path, dpi=150, bbox_inches="tight")
