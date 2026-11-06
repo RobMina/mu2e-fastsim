@@ -356,3 +356,11 @@ def test_phi_prescale_is_stateful_by_released_filter_invocation_counter():
     config['physics']['filters']['Cut']['posHelicitySelection']['prescaleUsingD0Phi'] = replay.Atom('false')
     _, prepared = replay.prepare(config)
     assert prepared['stateful_paths'] == []
+
+
+def test_parameter_tables_without_module_type_are_not_modules():
+    config = fixture()
+    config['physics']['producers']['HelixParams'] = {'maxEDepAvg': replay.Atom('0.0045')}
+    result, prepared = replay.prepare(config)
+    assert 'HelixParams' not in result['physics']['producers']
+    assert [row['path'] for row in replay.inventory(config)['paths']] == prepared['paths']

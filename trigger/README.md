@@ -11,6 +11,8 @@ needs the matching released Offline runtime and stock digis; no C++ build, new G
 | `compare.py` | per-path comparison of the stored (`TriggerResults::Digitize`) and replayed decisions printed by the job, keyed by run/subrun/event |
 | `menu_diff.py` | module-setting differences between two inventories (e.g. CE and cosmic eras) |
 | `timing.py` | trigger-module wall time per event from an art TimeTracker table |
+| `hybrid/pair.py` | paired per-path acceptance of two replays of the same events (e.g. fast vs Geant4 digis): difference, error, untested paths, module pass counts |
+| `hybrid/plot_paired.py` | acceptance per path for both arms and the paired difference with errors |
 
 ## Use
 
@@ -36,6 +38,14 @@ What `replay.py` changes in the production configuration: it removes `DigitizePa
 process name. Services, conditions, geometry and every filter threshold are the production ones. The replay
 process must be the release that made the file: the CE and cosmic productions differ (13_41 vs 13_33, 17 module
 settings, calorimeter digi time units).
+
+## Comparing two replay arms
+
+`hybrid/pair.py --common` measures acceptance only on events present in both arms. Its report keeps the actual
+union size in `events_in_logs.union`; `events` is the selected denominator. Module pass counts are omitted in this
+mode: the aggregate TrigReport cannot identify which module counts belong to common events. Without `--common`,
+attached `stages` are whole-log totals for each arm, not event-paired module decisions; `stages_basis` states this
+scope. Keep the all-event comparison alongside conditional results to expose losses before digitisation.
 
 ## Results (2026-11-04)
 
