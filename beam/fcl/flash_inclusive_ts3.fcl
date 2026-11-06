@@ -1,0 +1,17 @@
+# Direct TS3 pool continuation with board transport cuts, without resampling or pulse offsets.
+#include "flash_inclusive.fcl"
+physics.producers.g4run.Mu2eG4CommonCut: {
+  type: intersection
+  pars: [
+    { type: intersection pars: [
+        { type: kineticEnergy cut: 1 },
+        { type: pdgId pars: [11, -11] }
+    ] },
+    { type: inVolume pars: [TS2Vacuum, TS3Vacuum, TS4Vacuum, TS5Vacuum, DS2Vacuum, HallAir] }
+  ]
+}
+physics.producers.g4run.Mu2eG4StackingOnlyCut: {
+  type: pdgId
+  pars: [12, -12, 14, -14, 16, -16]
+}
+physics.producers.g4run.SDConfig.sensitiveVolumes: ["TrackerSupportElecG10Downstream", "PanelEBKey", "PanelEBKeyShield"]
