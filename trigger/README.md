@@ -11,6 +11,8 @@ needs the matching released Offline runtime and stock digis; no C++ build, new G
 | `compare.py` | per-path comparison of the stored (`TriggerResults::Digitize`) and replayed decisions printed by the job, keyed by run/subrun/event |
 | `menu_diff.py` | module-setting differences between two inventories (e.g. CE and cosmic eras) |
 | `timing.py` | trigger-module wall time per event from an art TimeTracker table |
+| `hybrid/pair.py` | paired per-path acceptance of two replays of the same events (e.g. fast vs Geant4 digis): difference, error, untested paths, module pass counts |
+| `hybrid/plot_paired.py` | acceptance per path for both arms and the paired difference with errors |
 
 ## Use
 

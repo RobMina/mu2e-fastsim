@@ -137,9 +137,15 @@ def paths(config):
     return result
 
 
+def module_tables(physics):
+    """Producers and filters; parameter tables without a module_type (unscheduled prolog leftovers) are skipped."""
+    return {label: module for kind in ('producers', 'filters') for label, module in physics.get(kind, {}).items()
+            if isinstance(module, dict) and 'module_type' in module}
+
+
 def inventory(config):
     physics = config['physics']
-    modules = {**physics.get('producers', {}), **physics.get('filters', {})}
+    modules = module_tables(physics)
     result = []
     for bit, name, sequence in paths(config):
         if name == 'DigitizePath' or name.startswith('Triggerable'):
@@ -224,7 +230,7 @@ def prepare(config, original_process='Digitize', replay_process='TriggerReplay',
     physics = config['physics']
     digitizers = set(plain(physics['DigitizePath']))
     inv = inventory(config)
-    modules = {**physics.get('producers', {}), **physics.get('filters', {})}
+    modules = module_tables(physics)
     removed_mc = {label for label, m in modules.items() if plain(m['module_type']) == 'SelectRecoMC'}
     selected = []
     sequences = {}
