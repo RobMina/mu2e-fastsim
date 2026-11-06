@@ -146,7 +146,9 @@ def _load_setup(rc, cfg, gdml_path, explicit_gdml, spec, calib, deviation, jax, 
     cond = runconfig.nominal_conditions(geom) if calib == "nominal" else chain.Conditions.from_csv(calib, deviation)
     if len(cond.status) < 4 * geom.nbars:
         raise SystemExit(f"runchain: conditions cover {len(cond.status)} channels, {rc.name} has {4 * geom.nbars}; "
-                         "pass the configuration's CRVCalib CSV or --calib nominal")
+                         "pass the configuration's conditions CSVs (--calib/--deviation: the converted conditions of the "
+                         "input release, or scripts/offline_conditions_csv.py on the Offline CRVConditions text files); "
+                         "--calib nominal treats every channel as live")
     cond = readout.apply(cond, geom, ccfg)   # physically absent SiPMs make no charges (Offline hasCMB)
     tagger = rc.tagger_bar(geom) if rc.name != runconfig.DEFAULT else None
     bar_cut = rc.bar_cut(geom)

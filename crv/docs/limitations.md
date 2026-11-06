@@ -34,11 +34,13 @@ PE tail above 2000 PE (0.923 +- 0.014 -> 0.991 +- 0.014), and the adjacent-layer
 
 ## Configurations
 
-- Only the **extracted (KPP) configuration** (`extracted_v04`) is supported end to end. The named configurations
-  (`run1a_v01`, `run1b_v01` = alias of Run 1A, `run2_v10`) have transport, geometry and conditions code, but their
-  only tier-1b set (`legacy`) was built from a library file that no longer exists, so a named chain cannot run until a
-  library is rebuilt for it. The `strict_v*` sets describe the extracted layer structure and are refused for named
-  configurations.
+- The **extracted (KPP) configuration** (`extracted_v04`) is the default. Of the named configurations (`run1a_v01`,
+  `run1b_v01` = alias of Run 1A, `run2_v10`), only `run1a_v01` has a tier-1b set of its own (`--tier1b run1a_v01`,
+  opt-in); the others need a custom `--library`. The `strict_v*` sets describe the extracted layer structure and are
+  refused for named configurations.
+- **Run 1A needs the converted Run 1A conditions** (`--calib`/`--deviation` from `scripts/offline_conditions_csv.py`):
+  `--calib nominal` counts the 45 channels that the Run 1A status table marks "ignore in reconstruction" as live, which
+  gives about 1 % more pulses than stock.
 - **Run 2 V1 fails** (primary-muon crossings vs Geant4, 1 M events): the CRV that wraps the DS needs below-plane
   scatter-in; the experimental marcher is on branch `park/named-run2`. Run 1A V1 passes.
 - No magnetic field: the transport is straight-line plus multiple scattering, valid for the extracted configuration.
