@@ -5,8 +5,8 @@ contains and how to verify it; [`docs/running.md`](../docs/running.md) says how 
 
 ## Availability
 
-A fresh clone is not a data release. The current input release is **`mu2e-fastsim-inputs-v1.1`** (76 files, about
-2.4 GB; it supersedes v1, which stays unchanged). It is on Fermilab shared storage, readable by the Unix group `mu2e`
+A fresh clone is not a data release. The current input release is **`mu2e-fastsim-inputs-v1.2`** (78 files, about
+2.4 GB; it supersedes v1 and v1.1, which stay unchanged). It is on Fermilab shared storage, readable by the Unix group `mu2e`
 from a Mu2e GPVM and from an EAF server, which mounts the same storage. Nothing is published on CVMFS or dCache, and
 the release must not be copied outside Mu2e: every file is marked `redistribution: mu2e-internal`. The Apache-2.0
 code licence does not grant rights to conditions, simulation-derived banks, detector data, CRY data, or an image's
@@ -14,13 +14,13 @@ third-party dependencies.
 
 **Requesting access.** You need a Fermilab computing account in the Mu2e group (the Unix group `mu2e` on the Mu2e
 GPVMs; EAF uses the same accounts). Ask the fast-simulation maintainers, through a GitHub issue on this repository or
-the Mu2e simulation channels, for the release root and the manifest path of `mu2e-fastsim-inputs-v1.1`. Neither is
+the Mu2e simulation channels, for the release root and the manifest path of `mu2e-fastsim-inputs-v1.2`. Neither is
 written in this public repository, because the manifest's provenance names internal storage. Then point
 `M2FS_INPUTS` at the release root and verify it against its manifest (below) before the first run.
 
 The format of the manifest is shown, with placeholder values, in [`RELEASE.example.json`](RELEASE.example.json).
 
-## Release v1.1 layout
+## Release v1.2 layout
 
 Paths are relative to `$M2FS_INPUTS`. `site.env.example` derives `CRVFS_DATA`, `CRVFS_LOOKUP_DIR`,
 `FASTSIMKIT_*_DATA` and `MU2E_SEARCH_PATH` from it.
@@ -32,6 +32,7 @@ Paths are relative to `$M2FS_INPUTS`. `site.env.example` derives `CRVFS_DATA`, `
 | `crv_fastsim/geometry/mu2e_extracted_v04.gdml` | CRV and tracker transport (default `extracted_v04`) | GDML world export, crv `geometry/README.md` |
 | `crv_fastsim/geometry/{mu2e_run1a_v01.gdml,mu2e_run2_v10.gdml}` | named run configurations (`crvfastsim.runconfig`) | GDML world exports |
 | `crv_fastsim/geometry/{crvcalib,crvphoton}_sim_best_v1_5_run1400.csv` | CRV response and reco | simulation conditions `sim_best_v1_5`, run 1400 |
+| `crv_fastsim/conditions_run1a_v01/{crvcalib_run1a_v01.csv,crvphoton_run1a_v01.csv}` | Run 1A CRV chain (`--calib`, `--deviation` with `--run-config run1a_v01`) | Offline Run 1A CRV conditions converted by crv `scripts/offline_conditions_csv.py`; without them `--calib nominal` counts the 45 ignore-in-reconstruction channels as live (new in v1.2) |
 | `crv_fastsim/lookup_v6_0/{LookupTable_6000_0,LookupTable_2370_1,LookupTable_3200_0,photonMap.root}` | CRV response (`CRVFS_LOOKUP_DIR`), kit `response_bench`, `v4_response` | CVMFS `DataFiles/CRVConditions/v6_0` |
 | `crv_fastsim/g4ref_v1_tables/gen.001400_000000{01..20}.root` | kit `chain_point` (`gen_set` 0), EAF `chain` (held-out 11-20), `tracker_point` (default shard 11) | CRY primaries in the extracted world, 50,000 generated events each |
 | `crv_fastsim/g4ref_v1_tables/crvsteps.001400_00000012.root` | EAF `regression` (V4 SiPM on Geant4 steps) | Geant4 CrvSteps of subrun 12 |
@@ -47,7 +48,7 @@ Paths are relative to `$M2FS_INPUTS`. `site.env.example` derives `CRVFS_DATA`, `
 | `beam_fastsim/g4ref_run1baa/g4ref_run1baa_vd8.npz` | kit `beam_sob` | Coll5_Out-plane beam sample from MuBeamCat Run1Baa |
 | `offline/Offline/Mu2eG4/geom/crv_counters_{extracted_v04,run1a_v01,v10}.txt`, `offline/Offline/CRVResponse/data/singlePEWaveform_v3.txt` | CRV geometry and waveform (`MU2E_SEARCH_PATH`) | public Mu2e/Offline v13_39_00 |
 
-**Not in v1.1:**
+**Not in v1.2:**
 - There is no tier-1b library for `run1b_v01` or `run2_v10`; those configurations run only with `--library`.
 - The beam field maps and the Offline geometry include tree are public. `beamfastsim` reads them from CVMFS, or
   `python3 -m beamfastsim.stage` fetches them where there is no CVMFS mount (`docs/running.md`).
@@ -75,11 +76,11 @@ python3 -m mu2efastsim.inputs fetch-inputs --manifest "$MANIFEST" --root "$M2FS_
   --source-dir "$APPROVED_SOURCE" --execute
 ```
 
-`check-inputs` reads every file once; for v1.1 that takes under 10 s on a GPVM or an EAF server. Read the release
+`check-inputs` reads every file once; for v1.2 that takes about 10 s on a GPVM or an EAF server. Read the release
 in place on FNAL storage: its files are marked `mu2e-internal`, so `fetch-inputs --execute` refuses to copy them.
 
 Access check for a new account, with `MANIFEST` and `M2FS_INPUTS` set. It reads the manifest, then one file of each
-kind, then verifies everything; expect `mu2e-fastsim-inputs-v1.1 76 files`, seven `ok` lines and `76`:
+kind, then verifies everything; expect `mu2e-fastsim-inputs-v1.2 78 files`, seven `ok` lines and `78`:
 
 ```bash
 python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); print(m["release"], len(m["files"]), "files")' "$MANIFEST"

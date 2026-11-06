@@ -21,7 +21,7 @@ items and the beam stage.
   material, the calorimeter front and back plates, the front-end electronics boxes and pipes (electrons that graze
   the first disk's inner edge and cross them are kept too often: +1.6 % in acceptance against Geant4), and showers.
   The fast chain uses EM option 4; full-simulation design points on FTFP_BERT (option 0) lose slightly less energy.
-- **Inputs are Mu2e-internal.** Input release `mu2e-fastsim-inputs-v1.1` is readable by the Mu2e group on Fermilab
+- **Inputs are Mu2e-internal.** Input release `mu2e-fastsim-inputs-v1.2` is readable by the Mu2e group on Fermilab
   storage (GPVM and EAF) only; it is not on CVMFS or dCache ([setup/README.md](../setup/README.md)). The project image is not downloadable either.
 - **Second account.** The quickstart has been run from an empty `HOME` with the same user, not yet from a second
   user account; access permissions of a shared release are therefore untested.
