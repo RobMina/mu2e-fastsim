@@ -20,7 +20,7 @@ complete primary-root closure. All 1,118 stock DS mu/pi records resolve to the c
 | DS mu-plus, fast / stock | 8 / 15; ratio 0.5333 +/- 0.1458; sparse deficit, not agreement |
 | Transport cost | 188.811 s for 25,078 entrances; 132.820 entrances/s |
 | Performance scope | One laptop CPU worker; field loading excluded; no matched stock TS-only or GPU benchmark |
-| Regression evidence | Latest recorded local TS suite: 339 passed, with both saved Run1A and Run1B GDML fixtures; not CI |
+| Regression evidence | Publication local TS suite: 344 passed, with both saved Run1A and Run1B GDML fixtures; not CI |
 
 The measured transport improvement is 8.362x over the initial 1,578.929 s run and
 2.880x over the first optimized 543.821 s run. All saved numerical arrays except
