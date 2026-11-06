@@ -34,6 +34,8 @@ def merge(paths, *, expected_events):
                 raise ValueError("shard completion/count mismatch")
             if report["failed_recording_events"] or report["incomplete_tracker_events"]:
                 raise ValueError("failed recording shard cannot enter an ordinary merged comparison")
+            for k in (*EVENT_FIELDS, *PHOTON_COLUMNS[:5]):
+                part[k] = part[k].astype(np.uint64, copy=False)
             pieces.append(part)
     result = {k: np.concatenate([p[k] for p in pieces]) for k in (*EVENT_COLUMNS, *PHOTON_COLUMNS)}
     if len(result["event_run"]) != expected_events:

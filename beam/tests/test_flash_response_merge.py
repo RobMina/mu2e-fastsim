@@ -4,7 +4,8 @@ import json
 import numpy as np
 import pytest
 
-from beamfastsim.flash_response_merge import merge, main
+from beamfastsim.flash_response_merge import EVENT_COLUMNS, PHOTON_COLUMNS, merge, main
+from beamfastsim.flash_response_compare import EVENT_FIELDS, _arm
 from test_flash_response_compare import sample
 
 
@@ -65,3 +66,74 @@ def test_cli_no_overwrite(tmp_path):
     assert main(argv) == 0
     with pytest.raises(FileExistsError):
         main(argv)
+
+
+IDENTITY_COLUMNS = (*EVENT_FIELDS, *PHOTON_COLUMNS[:5])
+
+
+def shard_data(path):
+    with np.load(path, allow_pickle=False) as z:
+        return dict(z)
+
+
+@pytest.mark.parametrize("dtypes", [(np.uint64, np.int64), (np.int64, np.uint64),
+                                    (np.uint64, np.uint64), (np.int64, np.int64)])
+def test_integer_identity_dtypes_preserve_exact_large_values(tmp_path, dtypes):
+    paths = [write(tmp_path / "a.npz"), write(tmp_path / "b.npz", 4)]
+    pieces = []
+    for path, dtype in zip(paths, dtypes):
+        part = shard_data(path)
+        for name in IDENTITY_COLUMNS:
+            part[name] = (part[name] + np.uint64(2**53 + 17)).astype(dtype)
+        if dtype == np.uint64:
+            for name in ("event_run", "run", "product", "key"):
+                part[name] += np.uint64(2**63)
+        _arm(part)
+        pieces.append(part)
+        np.savez_compressed(path, **part)
+    merged = merge(paths[::-1], expected_events=8)
+    for name in IDENTITY_COLUMNS:
+        order = pieces if name in EVENT_FIELDS else pieces[::-1]
+        expected = np.concatenate([part[name].astype(np.uint64) for part in order])
+        assert merged[name].dtype == np.dtype(np.uint64)
+        np.testing.assert_array_equal(merged[name], expected)
+    assert merged["input_event_count"] == 8
+    assert merged["photon_assigned_ionizing_mev"].sum() == 8.
+    assert merged["frontier_status"].dtype == pieces[0]["frontier_status"].dtype
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_signed_empty_photons_keep_large_unsigned_identities_and_zero_events(tmp_path, reverse):
+    a, b = write(tmp_path / "a.npz"), write(tmp_path / "zero.npz", 4)
+    populated, empty = shard_data(a), shard_data(b)
+    for name in ("product", "key"):
+        populated[name] += np.uint64(2**63 + 11)
+    for name in PHOTON_COLUMNS:
+        empty[name] = empty[name][:0]
+    for name in PHOTON_COLUMNS[:5]:
+        empty[name] = empty[name].astype(np.int64)
+    for name in EVENT_COLUMNS[len(EVENT_FIELDS):]:
+        empty[name][:] = 0
+    for path, part in ((a, populated), (b, empty)):
+        _arm(part)
+        np.savez_compressed(path, **part)
+    merged = merge([b, a] if reverse else [a, b], expected_events=8)
+    for name in PHOTON_COLUMNS[:5]:
+        assert merged[name].dtype == np.dtype(np.uint64)
+        np.testing.assert_array_equal(merged[name], populated[name])
+    np.testing.assert_array_equal(merged["event_ordinal"], np.arange(8, dtype=np.uint64))
+    np.testing.assert_array_equal(merged["event_tracker_ionizing_mev"][4:], np.zeros(4))
+    assert merged["input_event_count"] == 8
+
+
+@pytest.mark.parametrize("field", IDENTITY_COLUMNS)
+@pytest.mark.parametrize("invalid", ["negative", "float"])
+def test_identity_validation_precedes_unsigned_conversion(tmp_path, field, invalid):
+    path = write(tmp_path / "bad.npz")
+    part = shard_data(path)
+    part[field] = part[field].astype(np.int64 if invalid == "negative" else float)
+    if invalid == "negative":
+        part[field][0] = -1
+    np.savez_compressed(path, **part)
+    with pytest.raises(ValueError, match=field):
+        merge([path], expected_events=4)

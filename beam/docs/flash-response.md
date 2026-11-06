@@ -68,9 +68,12 @@ establishes transferability.
 ## Saved-shard merging
 
 A saved-only `flash_response_merge` combines only event/photon comparison columns
-after count,
-recording and duplicate-identity checks; raw tracker-owner row indices are local
-to their original shard and must not be naively concatenated.
+after count, recording and duplicate-identity checks. Validated nonnegative signed
+and unsigned event/photon identities are normalized to uint64 **before** shard
+concatenation, including empty photon arrays, so large identities never pass
+through floating point. Zero-photon shards retain their complete event denominator.
+Raw tracker-owner row indices are local to their original shard and must not be
+naively concatenated.
 
 ## Residual ancestry census
 
