@@ -52,6 +52,21 @@ Allocation charges depend on the site's rates and are not given here.
 | electrons, conversion-electron chain to the tracker entry | slab physics vs Geant4 pass (loss chi2/ndf 0.6-1.4; 1 X0 W stopped 18.41 +- 0.09 vs 18.28 %; reflected 0.347 +- 0.013 vs 0.336 %). CE chain vs Geant4 CeEndpoint at the tracker entry, inside a selection that implies the production filter: yield per generated electron 1.004 +- 0.003; momentum, angle, radius and time-of-flight chi2/ndf 0.8-1.3; E - E_CE MPV -0.37 vs -0.35 +- 0.02 MeV, FWHM 0.675 vs 0.677 +- 0.024 MeV, 0.25 MeV tail bins to -2 MeV within 1-2 sigma Device chain (`--backend device`, one JAX loop) vs the NumPy chain on the same starts (400k target stops and the 108k Geant4 starts, r_max > 450): yield per start 0.9999 +- 0.0007 / 1.0005 +- 0.0010 (float64), 1.0010 +- 0.0007 / 1.0000 +- 0.0010 (float32); E - E_CE 0.25 MeV bins from -2 to 0 MeV within 2.4 sigma (paired); same-start momentum +0.001 +- 0.008 MeV/c (float64), +0.012 +- 0.008 MeV/c (float32); against Geant4 the device yield is 1.0043 +- 0.0028 (float64) / 1.0054 +- 0.0028 (float32) | device chain, one RTX PRO 6000 MIG 1g.24gb slice with 4 cores: float32 about 70,000 electrons/s steady (whole process with 1.6 M electrons: 24,900/s, fixed cost about 17 s plus a 10 s tail of slow electrons), float64 8,600/s (process with 400k: 3,900/s); one CPU core: float32 170-240/s (process with 40k: 116-135/s), float64 106-110/s. NumPy chain with JAX layers: 37/s per core, 132/s per MIG slice. A stock event (24 electrons/s per grid slot) simulates every particle in the whole detector; the fast chain carries the primary electron to the tracker entry | device: about 2,900 per MIG slice (float32), 360 (float64); 7-10 per CPU core (float32), 4.4-4.6 (float64) |
 | tracker with the DS field (opt-in, in development) | first passage of Geant4 tracker-entry states, field-on chord transport: straws per track +0.017 +- 0.070 (muons), +0.055 +- 0.019 (CE); straw ionisation with the Geant4 gas density-effect branch and muon radiative losses (both default): conversion electrons -0.06 +- 0.06 %, cosmic muons above 10 GeV/c within 0.2 %; stock CentralHelix reco on the fast steps agrees with Geant4 above 300 MeV/c | one CPU core 6 muons/s, 4 CE/s (transport only) | stock field-on reference not yet timed |
 
+## TS entrance-to-DS prototype (opt-in, Run1A development only)
+
+After the material-cap and upstream-fate review corrections, 25,078 known-root
+mu/pi entrances across 100 shards (500,000 saved parent Events) give DS mu-minus
+**1,088/1,098 = 0.9909 +- 0.0219** and mu-plus **8/15 = 0.5333 +- 0.1633**;
+errors are paired by independent shard, not Poisson. The sparse positive deficit
+remains. No Run1A held-out result or complete primary-root closure is claimed.
+
+One laptop CPU worker transports **133.953 entrances/s** (187.215 s), excluding
+field loading, at 2.5 mm / 0.25 mm / 5% caps and seed 20261105. No matched stock
+TS-only timing exists: full-stage POT/s is a different denominator, so grid slots
+replaced are **unmeasured**. The preserved pre-review 132.820 entrances/s and exact
+optimization comparisons do not establish numerical identity of corrected code.
+See [TS transport](../beam/docs/ts-transport.md) for model and validation limits.
+
 ## CE shower-library diagnostic (opt-in)
 
 This separate route carries generated CE primaries through cechain, vacuum propagation to a disk front, sampled
