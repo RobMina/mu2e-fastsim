@@ -3,8 +3,9 @@
 `tsreference`, `tsfield`, `tsgeometry`, `tsphysics`, `tstransport` and `tscompare`
 are an independent charged-muon/pion development route. Nothing imports them from
 the default beam or CE chains. Inputs must use the same geometry and field as the
-stock sample. Run1B development and a Run1A development comparison exist; Run1A
-held-out validation and a matched stock TS-only performance comparison remain open.
+stock sample. Run1B and Run1A development comparisons and one frozen Run1A
+held-out comparison are complete. Held-out is consumed, not a fresh tuning test;
+a matched stock TS-only performance comparison remains unmeasured.
 
 ## Review-corrected development checkpoint (2026-11-06)
 
@@ -18,10 +19,13 @@ missing field. Positive deficit and 2,696 compact-ancestry gaps remain explicit.
 Material bounds are rechecked through convergence and after boundary truncation;
 unresolved proposals raise rather than sample over-cap columns. Entrance exits use
 the bracketed plane intersection/aperture. Details: [transport guide](../docs/ts-transport.md).
-Changed step sequences change RNG consumption; the saved outputs below are not
-numerically identical to this run. The 12-run study predates the cap correction and
-has not been rerun; do not use it as corrected-code convergence evidence. Local
-TS suite: **409 passed**, both saved geometry fixtures supplied. Held-out untouched.
+Changed step sequences change RNG consumption; the historical outputs below are
+not numerically identical to this run. The corrected 12-run study is now complete
+on merged main: mean positive yields 12.00 / 9.75 / 12.75 for baseline / tighter
+material / smaller field step, versus 15 stock. It does not establish convergence.
+The corrected publication checkpoint had **409 passing TS tests** with both saved
+geometry fixtures. The completed follow-up has **509 passing TS tests**. Development,
+Run1B held-out and Run1A held-out assets are separately labeled, not relabelled.
 
 ## Historical pre-review checkpoint (2026-11-06)
 
@@ -255,7 +259,94 @@ Optional `--reference development.npz --gdml matching.gdml` with `--summarize`
 adds per-ID fate/material tables for stock mu-plus survivors across saved NPZs.
 Those survivor-selected rows are diagnostics, not a replacement rate denominator.
 
-Historical pre-review yields for seeds 20261111, 20261112, 20261113 and 20261114:
+### Corrected transport, merged main (2026-11-06)
+
+All 12 runs use the same inputs, four seeds and variants, with the enforced
+material caps and boundary corrections. Counts for seeds 20261111 through 20261114:
+
+| Variant | DS mu-plus counts | Mean / sample SD |
+|---|---|---|
+| `baseline` | 12, 11, 15, 10 | 12.00 / 2.1602 |
+| `half_material` | 10, 9, 10, 10 | 9.75 / 0.5000 |
+| `half_step` | 14, 14, 12, 11 | 12.75 / 1.5000 |
+
+Every run retains 12,832 positive inputs and 500,000 parent-event IDs, with zero
+live, path-limit or missing-field outcomes. Stock has 15 mu-plus endpoints; no
+stock or fast pi-plus endpoint. JSON/NPZ overlap checks pass for all 12 saved runs.
+Halving material controls does not remove the deficit. Halving the field step
+changes counts by +2, +3, -3, +1 relative to the baseline seed labels, not a
+convergent sequence. The shared-stock-survivor mean is 10.25 baseline / 10.00
+half-step; fast-only mean is 1.75 / 2.75. The small total-yield gain is not evidence
+of recovering missed stock survivors. Do not substitute the 15/15 seed for the
+fixed all-charge result or choose settings by proximity to stock.
+
+One stock-surviving pion input never yields a DS muon in these 12 runs. Two muon
+inputs survive only 2/12 and 1/12, otherwise terminating in polyethylene and A1100
+respectively. These survivor-selected terminal labels are useful diagnostics, not
+stock material histories or proof of excessive energy loss. Keep the documented
+2.5 mm / 0.25 mm / 5% development point; numerical/model convergence remains open.
+
+### All-charge joint-tightening sensitivity (2026-11-06)
+
+One prespecified full-development candidate halves field/material/loss caps to
+1.25 mm / 0.125 mm / 2.5%, retaining all 25,078 inputs in original order, 500,000
+parent event IDs and seed 20261105. The corrected baseline is reused, not rerun.
+DS mu-minus changes 1,088 -> 1,073 (stock 1,098); mu-plus 8 -> 9 (stock 15).
+Tighter/baseline ratios are 0.98621 +/- 0.01985 and 1.125 +/- 0.437 respectively.
+Mu-minus source-fraction change is -0.12249 +/- 0.17769 percentage points.
+Paired-shard setting-difference momentum/time diagonal chi2 are 4.643/11 and
+22.352/21 for mu-minus; 3.347/3 and 6.351/8 for mu-plus. Maximum absolute bin pull
+is 1.56; no significance from scanning bins. Both fast settings have zero muon
+histogram flows, live/path-limit/missing-field outcomes and DS pi-plus; 3 DS pi-minus.
+
+No clear population instability is resolved at this sample size. This supports
+keeping the baseline for the subsequently completed frozen held-out test, not
+convergence or precision agreement of sparse positives. Equal seeds are not common-random
+histories: 267 mu-minus baseline-only / 252 tighter-only endpoints. Joint controls
+cannot isolate a numerical cause; no setting is selected by closeness to stock.
+Tighter transport cost is 398.133 s (62.989 entrances/s), one local worker,
+excluding field load; tests ran during part of this job. Keep the original
+baseline benchmark and development headline. Held-out was unopened at this checkpoint.
+The standalone [sensitivity guide](../docs/ts-sensitivity.md) describes the interface.
+
+`python3 -m beamfastsim.tssensitivity` runs this one fixed candidate against an
+existing baseline, or `--candidate` summarizes saved output without transport.
+It reports exact-ID paired stock/setting comparisons, charge-specific fates,
+species and flow bins; no default chain imports it. Run records carry paths and
+settings; historical baseline material caps come from the published command's
+defaults, not embedded NPZ metadata. No baseline rerun or seed/settings scan.
+
+### Two-muon material-history diagnostic (2026-11-06)
+
+The authorized follow-up traces mu+ `1430:920075:4321:1155` (A) and
+`1430:920071:2260:4478` (B). `tscrossings` reads only their existing development
+ntvd/nttvd records: each has 12 VD samples plus DS; exact VD1/DS states match the
+saved reference. Both stock momenta change between VD4 and VD5, from 34.148017 to
+31.546330 MeV/c (A) and 24.712124 to 15.826283 MeV/c (B). These sparse pre-step
+records are not material histories and do not measure stock material columns.
+
+`tstrace` replays existing baseline seeds 20261111/12/13 with all 12,832 positive
+inputs in original order, observing only A/B. Every saved terminal and exposure
+array is exactly reproduced except runtime. Before the absorber, fast chord
+intersections at VD4's recorded x plane differ from stock by 0.00823 mm (A) and
+0.01257 mm (B). After Ti6Al4V, A survives seed11 but encounters polyethylene and
+stops in seeds12/13; B encounters A1100 and stops in seeds11/12 but survives seed13.
+All four losing histories leave titanium with momentum above the corresponding
+stock VD5 value. B's survivor has the largest titanium column and lowest exit
+momentum of its three replays. A simple excessive-titanium-loss explanation is
+not supported; post-absorber direction/acceptance is implicated in these fast
+losses, but the cause of their frequency relative to stock remains unresolved.
+
+`tshistory` summarizes sampler-call episodes and all directional intersections
+of the recorded VD3..6 x planes. Those intersections are not validated VD hits.
+Applied material order is dictionary order, not geometric within-step order;
+episode positions bracket accepted steps rather than exact material boundaries.
+No new rate sample, seed scan, settings change, stock simulation or held-out
+access. The selected histories do not establish convergence or justify tuning.
+
+### Historical pre-review study
+
+Historical yields for seeds 20261111, 20261112, 20261113 and 20261114:
 
 | Variant | Field / material / fractional-loss caps | DS mu-plus counts | Mean / sample SD |
 |---|---|---|---|
@@ -273,6 +364,40 @@ Two inputs reach the 100 m path cap: `baseline` seed 20261113 and `half_step` se
 with explicit `path_limit` fates, not physical-absorption labels; a later fast DS
 endpoint remains possible for each. All 12 runs have zero live or missing-field
 outcomes. Saved summaries include capped IDs and their stock outcomes.
+
+## Frozen Run1A held-out comparison (2026-11-06)
+
+The user authorized opening the held-out half only after the development
+sensitivity check and baseline freeze. All 100 held-out shards have 500,000 finished
+Events and 500,000 primary-proton events; 476,156 empty-source events remain in exposure.
+25,339 recorded forward entrance tracks become 25,334 known-root inputs, retaining
+5 nested states. One repeat-forward track uses the unchanged earliest-state rule.
+The exact held-out event/source sets are disjoint from development. All 1,171 stock
+DS mu/pi links resolve; 2,665 upstream compact-ancestry gaps remain. No geometry exclusions.
+Stock statuses are all zero, with no overflow/step-limit events including flow bins.
+
+| Endpoint | Stock | Fast | Fast/stock, paired-shard SE |
+|---|---:|---:|---:|
+| mu-minus, 12,515 negative inputs | 1,153 | 1,164 | 1.00954 +/- 0.02371 |
+| mu-plus, 12,819 positive inputs | 11 | 9 | 0.81818 +/- 0.16529 |
+
+Input-fraction differences are +0.087895 +/- 0.217615 and -0.015602 +/- 0.015615
+percentage points. Momentum/time diagonal chi2 are 14.2826/11 and 12.1275/21
+(mu-minus), 4.0147/4 and 10.0299/11 (mu-plus). Mu-minus time overflow above 500 ns
+is 5 stock/1 fast, included in yields but outside displayed bins/chi2; other muon
+flows are zero. Positive precision is limited; no calibrated p-value/equivalence
+claim. Stock has 7 DS pi-minus versus fast 0, separate from the muon headline.
+
+Frozen seed 20261105, 2.5 mm / 0.25 mm / 5%, 100 m max path; no post-inspection
+adjustments. Fast fates: 1,173 DS, 18,567 range-out, 220 muon decay, 5,369 wall,
+5 upstream; zero live/path-cap/missing-field. One worker: 174.988836 s,
+144.774950 entrances/s excluding field load; not a speedup claim against the
+different development cohort. No matched stock TS-only/GPU/SU benchmark.
+Development results remain separate and unchanged.
+
+The opt-in charge-separated yield/momentum/time comparison is complete. Held-out
+assets are separately labeled; no default promotion, new simulation or continued
+tail tuning. The held-out set is now consumed, not reusable as a fresh tuning test.
 
 ## Reproducing the local test coverage
 

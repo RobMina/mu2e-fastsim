@@ -51,6 +51,27 @@ of full primary-root closure. Raw art remains the backing for that question.
 
 Completed development:500,000countedEvents,25,080recordedentrances reduced to
 25,078known roots, all1,118stockDSlinks resolved;2,696upstream ancestry gaps remain.
-Held-out physics stays unexamined. Raw bulk outputs stay at the production site.
-Tests: `test_tssmoke.py`, `test_tscampaign.py`, `test_tsrawreference.py` and
-`test_tsrun1a_campaign.py`; launcher tests use fake runners, not Slurm/art.
+Held-out access is explicit and requires a frozen configuration and authorization.
+Default census/reference merges still reject held-out indices. After authorization,
+`tscampaign --cohort heldout` and `tsrawreference --combine ... --cohort heldout`
+accept indices100..199/subruns920100..920199 only; never mix cohorts. The
+`tsholdout_extract.sbatch` reader runs census and compact reference extraction,
+not simulation. Set `TS_ANALYSIS_BIND` explicitly to container bind paths covering
+the campaign, output and beam code; no site storage path is built in.
+Set `TS_STATUS_COHORT=heldout` for the analyzer-only status read;
+its default remains development, and warm repeats are disabled.
+
+`tsholdout prepare` checks all100 explicitly named shard outputs,500,000 finished
+Events, exact event/source disjointness from development, status/geometry coverage,
+and known-root ancestry before saving the reference. `tsholdout run` uses the frozen
+2.5mm/0.25mm/5%,seed20261105 baseline once, retains all losses and parent exposure,
+and writes charge-separated held-out comparisons. Existing output paths are refused;
+there is no held-out seed/settings scan. The selected geometry/field must be the
+same saved Run1A inputs used for development. Raw bulk outputs stay at the production site.
+Completed held-out:500,000countedEvents,25,339recordedentrances ->25,334knownroots,
+all1,171DSlinks resolved;2,665upstreamancestrygaps,5nestedentrances retained. Together
+with development this independently counts all1,000,000productionEvents. Frozen
+comparison is reported in the TS transport guide; no post-held-out retuning.
+Tests: `test_tssmoke.py`, `test_tscampaign.py`, `test_tsrawreference.py`,
+`test_tsrun1a_campaign.py`, `test_tsholdout.py`, `test_tsholdout_extract.py`;
+launcher tests use fake runners, not Slurm/art.

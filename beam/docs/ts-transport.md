@@ -51,8 +51,56 @@ stock TS-only/GPU/SU speedup is measured. Settings and seed are unchanged, but
 shortening changes RNG consumption; equal seeds do not make paired trajectories.
 The preserved pre-review output (1,095/1,098 and 8/15, 132.820 entrances/s) and its
 exact optimization comparisons are historical, not validation of corrected code.
-The 12-run positive study also predates the enforced cap and is not convergence
-evidence for this implementation. Held-out data remain untouched.
+The preserved pre-review positive study is not convergence evidence for this code.
+A corrected rerun of the same 12 runs gives mean mu-plus counts 12.00 / 9.75 / 12.75
+for baseline / tighter material / half field step (stock 15), with no path caps.
+Four-seed spread and changing RNG consumption do not establish convergence or
+justify choosing the closest yield. See the full TS guide for the separate tables.
+Held-out data were untouched at that development checkpoint.
+
+A subsequent all-charge joint tightening to 1.25 mm / 0.125 mm / 2.5%, same
+25,078 inputs and seed, changes DS mu-minus 1,088 -> 1,073 and mu-plus 8 -> 9.
+Mu-minus tighter/baseline is 0.98621 +/- 0.01985; setting-difference momentum/time
+diagonal chi2 are 4.643/11 and 22.352/21. Zero live/path-cap/missing-field outcomes.
+No clear population instability is resolved, but one stochastic joint change is
+not convergence proof. This motivated retaining the baseline for the subsequently
+authorized frozen held-out test. `tssensitivity` reuses the saved baseline and
+never chooses settings by proximity to stock. See the [sensitivity guide](ts-sensitivity.md).
+
+## Frozen held-out result (2026-11-06)
+
+After the development checks, the unchanged baseline was run once on the disjoint
+100-shard Run1A held-out reference: 500,000 counted Events, 25,334 known-root inputs.
+DS mu-minus 1,164/1,153 gives fast/stock 1.00954 +/- 0.02371; mu-plus 9/11 gives
+0.81818 +/- 0.16529, still sparse. Momentum/time diagonal chi2: mu-minus 14.283/11
+and 12.128/21; mu-plus 4.015/4 and 10.030/11. Mu-minus elapsed-time overflow above
+500 ns is 5 stock/1 fast, retained in yields, outside plotted-bin chi2. No fast
+live/path-cap/missing-field outcomes. Stock DS pi-minus 7 versus fast 0 is a
+separate limitation. Transport cost: 174.989 s, 144.775 entrances/s, one local
+worker excluding field load; not an optimization speedup over the different
+development sample. All held-out stock statuses are zero; 2,665 upstream ancestry
+gaps and 5 nested entrances are explicitly retained.
+This completes the opt-in comparison, not default promotion or convergence proof.
+Held-out is now consumed; it must not become a tuning set advertised as a fresh test.
+
+## Optional selected-lane history diagnostic
+
+`transport(..., trace=observer)` copies selected source rows into `begin`,
+`material` and `end` callbacks. The observer supplies distinct integer `rows`;
+no RNG is supplied. `begin` records accepted field/boundary proposals, `material`
+records actual sampler inputs/results, and `end` records updated states/fates.
+Cold-at-start rows have terminal output but no accepted steps. Callback mutation
+is regression-tested not to change physics arrays.
+
+`python3 -m beamfastsim.tstrace --runs <existing-baseline-jsons> --out <fresh-dir>`
+replays only development seeds 20261111/12/13, with the complete original positive
+cohort. It saves two selected muons' histories only after every saved result and
+exposure array matches (runtime excluded). `tscrossings` extracts their sparse
+stock VD/DS records, and `tshistory --stock <npz> --traces <npzs> --out <json>`
+compares recorded states and applied material episodes. Material call chronology
+is not geometric within-chord ordering. Fast x-plane interpolation is not a
+validated VD hit or a stock trajectory reconstruction. See the [history guide](ts-history.md)
+for the bounded result; no physics controls or headline yields change.
 
 Use `python3 -m cProfile -o run.prof -m beamfastsim.tstransport ...` then
 `python3 -m beamfastsim.tsbench --profile run.prof` for profiling. Small-batch
@@ -60,5 +108,5 @@ profiles locate hotspots; they are not full-run runtime predictions.
 
 Run `test_tsfield.py`, `test_tsgeometry.py`, `test_tsphysics.py`,
 `test_tstransport.py` and `test_tsbench.py` under `beam/tests/`. Set `TS1_GDML` and
-`TS1_RUN1A_GDML` to saved matching geometries to include the two fixture tests;
+`TS1_RUN1A_GDML` to saved matching geometries to include all four fixture tests;
 the synthetic tests need no collaboration data. Local tests are not CI.
