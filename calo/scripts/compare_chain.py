@@ -241,6 +241,7 @@ def main(argv=None):
     p.add_argument("--timing", action="append", default=[], metavar="NAME=JSON",
                    help="time_chain.py output to fold in (repeatable)")
     p.add_argument("--stock-ms-per-event", type=float, help="stock calo digi+reco CPU time per event (TimeTracker)")
+    p.add_argument("--device-digitize", action="store_true", help="on-device digitisation (digi_device)")
     p.add_argument("--out-dir", required=True)
     args = p.parse_args(argv)
     import jax
@@ -257,7 +258,8 @@ def main(argv=None):
     rng = np.random.default_rng(args.seed)
     t0 = time.perf_counter()
     fast = run_chain(steps, timing, lambda s: stockio.adc_per_pe(sim, s), pulse, noise, geom, rng,
-                     ro_cfg=ReadoutConfig(), table=table, adc2mev=stockio.adc_to_mev)
+                     ro_cfg=ReadoutConfig(), table=table, adc2mev=stockio.adc_to_mev,
+                     device_digitize=args.device_digitize)
     t_fast = time.perf_counter() - t0
     s1, s2 = stock_arm(args.ntuple, args.arm, events), stock_arm(args.ntuple2, args.arm, events)
     lf, l1, l2 = leading(fast["clusters"], n), leading(s1["clusters"], n), leading(s2["clusters"], n)

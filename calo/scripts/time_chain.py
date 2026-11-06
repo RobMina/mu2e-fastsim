@@ -21,6 +21,7 @@ def main(argv=None):
     for k in ("steps", "geometry", "sim-crystal", "pulse", "noise", "propagation", "out"):
         p.add_argument(f"--{k}", required=True)
     p.add_argument("--repeat", type=int, default=5)
+    p.add_argument("--device-digitize", action="store_true", help="on-device digitisation (digi_device)")
     args = p.parse_args(argv)
     import jax
     jax.config.update("jax_enable_x64", True)
@@ -32,7 +33,8 @@ def main(argv=None):
     def once(seed):
         t0 = time.perf_counter()
         out = run_chain(steps, timing, lambda s: stockio.adc_per_pe(sim, s), pulse, noise, geom,
-                        np.random.default_rng(seed), ro_cfg=ReadoutConfig(), table=table, adc2mev=stockio.adc_to_mev)
+                        np.random.default_rng(seed), ro_cfg=ReadoutConfig(), table=table, adc2mev=stockio.adc_to_mev,
+                        device_digitize=args.device_digitize)
         return time.perf_counter() - t0, int(out["clusters"]["event"].size), out["seconds"]
 
     first = once(0)[0]
@@ -40,7 +42,7 @@ def main(argv=None):
     warm = np.array([r[0] for r in runs])
     rep = {"events": int(events.size), "first_call_s": first, "warm_s": warm.tolist(),
            "events_per_s_warm_median": float(events.size / np.median(warm)),
-           "device": str(jax.devices()[0]), "jax": jax.__version__, "host": platform.node(),
+           "device": str(jax.devices()[0]), "device_digitize": args.device_digitize, "jax": jax.__version__, "host": platform.node(),
            "clusters": [r[1] for r in runs], "stage_seconds_last": runs[-1][2]}
     Path(args.out).write_text(json.dumps(rep, indent=1) + "\n")
     print(json.dumps(rep, indent=1))

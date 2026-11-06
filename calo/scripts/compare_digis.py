@@ -22,13 +22,22 @@ from calofastsim.digi import DigiConfig, digitize, noise_pedestal
 from calofastsim.readout import ReadoutConfig, make_readouts
 
 
-def fast_digis(steps, timing, sim, pulse, *, noise=None, rng=None, ro_cfg=None, table=None, backend="numpy"):
+def fast_digis(steps, timing, sim, pulse, *, noise=None, rng=None, ro_cfg=None, table=None, backend="numpy",
+               device=False):
     ro_cfg = ro_cfg or ReadoutConfig(pe_stat=False, travel=False)
     ev, sipm, t, count = make_readouts(steps["event"], steps["crystal"], steps["energy_g4"], steps["energy_birks"],
                                        steps["time"], steps["z_local"], steps["lru"], steps["yields"], timing, ro_cfg,
                                        table=table, rng=rng)
     key = ev * 10000 + sipm
     ukey, row = np.unique(key, return_inverse=True)
+    if device:
+        import jax
+        from calofastsim.digi_device import digitize_device
+        key = jax.random.PRNGKey(int(rng.integers(0, 2**31 - 1))) if noise is not None else None
+        d = digitize_device(row, t, timing["pbtime"][ev], stockio.adc_per_pe(sim, sipm), ukey.size, pulse,
+                            DigiConfig(), weight=count, noise_wf=noise, key=key, marker=timing["marker"][ev])
+        d["event"], d["sipm"] = ukey[d["row"]] // 10000, ukey[d["row"]] % 10000
+        return d
     noise_arg = None
     if noise is not None:
         def offsets(length):
@@ -117,11 +126,12 @@ def main(argv=None):
     p.add_argument("--pulse", required=True)
     p.add_argument("--noise", required=True)
     p.add_argument("--backend", default="numpy", choices=["numpy", "jax"])
+    p.add_argument("--device-digitize", action="store_true", help="on-device digitisation (digi_device)")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--baseline-ntuple", help="same chain, independent stock seed: stock-vs-stock reference")
     p.add_argument("--out", required=True)
     args = p.parse_args(argv)
-    if args.backend == "jax":
+    if args.backend == "jax" or args.device_digitize:
         import jax
         jax.config.update("jax_enable_x64", True)
     sim = stockio.load_sim_crystal(args.sim_crystal)
@@ -131,13 +141,14 @@ def main(argv=None):
     report = {"events": int(events.size), "backend": args.backend, "seed": args.seed,
               "commit": git_sha(Path(__file__).parent), "inputs": vars(args)}
     t0 = time.perf_counter()
-    fast_det = fast_digis(steps, timing, sim, pulse, backend=args.backend)
+    fast_det = fast_digis(steps, timing, sim, pulse, backend=args.backend, device=args.device_digitize)
     report["time_det_s"] = time.perf_counter() - t0
     stock_det = stock_digis(args.ntuple, "det", events)
     report["noise_off"] = exact_compare(fast_det, stock_det)
     rng = np.random.default_rng(args.seed)
     t0 = time.perf_counter()
-    fast_noi = fast_digis(steps, timing, sim, pulse, noise=noise, rng=rng, backend=args.backend)
+    fast_noi = fast_digis(steps, timing, sim, pulse, noise=noise, rng=rng, backend=args.backend,
+                          device=args.device_digitize)
     report["time_noi_s"] = time.perf_counter() - t0
     stock_noi = stock_digis(args.ntuple, "noi", events)
     sf, ss = summaries(fast_noi), summaries(stock_noi)

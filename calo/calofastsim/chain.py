@@ -14,12 +14,14 @@ from .templatefit import FitConfig, fit_digis
 
 def run_chain(steps, timing, adc_per_pe, pulse, noise_wf, geom: Geometry, rng, *, ro_cfg=ReadoutConfig(),
               table=None, add_noise=True, adc2mev=None, max_chi2=2.0, time4merge=6.0, fit_cfg=FitConfig(),
-              cluster_cfg=ClusterConfig(), pbt_reco_sigma=0.5, backend="jax"):
+              cluster_cfg=ClusterConfig(), pbt_reco_sigma=0.5, backend="jax", device_digitize=False):
     """Run every stage for all events. ``adc_per_pe(sipm)`` gives ADCPerMeV/pePerMeV, ``adc2mev(sipm)`` the reco
     calibration (default 0.0625 for every SiPM); ``rng`` a NumPy Generator.
 
     The reco proton-bunch time subtracted from fitted times is the MC one smeared by ``pbt_reco_sigma`` ns per event,
     as the production event-window marker does (``RecoFromMCTruthErr``).
+    ``device_digitize`` runs the waveform build, noise, ADC and peak search as one jitted JAX function
+    (:mod:`calofastsim.digi_device`); off, the host path is used unchanged.
     Returns a dict with the flat ``digis``, ``reco`` (reco digis), ``hits`` and ``clusters`` tables.
     """
     n_events = timing["pbtime"].size
@@ -35,13 +37,21 @@ def run_chain(steps, timing, adc_per_pe, pulse, noise_wf, geom: Geometry, rng, *
     lap("readout")
     key = ev * 10000 + sipm
     ukey, row = np.unique(key, return_inverse=True)
+    if device_digitize:
+        import jax
+        from .digi_device import digitize_device
+        key = jax.random.PRNGKey(int(rng.integers(0, 2**31 - 1)))
+        d = digitize_device(row, t, timing["pbtime"][ev], adc_per_pe(sipm), ukey.size, pulse, DigiConfig(),
+                            weight=count, noise_wf=noise_wf if add_noise else None, key=key,
+                            marker=timing["marker"][ev])
     noise = None
-    if add_noise:
+    if add_noise and not device_digitize:
         def offsets(length):
             return np.trunc(rng.random(len(length)) * (noise_wf.size - np.asarray(length))).astype(np.int64)
         noise = (noise_wf, noise_pedestal(noise_wf), offsets)
-    d = digitize(row, t, timing["pbtime"][ev], adc_per_pe(sipm), ukey.size, pulse, DigiConfig(), weight=count,
-                 noise=noise, marker=timing["marker"][ev], backend=backend)
+    if not device_digitize:
+        d = digitize(row, t, timing["pbtime"][ev], adc_per_pe(sipm), ukey.size, pulse, DigiConfig(), weight=count,
+                     noise=noise, marker=timing["marker"][ev], backend=backend)
     d["event"], d["sipm"] = ukey[d["row"]] // 10000, ukey[d["row"]] % 10000
     lap("digitize")
     length = np.diff(d["offsets"])

@@ -39,6 +39,9 @@ prescribed draws.
   on the active readouts only, in NumPy or JAX (`backend="jax"`, x64 required), with the per-event DR-marker offset.
   Off spill, set `DigiConfig.event_length`. Noise comes from the stored noise histogram (`generate: false`, the
   production setting); the generated-noise cache is not implemented.
+- `digi_device.digitize_device`: the same digitisation with the waveform build, noise, ADC and peak search in one
+  jitted JAX function (no host PE grouping; `jax.random` noise offsets); `chain.run_chain(device_digitize=True)`
+  selects it. Off (the default), the host path above runs unchanged.
 
 `fcl/stock_chain.fcl` runs the stock chain on saved steps in three arms and writes one EventNtuple per arm:
 `det` (photon statistics, travel time and noise off), `noi` (the `det` readouts plus noise) and `prd` (the
