@@ -51,6 +51,42 @@ versus the saved stock 436.47 s. This is a descriptive stage sum using different
 CPU/GPU resources, not a controlled speedup or measured integrated wall timer.
 Environment startup and queue latency are excluded; split-job turnaround is worse.
 
+### Tracker/CRV-only native preparation
+
+`fcl/four_stream_tracker_crv_inputs.fcl` is an opt-in preparation candidate derived
+from the same seeded development configuration. It omits the four unused donor
+calorimeter step collections and bypasses the parent's universal `MixingFilter`
+copies. CRV response and the five tracker dumpers read the mixer products directly,
+in the same primary/stop/electron/muon/neutral order. GenParticle and SimParticle
+collections, keys, ancestry, multiplicities, donor skips, timing and random seeds
+are retained. This configuration is not suitable for calorimeter consumers or for
+a parent with nontrivial step selections. It does not replace the default chain.
+
+CRV photon truth now points to the mixer step products, rather than the filter
+copies. Exact exported detector and particle tables do not certify full art truth
+provenance or pointer-vector ordering. No response approximation is intended.
+
+`run_preparation_uva.sh NEW_OUT REFERENCE_OUT EXPECTED_EVENTS SIGNAL.art STOP.art
+ELE.art MU.art NEUTRAL.art` runs a ten-event startup check and the full input using
+an existing runtime, then reuses `container/offline/compare_root.py` to compare
+**all highest-cycle ROOT objects and branches at zero tolerance**. The saved
+reference is read, never regenerated. It requires the response-driver runtime
+variables plus `MIXING_SIF` and `MIXING_DATA_ROOT`, and refuses an existing output
+directory. `mixing.preparation_report` checks the full event census and step counts
+and records TimeTracker module totals and art CPU/wall times. Cross-run ratios are
+descriptive, not a controlled same-hardware speedup. Held-out inputs are not used.
+
+The full development check passed: all 37 ROOT objects match at zero tolerance,
+including all 2,741 event IDs and 3,474,473 ordered tracker steps, particle/generator
+tables, timing, CRV detector/reconstruction tables and conditions. Art wall time
+was 175.970 s versus the saved 207.272 s; CPU time was 161.440 versus 189.646 s.
+Preparation-only throughput was 15.58 versus 13.22 events/s. The runs used different
+CPU nodes: the observed 31.30 s reduction is not a controlled 15% speedup, and
+unchanged modules also ran faster. Summed mixer time was 58.16 versus 75.27 s;
+CRV photons 53.88 versus 57.64 s; step export 40.25 versus 44.00 s. No GPU run,
+tracker-kernel change, held-out rerun or full art-truth certification is implied.
+Environment setup, the startup check and comparison are outside art wall time.
+
 ### Development profiling
 
 Add `--profile --repeats 5 --fast-reference SAVED_FAST.root` to the same

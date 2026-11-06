@@ -44,6 +44,35 @@ def test_occupancy_config_changes_only_diagnostics():
     assert lines == ["physics.analyzers.crvdump.mc: false", "services.TimeTracker.printSummary: true"]
 
 
+def test_tracker_crv_preparation_bypasses_only_universal_filters():
+    text = (ROOT / "fcl/four_stream_tracker_crv_inputs.fcl").read_text()
+    parent = (ROOT / "fcl/four_stream_response.fcl").read_text()
+    assert '#include "four_stream_fast_inputs.fcl"' in text
+    streams = ("MuStopPileup", "EleBeamFlash", "MuBeamFlash", "NeutralsFlash")
+    for stream, directory in zip(streams, ("stopSteps", "eleSteps", "muSteps", "neutralSteps")):
+        assert f"{stream}Mixer.mu2e.products.caloShowerStepMixer.mixingMap: []" in text
+        assert f"physics.analyzers.{directory}.strawGasSteps: {stream}Mixer" in text
+        assert f"{stream}Filter: {{ module_type: MixingFilter MixingModule: {stream}Mixer }}" in parent
+    scheduled = text.split("physics.p1:", 1)[1]
+    assert "Filter" not in scheduled and "makeSD" not in scheduled
+    assert "[PBISim, " + ", ".join(s + "Mixer" for s in streams) in scheduled
+    assert "EWMProducer, timingTruth" in scheduled
+    assert "CrvDAQPackage.CrvDAQSequence" in scheduled and "CrvRecoPackage.CrvRecoSequence" in scheduled
+    assert "SeedService" not in text and "MaxEventsToSkip" not in text
+    assert "genParticles:" not in text and "simParticles:" not in text
+    assert "crvStepModuleLabels: [compressDetStepMCs, " + ", ".join(s + "Mixer" for s in streams) + "]" in text
+
+
+def test_preparation_runner_uses_saved_reference_and_new_output():
+    text = (ROOT / "run_preparation_uva.sh").read_text()
+    assert 'mkdir "$OUT"' in text and 'mkdir -p "$OUT"' not in text
+    assert "MIXING_EVENTS=10" in text and "MIXING_EVENTS=-1" in text
+    assert '"$REF/response.root" "$OUT/full/response.root"' in text
+    assert "compare_root.py" in text and "--expected-events" in text
+    assert '$REF:$REF,$OUT:$OUT' in text and text.count('apptainer exec --cleanenv -B "$BINDS"') == 2
+    assert "muse build" not in text and "scons" not in text
+
+
 def test_four_stream_response_uses_database_rates_and_no_extra_shift():
     text = (ROOT / "fcl/four_stream_response.fcl").read_text()
     assert "module_type: MixBackgroundFrames" in text
