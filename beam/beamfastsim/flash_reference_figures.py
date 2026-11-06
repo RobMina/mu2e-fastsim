@@ -7,9 +7,11 @@ from pathlib import Path
 
 import numpy as np
 
+MISSING_SE_NOTE = "Unavailable event SE omitted (e.g. n=1); missing bars do not imply zero uncertainty."
+
 
 def components(origin, comparison, arm):
-    """Return ancestry components in eV/input event and the raw event-mean SE."""
+    """Return eV/input-event components and raw mean SE, or None if unavailable."""
     n = comparison["events"]
     if n <= 0 or origin["input_events"] != n:
         raise ValueError("origins and comparison denominators disagree")
@@ -28,13 +30,15 @@ def components(origin, comparison, arm):
         raise ValueError("ancestry components disagree with comparison")
     if not np.isclose(sums.sum(), totals["raw"][arm]["sum_mev"], rtol=1e-12, atol=1e-14):
         raise ValueError("component sum disagrees with raw energy")
-    return sums * 1e6 / n, totals["raw"][arm]["event_mean_se"] * 1e6
+    error = totals["raw"][arm]["event_mean_se"]
+    return sums * 1e6 / n, None if error is None else error * 1e6
 
 
 def plot_spectra(low, high, out):
     import matplotlib.pyplot as plt
 
     fig, axes = plt.subplots(2, 2, figsize=(11, 7.2), constrained_layout=True)
+    missing_se = False
     for col, (name, report) in enumerate((("Low anchor", low), ("High anchor", high))):
         edges = np.asarray(report["energy_bin_lower_edges_mev"])
         n = report["input_events"]
@@ -45,8 +49,10 @@ def plot_spectra(low, high, out):
         for row, metric in enumerate(("photons", "energy_mev")):
             ax, data = axes[row, col], report["spectra"][metric]
             for model, color, offset in (("fast", "#0072B2", -.09), ("g4", "#D55E00", .09)):
+                error = np.asarray(data[model + "_total_event_se"], dtype=float) / n
+                missing_se |= np.isnan(error).any()
                 ax.errorbar(x + offset, np.asarray(data[model + "_total"]) / n,
-                    yerr=np.asarray(data[model + "_total_event_se"]) / n, fmt="o", ms=4, capsize=3,
+                    yerr=None if np.isnan(error).all() else error, fmt="o", ms=4, capsize=3,
                     color=color, label="Fast weighted" if model == "fast" else "G4 realized")
             ax.set_xticks(x, labels, rotation=40, ha="right")
             ax.grid(alpha=.2)
@@ -58,7 +64,8 @@ def plot_spectra(low, high, out):
             else:
                 ax.set_xlabel("Photon energy bin [MeV]")
     fig.suptitle("Primary brems: uncollided first-foil exit\nAbsolute spectra; event sampling errors; no fitted normalization", fontsize=13)
-    fig.supxlabel("Development samples; independent RNG; planar charged foils, no shower closure. Loopers/unknowns retained as caveats.", fontsize=9)
+    caveat = "Development samples; independent RNG; planar charged foils, no shower closure. Loopers/unknowns retained as caveats."
+    fig.supxlabel(caveat + ("\n" + MISSING_SE_NOTE if missing_se else ""), fontsize=9)
     fig.savefig(out, dpi=180)
     plt.close(fig)
 
@@ -68,6 +75,8 @@ def plot_components(low, high, comparison, out):
 
     values, error = zip(*(components(origin, comparison, arm) for origin, arm in ((low, "low"), (high, "high"))))
     values = np.stack(values)
+    error = np.asarray(error, dtype=float)
+    available = np.isfinite(error)
     fig, ax = plt.subplots(figsize=(9, 6), constrained_layout=True)
     labels = ("Foil-photon attributed", "Residual with foil-born ancestry", "Residual without foil-born ancestry", "Unresolved attribution")
     colors = ("#0072B2", "#D55E00", "#999999", "#CC79A7")
@@ -75,14 +84,19 @@ def plot_components(low, high, comparison, out):
     for index, (label, color) in enumerate(zip(labels, colors)):
         ax.bar(np.arange(2), values[:, index], bottom=bottom, width=.55, label=label, color=color)
         bottom += values[:, index]
-    ax.errorbar(np.arange(2), bottom, yerr=error, fmt="none", color="black", capsize=6, label="Raw total: event sampling SE")
+    if available.any():
+        ax.errorbar(np.arange(2)[available], bottom[available], yerr=error[available], fmt="none",
+                    color="black", capsize=6, label="Raw total: event sampling SE")
     ax.set_xticks([0, 1], ["Low anchor", "High anchor"])
     ax.set_ylabel("Raw tracker ionization [eV / TS3 input event]")
-    ax.set_ylim(0, (bottom + error).max() * 1.25)
+    upper = np.r_[bottom, bottom[available] + error[available]].max()
+    ax.set_ylim(0, upper * 1.25 if upper > 0 else 1.)
     ax.grid(axis="y", alpha=.2)
     ax.set_title(f"Inclusive reference: {comparison['events']:,} events per design\nAncestry components, not a fitted fast prediction")
     ax.legend(loc="upper left", fontsize=9)
-    fig.supxlabel("Residual is not necessarily upstream background. Rare showers dominate residual uncertainty.\nNo resampling, detector aggregation/selection or POT normalization; not board-budget closure.", fontsize=9)
+    caveat = ("Residual is not necessarily upstream background. Rare showers dominate residual uncertainty.\n"
+              "No resampling, detector aggregation/selection or POT normalization; not board-budget closure.")
+    fig.supxlabel(caveat + ("\n" + MISSING_SE_NOTE if not available.all() else ""), fontsize=9)
     fig.savefig(out, dpi=180)
     plt.close(fig)
 

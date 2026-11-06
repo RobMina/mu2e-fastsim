@@ -43,7 +43,11 @@ energy-sum comparisons remain the appropriate primary diagnostics.
 `flash_reference_figures` renders the saved absolute spectra and inclusive
 ancestry components from JSON reports. It checks matching denominators and energy
 components before plotting. Figure labels preserve the primary-only and raw-TS3
-scope; no historical asset is re-labelled as corrected-model closure.
+scope; no historical asset is re-labelled as corrected-model closure. Valid
+one-event reports retain their central values, but event sampling standard errors
+are unavailable. Missing errors remain unavailable (never zero), their error bars
+are omitted, and the figure carries an explicit caveat. Multi-event zero standard
+errors remain valid observed sampling estimates, not proof of physical certainty.
 
 ## Campaign planning
 
@@ -52,6 +56,14 @@ manifest without launching jobs. Shards cover disjoint source ranges, use distin
 seeds, and cannot wrap past the declared pool size. The runner accepts any explicit
 frozen geometry path; historical design IDs are not an inference API. Keep unused
 source ranges and new-design test points separate from development.
+
+The manifest path is supplied by `--out`; metadata uses that path with its suffix
+replaced by `.json`. These paths must be distinct, so a `.json` manifest is rejected
+before creating outputs. Both paths are reserved with exclusive creation before
+writing either artifact; existing manifests, metadata and symlinks are never
+overwritten. On reservation or write failure, only files created by this invocation
+are removed. This is rollback on ordinary process errors, not an atomic two-file
+publication or a guarantee against interruption by a process/machine crash.
 
 Use the saved-response and ancestry mergers described in the response reference
 for disjoint shards; shard-local ownership pointers must not be concatenated.

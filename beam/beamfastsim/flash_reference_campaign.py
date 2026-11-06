@@ -7,6 +7,7 @@ ranges, with distinct positive seeds. Geometric/physics admission is separate.
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import json
 import re
 from pathlib import Path
@@ -47,23 +48,37 @@ def main(argv=None):
     p.add_argument("--pool-events", type=int, required=True)
     p.add_argument("--seed-base", type=int, required=True)
     p.add_argument("--source", choices=("ds", "ts3"), required=True)
-    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--out", type=Path, required=True, help="new manifest path; .json is reserved for metadata")
     a = p.parse_args(argv)
     designs = [x.split("=", 1) for x in a.design]
     if any(len(x) != 2 for x in designs):
         p.error("each design must be label=path")
     text = manifest(designs, events=a.events, shards=a.shards, skip=a.skip, pool_events=a.pool_events,
                     seed_base=a.seed_base, source=a.source)
-    a.out.parent.mkdir(parents=True, exist_ok=True)
-    with a.out.open("x") as f:
-        f.write(text)
+    sidecar = a.out.with_suffix(".json")
+    if a.out.resolve() == sidecar.resolve():
+        p.error("manifest and .json metadata paths must be distinct")
     note = dict(source=a.source, designs=designs, events_per_shard=a.events, shards_per_design=a.shards,
                 jobs=len(designs)*a.shards, range_start_inclusive=a.skip,
                 range_end_exclusive=a.skip+a.events*a.shards, pool_events=a.pool_events,
                 unused_pool_tail=a.pool_events-a.skip-a.events*a.shards, seed_base=a.seed_base,
                 scope="Manifest only; no submission or geometry/physics validation")
-    a.out.with_suffix(".json").write_text(json.dumps(note, indent=2) + "\n")
-    print(json.dumps(note, indent=2))
+    metadata = json.dumps(note, indent=2)
+    a.out.parent.mkdir(parents=True, exist_ok=True)
+    created = []
+    try:
+        with ExitStack() as stack:
+            streams = []
+            for path in (a.out, sidecar):
+                streams.append(stack.enter_context(path.open("x")))
+                created.append(path)
+            for stream, content in zip(streams, (text, metadata + "\n")):
+                stream.write(content)
+    except BaseException:
+        for path in reversed(created):
+            path.unlink()
+        raise
+    print(metadata)
     return 0
 
 
