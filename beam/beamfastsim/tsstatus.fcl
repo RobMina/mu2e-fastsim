@@ -1,0 +1,15 @@
+#include "Offline/fcl/standardServices.fcl"
+process_name: TSStatusRead
+source: { module_type: RootInput fileNames: [] }
+services: @local::Services.Sim
+services.SeedService.baseSeed: 1
+services.GeometryService.inputFile: "Offline/Mu2eG4/geom/geom_run1_a.txt"
+services.GeometryService.bFieldFile: "Offline/Mu2eG4/geom/bfgeom_no_ds_v01.txt"
+services.TFileService.fileName: "tsstatus.root"
+physics: {
+  analyzers: {
+    status: { module_type: StatusG4Analyzer input: "g4run" }
+  }
+  end_paths: [read]
+  read: [status]
+}

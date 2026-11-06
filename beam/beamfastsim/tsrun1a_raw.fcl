@@ -1,0 +1,49 @@
+# Raw Run1A POT smoke reference; run with released SimJob MDC2025ac.
+#include "Production/JobConfig/beam/POT.fcl"
+
+process_name: TSRun1ARaw
+source.firstRun: 1430
+source.firstSubRun: 910000
+source.maxEvents: 100
+services.SeedService.baseSeed: 910001
+services.GeometryService.inputFile: "Offline/Mu2eG4/geom/geom_run1_a.txt"
+services.GeometryService.bFieldFile: "Offline/Mu2eG4/geom/bfgeom_no_ds_v01.txt"
+services.TFileService.fileName: "tsrun1a_raw.root"
+
+# Keep the stock physics and cuts, but never select events on downstream hits.
+physics.RawTSPath: [generate, genCounter, g4run]
+physics.trigger_paths: [RawTSPath]
+physics.OutputPath: [RawTSOutput]
+physics.TSInspectPath: [tsinspect]
+physics.end_paths: [OutputPath, LogPath, TSInspectPath]
+physics.BeamPath: @erase
+physics.NeutralsPath: @erase
+outputs.BeamOutput: @erase
+outputs.NeutralsOutput: @erase
+
+outputs.RawTSOutput: {
+  module_type: RootOutput
+  fileName: "sim.user.TSRun1ARaw.smoke.001430_00910000.art"
+  outputCommands: [
+    "drop *_*_*_*",
+    "keep *_generate_*_*",
+    "keep *_genCounter_*_*",
+    "keep *_g4run_*_*"
+  ]
+}
+
+# Beam is read as StepPoints, not misinterpreted as virtual-detector IDs.
+physics.analyzers.tsinspect: {
+  module_type: ReadVirtualDetector
+  simParticleColl: "g4run"
+  physicsVolumeColl: "g4run"
+  vdStepPoints: "g4run:virtualdetector"
+  tvdStepPoints: "g4run:Beam"
+  saveAllPDG: false
+  savePDG: [mu_minus, mu_plus, pi_minus, pi_plus, proton]
+  navigateToParent: false
+  writeNTPART: true
+  writeNTPART1: false
+  writeNTVD: true
+  writeNTTVD: true
+}
