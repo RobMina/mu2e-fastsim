@@ -104,8 +104,16 @@ a historical detector-deposit ratio is not a flux closure target.
 
 `flash_s1_reference` compares this component with saved fast uncollided first-foil
 weights on the same complete input-event universe, combining disjoint saved G4
-shards without rerunning transport. Count and energy-sum comparisons have paired
-event and SubRun uncertainty diagnostics. Agreement of counts alone does not
+shards without rerunning transport. Fast event totals obtain that universe from
+the extractor's `*_events.npz` ledger: `flash_flux --states` discovers its sidecar,
+or `--event-ledger` supplies one explicitly (also for old `--births` files).
+New births retain a supplied ledger for later postprocessing. Unique exact integer
+identities, source-row membership and equality to the scalar source-event count
+are required. Only these verified identities are zero-filled when no e-/e+ source
+rows exist; missing/unverified inputs still fail the matched comparison. See
+[flash-flux.md](flash-flux.md#time-and-normalization) for the saved fields.
+Count and energy-sum comparisons have paired event and SubRun uncertainty
+diagnostics. Agreement of counts alone does not
 establish spectral or energy closure. Fast path-limit tracks and unresolved G4
 exits remain caveats; neither is removed from the event denominator.
 

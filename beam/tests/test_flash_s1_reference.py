@@ -51,3 +51,41 @@ def test_missing_event_and_failed_source_not_imputed(case):
     report["capped_parents"] = 1
     with pytest.raises(ValueError, match="truncated"):
         compare(fast, report, [g4])
+
+
+def test_generated_fast_totals_compare_with_verified_zero_source_event(case):
+    from types import SimpleNamespace
+    from beamfastsim.flash_flux import exit_records, summarize
+    _, _, reference = case
+    payload = dict(source_run=np.array([1], np.int64), source_subrun=np.array([2], np.int64),
+                   source_event=np.array([10], np.uint64), source_pdg=np.array([11]),
+                   source_time_ns=np.array([0.]), photon_valid=np.array([[True]]),
+                   photon_position=np.array([[[2., 0., 0.]]]),
+                   photon_direction=np.array([[[0., 0., 1.]]]), photon_energy=np.array([[5.]]),
+                   photon_time=np.array([[0.]]), overflow=np.array([0]), capped=np.array([False]),
+                   loopers=np.array([False]))
+    beam = SimpleNamespace(axis_x=0., foil_z=np.array([0.]), foil_ht=np.array([1.]),
+                           foil_rin=np.array([1.]), foil_rout=np.array([3.]))
+    ledger = np.array([[1, 2, 10], [1, 2, 11]], np.uint64)
+    # G4 explicitly verifies both inputs, with zero states in the second event.
+    g4 = {"event_" + k: ledger[:, i] for i, k in enumerate(("run", "subrun", "event"))}
+    g4.update(evt_primary_exits=np.array([1, 0]), evt_primary_energy=np.array([5., 0.]),
+              event_input_states_declared=np.array([1, 0]), event_input_states_present=np.array([True, True]),
+              event_input_states_size_mismatch=np.array([False, False]), report_json=reference["report_json"])
+    photons = exit_records(payload, beam)
+    report, fast = summarize(payload, photons, source_events=2, event_ledger=ledger)
+    result = compare(fast, report, [g4])
+    assert result["input_events"] == 2
+    np.testing.assert_array_equal(fast["source_parents"], [1, 0])
+    np.testing.assert_array_equal(fast["uncollided_photons"], [photons["weight"][0], 0.])
+    assert result["metrics"]["photons"]["fast_mean_per_event"] == pytest.approx(photons["weight"][0] / 2)
+    assert result["metrics"]["energy_mev"]["fast_total"] == pytest.approx(photons["weight"][0] * 5)
+    # Neither a scalar denominator nor an unrelated ledger proves the missing ID.
+    report, incomplete = summarize(payload, photons, source_events=2)
+    with pytest.raises(ValueError, match="universes"):
+        compare(incomplete, report, [g4])
+    wrong = ledger.copy()
+    wrong[1, 2] = 12
+    report, incomplete = summarize(payload, photons, source_events=2, event_ledger=wrong)
+    with pytest.raises(ValueError, match="universes"):
+        compare(incomplete, report, [g4])

@@ -7,6 +7,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .flash_flux import _identity_rows
+
 FIELDS = ("transparent_photons", "uncollided_photons", "transparent_energy_mev", "uncollided_energy_mev")
 DESIGNS = ("bpzup21", "bpzup12")
 COLORS = ("#0072B2", "#E69F00")
@@ -41,6 +43,7 @@ def read_arm(path, n):
     event = data["event"]
     if event.ndim != 2 or event.shape[1] != 3 or event.dtype.kind not in "iu" or len(np.unique(event, axis=0)) != len(event):
         raise ValueError("Event identities must be unique integer (run, subrun, event) rows")
+    data["event"] = event = _identity_rows(event.T)
     for key in FIELDS:
         if data[key].shape != (len(event),):
             raise ValueError("Event totals must match event identities")
@@ -55,12 +58,10 @@ def event_histograms(path, event, edges, totals=None):
     if not (path / "births.npz").exists() or not (path / "foil_exit.npz").exists():
         return None
     with np.load(path / "births.npz", allow_pickle=False) as z:
-        source = np.column_stack([z["source_" + k] for k in ("run", "subrun", "event")])
-    if source.dtype.kind not in "iu":
-        raise ValueError("Birth source identities must be integers")
-    dtype = np.dtype([(name, "i8") for name in ("run", "subrun", "event")])
-    keys = np.ascontiguousarray(event, dtype=np.int64).view(dtype).reshape(-1)
-    query = np.ascontiguousarray(source, dtype=np.int64).view(dtype).reshape(-1)
+        source = _identity_rows([z["source_" + k] for k in ("run", "subrun", "event")])
+    dtype = np.dtype([(name, "u8") for name in ("run", "subrun", "event")])
+    keys = np.ascontiguousarray(_identity_rows(event.T)).view(dtype).reshape(-1)
+    query = np.ascontiguousarray(source).view(dtype).reshape(-1)
     order = np.argsort(keys)
     index = np.searchsorted(keys[order], query)
     if np.any(index >= len(keys)) or (len(query) and np.any(keys[order[index]] != query)):

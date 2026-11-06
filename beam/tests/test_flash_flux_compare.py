@@ -4,7 +4,7 @@ import json
 import numpy as np
 import pytest
 
-from beamfastsim.flash_flux_compare import FIELDS, compare, event_histograms, main, paired, spectrum
+from beamfastsim.flash_flux_compare import FIELDS, compare, event_histograms, main, paired, read_arm, spectrum
 
 
 def test_paired_ratio_and_standard_error_with_known_zeros():
@@ -47,9 +47,10 @@ def test_invalid_totals(lo, hi):
         paired(lo, hi, 3)
 
 
-def arm(path, factor=1, n=6, mapping=True):
+def arm(path, factor=1, n=6, mapping=True, event=None):
     path.mkdir()
-    event = np.array([[1, 1, 1], [1, 1, 2], [1, 1, 3], [1, 2, 4]], dtype=int)
+    if event is None:
+        event = np.array([[1, 1, 1], [1, 1, 2], [1, 1, 3], [1, 2, 4]], dtype=int)
     parent = np.tile([0, 0, 1, 3], factor)
     energy = np.tile([.1, 1., 10., 100.], factor)
     weight = np.full(len(parent), .5)
@@ -208,3 +209,69 @@ def test_shape_chi2_uses_covariance_and_fitted_normalization():
     assert result["ndf"] == 1 and result["chi2"] > 0
     exact = shape_chi2(lo, 2 * lo, lt, 2 * lt, 4)
     assert exact["ndf"] == 0 and exact["chi2"] is None
+
+
+@pytest.mark.parametrize("large", [2**53 + 1, 2**63, 2**64 - 1])
+def test_event_histograms_preserve_mixed_integer_source_ids(tmp_path, large):
+    event = np.array([[1, 1, large - i] for i in range(4)], dtype=np.uint64)
+    path = tmp_path / "arm"
+    _, totals = arm(path, event=event)
+    source = dict(source_run=event[:, 0].astype(np.int64),
+                  source_subrun=event[:, 1], source_event=event[:, 2])
+    np.savez(path / "births.npz", **source)
+    hist = event_histograms(path, event, np.array([.1, 1., 10., 100.]), totals)
+    np.testing.assert_array_equal(hist["transparent"], [[1, 1, 0], [0, 0, 1], [0, 0, 0], [0, 0, 1]])
+    # Adjacent values above float's exact range must not match an absent ID.
+    source["source_event"] = source["source_event"].copy()
+    source["source_event"][0] = large - 4
+    np.savez(path / "births.npz", **source)
+    with pytest.raises(ValueError, match="absent from event universe"):
+        event_histograms(path, event, np.array([.1, 1., 10., 100.]))
+
+
+@pytest.mark.parametrize("dtype", [np.int64, np.uint64])
+def test_read_arm_canonicalizes_exact_event_ids(tmp_path, dtype):
+    event = np.array([[1, 1, 2**53 + i] for i in range(4)], dtype=dtype)
+    path = tmp_path / "arm"
+    arm(path, event=event)
+    _, data = read_arm(path, 6)
+    assert data["event"].dtype == np.dtype("uint64")
+    assert data["event"].tolist() == event.tolist()
+
+
+@pytest.mark.parametrize("dtype", [np.int64, np.uint64])
+@pytest.mark.parametrize("offset", [0, 1])
+def test_compare_exact_mixed_integer_event_ids(tmp_path, monkeypatch, dtype, offset):
+    low, high, out = (tmp_path / k for k in ("low", "high", "out"))
+    event = np.array([[1, 1, 2**53 + 2*i] for i in range(4)], dtype=dtype)
+    other = event.astype(np.uint64 if dtype == np.int64 else np.int64)
+    other[0, 2] += offset
+    arm(low, event=event)
+    arm(high, factor=2, event=other)
+    monkeypatch.setattr("beamfastsim.flash_flux_compare.plot", lambda *_: None)
+    if offset:
+        with pytest.raises(ValueError, match="Exact same event arrays required"):
+            compare(low, high, out, 6)
+        assert not out.exists()
+    else:
+        result = compare(low, high, out, 6)
+        assert result["metrics"]["transparent_photons"]["ratio"] == 2
+        assert result["spectra"]["transparent"]["uncertainty"] == "paired event delta method"
+
+
+@pytest.mark.parametrize("column", [0, 1, 2])
+def test_negative_event_and_birth_ids_rejected(tmp_path, column):
+    path = tmp_path / "arm"
+    event, totals = arm(path)
+    event[0, column] = -1
+    np.savez(path / "event_totals.npz", event=event, **totals)
+    with pytest.raises(ValueError, match="nonnegative integer"):
+        read_arm(path, 6)
+    with pytest.raises(ValueError, match="nonnegative integer"):
+        event_histograms(path, event, np.array([.1, 1., 10., 100.]))
+    np.savez(path / "births.npz", **{"source_" + k: event[:, i]
+                                   for i, k in enumerate(("run", "subrun", "event"))})
+    # A signed negative must not wrap into a valid unsigned universe identity.
+    unsigned_event = event.astype(np.uint64)
+    with pytest.raises(ValueError, match="nonnegative integer"):
+        event_histograms(path, unsigned_event, np.array([.1, 1., 10., 100.]))
