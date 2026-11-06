@@ -8,6 +8,10 @@ jobs:
   diagnose:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        repeat: [1, 2, 3]
     env:
       JAX_PLATFORMS: cpu
       JAX_ENABLE_X64: "1"
@@ -38,5 +42,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: fl1-modes
+          name: fl1-modes-${{ matrix.repeat }}
           path: ${{ runner.temp }}/fl1-modes.jsonl
