@@ -18,7 +18,9 @@ Subcommands:
   ratios carry the paired error. Denominator: every event of the tables.
 - `reduce`: the per-event frame of other EventNtuple files (e.g. the production reco of the same dts events), for use
   as an arm of `compare`;
-- `plot`: the reco momentum spectrum above P_PLOT with paired pulls.
+  `shift_check` recounts the reference with its selected momenta shifted by the same-event mean difference, to test
+  whether that shift alone explains the yield ratios on a steep spectrum;
+- `plot`: the reco momentum spectrum above P_PLOT with a fast / Geant4 ratio panel.
 """
 import argparse
 import glob
@@ -197,7 +199,7 @@ def compare(den, arm, ref, drop_outside=False):
     out["bins"] = dict(edges=P_EDGES.tolist(), arm=[r["arm"] for r in rows], ref=[r["ref"] for r in rows],
                        arm_err=[r["arm_err"] for r in rows], ref_err=[r["ref_err"] for r in rows],
                        arm_count=[r["arm_count"] for r in rows], ref_count=[r["ref_count"] for r in rows],
-                       pull=pull)
+                       ratio=[r["ratio"] for r in rows], ratio_err=[r["ratio_err"] for r in rows], pull=pull)
     for lo in (95.0, 100.0):
         m = (P_EDGES[:-1] >= lo) & np.array([r["diff_err"] > 0 for r in rows])
         out["bins"][f"chi2_paired_above_{lo:g}"] = dict(chi2=float((np.array(pull)[m] ** 2).sum()), ndf=int(m.sum()))
@@ -206,6 +208,26 @@ def compare(den, arm, ref, drop_outside=False):
     out["same_event_dp"] = dict(n=int(both.sum()), mean=float(dp.mean()) if dp.size else np.nan,
                                 err=float(dp.std(ddof=1) / np.sqrt(dp.size)) if dp.size > 1 else np.nan,
                                 median=float(np.median(dp)) if dp.size else np.nan)
+    # does that mean shift alone explain the yield ratios? the reference's selected momenta shifted by it, recounted
+    delta = out["same_event_dp"]["mean"]
+    out["shift_check"] = dict(shift=delta, ratio_predicted={
+        f"{c:g}": float((zr + delta > c).sum() / max((zr > c).sum(), 1)) for c in P_CUTS})
+    return out
+
+
+def numbers(rep, prod=None):
+    """Headline numbers of a compare report (and of the Geant4-vs-production report, if given)."""
+    k = ("arm", "arm_err", "ref", "ref_err", "diff", "diff_err", "ratio", "ratio_err", "arm_count", "ref_count")
+    out = dict(events=rep["events"], dropped_outside=rep.get("dropped_outside"),
+               efficiency_fit={x: rep["efficiency_fit"][x] for x in k},
+               efficiency_selected={x: rep["efficiency_selected"][x] for x in k},
+               above={c: {x: v[x] for x in k} for c, v in rep["above"].items()},
+               same_event_dp=rep["same_event_dp"], shift_check=rep.get("shift_check"),
+               chi2_paired={lo: rep["bins"][f"chi2_paired_above_{lo}"] for lo in ("95", "100")})
+    if prod:
+        out["g4_vs_production"] = dict(events=prod["events"], dropped_outside=prod.get("dropped_outside"),
+                                       efficiency_selected={x: prod["efficiency_selected"][x] for x in k},
+                                       above={c: {x: prod["above"][c][x] for x in k} for c in ("95", "100")})
     return out
 
 
@@ -235,16 +257,23 @@ def plot(rep, path, lo=P_PLOT):
     ax[0].set_title(f"DIO, stock digitisation + LoopHelix reco ({rep['events']:,} events)\n"
                     f"selected: fast / G4 = {s['ratio']:.4f} +- {s['ratio_err']:.4f};  above 100 MeV/c: "
                     f"{y['ratio']:.3f} +- {y['ratio_err']:.3f}", fontsize=9.5)
-    x2 = b["chi2_paired_above_100"]
-    ax[0].text(0.03, 0.05, rf"paired $\chi^2$/ndf above 100 MeV/c = {x2['chi2']:.1f}/{x2['ndf']}",
-               transform=ax[0].transAxes, fontsize=9)
+    x1, x2 = b["chi2_paired_above_95"], b["chi2_paired_above_100"]
+    ax[0].text(0.03, 0.04, rf"paired $\chi^2$/ndf above 95: {x1['chi2']:.1f}/{x1['ndf']}, above 100: "
+               rf"{x2['chi2']:.1f}/{x2['ndf']}", transform=ax[0].transAxes, fontsize=8.5)
     ax[0].legend(fontsize=9, loc="upper right")
-    ax[1].bar(c, np.array(b["pull"])[k], width=w, color="#0072B2")
-    ax[1].axhline(0, color="black", lw=0.8)
+    rr, re = np.array(b["ratio"], float)[k], np.array(b["ratio_err"], float)[k]
+    ok = (fr > 0) & (fa > 0)
+    ax[1].errorbar(c[ok], rr[ok], yerr=re[ok], xerr=w[ok] / 2, fmt="o", ms=3, color="#0072B2")
+    ax[1].axhline(1, color="black", lw=0.8)
     ax[1].axvline(100.0, color="grey", lw=0.8, ls=":")
     ax[0].axvline(100.0, color="grey", lw=0.8, ls=":")
-    ax[1].set_ylim(-4, 4)
-    ax[1].set_ylabel("paired pull")
+    ax[1].set_ylim(0.0, 2.0)
+    ax[1].set_ylabel("fast / G4")
+    sc = rep.get("shift_check")
+    if sc:
+        ax[0].text(0.03, 0.12, f"same-event shift {sc['shift']:+.3f} MeV/c predicts\n"
+                   f"{sc['ratio_predicted']['95']:.3f} above 95, {sc['ratio_predicted']['100']:.3f} above 100",
+                   transform=ax[0].transAxes, fontsize=8.5)
     ax[1].set_xlabel("reco momentum at the tracker front [MeV/c]")
     fig.savefig(path, dpi=150, bbox_inches="tight")
 
@@ -265,6 +294,10 @@ def main(argv=None):
     r.add_argument("nts", nargs="+")
     r.add_argument("--subruns", type=int, nargs="+", help="keep only these subruns")
     r.add_argument("--out", required=True)
+    q = sub.add_parser("numbers", help="headline numbers of a compare report")
+    q.add_argument("report")
+    q.add_argument("out")
+    q.add_argument("--production", help="the Geant4-vs-production compare report")
     p = sub.add_parser("plot")
     p.add_argument("report")
     p.add_argument("png")
@@ -291,6 +324,10 @@ def main(argv=None):
         d = reduce(a.nts, a.subruns)
         d.to_csv(a.out, index=False)
         print(json.dumps(dict(files=len(a.nts), events=len(d), fit=int(d.fit.sum()), selected=int(selected(d).sum()))))
+    elif a.cmd == "numbers":
+        prod = json.load(open(a.production)) if a.production else None
+        with open(a.out, "w") as fh:
+            json.dump(numbers(json.load(open(a.report)), prod), fh, indent=1, default=float)
     else:
         plot(json.load(open(a.report)), a.png)
 

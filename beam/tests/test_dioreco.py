@@ -98,3 +98,15 @@ def test_drop_outside_counts_extra_events():
     big = _arm(_events(12), np.full(12, 101.0))
     r = R.compare(ev, big, _arm(ev, np.full(10, 101.0)), drop_outside=True)
     assert r["dropped_outside"] == dict(arm=2, ref=0) and r["efficiency_selected"]["diff"] == 0.0
+
+
+def test_shift_check_predicts_the_ratio_of_a_pure_shift():
+    rng = np.random.default_rng(8)
+    n = 200_000
+    ev = _events(n)
+    p = 95.0 + rng.exponential(1.2, n)            # steep falling spectrum above 95
+    ref = _arm(ev, p)
+    arm = _arm(ev, p + 0.05)
+    r = R.compare(ev, arm, ref)
+    assert r["shift_check"]["shift"] == pytest.approx(0.05)
+    assert r["shift_check"]["ratio_predicted"]["100"] == pytest.approx(r["above"]["100"]["ratio"], rel=1e-12)
