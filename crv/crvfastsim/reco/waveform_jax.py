@@ -54,12 +54,14 @@ def pack(chan, time, charge, tdc0_of_chan, cfg=WaveformConfig(), Q=None, L=None)
     return dict(T=T, W=W, n=nq, t_start=t_start, tdc0=tdc0, keep=keep, chan=cchan, est=est, L=L, tmpl=tmpl)
 
 
-@partial(dprec.jit, static_argnames=("L", "zs"))
+@partial(dprec.jit, static_argnames=("L", "zs", "stock_scan"))
 def synth_dense(T, W, n, t_start, keep, tmpl, key, L, zs, precision, noise, min_voltage, adc_conv, pedestal, adc_lo,
-                adc_hi):
+                adc_hi, *, window_start=None, window_end=None, stock_scan=False):
     """Dense waveforms, ADCs and digi starts for C clusters. T, W [C,Q]; n, t_start, keep [C].
-    Only L (samples) and zs (digi length) are compile-time; noise, threshold, ADC conversion, pedestal, template
-    precision and the template itself are data (a tuning knob reuses the compiled kernel)."""
+    L (samples), zs (digi length) and stock_scan are compile-time; other numeric parameters are data.
+    Default mode uses an ungated scan. Opt-in stock_scan gates candidate starts inclusively before advancing
+    by zs samples. window_start/window_end are scalar times (None = unbounded), used only in stock_scan mode;
+    accepted digi tails are not cropped at window_end."""
     C, Q = T.shape
     qmask = jnp.arange(Q)[None, :] < n[:, None]
     ts = t_start[:, None] + jnp.arange(L, dtype=dprec.FLOAT)[None, :] * PERIOD                       # [C, L]
@@ -79,6 +81,11 @@ def synth_dense(T, W, n, t_start, keep, tmpl, key, L, zs, precision, noise, min_
 
     def step(next_i, i):
         start = win[:, i] & (next_i <= i)
+        if stock_scan:
+            if window_start is not None:
+                start = start & (ts[:, i] >= window_start)
+            if window_end is not None:
+                start = start & (ts[:, i] <= window_end)
         return jnp.where(start, i + zs, next_i), start
 
     _, starts = lax.scan(step, jnp.zeros(C, jnp.int64), jnp.arange(L))
@@ -88,14 +95,18 @@ def synth_dense(T, W, n, t_start, keep, tmpl, key, L, zs, precision, noise, min_
 
 
 def synthesize(chan, time, charge, tdc0_of_chan, cfg=WaveformConfig(), window=(0.0, 1e5), rng_key=None, Q=None,
-               L=None):
-    """Same contract as waveform.synthesize (noise from a JAX key; None = no noise)."""
+               L=None, *, stock_scan=False):
+    """Same contract as waveform.synthesize (noise from a JAX key; None = no noise).
+    stock_scan opts into the stock start gate and nested-loop advance; default output is unchanged.
+    """
     pk = pack(chan, time, charge, tdc0_of_chan, cfg, Q, L)
     key = rng_key if rng_key is not None else jax.random.PRNGKey(0)
     wave, adc, starts, last = synth_dense(pk["T"], pk["W"], pk["n"], pk["t_start"], pk["keep"], pk["tmpl"], key,
                                           pk["L"], cfg.samples_zs, cfg.single_pe_precision,
                                           cfg.noise if rng_key is not None else 0.0, cfg.min_voltage,
-                                          cfg.adc_conversion, cfg.pedestal, cfg.min_adc, cfg.max_adc)
+                                          cfg.adc_conversion, cfg.pedestal, cfg.min_adc, cfg.max_adc,
+                                          window_start=window[0] if stock_scan else None,
+                                          window_end=window[1] if stock_scan else None, stock_scan=stock_scan)
     return to_digis(pk, np.asarray(wave), np.asarray(adc), np.asarray(starts), np.asarray(last), cfg, window)
 
 

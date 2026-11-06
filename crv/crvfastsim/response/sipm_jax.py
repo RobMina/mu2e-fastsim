@@ -10,8 +10,7 @@ A pixel's response depends only on the earlier hits on the same pixel (recovery)
   3. the active set is solved by a fixed point: active(candidate) = active(parent) and fired(parent); fired depends on
      the active hits before it on its pixel; iterated until stable (at most generations + 1 rounds).
 Every hit carries its own pre-drawn uniform, so the fixed point is deterministic. The previous twin scanned photon by
-photon (13 k SiPMs/s per A100, slower than the numpy port). Thermal noise and traps are not in the twin (0 in the
-production extracted configuration).
+photon (13 k SiPMs/s per A100, slower than the numpy port). Thermal noise is opt-in; trap afterpulses remain unsupported.
 """
 from functools import partial
 
@@ -124,10 +123,11 @@ LONG_CELLS_MAX = 1 << 26  # long-table cells beyond which the chunk goes to the 
 
 @partial(dprec.jit, static_argnames=("NB", "M1", "M2", "M3", "Ntot", "L", "SL", "LL", "nx", "ny", "gens"))
 def device_sipm(slot, t, valid, key, cum, ncol, dead, q_ct, vov, tau, p1, p2, cap,
-                NB, M1, M2, M3, Ntot, L, SL, LL, nx, ny, gens=GENERATIONS):
+                NB, M1, M2, M3, Ntot, L, SL, LL, nx, ny, gens=GENERATIONS, *, pixel_override=None):
     """All of the SiPM stage in one jitted call, fixed shapes, no host round trip.
 
     slot [NB] SiPM slot per photon, t [NB], valid [NB]; cum: normalised cumulative photon map; ncol: its row length.
+    pixel_override: optional [NB] flat pixel ids (x * NPIX + y); -1 retains the optical draw.
     Returns per hit (photons first, then cross-talk candidates): slot, time, root photon index, fired, charge, pe, and
     an overflow flag (a candidate buffer filled up, or the long-stream table [SL, LL] was too small: retry with
     long_buckets(r), else rerun those inputs on the host path).
@@ -136,6 +136,8 @@ def device_sipm(slot, t, valid, key, cum, ncol, dead, q_ct, vov, tau, p1, p2, ca
     b_ = jnp.searchsorted(cum, jax.random.uniform(kp, (NB,)), side="right")
     h = jax.random.uniform(kx, (2, NB)) >= 0.5                       # GetRandom2 + lrint
     pix = (b_ // ncol + h[0]) * NPIX + (b_ % ncol + h[1])
+    if pixel_override is not None:
+        pix = jnp.where(pixel_override >= 0, pixel_override, pix)
     hs, hp, ht, hpar, hv = [slot], [pix], [t], [jnp.full(NB, -1)], [valid]
     cs, cp, ctt, cv, off = slot, pix, t, valid, 0
     over = jnp.array(False)
@@ -169,13 +171,15 @@ def long_buckets(r):
     return None if SL * LL > LONG_CELLS_MAX else (SL, LL)
 
 
-def run_device_sipm(args, cfg):
+def run_device_sipm(args, cfg, *, pixel_override=None):
     """device_sipm with the default long table, retried once with measured buckets on a stream overflow."""
-    r = device_sipm(*args, STREAM_L, LONG_SL, LONG_LL, cfg.n_pixels_x, cfg.n_pixels_y)
+    r = device_sipm(*args, STREAM_L, LONG_SL, LONG_LL, cfg.n_pixels_x, cfg.n_pixels_y,
+                    pixel_override=pixel_override)
     if bool(r["stream_overflow"]):
         b = long_buckets(r)
         if b is not None:
-            r = device_sipm(*args, STREAM_L, *b, cfg.n_pixels_x, cfg.n_pixels_y)
+            r = device_sipm(*args, STREAM_L, *b, cfg.n_pixels_x, cfg.n_pixels_y,
+                            pixel_override=pixel_override)
     return r
 
 
@@ -194,19 +198,70 @@ def device_buckets(n_photons, cfg):
     return NB, Ms, Ntot, q_ct
 
 
-def simulate(chan, time, photon, pmap, cfg, rng, key, t_end=1e5, max_photons=1 << 23):
-    """JAX equivalent of sipm.simulate (no thermal noise / traps). Returns the same dict (host arrays).
+def _channel_labels(chans, name):
+    labels = np.asarray(chans)
+    if labels.ndim != 1 or (labels.size and (labels.dtype.kind not in "iu" or
+            np.any(labels < 0) or np.any(labels > np.iinfo(np.int64).max))):
+        raise ValueError(f"sipm_jax: {name} must be one-dimensional nonnegative integer labels")
+    return labels
 
-    One device_sipm call per chunk of whole SiPMs; the only host work is labelling SiPMs (np.unique) and the final
-    transfer. A chunk that overflows its static buffers is redone with the numpy port (sipm.simulate)."""
+
+def simulate(chan, time, photon, pmap, cfg, rng, key, t_end=1e5, max_photons=1 << 23,
+             *, t_start=0.0, thermal_chans=None):
+    """JAX equivalent of sipm.simulate, with opt-in thermal noise and no traps.
+
+    thermal_chans must list every eligible channel/event label once, including labels without photons.
+    Thermal attempts are generated on the host and share device recovery/cross-talk with optical hits.
+    Returns the same dict (host arrays); dark hits and their descendants have photon id -1.
+    Chunks that overflow are redone with the numpy port only when thermal_rate is zero.
+    """
     from . import sipm as SI
-    if cfg.thermal_rate > 0 or cfg.trap0_prob > 0 or cfg.trap1_prob > 0:
-        raise NotImplementedError("sipm_jax: thermal noise and trap afterpulses are not in the twin")
-    chan, time, photon = np.asarray(chan), np.asarray(time, float), np.asarray(photon)
+    if not np.isfinite(cfg.thermal_rate) or cfg.thermal_rate < 0:
+        raise ValueError("sipm_jax: thermal_rate must be finite and nonnegative")
+    if cfg.trap0_prob != 0 or cfg.trap1_prob != 0:
+        raise NotImplementedError("sipm_jax: trap afterpulses are not in the twin")
+    if not (np.isfinite(t_start) and np.isfinite(t_end) and 0 <= t_start <= t_end):
+        raise ValueError("sipm_jax: require finite 0 <= t_start <= t_end")
+    for n in (cfg.n_pixels_x, cfg.n_pixels_y):
+        if isinstance(n, (bool, np.bool_)) or not isinstance(n, (int, np.integer)) or not 1 <= n <= NPIX:
+            raise ValueError(f"sipm_jax: pixel dimensions must be integers in 1..{NPIX}")
+    inactive = np.asarray(cfg.inactive)
+    if inactive.size and (inactive.ndim != 2 or inactive.shape[1] != 2 or inactive.dtype.kind not in "iu" or
+                          np.any(inactive < 0) or np.any(inactive >= NPIX)):
+        raise ValueError("sipm_jax: inactive pixels must be integer pairs in 0..40")
+    chan, time, photon = _channel_labels(chan, "chan"), np.asarray(time, float), np.asarray(photon)
+    if time.ndim != 1 or photon.ndim != 1 or len(chan) != len(time) or len(chan) != len(photon):
+        raise ValueError("sipm_jax: chan, time and photon must have matching one-dimensional shapes")
+    if not np.all(np.isfinite(time)):
+        raise ValueError("sipm_jax: photon times must be finite")
     keep = time <= t_end
     chan, time, photon = chan[keep], time[keep], photon[keep]
+    pixels = None
+    if cfg.thermal_rate > 0:
+        if thermal_chans is None:
+            raise ValueError("sipm_jax: positive thermal_rate requires explicit thermal_chans")
+        labels = _channel_labels(thermal_chans, "thermal_chans")
+        if not labels.size or len(np.unique(labels)) != len(labels):
+            raise ValueError("sipm_jax: thermal_chans must be nonempty and unique")
+        p_fire = cfg.p_fire(cfg.overvoltage)
+        if not np.isfinite(p_fire) or not 0 < p_fire <= 1:
+            raise ValueError("sipm_jax: thermal noise requires a finite firing probability in (0, 1]")
+        lam = cfg.thermal_rate / p_fire * (t_end - t_start)
+        if not np.isfinite(lam):
+            raise ValueError("sipm_jax: thermal Poisson mean must be finite")
+        counts = rng.poisson(lam, len(labels))
+        dark_chan = np.repeat(labels.astype(np.int64), counts)
+        ndark = len(dark_chan)
+        dark_time = t_start + (t_end - t_start) * rng.random(ndark)
+        dark_pix = rng.integers(0, cfg.n_pixels_x, ndark) * NPIX + rng.integers(0, cfg.n_pixels_y, ndark)
+        pixels = np.r_[np.full(len(chan), -1, np.int64), dark_pix]
+        chan = np.r_[chan.astype(np.int64), dark_chan]
+        time = np.r_[time, dark_time]
+        photon = np.r_[photon.astype(np.int64), np.full(ndark, -1, np.int64)]
     o = np.argsort(chan, kind="stable")
     chan, time, photon = chan[o], time[o], photon[o]
+    if pixels is not None:
+        pixels = pixels[o]
     dead = np.zeros(NP2, bool)
     for x, y in cfg.inactive:
         dead[x * NPIX + y] = True
@@ -227,8 +282,14 @@ def simulate(chan, time, photon, pmap, cfg, rng, key, t_end=1e5, max_photons=1 <
         args = (jnp.asarray(np.pad(slot_np.ravel(), (0, NB - n))), jnp.asarray(np.pad(time[a:b], (0, NB - n))),
                 jnp.arange(NB) < n, sub, cum, pmap.shape[1], dead_d, q_ct, cfg.overvoltage,
                 cfg.time_constant, cfg.p1, cfg.p2, cfg.capacitance, NB, *Ms, Ntot)
-        r = run_device_sipm(args, cfg)
+        if pixels is None:
+            r = run_device_sipm(args, cfg)
+        else:
+            override = jnp.asarray(np.pad(pixels[a:b], (0, NB - n), constant_values=-1))
+            r = run_device_sipm(args, cfg, pixel_override=override)
         if bool(r["overflow"]):
+            if pixels is not None:
+                raise RuntimeError("sipm_jax: thermal device overflow; host fallback cannot preserve dark pixels")
             outs.append(SI.simulate(chan[a:b], time[a:b], photon[a:b], pmap, cfg, rng, t_end=t_end))
             continue
         f = np.asarray(r["fired"])
