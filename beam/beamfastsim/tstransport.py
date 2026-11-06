@@ -31,7 +31,7 @@ def radiation_length(mat):
 
 def transport(source, field, geometry, seed=20261105, step_mm=5.0, max_path_mm=100000.0,
               material_step_mm=0.25, loss_fraction=0.05, method="rk4", progress=False,
-              boundary_safety=True):
+              boundary_safety=True, trace=None):
     """Transport aligned x/p/t/pdg arrays, returning every input row including losses.
 
     geometry supplies inside(x), columns(start,end)->{name:length_mm}, materials,
@@ -39,6 +39,7 @@ def transport(source, field, geometry, seed=20261105, step_mm=5.0, max_path_mm=1
     tracks have explicit fates. The terminal downstream plane is not called a VD.
     Decay is drawn once in proper time, reset for the muon daughter; loss and time
     are split at step resolution. Per-material Highland history is cumulative.
+    Optional trace observes copied selected-lane states; it must not alter RNG or physics.
     """
     settings = (step_mm, max_path_mm, material_step_mm, loss_fraction)
     if not all(np.isfinite(v) and v > 0 for v in settings) or loss_fraction > 0.2:
@@ -49,6 +50,12 @@ def transport(source, field, geometry, seed=20261105, step_mm=5.0, max_path_mm=1
     pdg = np.array(source["pdg"], dtype=np.int64, copy=True)
     t = np.array(source["t"], dtype=float, copy=True)
     n = len(pdg)
+    if trace is not None:
+        trace_rows = np.asarray(trace.rows)
+        if (trace_rows.ndim != 1 or trace_rows.dtype.kind not in 'iu'
+                or np.any((trace_rows < 0) | (trace_rows >= n))
+                or len(np.unique(trace_rows)) != len(trace_rows)):
+            raise ValueError('trace rows must be distinct valid source indices')
     if x.shape != (n, 3) or p.shape != (n, 3) or t.shape != (n,):
         raise ValueError("x,p must be N by 3; pdg,t must be N")
     if not all(np.all(np.isfinite(a)) for a in (x, p, t)):
@@ -213,14 +220,29 @@ def transport(source, field, geometry, seed=20261105, step_mm=5.0, max_path_mm=1
             h = np.where(retry, h * np.minimum(0.5, scale), proposed_h)
         fate[live[valid & ~accepted_valid]] = FIELD_MISSING
         valid &= accepted_valid
+        if trace is not None:
+            selected = np.flatnonzero(np.isin(live, trace_rows))
+            trace.begin(row=live[selected].copy(), step=steps[live[selected]].copy(),
+                        x0=oldx[selected].copy(), proposed_x=xn[selected].copy(),
+                        p0=p[live[selected]].copy(), t0=t[live[selected]].copy(),
+                        path0=path[live[selected]].copy(), h=h[selected].copy(),
+                        pdg0=pdg[live[selected]].copy(), valid=valid[selected].copy())
         newp = un * pmag[:, None]
         travelled = np.ones(len(live))
         stopped = np.zeros(len(live), bool)
         for name, mm in columns.items():
             active = (mm > 0) & ~stopped & valid
             if active.any():
+                if trace is not None:
+                    traced_active = np.flatnonzero(np.isin(live[active], trace_rows))
+                    before_material = newp[active][traced_active].copy()
                 out, fraction, stop = phys.material_step(rng, geometry.materials[name], newp[active],
                                                         pdg[live[active]], mm[active], history[name][live[active]])
+                if trace is not None and len(traced_active):
+                    trace.material(name=name, row=live[active][traced_active].copy(),
+                                   requested_mm=mm[active][traced_active].copy(),
+                                   fraction=fraction[traced_active].copy(), stopped=stop[traced_active].copy(),
+                                   p_before=before_material, p_after=out[traced_active].copy())
                 newp[active] = out
                 travelled[active] = np.minimum(travelled[active], fraction)
                 stopped[active] |= stop
@@ -256,6 +278,10 @@ def transport(source, field, geometry, seed=20261105, step_mm=5.0, max_path_mm=1
         fate[live[outside]] = WALL
         capped = (fate[live] == LIVE) & (path[live] >= max_path_mm - 1e-8)
         fate[live[capped]] = PATH_LIMIT
+        if trace is not None:
+            trace.end(x1=x[live[selected]].copy(), p1=p[live[selected]].copy(),
+                      t1=t[live[selected]].copy(), path1=path[live[selected]].copy(),
+                      pdg1=pdg[live[selected]].copy(), fate=fate[live[selected]].copy())
         iteration += 1
         if progress and iteration % 1000 == 0:
             print(f"steps={iteration} live={np.count_nonzero(fate == LIVE)} ds={np.count_nonzero(fate == DS)}", flush=True)
