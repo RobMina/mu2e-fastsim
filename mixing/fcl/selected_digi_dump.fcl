@@ -1,0 +1,29 @@
+# Reconstruct saved selected digis; do not mix or digitize a second time.
+#include "Offline/fcl/standardServices.fcl"
+#include "Offline/CRVReco/fcl/prolog_v12.fcl"
+process_name: SelectedDigiDump
+source: { module_type: RootInput }
+services: @local::Services.Reco
+services.TFileService.fileName: "response.root"
+services.GeometryService.inputFile: "Offline/Mu2eG4/geom/geom_run1_a.txt"
+services.GeometryService.bFieldFile: "Offline/Mu2eG4/geom/bfgeom_reco_v01.txt"
+services.DbService.purpose: Sim_best
+services.DbService.version: v1_3
+services.DbService.verbose: 0
+physics: {
+  producers: { @table::CrvRecoPackage.producers }
+  analyzers: {
+    trkdigi: { module_type: StrawDigiTableDumper StrawDigiTag: "makeSD" }
+    crvdump: { module_type: CrvRecoTableDumper mc: false }
+    events: { module_type: EventLister }
+  }
+  p1: [@sequence::CrvRecoPackage.CrvRecoSequence]
+  e1: [trkdigi, crvdump, events]
+  trigger_paths: [p1]
+  end_paths: [e1]
+}
+physics.producers.CrvRecoPulses.crvDigiModuleLabel: "CrvDigi"
+physics.producers.CrvRecoPulses.eventWindowMarkerTag: "EWMProducer"
+physics.producers.CrvRecoPulses.protonBunchTimeTag: "EWMProducer"
+#include "Offline/CRVReco/fcl/epilog_run1a_v01.fcl"
+outputs: {}

@@ -1,0 +1,6 @@
+{
+  "geometry": "Offline/Mu2eG4/geom/crv_counters_run1a_v01.txt",
+  "coverage": "T1/T2 only; this geometry has no side sectors and cannot validate full-CRV coverage",
+  "sector_names": ["T1", "T2"],
+  "bars_per_sector": [1088, 192]
+}

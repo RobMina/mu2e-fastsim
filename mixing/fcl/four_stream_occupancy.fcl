@@ -1,0 +1,4 @@
+# Keep the stock response; omit diagnostic charge/MC tables from occupancy output.
+#include "four_stream_response.fcl"
+physics.analyzers.crvdump.mc: false
+services.TimeTracker.printSummary: true
