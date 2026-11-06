@@ -13,4 +13,6 @@ def test_legacy_dump_has_all_event_lister():
 def test_dump_driver_uses_existing_runtime():
     text = (ROOT / "run_dump.sh").read_text()
     assert "muse build" not in text and "scons" not in text
-    assert 'bash "$OFFLINE_CHAIN_RUNNER"' in text
+    assert 'mu2e -c mixing/fcl/dump_frames.fcl -s "$input" -n -1 -T "$name.root"' in text
+    for extra in ("module load", "config_dumper", "product_sizes_dumper", "OFFLINE_TIME", "legacy", "MIXING_EVENTS"):
+        assert extra not in text

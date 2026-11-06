@@ -53,6 +53,6 @@ def test_four_stream_response_uses_database_rates_and_no_extra_shift():
     assert "SimTimeOffset" not in text
     assert "SelectEvents" not in text
     for stream in ("MuStopPileup", "EleBeamFlash", "MuBeamFlash", "NeutralsFlash"):
-        assert f"{stream}Mixer: @local::PU1Mixer" in text
+        assert f"{stream}Mixer: @local::FourStreamMixer" in text
         assert f"{stream}Mixer.mu2e.simStageEfficiencyTags:" in text
     assert text.index("p1: [PBISim") < text.index("@sequence::CommonMC.DigiSim")

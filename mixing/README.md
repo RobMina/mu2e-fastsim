@@ -27,7 +27,8 @@ Offline `EventMixing/{MixBackgroundFrames,ProtonBunchIntensityLogNormal}`:
 - Ordinary mixing configures **no additional SimTimeOffset**. Source frames
   already contain pulse offsets. Do not reapply one, fold modulo the bunch period,
   or cut individual steps at the flash selection boundary. The flash filter
-  selected whole events; it is not a payload-wide time cut.
+  selected whole events; it is not a payload-wide time cut. The mixer does not
+  fold times; the detector response must, as stock digitizers do.
 - Keep each donor occurrence's tracker and CRV arrays together, even if one or
   both are empty. Repeated donor uses have separate particle keys. If a caller
   supplies a calorimeter collection, `overlay` keeps it with the same donor too.
@@ -45,12 +46,10 @@ containing both plugins, with `CrvStepTableDumper` supporting `staged_cat`.
 There is no new C++ module or build step here. For an already-built older dumper
 without association-policy support, `dump_frames_legacy.fcl` adds the stock
 `EventLister`; pass its log via `read_event_log` and `read_frames(event_ids=...)`.
-This keeps empty frames without inferring them from generator or step rows. It
-does not disable guards in the intermediate strict cosmic-only dumper: that
-version cannot read general staged beam frames and must not be used here.
+This keeps empty frames without inferring them from generator or step rows.
 
 ```bash
-mu2e -c mixing/fcl/dump_frames.fcl -s DONORS.art -T frames.root
+mu2e -c mixing/fcl/dump_frames.fcl -s DONORS.art -n -1 -T frames.root
 ```
 
 `read_frames` reads the highest ROOT tree cycles from that output. The CRV census

@@ -5,7 +5,7 @@
 #include "Offline/CRVResponse/fcl/prolog_v12.fcl"
 #include "Offline/CRVReco/fcl/prolog_v12.fcl"
 BEGIN_PROLOG
-PU1Mixer: {
+FourStreamMixer: {
   module_type: MixBackgroundFrames
   fileNames: @nil
   readMode: sequential
@@ -37,7 +37,7 @@ services.DbService.purpose: Sim_best
 services.DbService.version: v1_3
 services.DbService.verbose: 0
 services.ProditionsService.simbookkeeper.useDb: true
-services.ProditionsService.simbookkeeper.verbose: 8
+services.ProditionsService.simbookkeeper.verbose: 0
 physics: {
   producers: {
     @table::CommonMC.DigiProducers
@@ -57,10 +57,10 @@ physics: {
     NeutralsFlashFilter: { module_type: MixingFilter MixingModule: NeutralsFlashMixer }
   }
   filters: {
-    MuStopPileupMixer: @local::PU1Mixer
-    EleBeamFlashMixer: @local::PU1Mixer
-    MuBeamFlashMixer: @local::PU1Mixer
-    NeutralsFlashMixer: @local::PU1Mixer
+    MuStopPileupMixer: @local::FourStreamMixer
+    EleBeamFlashMixer: @local::FourStreamMixer
+    MuBeamFlashMixer: @local::FourStreamMixer
+    NeutralsFlashMixer: @local::FourStreamMixer
   }
   analyzers: {
     trkdigi: { module_type: StrawDigiTableDumper StrawDigiTag: "makeSD" }
@@ -77,6 +77,7 @@ physics: {
 }
 physics.filters.MuStopPileupMixer.mu2e.simStageEfficiencyTags: [MuBeamCat, MuminusStopsCat, MuStopPileupCat]
 physics.filters.MuStopPileupMixer.mu2e.meanEventsPerPOTFactors: [1000]
+# Inclusive initial-skip bounds from the reference production configuration.
 physics.filters.MuStopPileupMixer.mu2e.MaxEventsToSkip: 747582
 physics.filters.EleBeamFlashMixer.mu2e.MaxEventsToSkip: 5306
 physics.filters.MuBeamFlashMixer.mu2e.MaxEventsToSkip: 1025663
