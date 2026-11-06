@@ -17,7 +17,9 @@ The parent must wrap stock `Mix.fcl` with the reference campaign's geometry,
 conditions and primary-specific filters. All four donor streams are required;
 missing streams are not silently assigned zero rates. The generated FCL leaves
 the stock intensity law and SimBookkeeper rates in the parent unchanged and adds
-no timing offset. Donor identity sequences are saved for paired checks.
+no timing offset. `writeEventIDs` adds a product; saving donor identities also
+requires an art output module. The provided `outputs: {}` configuration does not
+persist those sequences.
 
 `--signal-tag fastSteps` redirects tracker and CRV step consumers to an existing
 fast-step product while leaving stock calorimeter inputs alone. That producer
@@ -27,6 +29,15 @@ producer must not be substituted without importing its corresponding generators.
 These bindings are source-tested but not yet runtime-validated through digitisation.
 
 ## Native response and saved-digi comparison
+
+The drivers require `OFFLINE_CHAIN_RUNNER`, an existing wrapper that accepts the
+Offline area, FCL path and input files, enters the configured runtime, and executes
+the shell file named by `OFFLINE_CHAIN`. They set library/FHiCL paths in that file;
+the wrapper supplies the released backing, input binds and `OFFLINE_TIME` command.
+No build or runtime installation is performed. `OFFLINE_AREA`, both
+`MIXING_*_PLUGIN_DIR` variables and `MIXING_OUT` must name existing runtime/plugins
+and the desired output location. `MIXING_EVENTS` selects the event count (`-1` for
+all events); the diagnostic response default is ten, not a donor-pool extraction.
 
 `run_response.sh CONFIG.fcl SIGNAL.art [STOP.art ELE.art MU.art NEUTRAL.art]`
 uses the same environment variables as the diagnostic driver. With
@@ -88,9 +99,16 @@ The native candidate uses stock primary steps, four stock streams and database
 multiplicity factors, not fast transport. Overlay/stock totals are
 `0.9915 +/- 0.0165` for straw digis and `1.0030 +/- 0.0202` for CRV pulses.
 Diagonal chi-square/ndf is `26.69/36` across planes and `7.88/2` across T1/T2.
-T2 alone is `0.7611 +/- 0.0740`, paired pull `-2.78`; this discrepancy is retained,
-not tuned away. No lateral sectors exist in this geometry. Independent pileup
-and response on stock-selected IDs are not a replay of the stock trigger.
+The reference is `dig.mu2e.CeMLeadingLogMix1BB.MDC2025au_best_v1_3`, produced
+with Offline v13_33_00; the candidate uses v13_41_00. The reference predates
+[Offline #1956](https://github.com/Mu2e/Offline/pull/1956): its T2 scintillation
+yield incorrectly used T1's 39794/MeV instead of 30482/MeV. The yield ratio predicts
+approximately `0.766`, consistent with the measured T2 ratio `0.7611 +/- 0.0740`
+(paired pull `-2.78` relative to unity). T1 is `1.008 +/- 0.020`. This known reference
+calibration mismatch accounts for nearly all of the sector chi-square; the
+held-out result is retained without retuning or rerunning it. No lateral sectors
+exist in this geometry. Independent pileup and response on stock-selected IDs
+are not a replay of the stock trigger.
 The measured mixer+tracker/CRV-response+flat-output boundary is 6.37 events/s;
 it excludes environment startup, calorimeter and trigger. No matched stock-grid
 speed comparison or end-to-end fast-chain speedup is established.
