@@ -3,7 +3,10 @@
 Per digi: baseline from the first samples, primary peaks (local maxima of the baseline-subtracted waveform), the
 sequential secondary-peak search on the residual, then a least-squares fit of ``b + sum_k A_k p(x - t_k)`` with the
 source's objective ``sum (y - f)^2 / b`` and parameter limits ``[0, 1e6]``. The source minimiser (TMinuit MIGRAD)
-is replaced by damped Newton steps on the same objective, so fitted values agree to tolerance, not bitwise.
+is replaced by damped Newton steps on the same objective, so fitted values agree to tolerance, not bitwise. The
+objective falls when the baseline grows, so weakly damped first steps can fall into a baseline-only solution;
+a per-step trust region (baseline and amplitudes by half their value, times by 5 ns) and the initial damping
+keep the iterates near the seed, as MIGRAD's line search does.
 Parabolic errors are ``sqrt(2 diag(H^-1))``. Components that fail the source's selection after a multi-peak fit
 are removed and the fit repeated; amplitudes below 1 are dropped. The source's second pass for digis with
 ``chi2/ndf > chiThreshold`` (re-seeding with rising-edge peaks) is not implemented: such digis keep the first fit
@@ -31,7 +34,8 @@ class FitConfig:
     chi_threshold: float = 1.0
     digi_sampling: float = 5.0
     max_peaks: int = 4
-    iterations: int = 15
+    iterations: int = 30
+    damping: float = 100.0   # initial Levenberg-Marquardt damping: keeps early steps near the seed, as MIGRAD does
 
 
 def _jnp():
@@ -218,6 +222,12 @@ def _fit_one(x, y, mask, n, evaluate, cfg, K, W, L):
         r = jnp.where(mask, yfull - f, 0.0)
         return jnp.where(jnp.abs(p[0]) > 1e-5, jnp.sum(r * r) / jnp.where(p[0] == 0, 1.0, p[0]), 0.0)
 
+    is_time = (jnp.arange(1 + 2 * K) % 2 == 0) & (jnp.arange(1 + 2 * K) > 0)
+
+    def cap(p):
+        """Trust region per step: baseline and amplitudes by half their value plus a floor, times by 5 ns."""
+        return jnp.where(is_time, 5.0, 0.5 * jnp.abs(p) + jnp.where(jnp.arange(1 + 2 * K) == 0, 1.0, 10.0))
+
     def minimise(p, act):
         free = jnp.concatenate([jnp.ones(1, bool), jnp.repeat(act, 2)])
         grad = jax.grad(objective)
@@ -229,12 +239,13 @@ def _fit_one(x, y, mask, n, evaluate, cfg, K, W, L):
             h = hess(p, act)
             h = jnp.where(free[:, None] & free[None, :], h, 0.0) + jnp.diag(jnp.where(free, 0.0, 1.0))
             step = -jnp.linalg.solve(h + lam * jnp.diag(jnp.abs(jnp.diag(h)) + 1e-9), g)
+            step = jnp.clip(step, -cap(p), cap(p))
             trial = jnp.clip(p + jnp.where(free, step, 0.0), 0.0, 1e6)
             ft = objective(trial, act)
             better = ft <= fval
             return (jnp.where(better, trial, p), jnp.where(better, lam * 0.3, lam * 10.0), jnp.where(better, ft, fval))
 
-        p, _, fval = lax.fori_loop(0, cfg.iterations, body, (p, 1e-3, objective(p, act)))
+        p, _, fval = lax.fori_loop(0, cfg.iterations, body, (p, cfg.damping, objective(p, act)))
         h = hess(p, act)
         h = jnp.where(free[:, None] & free[None, :], h, 0.0) + jnp.diag(jnp.where(free, 0.0, 1.0))
         cov = 2.0 * jnp.linalg.inv(h)
