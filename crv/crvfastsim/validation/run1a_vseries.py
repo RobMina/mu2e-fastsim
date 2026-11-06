@@ -13,8 +13,11 @@ and of the Geant4 steps (response control), both `runchain --steps-input --save-
 - End to end (fast_reco vs stock_reco), with the response control (g4_reco vs stock_reco): coincidence clusters, cluster
   PE, layers per cluster, pulses of at least PULSE_PE per sector, and their PE.
 
-Statistics: the ratio of the sums with the paired per-shard error, and per histogram bin the summed difference over its
-paired per-shard standard error (pull); chi2/ndf = mean squared pull over bins with a nonzero error.
+Statistics: the ratio of the sums with the paired per-shard error (validation.paired_rates.paired_ratio), and per
+histogram bin the summed difference over its paired per-shard standard error (pull); chi2/ndf = mean squared pull over
+bins with a nonzero error. Tail bins are merged from the top until each reference bin holds MIN_REF entries. The bin
+errors come from the spread of n shards, so each pull follows a t distribution with n - 1 degrees of freedom and chi2/ndf
+has the null expectation (n - 1)/(n - 3) (1.33 for nine shards), not 1. Bins with zero error are listed, not used.
 """
 import argparse
 import json
@@ -26,6 +29,7 @@ import pandas as pd
 import uproot
 
 from .. import runconfig, tables, tier1b
+from .paired_rates import paired_ratio as _paired_ratio
 from ..analyses.census import classify
 
 KEY = tables.KEY
@@ -36,21 +40,42 @@ NSTEP_EDGES = np.r_[1, 2, 3, 5, 8, 12, 20, 30, 50, 80, 120, 200, 1e9]
 PPE_EDGES = np.r_[np.arange(0, 200, 10), 200, 1e9]
 LAYERS = np.arange(1, 6)
 ORIGINS = ("mu_primary", "mu_descendant", "nonmu")
+MIN_REF = 25
 
 
 def paired_ratio(f, r):
     """Ratio of sums over shards with its paired per-shard standard error (arms share each shard's events)."""
-    f, r = np.asarray(f, float), np.asarray(r, float)
-    R = f.sum() / r.sum() if r.sum() > 0 else np.nan
-    n = len(f)
-    d = f - R * r
-    err = np.sqrt(n / max(n - 1, 1) * (d ** 2).sum()) / r.sum() if r.sum() > 0 else np.nan
-    return {"fast": float(f.sum()), "ref": float(r.sum()), "ratio": float(R), "err": float(err), "shards": n}
+    q = _paired_ratio(r, f)
+    ratio = None if q["relative_difference"] is None else 1 + q["relative_difference"]
+    return {"fast": q["total_cand"], "ref": q["total_ref"], "ratio": float("nan") if ratio is None else ratio,
+            "err": float("nan") if q["relative_se"] is None else q["relative_se"], "shards": q["events"]}
 
 
-def paired_shape(F, R):
-    """Per bin: summed difference, its paired per-shard error and pull; chi2/ndf over bins with a nonzero error."""
+def merge_tail(F, R, min_ref=MIN_REF):
+    """Merge bins from the top down until every merged bin's reference sum is at least min_ref (the last group joins
+    its lower neighbour). Returns (F, R, groups: list of original bin indices per merged bin)."""
+    tot = R.sum(0)
+    groups, cur, acc = [], [], 0.0
+    for b in range(len(tot) - 1, -1, -1):
+        cur.insert(0, b)
+        acc += tot[b]
+        if acc >= min_ref:
+            groups.insert(0, cur)
+            cur, acc = [], 0.0
+    if cur:
+        if groups:
+            groups[0] = cur + groups[0]
+        else:
+            groups = [cur]
+    merge = lambda X: np.stack([X[:, g].sum(1) for g in groups], 1)
+    return merge(F), merge(R), groups
+
+
+def paired_shape(F, R, n_shards=None):
+    """Per (tail-merged) bin: summed difference, its paired per-shard error and pull; chi2/ndf over bins with a nonzero
+    error, with its null expectation (n - 1)/(n - 3) for t-distributed pulls of n shards."""
     F, R = np.asarray(F, float), np.asarray(R, float)
+    F, R, groups = merge_tail(F, R)
     n = len(F)
     d = F - R
     D = d.sum(0)
@@ -58,7 +83,9 @@ def paired_shape(F, R):
     ok = se > 0
     pull = np.where(ok, D / np.where(ok, se, 1), 0.0)
     return {"fast": F.sum(0).tolist(), "ref": R.sum(0).tolist(), "diff_err": se.tolist(), "pull": pull.tolist(),
+            "bins": groups, "zero_error_bins": [groups[i] for i in np.flatnonzero(~ok)],
             "chi2_ndf": float((pull[ok] ** 2).mean()) if ok.any() else np.nan, "ndf": int(ok.sum()),
+            "chi2_ndf_null": (n - 1) / (n - 3) if n > 3 else np.nan,
             "max_abs_pull": float(np.abs(pull[ok]).max()) if ok.any() else np.nan}
 
 
@@ -163,7 +190,7 @@ def _compare(fast, ref):
     return res
 
 
-def run(pairs, out, run_config="run1a_v01", plots=False):
+def run(pairs, out, run_config="run1a_v01", plots=False, stock_label=None):
     rows = json.loads(Path(pairs).read_text())
     if len(rows) < 2:
         raise ValueError("paired statistics need at least two shards")
@@ -192,7 +219,7 @@ def run(pairs, out, run_config="run1a_v01", plots=False):
     (out / "vseries.json").write_text(json.dumps(result, indent=1, default=float))
     if plots:
         from . import run1a_vseries_plots
-        run1a_vseries_plots.make(result, out)
+        run1a_vseries_plots.make(result, out, {"stock": stock_label} if stock_label else None)
     return result
 
 
@@ -202,8 +229,9 @@ def main():
     p.add_argument("--out", required=True)
     p.add_argument("--run-config", default="run1a_v01")
     p.add_argument("--plots", action="store_true")
+    p.add_argument("--stock-label", default=None, help="legend of the stock arm (its Offline release)")
     a = p.parse_args()
-    run(a.pairs, a.out, a.run_config, a.plots)
+    run(a.pairs, a.out, a.run_config, a.plots, a.stock_label)
 
 
 if __name__ == "__main__":

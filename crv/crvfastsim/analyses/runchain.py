@@ -6,7 +6,9 @@ files of the stock chain on the same shards) it reports clusters per generated e
              [--tier1b strict_v5 [--tier1b-dir DIR] | --library lib.root]
              [--reco-cpu] [--max-events N] [--compare ref.<shard>.root ...] [--emit shard.json] --outdir DIR
              [--steps-input] [--save-reco reco.npz]   (CrvStep tables in: no transport or tier 1b; clusters, members
-                                                       and pulses of one input file out, for validation)
+                                                       and pulses of one input file out, for validation). With
+                                                       --steps-input generated_events counts the events with steps
+                                                       (events_basis in the stats and --emit)
     runchain-merge shard*.json --outdir DIR      (node totals: events, clusters per sector type, rates)
 
 Tier 1b (crvfastsim.tier1b_assets): default asset set strict_v5 for extracted_v04 (strict library with step-tree roots,
@@ -144,7 +146,9 @@ def _load_setup(rc, cfg, gdml_path, explicit_gdml, spec, calib, deviation, jax, 
     cond = runconfig.nominal_conditions(geom) if calib == "nominal" else chain.Conditions.from_csv(calib, deviation)
     if len(cond.status) < 4 * geom.nbars:
         raise SystemExit(f"runchain: conditions cover {len(cond.status)} channels, {rc.name} has {4 * geom.nbars}; "
-                         "pass the configuration's CRVCalib CSV or --calib nominal")
+                         "pass the configuration's conditions CSVs (--calib/--deviation: the converted conditions of the "
+                         "input release, or scripts/offline_conditions_csv.py on the Offline CRVConditions text files); "
+                         "--calib nominal treats every channel as live")
     cond = readout.apply(cond, geom, ccfg)   # physically absent SiPMs make no charges (Offline hasCMB)
     tagger = rc.tagger_bar(geom) if rc.name != runconfig.DEFAULT else None
     bar_cut = rc.bar_cut(geom)
@@ -465,6 +469,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
            "transport_backend": "jax" if device_transport is not None else "numpy", "range_out": bool(range_out),
            "tier1b_backend": "jax" if device_tier1b is not None else "numpy",
            "run_config": rc.name, "window": list(cfg.window), "time_window": time_window,
+           "events_basis": "events_with_steps" if steps_input else "generated",
            "clusters_per_generated": {stype_name.get(int(k), str(k)): float((cl_type == k).sum() / n_gen)
                                       for k in np.unique(cl_type)}}
     if native_receipt is not None:
@@ -499,6 +504,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
                        "tier1b": spec.describe(),
                        "cl_type_counts": {int(k): int((cl_type == k).sum()) for k in np.unique(cl_type)},
                        "run_config": rc.name, "window": list(cfg.window), "time_window": time_window,
+                       "events_basis": "events_with_steps" if steps_input else "generated",
                        "type_names": {int(k): v for k, v in stype_name.items()},
                        "device": res.get("device"), "reco_device": res.get("reco_device"),
                        "precision": res.get("precision"), "inputs": list(tables.expand(inputs))}, fh)
