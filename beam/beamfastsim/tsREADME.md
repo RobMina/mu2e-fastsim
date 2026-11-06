@@ -6,7 +6,24 @@ the default beam or CE chains. Inputs must use the same geometry and field as th
 stock sample. Run1B development and a Run1A development comparison exist; Run1A
 held-out validation and a matched stock TS-only performance comparison remain open.
 
-## Development checkpoint (2026-11-06)
+## Review-corrected development checkpoint (2026-11-06)
+
+On the same 25,078 entrances / 100 development shards / 500,000 parent Events:
+mu-minus **1,088/1,098 = 0.9909 +/- 0.0219**, mu-plus **8/15 = 0.5333 +/- 0.1633**.
+Transport takes **187.215 s / 133.953 entrances/s**, one laptop CPU worker excluding
+field loading. Settings/seed are unchanged, not fitted to yields. All inputs remain;
+1,099 DS, 18,538 range-out, 210 mu-decay, 5,225 wall, 6 upstream, no path caps or
+missing field. Positive deficit and 2,696 compact-ancestry gaps remain explicit.
+
+Material bounds are rechecked through convergence and after boundary truncation;
+unresolved proposals raise rather than sample over-cap columns. Entrance exits use
+the bracketed plane intersection/aperture. Details: [transport guide](../docs/ts-transport.md).
+Changed step sequences change RNG consumption; the saved outputs below are not
+numerically identical to this run. The 12-run study predates the cap correction and
+has not been rerun; do not use it as corrected-code convergence evidence. Local
+TS suite: **409 passed**, both saved geometry fixtures supplied. Held-out untouched.
+
+## Historical pre-review checkpoint (2026-11-06)
 
 The completed Run1A development comparison uses 100 independent shards, 500,000
 finished parent Events and 25,078 known-root mu/pi entrances. All zero-output
@@ -30,7 +47,7 @@ fates to DS; six terminal z coordinates changed by at most 2.27e-8 mm.
 
 The explicit Run1A settings are RK4 `--step 2.5 --seed 20261105 --max-path 100000`,
 0.1 rad angular cap, 0.25 mm material cap and 5% fractional mean-loss cap. The CLI
-step default remains 5 mm: pass 2.5 explicitly to reproduce this checkpoint.
+step default remains 5 mm. This historical checkpoint requires the pre-review code.
 Rates use the appropriate source-charge cohort, not POT. Errors are paired-shard
 estimates; diagonal shape chi2 includes yield and ignores bin covariance.
 
@@ -49,7 +66,7 @@ Keep every entrance, including those absent downstream. The stock
 through `tvdStepPoints`: the resulting `nttvd` has the actual pre-step position,
 momentum and time. These differ from SimParticle terminal states. `tsread.fcl`
 shows the entrance configuration; for downstream change the three collection
-labels to `TS5Filter`, `compressPVTS5` and `TS5Filter:Beam`. No Geant4 module runs.
+labels to `TS5Filter`, `compressPVTS5` and `TS5Filter:Beam`. No Geant4 module runs. A fixed service seed permits analyzer initialization.
 
 ```bash
 python3 -m beamfastsim.tsreference --source source.root --downstream downstream.root \
@@ -129,7 +146,7 @@ sbatch --parsable -A "$SBATCH_ACCOUNT" -p "$SBATCH_PARTITION" \
 Each task creates a new shard directory, appends only subrun/event-count/seed/art
 filename overrides to its frozen FCL, and records the requested POT in shard.tsv.
 The runner exit code propagates; automatic requeue and existing-output overwrite
-are disabled. Requested counts are not finished counts: inspect highest-cycle art
+are disabled. Both generation launchers force `OFFLINE_WARM_REPEAT=0`. Requested counts are not finished counts: inspect highest-cycle art
 Events after successful completion, retain empty-source events, and report failed
 or partial shards separately. Keep large raw outputs on UVA scratch, not in the
 laptop mirror. Full ancestry remains in art; the compact diagnostic alone is not
@@ -202,7 +219,7 @@ and map priority are unchanged. Each repeated advance reuses its entry field, an
 DS/wall bisections advance only crossing rows. Field evaluators must be stateless.
 This also preserves a snapped DS endpoint when a different row crosses a wall;
 whole-batch re-evaluation could round the DS row outside a closed envelope.
-Step sizes, field coverage checks, material ordering and random draws are unchanged.
+The exact optimization comparison refers to the preserved pre-review outputs only.
 
 The unit-grid interpolation gathers eight corners together and accumulates in the
 same order as core; independent-core tests require bitwise field agreement. A
@@ -214,7 +231,8 @@ The field bound covers every map including priority transitions; reflected maps
 are continuous in coverage across y=0. Material columns and full-step/end checks
 remain active. Unsupported safety objects use the ordinary probe path; Python
 `boundary_safety=False` permits an exact same-seed regression. Material shortening
-and boundary column recalculations operate only on rows whose chords changed.
+and boundary column recalculations target changed chords; a final cap failure retries
+the boundary proposal and flags before any material sampling.
 
 ## Bounded positive-source development study
 
@@ -237,7 +255,7 @@ Optional `--reference development.npz --gdml matching.gdml` with `--summarize`
 adds per-ID fate/material tables for stock mu-plus survivors across saved NPZs.
 Those survivor-selected rows are diagnostics, not a replacement rate denominator.
 
-Completed yields for seeds 20261111, 20261112, 20261113 and 20261114:
+Historical pre-review yields for seeds 20261111, 20261112, 20261113 and 20261114:
 
 | Variant | Field / material / fractional-loss caps | DS mu-plus counts | Mean / sample SD |
 |---|---|---|---|
@@ -260,7 +278,7 @@ outcomes. Saved summaries include capped IDs and their stock outcomes.
 
 From the umbrella checkout, use the project venv with the pinned core and this
 `beam/` on `PYTHONPATH`. Both saved geometry fixtures must be supplied to reproduce
-the recorded full TS coverage; without them the two fixture tests are skipped.
+the recorded full TS coverage; without them the four geometry-dependent tests skip.
 
 ```bash
 export PYTHONPATH=/path/to/pinned-core:$PWD/beam
