@@ -15,4 +15,4 @@ apptainer exec "${nv[@]}" --cleanenv -B "$CALO_CODE" -B "$CALO_IN" -B "$(dirname
   python3 "$CALO_CODE/calo/scripts/time_chain.py" --steps "$CALO_IN/calo_response_tables.root" \
   --geometry "$CALO_IN/calo_geometry_run1430.npz" --sim-crystal "$CALO_IN/Sim_crystal.txt" \
   --pulse "$CALO_IN/CsI-waveform-2020-02-12.root" --noise "$CALO_IN/ReadoutNoise.root" \
-  --propagation "$CALO_IN/CsI-propag-2020-07-29.root" --repeat "${CALO_REPEAT:-5}" --out "$CALO_OUT"
+  --propagation "$CALO_IN/CsI-propag-2020-07-29.root" --repeat "${CALO_REPEAT:-5}" --out "$CALO_OUT" ${CALO_DEVICE_DIGITIZE:+--device-digitize}
