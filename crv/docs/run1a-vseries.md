@@ -30,3 +30,17 @@ Statistics:
 - ratio of the sums, with error sqrt(n/(n-1) sum_i (f_i - R r_i)^2) / sum r;
 - per bin, the summed difference over sqrt(n var_i(f_i - r_i)) (the pull);
 - chi2/ndf, the mean squared pull over the bins with a nonzero error.
+
+## Conditions and statistics
+
+The fast response must use the reference's conditions. The Run 1A stock job reads the Offline text conditions
+`CRVConditions/data/{calib,status,photonyield}_run1a_v01.txt` and the channel map `run1a_v01.txt`;
+`scripts/offline_conditions_csv.py` converts them to the `--calib` / `--deviation` CSVs. `--calib nominal` treats every
+channel as live and ignores the 45 channels with status bit 1 ("ignore in reconstruction"), which shows up as about
+1 % more pulses than stock in both sectors.
+
+The reference release matters too: Offline before v13_40_00 shares one photon generator, and one scintillation yield,
+between sectors with the same lookup table (Run 1A T2 then runs at T1's yield; Offline#1956).
+
+Shape statistics merge tail bins until each reference bin holds 25 entries. The pull errors come from n shards, so
+chi2/ndf has the null expectation (n - 1)/(n - 3), reported as `chi2_ndf_null`.
