@@ -72,9 +72,11 @@ def mode_prescale(row, event_mode):
     return math.prod(factors) if factors else None
 
 
-def pair(reference, candidate, manifest, inventory, event_mode=None, total_events=None):
+def pair(reference, candidate, manifest, inventory, event_mode=None, total_events=None, common=False):
     (ref_label, ref), (cand_label, cand) = reference, candidate
-    events = sorted(set(ref[0]) | set(cand[0]))
+    events = sorted(set(ref[0]) & set(cand[0]) if common else set(ref[0]) | set(cand[0]))
+    if common and total_events:
+        raise ValueError('--total-events does not apply to the events common to both arms')
     n = total_events or len(events)
     if n < len(events):
         raise ValueError(f'total events {n} is below the {len(events)} events seen in the logs')
@@ -106,7 +108,8 @@ def pair(reference, candidate, manifest, inventory, event_mode=None, total_event
             paths[name]['stages'] = stages(name, ref[1], cand[1], ref_label, cand_label)
     return {'reference': ref_label, 'candidate': cand_label, 'events': n,
             'events_in_logs': {ref_label: len(ref[0]), cand_label: len(cand[0]), 'union': len(events)},
-            'event_mode': event_mode, 'difference': f'{cand_label} - {ref_label}, per event, paired',
+            'event_mode': event_mode, 'events_used': 'common to both arms' if common else 'union of both arms',
+            'difference': f'{cand_label} - {ref_label}, per event, paired',
             'paths': paths}
 
 
@@ -127,6 +130,7 @@ def main():
     parser.add_argument('--prepared', type=Path, required=True, help='replay.py output directory (manifest, inventory)')
     parser.add_argument('--event-mode', help='EventWindowMarker mode of the digis, e.g. OnSpill or OffSpill')
     parser.add_argument('--total-events', type=int, help='denominator including events absent from both arms')
+    parser.add_argument('--common', action='store_true', help='only events present in both arms (conditional)')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     manifest = json.loads((args.prepared / 'manifest.json').read_text())
@@ -135,7 +139,7 @@ def main():
     for spec in (args.reference, args.candidate):
         label, logs = parse_arm(spec)
         arms.append((label, read_arm(logs, manifest)))
-    report = pair(arms[0], arms[1], manifest, inventory, args.event_mode, args.total_events)
+    report = pair(arms[0], arms[1], manifest, inventory, args.event_mode, args.total_events, args.common)
     args.output.write_text(json.dumps(report, indent=2) + '\n')
     ref, cand = report['reference'], report['candidate']
     print(f"events={report['events']} {ref}={report['events_in_logs'][ref]} {cand}={report['events_in_logs'][cand]}")

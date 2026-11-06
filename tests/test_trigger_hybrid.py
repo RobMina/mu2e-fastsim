@@ -71,6 +71,10 @@ def test_paired_difference_error_and_status(arms):
     assert report['paths']['off_path']['status'] == 'not tested: disabled in OffSpill'
     assert report['paths']['cpr_Trk']['status'] == 'not tested: no event accepted in either arm'
     assert report['events_in_logs'] == {'g4': 9, 'fast': 8, 'union': 9}
+    common = pair.pair(ref, cand, MANIFEST, INVENTORY, 'OffSpill', common=True)
+    assert common['events'] == 8 and common['paths']['tpr_Trk']['g4_only'] == 2
+    with pytest.raises(ValueError, match='common'):
+        pair.pair(ref, cand, MANIFEST, INVENTORY, total_events=10, common=True)
 
 
 def test_stage_counts_attached_beyond_two_sigma(arms, tmp_path):
