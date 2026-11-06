@@ -199,3 +199,88 @@ response parameter. The opt-in mode preserves the stock 12-sample advance and
 digi tails; all offspill defaults remain unchanged. Invalid step endpoint NaNs
 are skipped as stock does (156,798 steps); timing rejection removes another
 234,518. These exclusions are reported, not silently repaired or counted as zero.
+
+## Single-pass end-to-end throughput
+
+`fast_detectors --skip-comparisons --repeats 1 --preparation-repeats 1` is the
+explicit direct-frame throughput mode. It still hashes and validates all inputs,
+loads timing/conditions/assets, samples and overlays all frames, runs both
+requested detector consumers, and writes the sampling receipt and closed ROOT
+output. Only paired diagnostic comparisons are deferred; multi-repeat preparation,
+response, or an inline sampling reference is rejected in this mode. The default
+driver behavior is unchanged.
+
+Time a **fresh process through exit**, not the sum of stage timers. The standard-
+library-only `python3 -m mixing.process_timer --receipt process.time.json --
+python3 -m mixing.fast_detectors ...` includes child imports, GPU initialization,
+setup, response, output and shutdown. The measurement launcher also times
+container launch through exit with GNU time. It runs one fresh
+private JAX/CUDA cache followed by two fresh processes sharing the now-populated
+caches, on the same allocated GPU. These are not in-process warm passes; operating-
+system/storage caches are uncontrolled. Cache file inventories are saved.
+
+After all timers stop, `python3 -m mixing.throughput ROOTDIR --reference
+SAVED_DIRECT_DIR --stock SAVED_STOCK_DIR --out report.json` checks finished
+highest-cycle event entries (including empty detector events), full-ID agreement,
+all five detector tables and all saved sampling choices against the existing
+reference. It reuses the original stock output and launch-to-exit `art.time`,
+reporting art's internal `TimeReport` separately. Failed, partial or multi-pass
+measurements cannot become throughput points.
+
+Boundary: existing complete source-frame pools and explicit timing/conditions to
+tracker digis/ADCs plus CRV digis/pulses/clusters. Source-pool extraction, prior
+transport, staging, queue wait and post-run comparisons are separate. This is not
+calorimeter simulation, tracker track fitting, trigger processing, or a complete
+native art truth/product output. A historical stock UVA measurement is not a grid
+or GPVM rate; different hardware, saved timing inputs, mixing implementation and
+diagnostic schemas preclude a certified grid-slot equivalence. The earlier cosmic
+CRV deck's grid denominator cannot be reused for this pileup workflow.
+
+### Measured single-pass result (6 November 2026)
+
+All three 2,741-event runs completed on one A100-80GB with two host CPUs and
+64 GB RAM. Each uses a fresh process, one preparation and one detector pass.
+Highest-cycle persisted entries, all sampling choices/source identities and every
+column in all five detector tables match the saved validated direct reference.
+
+| Cache state | Process wall (s) | End-to-end events/s | Container + process (s) |
+|---|---:|---:|---:|
+| Fresh private JAX/CUDA caches | 408.044529 | 6.717404 | 409.36 |
+| Populated caches, fresh process 1 | 218.420718 | 12.549176 | 219.20 |
+| Populated caches, fresh process 2 | 219.471473 | 12.489095 | 220.29 |
+| Historical stock, one UVA CPU | 443.27 | 6.183590 | not measured comparably |
+
+The historical stock process receipt is reused, not rerun; art's internal
+436.465571 s is a separate boundary. The roughly 2x populated-cache/stock rate
+ratio is descriptive, not a certified speedup or grid-slot equivalence.
+The earlier response-only ~22 events/s must not replace these end-to-end rates.
+
+Populated-cache setup takes 27.39/27.38 s (including 24.72/24.70 s input), combined
+response 178.25/179.15 s, and ROOT writing 2.32/2.31 s. Fresh-process import/GPU
+initialization, remaining compilation, output conversion and shutdown are also
+inside the external process timer. The fresh-cache response takes 364.32 s.
+No cache thresholds changed: the fresh directory has zero files before the first
+run, 38 afterwards, and 38 before/after both populated-cache runs. Storage/OS
+caches were not flushed. These measurements do not predict an in-process steady-
+state rate or a different sample size.
+
+`mixing.plot_throughput REPORT --out FIGURE --numbers NUMBERS` makes the separate
+slide handoff from this validated report, checks the recorded endpoint labels,
+and strips private paths/job IDs from the public numbers. The figure records the opt-in chain and timing boundary. Original occupancy
+assets stay unchanged.
+
+The user's 100x stock-throughput requirement applies to large production-scale jobs,
+not this 2,741-event fresh-process latency test. Neither these process timings nor
+the earlier repeated-response measurements establish the large-job limit. A future
+measurement needs many realizations streamed through one persistent process with
+reused source pools/assets, representative occupancy, bounded memory and actual
+output writing. Larger event counts alone do not enlarge the present 32-event
+response chunks; batching and sustained throughput must be measured, not extrapolated.
+
+Tracker status checked 6 November: TRK2 is developing field-on reconstruction;
+shared digitizer optimization is explicitly deferred. The earlier device-chain
+wrapper enables `digi_clusters_jax.MINION_UNROLL=16` and
+`SEARCH_METHOD="compare_all"`, whereas this direct caller uses the module defaults
+`1` and `"scan"`. These existing settings are a candidate integration test, not a
+measured PU1 speedup. Dense on-spill equality/physics and memory checks are needed
+before adopting them; no detector kernel or runtime setting was changed here.
