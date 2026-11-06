@@ -67,6 +67,19 @@ def test_tracker_steps_uses_the_tracker_gas_material(monkeypatch):
     assert not np.array_equal(actual.eion.to_numpy(), solid.eion.to_numpy())
 
 
+def test_tracker_steps_refuses_a_first_map_without_the_ds_field(monkeypatch):
+    from mu2efastsim import ehelix, world
+    geom = _straws()
+    weak = (ORIGIN - 2000.0, np.full(3, 4000.0), np.full(3, 2), np.broadcast_to([0.0, 0.0, 0.1], (2, 2, 2, 3)))
+    monkeypatch.setattr(geometry, "from_gdml", lambda path: geom)
+    monkeypatch.setattr(world, "load_tubes", lambda *args, **kwargs: [])
+    monkeypatch.setattr(ehelix, "read_g4bl", lambda path: weak)
+    start = pd.DataFrame({"run": 1, "subrun": 0, "event": np.arange(2, dtype=np.uint64), "sp": 1, "pdg": 11,
+                          "x": AXIS, "y": 0.0, "z": 8980.0, "px": 10.0, "py": 0.0, "pz": 104.0, "t": 100.0})
+    with pytest.raises(ValueError, match="DS map must come first"):
+        H.tracker_steps(start, "tracker.gdml", ["TSd.header", "DS.header"])
+
+
 def test_handoff_rows_start_the_field_on_tracker_and_fill_the_injector_table(tmp_path):
     rng = np.random.default_rng(21)
     beam = G.BeamGeometry(AXIS, np.array([5000.0]), np.full(1, 21.5), np.full(1, 75.0), np.full(1, 0.0528), 4204.6,

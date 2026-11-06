@@ -4,7 +4,8 @@ beamfastsim.cechain carries each electron to the tracker entry plane (VD TT_Fron
 there (position, direction, kinetic energy, global time; Mu2e frame) becomes one start row of the field-on tracker
 transport trkfastsim.sim.fieldsteps (position, momentum, time, PDG 11), with the event identity of the start it came
 from. Electrons with any other cechain fate get no tracker start and stay in the event denominator. The entry plane
-lies inside the fieldsteps envelope, so the tracker transport starts from the hand-off state unchanged.
+lies inside the fieldsteps envelope, so the tracker transport starts from the hand-off state unchanged. (In the Run 1A
+MDC2025ba geometry the Geant4 VD13 is at z = 8539.48 mm, 0.42 mm upstream of the cechain plane, both in vacuum.)
 
 The tracker transport writes StrawGasSteps rows; `write_injector` puts them in the table layout of the art module
 StrawGasStepsFromTable (one primary per event, SimParticle key 1), for stock digitisation and reconstruction.
@@ -32,25 +33,32 @@ KEY = tables.KEY
 STATE = ["x", "y", "z", "px", "py", "pz", "t"]
 PDG_E = 11
 ORIGIN = (-3904.0, 0.0, 10171.0)          # tracker (detector) origin in the Mu2e frame, Run 1A [mm]
+B_DS_MIN = 0.5                            # [T] the first map must give at least this field at ORIGIN (DS map)
 STEP_COLS = KEY + ["nsgs", "sid", "plane", "panel", "straw", "upanel", "shape", "ion", "sp", "eion", "len",
                    "width", "t", "x0", "y0", "z0", "x1", "y1", "z1", "px", "py", "pz"]
 
 
 def starts(paths):
-    """The generated electron of each event (Mu2e frame), one row per event, from the dumper tables: the gen tree, or
-    the birth state of the primary electron SimParticle when gen holds no electron (CeEndpoint dts keep the stopped
-    muon there)."""
+    """The generated electron of each event (Mu2e frame), one row per event, from the dumper tables: the electron in the
+    gen tree, or, for an event whose gen tree holds no electron (CeEndpoint dts keep the stopped muon there), the
+    birth state of its primary electron SimParticle."""
     g = tables.read_many(paths, "gen")
+    for k in KEY:
+        g[k] = g[k].astype(np.uint64)
+    events = g[KEY].drop_duplicates()
     g = g[g.pdg == PDG_E]
-    if g.empty:
+    missing = events.merge(g[KEY].drop_duplicates(), on=KEY, how="left", indicator=True)
+    missing = missing[missing._merge == "left_only"][KEY]
+    if len(missing):
         p = tables.read_many(paths, "particles")
-        g = p[(p.pdg == PDG_E) & ((p.isprim == 1) | (p.ismcprim == 1))].rename(
+        for k in KEY:
+            p[k] = p[k].astype(np.uint64)
+        p = p[(p.pdg == PDG_E) & ((p.isprim == 1) | (p.ismcprim == 1))].rename(
             columns={"sx": "x", "sy": "y", "sz": "z", "spx": "px", "spy": "py", "spz": "pz", "st": "t"})
+        g = pd.concat([g[KEY + ["pdg"] + STATE], p.merge(missing, on=KEY)[KEY + ["pdg"] + STATE]], ignore_index=True)
     if g.empty:
         raise ValueError("no generated electrons in the tables")
     g = g[KEY + ["pdg"] + STATE].copy()
-    for k in KEY:
-        g[k] = g[k].astype(np.uint64)
     if g.duplicated(KEY).any():
         raise ValueError("more than one generated electron in an event")
     return g.sort_values(KEY).reset_index(drop=True)
@@ -95,7 +103,9 @@ def run_cechain(g, geom, maps, seed=1, backend="numpy", step=10.0, device_float=
 
 def tracker_steps(start, gdml, maps, seed=1, origin=ORIGIN, chord_mm=10.0):
     """Field-on tracker StrawGasSteps of the hand-off starts (trkfastsim.sim.fieldsteps, electron loss model, the
-    tracker support from the GDML). Uses the tracker default StrawGas material (gas state). Returns (steps, final)."""
+    tracker support from the GDML). Uses the tracker default StrawGas material (gas state). The tracker field is the
+    first map of `maps` alone, which must be the DS map (checked: |B| at the origin >= B_DS_MIN). Returns
+    (steps, final)."""
     from mu2efastsim import ehelix
     from trkfastsim import geometry
     from trkfastsim.sim import fieldsteps as fs
@@ -105,6 +115,9 @@ def tracker_steps(start, gdml, maps, seed=1, origin=ORIGIN, chord_mm=10.0):
     support = fs.interior(gdml, geom, env, origin=org)
     field = ehelix.grid_field(*ehelix.read_g4bl(maps[0]))
     bnom = ehelix.field_at(field, org[None])[0]
+    if np.linalg.norm(bnom) < B_DS_MIN:
+        raise ValueError(f"first map {maps[0]} gives |B| = {np.linalg.norm(bnom):.3f} T at the tracker origin: "
+                         "the DS map must come first")
     return fs.transport(np.random.default_rng(np.random.SeedSequence([seed, 1])), start, geom, field, support,
                         chord_mm=chord_mm, sagitta_mm=0.02, envelope=env, origin=org, bnom=bnom,
                         loss=fs.electron_loss, tail=False)
@@ -124,7 +137,7 @@ def main(argv=None):
     ap.add_argument("tables", nargs="+", help="StrawGasStepTableDumper tables of the Geant4 events (starts)")
     ap.add_argument("--outdir", required=True)
     ap.add_argument("--gdml", required=True, help="tracker GDML (e.g. mu2e_run1a_v01.gdml)")
-    ap.add_argument("--maps", nargs="+", required=True, help="G4BL .header files, first match wins (DS first)")
+    ap.add_argument("--maps", nargs="+", required=True, help="G4BL .header files, first match wins; the DS map first (the tracker uses it alone)")
     ap.add_argument("--offline-root", required=True)
     ap.add_argument("--geom", default="Offline/Mu2eG4/geom/geom_common.txt")
     ap.add_argument("--backend", choices=("numpy", "device"), default="numpy")
