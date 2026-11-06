@@ -85,6 +85,27 @@ CE production simulation stage. Synchronization and all fast stages are included
 compilation are excluded. These small-batch timings do not establish device saturation. Full selections, timing
 boundaries, commands and limitations: [CE shower library](../calo/SHOWERS.md).
 
+## Mixed tracker/CRV pileup response (opt-in)
+
+The direct-frame path samples existing signal/four-stream pools and writes tracker
+digis/ADCs plus CRV digis/pulses/coincidences, not tracks, calorimeter, trigger or
+full art products. On the 2,741-event development sample, all five persisted tables
+and sampling choices exactly match the saved direct reference after host-index/cache
+optimization. First preparation took 24.94 s and reuse 11.85 s, versus 255.96 s for
+the saved preparation implementation (different nodes, not a controlled total speedup).
+
+Fresh-process, output-inclusive rates on A100-80GB with two host CPUs: **6.717 events/s**
+with fresh private compilation caches; **12.549 and 12.489 events/s** with populated
+caches. Historical stock native mixing/response on one CPU was **6.184 events/s**;
+its hardware and richer output boundary differ. This is not a matched grid/GPVM
+baseline or certified slot replacement. See [measurement boundaries](../mixing/FAST_DETECTORS.md).
+
+The opt-in resident device path has passed a physical-algorithm RTX A6000 integration
+on artificial sources/CRV calibration, using saved tracker conditions and a stock
+pulse template. Its tiny fixture rate is not a production measurement. Dense real
+PU1 closure, capacity/memory qualification and the **100x large-production throughput**
+target remain unmeasured; the 2,741-event latency test establishes no asymptotic ceiling.
+
 ## Per GPU: CRV default chain and beam stop fraction
 
 One GPU per job, the defaults of `main` (2026-11-02). CRV: production `runchain` over 11 shards of 50,000 generated
