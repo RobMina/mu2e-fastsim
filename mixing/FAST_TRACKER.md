@@ -3,10 +3,10 @@
 Companion to [native overlay validation](NATIVE.md); opt-in and development-only.
 
 
-The separate tracker `PU1-onspill-digi` branch extends the existing NumPy/JAX
+The tracker on-spill/field-on extension adds support to the existing NumPy/JAX
 response with explicit MC bunch time, actual event windows, stock ghost charges,
 field-dependent drift and a sample-specific detector origin. It is required by
-`python3 -m mixing.fast_tracker`; the stock PU1 chain does not change defaults.
+`python3 -m mixing.fast_tracker`; the stock mixing chain does not change defaults.
 
 `four_stream_steps.fcl` extracts all five tracker input collections with existing
 dumpers, exposing unsmeared MC timing through the CRV event table. Its reconstructed
@@ -30,7 +30,7 @@ paired plane chi-square/ndf `29.40/36`. TDC/TOT/PMP/ADC shape chi-square/ndf are
 `47.89/44`, `35.71/44`, `18.31/15`, `12.25/15`, `24.44/21`, `9.62/9`.
 CRV event, digi, pulse and cluster products are unchanged; the exposed timing
 column is explicitly MC truth. All three GPU output arrays repeat identically.
-These are development results; held-out PU1 results and assets are not rerun.
+These are development results; held-out mixing results and assets are not rerun.
 
 On one A100, warm tracker calls take `92.26 / 92.11 s` (`29.71 / 29.76 events/s`);
 the cache-loaded first call takes `124.58 s`. Setup/input reading is `4.46 s` and

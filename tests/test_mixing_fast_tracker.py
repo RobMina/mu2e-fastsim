@@ -35,7 +35,7 @@ def test_profile_passes_keep_two_clean_warm_repeats():
     assert all(profile_kind(i, False) == "uninstrumented" for i in range(5))
 
 
-def test_host_profile_writes_receipts_even_after_error(tmp_path):
+def test_host_profile_writes_profiles_even_after_error(tmp_path):
     import pstats
     from mixing.fast_tracker import diagnostic_profile
     with pytest.raises(RuntimeError, match="diagnostic"):
@@ -49,8 +49,8 @@ def test_host_profile_writes_receipts_even_after_error(tmp_path):
 
 def test_disabled_profile_writes_nothing(tmp_path):
     from mixing.fast_tracker import diagnostic_profile
-    with diagnostic_profile(tmp_path) as receipt:
-        assert receipt == {}
+    with diagnostic_profile(tmp_path) as measurements:
+        assert measurements == {}
     assert not tuple(tmp_path.iterdir())
 
 
@@ -100,6 +100,13 @@ def test_fast_inputs_preserve_crv_seed_and_separate_truth_timing():
     scheduled = text.split("physics.p1:", 1)[1]
     assert "makeSD" not in scheduled and "trkdigi" not in scheduled
     assert "CrvDAQPackage.CrvDAQSequence" in scheduled
+
+
+def test_origin_export_name_matches_driver():
+    text = (ROOT / "fcl/four_stream_steps.fcl").read_text()
+    driver = (ROOT / "fast_tracker.py").read_text()
+    assert "dumpName: DetectorOrigin" in text
+    assert 'base / "defaultDetectorOrigin.csv"' in driver
 
 
 def test_import_uses_existing_detector_bridge_only():

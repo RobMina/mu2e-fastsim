@@ -137,8 +137,8 @@ def diagnostic_profile(out, *, host=False, stages=False):
     if profiler is not None:
         profiler.enable()
     try:
-        with context as receipt:
-            yield receipt
+        with context as measurements:
+            yield measurements
     finally:
         if profiler is not None:
             profiler.disable()
@@ -147,7 +147,7 @@ def diagnostic_profile(out, *, host=False, stages=False):
                 with (out / f"host_warm_{sort}.txt").open("w") as stream:
                     pstats.Stats(profiler, stream=stream).sort_stats(sort).print_stats(100)
         if stages:
-            (out / "stages_warm.json").write_text(json.dumps(receipt, indent=2) + "\n")
+            (out / "stages_warm.json").write_text(json.dumps(measurements, indent=2) + "\n")
 
 
 def profile_kind(index, enabled):
@@ -188,7 +188,7 @@ def main(argv=None):
     ewm = cfg["physics"]["producers"][timing_tag]
     if not ewm.get("RecoFromMCTruth") or ewm.get("RecoFromMCTruthErr", 0) != 0:
         raise ValueError("event table must expose unsmeared MC bunch time, not reconstructed PBT")
-    bz = field_at_origin(base / "defaultPU1Origin.csv", args.detector_origin)
+    bz = field_at_origin(base / "defaultDetectorOrigin.csv", args.detector_origin)
     cond = digicond.build(base / "expanded.fcl", base / "db_TrkPreampStraw.csv", args.gdml,
                          base / "db_TrkAlignStrawSim.csv", global_constants=base / "globalConstants.txt",
                          field_bz_T=bz, detector_origin=args.detector_origin)

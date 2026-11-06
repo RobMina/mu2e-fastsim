@@ -37,6 +37,6 @@ physics.analyzers.fieldOrigin: {
   axisTwoMax: 1
   mapBinSize: 1
   dump: true
-  dumpName: PU1Origin
+  dumpName: DetectorOrigin
 }
 physics.e1: [trkdigi, crvdump, events, primarySteps, stopSteps, eleSteps, muSteps, neutralSteps, fieldOrigin]
