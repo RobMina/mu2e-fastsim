@@ -117,6 +117,8 @@ def reconstruct(charges, cond, cfg, rng, geom, ccfg, selection, timers):
 def run(selection, primaries, gdml, calib, deviation, seed=20261105, period=1695., library_dir=None,
         input_kind="represented", census=None):
     """Compose the fixed response chain with represented muons or independently retained generators."""
+    if len(selection) == 0:
+        raise ValueError("response chain requires a nonempty event selection")
     input_report = {}
     if input_kind == "retained":
         from .generators import prepare
@@ -188,6 +190,21 @@ def run(selection, primaries, gdml, calib, deviation, seed=20261105, period=1695
     return fast, report
 
 
+def check_prepared_split(path, split, split_at):
+    """Check adjacent preparation metadata when present; legacy inputs still face the empty-event guard."""
+    if not path.exists():
+        return
+    summary = json.loads(path.read_text())
+    prepared = summary.get("prepared_split")
+    if prepared is None or prepared == "all":
+        return
+    if prepared not in ("dev", "heldout"):
+        raise ValueError("unknown prepared split in inputs.json")
+    if split != "all" and (split != prepared or split_at != summary.get("split_at")):
+        raise ValueError(f"requested split={split!r} at shard {split_at} conflicts with prepared "
+                         f"split={prepared!r} at shard {summary.get('split_at')}")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     for key in ("selection", "primaries", "gdml", "calib", "deviation", "outdir"):
@@ -204,12 +221,13 @@ def main(argv=None):
     if args.input_kind == "retained" and not args.generator_events:
         parser.error("--input-kind retained requires --generator-events")
     census = pd.read_parquet(args.generator_events) if args.generator_events else None
-    if args.split != "all":
-        use = selection.shard < args.split_at
-        selection = selection[use] if args.split == "dev" else selection[~use]
-        if args.input_kind == "represented":
-            keep = primaries.shard < args.split_at
-            primaries = primaries[keep] if args.split == "dev" else primaries[~keep]
+    from .generators import select_split
+    if args.input_kind == "retained":
+        check_prepared_split(Path(args.selection).with_name("inputs.json"), args.split, args.split_at)
+    selection = select_split(selection, args.split, args.split_at)
+    if args.split != "all" and args.input_kind == "represented":
+        keep = primaries.shard < args.split_at
+        primaries = primaries[keep] if args.split == "dev" else primaries[~keep]
     if args.input_kind == "retained":
         from .generators import prepare
         primaries, _ = prepare(selection, primaries, census)

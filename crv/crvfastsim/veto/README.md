@@ -73,8 +73,10 @@ Input parquet schemas:
 Keys must have integer storage, be nonnegative and fit signed 64-bit; particle PDG/genid may be signed. Floating
 identity columns are rejected, not rounded. ProductIDs must be positive. Sparse source indices are retained;
 identical states with different identities are not deduplicated. Missing events/rows, duplicate identities,
-nonfinite states and energy below momentum magnitude are errors. Counts establish retained-collection coverage,
-not completeness of the original generated stream or upstream physics selection.
+nonfinite states and energy below momentum magnitude beyond storage roundoff are errors. The relative energy-check
+tolerance is the larger of 1e-9 and four epsilons of the least precise stored momentum/energy dtype; stored values
+are never rounded or repaired. Counts establish retained-collection coverage, not completeness of the original
+generated stream or upstream physics selection.
 
 ```bash
 python3 -m crvfastsim.veto.generators --selection selection.parquet \
@@ -85,9 +87,14 @@ python3 -m crvfastsim.veto.primary_chain --selection retained_dev/selection.parq
   --gdml run1a.gdml --calib calib.csv --deviation photon.csv --library-dir library --outdir response
 ```
 
-Preparation selects development shards <22 by default (`--split-at` changes the boundary). The response chain
-preserves every selected event, including empty responses. It retains source states/total energies and assigns
-unique dense internal event/particle keys; `generators.parquet` and `generator_map.parquet` preserve the original
+Preparation selects development shards <22 by default (`--split-at` changes the boundary). Use preparation
+`--split heldout` or `--split all` explicitly for other populations. `inputs.json` records `prepared_split` and
+`split_at`; the retained response CLI reads it beside `selection.parquet` and rejects a conflicting named split or
+boundary. Response `--split all` means all supplied events, not recovery of omitted shards. Legacy inputs without
+this metadata are supported, but preparation and response both reject an empty event selection after splitting,
+before transport or output writing. Nonempty selections whose generator collections are empty remain valid.
+The response chain preserves every selected event, including empty responses. It retains source states/total energies
+and assigns unique dense internal event/particle keys; `generators.parquet` and `generator_map.parquet` preserve the original
 `source_run/subrun/event`, `source_idx` and `gen_product_id`. These GenParticle identities are not SimParticle IDs.
 The existing muon transport still calculates its kinetic quantities from momentum and the muon mass; preserving
 input `e` does not change that transport model. The represented-muon default retains its existing energy calculation.

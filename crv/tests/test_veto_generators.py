@@ -195,7 +195,8 @@ def test_development_only_preparation_does_not_import_other_events():
     assert report["selected_events"] == 1
 
 
-def test_retained_run_sends_all_inputs_to_transport_and_sampler(monkeypatch):
+@pytest.mark.parametrize("empty", [False, True])
+def test_retained_run_sends_all_inputs_to_transport_and_sampler(monkeypatch, empty):
     pytest.importorskip("jax")
     from types import SimpleNamespace
     from crvfastsim import chain, readout, runconfig, transport, tier1b, tier1b_assets
@@ -203,6 +204,8 @@ def test_retained_run_sends_all_inputs_to_transport_and_sampler(monkeypatch):
     from crvfastsim.veto import primary_chain
     selection, gen, census = fixture()
     selection = ak.with_field(selection, np.zeros(len(selection)), "pbtime_mc")
+    if empty:
+        gen, census["n_gen"] = gen.iloc[:0], 0
     config = SimpleNamespace(jax=True, response=None, below_margin=0., below_msc=False,
         geometry=lambda: None, counters_cfg=lambda: None, chain_config=lambda **kw: SimpleNamespace(response=None),
         tagger_bar=lambda geom: None, bar_cut=lambda geom: None)
@@ -234,9 +237,9 @@ def test_retained_run_sends_all_inputs_to_transport_and_sampler(monkeypatch):
         pd.testing.assert_frame_equal(actual, expected)
     assert set(seen) == {"transport", "sampler"}
     assert len(fast) == 3 and ak.sum(ak.num(fast.coincs)) == 0
-    assert report["input_kind"] == "retained" and report["nonmuon_primaries"] == 2
+    assert report["input_kind"] == "retained" and report["nonmuon_primaries"] == (0 if empty else 2)
     assert report["library_sampling"] == {"shower_steps": 0}
-    assert report["inputs"]["shower_support"]["incomplete_response_support"]
+    assert report["inputs"]["shower_support"]["incomplete_response_support"] == (not empty)
 
 
 def test_chain_cli_saves_source_mapping_and_census_requirement(tmp_path, monkeypatch):
@@ -274,4 +277,111 @@ def test_preparation_cli_keeps_development_population_and_census(tmp_path):
     result = json.loads((tmp_path / "prepared/inputs.json").read_text())
     assert result["selected_events"] == 2 and result["primary_particles"] == 1
     assert result["empty_generator_events"] == 1 and result["nonmuon_primaries"] == 1
+    assert result["prepared_split"] == "dev" and result["split_at"] == 22
     assert len(pd.read_parquet(tmp_path / "prepared/generator_events.parquet")) == 2
+
+
+def test_empty_event_selection_is_not_an_empty_generator_collection():
+    selection, gen, census = fixture()
+    with pytest.raises(ValueError, match="nonempty event selection"):
+        prepare(selection[:0], gen, census)
+    for kind in ("represented", "retained"):
+        with pytest.raises(ValueError, match="nonempty event selection"):
+            run(selection[:0], gen.iloc[:0], "unused", "unused", "unused", input_kind=kind, census=census)
+
+
+@pytest.mark.parametrize("kind", ["represented", "retained"])
+@pytest.mark.parametrize("split,empty", [("heldout", False), ("all", True), ("dev", True)])
+def test_chain_cli_rejects_empty_split_before_transport(tmp_path, monkeypatch, kind, split, empty):
+    from crvfastsim.veto import primary_chain
+    selection, gen, census = fixture()
+    ak.to_parquet(selection[:0] if empty else selection, tmp_path / "selection.parquet")
+    gen.to_parquet(tmp_path / "primaries.parquet", index=False)
+    census.to_parquet(tmp_path / "events.parquet", index=False)
+    monkeypatch.setattr(primary_chain, "run", lambda *a: pytest.fail("transport must not start"))
+    args = ["--selection", str(tmp_path / "selection.parquet"), "--primaries", str(tmp_path / "primaries.parquet"),
+            "--gdml", "unused", "--calib", "unused", "--deviation", "unused", "--outdir", str(tmp_path / "output"),
+            "--input-kind", kind, "--split", split, "--generator-events", str(tmp_path / "events.parquet")]
+    with pytest.raises(ValueError, match="no selected events remain"):
+        primary_chain.main(args)
+    assert not (tmp_path / "output").exists()
+
+
+@pytest.mark.parametrize("split,count", [("dev", 2), ("heldout", 1), ("all", 3)])
+def test_prepared_split_metadata_is_enforced_by_chain(tmp_path, monkeypatch, split, count):
+    import json
+    from crvfastsim.veto import generators, primary_chain
+    selection, gen, census = fixture()
+    selection = ak.with_field(selection, [0, 22, 0], "shard")
+    ak.to_parquet(selection, tmp_path / "selection.parquet")
+    gen.to_parquet(tmp_path / "generators.parquet", index=False)
+    census.to_parquet(tmp_path / "events.parquet", index=False)
+    prepared = tmp_path / "prepared"
+    generators.main(["--selection", str(tmp_path / "selection.parquet"), "--generators",
+                     str(tmp_path / "generators.parquet"), "--events", str(tmp_path / "events.parquet"),
+                     "--outdir", str(prepared), "--split", split])
+    metadata = json.loads((prepared / "inputs.json").read_text())
+    assert metadata["prepared_split"] == split and metadata["split_at"] == 22
+    assert metadata["selected_events"] == count
+    monkeypatch.setattr(primary_chain, "run", lambda selected, *a: (selected, {}))
+    args = ["--selection", str(prepared / "selection.parquet"), "--primaries", str(prepared / "primaries.parquet"),
+            "--generator-events", str(prepared / "generator_events.parquet"), "--input-kind", "retained",
+            "--gdml", "unused", "--calib", "unused", "--deviation", "unused", "--outdir", str(tmp_path / "response")]
+    primary_chain.main([*args, "--split", "all"])
+    assert len(ak.from_parquet(tmp_path / "response/selection.parquet")) == count
+    primary_chain.main([*args, "--split", split])
+    if split != "all":
+        opposite = "heldout" if split == "dev" else "dev"
+        with pytest.raises(ValueError, match="conflicts with prepared"):
+            primary_chain.main([*args, "--split", opposite])
+        with pytest.raises(ValueError, match="conflicts with prepared"):
+            primary_chain.main([*args, "--split", split, "--split-at", "23"])
+    else:
+        primary_chain.main([*args, "--split", "heldout"])
+        assert len(ak.from_parquet(tmp_path / "response/selection.parquet")) == 1
+
+
+def test_preparation_cli_rejects_empty_split_without_writing(tmp_path):
+    from crvfastsim.veto import generators
+    selection, gen, census = fixture()
+    ak.to_parquet(selection, tmp_path / "selection.parquet")
+    gen.to_parquet(tmp_path / "generators.parquet", index=False)
+    census.to_parquet(tmp_path / "events.parquet", index=False)
+    with pytest.raises(ValueError, match="no selected events remain"):
+        generators.main(["--selection", str(tmp_path / "selection.parquet"), "--generators",
+                         str(tmp_path / "generators.parquet"), "--events", str(tmp_path / "events.parquet"),
+                         "--outdir", str(tmp_path / "prepared"), "--split", "heldout"])
+    assert not (tmp_path / "prepared").exists()
+
+
+def test_float32_massless_roundoff_preserves_states_but_not_unphysical_energy():
+    from crvfastsim.veto.generators import validate_generators
+    _, original, _ = fixture()
+    gen = pd.concat([original.iloc[:1]] * 2000, ignore_index=True)
+    momentum = np.random.default_rng(42).normal(size=(2000, 3)) * 1e3
+    gen[["px", "py", "pz"]] = momentum.astype(np.float32)
+    gen["e"] = np.linalg.norm(momentum, axis=1).astype(np.float32)
+    gen["pdg"], gen["idx"] = 22, np.arange(2000)
+    expected = gen.copy(deep=True)
+    validate_generators(gen)
+    pd.testing.assert_frame_equal(gen, expected)
+    gen["e"] *= np.float32(0.99)
+    with pytest.raises(ValueError, match="less than momentum"):
+        validate_generators(gen)
+
+
+def test_energy_roundoff_tolerance_tracks_storage_precision():
+    from crvfastsim.veto.generators import validate_generators
+    _, gen, _ = fixture()
+    gen["pdg"], gen["px"], gen["py"], gen["pz"] = 22, 1000., 0., 0.
+    gen["e"] = 1000. * (1 - 0.5e-9)
+    validate_generators(gen)
+    gen["e"] = 1000. * (1 - 2e-9)
+    with pytest.raises(ValueError, match="less than momentum"):
+        validate_generators(gen)
+    gen["px"] = gen.px.astype(np.float32)
+    gen["e"] = 1000. * (1 - 2 * np.finfo(np.float32).eps)
+    validate_generators(gen)
+    gen["e"] = 1000. * (1 - 8 * np.finfo(np.float32).eps)
+    with pytest.raises(ValueError, match="less than momentum"):
+        validate_generators(gen)

@@ -41,13 +41,29 @@ def validate_generators(gen):
         raise ValueError("missing generator state columns")
     if not np.isfinite(gen[list(STATE)].to_numpy()).all() or (gen.e < 0).any():
         raise ValueError("nonfinite state or negative generator total energy")
-    p = np.hypot(np.hypot(gen.px, gen.py), gen.pz)
-    if (gen.e < p - 1e-9 * np.maximum(p, 1.)).any():
+    p = np.hypot(np.hypot(gen.px.astype(float), gen.py.astype(float)), gen.pz.astype(float))
+    precision = max((np.finfo(gen[k].dtype).eps for k in ("px", "py", "pz", "e")
+                     if gen[k].dtype.kind == "f"), default=0.)
+    if (gen.e < p - max(1e-9, 4 * precision) * np.maximum(p, 1.)).any():
         raise ValueError("generator total energy is less than momentum magnitude")
+
+
+def select_split(selection, split, split_at):
+    """Reject empty event populations while preserving events with empty generator collections."""
+    if split not in ("all", "dev", "heldout"):
+        raise ValueError("unknown selection split: " + split)
+    if split != "all":
+        dev = selection.shard < split_at
+        selection = selection[dev] if split == "dev" else selection[~dev]
+    if len(selection) == 0:
+        raise ValueError(f"no selected events remain after split={split!r} at shard {split_at}")
+    return selection
 
 
 def prepare(selection, generators, census):
     """Keep every retained species and source identity; never derive inputs from veto outcomes."""
+    if len(selection) == 0:
+        raise ValueError("retained inputs require a nonempty event selection")
     selected = pd.DataFrame({k: np.asarray(selection[k]) for k in (*KEY, "shard")})
     integer_columns(selected, (*KEY, "shard"), "selection")
     integer_columns(census, (*KEY, "n_gen"), "census")
@@ -108,12 +124,13 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("selection", "generators", "events", "outdir"):
         parser.add_argument("--" + name, required=True)
+    parser.add_argument("--split", choices=("all", "dev", "heldout"), default="dev")
     parser.add_argument("--split-at", type=int, default=22)
     args = parser.parse_args(argv)
-    selection = ak.from_parquet(args.selection)
-    selection = selection[selection.shard < args.split_at]
+    selection = select_split(ak.from_parquet(args.selection), args.split, args.split_at)
     census = pd.read_parquet(args.events)
     gen, summary = prepare(selection, pd.read_parquet(args.generators), census)
+    summary.update(prepared_split=args.split, split_at=args.split_at)
     events = pd.DataFrame({k: np.asarray(selection[k]) for k in KEY}).merge(
         census, on=list(KEY), validate="one_to_one")
     out = Path(args.outdir)
