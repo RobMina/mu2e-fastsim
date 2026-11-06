@@ -27,71 +27,24 @@ import jax
 import jax.numpy as jnp
 from jax import lax
 
-from mu2efastsim import eioni
 from mu2efastsim import eslab_jax as SJ
 
 from . import cechain as C
+from . import target_geometry_jax as TG
 from . import fieldmap as FM
 from . import geometry as G
 
-ME = eioni.ME
-NCOUNT = 4                       # crossing counters: foil, IPA, OPA, end ring
+ME = TG.ME
+NCOUNT = TG.NCOUNT
 
 
-def layer_types(geom):
-    """(LaneTables specs, foil thicknesses, type of IPA / OPA / ring, counter index per type)."""
-    b = geom.beam
-    Lf = np.unique(2 * b.foil_ht)
-    specs = [(G.STOPPING_TARGET_AL, float(L), *C.CUTS[G.STOPPING_TARGET_AL.name]) for L in Lf]
-    counter = [0] * len(Lf)
-    t_ipa = len(specs)
-    specs.append((G.IPA_PE, float(b.ipa_t), *C.CUTS[G.IPA_PE.name]))
-    counter.append(1)
-    t_opa = len(specs)
-    specs.append((C.POLYETHYLENE096, float(geom.opa_t), *C.CUTS[C.POLYETHYLENE096.name]))
-    counter.append(2)
-    t_ring = -1
-    if geom.ring_t > 0:
-        t_ring = len(specs)
-        specs.append((C.CORRUGATED_PP, float(geom.ring_t), *C.CUTS[C.CORRUGATED_PP.name]))
-        counter.append(3)
-    return specs, Lf, t_ipa, t_opa, t_ring, np.array(counter, np.int32)
-
-
-def device_maps(headers, dtype=np.float64):
-    """Field maps (G4BL headers, first map containing the point wins) as device FieldMaps in dtype."""
-    out = []
-    for hdr in headers:
-        fm = FM.load(hdr)
-        out.append(FM.FieldMap(jnp.asarray(fm.lo, dtype), jnp.asarray(fm.d, dtype), jnp.asarray(fm.n, jnp.int32),
-                               jnp.asarray(fm.B, dtype)))
-    return tuple(out)
-
-
-def _field(maps, const, x):
-    if not maps:
-        return jnp.broadcast_to(jnp.asarray(const, x.dtype), x.shape)
-    out = jnp.zeros(x.shape, x.dtype)
-    todo = jnp.ones(x.shape[0], bool)
-    for fm in maps:
-        hi = fm.lo + fm.d * (fm.n - 1).astype(x.dtype)
-        inside = todo & jnp.all((x >= fm.lo) & (x < hi), axis=1)
-        out = jnp.where(inside[:, None], FM.field(fm, x), out)
-        todo = todo & ~inside
-    return out
-
-
-def _mom(T):
-    return jnp.sqrt(T * (T + 2 * ME))
-
-
-def _beta(T):
-    g = 1.0 + T / ME
-    return jnp.sqrt(jnp.maximum(1.0 - 1.0 / (g * g), 0.0))
-
-
-def _dot(a, b):
-    return (a * b).sum(axis=1)
+layer_types = TG.layer_types
+device_maps = TG.device_maps
+_field = TG.field
+_mom = TG.momentum
+_beta = TG.beta
+_dot = TG.dot
+gather = TG.gather
 
 
 _BUILT = {}
@@ -107,12 +60,10 @@ def _build(geom, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unro
     lt = SJ.lane_tables(specs, msc=msc)
     Ltype = jnp.asarray(lt.length, dt)
     counter_d = jnp.asarray(counter)
-    ftype = jnp.asarray(np.searchsorted(Lf, 2 * b.foil_ht).astype(np.int32))
-    face_up = jnp.asarray(b.foil_z - b.foil_ht, dt)
-    face_dn = jnp.asarray(b.foil_z + b.foil_ht, dt)
-    frin, frout = jnp.asarray(b.foil_rin, dt), jnp.asarray(b.foil_rout, dt)
-    nf = int(b.foil_z.size)
-    ax = float(b.axis_x)
+    geometry = TG.build(geom, dt, Lf, charge=-1.0, const_field=const_field,
+                        layer_field=layer_field, shell_curvature=shell_curvature, unroll=unroll)
+    ftype, face_up, face_dn = geometry.ftype, geometry.face_up, geometry.face_dn
+    frin, frout, nf = geometry.frin, geometry.frout, geometry.nf
     eps = 1e-7 if np.dtype(dt) == np.float64 else 2e-3       # foil-face search offset (a few ulp of z in float32)
     ztsda = float(b.tsda_z + b.tsda_hl)
     zr = [(float(z), float(z + 2 * geom.ring_hl)) for z in (b.ipa_z0, b.ipa_z1)]
@@ -122,57 +73,7 @@ def _build(geom, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unro
     def W(c, a, b_):
         return jnp.where(c, a, b_).astype(dt)
 
-    def radial(x):
-        return jnp.hypot(x[:, 0] - ax, x[:, 1])
-
-    def opa_rin(z):
-        f = jnp.clip((z - b.opa_z0) / (b.opa_z1 - b.opa_z0), 0.0, 1.0)
-        return (geom.opa_rin0 + f * (geom.opa_rin1 - geom.opa_rin0)).astype(dt)
-
-    def bisect(x, u, p, B, s_hi, target):
-        def f(s):
-            xs = SJ.helix(x, u, p, q, B, s)[0]
-            return radial(xs) - target(xs[:, 2])
-
-        def it(_, c):
-            lo, flo, hi = c
-            mid = 0.5 * (lo + hi)
-            fm = f(mid)
-            same = jnp.sign(fm) == jnp.sign(flo)
-            return jnp.where(same, mid, lo), jnp.where(same, fm, flo), jnp.where(same, hi, mid)
-        lo = jnp.zeros_like(s_hi)
-        return lax.fori_loop(0, 40, it, (lo, f(lo), s_hi), **SJ._unroll(unroll))[2]
-
-    def frames(maps, x, u, T, ty, kf):
-        """Slab frame (e1, e2, n), entry point, local direction and field of lanes entering layer type ty."""
-        n = x.shape[0]
-        foil = ty < len(Lf)
-        sg = W(u[:, 2] >= 0, 1.0, -1.0)
-        zero, one = jnp.zeros(n, dt), jnp.ones(n, dt)
-        fe1 = jnp.stack([one, zero, zero], axis=1)
-        fe2 = jnp.stack([zero, sg, zero], axis=1)
-        fn = jnp.stack([zero, zero, sg], axis=1)
-        kc = jnp.clip(kf, 0, nf - 1)
-        fentry = x.at[:, 2].set(jnp.where(sg > 0, face_up[kc], face_dn[kc]))
-        rv = jnp.stack([x[:, 0] - ax, x[:, 1], zero], axis=1)
-        rn = rv / jnp.maximum(jnp.linalg.norm(rv, axis=1, keepdims=True), 1e-30)
-        outward = ((x[:, 0] - ax) * u[:, 0] + x[:, 1] * u[:, 1]) > 0
-        sn = jnp.where(outward[:, None], rn, -rn)
-        se1 = jnp.stack([zero, zero, one], axis=1)
-        se2 = jnp.cross(sn, se1)
-        e1 = jnp.where(foil[:, None], fe1, se1)
-        e2 = jnp.where(foil[:, None], fe2, se2)
-        nn = jnp.where(foil[:, None], fn, sn)
-        entry = jnp.where(foil[:, None], fentry, x)
-        B = _field(maps, const_field, x) if layer_field else jnp.zeros((n, 3), dt)
-        if shell_curvature:
-            sgn = W(outward, 1.0, -1.0)
-            dBz = sgn * _dot(u, se2) * _mom(T) / (SJ.K_FIELD * jnp.maximum(radial(x), 1e-30))
-            B = B.at[:, 2].add(W(foil, 0.0, dBz))
-
-        def loc(v):
-            return jnp.stack([_dot(v, e1), _dot(v, e2), _dot(v, nn)], axis=1)
-        return e1, e2, nn, entry, loc(u), loc(B)
+    radial, opa_rin, bisect, frames = geometry.radial, geometry.opa_rin, geometry.bisect, geometry.frames
 
     def reset_slab(sl, enter, keep, T, d, ty):
         """Slab state: a fresh one (depth 0) for entering lanes, unchanged for lanes still inside, exited otherwise."""
@@ -196,14 +97,6 @@ def _build(geom, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unro
             st.update(rec_ok=jnp.zeros(n, bool), rec_x=jnp.zeros((n, 3), dt), rec_u=jnp.zeros((n, 3), dt),
                       rec_T=jnp.zeros(n, dt), rec_t=jnp.zeros(n, dt))
         return st
-
-    def gather(mask, m):
-        """Indices of the first m lanes in mask (n where fewer), validity and the chosen-lane mask."""
-        n = mask.shape[0]
-        idx = jnp.nonzero(mask, size=m, fill_value=n)[0]
-        ok = idx < n
-        chosen = jnp.zeros(n, bool).at[idx].set(True, mode="drop")
-        return idx, jnp.minimum(idx, n - 1), ok, chosen
 
     def crossings(x, u, p, Bm, h_, z0, z1, r0, r1, sel_p, sel_f, sel_t, face, kc, sel_i, sel_o, out_i, out_o,
                   sel_r, out_r):
