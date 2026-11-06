@@ -6,6 +6,7 @@ import re
 
 import awkward as ak
 import numpy as np
+import pandas as pd
 import uproot
 
 from .sampling import FrameSelection
@@ -34,27 +35,40 @@ TIME_FIELDS = {"particles": ("st", "et"), "gen": ("t",), "tracker": ("t",),
                "crv": ("t0", "t1"), "calo": ("t",)}
 
 
-def _event_keys(ids):
+def _validate_event_ids(ids):
     ids = np.asarray(ids)
     if ids.ndim != 2 or ids.shape[1] != 3 or ids.dtype.kind not in "iu" or np.any(ids < 0):
         raise ValueError("event IDs must be nonnegative integer (run, subrun, event) rows")
-    return np.rec.fromarrays(ids.T.astype(np.uint64), names=IDS)
+    return ids
+
+
+def _event_keys(ids):
+    return np.rec.fromarrays(_validate_event_ids(ids).T.astype(np.uint64), names=IDS)
+
+
+def _event_index(ids):
+    return pd.MultiIndex.from_arrays(_validate_event_ids(ids).T.astype(np.uint64, copy=False), names=IDS)
+
+
+def _table_event_ids(arrays):
+    columns = [np.asarray(arrays[name]) for name in IDS]
+    if any(column.dtype.kind not in "iu" or np.any(column < 0) for column in columns):
+        raise ValueError("event IDs must be nonnegative integer (run, subrun, event) rows")
+    dtype = np.result_type(*(column.dtype for column in columns))
+    if dtype.kind not in "iu":
+        dtype = np.dtype(np.uint64)
+    return np.column_stack([column.astype(dtype, copy=False) for column in columns])
 
 
 def _flat_keys(frame, key):
-    return np.rec.fromarrays([frame, key], names=("frame", "key"))
+    return pd.MultiIndex.from_arrays([frame, key], names=("frame", "key"))
 
 
 def _check_reference(target, query, name):
-    if query.size == 0:
-        return
-    order = np.argsort(target)
-    sorted_target = target[order]
-    index = np.searchsorted(sorted_target, query)
-    if target.size == 0 or np.any(index == target.size):
+    index = target.get_indexer(query).astype(np.int64, copy=False)
+    if np.any(index < 0):
         raise ValueError(f"dangling {name} reference")
-    if np.any(sorted_target[index] != query):
-        raise ValueError(f"dangling {name} reference")
+    return index
 
 
 @dataclass(frozen=True)
@@ -65,9 +79,11 @@ class FrameBatch:
     collections: Mapping[str, ak.Array]
 
     def __post_init__(self):
+        object.__setattr__(self, "event_ids", self._validate_structure())
+
+    def _validate_structure(self):
         ids = np.asarray(self.event_ids)
-        keys = _event_keys(ids)
-        if len(np.unique(keys)) != len(keys):
+        if not _event_index(ids).is_unique:
             raise ValueError("duplicate event IDs in frame pool")
         if not {"particles", "gen", "tracker", "crv"} <= self.collections.keys():
             raise ValueError("particles, gen, tracker and crv collections are required")
@@ -75,20 +91,24 @@ class FrameBatch:
             if name not in TIME_FIELDS or len(rows) != len(ids):
                 raise ValueError(f"invalid collection or event count: {name}")
             ak.num(rows, axis=1)
-        object.__setattr__(self, "event_ids", ids)
+        return ids
 
     def validate_references(self):
-        """Check event-local SimParticle keys and GenParticle indices before remapping."""
+        """Validate afresh; return flat particle indices for parent (-1 null) and detectors."""
+        self._validate_structure()
         parts, gen = self.collections["particles"], self.collections["gen"]
         frame = np.repeat(np.arange(len(self.event_ids)), ak.to_numpy(ak.num(parts)))
         key = _signed_indices(parts.key, "particle keys")
         pkeys = _flat_keys(frame, key)
-        if np.any(key < 0) or len(np.unique(pkeys)) != len(pkeys):
+        if np.any(key < 0) or not pkeys.is_unique:
             raise ValueError("SimParticle keys must be nonnegative and event-unique")
         parent = _signed_indices(parts.parent, "parent keys")
         if np.any(parent < -1):
             raise ValueError("null parent must be -1")
-        _check_reference(pkeys, _flat_keys(frame[parent >= 0], parent[parent >= 0]), "parent")
+        present = parent >= 0
+        references = {"parent": np.full(len(parent), -1, dtype=np.int64)}
+        references["parent"][present] = _check_reference(
+            pkeys, _flat_keys(frame[present], parent[present]), "parent")
         gi = _signed_indices(parts.genidx, "generator references")
         _signed_indices(gen.idx, "generator indices")
         ngen = ak.to_numpy(ak.num(gen))
@@ -99,21 +119,19 @@ class FrameBatch:
         for name in self.collections.keys() - {"particles", "gen"}:
             rows = self.collections[name]
             event = np.repeat(np.arange(len(self.event_ids)), ak.to_numpy(ak.num(rows)))
-            _check_reference(pkeys, _flat_keys(event, _signed_indices(rows.sp, name)), name)
+            step_key = _signed_indices(rows.sp, name)
+            if np.any(step_key < 0):
+                raise ValueError(f"dangling {name} reference")
+            references[name] = _check_reference(pkeys, _flat_keys(event, step_key), name)
+        return references
 
 
-def _group(tree, event_ids, fields):
+def _group(tree, census, fields):
     arrays = tree.arrays([*IDS, *fields], library="ak")
-    ids = np.column_stack([ak.to_numpy(arrays[k]) for k in IDS])
-    census = _event_keys(event_ids)
-    keys = _event_keys(ids)
-    order = np.argsort(census)
-    where = np.searchsorted(census[order], keys)
-    if len(keys) and (len(census) == 0 or np.any(where == len(census))):
+    keys = _event_index(_table_event_ids(arrays))
+    event = census.get_indexer(keys)
+    if np.any(event < 0):
         raise ValueError("step/particle event absent from census")
-    if len(keys) and np.any(census[order[where]] != keys):
-        raise ValueError("step/particle event absent from census")
-    event = order[where]
     row_order = np.argsort(event, kind="stable")
     return ak.unflatten(arrays[list(fields)][row_order], np.bincount(event, minlength=len(census)))
 
@@ -137,15 +155,17 @@ def read_frames(path, *, tracker_directory="tracker", crv_directory="crv", event
         census = None
         if event_ids is None:
             census = root[f"{crv_directory}/events"].arrays([*IDS, "n_steps"], library="np")
-            ids = np.column_stack([census[k] for k in IDS])
+            ids = _table_event_ids(census)
         else:
             ids = np.asarray(event_ids)
-            _event_keys(ids)
+        census_index = _event_index(ids)
+        if not census_index.is_unique:
+            raise ValueError("duplicate event IDs in frame pool")
         collections = {
-            "particles": _group(root[f"{crv_directory}/particles"], ids, PARTICLE_FIELDS),
-            "gen": _group(root[f"{crv_directory}/gen"], ids, GEN_FIELDS),
-            "tracker": _group(root[f"{tracker_directory}/sgsteps"], ids, TRACKER_FIELDS),
-            "crv": _group(root[f"{crv_directory}/steps"], ids, CRV_FIELDS),
+            "particles": _group(root[f"{crv_directory}/particles"], census_index, PARTICLE_FIELDS),
+            "gen": _group(root[f"{crv_directory}/gen"], census_index, GEN_FIELDS),
+            "tracker": _group(root[f"{tracker_directory}/sgsteps"], census_index, TRACKER_FIELDS),
+            "crv": _group(root[f"{crv_directory}/steps"], census_index, CRV_FIELDS),
         }
         if census is not None and not np.array_equal(ak.to_numpy(ak.num(collections["crv"])), census["n_steps"]):
             raise ValueError("CRV census and extracted steps disagree")
@@ -158,6 +178,25 @@ def _local_offsets(lengths, event, nevents):
     prefix = np.r_[0, np.cumsum(lengths)]
     first = np.searchsorted(event, np.arange(nevents))
     return prefix[:-1] - prefix[first[event]]
+
+
+def _particle_offsets(maxkey, event, nevents):
+    limit = np.iinfo(np.int64).max
+    if len(maxkey) and int(maxkey.max()) + 1 > limit // len(maxkey):
+        # Object arithmetic is only needed for rare sparse keys near the int64 limit.
+        offsets = _local_offsets(maxkey.astype(object) + 1, event, nevents)
+        if np.any((maxkey >= 0) & (offsets + maxkey > limit)):
+            raise ValueError("remapped particle key exceeds int64")
+        offsets[maxkey < 0] = 0
+        return offsets.astype(np.int64)
+    return _local_offsets(maxkey + 1, event, nevents)
+
+
+def _signed_collection(rows, name):
+    fields = ("key", "parent", "genidx") if name == "particles" else (("idx",) if name == "gen" else ("sp",))
+    for field in fields:
+        rows = ak.with_field(rows, ak.values_astype(rows[field], np.int64), field)
+    return rows
 
 
 def overlay(signal, backgrounds, *, time_offset_ns=None):
@@ -195,9 +234,11 @@ def overlay(signal, backgrounds, *, time_offset_ns=None):
     order = np.argsort(event, kind="stable")
     event = event[order]
     shift = np.concatenate(shift)[order]
-    rows = {name: ak.concatenate(parts, axis=0)[order] for name, parts in arrays.items()}
+    # Normalize pointer columns before concatenation can promote mixed signed/unsigned keys to floats.
+    rows = {name: ak.concatenate([_signed_collection(part, name) for part in parts], axis=0)[order]
+            for name, parts in arrays.items()}
     maxkey = ak.to_numpy(ak.fill_none(ak.max(rows["particles"].key, axis=1), -1))
-    poffset = _local_offsets(maxkey + 1, event, nevents)
+    poffset = _particle_offsets(maxkey, event, nevents)
     goffset = _local_offsets(ak.to_numpy(ak.num(rows["gen"])), event, nevents)
     output = {}
     for name, collection in rows.items():

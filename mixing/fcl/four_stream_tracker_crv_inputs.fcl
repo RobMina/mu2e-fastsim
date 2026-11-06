@@ -1,0 +1,14 @@
+# Opt-in tracker/CRV-only preparation; the parent filters select every input step.
+#include "four_stream_fast_inputs.fcl"
+physics.filters.MuStopPileupMixer.mu2e.products.caloShowerStepMixer.mixingMap: []
+physics.filters.EleBeamFlashMixer.mu2e.products.caloShowerStepMixer.mixingMap: []
+physics.filters.MuBeamFlashMixer.mu2e.products.caloShowerStepMixer.mixingMap: []
+physics.filters.NeutralsFlashMixer.mu2e.products.caloShowerStepMixer.mixingMap: []
+physics.producers.CrvPhotons.crvStepModuleLabels: [compressDetStepMCs, MuStopPileupMixer, EleBeamFlashMixer, MuBeamFlashMixer, NeutralsFlashMixer]
+physics.analyzers.stopSteps.strawGasSteps: MuStopPileupMixer
+physics.analyzers.eleSteps.strawGasSteps: EleBeamFlashMixer
+physics.analyzers.muSteps.strawGasSteps: MuBeamFlashMixer
+physics.analyzers.neutralSteps.strawGasSteps: NeutralsFlashMixer
+physics.p1: [PBISim, MuStopPileupMixer, EleBeamFlashMixer, MuBeamFlashMixer, NeutralsFlashMixer,
+             EWMProducer, timingTruth,
+             @sequence::CrvDAQPackage.CrvDAQSequence, @sequence::CrvRecoPackage.CrvRecoSequence]
