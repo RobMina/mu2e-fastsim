@@ -55,8 +55,9 @@ python3 -m beamfastsim point --g4 "$M2FS_INPUTS/beam_fastsim/g4ref_full/g4ref.np
 ```
 
 Environment options (venv, Mu2e GPVM, image), every `site.env` block and the beam staging step without CVMFS:
-[`docs/running.md`](docs/running.md). **The inputs are Mu2e-internal and not yet published as a collaborator
-release**; [`setup/README.md`](setup/README.md) gives the release layout and its verification.
+[`docs/running.md`](docs/running.md). **The inputs are Mu2e-internal**: Mu2e members request the input
+release `mu2e-fastsim-inputs-v1.2` as described in [`setup/README.md`](setup/README.md), which also gives its layout
+and verification.
 
 ## Endpoints and throughput
 

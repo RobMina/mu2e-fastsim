@@ -65,9 +65,9 @@ your own mode-600 files instead. Do not commit a filled site.env.
 ## 4. Inputs
 
 The chains read Mu2e-internal inputs (Geant4 reference tables, the tier-1b library, the GDML export, simulation
-conditions, the CRV photon lookup tables, the beam muon table). **No collaborator input release is published yet**;
-the layout a release must have, and how to verify one against its checksum manifest, are in
-[`setup/README.md`](../setup/README.md):
+conditions, the CRV photon lookup tables, the beam muon table). They come as the input release
+**`mu2e-fastsim-inputs-v1.2`**, readable by the Mu2e group on Fermilab storage from a GPVM or EAF. How to request
+access, its layout and how to verify it against its checksum manifest are in [`setup/README.md`](../setup/README.md):
 
 ```bash
 python3 -m mu2efastsim.inputs check-inputs --manifest RELEASE.json --root "$M2FS_INPUTS"
