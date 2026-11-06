@@ -73,7 +73,7 @@ def plot(samples, costs, output):
     top.text(-0.5, floor * 1.15, 'no event accepted', ha='left', va='bottom', fontsize=8, color='0.4')
     top.set_ylim(floor * 0.6, 1.5)
     top.set_ylabel('accepted fraction of stored events')
-    top.legend(fontsize=8, loc='lower left', bbox_to_anchor=(0, 1.0), ncol=len(samples) + 1, frameon=False)
+    top.legend(fontsize=8, loc='lower left', bbox_to_anchor=(0, 1.0), ncol=1, frameon=False)
     top.grid(axis='y', color='0.9', lw=0.6)
     bottom.set_ylabel('events with the\nsame decision (%)')
     stateful = set().union(*(report['stateful_paths'] for _, report in samples))
