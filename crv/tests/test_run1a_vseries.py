@@ -144,3 +144,12 @@ def test_save_reco_empty_export(tmp_path, n_events, layout):
             assert z[k].dtype == dtype
     cl, mem, pulses = V._reco_frames_fast(path)
     assert cl.empty and mem.empty and pulses.empty
+
+
+def test_tail_merge_and_null_baseline():
+    rng = np.random.default_rng(2)
+    R = np.c_[rng.poisson(100, (9, 4)), rng.poisson(1, (9, 3))].astype(float)
+    res = V.paired_shape(R + rng.normal(0, 1, R.shape), R)
+    assert all(R[:, g].sum() >= V.MIN_REF for g in res["bins"])
+    assert sorted(i for g in res["bins"] for i in g) == list(range(7))
+    assert res["chi2_ndf_null"] == pytest.approx(8 / 6)
