@@ -1,0 +1,20 @@
+# Import fast tracker detector products using the existing native table bridge.
+#include "Offline/fcl/standardServices.fcl"
+process_name: FastTrackerImport
+source: { module_type: RootInput }
+services: @local::Services.Reco
+services.TFileService.fileName: "response.root"
+physics: {
+  producers: {
+    tableSD: { module_type: StrawDigisFromTable tableFile: "fast.root" }
+  }
+  analyzers: {
+    trkdigi: { module_type: StrawDigiTableDumper StrawDigiTag: tableSD }
+    events: { module_type: EventLister }
+  }
+  p1: [tableSD]
+  e1: [trkdigi, events]
+  trigger_paths: [p1]
+  end_paths: [e1]
+}
+outputs: {}

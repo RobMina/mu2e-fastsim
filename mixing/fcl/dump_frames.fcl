@@ -1,0 +1,25 @@
+# Extract both detectors from the same donor event with existing analyzer plugins.
+#include "Offline/fcl/minimalMessageService.fcl"
+process_name: FrameDump
+source: { module_type: RootInput }
+services: {
+  message: @local::default_message
+  TFileService: { fileName: "frames.root" }
+  GlobalConstantsService: { inputFile: "Offline/GlobalConstantsService/data/globalConstants_01.txt" }
+}
+physics: {
+  analyzers: {
+    tracker: {
+      module_type: StrawGasStepTableDumper
+      genParticles: "compressDetStepMCs"
+      writeTrajectories: false
+    }
+    crv: {
+      module_type: CrvStepTableDumper
+      genParticles: "compressDetStepMCs"
+      associationPolicy: "staged_cat"
+    }
+  }
+  e1: [tracker, crv]
+  end_paths: [e1]
+}

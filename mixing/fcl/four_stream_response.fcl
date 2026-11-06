@@ -1,0 +1,98 @@
+# Stock four-stream multiplicities and tracker/CRV response, without trigger selection.
+#include "Offline/fcl/standardServices.fcl"
+#include "Offline/CommonMC/fcl/prolog.fcl"
+#include "Offline/TrackerMC/fcl/prolog.fcl"
+#include "Offline/CRVResponse/fcl/prolog_v12.fcl"
+#include "Offline/CRVReco/fcl/prolog_v12.fcl"
+BEGIN_PROLOG
+FourStreamMixer: {
+  module_type: MixBackgroundFrames
+  fileNames: @nil
+  readMode: sequential
+  wrapFiles: true
+  mu2e: {
+    protonBunchIntensityTag: PBISim
+    MaxEventsToSkip: 0
+    writeEventIDs: true
+    debugLevel: 0
+    meanEventsPerPOTFactors: []
+    products: {
+      genParticleMixer: { mixingMap: [["compressDetStepMCs", ""]] }
+      simParticleMixer: { mixingMap: [["compressDetStepMCs", ""]] }
+      strawGasStepMixer: { mixingMap: [["compressDetStepMCs", ""]] }
+      caloShowerStepMixer: { mixingMap: [["compressDetStepMCs", ""]] }
+      crvStepMixer: { mixingMap: [["compressDetStepMCs", ""]] }
+    }
+  }
+}
+END_PROLOG
+process_name: FourStreamResponse
+source: { module_type: RootInput }
+services: @local::Services.SimAndReco
+services.TFileService.fileName: "response.root"
+services.SeedService.baseSeed: 20261105
+services.GeometryService.inputFile: "Offline/Mu2eG4/geom/geom_run1_a.txt"
+services.GeometryService.bFieldFile: "Offline/Mu2eG4/geom/bfgeom_reco_v01.txt"
+services.DbService.purpose: Sim_best
+services.DbService.version: v1_3
+services.DbService.verbose: 0
+services.ProditionsService.simbookkeeper.useDb: true
+services.ProditionsService.simbookkeeper.verbose: 0
+physics: {
+  producers: {
+    @table::CommonMC.DigiProducers
+    @table::TrackerMC.DigiProducers
+    @table::CrvDAQPackage.producers
+    @table::CrvRecoPackage.producers
+    PBISim: {
+      module_type: ProtonBunchIntensityLogNormal
+      PrimaryParticle: FindMCPrimary
+      SDF: 0.8
+      extendedMean: 1.58e7
+      cutMax: 9.48e7
+    }
+    MuStopPileupFilter: { module_type: MixingFilter MixingModule: MuStopPileupMixer }
+    EleBeamFlashFilter: { module_type: MixingFilter MixingModule: EleBeamFlashMixer }
+    MuBeamFlashFilter: { module_type: MixingFilter MixingModule: MuBeamFlashMixer }
+    NeutralsFlashFilter: { module_type: MixingFilter MixingModule: NeutralsFlashMixer }
+  }
+  filters: {
+    MuStopPileupMixer: @local::FourStreamMixer
+    EleBeamFlashMixer: @local::FourStreamMixer
+    MuBeamFlashMixer: @local::FourStreamMixer
+    NeutralsFlashMixer: @local::FourStreamMixer
+  }
+  analyzers: {
+    trkdigi: { module_type: StrawDigiTableDumper StrawDigiTag: "makeSD" }
+    crvdump: { module_type: CrvRecoTableDumper mc: true }
+    events: { module_type: EventLister }
+  }
+  p1: [PBISim, MuStopPileupMixer, EleBeamFlashMixer, MuBeamFlashMixer, NeutralsFlashMixer,
+       MuStopPileupFilter, EleBeamFlashFilter, MuBeamFlashFilter, NeutralsFlashFilter,
+       @sequence::CommonMC.DigiSim, @sequence::TrackerMC.DigiSim,
+       @sequence::CrvDAQPackage.CrvDAQSequence, @sequence::CrvRecoPackage.CrvRecoSequence]
+  e1: [trkdigi, crvdump, events]
+  trigger_paths: [p1]
+  end_paths: [e1]
+}
+physics.filters.MuStopPileupMixer.mu2e.simStageEfficiencyTags: [MuBeamCat, MuminusStopsCat, MuStopPileupCat]
+physics.filters.MuStopPileupMixer.mu2e.meanEventsPerPOTFactors: [1000]
+# Inclusive initial-skip bounds from the reference production configuration.
+physics.filters.MuStopPileupMixer.mu2e.MaxEventsToSkip: 747582
+physics.filters.EleBeamFlashMixer.mu2e.MaxEventsToSkip: 5306
+physics.filters.MuBeamFlashMixer.mu2e.MaxEventsToSkip: 1025663
+physics.filters.NeutralsFlashMixer.mu2e.MaxEventsToSkip: 90871
+physics.filters.EleBeamFlashMixer.mu2e.simStageEfficiencyTags: [EleBeamCat, EleBeamFlashCat]
+physics.filters.MuBeamFlashMixer.mu2e.simStageEfficiencyTags: [MuBeamCat, MuBeamFlashCat]
+physics.filters.NeutralsFlashMixer.mu2e.simStageEfficiencyTags: [NeutralsCat, NeutralsFlashCat]
+physics.producers.EWMProducer.SpillType: 1
+physics.producers.makeSD.StrawGasStepModules: [compressDetStepMCs, MuStopPileupFilter, EleBeamFlashFilter, MuBeamFlashFilter, NeutralsFlashFilter]
+physics.producers.CrvPhotons.crvStepModuleLabels: [compressDetStepMCs, MuStopPileupFilter, EleBeamFlashFilter, MuBeamFlashFilter, NeutralsFlashFilter]
+physics.producers.CrvPhotons.crvStepProcessNames: ["", "", "", "", ""]
+services.ProditionsService.alignedTracker.useDb: true
+services.ProditionsService.trackerStatus.Settings.useDb: true
+services.ProditionsService.strawElectronics.useDb: true
+services.ProditionsService.strawElectronics.overrideDbTimeOffsets: true
+#include "Offline/CRVResponse/fcl/epilog_run1a_v01.fcl"
+#include "Offline/CRVReco/fcl/epilog_run1a_v01.fcl"
+outputs: {}

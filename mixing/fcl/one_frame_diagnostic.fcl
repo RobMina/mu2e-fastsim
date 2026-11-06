@@ -1,0 +1,64 @@
+# Diagnostic: one neutral donor per stock CE event, not the four-stream pileup law.
+#include "Offline/fcl/standardServices.fcl"
+#include "Offline/CommonMC/fcl/prolog.fcl"
+#include "Offline/TrackerMC/fcl/prolog.fcl"
+#include "Offline/CRVResponse/fcl/prolog_v12.fcl"
+#include "Offline/CRVReco/fcl/prolog_v12.fcl"
+process_name: FrameOverlayDiagnostic
+source: { module_type: RootInput }
+services: @local::Services.SimAndReco
+services.TFileService.fileName: "overlay.root"
+services.SeedService.baseSeed: 20261105
+services.GeometryService.inputFile: "Offline/Mu2eG4/geom/geom_run1_a.txt"
+services.GeometryService.bFieldFile: "Offline/Mu2eG4/geom/bfgeom_reco_v01.txt"
+services.DbService.purpose: Sim_best
+services.DbService.version: v1_3
+services.DbService.verbose: 0
+physics: {
+  producers: {
+    @table::CommonMC.DigiProducers
+    @table::TrackerMC.DigiProducers
+    @table::CrvDAQPackage.producers
+    @table::CrvRecoPackage.producers
+  }
+  filters: {
+    donor: {
+      module_type: ResamplingMixer
+      fileNames: @nil
+      readMode: sequential
+      wrapFiles: true
+      mu2e: {
+        MaxEventsToSkip: 0
+        writeEventIDs: true
+        products: {
+          genParticleMixer: { mixingMap: [["compressDetStepMCs", ""]] }
+          simParticleMixer: { mixingMap: [["compressDetStepMCs", ""]] }
+          strawGasStepMixer: { mixingMap: [["compressDetStepMCs", ""]] }
+          caloShowerStepMixer: { mixingMap: [["compressDetStepMCs", ""]] }
+          crvStepMixer: { mixingMap: [["compressDetStepMCs", ""]] }
+        }
+      }
+    }
+  }
+  analyzers: {
+    trkdigi: { module_type: StrawDigiTableDumper StrawDigiTag: "makeSD" }
+    crvdump: { module_type: CrvRecoTableDumper mc: true }
+    events: { module_type: EventLister }
+  }
+  p1: [donor, @sequence::CommonMC.DigiSim, @sequence::TrackerMC.DigiSim,
+       @sequence::CrvDAQPackage.CrvDAQSequence, @sequence::CrvRecoPackage.CrvRecoSequence]
+  e1: [trkdigi, crvdump, events]
+  trigger_paths: [p1]
+  end_paths: [e1]
+}
+physics.producers.EWMProducer.SpillType: 1
+physics.producers.makeSD.StrawGasStepModules: ["compressDetStepMCs", "donor"]
+physics.producers.CrvPhotons.crvStepModuleLabels: ["compressDetStepMCs", "donor"]
+physics.producers.CrvPhotons.crvStepProcessNames: ["", ""]
+services.ProditionsService.alignedTracker.useDb: true
+services.ProditionsService.trackerStatus.Settings.useDb: true
+services.ProditionsService.strawElectronics.useDb: true
+services.ProditionsService.strawElectronics.overrideDbTimeOffsets: true
+#include "Offline/CRVResponse/fcl/epilog_run1a_v01.fcl"
+#include "Offline/CRVReco/fcl/epilog_run1a_v01.fcl"
+outputs: {}

@@ -1,0 +1,25 @@
+# Development seed replay: mix steps and run CRV, leaving tracker digitisation to Python.
+#include "four_stream_steps.fcl"
+services.SeedService.policy: preDefinedSeed
+services.SeedService.CrvPhotons: 20261105
+services.SeedService.CrvSiPMCharges: 20261106
+services.SeedService.CrvWaveforms: 20261107
+services.SeedService.EWMProducer: 20261108
+services.SeedService.timingTruth: 20261108
+services.SeedService.EleBeamFlashMixer: 20261109
+services.SeedService.MuBeamFlashMixer: 20261110
+services.SeedService.MuStopPileupMixer: 20261111
+services.SeedService.NeutralsFlashMixer: 20261112
+services.SeedService.PBISim: 20261113
+services.SeedService.makeSD: 20261114
+physics.producers.EWMProducer.RecoFromMCTruth: true
+physics.producers.EWMProducer.RecoFromMCTruthErr: 0.5
+physics.producers.timingTruth: @local::physics.producers.EWMProducer
+physics.producers.timingTruth.RecoFromMCTruth: true
+physics.producers.timingTruth.RecoFromMCTruthErr: 0
+physics.analyzers.crvdump.protonBunchTime: timingTruth
+physics.p1: [PBISim, MuStopPileupMixer, EleBeamFlashMixer, MuBeamFlashMixer, NeutralsFlashMixer,
+             MuStopPileupFilter, EleBeamFlashFilter, MuBeamFlashFilter, NeutralsFlashFilter,
+             EWMProducer, timingTruth,
+             @sequence::CrvDAQPackage.CrvDAQSequence, @sequence::CrvRecoPackage.CrvRecoSequence]
+physics.e1: [crvdump, events, primarySteps, stopSteps, eleSteps, muSteps, neutralSteps, fieldOrigin]

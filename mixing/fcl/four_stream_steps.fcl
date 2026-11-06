@@ -1,0 +1,42 @@
+# Extract the exact response inputs; truth PBT is exposed through the existing CRV event table.
+#include "four_stream_occupancy.fcl"
+services.SeedService.endOfJobSummary: true
+services.ProditionsService.strawDrift.verbose: 2
+physics.producers.EWMProducer.RecoFromMCTruth: true
+physics.producers.EWMProducer.RecoFromMCTruthErr: 0
+physics.analyzers.primarySteps: {
+  module_type: StrawGasStepTableDumper
+  strawGasSteps: compressDetStepMCs
+  genParticles: compressDetStepMCs
+  simParticles: compressDetStepMCs
+  writeTrajectories: false
+}
+physics.analyzers.stopSteps: @local::physics.analyzers.primarySteps
+physics.analyzers.stopSteps.strawGasSteps: MuStopPileupFilter
+physics.analyzers.stopSteps.genParticles: MuStopPileupMixer
+physics.analyzers.stopSteps.simParticles: MuStopPileupMixer
+physics.analyzers.eleSteps: @local::physics.analyzers.primarySteps
+physics.analyzers.eleSteps.strawGasSteps: EleBeamFlashFilter
+physics.analyzers.eleSteps.genParticles: EleBeamFlashMixer
+physics.analyzers.eleSteps.simParticles: EleBeamFlashMixer
+physics.analyzers.muSteps: @local::physics.analyzers.primarySteps
+physics.analyzers.muSteps.strawGasSteps: MuBeamFlashFilter
+physics.analyzers.muSteps.genParticles: MuBeamFlashMixer
+physics.analyzers.muSteps.simParticles: MuBeamFlashMixer
+physics.analyzers.neutralSteps: @local::physics.analyzers.primarySteps
+physics.analyzers.neutralSteps.strawGasSteps: NeutralsFlashFilter
+physics.analyzers.neutralSteps.genParticles: NeutralsFlashMixer
+physics.analyzers.neutralSteps.simParticles: NeutralsFlashMixer
+physics.analyzers.fieldOrigin: {
+  module_type: BFieldPlotter
+  plane: z
+  planeValue: 10171
+  axisOneMin: -3905
+  axisOneMax: -3903
+  axisTwoMin: -1
+  axisTwoMax: 1
+  mapBinSize: 1
+  dump: true
+  dumpName: DetectorOrigin
+}
+physics.e1: [trkdigi, crvdump, events, primarySteps, stopSteps, eleSteps, muSteps, neutralSteps, fieldOrigin]
