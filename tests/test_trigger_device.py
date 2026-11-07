@@ -1,0 +1,111 @@
+"""Device trigger pieces on synthetic inputs: menu parsing, the TMVA MLP, panel combining, the helix fit."""
+from pathlib import Path
+import sys
+
+import numpy as np
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from trigger.device import menu  # noqa: E402
+
+MENU = """
+process_name: "R"
+physics: {
+  producers: {
+    TC: { module_type: "TimeClusterFinder" AveragePitch: 6e-1 }
+    HF: { module_type: "RobustHelixFinder" }
+  }
+  filters: {
+    PS: { module_type: "PrescaleEvent" eventModeConfig: [ { eventMode: "OnSpill" prescale: -1 }, { eventMode: "OffSpill" prescale: 1 } ] }
+    TCF: { module_type: "TimeClusterFilter" timeClusterCollection: "TC" minNStrawHits: 15 }
+    HSF: { module_type: "HelixFilter" posHelicitySelection: { configured: true minMomentum: 70 } negHelicitySelection: { configured: false } }
+    CAL: { module_type: "CaloClusterFilter" }
+  }
+  tpr_X: [ "PS", "TC", "TCF", "HF", "HSF" ]
+  calo_Y: [ "PS", "CAL" ]
+  trigger_paths: [ "100:tpr_X", "400:calo_Y" ]
+}
+# a comment
+physics.filters.TCF.minNStrawHits: 12
+"""
+
+
+def test_parse_and_paths():
+    cfg = menu.parse_fcl(MENU)
+    assert cfg["physics"]["filters"]["TCF"]["minNStrawHits"] == 12          # dotted override wins
+    assert cfg["physics"]["filters"]["HSF"]["posHelicitySelection"]["minMomentum"] == 70
+    dp = menu.device_paths(cfg)
+    assert list(dp) == ["tpr_X"]
+    assert dp["tpr_X"]["family"] == "tpr" and [r for r, _, _ in dp["tpr_X"]["filters"]] == ["tc", "hs"]
+    assert menu.prescales(cfg, "tpr_X", "OnSpill") == -1 and menu.prescales(cfg, "tpr_X", "OffSpill") == 1
+
+
+XML = """<MethodSetup Method="MLP::MLP"><GeneralInfo><Info name="TMVA Release" value="4.2.1 [262657]"/></GeneralInfo>
+<Options><Option name="NeuronType" modified="No">sigmoid</Option><Option name="VarTransform" modified="Yes">N</Option></Options>
+<Variables NVar="2"><Variable VarIndex="0" Min="0" Max="2"/><Variable VarIndex="1" Min="-1" Max="1"/></Variables>
+<Weights><Layout NLayers="3">
+<Layer Index="0" NNeurons="3"><Neuron NSynapses="2">0.5 -1.0</Neuron><Neuron NSynapses="2">2.0 0.25</Neuron><Neuron NSynapses="2">0.1 0.2</Neuron></Layer>
+<Layer Index="1" NNeurons="3"><Neuron NSynapses="1">1.5</Neuron><Neuron NSynapses="1">-0.7</Neuron><Neuron NSynapses="1">0.3</Neuron></Layer>
+<Layer Index="2" NNeurons="1"><Neuron NSynapses="0"/></Layer></Layout></Weights></MethodSetup>"""
+
+
+def test_mlp_matches_numpy(tmp_path):
+    pytest.importorskip("jax")
+    from trigger.device import mva
+    p = tmp_path / "w.xml"
+    p.write_text(XML)
+    net = mva.load(p)
+    x = np.array([[0.3, 0.1], [1.9, -0.8]], np.float32)
+    xn = (x - [0, -1]) * [1.0, 1.0] - 1.0
+    w0 = np.array([[0.5, -1.0], [2.0, 0.25], [0.1, 0.2]])
+    w1 = np.array([[1.5], [-0.7], [0.3]])
+    h = 1 / (1 + np.exp(-(np.c_[xn, np.ones(2)] @ w0)))
+    ref = 1 / (1 + np.exp(-(np.c_[h, np.ones(2)] @ w1)[:, 0]))
+    np.testing.assert_allclose(np.asarray(mva.evaluate(net, x)), ref, rtol=1e-6)
+
+
+def test_panel_combine_greedy():
+    pytest.importorskip("jax")
+    pytest.importorskip("trkfastsim")
+    import jax.numpy as jnp
+    from trigger.device import hits
+    sid = np.array([[10, 11, 200, 0]])                 # straws 10, 11 of panel 0; straw 72 of panel 1; padding
+    flag = np.full((1, 4), (1 << 3), np.uint32)        # TimeSelection
+    h = {"valid": np.array([[True, True, True, False]]), "spill": np.array([0]), "sid": sid,
+         "upanel": (sid >> 10) * 6 + ((sid & 0x380) >> 7), "straw": sid & 0x7F, "flag": flag,
+         "time": np.array([[100.0, 110.0, 105.0, 0]], np.float32), "et0": np.zeros((1, 4), np.float32),
+         "et1": np.zeros((1, 4), np.float32), "edep": np.full((1, 4), 1e-3, np.float32),
+         "wdist": np.array([[5.0, 9.0, 0.0, 0]], np.float32), "uvar": np.full((1, 4), 900.0, np.float32),
+         "vvar": np.full((1, 4), 2.0, np.float32), "timevar": np.full((1, 4), 4.0, np.float32),
+         "x": np.full((1, 4), 400.0, np.float32), "y": np.zeros((1, 4), np.float32), "z": np.zeros((1, 4), np.float32),
+         "udx": np.ones((1, 4), np.float32), "udy": np.zeros((1, 4), np.float32)}
+    s = {"maxdt": 45.0, "maxds": 3, "maxwdchi": 5.0, "uerr": 10.0, "checkWres": True, "minN": 1, "maxN": 8,
+         "minT": 0.0, "maxT": 1e5, "minTOff": 0.0, "maxTOff": 1e5, "minE": 1e-4, "maxE": 5e-3, "minR": 380.0,
+         "maxR": 700.0, "sel": 1 << 3, "mask": 1 << 23}
+    out = hits.panel_hits({k: jnp.asarray(v) for k, v in h.items()}, s)
+    assert np.asarray(out["valid"]).tolist() == [[True, True, False, False]]
+    assert np.asarray(out["ncombo"])[0, :2].tolist() == [2, 1]
+    assert np.asarray(out["time"])[0, 0] == pytest.approx(105.0)
+
+
+def test_helix_fit_recovers_parameters():
+    pytest.importorskip("jax")
+    import jax.numpy as jnp
+    from trigger.device import helix
+    R, lam, cx, cy, fz0 = 250.0, 180.0, 120.0, -60.0, 0.4
+    z = np.linspace(-1400, 1400, 40)
+    ph = fz0 + z / lam
+    x, y = cx + R * np.cos(ph), cy + R * np.sin(ph)
+    n = len(z)
+    hit = {"x": jnp.asarray(x), "y": jnp.asarray(y), "z": jnp.asarray(z), "udx": jnp.ones(n), "udy": jnp.zeros(n),
+           "uvar": jnp.full(n, 900.0), "vvar": jnp.full(n, 2.0), "uface": jnp.arange(n), "nsh": jnp.ones(n, int)}
+    s = {"maxrpull": 5.0, "maxdr": 100.0, "maxchisq": 25.0, "cradres": 20.0, "cperpres": 12.0, "minnsh": 10,
+         "lmin": 30.0, "lmax": 1000.0, "lstep": 10.0, "minR": 100.0, "maxR": 600.0, "minCR": 100.0, "maxCR": 700.0,
+         "minabsl": 10.0, "maxabsl": 700.0, "helicities": (-1, 1)}
+    f = helix._fit(hit, jnp.ones(n, bool), s, 1.0, jnp.asarray(z))
+    assert bool(f["ok"]) and float(f["helicity"]) == 1.0
+    assert float(f["R"]) == pytest.approx(R, abs=1e-3) and float(f["lambda"]) == pytest.approx(lam, rel=1e-4)
+    assert float(f["d0"]) == pytest.approx(np.hypot(cx, cy) - R, abs=1e-3)
+    assert float(f["nsh"]) == n and float(f["chi2xy"]) < 1e-6
