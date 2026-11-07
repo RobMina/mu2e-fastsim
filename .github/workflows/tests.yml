@@ -1,4 +1,4 @@
-# Test pinned submodules; PRs use same-named sibling branches when available.
+# Test pinned submodule commits and the umbrella on pull requests and main.
 # The "suite (...)" jobs are the required status checks of the main branch; the "no JAX (...)" jobs run the same
 # suites without JAX installed, where the JAX tests must skip cleanly.
 name: tests
@@ -46,18 +46,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: PR sibling branches (same name when available)
-        if: github.event_name == 'pull_request'
-        env:
-          CI_BRANCH: ${{ github.head_ref }}
-        shell: bash
-        run: |
-          for sibling in core crv tracker; do
-            if git -C "$sibling" ls-remote --exit-code --heads origin "$CI_BRANCH" >/dev/null 2>&1; then
-              git -C "$sibling" fetch --depth 1 origin "refs/heads/$CI_BRANCH"
-              git -C "$sibling" switch --detach FETCH_HEAD
-            fi
-          done
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -116,18 +104,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: PR sibling branches (same name when available)
-        if: github.event_name == 'pull_request'
-        env:
-          CI_BRANCH: ${{ github.head_ref }}
-        shell: bash
-        run: |
-          for sibling in core crv tracker; do
-            if git -C "$sibling" ls-remote --exit-code --heads origin "$CI_BRANCH" >/dev/null 2>&1; then
-              git -C "$sibling" fetch --depth 1 origin "refs/heads/$CI_BRANCH"
-              git -C "$sibling" switch --detach FETCH_HEAD
-            fi
-          done
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
