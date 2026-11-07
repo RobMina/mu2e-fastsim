@@ -83,6 +83,49 @@ Status (2,000 CE, production settings, against stock Offline v13_39_00 on the sa
 `scripts/compare_reco.py` runs the stage-by-stage comparison, `scripts/compare_chain.py` the full chain (figures and
 `numbers.json`), `scripts/time_chain.py` the throughput.
 
+## On-device chain (`calofastsim.device_chain`, opt-in)
+
+One jitted call per batch of events, from calorimeter-entrance states to clusters, with the per-event data resident
+on the device: whole-shower library draw (cell lookup, one uniform draw, a gather from the packed offsets and flat
+step arrays), crystal or geometric placement (pixel candidate table instead of a k-d tree), crystal response and
+photoelectrons, digitisation, template fit, hits and clusters. A second entry point starts from saved
+CaloShowerSteps. Nothing else changes; the host modules stay the reference.
+
+```python
+import jax
+jax.config.update("jax_enable_x64", True)
+from calofastsim import device_chain as dc
+lib = dc.pack_library(library, radius_neighbors=8, placement="crystal")   # showers.library dict with geometry
+resp = dc.pack_response(sim, pulse, noise, propagation, geometry, adc2mev=stockio.adc_to_mev)
+chain = dc.make_chain(lib, resp, dc.Caps(events=4096, steps=4096 * 56, photoelectrons=4096 * 5000,
+                                        rows=4096 * 26, digis=4096 * 16, hits=4096 * 8, event_hits=32))
+q, t = dc.entries_batch(entries, timing, event_row, 4096)   # one disk-front entry per event at most
+out = dc.run(chain, q, t, jax.random.PRNGKey(1))           # clusters per event, sorted by energy
+steps_chain = dc.make_steps_chain(resp, caps)              # saved steps -> clusters (dc.steps_batch)
+```
+
+Every collection has a static capacity (`Caps`); anything beyond it is counted in `overflow` and `run` raises.
+Pick capacities from a first batch. The waveform histograms each SiPM's photoelectrons over a short window in
+(sample, fine phase) and multiplies by the pulse table; only the summation order differs from the per-photoelectron
+sum.
+
+Checks (`tests/test_device_chain.py`): the library draw and both placements give the host's donors, positions,
+crystals and depths for given uniforms; with photon statistics, travel time and the bunch-time smear off (constant
+noise baseline), digis are identical to the host chain and clusters agree to roundoff.
+
+Held-out CE comparison (12,195 production events with a disk-front entry, paired with stock digitisation and reco
+of the same events' steps; production library, `radius_neighbors=8`, crystal placement, no tuning):
+
+| Observable | Fast / stock |
+|---|---|
+| Leading-cluster energy peak (Gaussian core) | ratio 0.9996 +- 0.0027 |
+| Events with a cluster above 10 MeV | ratio 1.0009 +- 0.0028 |
+| Leading-cluster energy shape, clusters per event, x, y | chi2/ndf 37/45, 2.5/5, 74/51, 38/50 |
+| Leading-cluster radius | chi2/ndf 87/13: fewer clusters at the inner edge (380-400 mm) |
+
+Events without a disk-front entry (side and photon arrivals, 14 % of stored events) are outside the library's scope;
+the stock arm has a cluster above 10 MeV in 59 % of them.
+
 ## Tests
 
 ```bash
