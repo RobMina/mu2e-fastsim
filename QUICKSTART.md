@@ -74,8 +74,8 @@ and ssh access to both the cluster login host and a Mu2e GPVM (your laptop, with
    ```bash
    git clone --recurse-submodules https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
    python3 -m venv .venv && .venv/bin/pip install -q -e core -e crv -e tracker -e beam
-   export FASTSIMKIT_FNAL_HOST=mu2egpvm01 FASTSIMKIT_SLURM_HOST=<login host> \
-          FASTSIMKIT_SLURM_ACCOUNT=<account> FASTSIMKIT_SCRATCH=<your work area on the cluster>
+   export FASTSIMKIT_FNAL_HOST=mu2egpvm01 FASTSIMKIT_SLURM_HOST=YOUR_LOGIN_HOST \
+          FASTSIMKIT_SLURM_ACCOUNT=YOUR_ACCOUNT FASTSIMKIT_SCRATCH=YOUR_CLUSTER_WORK_AREA
    source site/slurm.env && .venv/bin/python site/check.py slurm
    ```
 
