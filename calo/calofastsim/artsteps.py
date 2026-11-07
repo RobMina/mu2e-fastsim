@@ -4,7 +4,7 @@ art writes ``std::vector<mu2e::CaloShowerStep>`` memberwise in one unsplit branc
 Each event's blob is decoded here from its fixed layout (class version 1, members in streamer order)::
 
     header   bytecount(4) version|memberwise(2) class version(2) checksum(4) n(4)
-    sim_     n x art::Ptr          36 bytes each (bytecounted object; ProductID value at +16, key at +28)
+    sim_     n x art::Ptr          36 bytes each (bytecounted object; ProductID value at +18, key at +28)
     volumeG4ID_ n x int32, nCompress_ n x uint32, time_ n x float64,
     energyDepG4_, energyDepBirks_, momentumIn_  n x float32 each
     pos_     n x CLHEP::Hep3Vector  30 bytes each (bytecounted object, 3 x float64 at +6)
@@ -42,7 +42,7 @@ def decode_blobs(data, offsets):
     nn = np.repeat(n, n)
     col = {}
     ptr = base + k * PTR_BYTES
-    col["sim_product"] = _be(data, ptr + 16, ">u4")
+    col["sim_product"] = _be(data, ptr + 18, ">u4")
     col["sim_key"] = _be(data, ptr + 28, ">u8")
     off = base + nn * PTR_BYTES
     for name, fmt, size in (("volume", ">i4", 4), ("n_compress", ">u4", 4), ("time", ">f8", 8),

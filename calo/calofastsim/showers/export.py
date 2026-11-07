@@ -31,40 +31,58 @@ def columns(source, table, fields):
     return source["dump/" + table].arrays(list(fields), library="np")
 
 
-def read(path):
-    """One first forward direct-root front VD entry and the entire event CSS.
+def _stage_identity(source, events):
+    generated = columns(source, "generated", EVENT + ("pdg", "parent_key", "parent_valid"))
+    products = columns(source, "products", EVENT + ("kind", "product_id"))
+    names = source["dump/products"]["branch_name"].array(library="np").astype(str)
+    transport = (products["kind"] == -1) & np.char.endswith(names, "_g4run__CaloLibraryCE.")
+    products = {k: v[transport] for k, v in products.items()}
+    event_ids = keys(events, EVENT)
+    if len(np.unique(event_ids)) != len(event_ids):
+        raise ValueError("duplicate source event")
+    if len(generated["pdg"]) != len(event_ids) or np.any(generated["pdg"] != 11) or not np.all(generated["parent_valid"]):
+        raise ValueError("expected one parent-linked CE per event")
+    if len(products["product_id"]) != len(event_ids):
+        raise ValueError("expected one raw g4run product per event")
+    gi = join(keys(generated, EVENT), event_ids)
+    pi = join(keys(products, EVENT), event_ids)
+    parent = {**events, "parent_product_id": products["product_id"][pi], "parent_key": generated["parent_key"][gi]}
+    particles = columns(source, "particles", IDENTITY + ("pdg", "parent_product_id", "parent_key", "parent_valid"))
+    pfields = EVENT + ("parent_product_id", "parent_key")
+    root = ((particles["pdg"] == 11) & particles["parent_valid"] &
+            (particles["sim_product_id"] == particles["parent_product_id"]) &
+            np.isin(keys(particles, pfields), keys(parent, pfields)))
+    roots = {k: v[root] for k, v in particles.items()}
+    if len(roots["event"]) != len(event_ids) or not np.array_equal(np.sort(keys(roots, EVENT)), np.sort(event_ids)):
+        raise ValueError("generated parent did not identify exactly one transport CE per event")
+    return keys(roots, IDENTITY)
 
-    The supported input is the single-CE StageParticle pilot, with the upstream
-    parent reseated into g4run under its original key. Photon-only and side-only
-    arrivals remain in the event census but are not direct-electron entries.
+
+def read(path, *, input_mode="stage"):
+    """First forward direct-electron front crossing and the entire event CSS.
+
+    Stage mode preserves the single-CE pilot contract. Explicit primary mode uses
+    the saved production PrimaryParticle and only physical-continuation edges.
+    Photon-only and side-only arrivals remain in the stored-event census.
     """
+    if input_mode not in ("stage", "primary"):
+        raise ValueError("input_mode must be stage or primary")
+    audit = {}
     with uproot.open(path) as source:
         events = columns(source, "events", EVENT + ("g4_status", "n_showers"))
-        generated = columns(source, "generated", EVENT + ("pdg", "parent_key", "parent_valid"))
-        products = columns(source, "products", EVENT + ("kind", "product_id"))
-        names = source["dump/products"]["branch_name"].array(library="np").astype(str)
-        transport = (products["kind"] == -1) & np.char.endswith(names, "_g4run__CaloLibraryCE.")
-        products = {k: v[transport] for k, v in products.items()}
         event_ids = keys(events, EVENT)
         if len(np.unique(event_ids)) != len(event_ids):
             raise ValueError("duplicate source event")
-        if len(generated["pdg"]) != len(event_ids) or np.any(generated["pdg"] != 11) or not np.all(generated["parent_valid"]):
-            raise ValueError("expected one parent-linked CE per event")
-        if len(products["product_id"]) != len(event_ids):
-            raise ValueError("expected one raw g4run product per event")
-        gi = join(keys(generated, EVENT), event_ids)
-        pi = join(keys(products, EVENT), event_ids)
-        parent = {**events, "parent_product_id": products["product_id"][pi], "parent_key": generated["parent_key"][gi]}
-        particles = columns(source, "particles", IDENTITY + ("pdg", "parent_product_id", "parent_key", "parent_valid"))
-        pfields = EVENT + ("parent_product_id", "parent_key")
-        root = ((particles["pdg"] == 11) & particles["parent_valid"] &
-                (particles["sim_product_id"] == particles["parent_product_id"]) &
-                np.isin(keys(particles, pfields), keys(parent, pfields)))
-        roots = {k: v[root] for k, v in particles.items()}
-        if len(roots["event"]) != len(event_ids) or not np.array_equal(np.sort(keys(roots, EVENT)), np.sort(event_ids)):
-            raise ValueError("generated parent did not identify exactly one transport CE per event")
-        root_ids = keys(roots, IDENTITY)
-        del particles
+        if np.any(events["g4_status"] != 0):
+            raise ValueError("input contains failed transport events; select completed input events first")
+        if input_mode == "primary":
+            from .production import primary_identity
+            root_ids, audit = primary_identity(source, events)
+        else:
+            if "input_mode" in source["dump/events"]:
+                if np.any(source["dump/events/input_mode"].array(library="np") != 0):
+                    raise ValueError("production export requires input_mode='primary'")
+            root_ids = _stage_identity(source, events)
         fields = IDENTITY + ("kind", "volume", "time") + tuple(p + "_" + a for p in ("position", "momentum") for a in "xyz")
         steps = columns(source, "steps", fields)
         front = ((steps["kind"] == 0) & np.isin(steps["volume"], (73, 75)) & np.isin(keys(steps, IDENTITY), root_ids))
@@ -73,8 +91,6 @@ def read(path):
         crystals = columns(source, "crystals", ("run", "crystal", "disk") + tuple(p + "_" + a for p in ("position", "size") for a in "xyz"))
         showers = columns(source, "showers", EVENT + ("crystal", "time", "energy_g4", "energy_birks") + tuple("position_" + a for a in "xyz"))
         vd = columns(source, "virtualdetectors", ("run", "id") + tuple("position_" + a for a in "xyz"))
-    if np.any(events["g4_status"] != 0):
-        raise ValueError("input contains failed transport events; select completed input events first")
     rotation = np.stack([vector(disks, "axis_" + a) for a in "xyz"], axis=2)
     disk_id = (steps["volume"] - 73) // 2
     drow = join(keys(disks, ("run", "disk")), keys({**steps, "disk": disk_id}, ("run", "disk")))
@@ -106,7 +122,33 @@ def read(path):
                   non_front_entry_events=int(np.sum(lookup < 0)),
                   non_front_entry_positive_events=int(np.sum((lookup < 0) & (total > 0))),
                   css_rows=len(srow), retained_css_rows=int(np.sum(take)))
+    census.update(audit)
     geometry = {"crystal_" + k: v for k, v in crystals.items()}
     geometry.update({"disk_" + k: v for k, v in disks.items()})
     geometry.update({"vd_" + k: v for k, v in vd.items()})
     return entries, css, geometry, census, total
+
+
+def main():
+    """Check saved numeric tables without fitting, sampling or building a library."""
+    import argparse
+    import json
+    from pathlib import Path
+
+    parser = argparse.ArgumentParser(description=main.__doc__)
+    parser.add_argument("input", type=Path)
+    parser.add_argument("--input-mode", choices=("stage", "primary"), default="stage")
+    parser.add_argument("--out", type=Path, required=True)
+    args = parser.parse_args()
+    _, _, _, census, _ = read(args.input, input_mode=args.input_mode)
+    report = dict(input=str(args.input), input_mode=args.input_mode, census=census,
+                  denominator="stored input events; not unconditional generated acceptance",
+                  geometry="exporter geometry; sample parity must be verified separately")
+    text = json.dumps(report, indent=2, allow_nan=False) + "\n"
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(text)
+    print(text, end="")
+
+
+if __name__ == "__main__":
+    main()

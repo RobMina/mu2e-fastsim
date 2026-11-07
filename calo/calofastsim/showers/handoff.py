@@ -93,15 +93,22 @@ def disk_front(field, library, x, u, kinetic_energy, time, *, step_mm=10., path_
                 radius=np.linalg.norm(x[keep, :2] - origin[d, :2], axis=1), time=time[keep])
 
 
-def from_cechain(result, field, library, rng, *, plane_fate=1, **options):
+def from_cechain(result, field, library, rng, *, plane_fate=1, placement="geometric", **options):
     """Return query states, sampled CSS, and counts; no cesob default changes.
 
     ``result`` is cechain's Result, including absolute ``t``; old cesob NPZs
     omit time and cannot be used for a timing-aware response without that input.
     """
+    if placement not in ("geometric", "crystal"):
+        raise ValueError("placement must be geometric or crystal")
     selected = np.flatnonzero(np.asarray(result.fate) == plane_fate)
     entries = disk_front(field, library, result.x[selected], result.u[selected], result.T[selected], result.t[selected], **options)
     entries["event_row"] = selected[entries["event_row"]]
-    draw = place(library, sample(library, entries, rng, orientation="disk"))
+    draw = sample(library, entries, rng, orientation="disk")
+    if placement == "crystal":
+        from .crystal_placement import place_crystals
+        draw = place_crystals(library, entries, draw)
+    else:
+        draw = place(library, draw)
     return dict(entries=entries, steps=draw, generated_events=len(result.fate),
                 tracker_entry_events=len(selected), disk_front_events=len(entries["energy"]))

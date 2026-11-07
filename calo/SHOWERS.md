@@ -76,6 +76,47 @@ are not silently assigned fabricated times. No beam file is modified.
 Full generated-event comparisons and timing are below; their denominators include non-front-entry events.
 The proxy remains unchanged.
 
+## Opt-in sampling, placement and input options
+
+All three options default to the behaviour above. With the defaults, outputs, output schema and RNG use are
+unchanged.
+
+**Radius-local donors.** `sample(..., radius_neighbors=K)` with a positive integer `K` keeps the same disk, the same
+selected energy/cosine/radius cell and the same closest-occupied-cell fallback, then restricts the donors in that
+cell to up to `K` rows nearest in entry radius. Equal distances break by library row. The eligible rows go back to
+library-row order before the same per-disk uniform draw is applied, so a cell with at most `K` rows gives the
+default donor. Empty showers stay eligible. Only this option adds the per-query `radius_pool_size` and
+`bin_pool_size` arrays (both zero for a disk without support). The default `radius_neighbors=0` is the original
+draw. No value of `K` is tuned or recommended here.
+
+**Crystal-aware placement.** `from_cechain(..., placement="crystal")` (default `"geometric"`) calls
+`crystal_placement.place_crystals(library, entries, draw)` after sampling. Instead of rotating each deposit into the
+target position, it moves each donor crystal centre as a whole to the nearest real crystal in the same disk, within
+half that crystal's cell diagonal, and keeps the deposit's crystal-local offset and depth without rotation or
+scaling. Deposits outside the disk radial/axial envelope, with a larger centre shift, or not contained in the
+target crystal stay losses: `crystal` is -1 and `crystal_loss_reason` is 1, 2 or 3 respectively. The result also
+carries `raw_position` (the sampled position before remapping) and `center_shift_mm`. This is a discrete shower
+model, not a correction of the geometric placement.
+
+**Production primary input.** `read(path, input_mode="primary")` (default `"stage"`) reads a production CE export
+through its saved `PrimaryParticle` instead of the StageParticle parent. It needs an export with
+`dump/events/input_mode == 1` and the extra columns `transport_product_id`, `transport_particles_present`,
+`primary_present`, `primary_product_id`, `n_primaries`, `n_particles`, `n_steps`, `showers_present` and
+`unresolved_links` in `events`; `sim_valid`, `generator_valid`, `generator_product_id`, `generator_key`,
+`self_parent` and `is_ce_endpoint` in `particles`; and the `primaries` and `genparticles` tables. The exporter
+changes that write these columns are not part of this repository. The reader requires exactly one
+`mu2eCeMinusEndpoint` electron per stored event, joined by its exact `(run, subrun, event, ProductID, key)` identity
+to the configured transport collection. Only `selfParent` continuations extend that direct electron; other
+descendants still contribute to the whole-event CSS but are not incident candidates. Parent links must resolve and
+be acyclic, every non-null generator link must resolve (the CE itself may have none), and every step and shower
+pointer must resolve. The census adds `direct_ce_particles`, `ce_descendant_css_rows` and
+`other_ancestry_css_rows`; nothing is dropped on ancestry. Stage mode refuses an export marked as primary.
+To check saved tables without building a library:
+
+```bash
+PYTHONPATH=calo python3 -m calofastsim.showers.export TABLES.root --input-mode primary --out input_check.json
+```
+
 ## Pilot result and current limit
 
 A 2,000-event stock pilot supplies 1,042 direct-electron front entries: 505 development (20,336 CSS, 17 empty
