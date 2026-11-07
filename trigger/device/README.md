@@ -30,6 +30,10 @@ python3 -m trigger.device.run decide --dump hold/*/trgdump.root --menu replay.fc
 ```
 
 Inputs: `trgdump.root` from `StrawHitTableDumper` (tracker package) run in the replay job on the trigger's own
-collections (`StrawHitTag: TrigMakeSH`, `PanelHitTag: TrigMakePH`, tree `w8ph`), which also gives the stock hits for
+collections (`StrawHitTag: TrigMakeSH`, `PanelHitTag: TrigMakePH`, tree `trigph` (`--tree` for another name)), which also gives the stock hits for
 `--check-hits`; `replay.fcl`, `manifest.json` and `inventory.json` from `trigger/replay.py`; the `TimeCluster.weights.xml`
 MLP from Offline `TrkPatRec/data`. Timing: `trigger/device/bench.py` with `mu2efastsim.bench`.
+
+`--precision float32` (bench: `TRIGGER_DEVICE_PRECISION=float32`) runs every device array in 32-bit, including
+the double-precision intermediates of the stock hit reconstruction; the default `float64` keeps the stock types.
+JAX's x64 flag is process-wide, so a process runs one precision.

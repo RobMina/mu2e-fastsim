@@ -1,9 +1,9 @@
 """Entry points for the shared warm-rate timer (`python3 -m mu2efastsim.bench`), boundary "StrawDigis -> decisions".
 
     TRIGGER_DEVICE_DUMPS=a.root,b.root TRIGGER_DEVICE_MENU=replay.fcl TRIGGER_DEVICE_MVA=TimeCluster.weights.xml \
-    [TRIGGER_DEVICE_RESPONSE=response.json] [TRIGGER_DEVICE_BATCH=1024] \
+    [TRIGGER_DEVICE_RESPONSE=response.json] [TRIGGER_DEVICE_BATCH=1024] [TRIGGER_DEVICE_PRECISION=float32] \
     python3 -m mu2efastsim.bench trigger.device.bench:step --prepare trigger.device.bench:load --events N \
-        --dtype float64 --workflow trigger --boundary "StrawDigis -> tracker trigger path decisions" --out bench.json
+        --dtype float64 (or float32, matching TRIGGER_DEVICE_PRECISION) --workflow trigger --boundary "StrawDigis -> tracker trigger path decisions" --out bench.json
 
 `load(N)` reads the first N events' digis into host memory and packs them into dense event blocks (not timed);
 `step(data)` runs a whole pass: host -> device transfer, hit reconstruction, time clusters, helices, every evaluated
@@ -24,16 +24,17 @@ from . import chain as chainmod, menu, run
 def load(n):
     dumps = os.environ["TRIGGER_DEVICE_DUMPS"].split(",")
     cfg = menu.parse_fcl(Path(os.environ["TRIGGER_DEVICE_MENU"]).read_text())
-    cond = run.conditions(dumps[0], os.environ.get("TRIGGER_DEVICE_TREE", "w8ph"))
+    cond = run.conditions(dumps[0], os.environ.get("TRIGGER_DEVICE_TREE", "trigph"))
     resp_path = os.environ.get("TRIGGER_DEVICE_RESPONSE")
     resp = json.loads(Path(resp_path).read_text()) if resp_path else {}
-    ch = chainmod.Chain(cfg, cond, os.environ["TRIGGER_DEVICE_MVA"], response=resp)
+    ch = chainmod.Chain(cfg, cond, os.environ["TRIGGER_DEVICE_MVA"], response=resp,
+                        precision=os.environ.get("TRIGGER_DEVICE_PRECISION", "float64"))
     size = int(os.environ.get("TRIGGER_DEVICE_BATCH", "1024"))
     blocks, left = [], n
     for d in dumps:
         if left <= 0:
             break
-        keys, ev, _ = run.load_dump(d, os.environ.get("TRIGGER_DEVICE_TREE", "w8ph"))
+        keys, ev, _ = run.load_dump(d, os.environ.get("TRIGGER_DEVICE_TREE", "trigph"))
         keys = keys[:left]
         ev = {k: v[:left] for k, v in ev.items()}
         left -= len(keys)

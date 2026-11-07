@@ -58,7 +58,7 @@ def conditions(path, tree):
         hitreco.uproot = real
 
 
-def load_dump(path, tree="w8ph"):
+def load_dump(path, tree="trigph"):
     names = ["run", "subrun", "event", "pbt", "spill"] + ["d_" + k for k in DIG] + \
         [p + k for p in ("s_", "p_") for k in STOCK]
     a = uproot.open(path)[f"{tree}/events"].arrays(names)
@@ -147,8 +147,8 @@ def cmd_decide(args):
     cfg = menu.parse_fcl(Path(args.menu).read_text())
     cond = conditions(args.dump[0], args.tree)
     resp = json.loads(Path(args.response).read_text()) if args.response else {}
-    ch = chainmod.Chain(cfg, cond, args.tc_mva, response=resp, debug=args.check_hits)
-    report, device, stages = {}, {}, {}
+    ch = chainmod.Chain(cfg, cond, args.tc_mva, response=resp, debug=args.check_hits, precision=args.precision)
+    report, device, stages, stage_flags = {}, {}, {}, {}
     t_dev = 0.0
     for dump in args.dump:
         keys, ev, stock = load_dump(dump, args.tree)
@@ -165,6 +165,10 @@ def cmd_decide(args):
         dec = {k: np.concatenate([o[k] for o in outs]) for k in outs[0]}
         aux = {k: np.concatenate([a[k] for a in auxs]) for k in auxs[0]}
         dec = ch.finish(dec, aux, len(keys))
+        for i, key in enumerate(keys):            # deterministic stage results (before response-layer draws)
+            stage_flags["|".join(map(str, key))] = {
+                st: sorted(n for n in ch.plan if f"{n}:{st}" in aux and aux[f"{n}:{st}"][i])
+                for st in ("tc", "hs_raw", "ks_raw")}
         for k, v in aux.items():
             name, _, stage = k.partition(":")
             if stage in ("tc", "hs_raw", "hs", "ks_raw"):
@@ -175,7 +179,7 @@ def cmd_decide(args):
                 raise ValueError(f"event {key} in two dumps")
             device[key] = {p: bool(v[i]) for p, v in dec.items()}
     result = {"dumps": [str(d) for d in args.dump], "events": len(device), "paths": sorted(ch.plan),
-              "skipped": ch.skipped, "response": resp, "stages": stages, "hits": report,
+              "precision": ch.precision, "skipped": ch.skipped, "response": resp, "stages": stages, "hits": report,
               "wall_s_including_compile": t_dev}
     if args.logs:
         manifest = json.loads((Path(args.prepared) / "manifest.json").read_text())
@@ -193,6 +197,8 @@ def cmd_decide(args):
         result["paired"] = paired
         exact = {p: r["stock_only"] + r["device_only"] for p, r in paired["paths"].items()}
         result["discordant"] = exact
+    result["stage_flags"] = stage_flags
+    result["decisions"] = {"|".join(map(str, k)): [p for p, v in sorted(d.items()) if v] for k, d in device.items()}
     Path(args.output).write_text(json.dumps(result, indent=1, default=float))
     if "paired" in result:
         for p, r in sorted(result["paired"]["paths"].items()):
@@ -212,7 +218,7 @@ def main(argv=None):
     k.add_argument("--output", required=True)
     d = sub.add_parser("decide")
     d.add_argument("--dump", nargs="+", required=True)
-    d.add_argument("--tree", default="w8ph")
+    d.add_argument("--tree", default="trigph")
     d.add_argument("--menu", required=True)
     d.add_argument("--tc-mva", required=True)
     d.add_argument("--response")
@@ -220,6 +226,7 @@ def main(argv=None):
     d.add_argument("--prepared")
     d.add_argument("--event-mode", default="OffSpill")
     d.add_argument("--batch", type=int, default=512)
+    d.add_argument("--precision", choices=chainmod.PRECISIONS, default="float64")
     d.add_argument("--check-hits", action="store_true")
     d.add_argument("--output", required=True)
     args = ap.parse_args(argv)

@@ -61,9 +61,9 @@ def _one_event(hit, s, net):
     inr = valid & (cht >= s["tmin"]) & (cht < s["tmax"])
     hist = jnp.zeros(nbins + 2, F32).at[jnp.where(inr, b, 0)].add(jnp.where(inr, nsh_i, 0.0).astype(F32))
     centre = s["tmin"] + (jnp.arange(nbins + 2) - 0.5) * width
-    # candidates: bins >= Ymin by content (descending), ties by bin number
+    # candidates: bins >= Ymin by content (descending), ties by bin number; exact in float32 (integer contents)
     key = jnp.where((jnp.arange(nbins + 2) >= 1) & (jnp.arange(nbins + 2) <= nbins) & (hist >= s["ymin"]),
-                    hist.astype(F64) * 1e6 - jnp.arange(nbins + 2), -jnp.inf)
+                    hist * 16384.0 - jnp.arange(nbins + 2), -jnp.inf)
     _, cand = jax.lax.top_k(key, NCAND)
     cand_ok = jnp.isfinite(key[cand])
     npk = s["npeak"]
