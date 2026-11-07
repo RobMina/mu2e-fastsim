@@ -3,12 +3,12 @@ import json
 
 import pytest
 
-from mixing.plot_throughput import main, make_figure
+from mixing.plot_throughput import ENDPOINT_SCOPE, hardware_label, main, make_figure, public_numbers
 
 
 def receipt():
-    return {"events": 3, "hardware": {"text": "cpus=2 NVIDIA A100-SXM4-80GB"},
-            "stock": {"external_process": {"events_per_s": 1.5}, "endpoint": "UVA historical 1 CPU; not grid or GPVM"},
+    return {"events": 3, "hardware": {"label": "fast endpoint"},
+            "stock": {"external_process": {"events_per_s": 1.5}, "hardware": {"label": "stock endpoint"}},
             "runs": [{"python_process": {"events_per_s": rate}, "validation": {"outputs": {"equal": True}},
                       "cache_state": "fresh_private_cache" if index == 0 else "populated_cache_fresh_process"}
                      for index, rate in enumerate((2., 3., 3.1))]}
@@ -37,23 +37,36 @@ def test_bad_measurement_never_becomes_figure(tmp_path, mutation):
     assert not (tmp_path / "plot.png").exists()
 
 
-@pytest.mark.parametrize("mutation", ["hardware", "cpus", "cache", "stock"])
-def test_unsupported_labels_rejected(tmp_path, mutation):
+@pytest.mark.parametrize("metadata", [None, {}, {"text": "raw provenance only"}])
+def test_missing_label_renders_hardware_not_recorded(tmp_path, metadata):
+    assert hardware_label(metadata) == "hardware not recorded"
     data = receipt()
-    if mutation == "hardware":
-        data["hardware"] = None
-    elif mutation == "cpus":
-        data["hardware"]["text"] = "cpus=20 A100"
-    elif mutation == "cache":
-        data["runs"][0]["cache_state"] = "populated_cache_fresh_process"
-    else:
-        data["stock"]["endpoint"] = "unknown"
-    with pytest.raises(ValueError, match="recorded UVA"):
+    data["hardware"] = metadata
+    data["stock"]["hardware"] = metadata
+    make_figure(data, tmp_path / "plot.png")
+    assert (tmp_path / "plot.png").read_bytes().startswith(b"\x89PNG")
+
+
+@pytest.mark.parametrize("label", ["", "   ", "device\nhost", "device\rhost", 2])
+@pytest.mark.parametrize("side", ["fast", "stock"])
+def test_invalid_label_raises(tmp_path, label, side):
+    data = receipt()
+    (data if side == "fast" else data["stock"])["hardware"] = {"label": label}
+    with pytest.raises(ValueError, match="single-line public label"):
         make_figure(data, tmp_path / "plot.png")
+    assert not (tmp_path / "plot.png").exists()
+
+
+def test_wrong_cache_order_raises(tmp_path):
+    data = receipt()
+    data["runs"][0]["cache_state"], data["runs"][1]["cache_state"] = (
+        data["runs"][1]["cache_state"], data["runs"][0]["cache_state"])
+    with pytest.raises(ValueError, match="expected a fresh cache"):
+        make_figure(data, tmp_path / "plot.png")
+    assert not (tmp_path / "plot.png").exists()
 
 
 def test_public_number_export_drops_internal_provenance():
-    from mixing.plot_throughput import public_numbers
     data = receipt()
     data.update(denominator="all events", boundary="steps to output", excluded=["transport"],
                 cache_scope="private", comparison_scope="historical only", rootdir="/private/path")
@@ -68,3 +81,6 @@ def test_public_number_export_drops_internal_provenance():
     assert public["fast"][0]["events_per_s"] == 2.
     assert "/private" not in json.dumps(public)
     assert "hardware" not in public and "rootdir" not in public
+    assert public["endpoint_scope"] == ENDPOINT_SCOPE
+    assert public["stock"]["endpoint"] == "stock endpoint"
+    assert [run["endpoint"] for run in public["fast"]] == ["fast endpoint"] * 3

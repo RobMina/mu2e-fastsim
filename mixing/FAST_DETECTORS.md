@@ -219,6 +219,19 @@ private JAX/CUDA cache followed by two fresh processes sharing the now-populated
 caches, on the same allocated GPU. These are not in-process warm passes; operating-
 system/storage caches are uncontrolled. Cache file inventories are saved.
 
+The launcher is `mixing/run_throughput.sbatch`. It names no account, partition or
+site path: submit it with `sbatch -A ACCOUNT -p PARTITION --gres=gpu:1
+mixing/run_throughput.sbatch OUT REFERENCE STOCK -- INPUTS...`, where `OUT` is a new
+directory, `REFERENCE` the saved direct reference run, `STOCK` the saved stock run
+with its `art.time`, and `INPUTS` the direct-frame `fast_detectors` inputs
+(`--frames-manifest`, `--expanded`, `--truth`, `--stock`, `--photon-csv`,
+`--tracker-conditions`, ...). The image, umbrella checkout, bind list and runtime
+data come from `FASTSIMKIT_SIF`, `M2FS_CODE`, `THROUGHPUT_BINDS`, `MU2E_SEARCH_PATH`
+and `CRVFS_LOOKUP_DIR`. It writes `hardware.json` with a label built from the
+allocated GPU name, CPUs and memory (or `THROUGHPUT_HARDWARE_LABEL`), and
+`stock_hardware.json` only when `THROUGHPUT_STOCK_LABEL` is set; then it runs the
+three timed processes and `mixing.throughput`.
+
 After all timers stop, `python3 -m mixing.throughput ROOTDIR --reference
 SAVED_DIRECT_DIR --stock SAVED_STOCK_DIR --out report.json` checks finished
 highest-cycle event entries (including empty detector events), full-ID agreement,
@@ -231,29 +244,38 @@ Boundary: existing complete source-frame pools and explicit timing/conditions to
 tracker digis/ADCs plus CRV digis/pulses/clusters. Source-pool extraction, prior
 transport, staging, queue wait and post-run comparisons are separate. This is not
 calorimeter simulation, tracker track fitting, trigger processing, or a complete
-native art truth/product output. A historical stock UVA measurement is not a grid
+native art truth/product output. A historical stock measurement is not a grid
 or GPVM rate; different hardware, saved timing inputs, mixing implementation and
 diagnostic schemas preclude a certified grid-slot equivalence. The earlier cosmic
-CRV deck's grid denominator cannot be reused for this pileup workflow.
+CRV grid denominator cannot be reused for this pileup workflow.
 
 ### Measured single-pass result (6 November 2026)
 
-All three 2,741-event runs completed on one A100-80GB with two host CPUs and
-64 GB RAM. Each uses a fresh process, one preparation and one detector pass.
+All three 2,741-event runs completed on one allocated GPU; the hardware each
+endpoint ran on is the label in the run's `hardware.json` (fast) and
+`stock_hardware.json` (stock), carried into the report, figure and public numbers
+("hardware not recorded" when absent). Each uses a fresh process, one preparation
+and one detector pass.
 Highest-cycle persisted entries, all sampling choices/source identities and every
 column in all five detector tables match the saved validated direct reference.
+
+Fast boundary: fresh Python process launch through output and exit, from cached
+source-frame pools through sampling/mixing, detector response and reduced ROOT output.
 
 | Cache state | Process wall (s) | End-to-end events/s | Container + process (s) |
 |---|---:|---:|---:|
 | Fresh private JAX/CUDA caches | 408.044529 | 6.717404 | 409.36 |
 | Populated caches, fresh process 1 | 218.420718 | 12.549176 | 219.20 |
 | Populated caches, fresh process 2 | 219.471473 | 12.489095 | 220.29 |
-| Historical stock, one UVA CPU | 443.27 | 6.183590 | not measured comparably |
 
-The historical stock process receipt is reused, not rerun; art's internal
-436.465571 s is a separate boundary. The roughly 2x populated-cache/stock rate
-ratio is descriptive, not a certified speedup or grid-slot equivalence.
 The earlier response-only ~22 events/s must not replace these end-to-end rates.
+
+Stock is a separate measurement on a different device with a different boundary:
+GNU time around the external art process, launch through exit, including native
+mixing, framework/source I/O and the richer native detector diagnostics. The
+historical receipt is reused, not rerun: 443.27 s process wall, 6.183590 events/s.
+Art's internal TimeReport (436.465571 s) is a further separate boundary. The stock
+and fast rates are not a speedup comparison.
 
 Populated-cache setup takes 27.39/27.38 s (including 24.72/24.70 s input), combined
 response 178.25/179.15 s, and ROOT writing 2.32/2.31 s. Fresh-process import/GPU
@@ -264,23 +286,22 @@ run, 38 afterwards, and 38 before/after both populated-cache runs. Storage/OS
 caches were not flushed. These measurements do not predict an in-process steady-
 state rate or a different sample size.
 
-`mixing.plot_throughput REPORT --out FIGURE --numbers NUMBERS` makes the separate
-slide handoff from this validated report, checks the recorded endpoint labels,
-and strips private paths/job IDs from the public numbers. The figure records the opt-in chain and timing boundary. Original occupancy
-assets stay unchanged.
+`mixing.plot_throughput REPORT --out FIGURE --numbers NUMBERS` draws the stock and
+fast endpoints on separate axes from this validated report, takes each endpoint's
+hardware label from the report's metadata ("hardware not recorded" when absent),
+and strips private paths/job IDs from the public numbers. The figure records the
+opt-in chain and timing boundary. Original occupancy assets stay unchanged.
 
-The user's 100x stock-throughput requirement applies to large production-scale jobs,
-not this 2,741-event fresh-process latency test. Neither these process timings nor
-the earlier repeated-response measurements establish the large-job limit. A future
+Production-scale throughput is not measured by this 2,741-event fresh-process
+latency test. Neither these process timings nor the earlier repeated-response
+measurements establish the large-job limit. A future
 measurement needs many realizations streamed through one persistent process with
 reused source pools/assets, representative occupancy, bounded memory and actual
 output writing. Larger event counts alone do not enlarge the present 32-event
 response chunks; batching and sustained throughput must be measured, not extrapolated.
 
-Tracker status checked 6 November: TRK2 is developing field-on reconstruction;
-shared digitizer optimization is explicitly deferred. The earlier device-chain
-wrapper enables `digi_clusters_jax.MINION_UNROLL=16` and
+The earlier device-chain wrapper enables `digi_clusters_jax.MINION_UNROLL=16` and
 `SEARCH_METHOD="compare_all"`, whereas this direct caller uses the module defaults
 `1` and `"scan"`. These existing settings are a candidate integration test, not a
-measured PU1 speedup. Dense on-spill equality/physics and memory checks are needed
+measured speedup. Dense on-spill equality/physics and memory checks are needed
 before adopting them; no detector kernel or runtime setting was changed here.
