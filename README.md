@@ -1,5 +1,8 @@
 # mu2e-fastsim
 
+**New here? [QUICKSTART.md](QUICKSTART.md)**: from this URL to your own job on EAF, a Mu2e GPVM or your own Slurm
+cluster in about 10 minutes.
+
 Geant4-free, GPU-ready fast simulation and fast reconstruction for Mu2e design and calibration studies:
 
 - the **cosmic chain of the extracted (KPP, no field) configuration**: CRV (fast CrvSteps, response, digis, pulses,
@@ -24,40 +27,30 @@ Every stage is NumPy by default with JAX twins for CPU and GPU; stages exchange 
 
 ## Status
 
-| Stage | Validated against | Result | Open |
+| Stage | Validated against | Headline | Open |
 |---|---|---|---|
-| CRV | Geant4 + stock Offline, stage by stage and end to end | V0, V1, V4, V-R1..V-R5 pass; 5 M held-out events: counts within 0.25 %; paired per-shard statistic: 11/155 histograms flagged with fast steps (7 quantities: cluster PE, multiplicities), 12/133 end to end | cluster-PE shape, adjacent-layer descendant correlation; Run 2 V1; named configurations |
-| tracker | Geant4 + stock Offline | T-V0, T-V1 pass; digis, hits, seeds agree with stock | rate -0.82 +- 0.26 % (default), +0.14 +- 0.26 % with the opt-in `--scatter-in`; T-V3 yield -1.42 +- 0.37 % (default), -0.85 +- 0.37 % (`--scatter-in`); secondary placement; F1 frozen at 94.2 % (default), 95.6 % (opt-in time model) vs 99.5 % |
-| beam | stock and refined-step Geant4 DS stage on the same muons | stop fraction ratio 0.9976 +- 0.0058 (nominal), 0.9950 +- 0.0031 (49 foils); finer Geant4 steps do not move it (refined / stock 1.0016 +- 0.0020, 1.0019 +- 0.0011) | fast 0.5-0.7 % low with paired errors, 2.15 sigma against refined steps on 49 foils; stopping-edge shape not compared for the default transport |
-| electrons | ESTAR, Geant4 slabs (EM option 4); field stepping against analytic helices and RK4; conversion electrons to the tracker entry against Geant4 CeEndpoint | slab physics (`eslab`, device twin `eslab_jax` with field and lane compaction): loss chi2/ndf 0.6-1.4, 1 X0 W reflected 0.336 vs 0.347 +- 0.013 %; CE chain `beam/beamfastsim/cechain.py`: yield per generated electron 1.004 +- 0.003 and the angles and energy at the tracker entry agree with Geant4 CeEndpoint; sob stand-in `cesob`: Geant4 / fast 0.9920 +- 0.0006 on 65 design points; device chain (`--backend device`) agrees with it on the same starts | [core limitations](https://github.com/RobMina/mu2e-fastsim-core/blob/main/docs/limitations.md) |
+| CRV | Geant4 + stock Offline, stage by stage and end to end | 5 M held-out events: counts within 0.25 %; cluster PE chi2/ndf 1.09 | cluster-PE shape, adjacent-layer correlations; named configurations |
+| tracker | Geant4 + stock Offline | digis, hits and seeds agree with stock; track yield -1.42 +- 0.37 % | yield and rate offsets; secondary placement |
+| beam | Geant4 DS stage on the same muons | stop fraction ratio 0.9976 +- 0.0058 (nominal), 0.9950 +- 0.0031 (49 foils) | 0.5-0.7 % low against refined-step Geant4 |
+| electrons | ESTAR and Geant4 slabs; Geant4 CeEndpoint | CE yield at the tracker entry 1.004 +- 0.003 of Geant4; sob stand-in Geant4 / fast 0.9920 +- 0.0006 on 65 design points | energy-loss tail; calorimeter proxy |
 
-Tables with samples, thresholds, dates and commits: [`docs/validation.md`](docs/validation.md). Not implemented or
-not validated: [`docs/limitations.md`](docs/limitations.md).
+Samples, thresholds, dates and commits: [`docs/validation.md`](docs/validation.md). Not implemented or not
+validated: [`docs/limitations.md`](docs/limitations.md).
 
 ## Quickstart
 
+[QUICKSTART.md](QUICKSTART.md) has the three paths (EAF, GPVM, own Slurm cluster), the demo
+(`python3 -m mu2efastsim.demo`) and one kit task with a changed parameter. The inputs are Mu2e-internal: Mu2e members
+request the input release `mu2e-fastsim-inputs-v1.2` as described in [`setup/README.md`](setup/README.md). The tests
+need no inputs:
+
 ```bash
 git clone --recurse-submodules https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
-cp site.env.example site.env      # set M2FS_INPUTS (verified input release) and M2FS_DATA (outputs)
-source site.env
-python3 -m pytest -q -p no:cacheprovider core/tests          # no inputs needed
-python3 -m mu2efastsim.inputs check-inputs --manifest RELEASE.json --root "$M2FS_INPUTS"
-G="$CRVFS_DATA/g4ref_v2_tables/gen.001400_00000022.root"; GEOM="$CRVFS_DATA/geometry"
-# CRV, default chain on 1,000 events (CPU)
-python3 -m crvfastsim runchain "$G" --tier1b-dir "$CRVFS_DATA/tier1b_strict_v5" --gdml "$GEOM/mu2e_extracted_v04.gdml" \
-  --calib "$GEOM/crvcalib_sim_best_v1_5_run1400.csv" --deviation "$GEOM/crvphoton_sim_best_v1_5_run1400.csv" \
-  --max-events 1000 --seed 22 --outdir "$M2FS_DATA/crv-smoke"
-# tracker, stage C steps of the same shard
-python3 -m trkfastsim steps "$G" --gdml "$GEOM/mu2e_extracted_v04.gdml" --stage C --sliced-msc --seed 22 \
-  --outdir "$M2FS_DATA/tracker-smoke"
-# beam, stop fraction of the nominal target (JAX)
-python3 -m beamfastsim point --g4 "$M2FS_INPUTS/beam_fastsim/g4ref_full/g4ref.npz" --n 20000 --out "$M2FS_DATA/beam-smoke"
+python3 -m venv .venv && .venv/bin/pip install -q -e core -e crv -e tracker -e beam -r core/ci/requirements.txt
+.venv/bin/python -m pytest -q -p no:cacheprovider core/tests
 ```
 
-Environment options (venv, Mu2e GPVM, image), every `site.env` block and the beam staging step without CVMFS:
-[`docs/running.md`](docs/running.md). **The inputs are Mu2e-internal**: Mu2e members request the input
-release `mu2e-fastsim-inputs-v1.2` as described in [`setup/README.md`](setup/README.md), which also gives its layout
-and verification.
+Every environment option, `site.env` block and the beam staging step without CVMFS: [`docs/running.md`](docs/running.md).
 
 ## Endpoints and throughput
 
