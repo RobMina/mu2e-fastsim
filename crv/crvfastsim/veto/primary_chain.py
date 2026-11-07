@@ -114,7 +114,7 @@ def reconstruct(charges, cond, cfg, rng, geom, ccfg, selection, timers):
     return coincidence_rows(outs, geom, selection)
 
 
-def load_setup(gdml, calib, deviation, library_dir=None):
+def load_setup(gdml, calib, deviation, library_dir=None, device_refit=False):
     """Load the event-independent setup of the C4 chain once: run configuration, conditions, transport world,
     optical tables, SiPM photon map and the optional library. Draws no random numbers; pass the result to run()
     (``setup=``) to process several selections in one process without reloading (crvfastsim.veto.stream)."""
@@ -124,6 +124,9 @@ def load_setup(gdml, calib, deviation, library_dir=None):
     rc = runconfig.get("run1a_v01")
     geom, ccfg = rc.geometry(), rc.counters_cfg()
     cfg = rc.chain_config(jax=True)
+    if device_refit:
+        import dataclasses
+        cfg = dataclasses.replace(cfg, device_refit=True)
     cond = chain.Conditions.from_csv(calib, deviation)
     cond = readout.apply(cond, geom, ccfg)
     world, _ = transport.load_world(gdml, banded=True, y_plane=transport.msc_plane(geom))

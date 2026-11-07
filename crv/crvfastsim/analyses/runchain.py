@@ -40,7 +40,7 @@ SECTOR_TYPES = {1: "EX", 2: "T1", 3: "T2", 4: "M"}
 
 
 def _resolve(library, calib, deviation, gdml, jax, counters, run_config, window, fused_response=False,
-             tier1b_set=None, tier1b_dir=None, resident_response=False):
+             tier1b_set=None, tier1b_dir=None, resident_response=False, device_refit=False):
     """Resolve setup arguments without loading large assets or drawing random numbers."""
     if not calib:
         raise SystemExit("runchain needs --calib (a CRVCalib CSV or nominal)")
@@ -53,6 +53,8 @@ def _resolve(library, calib, deviation, gdml, jax, counters, run_config, window,
         cfg = dataclasses.replace(cfg, fused_response=True)
     if resident_response:
         cfg = dataclasses.replace(cfg, resident_response=True)
+    if device_refit:
+        cfg = dataclasses.replace(cfg, device_refit=True)
     gdml_path = gdml or (rc.gdml_path() if rc.name != runconfig.DEFAULT else default_gdml())
     try:
         spec = tier1b_assets.resolve(tier1b_set, library, tier1b_dir, rc.name)
@@ -100,7 +102,7 @@ class PreparedContext:
 
 def prepare(library=None, calib=None, deviation=None, gdml=None, jax=False, counters=None,
             run_config=None, window=None, benchmark=None, fused_response=False,
-            below_margin=None, tier1b_set=None, tier1b_dir=None, resident_response=False):
+            below_margin=None, tier1b_set=None, tier1b_dir=None, resident_response=False, device_refit=False):
     """Load and seal reusable CSV setup."""
     if fused_response:
         raise ValueError("prepared context does not support memory-dependent fused response batching")
@@ -108,7 +110,7 @@ def prepare(library=None, calib=None, deviation=None, gdml=None, jax=False, coun
     from ..reco import waveform as WF
     rc, cfg, gdml_path, _, spec = _resolve(library, calib, deviation, gdml, jax, counters, run_config, window,
                                            fused_response, tier1b_set=tier1b_set, tier1b_dir=tier1b_dir,
-                                           resident_response=resident_response)
+                                           resident_response=resident_response, device_refit=device_refit)
     rc, cfg = copy.deepcopy((rc, cfg))
     sig = _signature(rc, cfg, gdml_path, spec, calib, deviation, below_margin)
     if benchmark is not None:
@@ -290,7 +292,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
     bench_start = time.perf_counter() if benchmark is not None else None
     rc, cfg, gdml_path, time_window, spec = _resolve(library, calib, deviation, gdml, jax, counters, run_config, window,
                                                      kw.get("fused_response", False), tier1b_set, tier1b_dir,
-                                                     kw.get("resident_response", False))
+                                                     kw.get("resident_response", False), kw.get("device_refit", False))
     for warning in time_window["warnings"]:
         print(f"# time window: {warning}", flush=True)
     if benchmark is not None:

@@ -161,6 +161,9 @@ def build_parser():
             sp.add_argument("--reco-cpu", action="store_true", help="with --jax: pulses and coincidences on the JAX CPU backend")
             sp.add_argument("--prefetch", action="store_true",
                             help="read, transport and tier 1b of the next file in a thread while the device runs this one")
+            sp.add_argument("--device-refit", action="store_true",
+                            help="with --jax: waveforms the short pulse fit flags are refit on the device at full "
+                                 "length before any numpy refit (reco.chain_jax._device_refit)")
             sp.add_argument("--resident-response", action="store_true",
                             help="with --jax: photons stay on the device into the SiPM stage (same charges as the "
                                  "two-stage twins; response.resident)")

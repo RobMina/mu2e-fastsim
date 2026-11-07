@@ -75,6 +75,8 @@ class ChainConfig:
     background_scale: float = 1.0       # multiplies the background model's net rate (knob background_scale)
     pulse_reco: object = None           # reco.pulsefit.RecoConfig (None: the stock defaults)
     feb_phase_width: float = PERIOD     # uniform FEB clock-phase width [ns]
+    device_refit: bool = False          # JAX reco: waveforms the 12-sample, 3-round pulse fit flags are refit on the
+                                        # device at full length (reco.chain_jax._device_refit) before any numpy refit
     resident_response: bool = False     # JAX: photons stay on the device into the SiPM stage (response.resident;
                                         # the same draws and charges as the two-stage twins, no thermal noise)
 
@@ -289,7 +291,8 @@ def clusters(W, cond, geom, counters_cfg, cfg, timers=None, detail=False, rng=No
         from .reco import chain_jax
         return chain_jax.run(W, G, cond.status, n_chunks=max(1, min(8, len(np.unique(W["ev"])) // 1000)),
                              rounds=cfg.rounds, L=12, timers=timers, keep_pulses=detail, with_pos=detail, coinc_cfg=fcfg, pulse_cfg=rcfg,
-                             add_pulses=background_sampler(cfg, rng if rng is not None else np.random.default_rng()))
+                             add_pulses=background_sampler(cfg, rng if rng is not None else np.random.default_rng()),
+                             **({"device_refit": True} if cfg.device_refit else {}))
     t0 = _time.perf_counter()
     P = pulsefit.reconstruct_full(W["adc"], W["n"], W["start"], W["ped"], W["area"], W["height"], rcfg)
     P = pulsefit.filter_channels(P, W['bar'] * 4 + W['sipm'], cond.status, rcfg)

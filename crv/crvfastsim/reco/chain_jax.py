@@ -38,14 +38,66 @@ def _pulse_dispatch(W, rows, cfg, batch, L):
     return outs
 
 
-def _pulse_collect(outs, W, rows, cfg_np):
-    """Flat pulses (waveform row, seq, pe, time) in (waveform, seq) order; flagged waveforms redone in numpy."""
+REFIT_ROUNDS = 16        # device refit: pulse rounds (static); a pulse in the last one still goes to numpy
+REFIT_MIN_L = 16         # device refit: smallest padded waveform length
+
+
+def _bucket(n, lo):
+    return max(lo, 1 << int(np.ceil(np.log2(max(n, 1)))))
+
+
+def _device_refit(W, g, cfg_np):
+    """Waveforms g (W rows) through the dense JAX fit at full length (power-of-two padded) with REFIT_ROUNDS rounds.
+    Returns (flat pulses wf/seq/pe/time with wf indexing g, mask of g still needing the numpy refit)."""
+    import jax.numpy as jnp
+    n = W["n"][g]
+    L2 = _bucket(int(n.max()), REFIT_MIN_L)
+    R = _bucket(len(g), 1024)
+    adc = np.zeros((R, L2), W["adc"].dtype)
+    width = min(L2, W["adc"].shape[1])
+    adc[:len(g), :width] = W["adc"][g][:, :width]
+    pad = lambda x, v: np.concatenate([x, np.full(R - len(g), v, x.dtype)])
+    cfg = dataclasses.replace(cfg_np, max_pulses=max(cfg_np.max_pulses, REFIT_ROUNDS))
+    d = PJ.reconstruct_dense(jnp.asarray(adc), jnp.asarray(pad(n, 0)), jnp.asarray(pad(W["start"][g], 0)),
+                             jnp.asarray(pad(W["ped"][g].astype(float), 0.0)),
+                             jnp.asarray(pad(W["area"][g].astype(float), 1.0)),
+                             jnp.asarray(pad(W["height"][g].astype(float), 1.0)), cfg=cfg)
+    d = {k: dprec.host(d[k])[:len(g)] for k in ("found", "pe", "time", "rounds_exhausted", "window_overflow")}
+    again = d["rounds_exhausted"] | d["window_overflow"]
+    wf, seq = np.nonzero(d["found"] & ~again[:, None])
+    return dict(wf=wf, seq=seq, pe=d["pe"][wf, seq], time=d["time"][wf, seq]), again
+
+
+def _pulse_collect(outs, W, rows, cfg_np, device_refit=False, counts=None):
+    """Flat pulses (waveform row, seq, pe, time) in (waveform, seq) order; flagged waveforms redone in numpy, or first
+    on the device at full length (device_refit) with only the ones that still overflow in numpy."""
     d = {k: np.concatenate([dprec.host(o[k])[:n] for o, n in outs]) for k in PULSE_KEYS}
     wf, seq = np.nonzero(d["found"])
     redo = d["rounds_exhausted"] | d["window_overflow"] | d["input_truncated"]
     pe, tm = d["pe"][wf, seq], d["time"][wf, seq]
     nredo = int(redo.sum())
-    if nredo:
+    if nredo and device_refit:
+        rr = np.flatnonzero(redo)
+        dev, again = _device_refit(W, rows[rr], cfg_np)
+        parts = [dev]
+        if again.any():
+            ra = np.flatnonzero(again)
+            g = rows[rr[ra]]
+            s = pulsefit.reconstruct_full(W["adc"][g], W["n"][g], W["start"][g], W["ped"][g].astype(float),
+                                          W["area"][g].astype(float), W["height"][g].astype(float), cfg_np)
+            parts.append(dict(wf=ra[s["wf"]], seq=s["seq"], pe=s["pe"], time=s["time"]))
+        sub = {k: np.concatenate([q[k] for q in parts]) for k in ("wf", "seq", "pe", "time")}
+        if counts is not None:
+            counts["pulse_device_refit"] = counts.get("pulse_device_refit", 0) + int(nredo - again.sum())
+        keep = ~redo[wf]
+        wf = np.concatenate([wf[keep], rr[sub["wf"]]])
+        seq = np.concatenate([seq[keep], sub["seq"]])
+        pe = np.concatenate([pe[keep], sub["pe"]])
+        tm = np.concatenate([tm[keep], sub["time"]])
+        o = np.lexsort((seq, wf))
+        wf, seq, pe, tm = wf[o], seq[o], pe[o], tm[o]
+        nredo = int(again.sum())
+    elif nredo:
         rr = np.flatnonzero(redo)
         g = rows[rr]
         sub = pulsefit.reconstruct_full(W["adc"][g], W["n"][g], W["start"][g], W["ped"][g].astype(float),
@@ -61,13 +113,14 @@ def _pulse_collect(outs, W, rows, cfg_np):
 
 
 def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.FinderConfig(), timers=None,
-        keep_pulses=False, with_pos=False, add_pulses=None, pulse_cfg=None):
+        keep_pulses=False, with_pos=False, add_pulses=None, pulse_cfg=None, device_refit=False):
     """W: waveforms sorted by (ev, channel, time) with pulsefit inputs and ev, bar, sipm; optional "toff" (per-waveform
     DB time offset [ns], added to the pulse times as CrvRecoPulsesFinder does with useTimeOffsetDB; offspill TDC0time
     is 0). Optional "event_t0" is a per-waveform bunch correction added independently of DB calibration.
     Returns per-chunk cluster outputs (list) and timers (pulse_dispatch_s, pulse_collect_s, coinc_async_s,
     coinc_finish_s, wall_s). keep_pulses: each chunk output also carries its flat pulses under "pulses" (ev, idx, bar,
     sipm, seq, pe, time; idx is the member index mem_idx refers to). with_pos: clusters carry cl_pos [n, 3].
+    device_refit: flagged waveforms are refit on the device at full length first (_device_refit), numpy only after.
     add_pulses: callable(events) -> extra pulses (ev, bar, sipm, pe, time, seq) merged before the coincidence finder
     (reco.background: out-of-time light deposits the MC does not simulate)."""
     timers = timers if timers is not None else {}
@@ -92,7 +145,8 @@ def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.Finde
             add("pulse_dispatch_s", t0)
         if 0 <= k - 1 < len(chunks):
             t0 = tic()
-            wrow, seq, pe, tm, nredo = _pulse_collect(pul.pop(k - 1), W, chunks[k - 1], cfg_np)
+            wrow, seq, pe, tm, nredo = (_pulse_collect(pul.pop(k - 1), W, chunks[k - 1], cfg_np, True, timers)
+                                        if device_refit else _pulse_collect(pul.pop(k - 1), W, chunks[k - 1], cfg_np))
             if cfg_np.ignore_channels:
                 keep = (status[W['bar'][wrow] * 4 + W['sipm'][wrow]] & 0b010) == 0
                 wrow, seq, pe, tm = wrow[keep], seq[keep], pe[keep], tm[keep]

@@ -152,6 +152,8 @@ def main(argv=None):
     parser.add_argument("--split", choices=("all", "dev", "heldout"), default="all")
     parser.add_argument("--split-at", type=int, default=22)
     parser.add_argument("--compile-cache", metavar="DIR", help="JAX persistent compilation cache directory")
+    parser.add_argument("--device-refit", action="store_true",
+                        help="flagged waveforms refit on the device before any numpy refit (ChainConfig.device_refit)")
     parser.add_argument("--bench", metavar="JSON", help="time three passes with mu2efastsim.bench; write its report")
     parser.add_argument("--passes", type=int, default=3)
     args = parser.parse_args(argv)
@@ -172,7 +174,7 @@ def main(argv=None):
 
     def one_pass(setup=None):
         begin = time.perf_counter()
-        setup = setup if setup is not None else load_setup(*common)
+        setup = setup if setup is not None else load_setup(*common, device_refit=args.device_refit)
         last["result"] = stream(inputs, setup, *common, seed=args.seed, period=args.period,
                                 batch_events=args.batch_events, input_kind=args.input_kind, card=card)
         last["wall"] = time.perf_counter() - begin
@@ -186,7 +188,7 @@ def main(argv=None):
 
         def timed_pass():   # setup belongs to the first pass (the timer reports it as setup_s)
             if "setup" not in cached:
-                cached["setup"] = load_setup(*common)
+                cached["setup"] = load_setup(*common, device_refit=args.device_refit)
             return one_pass(cached["setup"])
         from mu2efastsim import precision
         report = bench.run(timed_pass, events, passes=args.passes, workflow="W5", boundary=BOUNDARY,

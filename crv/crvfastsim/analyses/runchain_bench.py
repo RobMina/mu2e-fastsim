@@ -31,6 +31,8 @@ def main(argv=None):
     p.add_argument("--library")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--prefetch", action="store_true")
+    p.add_argument("--device-refit", action="store_true",
+                   help="flagged waveforms refit on the device first (ChainConfig.device_refit)")
     p.add_argument("--resident-response", action="store_true",
                    help="photons stay on the device into the SiPM stage (ChainConfig.resident_response)")
     p.add_argument("--compile-cache", metavar="DIR")
@@ -53,6 +55,8 @@ def main(argv=None):
                  run_config=a.run_config, window=a.window, tier1b_set=a.tier1b_set, tier1b_dir=a.tier1b_dir)
     if a.resident_response:
         setup["resident_response"] = True
+    if a.device_refit:
+        setup["device_refit"] = True
     outdir = a.outdir or str(Path(a.out).with_suffix("")) + "_runchain"
     state = {}
 
