@@ -1,8 +1,7 @@
 # Persistent end-to-end benchmark infrastructure
 
 This is infrastructure for a future production-scale measurement, not a new speed
-claim. The user's target is at least 100x stock throughput at production scale.
-The 2,741-event process benchmark is preserved as a small-job latency measurement.
+claim. The 2,741-event process benchmark is preserved as a small-job latency measurement.
 
 ## What runs once and what runs per batch
 
@@ -53,7 +52,7 @@ workload; choose disk allocation explicitly before submitting. File close means 
 to the filesystem, not forced durable storage (`fsync` on payloads is not requested).
 No production-scale memory/storage qualification has been performed. The separate
 device backend has passed a tiny synthetic CUDA integration, not physical-response
-validation; see [DEVICE_BACKEND.md](DEVICE_BACKEND.md).
+validation.
 
 ## Timing contract
 
@@ -69,8 +68,8 @@ validation; see [DEVICE_BACKEND.md](DEVICE_BACKEND.md).
 5. `validation_s`: post-run persisted census checks, outside the sustained-rate timer.
 
 For actual whole-job cost, wrap the CLI with `mixing.process_timer`. Its interval
-includes interpreter startup, setup, warm-up, writing, readback and shutdown. The UVA
-wrapper also records container-launch wall time, CPU usage and peak RSS. Neither
+includes interpreter startup, setup, warm-up, writing, readback and shutdown. A
+container launcher can also record container-launch wall time, CPU usage and peak RSS. Neither
 sum stage medians nor multiply the small-job rate to forecast a campaign runtime.
 No stock baseline or speedup is invented by the runner; compare to a separately
 measured large-job stock boundary and resource allocation.
@@ -93,7 +92,7 @@ An allocation-side launcher can wrap this command in the existing analysis image
 record the actual hardware and private compilation-cache state, and use the external
 process timer above. No physical production streaming campaign has been measured.
 
-## TRK2 / future device-backend interface
+## Future backend interface
 
 `--backend module:factory` constructs one backend as `factory(args, source)`.
 It must provide:
@@ -105,7 +104,7 @@ It must provide:
   return a small metrics dictionary containing `events` (no retained payload arrays).
 - `sync()`: wait for outstanding device work before the timing boundary.
 
-The default stages are `tracker_digis` and `crv_reco`. Future TRK2 integration should
+The default stages are `tracker_digis` and `crv_reco`. Future track reconstruction should
 advertise `track_reco` only when implemented, persist an event census including failed
 and zero-track events, and list that table in `output_event_tables`. Requesting
 `--require-stage track_reco` currently fails explicitly. Numerical convergence of
@@ -114,9 +113,6 @@ individual fit components is not full reconstruction validation.
 The default source batch contains host detector inputs plus original identity/provenance.
 `device_backend.Backend` selects its own request-only source automatically and runs
 device sampling/overlay with an explicit pure-JAX response factory. The arithmetic
-fixture requires `--synthetic` and cannot satisfy physical stage requests. The new
-`mixing.device_physics:model` provides physical tracker digis and onspill CRV reco,
-with `response.tracker`/`response.crv` capacities in the device capacity JSON. See
-[DEVICE_BACKEND.md](DEVICE_BACKEND.md) for interfaces and tests. Physical track
-reconstruction remains absent; shared tracker/TRK2 source and the old exact
+fixture requires `--synthetic` and cannot satisfy physical stage requests. Physical
+track reconstruction remains absent; the shared tracker source and the old exact
 single-realization regression are unchanged.
