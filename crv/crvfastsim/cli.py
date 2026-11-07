@@ -161,6 +161,9 @@ def build_parser():
             sp.add_argument("--reco-cpu", action="store_true", help="with --jax: pulses and coincidences on the JAX CPU backend")
             sp.add_argument("--prefetch", action="store_true",
                             help="read, transport and tier 1b of the next file in a thread while the device runs this one")
+            sp.add_argument("--resident-response", action="store_true",
+                            help="with --jax: photons stay on the device into the SiPM stage (same charges as the "
+                                 "two-stage twins; response.resident)")
             sp.add_argument("--fused-response", action="store_true",
                             help="with --jax: photons -> SiPM charges in one device pass (response.device, as reco-r3)")
             sp.add_argument("--emit", default=None, metavar="JSON", help="per-shard accumulators for runchain-merge")

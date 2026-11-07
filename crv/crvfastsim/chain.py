@@ -75,6 +75,8 @@ class ChainConfig:
     background_scale: float = 1.0       # multiplies the background model's net rate (knob background_scale)
     pulse_reco: object = None           # reco.pulsefit.RecoConfig (None: the stock defaults)
     feb_phase_width: float = PERIOD     # uniform FEB clock-phase width [ns]
+    resident_response: bool = False     # JAX: photons stay on the device into the SiPM stage (response.resident;
+                                        # the same draws and charges as the two-stage twins, no thermal noise)
 
 
 # light-propagation keys (extracted v04): sectors, TAG = every muon tagger, and modules (photons.bar_keys)
@@ -172,6 +174,12 @@ def charges(steps, parts, geom, cond, cfg, rng, key=None, tabs=None, pmap=None, 
         timers["response_s"] = timers.get("response_s", 0.0) + _time.perf_counter() - t0
         timers["charges"] = timers.get("charges", 0) + len(Q["time"])
         return Q
+    if cfg.jax and cfg.resident_response:
+        import jax
+        from .response import resident
+        key = key if key is not None else jax.random.PRNGKey(0)
+        return resident.charges(steps, pdg, geom, cond, cfg, rng, key, tabs, pmap, status, event_key(steps), CHAN_MULT,
+                                timers)
     if cfg.jax:
         import jax
         from .response import photons_jax, sipm_jax
