@@ -230,7 +230,8 @@ def test_charge_block_keys_cross_4096_boundary(cond):
             jnp.asarray(np.pad(position[first:first + take], ((0, pad), (0, 0)))),
             jnp.ones(4096, jnp.int64), jnp.asarray(np.pad(st["time"][first:first + take], (0, pad))))
         for actual, expected in zip(got[:3], jax.device_get(result)):
-            np.testing.assert_array_equal(actual[first:first + take], expected[:take])
+            # Fused CUDA arithmetic can shift a rounded floating output by one ULP.
+            np.testing.assert_array_max_ulp(actual[first:first + take], expected[:take], maxulp=1)
 
 
 def test_marker_jitter_crosses_event_block_and_masked_timing(cond, helpers):
