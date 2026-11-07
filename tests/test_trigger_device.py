@@ -143,6 +143,7 @@ def test_helix_fit_float32_subprocess():
 
 
 def test_digi_blocks_pack_flat_digis():
+    pytest.importorskip("jax")
     pytest.importorskip("trkfastsim")
     from trigger.device import digis
     dg = {"ev": np.array([0, 0, 2, 2, 2]), "sid": np.array([5, 9, 1, 1, 300]),
