@@ -1,0 +1,27 @@
+# Cache joint mixed steps; event timing and calibration are supplied explicitly to fast response.
+#include "four_stream_tracker_crv_inputs.fcl"
+physics.analyzers.primaryCrv: {
+  module_type: CrvStepTableDumper
+  crvSteps: compressDetStepMCs
+  genParticles: compressDetStepMCs
+  simParticles: compressDetStepMCs
+}
+physics.analyzers.stopCrv: @local::physics.analyzers.primaryCrv
+physics.analyzers.stopCrv.crvSteps: MuStopPileupMixer
+physics.analyzers.stopCrv.genParticles: MuStopPileupMixer
+physics.analyzers.stopCrv.simParticles: MuStopPileupMixer
+physics.analyzers.eleCrv: @local::physics.analyzers.primaryCrv
+physics.analyzers.eleCrv.crvSteps: EleBeamFlashMixer
+physics.analyzers.eleCrv.genParticles: EleBeamFlashMixer
+physics.analyzers.eleCrv.simParticles: EleBeamFlashMixer
+physics.analyzers.muCrv: @local::physics.analyzers.primaryCrv
+physics.analyzers.muCrv.crvSteps: MuBeamFlashMixer
+physics.analyzers.muCrv.genParticles: MuBeamFlashMixer
+physics.analyzers.muCrv.simParticles: MuBeamFlashMixer
+physics.analyzers.neutralCrv: @local::physics.analyzers.primaryCrv
+physics.analyzers.neutralCrv.crvSteps: NeutralsFlashMixer
+physics.analyzers.neutralCrv.genParticles: NeutralsFlashMixer
+physics.analyzers.neutralCrv.simParticles: NeutralsFlashMixer
+physics.p1: [PBISim, MuStopPileupMixer, EleBeamFlashMixer, MuBeamFlashMixer, NeutralsFlashMixer]
+physics.e1: [events, primarySteps, stopSteps, eleSteps, muSteps, neutralSteps, fieldOrigin,
+             primaryCrv, stopCrv, eleCrv, muCrv, neutralCrv]

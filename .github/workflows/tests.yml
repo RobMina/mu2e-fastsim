@@ -1,4 +1,4 @@
-# Integration tests of the pinned submodule commits plus the umbrella's own code, on every pull request and on main.
+# Test pinned submodule commits and the umbrella on pull requests and main.
 # The "suite (...)" jobs are the required status checks of the main branch; the "no JAX (...)" jobs run the same
 # suites without JAX installed, where the JAX tests must skip cleanly.
 name: tests
@@ -35,7 +35,7 @@ jobs:
             path: beam:core
           - suite: umbrella
             dir: .
-            path: beam:core:tracker
+            path: beam:core:tracker:crv
           - suite: calo
             dir: calo
             path: calo:core
@@ -93,7 +93,7 @@ jobs:
             path: beam:core
           - suite: umbrella
             dir: .
-            path: beam:core:tracker
+            path: beam:core:tracker:crv
           - suite: calo
             dir: calo
             path: calo:core

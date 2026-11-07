@@ -1,0 +1,120 @@
+"""Combined resident physical response with explicit synthetic geometry/steps."""
+import json
+from pathlib import Path
+
+import awkward as ak
+import numpy as np
+import pytest
+import uproot
+
+jax = pytest.importorskip("jax")
+pytest.importorskip("mu2efastsim.testing")
+pytest.importorskip("trkfastsim")
+pytest.importorskip("crvfastsim")
+
+from test_mixing_device_tracker import helpers, cond
+from mixing.device_integration import CAPACITY, source
+from mixing.device_physics import _crv_pdg
+
+
+@pytest.fixture(autouse=True)
+def x64():
+    previous = jax.config.x64_enabled
+    jax.config.update("jax_enable_x64", True)
+    try:
+        yield
+    finally:
+        jax.config.update("jax_enable_x64", previous)
+
+
+@pytest.fixture
+def template():
+    from crvfastsim.geometry import find_counters
+    from crvfastsim.reco.waveform import WaveformConfig
+
+    # Use the public Offline template, not a synthetic replacement or a download.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("CRVFS_NO_FETCH", "1")
+        try:
+            return Path(find_counters(WaveformConfig().single_pe_file))
+        except FileNotFoundError:
+            pytest.skip("public singlePEWaveform_v3.txt unavailable; set MU2E_SEARCH_PATH")
+
+
+def test_truth_identity_join_sparse_keys_and_missing():
+    cols = {
+        "particles": {"mask": np.array([True, True, True, False]), "event": np.array([1, 0, 1, 0]),
+                      "columns": {"key": np.array([2**53 + 7, 99, 99, 0]), "pdg": np.array([13, 22, 11, 0])}},
+        "crv": {"mask": np.array([True, True, True, False]), "event": np.array([1, 0, 1, 0]),
+                "columns": {"sp": np.array([99, 99, 2**53 + 7, 0])}}}
+    actual, failed = jax.device_get(jax.jit(_crv_pdg)(jax.device_put(cols)))
+    assert not failed
+    np.testing.assert_array_equal(actual["columns"]["pdg"], [11, 22, 13, 0])
+    cols["crv"]["columns"]["sp"][0] += 1
+    _, failed = jax.device_get(jax.jit(_crv_pdg)(jax.device_put(cols)))
+    assert failed
+
+
+def test_combined_physical_stream_roundtrip(template, cond, tmp_path):
+    from types import SimpleNamespace
+    from trkfastsim.digi.digicond import Conditions
+    from mixing.device_backend import Backend
+    from mixing.stream_benchmark import run
+
+    c = Conditions(cond.s, cond.a)
+    c.s["onspill"] = True
+    capacity = tmp_path / "capacities.json"
+    capacity.write_text(json.dumps(CAPACITY))
+    args = SimpleNamespace(out=tmp_path / "out", frames_manifest=None, device_platform="cpu",
+                           device_kernel="mixing.device_integration:model", device_capacities=capacity,
+                           synthetic=False, backend="mixing.device_backend:Backend", events=5, batch_events=2,
+                           max_selected_rows=448, chunk=2, warmup_batches=1, seed=17, tracker_seed=19,
+                           sampling_seed=23, require_stage=[], template=template)
+    def source_factory(manifest, **kwargs):
+        return source(c, **kwargs)
+    report = run(args, source_factory, Backend)
+    assert report["events"] == 5 and report["warmup_events"] == 2
+    assert report["backend"]["model_kind"] == "physics"
+    assert report["backend"]["model"]["synthetic_inputs"]
+    assert report["backend"]["support"] == ["tracker_digis", "crv_reco"]
+    totals = {"tracker": 0, "digis": 0, "pulses": 0, "clusters": 0}
+    for path in args.out.glob("*/fast.root"):
+        with uproot.open(path) as root:
+            trk = root["trkdigi/events"].arrays(library="ak")
+            assert {"d_tdc0", "d_tdc1", "d_tot0", "d_tot1", "d_flags", "d_nadc", "d_adc"} <= set(ak.fields(trk))
+            assert ak.all(ak.num(trk.d_adc) == 15 * ak.num(trk.d_sid))
+            totals["tracker"] += int(ak.sum(ak.num(trk.d_sid)))
+            for name in ("digis", "pulses", "clusters"):
+                totals[name] += root["crvfast/" + name].num_entries
+    assert all(totals.values()), totals
+
+
+def test_lifted_kernel_assets_are_explicit_operands():
+    import jax.numpy as jnp
+    from mixing.device_kernels import lift
+    device_constant = jax.device_put(np.array([2., 3.]))
+    @jax.jit
+    def shared(x):
+        return {"values": device_constant * x, "sum": (device_constant * x).sum()}
+    lifted = lift(shared, jax.ShapeDtypeStruct((2,), np.float64))
+    assert len(lifted.assets) == 1
+    assets = jax.device_put(lifted.assets)
+    values = jax.device_put(np.array([4., 5.]))
+    program = jax.make_jaxpr(lifted.apply)(assets, values)
+    assert len(program.consts) == 0
+    with jax.transfer_guard("disallow"):
+        out = jax.jit(lifted.apply)(assets, values)
+        jax.block_until_ready(out)
+    actual = jax.device_get(out)
+    np.testing.assert_array_equal(actual["values"], [8., 15.])
+    assert actual["sum"] == 23
+    assert not lifted.assets[0].flags.writeable
+
+
+def test_truth_pdg_invalid_float_and_unsigned_not_silently_truncated():
+    for pdg in (np.array([13.5]), np.array([np.nan]), np.array([2**63 + 13], np.uint64)):
+        cols = {"particles": {"mask": np.array([True]), "event": np.array([0]),
+                              "columns": {"key": np.array([3]), "pdg": pdg}},
+                "crv": {"mask": np.array([True]), "event": np.array([0]), "columns": {"sp": np.array([3])}}}
+        _, failed = jax.device_get(jax.jit(_crv_pdg)(jax.device_put(cols)))
+        assert failed

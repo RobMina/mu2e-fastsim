@@ -43,6 +43,9 @@ CHAIN="$PWD/chain.sh"
     done
     printf 'cp "$MUSE_WORK_DIR/backing/Offline/GlobalConstantsService/data/globalConstants_01.txt" globalConstants.txt\n'
   fi
+  if [[ ${MIXING_EXPORT_CRV_CONDITIONS:-0} == 1 ]]; then
+    printf 'dbTool print-run --purpose Sim_best --version v1_3 --run 1430:1253 --table CRVPhoton --content > db_CRVPhoton.csv\n'
+  fi
   printf '"$OFFLINE_TIME" -v -o art.time mu2e -c job.fcl -s %q -n %q -T response.root > art.log 2>&1\n' "${INPUTS[0]}" "${MIXING_EVENTS:-10}"
 } > "$CHAIN"
 export OFFLINE_CHAIN="$CHAIN" OFFLINE_LOG_PREFIX=response OFFLINE_FCL_PATH="$(dirname "$CONFIG"):$HERE/fcl"

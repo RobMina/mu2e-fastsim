@@ -4,6 +4,7 @@ This package samples joint tracker/CRV detector-step frames **before digitisatio
 It changes no default chain. Synthetic tests cover the probability laws, donor
 ordering, empty events, particle-reference remapping and timing. Native response
 validation and optional fast-digitiser integration are separate companion changes.
+The opt-in direct sampler-to-response driver is documented in [FAST_DETECTORS.md](FAST_DETECTORS.md).
 
 ## Stock semantics
 

@@ -94,6 +94,35 @@ CE production simulation stage. Synchronization and all fast stages are included
 compilation are excluded. These small-batch timings do not establish device saturation. Full selections, timing
 boundaries, commands and limitations: [CE shower library](../calo/SHOWERS.md).
 
+## Mixed tracker/CRV pileup response (opt-in)
+
+The direct-frame path samples existing signal/four-stream pools and writes tracker
+digis/ADCs plus CRV digis/pulses/coincidences, not tracks, calorimeter, trigger or
+full art products. On the 2,741-event development sample, all five persisted tables
+and sampling choices exactly match the saved direct reference after host-index/cache
+optimization. First preparation took 24.94 s and reuse 11.85 s, versus 255.96 s for
+the saved preparation implementation (different nodes, not a controlled total speedup).
+
+- **Direct-frame path.** Boundary: one fresh process through exit, from the existing
+  source-frame pools and saved timing/conditions to written tracker digis/ADCs and CRV
+  digis/pulses/coincidences, including imports, GPU initialization, input validation,
+  sampling, overlay and output; pool extraction is excluded. Device: one A100-80GB
+  with two host CPUs. **6.717 events/s** with fresh private compilation caches,
+  **12.549 and 12.489 events/s** with populated caches.
+- **Stock native chain.** Boundary: one art process launch to exit, native four-stream
+  mixing and stock tracker/CRV response from the source art files, with its own
+  output. Device: one batch-node CPU. **6.184 events/s**, a saved earlier measurement,
+  not rerun and not a grid or GPVM slot rate.
+
+The two boundaries, inputs and devices differ, so these rates are not a speedup or a
+grid-slot equivalence. Details: [measurement boundaries](../mixing/FAST_DETECTORS.md).
+
+The opt-in resident device path has passed a physical-algorithm RTX A6000 integration
+on artificial sources/CRV calibration, using saved tracker conditions and a stock
+pulse template. Its tiny fixture rate is not a production measurement. Dense real
+pileup closure, capacity/memory qualification and large-job production throughput
+remain unmeasured; the 2,741-event latency test establishes no asymptotic ceiling.
+
 ## Per GPU: CRV default chain and beam stop fraction
 
 One GPU per job, the defaults of `main` (2026-11-02). CRV: production `runchain` over 11 shards of 50,000 generated
