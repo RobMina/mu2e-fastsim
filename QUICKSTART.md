@@ -59,7 +59,7 @@ The venv is the one Path A makes, so a clone on Fermilab storage serves both. Ke
 
 The kit runs one job per point on the cluster through `slurm_ssh` (hep-endpoints) and the project image; the job
 streams its inputs from a Mu2e GPVM, so the inputs never stay on the cluster. Use a kit host with Python 3.10 or newer, git
-and ssh access to both the cluster login host and a Mu2e GPVM (your laptop, with a Fermilab Kerberos ticket).
+and ssh access to both the cluster login host and a Mu2e GPVM (a workstation with a Fermilab Kerberos ticket).
 
 1. **The image**, once: on a machine with Apptainer and user namespaces (a cluster node, or a Mu2e GPVM), build it
    from this repository and copy it to `$FASTSIMKIT_SIF` on the cluster. It is not on CVMFS and not downloadable.
@@ -74,7 +74,7 @@ and ssh access to both the cluster login host and a Mu2e GPVM (your laptop, with
    ```bash
    git clone --recurse-submodules https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
    python3 -m venv .venv && .venv/bin/pip install -q -e core -e crv -e tracker -e beam
-   export FASTSIMKIT_FNAL_HOST=mu2egpvm01 FASTSIMKIT_SLURM_HOST=YOUR_LOGIN_HOST \
+   export FASTSIMKIT_FNAL_HOST=YOUR_GPVM FASTSIMKIT_SLURM_HOST=YOUR_LOGIN_HOST \
           FASTSIMKIT_SLURM_ACCOUNT=YOUR_ACCOUNT FASTSIMKIT_SCRATCH=YOUR_CLUSTER_WORK_AREA
    source site/slurm.env && .venv/bin/python site/check.py slurm
    ```
@@ -85,20 +85,24 @@ and ssh access to both the cluster login host and a Mu2e GPVM (your laptop, with
 3. Then [run your own job](#run-your-own-job) (Slurm column). The demo needs the release mounted, so on this path it
    runs on a GPVM or EAF.
 
+Path C is not yet tested end to end: the image build and the preset check were run, a kit task submitted from a
+workstation to a cluster was not.
+
 ## The demo
 
 `python3 -m mu2efastsim.demo` runs three short chains on the CPU and prints one line per chain, the headline number
 next to its reference value and tolerance (`--quick`: a quarter of each sample; `--only beam,ce,crv`). On a GPVM
-(4-core AMD EPYC VM, JAX on the CPU) the three take about 6 minutes, wall time per chain including Python start-up,
-JAX compilation and input reads: beam 108 s, CE 140 s, CRV 88 s. Most of it is fixed cost (the beam transport
-compiles for about a minute, the CRV chain loads its library and tables for about a minute), so `--quick` saves less
-than its sample sizes suggest. On a GPU server set `JAX_PLATFORMS=cuda` first.
+(4-core AMD EPYC VM, JAX on the CPU) the three take 5 to 6 minutes, wall time per chain including Python start-up,
+JAX compilation and input reads: 336 s in a first run of one chain at a time (beam 108 s, CE 140 s, CRV 88 s), 283 s
+in the clean-clone run below. Most of it is fixed cost (the beam transport compiles for about a minute, the CRV chain
+loads its library and tables for about a minute), so `--quick` saves less than its sample sizes suggest. A GPU does not
+help: with `JAX_PLATFORMS=cuda` on an A6000 the demo took 388 s against 393 s on a 4-core Xeon CPU node.
 
 | Chain | Sample | Headline | Reference |
 |---|---|---|---|
-| beam | 20,000 DS-entrance muons (MDC2025ac table of the release) | target stop fraction, nominal target | Geant4 0.3592 on the full 105,350 muons ([docs/validation.md](docs/validation.md)) |
-| CE | 2,000 conversion electrons from that table's target stops | fraction reaching the tracker entry plane | fast chain on 40,000 electrons from the same stops, another seed: 0.7260 |
-| CRV | 1,000 generated cosmic events, default chain (shard 11 of `g4ref_v1`) | coincidence clusters per generated event | stock chain (Geant4 + digi + reco) on all 50,000 events of that shard |
+| beam | 20,000 DS-entrance muons (MDC2025ac table of the release) | target stop fraction, nominal target | Geant4 0.3604 +- 0.0015 on the full 105,350 muons, clean stock rerun ([docs/validation.md](docs/validation.md)) |
+| CE | 2,000 conversion electrons from that table's target stops | fraction reaching the tracker entry plane | fast chain on 40,000 electrons from the same stops, another seed: 0.7260 +- 0.0022 |
+| CRV | 1,000 generated cosmic events, default chain (shard 11 of `g4ref_v1`) | coincidence clusters per generated event | stock chain (Geant4 + digi + reco) on all 50,000 events of that shard: 0.0582 +- 0.0011 |
 
 A line passes within 3 sigma of the combined counting errors. It also writes `$M2FS_DATA/demo/demo_summary.json` and a
 log per chain. Exit 0: every line passes. It is a check of your setup, not a validation.
@@ -154,7 +158,7 @@ started server, default profile). Wall times:
 | venv on the Mu2e ana Python | 10 s | 19 s |
 | `pip install` (JAX and the four packages) | 55 s | 39 s |
 | `check-inputs` (78 files) | 30 s | 7 s |
-| demo (all three lines ok) | 283 s | 434 s |
+| demo (all three lines ok; the run quoted under [The demo](#the-demo)) | 283 s | 434 s |
 | your own job (`beam_point`, 49 foils: stop fraction 0.6669 +- 0.0033) | 76 s | 144 s |
 | **total** | **7.7 min** | **10.8 min** (12 min with the server start) |
 
