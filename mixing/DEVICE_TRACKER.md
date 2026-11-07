@@ -3,7 +3,7 @@
 `device_tracker.prepare(conditions, capacities, batch_events)` returns numeric
 `assets`, `apply(collection, timing, assets, key)` and diagnostic stage functions.
 It reuses the unchanged `digi_clusters_jax` sampling, `digi_jax` charge/drift and
-`_electronics_kernel` physical implementations. No shared tracker/TRK2 file is
+`_electronics_kernel` physical implementations. No shared tracker file is
 modified. Track reconstruction is not part of this adapter.
 
 ## Device operations
@@ -54,7 +54,7 @@ Every capacity is a resource bound, not a physics cut. Overflow flags reject the
 entire combined batch. There is no attempt to substitute NumPy, accept a truncated
 tail, or change the physical draw. The electron residual loop remains the existing
 uncapped masked loop. Increasing capacities can increase memory/compilation costs;
-small fixture sizes are not recommendations for dense production PU1.
+small fixture sizes are not recommendations for dense production pileup.
 
 The adapter supports the existing conditions' scope: no unimplemented noise hits,
 crosstalk, DriftSingleElectrons or UseStatus modes are introduced. Float32 tracker
@@ -73,5 +73,5 @@ individual-component aliasing, capacities and fractional-ID rejection are tested
 All dispatch tests use a transfer guard and callback-free traced programs.
 
 These are implementation regressions against the existing fast detector, not new
-stock-physics closure or a dense PU1 throughput result. See `DEVICE_BACKEND.md` for
+stock-physics closure or a dense-pileup throughput result. See `DEVICE_BACKEND.md` for
 the combined runner and `DEVICE_CRV.md` for CRV scope.

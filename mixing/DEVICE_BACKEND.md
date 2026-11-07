@@ -6,11 +6,11 @@ tracker digitisation and onspill CRV response through coincidences**, with all
 intermediate packing on device. The original synthetic arithmetic model remains
 available for infrastructure tests. Existing staged consumers and shared tracker/CRV
 kernels are unchanged; `stream_backend.Backend` is still the default. Tracker track
-reconstruction is not implemented here and TRK2 work is untouched.
+reconstruction is not implemented here.
 
 See [DEVICE_TRACKER.md](DEVICE_TRACKER.md) and [DEVICE_CRV.md](DEVICE_CRV.md) for
 physical scope, explicit capacities and implementation-regression tests. Production
-physics closure, dense-memory qualification and sustained 100x throughput are not
+physics closure, dense-memory qualification and sustained large-job throughput are not
 established by the small integrations.
 
 ## Execution boundary
@@ -53,7 +53,7 @@ files are never overwritten by the backend.
 
 The shapes bound expanded arrays, not total memory: resident host/device pools,
 receipts, JAX executables and workspaces also cost memory. Capacities have not been
-qualified for dense production PU1. Choose them explicitly, not from this tiny test.
+qualified for dense production pileup. Choose them explicitly, not from this tiny test.
 
 ## Response factory contract
 
@@ -115,7 +115,7 @@ fixture measurement and must not enter production comparisons or slides.
 
 Physical response was subsequently ported; the arithmetic test alone does not
 validate that port. Reconstruction, physical closure, representative dense memory
-behavior and the production-scale 100x goal remain **not validated**.
+behavior and production-scale throughput remain **not validated**.
 
 ## Physical-kernel integration
 
@@ -144,8 +144,7 @@ and the extra staged comparison. No production-rate interpretation is attached.
 
 An initial GPU attempt stopped during compilation when the transfer guard caught
 captured tracker condition arrays being downloaded, before output. Explicit operand
-lifting fixed that without relaxing the guard. Local suite: **688 mixing tests
-passed**, plus two site-path checks. The malformed-PDG guard and its regression
+lifting fixed that without relaxing the guard. The malformed-PDG guard and its regression
 tests postdate the successful GPU snapshot; valid integration PDGs are unchanged.
-No shared detector kernels or TRK2 files were edited by the device port. The separate
+No shared detector kernels or shared tracker files were edited by the device port. The separate
 CRV onspill dependency supplies the opt-in timing, waveform gate and thermal hooks.

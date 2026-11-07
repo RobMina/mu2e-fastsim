@@ -135,8 +135,8 @@ JAX_ENABLE_X64=1 MU2EFS_DEVICE_FLOAT=float64 \
 Local result: **17/17 adapter tests passed in float64 and float32**, including the
 actual v6 asset test; the existing `tests/test_mixing_device.py` also passed 17/17.
 The local tests use CPU JAX explicitly available in the environment. They do not
-certify GPU execution, representative PU1 memory behavior, throughput, dense mixed
-production closure, or a 100x performance goal. There are no changes to TRK2.
+certify GPU execution, representative dense-pileup memory behavior, throughput or
+dense mixed production closure. Shared tracker files are unchanged.
 
 Source contracts: `crvfastsim/onspill.py`, `docs/onspill-response.md`,
 `response/photons.py:iter_rows`, `response/photons_jax.py:_kernel_a/_kernel_b`,

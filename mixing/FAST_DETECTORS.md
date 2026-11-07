@@ -312,11 +312,11 @@ The new [stream benchmark](STREAM_BENCHMARK.md) loads source pools and detector
 assets once, continues sequential donor cursors across bounded overlay batches,
 writes each batch, and separates warm-up from output-inclusive sustained timing.
 `python3 -m mixing.stream_benchmark` supports explicit workload/batch/row limits
-and a replaceable response backend for future TRK2 integration. The default remains
+and a replaceable response backend for a future tracker reconstruction stage. The default remains
 GPU-backed tracker digitization + CRV response/reco, not a fully on-device chain.
 No new performance result follows from the local infrastructure tests.
 
-Device follow-up: [DEVICE_BACKEND.md](DEVICE_BACKEND.md) documents resident JAX
+Device-resident option: [DEVICE_BACKEND.md](DEVICE_BACKEND.md) documents resident JAX
 sampling/overlay plus physical tracker/CRV adapters (`device_physics:model`). The
 original arithmetic fixture remains separate. The physical default above stays
 host-staged; the opt-in device chain has bounded integration tests, not production
