@@ -21,7 +21,8 @@ def timing(n=1, **kw):
 
 def conditions():
     z = np.zeros(8)
-    return CH.Conditions(z + 100, z + 400, z + 11, z + 7, z.astype(int), z.astype(int), z.astype(int), z)
+    return CH.Conditions(z + 100, z + 400, z + 11, z + 7, z.astype(int), z.astype(int), z.astype(int), z,
+                         readout_mask=np.ones(8, bool))
 
 
 def config(**kw):
@@ -132,6 +133,78 @@ def test_uint64_full_ids_and_signed_lookup():
         timing().lookup(keys[:1])
 
 
+@pytest.mark.parametrize('t0,n_events', [((300.,), 2), ((), 2), ((), 0)])
+@pytest.mark.parametrize('thermal_rate', [0., 1e-4])
+def test_missing_readout_mask_rejected_before_response(monkeypatch, t0, n_events, thermal_rate):
+    seen, _, _ = spy(monkeypatch)
+    cond = replace(conditions(), readout_mask=None)
+    cfg = config()
+    cfg = replace(cfg, sipm=replace(cfg.sipm, thermal_rate=thermal_rate))
+    with pytest.raises(ValueError, match='require cond.readout_mask'):
+        response(steps(t0), tm=timing(n_events), cond=cond, cfg=cfg)
+    assert seen == {}
+    assert cond.readout_mask is None
+    np.testing.assert_array_equal(cond.status, np.zeros(8, int))
+
+
+@pytest.mark.parametrize('t0', [(300.,), ()])
+@pytest.mark.parametrize('supplied_mask', [False, True])
+def test_run_physical_sides_filter_optical_and_thermal_including_empty_event(monkeypatch, t0, supplied_mask):
+    seen, _, _ = spy(monkeypatch, ([0] * 8, range(8), [300.] * 8))
+    geom = SimpleNamespace(nbars=2, sector_names=['A', 'B'], sector=np.array([0, 1]))
+    counters = {'crs.sectorNames': ['A', 'B'], 'crs.sipmsAtSide0A': True, 'crs.sipmsAtSide1A': False,
+                'crs.sipmsAtSide0B': False, 'crs.sipmsAtSide1B': True}
+    mask = np.array([True, False, True, False, False, True, False, True])
+    cond = replace(conditions(), readout_mask=mask.copy() if supplied_mask else None)
+    cond.status[:] = [0, 0, 2, 0, 0, 0, 0, 4]
+    original_status = cond.status.copy()
+    downstream = []
+    def check_conditions(current):
+        downstream.append(current)
+        np.testing.assert_array_equal(current.readout_mask, mask)
+        np.testing.assert_array_equal(current.status, original_status)
+        assert (current is cond) == supplied_mask
+    def digis(Q, current, *args, **kw):
+        check_conditions(current)
+        return {}
+    def reco_waveforms(D, current):
+        check_conditions(current)
+        return dict(ev=np.empty(0, int))
+    def clusters(W, current, *args, **kw):
+        check_conditions(current)
+        return [], kw['timers']
+    monkeypatch.setattr(CH, 'digis', digis)
+    monkeypatch.setattr(CH, 'reco_waveforms', reco_waveforms)
+    monkeypatch.setattr(CH, 'clusters', clusters)
+    st, tm = steps(t0), timing(2)
+    out = O.run(st, np.full(len(st), 13, int), geom, cond, config(), np.random.default_rng(123),
+                timing=tm, counters_cfg=counters, tabs={}, pmap=np.ones((40, 40)))
+    live = np.array([0, 2, 5])
+    np.testing.assert_array_equal(seen['chan'], live if len(st) else np.empty(0, int))
+    np.testing.assert_array_equal(out['Q']['chan'], seen['chan'])
+    np.testing.assert_array_equal(seen['thermal_chans'], np.concatenate((live, live + CH.CHAN_MULT)))
+    assert ('steps' in seen) == bool(len(st))
+    assert len(downstream) == 3 and all(current is downstream[0] for current in downstream)
+    np.testing.assert_array_equal(out['event_keys'], tm.keys)
+    np.testing.assert_array_equal(cond.status, original_status)
+    if supplied_mask:
+        np.testing.assert_array_equal(cond.readout_mask, mask)
+    else:
+        assert cond.readout_mask is None
+
+
+@pytest.mark.parametrize('counters', [{}, {'crs.sipmsAtSide0A': True},
+                                     {'crs.sipmsAtSide0A': True, 'crs.sipmsAtSide1A': 1}])
+def test_run_missing_mask_never_guesses_side_presence(monkeypatch, counters):
+    seen, _, _ = spy(monkeypatch)
+    geom = SimpleNamespace(nbars=2, sector_names=['A'], sector=np.zeros(2, int))
+    cond = replace(conditions(), readout_mask=None)
+    with pytest.raises(ValueError, match='readout counters'):
+        O.run(steps([]), np.empty(0, int), geom, cond, config(), np.random.default_rng(123),
+              timing=timing(0), counters_cfg=counters)
+    assert seen == {} and cond.readout_mask is None
+
+
 def test_zero_step_thermal_readout_and_status(monkeypatch):
     seen, _, _ = spy(monkeypatch)
     cond = conditions()
@@ -155,8 +228,11 @@ def test_photon_status_and_readout_mask(monkeypatch):
 
 def test_real_numpy_thermal_zero_steps(monkeypatch):
     monkeypatch.setattr(O.PH, 'make_photons', lambda *a: pytest.fail('optics called for no steps'))
-    Q = response(steps([]), tm=timing(32))
+    cond = replace(conditions(), readout_mask=np.array([True, False, True, False, False, True, False, True]))
+    cond.status[[2, 7]] = [2, 4]
+    Q = response(steps([]), tm=timing(32), cond=cond)
     assert len(Q['time']) > 0
+    assert np.all(np.isin(Q['chan'] % CH.CHAN_MULT, [0, 2, 5]))
     assert np.all(Q['photon'] == -1)
     assert np.all((Q['time'] >= 100) & (Q['time'] <= 1500))
     np.testing.assert_array_equal(np.lexsort((Q['time'], Q['chan'])), np.arange(len(Q['time'])))
@@ -325,7 +401,11 @@ def test_run_empty_population(monkeypatch):
     from crvfastsim.reco import waveform
     monkeypatch.setattr(waveform, 'single_pe_template', lambda *a: np.ones(200))
     monkeypatch.setattr(coinc, 'sector_geom', lambda *a: None)
-    out = O.run(steps([]), np.empty(0, int), SimpleNamespace(nbars=2), conditions(), config(),
-                np.random.default_rng(1), timing=timing(0), counters_cfg={})
+    geom = SimpleNamespace(nbars=2, sector_names=['A'], sector=np.zeros(2, int))
+    counters = {'crs.sipmsAtSide0A': True, 'crs.sipmsAtSide1A': False}
+    cond = replace(conditions(), readout_mask=None)
+    out = O.run(steps([]), np.empty(0, int), geom, cond, config(),
+                np.random.default_rng(1), timing=timing(0), counters_cfg=counters)
+    assert cond.readout_mask is None
     assert len(out['Q']['chan']) == len(out['D']['chan']) == len(out['W']['ev']) == len(out['event_keys']) == 0
     assert sum(len(c['cl_event']) for c in out['clusters']) == 0

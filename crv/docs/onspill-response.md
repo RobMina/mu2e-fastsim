@@ -34,6 +34,16 @@ reco. Returned charge/waveform times are local; detector TDCs need no translatio
 
 ## Thermal noise and scope
 
+`charges()` requires an explicit boolean `cond.readout_mask` covering the conditions
+channels, even for zero thermal rate or an empty event population. Prepare it with
+`cond = readout.apply(cond, geom, counters_cfg)`. `run()` derives a missing mask from its
+supplied geometry and counters configuration without mutating the input conditions;
+an existing mask is preserved. Missing or invalid side-presence settings are errors,
+not an assumption that all sensors exist. SiPM side is `sipm % 2`, independently of
+optical reflector routing and calibration status. The effective status veto applies
+to both optical arrivals and thermal channels; reconstruction-only status bit 1
+remains eligible for charge production.
+
 Stock on-spill thermal rate is 1e-4/ns/SiPM. The adapter supplies every physically
 present, status-eligible event/channel label, including zero-step events. Thermal
 attempts are Poisson with rate divided by the fully-charged firing probability;

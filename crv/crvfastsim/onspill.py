@@ -95,6 +95,8 @@ def _validate(cfg, timing, geom, cond):
     if not np.isfinite(cfg.feb_phase_width) or not 0 <= cfg.feb_phase_width <= CH.PERIOD:
         raise ValueError("invalid FEB phase width")
     nchan = geom.nbars * 4
+    if cond.readout_mask is None:
+        raise ValueError("onspill charges require cond.readout_mask; use readout.apply with geometry and counters_cfg")
     status = np.asarray(readout.effective_status(cond))
     if (not isinstance(nchan, (int, np.integer)) or not 0 <= nchan <= CH.CHAN_MULT
             or status.ndim != 1 or status.dtype.kind not in "iu" or len(status) < nchan):
@@ -113,6 +115,7 @@ def charges(steps, pdg, geom, cond, cfg, rng, *, timing, key=None, tabs=None, pm
     chan = dense_event * CH.CHAN_MULT + channel. All streams in one event share its
     SiPM history. Stock cfg.window=(200,1500) gives thermal start=100 and end=1500;
     photons before thermal start remain eligible. Caller chooses thermal_rate (stock 1e-4).
+    cond.readout_mask must explicitly describe physical sensor presence, even for empty events.
     """
     status = _validate(cfg, timing, geom, cond)
     # DataFrame.to_numpy can promote mixed int64/uint64 columns to float64 and lose IDs.
@@ -194,8 +197,10 @@ def reco_timing(W, timing):
 
 def run(steps, pdg, geom, cond, cfg, rng, *, timing, counters_cfg, key=None, tabs=None, pmap=None,
         timers=None, detail=False):
-    """Convenience staged chain; event_keys maps all dense outputs back to full original IDs."""
+    """Staged chain deriving a missing readout mask; event_keys maps dense outputs to original IDs."""
     timers = timers if timers is not None else {}
+    if cond.readout_mask is None:
+        cond = readout.apply(cond, geom, counters_cfg)
     Q = charges(steps, pdg, geom, cond, cfg, rng, timing=timing, key=key, tabs=tabs, pmap=pmap, timers=timers)
     D = CH.digis(Q, cond, cfg, rng, key=key, timers=timers, stock_scan=True)
     W = reco_timing(CH.reco_waveforms(D, cond), timing)
