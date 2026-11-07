@@ -34,6 +34,10 @@ collections (`StrawHitTag: TrigMakeSH`, `PanelHitTag: TrigMakePH`, tree `trigph`
 `--check-hits`; `replay.fcl`, `manifest.json` and `inventory.json` from `trigger/replay.py`; the `TimeCluster.weights.xml`
 MLP from Offline `TrkPatRec/data`. Timing: `trigger/device/bench.py` with `mu2efastsim.bench`.
 
+Device digis (`trkfastsim.digi.digi_jax.digitize` output: flat `ev`, `sid`, `tdc`, `tot`, `pmp`, ordered by event and
+StrawId) go to `Chain.decide` through `digis.blocks`, which packs them into the dense event blocks without a
+per-event loop; events without digis keep their place.
+
 `--precision float32` (bench: `TRIGGER_DEVICE_PRECISION=float32`) runs every device array in 32-bit, including
 the double-precision intermediates of the stock hit reconstruction; the default `float64` keeps the stock types.
 JAX's x64 flag is process-wide, so a process runs one precision.

@@ -140,3 +140,19 @@ def test_helix_fit_float32_subprocess():
     import subprocess
     r = subprocess.run([sys.executable, "-c", F32_SCRIPT, str(ROOT)], capture_output=True, text=True, timeout=600)
     assert r.returncode == 0 and r.stdout.strip().endswith("ok"), r.stderr[-2000:]
+
+
+def test_digi_blocks_pack_flat_digis():
+    pytest.importorskip("jax")
+    pytest.importorskip("trkfastsim")
+    from trigger.device import digis
+    dg = {"ev": np.array([0, 0, 2, 2, 2]), "sid": np.array([5, 9, 1, 1, 300]),
+          "tdc": np.arange(10).reshape(5, 2), "tot": np.arange(10, 20).reshape(5, 2), "pmp": np.arange(5) * 1.0}
+    out = list(digis.blocks(dg, nev=4, size=3, events=[10, 11, 12, 13], nh=4))
+    assert [(lo, n) for lo, n, _ in out] == [(0, 3), (3, 1)]
+    b = out[0][2]
+    assert b["valid"].sum(axis=1).tolist() == [2, 0, 3]
+    assert b["sid"][2, :3].tolist() == [1, 1, 300] and b["tdc1"][0, :2].tolist() == [1, 3]
+    assert b["event"].tolist() == [10, 11, 12] and out[1][2]["valid_event"].tolist() == [True, False, False]
+    with pytest.raises(ValueError):
+        list(digis.blocks({**dg, "sid": np.array([9, 5, 1, 1, 300])}, nev=4, size=3))
