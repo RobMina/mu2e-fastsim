@@ -54,27 +54,10 @@ Allocation charges depend on the site's rates and are not given here.
 
 ## TS entrance-to-DS prototype (opt-in, frozen Run1A held-out)
 
-The once-only held-out comparison retains 25,334 known-root mu/pi entrances across
-100 independent shards and 500,000 counted parent Events. DS mu-minus is
-**1,164/1,153 = 1.00954 +- 0.02371** and mu-plus **9/11 = 0.81818 +- 0.16529**
-(fast/stock, paired-shard SE). Momentum/time diagonal chi2 are 14.283/11 and
-12.128/21 for mu-minus, 4.015/4 and 10.030/11 for mu-plus; these are descriptive,
-not calibrated p-values. Mu-minus time overflow above 500 ns is 5 stock/1 fast,
-retained in yields but outside displayed-bin chi2. Positives remain sparse;
-stock has 7 DS pi-minus versus fast 0. Five nested entrances remain saved; the
-2,665 upstream compact-ancestry gaps preclude a claim of complete primary-root
-closure. All held-out stock statuses are zero. No default promotion.
-
-One CPU worker transports **144.775 entrances/s** (174.989 s), excluding
-field loading, with frozen RK4 2.5 mm / 0.25 mm / 5% caps and seed 20261105.
-No live/path-cap/missing-field outcomes remain. This different cohort is not an
-optimization speedup over development: that separate 25,078-input result remains
-**1,088/1,098 = 0.9909 +- 0.0219**, **8/15 = 0.5333 +- 0.1633**, and
-**133.953 entrances/s** (187.215 s). No matched stock TS-only timing exists:
-full-stage POT/s is a different denominator, so grid slots replaced are
-**unmeasured**. No GPU or matched SU benchmark is claimed. Held-out is consumed,
-not reusable as a fresh tuning test. See [TS transport](../beam/docs/ts-transport.md)
-for the sensitivity check, model omissions and validation limits.
+The held-out yields, spectra and the single-core transport cost are recorded once, in
+[TS transport](../beam/docs/ts-transport.md#frozen-held-out-result-2026-11-06), with the sensitivity
+check, model omissions and validation limits. No matched stock TS-only timing exists there, so no
+grid-slot multiplier is quoted for this stage.
 
 ## CE shower-library diagnostic (opt-in)
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=ts1_run1a_smoke
+#SBATCH --job-name=ts_run1a_smoke
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=12G

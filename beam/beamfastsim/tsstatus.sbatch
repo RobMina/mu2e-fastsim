@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=ts1_status_dev
+#SBATCH --job-name=ts_status
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=8G
