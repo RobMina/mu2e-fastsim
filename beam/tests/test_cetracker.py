@@ -135,3 +135,60 @@ def test_births_from_stops_follow_the_ceendpoint_generator():
     assert abs((g.pz / p).mean()) < 0.02 and abs((g.pz / p).var() - 1 / 3) < 0.01      # isotropic
     assert set(np.round(g.z, 6)) <= set(np.round(stops["z"], 6))
     assert (g.t > 300.0).all() and abs((g.t - 300.0).mean() - C.TAU_MU_AL) < 0.03 * C.TAU_MU_AL
+
+
+def _gen_file(n_per, shards, pdg=None):
+    """Generator rows in the cechain reference format, in shard order (as diospec starts writes them)."""
+    rng = np.random.default_rng(5)
+    n = n_per * len(shards)
+    d = {k: rng.normal(size=n) for k in ("x", "y", "z", "px", "py", "pz")}
+    d["time"] = rng.uniform(500.0, 1500.0, n)
+    if shards != [None]:
+        d["shard"] = np.repeat(shards, n_per)
+    if pdg is not None:
+        d["pdg"] = np.full(n, pdg, np.int32)
+    return d
+
+
+def test_births_from_starts_keep_rows_and_number_events_per_shard():
+    src = _gen_file(3, [50, 51, 52])
+    g = H.births_from_starts(src)
+    assert len(g) == 9 and (g.pdg == 11).all() and (g.run == 0).all()
+    assert list(g.subrun) == [50] * 3 + [51] * 3 + [52] * 3
+    assert list(g.event) == [1, 2, 3] * 3
+    np.testing.assert_array_equal(g.px, src["px"])
+    np.testing.assert_array_equal(g.t, src["time"])
+    assert not g.duplicated(H.KEY).any()
+    h = H.births_from_starts(src, shards=(51, 52))
+    assert list(h.subrun) == [51] * 3 + [52] * 3 and list(h.event) == [1, 2, 3] * 2
+    np.testing.assert_array_equal(h.x, src["x"][3:])
+
+
+def test_births_from_starts_take_rpc_electrons_without_shards():
+    src = _gen_file(4, [None], pdg=11)
+    g = H.births_from_starts(src)
+    assert list(g.subrun) == [0] * 4 and list(g.event) == [1, 2, 3, 4]
+    with pytest.raises(ValueError, match="other than electrons"):
+        H.births_from_starts(_gen_file(4, [None], pdg=-11))
+    with pytest.raises(ValueError, match="shard column"):
+        H.births_from_starts(src, shards=(0, 1))
+    bad = dict(src)
+    del bad["time"]
+    with pytest.raises(ValueError, match="'time'"):
+        H.births_from_starts(bad)
+
+
+def test_births_from_starts_number_interleaved_shards_in_row_order():
+    src = _gen_file(1, [2, 3, 2, 3, 2])
+    g = H.births_from_starts(src)
+    assert list(g.subrun) == [2, 3, 2, 3, 2] and list(g.event) == [1, 1, 2, 2, 3]
+    np.testing.assert_array_equal(g.x, src["x"])
+    h = H.births_from_starts(src, shards=(3, 3))
+    assert list(h.event) == [1, 2] and list(h.x) == list(src["x"][[1, 3]])
+
+
+@pytest.mark.parametrize("args", [["t.root", "--starts", "s.npz"], ["--stops", "x.npz", "--starts", "s.npz"],
+                                  [], ["t.root", "--shards", "0", "1"]])
+def test_cli_starts_argument_rules(args, capsys, tmp_path):
+    with pytest.raises(SystemExit):
+        H.main(args + ["--outdir", str(tmp_path), "--gdml", "g", "--maps", "m", "--offline-root", "o"])

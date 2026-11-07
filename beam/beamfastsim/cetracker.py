@@ -15,7 +15,9 @@ First passage only: no secondaries, no return after the tracker envelope.
       --gdml mu2e_run1a_v01.gdml --outdir DIR [--backend numpy|device] [--seed S] [--max-events N]
 
 TABLE: StrawGasStepTableDumper tables of Geant4 CeEndpoint events (trees dump/gen, dump/particles); the generated
-electron of each event is the start. Writes DIR/fasttrk_field.root (injector table), DIR/states.root (starts,
+electron of each event is the start. Instead of tables, `--starts FILE` takes the births from a generator file in the
+cechain reference format, e.g. DIO (`beamfastsim.diospec starts`) or RPC (`beamfastsim.rpcspec`) electrons, one event
+per row (`--shards FIRST LAST` keeps a range of diospec shards). Writes DIR/fasttrk_field.root (injector table), DIR/states.root (starts,
 hand-off states, final tracker states), DIR/cechain.npz and DIR/handoff.json (counts and timings).
 """
 import json
@@ -77,6 +79,37 @@ def births_from_stops(rng, stops, keys):
     g[["px", "py", "pz"]] = u * p[:, None]
     g["t"] = t
     return g
+
+
+def births_from_starts(src, shards=None):
+    """Births from a generator file in the cechain reference format (x, y, z [mm, Mu2e frame], px, py, pz [MeV/c],
+    time [ns]): the starts `beamfastsim.diospec starts` writes (DIO), or the output of `beamfastsim.rpcspec` (RPC, the
+    electron of each pair; the positron is not transported). One event per row, so every row is a generated electron.
+
+    Event identities: run 0, subrun = the row's shard (`shard` column, e.g. diospec or rpcstudy) or 0, event = 1, 2,
+    ... within the subrun in row order. Rows keep their order.
+    shards: optional (first, last) inclusive range of diospec shards to keep."""
+    for k in ("x", "y", "z", "px", "py", "pz", "time"):
+        if k not in src:
+            raise ValueError(f"generator file has no column {k!r} (cechain reference format expected)")
+    n = np.asarray(src["x"]).size
+    if "pdg" in src and np.any(np.asarray(src["pdg"]) != PDG_E):
+        raise ValueError("generator file holds particles other than electrons")
+    sub = np.asarray(src["shard"], np.int64) if "shard" in src else np.zeros(n, np.int64)
+    keep = np.ones(n, bool)
+    if shards is not None:
+        if "shard" not in src:
+            raise ValueError("--shards needs a generator file with a shard column (diospec starts)")
+        keep = (sub >= shards[0]) & (sub <= shards[1])
+    order = np.argsort(sub, kind="stable")
+    event = np.empty(n, np.int64)
+    event[order] = np.arange(n) - np.searchsorted(sub[order], sub[order], side="left") + 1
+    g = pd.DataFrame({"run": np.zeros(n, np.uint64), "subrun": sub.astype(np.uint64),
+                      "event": event.astype(np.uint64), "pdg": PDG_E})
+    for k in ("x", "y", "z", "px", "py", "pz"):
+        g[k] = np.asarray(src[k], float)
+    g["t"] = np.asarray(src["time"], float)
+    return g[keep].reset_index(drop=True)
 
 
 def handoff(keys, result, plane_fate=cechain.PLANE):
@@ -149,7 +182,8 @@ def write_injector(path, steps, entries):
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(prog="python3 -m beamfastsim.cetracker", description=__doc__.split("\n")[0])
-    ap.add_argument("tables", nargs="+", help="StrawGasStepTableDumper tables of the Geant4 events (starts)")
+    ap.add_argument("tables", nargs="*", help="StrawGasStepTableDumper tables of the Geant4 events (starts); "
+                                              "none with --starts")
     ap.add_argument("--outdir", required=True)
     ap.add_argument("--gdml", required=True, help="tracker GDML (e.g. mu2e_run1a_v01.gdml)")
     ap.add_argument("--maps", nargs="+", required=True, help="G4BL .header files, first match wins; the DS map first (the tracker uses it alone)")
@@ -164,11 +198,26 @@ def main(argv=None):
     ap.add_argument("--origin", nargs=3, type=float, default=ORIGIN)
     ap.add_argument("--stops", help="stop table npz (x, y, z, t): fresh unfiltered CE births, one per event of the "
                                     "tables, which then only carry the event identities")
+    ap.add_argument("--starts", help="generator file in the cechain reference format instead of tables: DIO "
+                                     "(diospec starts) or RPC (rpcspec) electrons, one event per row")
+    ap.add_argument("--shards", nargs=2, type=int, metavar=("FIRST", "LAST"),
+                    help="with --starts: keep these diospec shards (inclusive)")
     a = ap.parse_args(argv)
+    if a.starts and (a.tables or a.stops):
+        ap.error("--starts replaces the tables and --stops")
+    if not a.starts and not a.tables:
+        ap.error("give tables or --starts")
+    if a.shards and not a.starts:
+        ap.error("--shards needs --starts")
     out = Path(a.outdir)
     out.mkdir(parents=True, exist_ok=True)
-    paths = tables.expand(a.tables)
-    g = starts(paths)
+    if a.starts:
+        paths = [a.starts]
+        with np.load(a.starts, allow_pickle=False) as src:
+            g = births_from_starts(src, a.shards)
+    else:
+        paths = tables.expand(a.tables)
+        g = starts(paths)
     if a.stops:
         g = births_from_stops(np.random.default_rng(np.random.SeedSequence([a.seed, 2])), np.load(a.stops), g)
     if a.max_events is not None:
@@ -189,7 +238,8 @@ def main(argv=None):
         fin = pd.concat([ent[KEY].reset_index(drop=True), fin], axis=1)
     tables.write(str(out / "states.root"), {"gen": g, "entries": ent, "final": fin}, as_ttree=True)
     report = dict(inputs=[Path(p).name for p in paths], events=len(g), seed=a.seed, backend=a.backend,
-                  births="stops " + Path(a.stops).name if a.stops else "tables",
+                  births=("stops " + Path(a.stops).name if a.stops else
+                          "starts " + Path(a.starts).name if a.starts else "tables"),
                   geom=a.geom, maps=[Path(m).name for m in a.maps], gdml=Path(a.gdml).name,
                   ce_fates={f: int((r.fate == k).sum()) for k, f in enumerate(cechain.FATES)},
                   entries=len(ent), steps=len(steps), events_with_steps=int(len(steps[KEY].drop_duplicates())),
