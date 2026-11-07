@@ -13,7 +13,8 @@ export MANIFEST=<manifest path from the access reply>
 export M2FS_DATA=<your Mu2e data area>/fastsim        # writable and with quota; not the app area, not $HOME
 ```
 
-Timings below are from a clean-clone test (see the end of this page); `pip` dominates the first run.
+A clean-clone test took 7.7 minutes on a GPVM and 12 on a newly started EAF server, most of it the demo (timings at the
+end of this page).
 
 ## Path A: EAF notebook (Fermilab Elastic Analysis Facility)
 
@@ -142,4 +143,20 @@ and [core/docs/running.md](core/docs/running.md).
 
 ## Clean-clone timings
 
-To be filled by the clean-clone test.
+Each path was followed verbatim from a fresh clone in a new shell (GPVM: `env -i` plus a login shell; EAF: a newly
+started server, default profile). Wall times:
+
+| Step | GPVM (4-core VM) | EAF (default server, 2 CPUs) |
+|---|---:|---:|
+| server start | - | 73 s |
+| clone with submodules | 8 s | 4 s |
+| `site/check.py` | 0 s | 0 s |
+| venv on the Mu2e ana Python | 10 s | 19 s |
+| `pip install` (JAX and the four packages) | 55 s | 39 s |
+| `check-inputs` (78 files) | 30 s | 7 s |
+| demo (all three lines ok) | 283 s | 434 s |
+| your own job (`beam_point`, 49 foils: stop fraction 0.6669 +- 0.0033) | 76 s | 144 s |
+| **total** | **7.7 min** | **10.8 min** (12 min with the server start) |
+
+The demo is most of it, and most of the demo is fixed cost (JAX compilation, table loading); skip it, or use `--quick`,
+when you only need your own job. On the Slurm path the image build from a fresh clone took 87 s (CPU variant).
