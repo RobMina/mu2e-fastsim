@@ -1,0 +1,4 @@
+# A missing required collection must fail, even when other roles are present.
+#include "FlashBoard/fcl/read_fixture.fcl"
+physics.analyzers.board.strawSteps: ["fixture:missingTracker"]
+services.TFileService.fileName: "flash_board_missing.root"

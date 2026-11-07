@@ -1,0 +1,12 @@
+BEGIN_PROLOG
+# Unset tags and zero expectations force an explicit input-product census before reading.
+flashBoardExport: {
+  module_type: FlashBoardExporter
+  strawSteps: []
+  caloSteps: []
+  crvSteps: []
+  generatedEvents: ""
+  expectedEvents: 0
+  expectedSubRuns: 0
+}
+END_PROLOG

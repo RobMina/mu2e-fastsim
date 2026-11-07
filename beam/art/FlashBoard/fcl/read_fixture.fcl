@@ -1,0 +1,10 @@
+# Reread persisted fixture products without rerunning the producer.
+#include "FlashBoard/fcl/read.fcl"
+source.maxEvents: 4
+services.TFileService.fileName: "flash_board_fixture_reread.root"
+physics.analyzers.board.strawSteps: ["fixture:tracker"]
+physics.analyzers.board.caloSteps: ["fixture:calo"]
+physics.analyzers.board.crvSteps: ["fixture:crv"]
+physics.analyzers.board.generatedEvents: "fixture"
+physics.analyzers.board.expectedEvents: 4
+physics.analyzers.board.expectedSubRuns: 2

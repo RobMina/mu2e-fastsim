@@ -1,0 +1,10 @@
+# Saved aggregated art only; no producer, filter, transport or aggregation is scheduled.
+#include "FlashBoard/fcl/export.fcl"
+process_name: flashBoardRead
+source: { module_type: RootInput maxEvents: 0 }
+services.TFileService: { fileName: "flash_board_export.root" }
+physics: {
+  analyzers: { board: @local::flashBoardExport }
+  read: [board]
+  end_paths: [read]
+}

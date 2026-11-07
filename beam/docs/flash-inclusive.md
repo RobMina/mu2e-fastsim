@@ -123,6 +123,11 @@ implemented by these reference-analysis modules.
 
 ## Timing and normalization
 
+The [historical board observable](flash-board-observable.md) defines the exact
+7.506758e-6 MeV/generated-resampler-event budget, saved filter/aggregation
+settings, source/pulse policy and independent two-anchor normalization checks.
+Those checks establish the comparison quantity, not fast/G4 closure.
+
 Raw times and deposits are retained. The stock main-flash event filter uses
 strict `fmod(t,1695) > 250 || fmod(t,1695) < 10`, together with detector energy,
 particle and multiplicity conditions. Applying this predicate to individual raw

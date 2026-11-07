@@ -1,0 +1,33 @@
+# Unfiltered deterministic extraction fixture; exposure is written at endSubRun without G4.
+#include "FlashBoard/fcl/export.fcl"
+process_name: flashBoardFixture
+services.TFileService: { fileName: "flash_board_fixture.root" }
+source: {
+  module_type: EmptyEvent
+  maxEvents: 4
+  firstRun: 1
+  firstSubRun: 1
+  firstEvent: 1
+  numberEventsInSubRun: 2
+}
+physics: {
+  producers: { fixture: { module_type: FlashBoardFixture badPtr: false } }
+  analyzers: { board: @local::flashBoardExport }
+  make: [fixture]
+  read: [board]
+  out: [saved]
+  trigger_paths: [make]
+  end_paths: [read, out]
+}
+physics.analyzers.board.strawSteps: ["fixture:tracker"]
+physics.analyzers.board.caloSteps: ["fixture:calo"]
+physics.analyzers.board.crvSteps: ["fixture:crv"]
+physics.analyzers.board.generatedEvents: "fixture"
+physics.analyzers.board.expectedEvents: 4
+physics.analyzers.board.expectedSubRuns: 2
+outputs.saved: {
+  module_type: RootOutput
+  fileName: "flash_board_fixture_%#.art"
+  outputCommands: ["keep *_*_*_*"]
+  fileProperties: { granularity: "Job" }
+}

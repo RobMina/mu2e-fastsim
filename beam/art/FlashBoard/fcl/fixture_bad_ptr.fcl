@@ -1,0 +1,5 @@
+# A nonexistent map key must fail extraction rather than become a zero-response event.
+#include "FlashBoard/fcl/fixture.fcl"
+physics.producers.fixture.badPtr: true
+services.TFileService.fileName: "flash_board_fixture_bad_ptr.root"
+outputs.saved.fileName: "flash_board_fixture_bad_ptr_%#.art"

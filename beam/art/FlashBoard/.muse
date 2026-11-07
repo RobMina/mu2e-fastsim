@@ -1,0 +1,1 @@
+# Register the Offline-backed aggregated-accessor exporter and fixture with Muse.
