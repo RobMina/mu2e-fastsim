@@ -1,4 +1,4 @@
-"""Strict PU1 development adapter; no EWM rerun, nominal conditions, or time-based joins.
+"""Strict development adapter; no EWM rerun, nominal conditions, or time-based joins.
 
 Timing provenance is caller supplied: truth = fast_inputs_dev1253_v2/response.root,
 reco = four_stream_dev1253/response.root. Only highest-cycle ROOT tables are read.

@@ -1,4 +1,4 @@
-"""Synthetic-only PU1 CRV adapter contracts; no geometry downloads or real events."""
+"""Synthetic-only CRV adapter contracts; no geometry downloads or real events."""
 from copy import deepcopy
 from types import SimpleNamespace
 
