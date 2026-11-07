@@ -1,0 +1,3 @@
+# Provenance-only stock printer for the existing legacy pilot.
+#include "CaloFastSim/fcl/print_primary_sources.fcl"
+physics.analyzers.printSource.input : "TargetStopResampler::CaloLibraryCE"

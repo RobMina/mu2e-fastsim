@@ -1,0 +1,4 @@
+# Opt-in immediate-source identity export; analyzer-only, no transport.
+#include "CaloFastSim/fcl/dump_library_primary.fcl"
+physics.analyzers.dump.exportSourceEvents : true
+physics.analyzers.dump.sourceEvents : "TargetStopResampler::Primary"

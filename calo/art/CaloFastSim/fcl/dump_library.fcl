@@ -1,0 +1,26 @@
+# Build-gated exporter for an existing full-truth pilot art, never a new G4 run.
+#include "Offline/fcl/standardServices.fcl"
+process_name : CaloLibraryDump
+source : { module_type : RootInput }
+services : { @table::Services.Sim }
+services.SeedService.baseSeed : 1
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_run1_a.txt"
+services.GeometryService.bFieldFile : "Offline/Mu2eG4/geom/bfgeom_no_tsu_ps_v01.txt"
+services.GeometryService.printConfig : true
+services.TFileService.fileName : "calo_library_tables.root"
+physics : {
+  analyzers : {
+    dump : {
+      module_type : CaloLibraryDumper
+      inputMode : "stage"
+      status : "g4run::CaloLibraryCE"
+      generated : "generate::CaloLibraryCE"
+      showers : "CaloShowerStepMaker::CaloLibraryCE"
+      steps : [ "g4run:virtualdetector:CaloLibraryCE", "g4run:calorimeter:CaloLibraryCE",
+                "g4run:tracker:CaloLibraryCE", "g4run:stoppingtarget:CaloLibraryCE",
+                "g4run:protonabsorber:CaloLibraryCE", "g4run:CRV:CaloLibraryCE" ]
+    }
+  }
+  e1 : [ dump ]
+  end_paths : [ e1 ]
+}

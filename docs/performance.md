@@ -70,6 +70,77 @@ CE production simulation stage. Synchronization and all fast stages are included
 compilation are excluded. These small-batch timings do not establish device saturation. Full selections, timing
 boundaries, commands and limitations: [CE shower library](../calo/SHOWERS.md).
 
+A separate **development-only** replay with the merged native calorimeter fitter (15 iterations, its own cache)
+keeps the stock-CSS control near stock: conditional acceptance **0.9972 +- 0.0028**, energy difference
+**+0.049 +- 0.103 MeV**. Crystal-aware placement improves five-fold cross-fit energy chi2/ndf from **35.72/19** to
+**19.34/19** and conditional acceptance from **0.9231 +- 0.0184** to **0.9544 +- 0.0166**, but worsens truth-E/p
+shape (**35.0/19 → 63.7/19**) and does not fix the common-event spatial discrepancy. This is not confirmation.
+
+On the same 1,000 **development** starts, complete-route geometric/crystal rates are **13.25/14.87 CE/s per CPU
+core**, **107.85/106.39 per MIG slice**, and **110.92/110.16 per A100-40GB**, with four allocated host cores for each
+GPU. Identical-seed warm calls include synchronization and all fast stages. Unchanged CPU transport varies between
+placement arms, so their total-rate difference is not a placement speedup. MIG transport is 85% of the geometric
+route; A100's faster transport is offset by slower host hand-off and digitisation. These different development
+inputs/backend cannot be compared directly to the earlier frozen held-out timings, and the stock rate still has
+unequal physics scope. No replacement, saturation or reconstructed-E/p claim is added.
+
+A subsequent frozen-library check on **2,396 direct-front entries from a different production development file**
+keeps the same-shower fast control near stock (selection ratio **0.9971 +- 0.0015**, energy difference
+**-0.135 +- 0.087 MeV**). Geometric/crystal library ratios are **0.9207 +- 0.0073 / 0.9375 +- 0.0077**, energy
+biases **-6.37 +- 0.54 / -5.29 +- 0.48 MeV**, and energy chi2/ndf **178.2/19 / 122.3/19**. Inner-radius deficits
+and radial/tangential shape disagreement persist; neither variant is ready for confirmation or replacement.
+The reference is the existing Offline v13_39_00 calorimeter runtime, not current head; geometry comes from the
+source release. Filtered-population and library-uncertainty caveats remain. Reserved confirmation files were not
+used, and this single-call physics check adds **no throughput/speedup claim**. Details: [CE showers](../calo/SHOWERS.md).
+
+A saved-only decomposition finds, below 450 mm entry radius, **−5.04 ± 1.22 MeV/query** of donor-minus-original
+Birks CSS energy before placement, followed by **11.65 ± 0.65 / 9.08 ± 0.51 MeV/query** discarded by geometric/crystal
+placement. Most discarded energy is not inside the nominal central hole; coarse donor-radius mismatch is strongly
+associated with both missing donor energy and mapping loss. This is CSS accounting, not a causal decomposition of
+reconstructed inefficiency. That diagnostic made no correction, reconstruction, confirmation or timing run.
+
+One subsequent predeclared **K=8 nearest-radius donor candidate**, within the same bins and disk and with unchanged
+placement guards, improves geometric/crystal selection ratios to **0.9514 ± 0.0073 / 0.9583 ± 0.0075** and mean energy
+biases to **−3.59 ± 0.41 / −2.80 ± 0.39 MeV**. Only candidate arms were reconstructed; baselines were reused. Energy
+shapes still disagree (**116.7/19 / 108.9/19**), as do spatial marginals. It is a development improvement, not stock
+closure, confirmation or a default change; **no new speedup claim** follows from these two physics-check calls.
+
+Saved-only residual stratification localizes a strong remaining failure to disk-1 entries with radius <450 mm
+and incident energy ≥95 MeV: both candidates select **117/146 stock**, while the original-CSS control selects 145.
+In that same 190-query population, sampled CSS patterns with ≤10 MeV occur **32 times versus 1** in the original;
+this is a donor-population association, not permission to remove weak/empty showers. The lower readout-time gate
+has no miss-associated CSS threshold downcrossing in this region. No new reconstruction, model or timing benchmark
+was run; K8 remains development-only. Details and uncertainty limits: [saved residual diagnosis](../calo/SHOWERS.md#saved-k8-residual-diagnosis).
+
+An exact frozen-pool census finds **34 expected versus 32 saved weak showers** in the problematic 109-query
+subcell (conditional draw SD 1.91): the discrepancy is in the pool mixture, not an unlucky draw. Sixteen of 40
+queried cells have no donors, but the saved production detector-step filter also makes selection compatibility an
+unresolved confound. A larger library should follow a matched-population/source audit, not a K increase or empty-
+shower veto. This census changes no physics output and provides no throughput measurement.
+
+A separately audited **selected-production training library** contains 24,120 front-entry donors from ten files,
+including all empty/weak responses. On the same exposed 2,396-query development file, its fixed K8 draw improves
+geometric/crystal mean-energy biases to **−1.803±0.420 / −0.753±0.404 MeV**, with selection ratios
+**0.9925±0.0065 / 1.0012±0.0070**. The selected-production versus unfiltered-pilot difference is a population/release
+confound, not a library-size-only effect. Truth-E/p and conditional spatial response still disagree.
+
+One predeclared opt-in direction candidate (same cell, matching both local direction signs, ≤10° and ≤25 mm,
+nearest eight only when eight qualify; otherwise original K8) restores radial centroid–incident-direction
+correlations from **0.067/0.073 to 0.591/0.596**, versus stock0.657. Paired gains are **0.524±0.033 / 0.523±0.033**;
+identical three-way selected comparisons confirm the recovery. Selection ratios are **0.9832±0.0074 / 0.9983±0.0067**,
+energy biases **−1.797±0.409 / −0.325±0.402 MeV**, and truth-E/p χ²/ndf **76.52/24 / 69.34/23**. These are conditional
+distribution diagnostics, not detector resolution or replacement validation. Only the two candidate arms were
+reconstructed; existing references were reused. Defaults and reserved confirmation files remain unchanged.
+
+The saved-only follow-up finds the crystal E/p peak deficit mainly in direction-matched, middle-radius queries;
+radial widths are tail-sensitive, and disk1 tangential widths already disagree before placement. On the same526
+selected disk1 queries, crystal new/K8/stock widths are **39.63/35.98/29.74 mm**, new-minus-stock **9.89±6.14 mm**.
+All112fallback queries and all tails are retained. These checks add **no throughput/speedup measurement**; the earlier
+development profile is not a matched frozen-candidate benchmark. Broader fixed development, library/model/stock-seed
+uncertainty, current-runtime compatibility, inclusive transport/acceptance and reconstructed-track E/p remain open.
+Details: [fixed direction trial](../calo/SHOWERS.md#fixed-capped-direction-trial) and
+[saved-only localization](../calo/SHOWERS.md#saved-only-localization-of-the-direction-candidate).
+
 ## Per GPU: CRV default chain and beam stop fraction
 
 One GPU per job, the defaults of `main` (2026-11-02). CRV: production `runchain` over 11 shards of 50,000 generated

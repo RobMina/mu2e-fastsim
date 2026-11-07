@@ -1,0 +1,16 @@
+# Independent stock-printer audit with one framework EventID line per event.
+#include "Offline/fcl/minimalMessageService.fcl"
+process_name : SourceEventAudit
+source : { module_type : RootInput }
+services.message : @local::default_message
+services.message.destinations.log.categories.ArtReport : { reportEvery : 1 limit : -1 }
+physics : {
+  analyzers : {
+    printSource : {
+      module_type : EventIDSequencePrinter
+      input : "TargetStopResampler::Primary"
+    }
+  }
+  e1 : [ printSource ]
+  end_paths : [ e1 ]
+}

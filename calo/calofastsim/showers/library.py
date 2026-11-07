@@ -119,14 +119,48 @@ def build(entries, steps, *, development, binning=Binning()):
     return packed
 
 
-def sample(library, entries, rng, *, orientation="incident"):
+def _radius_pool(rows, radius, query_radius, neighbors):
+    """Nearest rows with bounded query-by-K storage and library-row tie breaks.
+
+    Radius-sorted neighbors on either side bracket the nearest K. Left-hand
+    duplicate radii are canonicalized to the first library rows of each tie,
+    including when the candidate window begins partway through that tie.
+    """
+    sorted_rows = rows[np.argsort(radius[rows], kind="stable")]
+    sorted_radius = radius[sorted_rows]
+    split = np.searchsorted(sorted_radius, query_radius, side="left")
+    left = split[:, None] - neighbors + np.arange(neighbors)
+    right = split[:, None] + np.arange(neighbors)
+    valid_left = left >= 0
+    valid_right = right < len(rows)
+    left = np.maximum(left, 0)
+    first = np.searchsorted(sorted_radius, sorted_radius[left], side="left")
+    left = first + left - np.maximum(first, np.maximum(split - neighbors, 0)[:, None])
+    candidates = sorted_rows[np.column_stack((left, np.minimum(right, len(rows) - 1)))]
+    distance = np.abs(radius[candidates] - query_radius[:, None])
+    distance[~np.column_stack((valid_left, valid_right))] = np.inf
+    nearest = np.lexsort((candidates, distance), axis=1)[:, :neighbors]
+    return np.sort(np.take_along_axis(candidates, nearest, axis=1), axis=1)
+
+
+def sample(library, entries, rng, *, orientation="incident", radius_neighbors=0):
     """Draw one whole pattern per query; flag empty-bin/out-of-range fallback.
 
     Sparse bins use the closest occupied bin in bin-index distance, in the same
     entry disk only. No support in a disk returns donor=-1 and zero steps;
     ``supported`` distinguishes that outcome from a sampled empty shower.
     Energies are copied, not scaled to the query entry energy.
+
+    ``radius_neighbors=0`` preserves the original draw and output schema. A
+    positive integer restricts each selected cell to up to that many nearest
+    entry radii, breaking distance ties by library row. The eligible rows are
+    sorted by library row before the same per-disk uniform draws are applied.
+    Empty showers remain eligible. Only this opt-in adds per-query
+    ``radius_pool_size`` and ``bin_pool_size`` (both zero without disk support).
     """
+    if (isinstance(radius_neighbors, (bool, np.bool_)) or
+            not isinstance(radius_neighbors, (int, np.integer)) or radius_neighbors < 0):
+        raise ValueError("radius_neighbors must be a nonnegative integer")
     binning = Binning(*(library["bins_" + k] for k in ("energy", "cosine", "radius")))
     query, outside = cells(entries["energy"], entries["cosine"], entries["radius"], binning)
     rotation = frame(entries["direction"])
@@ -143,6 +177,9 @@ def sample(library, entries, rng, *, orientation="incident"):
     starts = np.r_[0, np.cumsum(counts[:-1])]
     donors = np.full(n, -1, dtype=np.int64)
     fallback = outside.copy()
+    if radius_neighbors:
+        radius_pool_size = np.zeros(n, dtype=np.int64)
+        bin_pool_size = np.zeros(n, dtype=np.int64)
     for disk in np.unique(entries["disk"]):
         where = np.flatnonzero(np.asarray(entries["disk"]) == disk)
         pool = np.flatnonzero(occupied[:, 0] == disk)
@@ -153,7 +190,23 @@ def sample(library, entries, rng, *, orientation="incident"):
         near = np.argmin(distance, axis=1)
         bins = pool[near]
         fallback[where] |= distance[np.arange(len(where)), near] != 0
-        donors[where] = order[starts[bins] + (rng.random(len(where)) * counts[bins]).astype(np.int64)]
+        if not radius_neighbors:
+            donors[where] = order[starts[bins] + (rng.random(len(where)) * counts[bins]).astype(np.int64)]
+            continue
+        uniform = rng.random(len(where))
+        bin_pool_size[where] = counts[bins]
+        for cell in np.unique(bins):
+            local = np.flatnonzero(bins == cell)
+            target = where[local]
+            rows = order[starts[cell]:starts[cell] + counts[cell]]
+            size = min(radius_neighbors, len(rows))
+            radius_pool_size[target] = size
+            draw = (uniform[local] * size).astype(np.int64)
+            if size == len(rows):
+                donors[target] = rows[draw]
+            else:
+                eligible = _radius_pool(rows, library["entry_radius"], np.asarray(entries["radius"])[target], size)
+                donors[target] = eligible[np.arange(len(target)), draw]
     supported = donors >= 0
     length = np.zeros(n, dtype=np.int64)
     length[supported] = np.diff(library["offsets"])[donors[supported]]
@@ -184,6 +237,8 @@ def sample(library, entries, rng, *, orientation="incident"):
     result["position"] = entries["position"][row] + delta
     result["time"] = entries["time"][row] + result.pop("relative_time")
     result.update(entry=row, offsets=offsets, donor=donors, supported=supported, fallback=fallback)
+    if radius_neighbors:
+        result.update(radius_pool_size=radius_pool_size, bin_pool_size=bin_pool_size)
     return result
 
 

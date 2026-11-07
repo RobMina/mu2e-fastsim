@@ -1,0 +1,6 @@
+# One production-calorimeter arm on saved compressed DTS; no transport or output art.
+#include "stock_chain.fcl"
+physics.producers.prdRO.caloShowerStepCollection : [ "compressDetStepMCs::Primary" ]
+physics.p1 : [ EWMProducer, prdRO, prdDigi, prdRecoDigi, prdHit, prdProto, prdCluster ]
+physics.e1 : [ prd ]
+outputs : {}

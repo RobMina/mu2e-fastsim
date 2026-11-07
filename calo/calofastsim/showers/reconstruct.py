@@ -79,6 +79,9 @@ def main():
     p.add_argument("--device", choices=("cpu", "gpu"), required=True)
     p.add_argument("--seed", type=int, default=20261105)
     p.add_argument("--reco-commit", required=True)
+    p.add_argument("--placement", choices=("geometric", "crystal"), default="geometric")
+    p.add_argument("--stock-ntuple", type=Path, help="replace the saved stock reference with an explicitly selected ntuple")
+    p.add_argument("--expect-clusters", type=Path, help="require exact saved leading-cluster observables on each repeat")
     p.add_argument("--live-transport", choices=("numpy", "device"), help="time the complete route in one call, not a stage sum")
     p.add_argument("--transport-geometry", type=Path)
     args = p.parse_args()
@@ -97,6 +100,17 @@ def main():
         conditions = {k.removeprefix("condition_"): f[k][rows] for k in f.files if k.startswith("condition_")}
         stock = {k.removeprefix("stock_cluster_"): f[k][rows] for k in f.files if k.startswith("stock_cluster_")}
         starts = {k: f[k][rows] for k in ("x0", "u0", "p0", "t0")}
+        if args.stock_ntuple:
+            from .export import EVENT, keys
+            from .prepare_chain import stock_clusters
+            ids = keys({k: f["condition_" + k] for k in EVENT}, EVENT)
+            stock = {k: v[rows] for k, v in stock_clusters(args.stock_ntuple, ids).items()}
+    expected = None
+    if args.expect_clusters:
+        with np.load(args.expect_clusters, allow_pickle=False) as f:
+            if not np.array_equal(rows, f["event_row"]):
+                raise ValueError("expected clusters have different event rows")
+            expected = {k: f["fast_" + k] for k in ("energy", "time", "x", "y", "z")}
     if not stock:
         p.error("prepared inputs must include saved stock reconstruction")
     library, _ = load(args.library)
@@ -132,7 +146,7 @@ def main():
                 if not np.array_equal(getattr(result, name), saved[field_name]):
                     raise RuntimeError("live timing repeat differs from the saved same-seed transport")
         start = time.perf_counter()
-        handoff = from_cechain(result, field, library, np.random.default_rng(args.seed + 1))
+        handoff = from_cechain(result, field, library, np.random.default_rng(args.seed + 1), placement=args.placement)
         steps = steps_for_reco(handoff, sim)
         handoff_seconds = time.perf_counter() - start
         start = time.perf_counter()
@@ -142,12 +156,13 @@ def main():
         reco_seconds = time.perf_counter() - start
         total_seconds = time.perf_counter() - total_start
         fast = leading(reco["clusters"], len(rows))
+        for reference in (first, expected):
+            if reference is not None and any(not np.array_equal(fast[k], reference[k], equal_nan=True) for k in fast):
+                raise RuntimeError("leading-cluster observables differ from the saved reference or first repeat")
         if first is None:
             first = fast
             np.savez_compressed(args.out / "clusters.npz", event_row=rows,
                                 **{"fast_" + k: v for k, v in fast.items()}, **{"stock_" + k: v for k, v in stock.items()})
-        elif not np.array_equal(first["energy"], fast["energy"]):
-            raise RuntimeError("same-seed reconstruction repeat differs")
         runs.append(dict(repeat=repeat, handoff_seconds=handoff_seconds, reco_seconds=reco_seconds,
                          transport_seconds=transport_seconds, total_seconds=total_seconds,
                          downstream_seconds=handoff_seconds + reco_seconds, stage_seconds=reco.get("seconds"),
@@ -156,14 +171,18 @@ def main():
         (args.out / "timing.json").write_text(json.dumps(runs, indent=2) + "\n")
         print(json.dumps(runs[-1]), flush=True)
     parent = json.loads(args.chain_report.read_text())
-    transport = float(np.median([r["transport_seconds"] for r in parent["timing"]["measurements"][1:]]))
     downstream = float(np.median([r["downstream_seconds"] for r in runs[1:]]))
-    total = transport + downstream
-    method = "sum of separately measured sequential stages on matching CPU/device allocations; excludes setup and compilation"
     if args.live_transport:
         transport = float(np.median([r["transport_seconds"] for r in runs[1:]]))
         total = float(np.median([r["total_seconds"] for r in runs[1:]]))
         method = "single-call CE birth through calorimeter clusters, host/device synchronization included; excludes setup and compilation"
+    else:
+        warm = parent["timing"]["measurements"][1:]
+        if not warm:
+            raise ValueError("composed timing requires a warm upstream transport measurement")
+        transport = float(np.median([r["transport_seconds"] for r in warm]))
+        total = transport + downstream
+        method = "sum of separately measured sequential stages on matching CPU/device allocations; excludes setup and compilation"
     summary = report(first, stock, rows)
     summary.update(repeats=runs, timing=dict(warm_transport_seconds=transport, warm_downstream_seconds=downstream,
                    composed_chain_seconds=total, generated_per_second=len(rows) / total,

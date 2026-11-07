@@ -1,0 +1,8 @@
+# Analyzer-only production input; geometry parity is not verified.
+#include "CaloFastSim/fcl/dump_library.fcl"
+physics.analyzers.dump.inputMode : "primary"
+physics.analyzers.dump.status : "g4run::Primary"
+physics.analyzers.dump.transportParticles : "compressDetStepMCs::Primary"
+physics.analyzers.dump.showers : "compressDetStepMCs::Primary"
+physics.analyzers.dump.primaryParticles : "FindMCPrimary::Primary"
+physics.analyzers.dump.steps : [ "compressDetStepMCs:virtualdetector:Primary" ]
