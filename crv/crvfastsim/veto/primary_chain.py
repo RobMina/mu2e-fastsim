@@ -114,20 +114,10 @@ def reconstruct(charges, cond, cfg, rng, geom, ccfg, selection, timers):
     return coincidence_rows(outs, geom, selection)
 
 
-def run(selection, primaries, gdml, calib, deviation, seed=20261105, period=1695., library_dir=None,
-        input_kind="represented", census=None):
-    """Compose the fixed response chain with represented muons or independently retained generators."""
-    if len(selection) == 0:
-        raise ValueError("response chain requires a nonempty event selection")
-    input_report = {}
-    if input_kind == "retained":
-        from .generators import prepare
-        if census is None:
-            raise ValueError("retained inputs require an independent event census")
-        primaries, input_report = prepare(selection, primaries, census)
-        if (primaries.pdg.abs() != 13).any() and not library_dir:
-            raise ValueError("non-muon retained inputs require the shower library; cannot silently omit their response")
-    gen = rekey(selection, primaries, input_kind)
+def load_setup(gdml, calib, deviation, library_dir=None):
+    """Load the event-independent setup of the C4 chain once: run configuration, conditions, transport world,
+    optical tables, SiPM photon map and the optional library. Draws no random numbers; pass the result to run()
+    (``setup=``) to process several selections in one process without reloading (crvfastsim.veto.stream)."""
     from .. import chain, readout, runconfig, transport
     from ..response import photons, sipm
     start = time.perf_counter()
@@ -143,7 +133,7 @@ def run(selection, primaries, gdml, calib, deviation, seed=20261105, period=1695
     pmap = sipm.photon_map()
     lib = spec = None
     if library_dir:
-        from .. import tier1b, tier1b_assets
+        from .. import tier1b_assets
         directory = Path(library_dir)
         options = dict(context=True, contain=True, point=True, topology=True, unvisited=True,
                        nearmiss=True, chord=True, anchor=True, per_primary=True)
@@ -151,10 +141,43 @@ def run(selection, primaries, gdml, calib, deviation, seed=20261105, period=1695
                                       str(directory / "topology.npz"), str(directory / "templates_v3.npz"),
                                       options=options)
         lib = tier1b_assets.load(spec, geom)
-        if input_kind == "retained":
-            from .generators import shower_support
-            input_report["shower_support"] = shower_support(gen, lib)
+    return dict(inputs=(gdml, calib, deviation, library_dir), rc=rc, geom=geom, ccfg=ccfg, cfg=cfg, cond=cond,
+                world=world, below=below, tabs=tabs, pmap=pmap, lib=lib, spec=spec,
+                setup_s=time.perf_counter() - start)
+
+
+def run(selection, primaries, gdml, calib, deviation, seed=20261105, period=1695., library_dir=None,
+        input_kind="represented", census=None, setup=None):
+    """Compose the fixed response chain with represented muons or independently retained generators.
+    setup: the result of load_setup() for the same gdml/calib/deviation/library_dir (default: load it here)."""
+    if len(selection) == 0:
+        raise ValueError("response chain requires a nonempty event selection")
+    input_report = {}
+    if input_kind == "retained":
+        from .generators import prepare
+        if census is None:
+            raise ValueError("retained inputs require an independent event census")
+        primaries, input_report = prepare(selection, primaries, census)
+        if (primaries.pdg.abs() != 13).any() and not library_dir:
+            raise ValueError("non-muon retained inputs require the shower library; cannot silently omit their response")
+    gen = rekey(selection, primaries, input_kind)
+    from .. import tier1b, transport
+    start = time.perf_counter()
+    if setup is None:
+        setup = load_setup(gdml, calib, deviation, library_dir)
+        reused = False
+    elif setup["inputs"] != (gdml, calib, deviation, library_dir):
+        raise ValueError("prepared C4 setup was loaded for other geometry, conditions or library")
+    else:
+        reused = True
+    rc, geom, ccfg, cfg, cond = (setup[k] for k in ("rc", "geom", "ccfg", "cfg", "cond"))
+    world, below, tabs, pmap, lib, spec = (setup[k] for k in ("world", "below", "tabs", "pmap", "lib", "spec"))
+    if lib is not None and input_kind == "retained":
+        from .generators import shower_support
+        input_report["shower_support"] = shower_support(gen, lib)
     timers = {"setup_s": time.perf_counter() - start}
+    if reused:
+        timers["setup_reused"] = True
     rng = np.random.default_rng(seed)
     begin = time.perf_counter()
     steps, parts = transport.transport(gen, geom, rng, stage="C", world=world, below=below,
