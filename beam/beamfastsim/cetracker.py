@@ -193,17 +193,20 @@ class DeviceChain:
     tracker and response tables); each call runs one batch. Per-event outputs stay device arrays.
 
     offline_root, maps (G4BL headers, DS map first), gdml: as the CLI. response: reco response tables (.npz,
-    trkfastsim.recoresp.table) or None (no track observables). digi_cond: device digitiser conditions (.npz,
+    trkfastsim.recoresp.table), "default" (the tables shipped with trkfastsim.recoresp) or None (no track
+    observables). digi_cond: device digitiser conditions (.npz,
     trkfastsim.digi.digicond) or None (no digis)."""
 
     def __init__(self, offline_root, maps, gdml, geom="Offline/Mu2eG4/geom/geom_2021_PhaseI_v03.txt",
-                 response=None, digi_cond=None, dtype="float64", origin=ORIGIN, chord_mm=10.0, lanes=None):
+                 response=None, digi_cond=None, dtype="float64", origin=ORIGIN, chord_mm=10.0, lanes=None,
+                 ce_unroll=True):
         import jax  # noqa: F401  (device backend)
         from mu2efastsim import ehelix
         from trkfastsim.sim import fieldsteps_jax as FJ
         from . import cechain_jax
         self.dt = np.dtype(dtype)
         self.lanes = lanes
+        self.ce_unroll = ce_unroll
         self.cg = cechain.from_offline(geom, offline_root)
         self.maps = cechain_jax.device_maps(maps, self.dt)
         org = np.asarray(origin, float)
@@ -214,7 +217,7 @@ class DeviceChain:
         self.resp = None
         if response is not None:
             from trkfastsim.recoresp import device as RD, table as RT
-            self.resp = RD.to_device(RT.load(response), self.dt)
+            self.resp = RD.to_device(RT.load() if response == "default" else RT.load(response), self.dt)
         self.cond = None
         if digi_cond is not None:
             from trkfastsim.digi import digicond
@@ -247,7 +250,7 @@ class DeviceChain:
         key = jax.random.PRNGKey(seed)
         tic = time.perf_counter()
         r = cechain_jax.transport(jax.random.fold_in(key, 0), self.cg, self.maps, x, u, p, t0, h=10.0,
-                                  dtype=self.dt, lanes=self.lanes, device_out=True)
+                                  dtype=self.dt, lanes=self.lanes, unroll=self.ce_unroll, device_out=True)
         t_ce = time.perf_counter() - tic
         has = r.fate == cechain.PLANE
         T = r.T

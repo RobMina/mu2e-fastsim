@@ -150,8 +150,8 @@ def _build(geom, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unro
         r0, r1 = radial(x), radial(xe)
         sel_p = (z0 < geom.z_plane) & (z1 >= geom.z_plane)
         up = z1 > z0
-        k = jnp.where(up, jnp.searchsorted(face_up, z0 + eps, side="left"),
-                      jnp.searchsorted(face_dn, z0 - eps, side="right") - 1)
+        k = jnp.where(up, jnp.searchsorted(face_up, z0 + eps, side="left", method="compare_all"),
+                      jnp.searchsorted(face_dn, z0 - eps, side="right", method="compare_all") - 1)
         kc = jnp.clip(k, 0, nf - 1).astype(jnp.int32)
         face = jnp.where(up, face_up[kc], face_dn[kc])
         sel_f = (k >= 0) & (k < nf) & jnp.where(up, face <= z1, face >= z1)
