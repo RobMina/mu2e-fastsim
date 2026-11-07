@@ -615,7 +615,8 @@ def _p2(x):
     return (2 ** np.ceil(np.log2(np.maximum(x, 1)))).astype(np.int64)
 
 
-def _synth_jax_bucketed(WJ, Q, tdc0_row, cfg, noise=0.0, seed=0, budget_gib=SYNTH_BUCKET_GIB, window=(0.0, 1e5)):
+def _synth_jax_bucketed(WJ, Q, tdc0_row, cfg, noise=0.0, seed=0, budget_gib=SYNTH_BUCKET_GIB, window=(0.0, 1e5),
+                         *, stock_scan=False):
     """_synth_jax_batched with charge clusters grouped by padded shape (power-of-two charges Q and samples L) and each
     call filled up to budget_gib: few calls (~30 for a 22 k-event MC file instead of ~300) and no batch padded to the
     largest cluster. Used on oneAPI, where many small noisy calls intermittently abort the Level Zero runtime
@@ -625,6 +626,10 @@ def _synth_jax_bucketed(WJ, Q, tdc0_row, cfg, noise=0.0, seed=0, budget_gib=SYNT
     rows, t, q = Q["row"], Q["time"], Q["charge"]
     cid = waveform.charge_clusters(rows, t, cfg)
     if not len(cid):
+        if stock_scan:
+            return {"chan": np.empty(0, np.int64), "start": np.empty(0), "tdc0": np.empty(0),
+                    "starttdc": np.empty(0, np.int64), "volt": np.empty((0, cfg.samples_zs)),
+                    "adc": np.empty((0, cfg.samples_zs), np.int16)}
         return _synth_jax_batched(WJ, Q, tdc0_row, cfg, 1, noise, seed)
     C = int(cid[-1]) + 1
     first = np.flatnonzero(np.r_[True, cid[1:] != cid[:-1]])
@@ -648,11 +653,12 @@ def _synth_jax_bucketed(WJ, Q, tdc0_row, cfg, noise=0.0, seed=0, budget_gib=SYNT
             n = len(pk["n"])
             Cp = cap if n == cap else int(_p2(n))                       # few distinct shapes -> few compiles
             pad = lambda x, v: np.concatenate([x, np.full((Cp - n,) + x.shape[1:], v, x.dtype)]) if Cp > n else x
+            options = dict(stock_scan=True, window_start=window[0], window_end=window[1]) if stock_scan else {}
             wave, adc, st, last = WJ.synth_dense(pad(pk["T"], 0.0), pad(pk["W"], 0.0), pad(pk["n"], 0),
                                                  pad(pk["t_start"], 0.0), pad(pk["keep"], False), pk["tmpl"],
                                                  jax.random.fold_in(root, call), Lb, cfg.samples_zs,
                                                  cfg.single_pe_precision, noise, cfg.min_voltage, cfg.adc_conversion,
-                                                 cfg.pedestal, cfg.min_adc, cfg.max_adc)
+                                                 cfg.pedestal, cfg.min_adc, cfg.max_adc, **options)
             parts.append(WJ.to_digis(pk, np.asarray(wave)[:n], np.asarray(adc)[:n], np.asarray(st)[:n],
                                      np.asarray(last)[:n], cfg, window))
             call += 1

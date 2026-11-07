@@ -209,7 +209,7 @@ def tdc0_per_feb(labels, cond, rng, width=PERIOD):
     return rng.random(len(u))[inv.ravel()] * width
 
 
-def digis(Q, cond, cfg, rng, key=None, timers=None):
+def digis(Q, cond, cfg, rng, key=None, timers=None, *, stock_scan=False):
     """SiPM charges -> zero-suppressed digis (reco.waveform[_jax]); per digi chan (label), starttdc, adc [n, 12]."""
     from .reco import waveform as WF
     timers = timers if timers is not None else {}
@@ -225,11 +225,14 @@ def digis(Q, cond, cfg, rng, key=None, timers=None):
         if is_oneapi() or not cfg.unbucketed_synth:   # one call padded to the largest cluster needs tens of GiB
             from .reco.cli import _synth_jax_bucketed    # (OOM on A100-40/80, UVA jobs 21732754-60): bucketed calls
             seed = int(rng.integers(2 ** 31))
+            options = {"stock_scan": True} if stock_scan else {}
             D = _synth_jax_bucketed(waveform_jax, {"row": Q["chan"], "time": Q["time"], "charge": Q["charge"]},
-                                    lut, wcfg, noise=wcfg.noise if cfg.noise else 0.0, seed=seed, window=cfg.window)
+                                    lut, wcfg, noise=wcfg.noise if cfg.noise else 0.0, seed=seed, window=cfg.window,
+                                    **options)
         else:
+            options = {"stock_scan": True} if stock_scan else {}
             D = waveform_jax.synthesize(Q["chan"], Q["time"], Q["charge"], lut, wcfg, window=cfg.window,
-                                        rng_key=(key if cfg.noise else None))
+                                        rng_key=(key if cfg.noise else None), **options)
     else:
         D = WF.synthesize(Q["chan"], Q["time"], Q["charge"], lut, wcfg, window=cfg.window,
                           rng=(rng if cfg.noise else None))
@@ -265,7 +268,8 @@ def clusters(W, cond, geom, counters_cfg, cfg, timers=None, detail=False, rng=No
     """Reco waveforms -> pulses -> coincidence clusters. JAX: reco.chain_jax.run (pipelined pulses + coincidences);
     numpy: reco.pulsefit.reconstruct then reco.coinc.find_event per event (the validated references; no JAX needed).
     Returns (list of cluster dicts with cl_event, cl_type, cl_pe, ..., timers). detail: each dict also carries cl_pos,
-    the member table (mem_cl, mem_idx, mem_event) and its flat pulses under "pulses" (reco.ntview input)."""
+    the member table (mem_cl, mem_idx, mem_event) and its flat pulses under "pulses" (reco.ntview input).
+    Optional W["event_t0"] is an additive per-waveform bunch correction, independent of DB calibration."""
     from .reco import coinc as C, pulsefit
     timers = timers if timers is not None else {}
     if 'toff' not in W:
@@ -284,6 +288,8 @@ def clusters(W, cond, geom, counters_cfg, cfg, timers=None, detail=False, rng=No
     if rcfg.use_time_offset_db:  # CrvRecoPulsesFinder adds the DB time offset (offspill: TDC0time = 0)
         toff = W["toff"]   # DB offset plus any explicit time calibration
         P["time"] = P["time"] + toff[P["wf"]] * rcfg.time_offset_scale
+    if "event_t0" in W:  # bunch correction is independent of DB calibration enable/scale
+        P["time"] = P["time"] + W["event_t0"][P["wf"]]
     timers["pulses_s"] = timers.get("pulses_s", 0.0) + _time.perf_counter() - t0
     wf = P["wf"]
     ev = W["ev"][wf]

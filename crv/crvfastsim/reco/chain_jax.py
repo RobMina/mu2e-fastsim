@@ -64,7 +64,8 @@ def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.Finde
         keep_pulses=False, with_pos=False, add_pulses=None, pulse_cfg=None):
     """W: waveforms sorted by (ev, channel, time) with pulsefit inputs and ev, bar, sipm; optional "toff" (per-waveform
     DB time offset [ns], added to the pulse times as CrvRecoPulsesFinder does with useTimeOffsetDB; offspill TDC0time
-    is 0). Returns per-chunk cluster outputs (list) and timers (pulse_dispatch_s, pulse_collect_s, coinc_async_s,
+    is 0). Optional "event_t0" is a per-waveform bunch correction added independently of DB calibration.
+    Returns per-chunk cluster outputs (list) and timers (pulse_dispatch_s, pulse_collect_s, coinc_async_s,
     coinc_finish_s, wall_s). keep_pulses: each chunk output also carries its flat pulses under "pulses" (ev, idx, bar,
     sipm, seq, pe, time; idx is the member index mem_idx refers to). with_pos: clusters carry cl_pos [n, 3].
     add_pulses: callable(events) -> extra pulses (ev, bar, sipm, pe, time, seq) merged before the coincidence finder
@@ -97,6 +98,8 @@ def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.Finde
                 wrow, seq, pe, tm = wrow[keep], seq[keep], pe[keep], tm[keep]
             if "toff" in W and cfg_np.use_time_offset_db:
                 tm = tm + W["toff"][wrow] * cfg_np.time_offset_scale
+            if "event_t0" in W:  # bunch correction is independent of DB calibration enable/scale
+                tm = tm + W["event_t0"][wrow]
             timers["pulse_numpy_redo"] = timers.get("pulse_numpy_redo", 0) + nredo
             ev = W["ev"][wrow]
             idx = np.arange(len(ev)) - np.searchsorted(ev, ev)
