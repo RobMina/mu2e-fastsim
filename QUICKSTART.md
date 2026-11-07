@@ -55,8 +55,8 @@ The venv is the one Path A makes, so a clone on Fermilab storage serves both. Ke
 ## Path C: your own Slurm cluster
 
 The kit runs one job per point on the cluster through `slurm_ssh` (hep-endpoints) and the project image; the job
-streams its inputs from a Mu2e GPVM, so the inputs never stay on the cluster. Use a kit host with ssh access to both
-the cluster login host and a Mu2e GPVM (your laptop, with a Fermilab Kerberos ticket).
+streams its inputs from a Mu2e GPVM, so the inputs never stay on the cluster. Use a kit host with Python 3.10 or newer
+and ssh access to both the cluster login host and a Mu2e GPVM (your laptop, with a Fermilab Kerberos ticket).
 
 1. **The image**, once: on a machine with Apptainer and user namespaces (a cluster node, or a Mu2e GPVM), build it
    from this repository and copy it to `$FASTSIMKIT_SIF` on the cluster. It is not on CVMFS and not downloadable.
@@ -94,7 +94,7 @@ than its sample sizes suggest. On a GPU server set `JAX_PLATFORMS=cuda` first.
 | Chain | Sample | Headline | Reference |
 |---|---|---|---|
 | beam | 20,000 DS-entrance muons (MDC2025ac table of the release) | target stop fraction, nominal target | Geant4 0.3592 on the full 105,350 muons ([docs/validation.md](docs/validation.md)) |
-| CE | 2,000 conversion electrons from that table's target stops | fraction reaching the tracker entry plane | fast chain on 100,000 electrons from the same stops |
+| CE | 2,000 conversion electrons from that table's target stops | fraction reaching the tracker entry plane | fast chain on 40,000 electrons from the same stops (pending: printed as "reference pending") |
 | CRV | 1,000 generated cosmic events, default chain (shard 11 of `g4ref_v1`) | coincidence clusters per generated event | stock chain (Geant4 + digi + reco) on all 50,000 events of that shard |
 
 A line passes within 3 sigma of the combined counting errors. It also writes `$M2FS_DATA/demo/demo_summary.json` and a
