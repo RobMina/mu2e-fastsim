@@ -30,6 +30,8 @@ rigidly placed finite components: correlated deposits, particle ancestry and fir
 field-free vacuum handoff tests for translated/rotated components, not a trained physics bank or production
 navigator. Existing nominal-detector shower templates cannot be assumed portable merely because primary transport
 accepts a new geometry. No current simulation default uses this prototype.
+The opt-in [`saved G4 exporter`](art/README.md) recovers retained trajectories, raw step states and ancestry from
+existing art files without rerunning simulation; extraction does not imply complete boundary-response coverage.
 
 ## Quickstart
 
