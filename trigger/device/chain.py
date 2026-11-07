@@ -1,6 +1,6 @@
 """Device trigger chain: StrawDigis -> hits -> time clusters -> helices -> per-path decisions.
 
-`Chain(menu_cfg, conditions, tc_mva)` compiles once per padded batch shape; `Chain.decide(batch)` returns per-path
+`Chain(menu_cfg, conditions, tc_mva, precision="float64"|"float32")` compiles once per padded batch shape; `Chain.decide(batch)` returns per-path
 decisions [E] for every tracker path it evaluates, all on the device; only the stateful D0-phi prescale counter is
 applied on the host afterwards (`Chain.finish`).
 """
@@ -14,10 +14,18 @@ from . import helix, hits, menu, mva, paths, timecluster
 
 HELIX_TYPES = ("RobustHelixFinder", "AgnosticHelixFinder")
 KSF_TYPES = ("LoopHelixFit", "KinKalSeedFit", "LoopHelixDeFit")
+PRECISIONS = ("float64", "float32")
 
 
 class Chain:
-    def __init__(self, cfg, cond, tc_mva_path, response=None, path_names=None, salt=20261107, debug=False):
+    def __init__(self, cfg, cond, tc_mva_path, response=None, path_names=None, salt=20261107, debug=False,
+                 precision="float64"):
+        if precision not in PRECISIONS:
+            raise ValueError(f"precision must be one of {PRECISIONS}")
+        # float32: every device array, including the stock double-precision intermediates of the hit ports, in
+        # 32-bit (JAX's x64 flag is process-wide, so set it before any device array is made)
+        jax.config.update("jax_enable_x64", precision == "float64")
+        self.precision = precision
         self.cfg = cfg
         self.debug = debug
         phys = cfg["physics"]
