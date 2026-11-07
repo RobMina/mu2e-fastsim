@@ -110,3 +110,20 @@ def test_pair_comparison_of_two_runs_of_the_same_starts(tmp_path):
              **{k: v for k, v in r._asdict().items() if v is not None})
     with pytest.raises(ValueError, match="same starts"):
         CC.pair(str(tmp_path / "a.npz"), str(tmp_path / "c.npz"), g, lambda xx: np.zeros((len(xx), 3)))
+
+
+def test_device_out_returns_the_same_result_as_device_arrays():
+    # device_out keeps the outputs on the device; values equal the host-returned result of the same key and lanes
+    rng = np.random.default_rng(7)
+    g = _geom()
+    x, u = _starts(200, rng)
+    kw = dict(min_bucket=64, lanes=64, chunk=64)
+    a = CJ.transport(jax.random.PRNGKey(3), g, [0.0, 0.0, 1.0], x, u, C.P_CE_AL, 5.0, **kw)
+    b = CJ.transport(jax.random.PRNGKey(3), g, [0.0, 0.0, 1.0], x, u, C.P_CE_AL, 5.0, device_out=True, **kw)
+    assert isinstance(b.x, jax.Array) and isinstance(b.fate, jax.Array)
+    for f in C.Result._fields:
+        va, vb = getattr(a, f), getattr(b, f)
+        if va is None:
+            assert vb is None
+            continue
+        assert np.array_equal(np.asarray(vb), va), f

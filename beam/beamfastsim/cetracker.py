@@ -17,8 +17,16 @@ First passage only: no secondaries, no return after the tracker envelope.
 TABLE: StrawGasStepTableDumper tables of Geant4 CeEndpoint events (trees dump/gen, dump/particles); the generated
 electron of each event is the start. Instead of tables, `--starts FILE` takes the births from a generator file in the
 cechain reference format, e.g. DIO (`beamfastsim.diospec starts`) or RPC (`beamfastsim.rpcspec`) electrons, one event
-per row (`--shards FIRST LAST` keeps a range of diospec shards). Writes DIR/fasttrk_field.root (injector table), DIR/states.root (starts,
+per row (`--shards FIRST LAST` keeps a range of diospec shards). `--tracker device` (opt-in) runs the tracker transport
+on the device as well (trkfastsim.sim.fieldsteps_jax, from the device cechain states, no host round trip in between).
+Writes DIR/fasttrk_field.root (injector table), DIR/states.root (starts,
 hand-off states, final tracker states), DIR/cechain.npz and DIR/handoff.json (counts and timings).
+
+DeviceChain / run (opt-in, Python API): stops or births -> tracker entry -> field-on tracker steps -> digis -> track
+observables, every stage on one device. The track observables come from the reco response layer
+(trkfastsim.recoresp: efficiency and residual tables measured from stock LoopHelix reconstruction), applied per
+event to the device entry state and the number of step rows. Digitisation (optional) runs the device digitiser
+(trkfastsim.digi.digi_jax), whose host packing reads the steps once.
 """
 import json
 import time
@@ -179,6 +187,168 @@ def write_injector(path, steps, entries):
     tables.write(str(path), {"sgsteps": s[STEP_COLS], "particles": p}, as_ttree=True)
 
 
+class DeviceChain:
+    """Conversion electrons on one device: births (or stops) -> cechain_jax to the tracker entry -> fieldsteps_jax
+    StrawGasSteps -> (optional) device digis -> reco response track observables. Built once (geometry, field maps,
+    tracker and response tables); each call runs one batch. Per-event outputs stay device arrays.
+
+    offline_root, maps (G4BL headers, DS map first), gdml: as the CLI. response: reco response tables (.npz,
+    trkfastsim.recoresp.table), "default" (the tables shipped with trkfastsim.recoresp) or None (no track
+    observables). digi_cond: device digitiser conditions (.npz,
+    trkfastsim.digi.digicond) or None (no digis)."""
+
+    def __init__(self, offline_root, maps, gdml, geom="Offline/Mu2eG4/geom/geom_2021_PhaseI_v03.txt",
+                 response=None, digi_cond=None, dtype="float64", origin=ORIGIN, chord_mm=10.0, lanes=None,
+                 ce_unroll=True):
+        import jax  # noqa: F401  (device backend)
+        from mu2efastsim import ehelix
+        from trkfastsim.sim import fieldsteps_jax as FJ
+        from . import cechain_jax
+        self.dt = np.dtype(dtype)
+        self.lanes = lanes
+        self.ce_unroll = ce_unroll
+        self.cg = cechain.from_offline(geom, offline_root)
+        self.maps = cechain_jax.device_maps(maps, self.dt)
+        org = np.asarray(origin, float)
+        field = ehelix.grid_field(*ehelix.read_g4bl(maps[0]))
+        if np.linalg.norm(ehelix.field_at(field, org[None])[0]) < B_DS_MIN:
+            raise ValueError(f"first map {maps[0]}: the DS map must come first")
+        self.trk = FJ.Tracker.from_gdml(gdml, maps[0], org, chord_mm=chord_mm, dtype=self.dt)
+        self.resp = None
+        if response is not None:
+            from trkfastsim.recoresp import device as RD, table as RT
+            self.resp = RD.to_device(RT.load() if response == "default" else RT.load(response), self.dt)
+        self.cond = None
+        if digi_cond is not None:
+            from trkfastsim.digi import digicond
+            self.cond = digicond.Conditions.load(digi_cond)
+
+    @staticmethod
+    def births(stops, n, seed):
+        """n CeEndpoint births from a stop table (dict or npz with x, y, z, t), host arrays (x, u, p, t)."""
+        xs = np.stack([np.asarray(stops[c], float) for c in ("x", "y", "z")], axis=1)
+        x, u, p, t, _ = cechain.from_stops(np.random.default_rng(np.random.SeedSequence([seed, 2])), xs,
+                                           np.asarray(stops["t"], float), n)
+        return x, u, p, t
+
+    def transport(self, births, seed):
+        """cechain + tracker transport of births ((x, u, p, t) host or device arrays, or a DataFrame with KEY +
+        STATE columns). Returns a dict: cechain (Result, device), has_entry, entry x, p, t, tracker
+        (fieldsteps_jax.Result), nrow (step rows per event), timing (enqueue wall seconds; the device may still run)."""
+        import jax
+        import jax.numpy as jnp
+        from trkfastsim.sim import fieldsteps_jax as FJ
+        from . import cechain_jax
+        if isinstance(births, pd.DataFrame):
+            x = births[["x", "y", "z"]].to_numpy(float)
+            pv = births[["px", "py", "pz"]].to_numpy(float)
+            p = np.linalg.norm(pv, axis=1)
+            u = pv / p[:, None]
+            t0 = births["t"].to_numpy(float)
+        else:
+            x, u, p, t0 = (np.asarray(v, float) for v in births)
+        key = jax.random.PRNGKey(seed)
+        tic = time.perf_counter()
+        r = cechain_jax.transport(jax.random.fold_in(key, 0), self.cg, self.maps, x, u, p, t0, h=10.0,
+                                  dtype=self.dt, lanes=self.lanes, unroll=self.ce_unroll, device_out=True)
+        t_ce = time.perf_counter() - tic
+        has = r.fate == cechain.PLANE
+        T = r.T
+        pm = jnp.sqrt(T * (T + 2.0 * eioni.ME))
+        un = r.u / jnp.linalg.norm(r.u, axis=1, keepdims=True)
+        pe = un * pm[:, None]
+        tic = time.perf_counter()
+        trk = FJ.transport(self.trk, jax.random.fold_in(key, 1), r.x, pe, r.t, active=has)
+        t_trk = time.perf_counter() - tic
+        nrow = trk.steps["valid"].sum(axis=1)
+        return dict(cechain=r, has_entry=has, x=r.x, p=pe, t=r.t, tracker=trk, nrow=nrow,
+                    timing=dict(cechain_s=round(t_ce, 3), tracker_s=round(t_trk, 3)))
+
+    def digitize(self, res, seed, event_timing=None, chunk=500):
+        """Device digitiser on the chain's steps (trkfastsim.digi.digi_jax; its host packing reads the steps once).
+        event_timing: pbtime and event_length per event (default 0 and the conditions' event window). Returns the
+        digis (host arrays, `ev` = event index of the batch)."""
+        import jax
+        from trkfastsim.digi import digi_jax
+        s = res["tracker"].steps
+        valid = np.asarray(s["valid"])
+        tr, sl = np.nonzero(valid)
+        st = {k: np.asarray(s[k])[tr, sl] for k in ("shape", "ion", "eion", "len", "width", "t", "x0", "y0", "z0",
+                                                    "x1", "y1", "z1")}
+        st["sid"] = ((np.asarray(s["plane"])[tr, sl].astype(np.int64) << 10)
+                     | (np.asarray(s["panel"])[tr, sl].astype(np.int64) << 7) | np.asarray(s["straw"])[tr, sl])
+        st["ev"] = tr.astype(np.int64)
+        nev = valid.shape[0]
+        if event_timing is None and self.cond.onspill:
+            event_timing = dict(pbtime=np.zeros(nev), event_length=np.full(nev, float(self.cond.eventWindowLength)))
+        key = jax.random.fold_in(jax.random.PRNGKey(seed), 3)
+        outs = []
+        for e0 in range(0, nev, chunk):                   # event chunks, as fastdigi.digitize_steps (cluster capacity)
+            m = (st["ev"] >= e0) & (st["ev"] < e0 + chunk)
+            sub = {k: v[m] for k, v in st.items()}
+            sub["ev"] = sub["ev"] - e0
+            ne = min(chunk, nev - e0)
+            kw = {} if event_timing is None else {"event_timing": {k: np.asarray(v)[e0:e0 + ne]
+                                                                   for k, v in event_timing.items()}}
+            if not len(sub["ev"]):
+                continue
+            d = digi_jax.digitize(sub, ne, self.cond, jax.random.fold_in(key, e0), **kw)
+            d["ev"] = d["ev"] + e0
+            d["step"] = np.flatnonzero(m)[d["step"]] if len(d["step"]) else d["step"]   # row of the flat steps
+            outs.append(d)
+        if not outs:
+            return digi_jax._empty(self.cond)
+        return {k: np.concatenate([o[k] for o in outs]) for k in outs[0]}
+
+    def observables(self, res, seed):
+        """Reco response track observables per event (device arrays; trkfastsim.recoresp.device.apply)."""
+        import jax
+        from trkfastsim.recoresp import device as RD
+        return RD.apply(self.resp, jax.random.fold_in(jax.random.PRNGKey(seed), 2), res["has_entry"], res["nrow"],
+                        res["x"], res["p"])
+
+    def __call__(self, births, seed, digis=True, event_timing=None):
+        res = self.transport(births, seed)
+        if digis and self.cond is not None:
+            res["digis"] = self.digitize(res, seed, event_timing)
+        if self.resp is not None:
+            res["track"] = self.observables(res, seed)
+        return res
+
+
+_CHAIN = {}
+
+
+def run(stops_or_births, seed, *, n=None, digis=True, event_timing=None, **chain_kw):
+    """One batch through DeviceChain (built once per process and configuration): stops_or_births is a stop table
+    (dict/npz with x, y, z, t; then n births are drawn) or births (x, u, p, t). Returns DeviceChain's dict."""
+    key = tuple(sorted((k, tuple(v) if isinstance(v, (list, tuple)) else v) for k, v in chain_kw.items()))
+    if key not in _CHAIN:
+        _CHAIN[key] = DeviceChain(**chain_kw)
+    ch = _CHAIN[key]
+    if hasattr(stops_or_births, "keys") or hasattr(stops_or_births, "files"):
+        births = ch.births(stops_or_births, int(n), seed)
+    else:
+        births = stops_or_births
+    return ch(births, seed, digis=digis, event_timing=event_timing)
+
+
+def bench_prepare(n):
+    """mu2efastsim.bench --prepare: the stop table named by $CETRACKER_STOPS, in host memory."""
+    import os
+    with np.load(os.environ["CETRACKER_STOPS"]) as f:
+        return {k: np.asarray(f[k]) for k in ("x", "y", "z", "t")}, int(n)
+
+
+def bench_run(prepared, seed=1, digis=True, **chain_kw):
+    """mu2efastsim.bench entry point: n births drawn from the stops, then the whole device chain. Returns the device
+    outputs the timer waits on."""
+    stops, n = prepared
+    res = run(stops, seed, n=n, digis=digis, **chain_kw)
+    return dict(track=res.get("track"), nrow=res["nrow"], steps_len=res["tracker"].steps["len"],
+                digis=None if "digis" not in res else res["digis"]["adc"])
+
+
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(prog="python3 -m beamfastsim.cetracker", description=__doc__.split("\n")[0])
@@ -202,6 +372,8 @@ def main(argv=None):
                                      "(diospec starts) or RPC (rpcspec) electrons, one event per row")
     ap.add_argument("--shards", nargs=2, type=int, metavar=("FIRST", "LAST"),
                     help="with --starts: keep these diospec shards (inclusive)")
+    ap.add_argument("--tracker", choices=("numpy", "device"), default="numpy",
+                    help="tracker transport: NumPy fieldsteps (default) or the device twin (needs --backend device)")
     a = ap.parse_args(argv)
     if a.starts and (a.tables or a.stops):
         ap.error("--starts replaces the tables and --stops")
@@ -223,21 +395,40 @@ def main(argv=None):
     if a.max_events is not None:
         g = g.iloc[:a.max_events].reset_index(drop=True)
     cg = cechain.from_offline(a.geom, a.offline_root)
-    tic = time.perf_counter()
-    r = run_cechain(g, cg, a.maps, seed=a.seed, backend=a.backend, device_float=a.device_float, lanes=a.lanes)
-    t_ce = time.perf_counter() - tic
-    ent = handoff(g, r)
-    np.savez_compressed(out / "cechain.npz", **{k: v for k, v in r._asdict().items() if v is not None},
-                        **{k: g[k].to_numpy() for k in KEY})
-    tic = time.perf_counter()
-    steps, final = tracker_steps(ent, a.gdml, a.maps, seed=a.seed, origin=a.origin, chord_mm=a.chord_mm)
-    t_trk = time.perf_counter() - tic
+    if a.tracker == "device":
+        if a.backend != "device":
+            raise SystemExit("--tracker device needs --backend device")
+        ch = DeviceChain(a.offline_root, a.maps, a.gdml, geom=a.geom, dtype=a.device_float, origin=a.origin,
+                         chord_mm=a.chord_mm, lanes=a.lanes)
+        tic = time.perf_counter()
+        res = ch.transport(g, a.seed)
+        t_ce, t_trk = res["timing"]["cechain_s"], res["timing"]["tracker_s"]
+        r = cechain.Result(**{k: (None if v is None else np.asarray(v)) for k, v in res["cechain"]._asdict().items()})
+        ent = handoff(g, r)
+        np.savez_compressed(out / "cechain.npz", **{k: v for k, v in r._asdict().items() if v is not None},
+                            **{k: g[k].to_numpy() for k in KEY})
+        from trkfastsim.sim import fieldsteps_jax as FJ
+        keys = g[KEY].assign(sp=1)
+        sel = np.asarray(res["has_entry"])
+        steps = FJ.to_frame(res["tracker"], keys)                    # tracks without an entry have no rows
+        final = FJ.final_frame(res["tracker"], keys)[sel].reset_index(drop=True)
+    else:
+        tic = time.perf_counter()
+        r = run_cechain(g, cg, a.maps, seed=a.seed, backend=a.backend, device_float=a.device_float, lanes=a.lanes)
+        t_ce = time.perf_counter() - tic
+        ent = handoff(g, r)
+        np.savez_compressed(out / "cechain.npz", **{k: v for k, v in r._asdict().items() if v is not None},
+                            **{k: g[k].to_numpy() for k in KEY})
+        tic = time.perf_counter()
+        steps, final = tracker_steps(ent, a.gdml, a.maps, seed=a.seed, origin=a.origin, chord_mm=a.chord_mm)
+        t_trk = time.perf_counter() - tic
     write_injector(out / "fasttrk_field.root", steps, ent)
     fin = final.reset_index(drop=True)
     if not set(KEY) <= set(fin.columns):
         fin = pd.concat([ent[KEY].reset_index(drop=True), fin], axis=1)
     tables.write(str(out / "states.root"), {"gen": g, "entries": ent, "final": fin}, as_ttree=True)
     report = dict(inputs=[Path(p).name for p in paths], events=len(g), seed=a.seed, backend=a.backend,
+                  tracker=a.tracker,
                   births=("stops " + Path(a.stops).name if a.stops else
                           "starts " + Path(a.starts).name if a.starts else "tables"),
                   geom=a.geom, maps=[Path(m).name for m in a.maps], gdml=Path(a.gdml).name,

@@ -150,8 +150,8 @@ def _build(geom, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unro
         r0, r1 = radial(x), radial(xe)
         sel_p = (z0 < geom.z_plane) & (z1 >= geom.z_plane)
         up = z1 > z0
-        k = jnp.where(up, jnp.searchsorted(face_up, z0 + eps, side="left"),
-                      jnp.searchsorted(face_dn, z0 - eps, side="right") - 1)
+        k = jnp.where(up, jnp.searchsorted(face_up, z0 + eps, side="left", method="compare_all"),
+                      jnp.searchsorted(face_dn, z0 - eps, side="right", method="compare_all") - 1)
         kc = jnp.clip(k, 0, nf - 1).astype(jnp.int32)
         face = jnp.where(up, face_up[kc], face_dn[kc])
         sel_f = (k >= 0) & (k < nf) & jnp.where(up, face <= z1, face >= z1)
@@ -290,7 +290,7 @@ def _merge(st, new, mask):
 
 def transport(key, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True, layer_field=True, z_record=None,
               shell_curvature=True, dtype=np.float64, chunk=256, min_bucket=64, cand_frac=0.125, slab_frac=0.5,
-              unroll=False, lanes=None, shrink=2, stats=None):
+              unroll=False, lanes=None, shrink=2, stats=None, device_out=False):
     """cechain.transport on the device. key: jax.random key; field: a constant 3-vector [T] or a tuple of device
     FieldMaps (device_maps). chunk: iterations per launch; between launches finished lanes are copied out and, while
     starts remain, refilled with new starts (lanes: lane count, a power of two, default all starts at once); then
@@ -300,7 +300,8 @@ def transport(key, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
     of the gathered crossing and slab sub-batches as fractions of the bucket; unroll (opt-in): fixed-trip loops
     unrolled (fewer device launches per iteration on a GPU). Returns cechain.Result (NumPy, float64) with per-lane
     vacuum steps, slab steps and waits (nvac, nslab, nstall). stats (dict): filled with iterations, rounds and
-    lane-iterations."""
+    lane-iterations. device_out (opt-in): the per-lane outputs are gathered on the device and returned as device
+    arrays (same values; the host reads only the lane fates between launches)."""
     dt = np.dtype(dtype)
     maps, const = (tuple(field), None) if isinstance(field, (tuple, list)) and field and \
         isinstance(field[0], FM.FieldMap) else ((), np.asarray(field, float))
@@ -334,8 +335,11 @@ def transport(key, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
     nxt = first.size
     fields = OUT_FIELDS + (REC_FIELDS if z_record is not None else ())
     ints = ("fate", "cnt", "rec_ok", "nvac", "nslab", "nstall")
-    final = {f: np.zeros((n,) + tuple(st[f].shape[1:]), np.asarray(st[f]).dtype if f in ints else np.float64)
-             for f in fields}
+    if device_out:
+        final = {f: jnp.zeros((n,) + tuple(st[f].shape[1:]), st[f].dtype) for f in fields}
+    else:
+        final = {f: np.zeros((n,) + tuple(st[f].shape[1:]), np.asarray(st[f]).dtype if f in ints else np.float64)
+                 for f in fields}
     rounds = iters = lane_it = refills = 0
     timeline = []
     while True:
@@ -352,8 +356,13 @@ def transport(key, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
         fin = np.flatnonzero((idx >= 0) & ~live)
         if fin.size:
             fd = jnp.asarray(fin)
-            for f in fields:
-                final[f][idx[fin]] = np.asarray(st[f][fd])
+            if device_out:
+                dst = jnp.asarray(idx[fin])
+                for f in fields:
+                    final[f] = final[f].at[dst].set(st[f][fd])
+            else:
+                for f in fields:
+                    final[f][idx[fin]] = np.asarray(st[f][fd])
             idx[fin] = -1
         if nxt < n:                                                    # refill free lanes with new starts
             free = np.flatnonzero(idx < 0)
@@ -382,12 +391,15 @@ def transport(key, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
         stats.update(iterations=iters, rounds=rounds, refills=refills, lane_iterations=lane_it,
                      lanes=int(pow2(n if lanes is None else min(n, lanes))), timeline=timeline)
     c = final["cnt"]
+    if device_out:
+        t = jnp.asarray(t, final["t"].dtype)
     # the device accumulates the time since the start (small, so float32 rounding does not bias it); t0 added here
-    res = dict(fate=final["fate"].astype(int), x=final["x"], u=final["u"], T=final["T"], t=t + final["t"],
+    res = dict(fate=final["fate"].astype(jnp.int32 if device_out else int), x=final["x"], u=final["u"], T=final["T"],
+               t=t + final["t"],
                path=final["s"], nfoil=c[:, 0].astype(int), nipa=c[:, 1].astype(int), nopa=c[:, 2].astype(int),
                nring=c[:, 3].astype(int), nvac=final["nvac"].astype(int), nslab=final["nslab"].astype(int),
                nstall=final["nstall"].astype(int))
     if z_record is not None:
         res.update(rec_ok=final["rec_ok"], rec_x=final["rec_x"], rec_u=final["rec_u"], rec_T=final["rec_T"],
-                   rec_t=np.where(final["rec_ok"], t + final["rec_t"], 0.0))
+                   rec_t=(jnp if device_out else np).where(final["rec_ok"], t + final["rec_t"], 0.0))
     return C.Result(**res)
