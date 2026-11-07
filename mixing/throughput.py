@@ -212,7 +212,20 @@ def artifact(path):
 
 
 def hardware(path):
-    return {"path": str(path), "text": path.read_text()} if path.is_file() else None
+    """Keep raw provenance private; an optional JSON label is safe for public plots.
+
+    Adjacent hardware.json / stock_hardware.json contain {"label": "..."}.
+    A missing receipt never implies a particular accelerator or allocation.
+    """
+    result = {"path": str(path), "text": path.read_text()} if path.is_file() else {}
+    metadata = path.with_suffix(".json")
+    if metadata.is_file():
+        data = json_object(metadata.read_text())
+        label = data.get("label")
+        if not isinstance(label, str) or not label.strip() or any(c in label for c in "\r\n"):
+            raise ValueError("hardware metadata needs a nonempty single-line public label")
+        result.update(label=label.strip(), metadata=artifact(metadata))
+    return result or None
 
 
 def measured(timing, events, scope):
@@ -276,10 +289,11 @@ def report(rootdir, reference, stock, run_names=DEFAULT_RUNS):
                                     "scope": "derived response + ROOT write only; not measured end-to-end latency"},
             "settings": {key: saved.get(key) for key in ("seed", "chunk", "devices", "crv_device_precision", "tracker_device_precision")},
             "validation": {"paired_comparisons_skipped": True, "sampling_identical": True, "outputs": equality},
-            "descriptive_historical_stock_wall_over_python_wall": number(stock_time["wall_s"] / inner["wall_s"], "historical ratio", positive=True),
             "artifacts": {filename: artifact(directory / filename) for filename in ("fast.root", "report.json", "sampling.json", "sampling.npz")},
             "timing_artifacts": {"outer": artifact(outer_path), "python": artifact(inner_path)},
         })
+    fast_hardware = hardware(rootdir / "hardware.txt")
+    stock_hardware = hardware(rootdir / "stock_hardware.txt")
     result = {
         "schema_version": 1, "rootdir": str(rootdir), "events": events, "run_order": list(names),
         "denominator": "all primary events in finished highest-cycle ROOT entries, including empty detector events",
@@ -288,12 +302,12 @@ def report(rootdir, reference, stock, run_names=DEFAULT_RUNS):
         "cache_scope": "fresh means only a fresh private JAX/CUDA cache, not a cold OS page cache; populated-cache runs are fresh processes, NOT fully warmed in-process passes; cache labels follow the supplied run order",
         "stage_scope": "setup_s includes input_s; never add them twice. Stage sums are not measured end-to-end time. External Python/container timings are independent measurements; post-run comparisons are excluded.",
         "comparison_scope": "Saved direct outputs and scientific sampling choices must match the supplied saved direct reference exactly. Stock shares ordered primary IDs but has independent pileup/response draws and richer native output, not exact detector equivalence.",
-        "historical_ratio_scope": "Descriptive cross-endpoint stock external process wall / fast Python process wall only, not a controlled speedup or certified grid/GPVM job comparison. Stock art includes native mixing, framework/source I/O and richer native detector diagnostics; fast starts from cached source steps and writes reduced diagnostics. Art TimeReport is a separate timing boundary and is not substituted for process wall.",
-        "hardware": hardware(rootdir / "hardware.txt"),
+        "endpoint_scope": "Stock and fast rates are separate measurements, not a speedup comparison: devices and timing boundaries differ. Stock art includes native mixing, framework/source I/O and richer native detector diagnostics; fast starts from cached source steps and writes reduced diagnostics. Art TimeReport is a separate timing boundary and is not substituted for process wall.",
+        "hardware": fast_hardware,
         "reference": {"directory": str(reference), "census": baseline,
                       "artifacts": {name: artifact(reference / name) for name in ("fast.root", "report.json", "sampling.json", "sampling.npz")}},
-        "stock": {"directory": str(stock), "endpoint": "UVA historical 1 CPU; not grid or GPVM", "rerun": False,
-                  "census": native, "hardware": hardware(rootdir / "stock_hardware.txt"),
+        "stock": {"directory": str(stock), "endpoint": (stock_hardware or {}).get("label", "hardware not recorded"), "rerun": False,
+                  "census": native, "hardware": stock_hardware,
                   "external_process": measured(stock_time, events, "original GNU time external art process wall, including process startup/shutdown"),
                   "art_time_report": {**art, "real_events_per_s": number(events / art["real_s"], "Art event rate", positive=True),
                                       "scope": "art TimeReport CPU/Real; distinct from external process wall"},

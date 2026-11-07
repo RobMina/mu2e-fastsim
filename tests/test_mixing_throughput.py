@@ -168,11 +168,12 @@ def test_report_counts_highest_cycle_and_empty_events_and_records_scopes(saved):
     assert result["stock"]["art_time_report"]["real_s"] == 60.25
     assert result["stock"]["rerun"] is False
     assert result["hardware"] is None and result["stock"]["hardware"] is None
-    assert "UVA historical 1 CPU" in result["stock"]["endpoint"]
+    assert result["stock"]["endpoint"] == "hardware not recorded"
     assert "empty detector events" in result["denominator"]
     assert "not a cold OS" in result["cache_scope"]
     assert "NOT fully warmed in-process" in result["cache_scope"]
-    assert "not a controlled speedup" in result["historical_ratio_scope"]
+    assert "devices and timing boundaries differ" in result["endpoint_scope"]
+    assert "historical_ratio_scope" not in result
     assert "setup_s includes input_s" in result["stage_scope"]
     for run in result["runs"]:
         assert run["census"]["events"] == 3
@@ -183,7 +184,7 @@ def test_report_counts_highest_cycle_and_empty_events_and_records_scopes(saved):
         assert run["response_plus_write"]["seconds"] == 4.3
         assert run["validation"]["sampling_identical"] is True
         assert len(run["validation"]["outputs"]["objects"]) == 5
-        assert run["descriptive_historical_stock_wall_over_python_wall"] == 6.25
+        assert "descriptive_historical_stock_wall_over_python_wall" not in run
         assert len(run["artifacts"]["fast.root"]["sha256"]) == 64
     json.dumps(result, allow_nan=False)
     assert result == tp.report(*saved)
@@ -384,3 +385,19 @@ def test_report_does_not_reassemble_frames_or_invoke_gpu(saved, monkeypatch):
         raise AssertionError("post-run analysis must not load full frames")
     monkeypatch.setattr(mixing.direct_frames, "load_manifest", forbidden)
     assert tp.report(*saved)["events"] == 3
+
+
+def test_public_hardware_labels_come_only_from_metadata(saved):
+    (saved[0] / "hardware.json").write_text(json.dumps({"label": "recorded accelerator; 6 host CPUs; 24 GB RAM"}))
+    (saved[0] / "stock_hardware.json").write_text(json.dumps({"label": "recorded CPU; 3 cores; 12 GB RAM"}))
+    result = tp.report(*saved)
+    assert result["hardware"]["label"] == "recorded accelerator; 6 host CPUs; 24 GB RAM"
+    assert result["stock"]["endpoint"] == "recorded CPU; 3 cores; 12 GB RAM"
+    assert len(result["hardware"]["metadata"]["sha256"]) == 64
+
+
+@pytest.mark.parametrize("label", [None, "", "  ", 2, "device\nhost"])
+def test_invalid_public_hardware_label_rejected(saved, label):
+    (saved[0] / "hardware.json").write_text(json.dumps({"label": label}))
+    with pytest.raises(ValueError, match="public label"):
+        tp.report(*saved)
