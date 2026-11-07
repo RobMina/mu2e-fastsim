@@ -94,7 +94,7 @@ than its sample sizes suggest. On a GPU server set `JAX_PLATFORMS=cuda` first.
 | Chain | Sample | Headline | Reference |
 |---|---|---|---|
 | beam | 20,000 DS-entrance muons (MDC2025ac table of the release) | target stop fraction, nominal target | Geant4 0.3592 on the full 105,350 muons ([docs/validation.md](docs/validation.md)) |
-| CE | 2,000 conversion electrons from that table's target stops | fraction reaching the tracker entry plane | fast chain on 40,000 electrons from the same stops (pending: printed as "reference pending") |
+| CE | 2,000 conversion electrons from that table's target stops | fraction reaching the tracker entry plane | fast chain on 40,000 electrons from the same stops, another seed: 0.7260 |
 | CRV | 1,000 generated cosmic events, default chain (shard 11 of `g4ref_v1`) | coincidence clusters per generated event | stock chain (Geant4 + digi + reco) on all 50,000 events of that shard |
 
 A line passes within 3 sigma of the combined counting errors. It also writes `$M2FS_DATA/demo/demo_summary.json` and a
