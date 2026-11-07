@@ -126,10 +126,12 @@ class DeviceLibrary:
     meta: dict = field(default_factory=dict)
 
 
-def pack_library(library, *, radius_neighbors=0, placement="crystal", pixel=8.0, candidate_width=12):
+def pack_library(library, *, radius_neighbors=0, placement="crystal", pixel=8.0, candidate_width=12,
+                 dtype=np.float64):
     """Pack a :mod:`calofastsim.showers.library` dict (with saved geometry) into device arrays.
 
-    ``placement`` is ``"crystal"`` (:func:`place_crystals`) or ``"geometric"`` (:func:`place`).
+    ``placement`` is ``"crystal"`` (:func:`place_crystals`) or ``"geometric"`` (:func:`place`). ``dtype`` is the
+    precision of positions, frames and geometry (cell lookup, draws and times stay double).
     """
     import jax.numpy as jnp
     if placement not in ("crystal", "geometric"):
@@ -192,6 +194,10 @@ def pack_library(library, *, radius_neighbors=0, placement="crystal", pixel=8.0,
     )
     meta = dict(entries=int(len(radius)), steps=int(len(step_crystal)), occupied_cells=int(len(counts)),
                 max_cell=int(counts.max(initial=0)))
+    for k in ("donor_frame", "donor_angle", "donor_position", "step_relative_position", "origin", "axes", "inner",
+              "outer", "zmin", "zmax", "centers", "sizes"):
+        a[k] = np.asarray(a[k], dtype)
+    meta["dtype"] = np.dtype(dtype).name
     return DeviceLibrary({k: jnp.asarray(v) for k, v in a.items()}, shape, int(radius_neighbors), placement,
                          n_pix, float(pixel), meta)
 
@@ -210,12 +216,16 @@ class DeviceResponse:
     add_noise: bool
     noise_size: int
     n_crystals: int
+    dtype: str = "float64"
 
 
 def pack_response(sim, pulse: PulseCache, noise_wf, table: PropagationTable, geom: Geometry, *, adc2mev=None,
                   ro_cfg=ReadoutConfig(), digi_cfg=DigiConfig(), fit_cfg=FitConfig(), cluster_cfg=ClusterConfig(),
-                  add_noise=True, max_chi2=2.0, time4merge=6.0, pbt_reco_sigma=0.5):
-    """Calorimeter conditions as device arrays (``sim`` from :func:`calofastsim.stockio.load_sim_crystal`)."""
+                  add_noise=True, max_chi2=2.0, time4merge=6.0, pbt_reco_sigma=0.5, dtype=np.float64):
+    """Calorimeter conditions as device arrays (``sim`` from :func:`calofastsim.stockio.load_sim_crystal`).
+
+    ``dtype`` is the precision of the waveform, noise, template fit and cluster sums (the source uses double).
+    Time folding, photoelectron times, keys and reco digi weighting keep the source types."""
     import jax.numpy as jnp
     n = geom.disk.size
     sipm = np.arange(2 * n)
@@ -223,16 +233,17 @@ def pack_response(sim, pulse: PulseCache, noise_wf, table: PropagationTable, geo
     scale = (sim["adc_per_mev"][c, i] / sim["pe_per_mev"][c, i]).astype(np.float64)
     reco = np.full(2 * n, 0.0625) if adc2mev is None else np.asarray(adc2mev(sipm))
     noise = np.zeros(1) if noise_wf is None else np.asarray(noise_wf, np.float64)
+    ped = np.float64(noise_pedestal(noise)) if add_noise else np.float64(0.0)
     a = dict(lru=np.asarray(sim["lru"], np.float32)[:n], yields=np.asarray(sim["pe_per_mev"], np.float32)[:n],
-             adc_per_pe=scale, adc2mev=reco, noise=noise, pulse_vec=np.asarray(pulse.pulse_vec, np.float64),
-             pedestal=np.float64(noise_pedestal(noise)) if add_noise else np.float64(0.0),
+             adc_per_pe=scale, adc2mev=reco, noise=noise.astype(dtype), pulse_vec=np.asarray(pulse.pulse_vec, dtype),
+             pedestal=np.asarray(ped, dtype),
              cdf=np.asarray(table.cdf, np.float32), times=np.asarray(table.times, np.float32),
-             position=np.asarray(geom.position, np.float64), disk=np.asarray(geom.disk),
-             neighbors=np.asarray(geom.neighbors, bool), front_face=np.asarray(geom.front_face, np.float64))
+             position=np.asarray(geom.position, dtype), disk=np.asarray(geom.disk),
+             neighbors=np.asarray(geom.neighbors, bool), front_face=np.asarray(geom.front_face, dtype))
     out = {k: jnp.asarray(v) for k, v in a.items()}
     out["dz"] = float(table.dz)
     return DeviceResponse(out, pulse, ro_cfg, digi_cfg, fit_cfg, cluster_cfg, float(max_chi2), float(time4merge),
-                          float(pbt_reco_sigma), bool(add_noise), int(noise.size), int(n))
+                          float(pbt_reco_sigma), bool(add_noise), int(noise.size), int(n), np.dtype(dtype).name)
 
 
 def entries_batch(entries, timing, event_row, n_events):
@@ -491,6 +502,8 @@ def _waveforms(resp: DeviceResponse, row, time32, weight, n_rows, window, outlie
     pulse = resp.pulse
     size, nshape = cfg.waveform_size, pulse.n_bin_shape
     vec = resp.arrays["pulse_vec"]
+    fdt = jnp.dtype(resp.dtype)
+    weight = weight.astype(fdt)
     start = jnp.trunc(time32 / jnp.float32(cfg.digi_sampling)).astype(jnp.int64)
     keep = start >= 0
     q = jnp.trunc(time32.astype(jnp.float64) / pulse.digi_step).astype(jnp.int64)
@@ -502,11 +515,11 @@ def _waveforms(resp: DeviceResponse, row, time32, weight, n_rows, window, outlie
     inwin = keep & (q >= 0) & (ds < window)
     # windowed part: H[row, ds, phase] -> A[row, ds, k] = sum_phase H * vec[phase + 100 k]
     flat = (row * window + jnp.where(inwin, ds, 0)) * N_STEPS + jnp.where(inwin, first - 1, 0)
-    H = jnp.zeros(n_rows * window * N_STEPS, jnp.float64).at[flat].add(jnp.where(inwin, w, 0.0))
+    H = jnp.zeros(n_rows * window * N_STEPS, fdt).at[flat].add(jnp.where(inwin, w, 0.0))
     V = vec[jnp.clip(jnp.arange(1, N_STEPS + 1)[:, None] + N_STEPS * jnp.arange(nshape)[None, :], 0, vec.size - 1)]
     A = (H.reshape(n_rows * window, N_STEPS) @ V).reshape(n_rows, window, nshape)
     width = size + window + nshape
-    wave = jnp.zeros((n_rows, width), jnp.float64)
+    wave = jnp.zeros((n_rows, width), fdt)
     base = jnp.where(s0 < big, s0, size)[:, None]
     for d in range(window):
         cols = jnp.minimum(base + d + jnp.arange(nshape)[None, :], width - 1)
@@ -519,14 +532,15 @@ def _waveforms(resp: DeviceResponse, row, time32, weight, n_rows, window, outlie
     o_row = jnp.zeros(outlier_cap + 1, jnp.int64).at[slot].set(row)[:outlier_cap]
     o_start = jnp.zeros(outlier_cap + 1, jnp.int64).at[slot].set(start)[:outlier_cap]
     o_first = jnp.zeros(outlier_cap + 1, jnp.int64).at[slot].set(first)[:outlier_cap]
-    o_w = jnp.zeros(outlier_cap + 1, jnp.float64).at[slot].set(w)[:outlier_cap]
+    o_w = jnp.zeros(outlier_cap + 1, fdt).at[slot].set(w)[:outlier_cap]
     flat_wave = wave.reshape(-1)
 
     def add_sample(k, acc):
         sample = o_start + k
         ok = sample < size
         idx = jnp.where(ok, o_row * width + sample, n_rows * width - 1)
-        return acc.at[idx].add(jnp.where(ok, vec[jnp.clip(o_first + N_STEPS * k, 0, vec.size - 1)] * o_w, 0.0))
+        return acc.at[idx].add(jnp.where(ok, vec[jnp.clip(o_first + N_STEPS * k, 0, vec.size - 1)] * o_w,
+                                         jnp.zeros((), fdt)))
 
     flat_wave = lax.fori_loop(0, nshape, add_sample, flat_wave)
     return flat_wave.reshape(n_rows, width)[:, :size], jnp.maximum(n_out - outlier_cap, 0)
@@ -582,7 +596,7 @@ def digitise(resp: DeviceResponse, t, ev, sipm, pe_t, weight, valid, key, caps: 
     tt = tt + t["marker"][ev].astype(f32)
     tt = (tt + cfg.start_time_buffer).astype(f32)
     tt = jnp.where(row_ok, tt, f32(-1e6))
-    w = jnp.where(row_ok, weight * a["adc_per_pe"][sipm], 0.0)
+    w = jnp.where(row_ok, weight * a["adc_per_pe"][sipm], 0.0).astype(jnp.dtype(resp.dtype))
     wave, over_out = _waveforms(resp, row, tt, w, caps.rows, caps.window, caps.outliers)
     stored, peaks, run_end = _digi_post(resp, wave, key)
     # digi extraction (digi.extract_digis): merge peaks whose buffered start overlaps the previous stop
@@ -629,11 +643,12 @@ def fit_and_hits(resp: DeviceResponse, t, dg, pbt_reco, caps: Caps):
     cfg = resp.fit_cfg
     L = caps.digi_length
     idx = jnp.arange(L)
-    x = dg["t0"].astype(jnp.float64)[:, None] + (idx + 0.5) * cfg.digi_sampling
+    fdt = jnp.dtype(resp.dtype)
+    x = dg["t0"].astype(fdt)[:, None] + (idx + 0.5) * cfg.digi_sampling
     mask = idx[None, :] < dg["length"][:, None]
     with jax.ensure_compile_time_eval():   # the cached fit must not close over this trace
-        fitter = _compiled(resp.pulse, cfg, L)
-    fit = fitter(x, dg["samples"].astype(jnp.float64), mask, dg["length"])
+        fitter = _compiled(resp.pulse, cfg, L, None if fdt == jnp.float64 else fdt)
+    fit = fitter(x, dg["samples"].astype(fdt), mask, dg["length"])
     ftime = fit["peak_time"] - resp.pulse.delta_t - 0.5 * resp.pulse.digi_step * N_STEPS
     chi_ok = (fit["chi2"] / jnp.maximum(fit["ndf"], 1).astype(jnp.float32)) <= resp.max_chi2
     sel = fit["valid"] & chi_ok[:, None] & dg["ok"][:, None]
@@ -835,7 +850,7 @@ def clusters(resp: DeviceResponse, hits, n_events, caps: Caps):
     lead_disk = a["disk"][jnp.take_along_axis(crystal, jnp.maximum(lead, 0), axis=1)]  # (B, C)
     hit_disk = a["disk"][crystal]
     on_disk = f_mem & (hit_disk[:, :, None] == lead_disk[:, None, :])
-    w = jnp.where(on_disk, e[:, :, None].astype(jnp.float64), 0.0)                     # (B, H, C)
+    w = jnp.where(on_disk, e[:, :, None].astype(a["position"].dtype), 0.0)                     # (B, H, C)
     sw = w.sum(axis=1)
     sxyz = jnp.einsum("bhc,bhk->bck", w, pos)
     cog = sxyz / jnp.where(sw > 0, sw, 1.0)[..., None] - a["front_face"][lead_disk]
@@ -863,7 +878,10 @@ def make_chain(lib: DeviceLibrary, resp: DeviceResponse, caps: Caps = Caps()):
     if not jax.config.x64_enabled:
         raise ValueError("the device chain requires caller-enabled JAX x64")
 
+    pdt = lib.arrays["centers"].dtype
+
     def chain(q, t, key, uniform=None):
+        q = dict(q, position=q["position"].astype(pdt), direction=q["direction"].astype(pdt))
         k_draw, k_pe, k_digi, k_pbt = jax.random.split(key, 4)
         if uniform is None:
             uniform = jax.random.uniform(k_draw, q["energy"].shape, dtype=jnp.float64)

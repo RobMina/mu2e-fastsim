@@ -104,6 +104,10 @@ out = dc.run(chain, q, t, jax.random.PRNGKey(1))           # clusters per event,
 steps_chain = dc.make_steps_chain(resp, caps)              # saved steps -> clusters (dc.steps_batch)
 ```
 
+`pack_library(..., dtype=np.float32)` and `pack_response(..., dtype=np.float32)` run placement, the waveform, noise,
+template fit (`templatefit._compiled(..., dtype)`, opt-in; the default fit is unchanged) and cluster sums in single
+precision; time folding, photoelectron times and integer keys keep the source types.
+
 Every collection has a static capacity (`Caps`); anything beyond it is counted in `overflow` and `run` raises.
 Pick capacities from a first batch. The waveform histograms each SiPM's photoelectrons over a short window in
 (sample, fine phase) and multiplies by the pulse table; only the summation order differs from the per-photoelectron

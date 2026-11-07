@@ -43,9 +43,10 @@ def _jnp():
     return jnp
 
 
-def make_evaluate(pulse: PulseCache):
+def make_evaluate(pulse: PulseCache, dtype=None):
+    """``dtype`` None keeps the default (float64 under x64); e.g. ``jnp.float32`` evaluates in single precision."""
     jnp = _jnp()
-    vec = jnp.asarray(pulse.pulse_vec)
+    vec = jnp.asarray(pulse.pulse_vec) if dtype is None else jnp.asarray(pulse.pulse_vec, dtype)
     step, delta, n = pulse.digi_step, pulse.delta_t, pulse.pulse_vec.size
 
     def evaluate(dt):
@@ -53,7 +54,7 @@ def make_evaluate(pulse: PulseCache):
         ibin = N_STEPS + jnp.trunc(t * N_STEPS / step / N_STEPS).astype(jnp.int64)
         ok = (ibin >= 0) & (ibin < n - 1)
         ib = jnp.clip(ibin, 0, n - 2)
-        t0bin = (ib - N_STEPS) * step
+        t0bin = (ib - N_STEPS) * step if dtype is None else (ib - N_STEPS).astype(dtype) * jnp.asarray(step, dtype)
         val = (vec[ib + 1] - vec[ib]) / step * (t - t0bin) + vec[ib]
         return jnp.where(ok, val, 0.0)
 
@@ -90,16 +91,18 @@ def fit_digis(t0, samples, length, pulse: PulseCache, cfg: FitConfig = FitConfig
 _CACHE = {}
 
 
-def _compiled(pulse, cfg, L):
-    """The jitted, vmapped per-digi fit for one pulse cache and configuration, built once and reused."""
+def _compiled(pulse, cfg, L, dtype=None):
+    """The jitted, vmapped per-digi fit for one pulse cache and configuration, built once and reused.
+
+    ``dtype`` None is the default double-precision fit; ``jnp.float32`` fits in single precision (opt-in)."""
     import jax
-    key = (id(pulse), cfg, L)
+    key = (id(pulse), cfg, L) if dtype is None else (id(pulse), cfg, L, dtype)
     if key not in _CACHE:
-        evaluate = make_evaluate(pulse)
+        evaluate = make_evaluate(pulse, dtype)
         K, W = cfg.max_peaks, cfg.window_peak
 
         def one(x, y, mask, n):
-            return _fit_one(x, y, mask, n, evaluate, cfg, K, W, L)
+            return _fit_one(x, y, mask, n, evaluate, cfg, K, W, L, dtype)
 
         _CACHE[key] = (jax.jit(jax.vmap(one)), pulse)
     return _CACHE[key][0]
@@ -157,13 +160,13 @@ def _model(evaluate, x, par, active):
     return par[0] + jnp.sum(jnp.where(active[:, None], pulses, 0.0), axis=0)
 
 
-def _fit_one(x, y, mask, n, evaluate, cfg, K, W, L):
+def _fit_one(x, y, mask, n, evaluate, cfg, K, W, L, dtype=None):
     import jax
     from jax import lax
     jnp = _jnp()
     amp_min = cfg.min_peak_amplitude
     noise = jnp.float32(jnp.sum(jnp.where(jnp.arange(L) < cfg.num_noise_bins, y, 0.0)) / cfg.num_noise_bins)
-    noise = noise.astype(jnp.float64)
+    noise = noise.astype(jnp.float64 if dtype is None else dtype)
     yw = jnp.where(mask, y - noise, -1e30)
 
     pos = jnp.arange(L)
@@ -171,7 +174,7 @@ def _fit_one(x, y, mask, n, evaluate, cfg, K, W, L):
     def candidates(w):
         """Source peak test at every sample: local maximum in +-W, three samples above threshold, inside."""
         ok = (pos >= W) & (pos + W < n)
-        pad = jnp.concatenate([jnp.full(W, -1e30), w, jnp.full(W, -1e30)])
+        pad = jnp.concatenate([jnp.full(W, -1e30, dtype=dtype), w, jnp.full(W, -1e30, dtype=dtype)])
         for d in range(1, W + 1):
             ok = ok & (w > pad[W - d:W - d + L]) & (w >= pad[W + d:W + d + L])
         return ok & (pad[W - 1:W - 1 + L] >= amp_min) & (w >= amp_min) & (pad[W + 1:W + 1 + L] >= amp_min)
@@ -182,7 +185,7 @@ def _fit_one(x, y, mask, n, evaluate, cfg, K, W, L):
     use = jnp.arange(K) < jnp.sum(prim)
     tx = jax.vmap(lambda i: _estimate_time(evaluate, x, yw, i, W, L))(sel)
     ty = jax.vmap(lambda i, t: _peak_norm(evaluate, x, yw, t, i - W, i + W, L))(sel, tx)
-    par = jnp.zeros(1 + 2 * K).at[0].set(noise).at[1::2].set(jnp.where(use, ty, 0.0)).at[2::2].set(jnp.where(use, tx, 0.0))
+    par = jnp.zeros(1 + 2 * K, dtype=dtype).at[0].set(noise).at[1::2].set(jnp.where(use, ty, 0.0)).at[2::2].set(jnp.where(use, tx, 0.0))
     active = use
     k = jnp.sum(use).astype(jnp.int64)
 
@@ -245,7 +248,8 @@ def _fit_one(x, y, mask, n, evaluate, cfg, K, W, L):
             better = ft <= fval
             return (jnp.where(better, trial, p), jnp.where(better, lam * 0.3, lam * 10.0), jnp.where(better, ft, fval))
 
-        p, _, fval = lax.fori_loop(0, cfg.iterations, body, (p, cfg.damping, objective(p, act)))
+        lam0 = cfg.damping if dtype is None else jnp.asarray(cfg.damping, dtype)
+        p, _, fval = lax.fori_loop(0, cfg.iterations, body, (p, lam0, objective(p, act)))
         h = hess(p, act)
         h = jnp.where(free[:, None] & free[None, :], h, 0.0) + jnp.diag(jnp.where(free, 0.0, 1.0))
         cov = 2.0 * jnp.linalg.inv(h)

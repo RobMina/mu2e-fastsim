@@ -252,3 +252,74 @@ def test_full_chain_runs_and_conserves_scale(library):
     assert 0.5 < lead[:60].sum() / visible.sum() < 1.5
     again = dc.run(chain, q, t, jax.random.PRNGKey(7))
     np.testing.assert_array_equal(again["clusters"]["energy"], out["clusters"]["energy"])
+
+
+def test_float32_draw_and_placement_close_to_host(library):
+    """Single-precision geometry: same donors; crystals and depths agree except at float32 boundary roundoff."""
+    query = _queries()
+    host = sample(library, query, np.random.default_rng(11), orientation="disk")
+    placed = place_crystals(library, query, host)
+    lib = dc.pack_library(library, placement="crystal", dtype=np.float32)
+    q, _ = dc.entries_batch(query, _timing(1), np.arange(300), 320)
+    q["position"], q["direction"] = q["position"].astype(np.float32), q["direction"].astype(np.float32)
+    u = np.zeros(320)
+    u[:300] = _uniforms(query, library, 11)
+
+    @jax.jit
+    def stages(q, u):
+        donor, _, slot = dc.sample_donors(lib, q, u)
+        st, _ = dc.gather_steps(lib, q, donor, slot, 4096)
+        return (donor, st["position"]) + dc.place_steps(lib, q, st)
+
+    donor, pos, crystal, depth, mapped = jax.tree_util.tree_map(
+        np.asarray, stages({k: jnp.asarray(v) for k, v in q.items()}, jnp.asarray(u)))
+    n = len(host["entry"])
+    np.testing.assert_array_equal(donor[:300], host["donor"])
+    assert pos.dtype == np.float32
+    np.testing.assert_allclose(pos[:n], host["position"], atol=2e-3)
+    same = mapped[:n] == placed["mapped"]
+    assert same.mean() > 0.995
+    both = mapped[:n] & placed["mapped"]
+    assert (library["geometry_crystal_crystal"][crystal[:n][both]] == placed["crystal"][both]).all()
+    np.testing.assert_allclose(depth[:n][both], placed["local_position"][both, 2], atol=2e-3)
+
+
+def test_float32_fit_and_clusters_close_to_double():
+    """Single-precision waveform and template fit: the fit really runs in float32; clusters agree with double."""
+    pos, disk = _grid()
+    geom = _geom(pos, disk)
+    rng = np.random.default_rng(3)
+    n_ev, per = 6, 12
+    ev = np.repeat(np.arange(n_ev), per)
+    seedc = rng.integers(0, len(disk), n_ev)
+    near = np.argsort(np.linalg.norm(pos[None, :, :] - pos[seedc][:, None, :], axis=2), axis=1)[:, :5]
+    steps = {"event": ev, "crystal": near[ev, rng.integers(0, 5, ev.size)],
+             "energy_g4": rng.uniform(0.5, 25, ev.size).astype(np.float32),
+             "energy_birks": rng.uniform(0.5, 25, ev.size).astype(np.float32),
+             "time": rng.uniform(600, 1400, n_ev)[ev] + rng.uniform(0, 1.5, ev.size),
+             "z_local": rng.uniform(5, 195, ev.size).astype(np.float32)}
+    pulse = _pulse()
+    table = PropagationTable(np.ones((1, 1), np.float32), np.zeros(1, np.float32), np.float32(1.0))
+    ro = ReadoutConfig(pe_stat=False, travel=False)
+    caps = dc.Caps(events=8, steps=ev.size, rows=128, digis=128, digi_length=64, hits=128, event_hits=32, rounds=6)
+    t = dc.entries_batch({k: np.zeros((0, 3) if k in ("position", "direction") else 0) for k in
+                          ("energy", "cosine", "radius", "disk", "time", "position", "direction")},
+                         _timing(n_ev), np.zeros(0, int), caps.events)[1]
+    out = {}
+    for dtype in (np.float64, np.float32):
+        resp = dc.pack_response(_sim(len(disk)), pulse, np.full(10000, 12.0), table, geom, ro_cfg=ro,
+                                pbt_reco_sigma=0.0, dtype=dtype)
+        chain = dc.make_steps_chain(resp, caps)
+        out[dtype] = dc.run(chain, dc.steps_batch(steps, caps.steps), t, jax.random.PRNGKey(0))
+        if dtype is np.float32:
+            from calofastsim.templatefit import _compiled
+            fit = _compiled(pulse, resp.fit_cfg, 64, jnp.float32)(
+                jnp.zeros((4, 64), jnp.float32) + jnp.arange(64, dtype=jnp.float32) * 5, jnp.full((4, 64), 12.0, jnp.float32),
+                jnp.ones((4, 64), bool), jnp.full(4, 64))
+            assert fit["amp"].dtype == jnp.float32 and fit["chi2"].dtype == jnp.float32
+    a, b = dc.flat_clusters(out[np.float64]["clusters"]), dc.flat_clusters(out[np.float32]["clusters"])
+    for k in ("event", "size", "disk"):
+        np.testing.assert_array_equal(a[k], b[k])
+    np.testing.assert_allclose(b["energy"], a["energy"], rtol=2e-3)
+    np.testing.assert_allclose(b["time"], a["time"], atol=0.05)
+    np.testing.assert_allclose(np.column_stack((b["x"], b["y"])), np.column_stack((a["x"], a["y"])), atol=0.5)
