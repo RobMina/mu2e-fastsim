@@ -34,7 +34,7 @@ python3 -m mu2efastsim.demo
 
 The clone and the venv live on Fermilab storage, so they outlive the server: in a new server only the three exports and
 `source site/eaf.env` are needed. The same steps as a notebook: [notebooks/quickstart_eaf.ipynb](notebooks/quickstart_eaf.ipynb).
-Then [run your own job](#run-your-own-job) (EAF column).
+Then [run your own job](#run-your-own-job).
 
 ## Path B: Mu2e GPVM
 
@@ -53,13 +53,15 @@ python3 -m mu2efastsim.demo
 ```
 
 The venv is the one Path A makes, so a clone on Fermilab storage serves both. Keep to one job per GPVM. Then
-[run your own job](#run-your-own-job) (GPVM column): on the GPVM itself, or on EAF driven from the GPVM.
+[run your own job](#run-your-own-job): on the GPVM itself, or on EAF driven from the GPVM.
 
 ## Path C: your own Slurm cluster
 
 The kit runs one job per point on the cluster through `slurm_ssh` (hep-endpoints) and the project image; the job
 streams its inputs from a Mu2e GPVM, so the inputs never stay on the cluster. Use a kit host with Python 3.10 or newer, git
-and ssh access to both the cluster login host and a Mu2e GPVM (a workstation with a Fermilab Kerberos ticket).
+and ssh access to both the cluster login host and a Mu2e GPVM (a workstation with a Fermilab Kerberos ticket). Both
+ssh names must log in without a prompt, for the whole job: `ssh -o BatchMode=yes YOUR_GPVM true` and the same for
+the login host should return at once (an ssh `ControlMaster` connection to the GPVM is the easy way).
 
 1. **The image**, once: on a machine with Apptainer and user namespaces (a cluster node, or a Mu2e GPVM), build it
    from this repository and copy it to `$FASTSIMKIT_SIF` on the cluster. It is not on CVMFS and not downloadable.
@@ -73,20 +75,25 @@ and ssh access to both the cluster login host and a Mu2e GPVM (a workstation wit
 
    ```bash
    git clone --recurse-submodules https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
-   python3 -m venv .venv && .venv/bin/pip install -q -e core -e crv -e tracker -e beam
+   python3 -m venv .venv && source .venv/bin/activate     # python3 is now the venv's, as the kit block below needs
+   pip install -q -e core -e crv -e tracker -e beam
    export FASTSIMKIT_FNAL_HOST=YOUR_GPVM FASTSIMKIT_SLURM_HOST=YOUR_LOGIN_HOST \
           FASTSIMKIT_SLURM_ACCOUNT=YOUR_ACCOUNT FASTSIMKIT_SCRATCH=YOUR_CLUSTER_WORK_AREA
-   source site/slurm.env && .venv/bin/python site/check.py slurm
+   source site/slurm.env && python3 site/check.py slurm
    ```
 
    `M2FS_INPUTS` and `MANIFEST` are the paths on the Fermilab side (as the access reply gives them); `M2FS_DATA` is a
-   writable directory on the kit host. Put the image at `$FASTSIMKIT_SIF` on the cluster.
+   writable directory on the kit host. Put the image at `$FASTSIMKIT_SIF` on the cluster. Job records, results and
+   logs land under `$FASTSIMKIT_STATE_DIR` on the kit host (default `~/.mu2efastsim/kit`).
 
-3. Then [run your own job](#run-your-own-job) (Slurm column). The demo needs the release mounted, so on this path it
-   runs on a GPVM or EAF.
+3. Then [run your own job](#run-your-own-job), the "through the kit" block, from this shell. The demo needs the release
+   mounted, so on this path it runs on a GPVM or EAF.
 
-Path C is not yet tested end to end: the image build and the preset check were run, a kit task submitted from a
-workstation to a cluster was not.
+Tested end to end from a workstation (kit host) to a Slurm cluster, with the 49-foil `beam_point` of the next section:
+check and submit 18 s (code snapshot on the cluster, image and input checksums); queue 212 s (a maintenance
+reservation; yours will differ); job 139 s on an A100-SXM4-80GB, of which 15 s for the muon table to stream in from the
+GPVM and 88 s for the transport of 20,000 muons including JAX compilation. It prints `completed` and
+`0.66685 +- 0.0033`. On a fresh kit host, the venv and pip take about 3 minutes.
 
 ## The demo
 
@@ -122,7 +129,8 @@ cat "$M2FS_DATA/my_point/metrics.json"
 ```
 
 **Through the kit** (GPVM to EAF with `EAF_TOKEN_FILE` set to your own mode-600 hub token, made at
-<https://analytics-hub.fnal.gov/hub/token>; or the Slurm path, where the kit picks a GPU and streams the muon table in):
+<https://analytics-hub.fnal.gov/hub/token>; or the Slurm path, where the kit picks a GPU and streams the muon table in;
+run it where the preset is sourced and `python3` is the venv's):
 
 ```bash
 python3 - <<'EOF'
