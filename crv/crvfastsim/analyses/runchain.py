@@ -253,7 +253,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         prepared=None,
         tier1b_set=None, tier1b_dir=None, steps_input=False, save_reco=None,
         transport_context=None, tier1b_context=None, tier1b_backend="numpy",
-        gen="table", gen_events=None, gen_seed=None, gen_subrun=1, gen_chunk=50000, **kw):
+        gen="table", gen_events=None, gen_seed=None, gen_subrun=1, gen_chunk=50000, gen_tables=None, **kw):
     removed = sorted(set(kw) & {"msc_tail", "tail_k", "sliced_msc", "first_muon_only", "no_absorbers",
                                 "unbanded_world", "no_below_world"})
     if removed:
@@ -378,6 +378,8 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
                                source.generate(n, subrun=gen_subrun, first_event=1 + i * gen_chunk))
             native_receipt = _add_receipt(native_receipt, receipt)
             t["generation_s"] = time.perf_counter() - started
+        elif gen_tables is not None and f in gen_tables:   # read into memory by the caller (analyses.runchain_bench)
+            gen = gen_tables[f].copy()
         else:
             gen = tables.read(f, "gen")
         if benchmark is not None:
