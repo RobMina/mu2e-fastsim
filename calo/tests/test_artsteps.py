@@ -36,6 +36,7 @@ def test_decode_matches_encoded_values():
     flat = [s for e in events for s in e]
     np.testing.assert_array_equal(col["entry"], [0, 0, 0, 2, 2, 2, 2, 2])
     np.testing.assert_array_equal(col["volume"], [s["volume"] for s in flat])
+    np.testing.assert_array_equal(col["sim_product"], [s["product"] for s in flat])
     np.testing.assert_array_equal(col["sim_key"], [s["key"] for s in flat])
     np.testing.assert_array_equal(col["time"], [s["time"] for s in flat])
     np.testing.assert_array_equal(col["energy_birks"], np.float32([s["ebirks"] for s in flat]))
