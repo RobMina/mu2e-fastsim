@@ -21,8 +21,9 @@ Start a server at <https://analytics-hub.fnal.gov> (any profile; a GPU slice run
 (File > New > Terminal) and paste the three exports above, then:
 
 ```bash
-cd "$M2FS_DATA/.." && git clone --recurse-submodules https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
-mkdir -p "$M2FS_DATA" && source site/eaf.env && python3 site/check.py eaf
+mkdir -p "$M2FS_DATA" && cd "$M2FS_DATA/.."
+git clone --recurse-submodules https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
+source site/eaf.env && python3 site/check.py eaf
 /cvmfs/mu2e.opensciencegrid.org/env/ana/current/bin/python -m venv --system-site-packages "$M2FS_VENV"
 "$M2FS_VENV/bin/pip" install -q "jax==0.11.2" -e core -e crv -e tracker -e beam
 source site/eaf.env                                   # again: puts the venv first on PATH
@@ -40,8 +41,9 @@ Then [run your own job](#run-your-own-job) (EAF column).
 in to any `mu2egpvm0N`, paste the three exports, then:
 
 ```bash
-cd "$M2FS_DATA/.." && git clone --recurse-submodules https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
-mkdir -p "$M2FS_DATA" && source site/gpvm.env && python3 site/check.py gpvm
+mkdir -p "$M2FS_DATA" && cd "$M2FS_DATA/.."
+git clone --recurse-submodules https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
+source site/gpvm.env && python3 site/check.py gpvm
 /cvmfs/mu2e.opensciencegrid.org/env/ana/current/bin/python -m venv --system-site-packages "$M2FS_VENV"
 "$M2FS_VENV/bin/pip" install -q "jax==0.11.2" -e core -e crv -e tracker -e beam
 source site/gpvm.env                                  # again: puts the venv first on PATH
