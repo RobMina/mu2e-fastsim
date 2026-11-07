@@ -99,6 +99,30 @@ def test_combine_offsets_all_foreign_keys_and_rejects_duplicate_events(tmp_path)
         ts.combine([paths[0], paths[0]])
 
 
+def test_heldout_merge_requires_explicit_cohort_and_rejects_mixing(tmp_path):
+    import json
+    paths = []
+    for index in (99, 100, 199):
+        p, vd, beam = particles(), hits([2], [-211], [10]), hits([3], [13], [50])
+        for table in (p, vd, beam):
+            table['subrun'][:] = 920000 + index
+        a, report = ts.build(p, vd, beam)
+        path = tmp_path / f'reference-{index}.npz'
+        ts.save(a, path)
+        path.with_suffix('.json').write_text(json.dumps(report))
+        paths.append(path)
+    with pytest.raises(ValueError, match='development'):
+        ts.combine(paths[1:], root_cohort=True)
+    a, report = ts.combine(paths[1:], root_cohort=True, cohort='heldout')
+    assert report['cohort'] == 'heldout'
+    assert report['events'] == 4
+    assert a['shard'].tolist() == [920100, 920199]
+    with pytest.raises(ValueError, match='heldout'):
+        ts.combine(paths, root_cohort=True, cohort='heldout')
+    with pytest.raises(ValueError, match='cohort'):
+        ts.combine(paths[1:], cohort='all')
+
+
 def test_explicit_event_inventory_retains_particle_free_event():
     a, _ = ts.build(particles(), hits([], [], []), hits([], [], []),
                     event_id=np.array([[1, 1, 1], [1, 1, 2], [1, 1, 3]], dtype="i8"))

@@ -1,4 +1,4 @@
-"""Development-only campaign readers preserve empty events and unknown ancestry."""
+"""Explicit-cohort campaign readers preserve empty events and unknown ancestry."""
 import json
 from pathlib import Path
 
@@ -113,7 +113,9 @@ def test_status_reader_has_no_simulation_and_bounds_development():
     assert 'services.SeedService.baseSeed: 1' in fcl
     assert 'geom_run1_a.txt' in fcl
     assert 'producers:' not in fcl and 'Mu2eG4' not in fcl.split('physics:')[1]
-    assert 'for index in {0..99}' in script
+    assert 'development) indices=({0..99})' in script
+    assert 'heldout) indices=({100..199})' in script
+    assert 'OFFLINE_WARM_REPEAT=0' in script
     assert 'OFFLINE_EVENTS=500000' in script
     assert 'muse build' not in script
     subprocess.run(['bash', '-n', root / 'tsstatus.sbatch'], check=True)
@@ -132,3 +134,111 @@ def test_configurable_generation_log(tmp_path):
     assert report["finished_art_events"] == 2
     script = Path(ts.__file__).with_name("tsstatus.sbatch").read_text()
     assert "${TS_GENERATION_JOB}_$index.log" in script
+
+
+@pytest.mark.parametrize("index", [100, 199])
+def test_explicit_heldout_reader_and_combine(tmp_path, index):
+    root, _ = fixture(tmp_path, index=index)
+    out = tmp_path / "heldout.json"
+    report = ts.inspect_shard(root, index, out, generation_job=12345, cohort="heldout")
+    assert report["cohort"] == "heldout"
+    assert report["finished_art_events"] == 2
+    summary = ts.combine([out], cohort="heldout")
+    assert summary["cohort"] == "heldout"
+    assert summary["indices"] == [index]
+    assert summary["finished_art_events"] == 2
+    with pytest.raises(ValueError, match="development"):
+        ts.combine([out])
+
+
+@pytest.mark.parametrize("index", [-1, 0, 99, 200])
+def test_heldout_rejects_other_indices_before_reads(tmp_path, index):
+    with pytest.raises(ValueError, match="heldout indices must be 100..199"):
+        ts.inspect_shard(tmp_path / "absent", index, tmp_path / "out.json",
+                         generation_job=12345, cohort="heldout")
+    assert not (tmp_path / "out.json").exists()
+
+
+@pytest.mark.parametrize("cohort", ["", "all", "Heldout"])
+def test_invalid_cohort_rejected_before_reads(tmp_path, cohort):
+    with pytest.raises(ValueError, match="cohort must be"):
+        ts.inspect_shard(tmp_path / "absent", 100, tmp_path / "out.json",
+                         generation_job=12345, cohort=cohort)
+    with pytest.raises(ValueError, match="cohort must be"):
+        ts.combine([tmp_path / "absent.json"], cohort=cohort)
+    assert not (tmp_path / "out.json").exists()
+
+
+def test_combine_rejects_mixed_or_mislabeled_cohorts(tmp_path):
+    dev, heldout = tmp_path / "dev.json", tmp_path / "heldout.json"
+    # Guard validation must occur before accessing any census payload.
+    dev.write_text(json.dumps({"index": 0, "cohort": "development"}))
+    heldout.write_text(json.dumps({"index": 100, "cohort": "heldout"}))
+    for cohort in ("development", "heldout"):
+        with pytest.raises(ValueError, match=f"{cohort} reports only"):
+            ts.combine([dev, heldout], cohort=cohort)
+    for index, label in ((99, "heldout"), (200, "heldout"), (100, "development"), (100, "other")):
+        heldout.write_text(json.dumps({"index": index, "cohort": label}))
+        with pytest.raises(ValueError, match="heldout reports only"):
+            ts.combine([heldout], cohort="heldout")
+
+
+def test_cli_passes_explicit_cohort(tmp_path, monkeypatch):
+    import sys
+    root, _ = fixture(tmp_path, index=100)
+    out, summary = tmp_path / "heldout.json", tmp_path / "summary.json"
+    for arguments, code in ((["--root", str(root), "--index", "100", "--generation-job", "12345",
+                             "--out", str(out)], 1),
+                            (["--combine", str(out), "--out", str(summary)], 1)):
+        monkeypatch.setattr(sys, "argv", ["tscampaign", "--cohort", "heldout", *arguments])
+        with pytest.raises(SystemExit) as exc:
+            ts.main()
+        assert exc.value.code == code  # Synthetic fixture has 2, not 5000, finished events.
+    assert json.loads(summary.read_text())["cohort"] == "heldout"
+
+
+@pytest.mark.parametrize("cohort,start", [(None, 0), ("development", 0), ("heldout", 100)])
+def test_status_wrapper_selects_only_cohort_and_runs_once(tmp_path, cohort, start):
+    import os
+    import subprocess
+    root = tmp_path / "campaign"
+    (root / "config").mkdir(parents=True)
+    (root / "logs").mkdir()
+    for index in range(start, start + 100):
+        (root / "logs" / f"12345_{index}.log").write_text("Art has completed and will exit with status 0.\n")
+    # No raw data or real Offline process: the existing runner interface is captured.
+    (root / "config/offline_uva.sh").write_text(
+        'printf "%s\\n" "$OFFLINE_WARM_REPEAT" "$OFFLINE_EVENTS" "$@" >> "$CAPTURE"\n')
+    bash_env = tmp_path / "bash_env"
+    bash_env.write_text('module() { :; }\n')
+    capture, out = tmp_path / "capture", tmp_path / "output"
+    fcl = Path(ts.__file__).with_name("tsstatus.fcl")
+    env = {**os.environ, "TS_CAMPAIGN_ROOT": str(root), "TS_GENERATION_JOB": "12345",
+           "TS_STATUS_OUT": str(out), "TS_STATUS_FCL": str(fcl), "CVMFSEXEC_DIST": "unused",
+           "BASH_ENV": str(bash_env), "CAPTURE": str(capture), "OFFLINE_WARM_REPEAT": "1"}
+    env.pop("TS_STATUS_COHORT", None)
+    if cohort is not None:
+        env["TS_STATUS_COHORT"] = cohort
+    subprocess.run(["bash", str(Path(ts.__file__).with_name("tsstatus.sbatch"))],
+                   env=env, check=True, capture_output=True, text=True)
+    lines = capture.read_text().splitlines()
+    assert lines[:2] == ["0", "500000"]
+    assert lines[2:4] == ["/cvmfs/mu2e.opensciencegrid.org/Musings/SimJob/MDC2025ac", str(out / "read.fcl")]
+    assert lines[4:] == [str(root / "shards" / f"{index:03d}" /
+                            f"sim.user.TSRun1ARaw.campaign_v1.001430_{920000 + index:08d}.art")
+                         for index in range(start, start + 100)]
+    assert (out / "read.fcl").read_bytes() == fcl.read_bytes()
+
+
+@pytest.mark.parametrize("cohort", ["", "all", "Heldout"])
+def test_status_wrapper_invalid_cohort_before_reads_or_output(tmp_path, cohort):
+    import os
+    import subprocess
+    env = {**os.environ, "TS_STATUS_COHORT": cohort, "TS_CAMPAIGN_ROOT": str(tmp_path / "absent"),
+           "TS_STATUS_OUT": str(tmp_path / "output"), "TS_GENERATION_JOB": "12345",
+           "TS_STATUS_FCL": "absent.fcl", "CVMFSEXEC_DIST": "unused"}
+    result = subprocess.run(["bash", str(Path(ts.__file__).with_name("tsstatus.sbatch"))],
+                            env=env, capture_output=True, text=True)
+    assert result.returncode == 2
+    assert result.stderr.strip() == "TS_STATUS_COHORT must be development or heldout"
+    assert not (tmp_path / "output").exists()

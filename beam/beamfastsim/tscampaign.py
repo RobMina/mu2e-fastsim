@@ -1,4 +1,4 @@
-"""Read finished Run 1A development shards, never glob the held-out campaign."""
+"""Read finished Run 1A shards; held-out reads require explicit cohort selection."""
 import argparse
 import json
 from pathlib import Path
@@ -66,10 +66,20 @@ def status_histograms(path):
                 "limits": "stock histogram summary, not event-keyed statuses; field-propagator kills have no dedicated histogram"}
 
 
-def inspect_shard(root, index, out, *, generation_job):
-    """Read one explicitly selected development shard after its successful art exit."""
-    if not 0 <= index < 100:
-        raise ValueError("development indices must be 0..99; held-out files are not opened")
+def _cohort_indices(cohort):
+    if cohort == "development":
+        return range(0, 100)
+    if cohort == "heldout":
+        return range(100, 200)
+    raise ValueError("cohort must be development or heldout")
+
+
+def inspect_shard(root, index, out, *, generation_job, cohort="development"):
+    """Read one shard from the explicitly selected cohort after successful art exit."""
+    indices = _cohort_indices(cohort)
+    if index not in indices:
+        raise ValueError(f"{cohort} indices must be {indices.start}..{indices.stop - 1}; "
+                         "files outside the selected cohort are not opened")
     root, out = Path(root), Path(out)
     shard = root / "shards" / f"{index:03d}"
     if not str(generation_job).isascii() or not str(generation_job).isdecimal() or int(generation_job) <= 0:
@@ -80,21 +90,22 @@ def inspect_shard(root, index, out, *, generation_job):
     art = shard / f"sim.user.TSRun1ARaw.campaign_v1.001430_{920000 + index:08d}.art"
     start = time.perf_counter()
     report = tssmoke.inspect(art, shard / "tsrun1a_raw.root", 5000, compact=True)
-    report.update(index=index, cohort="development", status_g4=status_g4(art),
+    report.update(index=index, cohort=cohort, status_g4=status_g4(art),
                   seconds=time.perf_counter() - start)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
     return report
 
 
-def combine(paths):
-    """Sum independent shard censuses without converting unknown ancestry into losses."""
+def combine(paths, *, cohort="development"):
+    """Sum one cohort without converting unknown ancestry into losses."""
+    allowed_indices = _cohort_indices(cohort)
     reports = [json.loads(Path(p).read_text()) for p in paths]
     indices = [r["index"] for r in reports]
     if not reports or len(set(indices)) != len(indices):
-        raise ValueError("nonempty distinct development shards required")
-    if any(r["cohort"] != "development" or not 0 <= r["index"] < 100 for r in reports):
-        raise ValueError("development reports only")
+        raise ValueError(f"nonempty distinct {cohort} shards required")
+    if any(r["cohort"] != cohort or r["index"] not in allowed_indices for r in reports):
+        raise ValueError(f"{cohort} reports only, with indices {allowed_indices.start}..{allowed_indices.stop - 1}")
     counts = ("finished_art_events", "events_in_ntpart", "primary_proton_events", "particle_rows",
               "coll1_mu_pi_forward_rows", "coll1_mu_pi_forward_tracks", "tracks_with_repeated_forward_records",
               "events_with_forward_mu_pi", "events_without_forward_mu_pi_in_ntpart", "ds_beam_all_species_rows",
@@ -112,7 +123,7 @@ def combine(paths):
                                    for k in sorted(set().union(*(r["status_counts"] for r in decoded)))}
         for k in ("events", "overflow_events", "step_limit_killed_tracks", "field_propagator_killed_tracks"):
             status[k] = sum(r[k] for r in decoded)
-    return {"cohort": "development", "indices": sorted(indices), "shards": len(reports),
+    return {"cohort": cohort, "indices": sorted(indices), "shards": len(reports),
             "checks_passed": all(r["checks_passed"] for r in reports), **total,
             "source_species": species, "status_g4": status,
             "seconds": sum(r["seconds"] for r in reports),
@@ -123,6 +134,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root")
     parser.add_argument("--index", type=int)
+    parser.add_argument("--cohort", choices=("development", "heldout"), default="development",
+                        help="census cohort; held-out access requires explicit selection")
     parser.add_argument("--generation-job", type=int, help="generation array job ID for completion logs")
     parser.add_argument("--status-art", help="inspect only the StatusG4 object in a finished smoke art")
     parser.add_argument("--combine", nargs="+")
@@ -134,11 +147,12 @@ def main():
     elif args.status_art:
         report = status_g4(args.status_art)
     elif args.combine:
-        report = combine(args.combine)
+        report = combine(args.combine, cohort=args.cohort)
     elif args.root is not None and args.index is not None:
         if args.generation_job is None:
             parser.error("--root/--index requires --generation-job")
-        report = inspect_shard(args.root, args.index, args.out, generation_job=args.generation_job)
+        report = inspect_shard(args.root, args.index, args.out, generation_job=args.generation_job,
+                               cohort=args.cohort)
     else:
         parser.error("use --root/--index/--generation-job, --combine, --status-art, or --status-histograms")
     Path(args.out).write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
