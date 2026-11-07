@@ -57,7 +57,7 @@ The venv is the one Path A makes, so a clone on Fermilab storage serves both. Ke
 ## Path C: your own Slurm cluster
 
 The kit runs one job per point on the cluster through `slurm_ssh` (hep-endpoints) and the project image; the job
-streams its inputs from a Mu2e GPVM, so the inputs never stay on the cluster. Use a kit host with Python 3.10 or newer
+streams its inputs from a Mu2e GPVM, so the inputs never stay on the cluster. Use a kit host with Python 3.10 or newer, git
 and ssh access to both the cluster login host and a Mu2e GPVM (your laptop, with a Fermilab Kerberos ticket).
 
 1. **The image**, once: on a machine with Apptainer and user namespaces (a cluster node, or a Mu2e GPVM), build it
@@ -112,7 +112,7 @@ One kit task with one changed parameter: `beam_point`, the stopping-target metri
 
 ```bash
 python3 -m beamfastsim point --g4 "$M2FS_INPUTS/beam_fastsim/g4ref_full/g4ref.npz" \
-  --geom beam/geom/move_extras12.txt --n 20000 --seed 1 --out "$M2FS_DATA/my_point"
+  --geom "$M2FS_CODE/beam/geom/move_extras12.txt" --n 20000 --seed 1 --out "$M2FS_DATA/my_point"
 cat "$M2FS_DATA/my_point/metrics.json"
 ```
 
