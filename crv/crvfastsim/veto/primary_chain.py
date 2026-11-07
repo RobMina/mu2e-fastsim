@@ -216,7 +216,12 @@ def main(argv=None):
     parser.add_argument("--library-dir", help="optional run1a_v01 library and sidecars; requires per-primary sampler")
     parser.add_argument("--split", choices=("all", "dev", "heldout"), default="all")
     parser.add_argument("--split-at", type=int, default=22, help="first held-out source-file shard")
+    parser.add_argument("--compile-cache", metavar="DIR",
+                        help="JAX persistent compilation cache directory (crvfastsim.compile_cache); default off")
     args = parser.parse_args(argv)
+    if args.compile_cache:
+        from ..compile_cache import enable
+        print(f"# compile cache: {enable(args.compile_cache)}", flush=True)
     selection, primaries = ak.from_parquet(args.selection), pd.read_parquet(args.primaries)
     if args.input_kind == "retained" and not args.generator_events:
         parser.error("--input-kind retained requires --generator-events")

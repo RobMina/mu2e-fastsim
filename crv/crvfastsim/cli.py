@@ -168,6 +168,9 @@ def build_parser():
                             help="inputs are CrvStep tables (Geant4 or tier1b-apply): response and reco only")
             sp.add_argument("--save-reco", default=None, metavar="NPZ",
                             help="one input: write its clusters, cluster members and pulses (validation input)")
+            sp.add_argument("--compile-cache", default=None, metavar="DIR",
+                            help="JAX persistent compilation cache directory (crvfastsim.compile_cache): later "
+                                 "processes reuse the compiled kernels; default off")
         if name == "runchain-merge":
             sp.add_argument("--wall", type=float, default=None, help="node job wall time [s] (default: slowest shard)")
         if name == "v4sipm":
@@ -265,6 +268,10 @@ def main(argv=None):
         return reco_cli.run_reco(args.cmd[len("reco-"):], args)
     kw = vars(args)
     cmd = kw.pop("cmd")
+    cache = kw.pop("compile_cache", None)
+    if cache:
+        from . import compile_cache
+        print(f"# compile cache: {compile_cache.enable(cache)}", flush=True)
     inputs = kw.pop("inputs")
     outdir = kw.pop("outdir") or f"plots/{cmd}"
     if cmd == "tier1b-apply" and kw.pop("tier1b_backend", "numpy") == "jax":
