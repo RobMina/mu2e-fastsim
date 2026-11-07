@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live test of beam_point on UVA (one A100), from the laptop on the UVA network/VPN.
+"""Live test of beam_point on UVA (one A100), from a workstation on the UVA network/VPN.
 
 The kit streams the muon table from the FNAL host (ssh) into the UVA job's tmpfs; the job fetches the public inputs
 from the CVMFS Stratum-1. check -> submit -> status (poll) -> results for each geometry given.

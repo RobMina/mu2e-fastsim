@@ -74,7 +74,7 @@ PYTHONPATH=core:beam python3 -m beamfastsim.diocompare --plot dio_compare.json d
 # sob stand-in for one target geometry: stops, CE, calorimeter proxy and the approximate sensitivity
 PYTHONPATH=core:beam python3 -m beamfastsim.cesob point --g4 g4ref_run1baa_vd8.npz --z-up 3900 --geom overlay.txt \
   --electrons 100000 --procs 32 --out sob_point
-# laptop/any: unit tests and benchmark
+# any machine: unit tests and benchmark
 PYTHONPATH=core:beam python3 -m pytest -q beam/tests
 PYTHONPATH=core:beam python3 -m beamfastsim.bench --n 2000
 ```

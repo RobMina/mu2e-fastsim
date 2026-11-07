@@ -44,7 +44,7 @@ curved-path material ordering, time integration and grazing boundaries remain
 finite-step approximations. Fixed map precedence differs from stock's cache.
 
 After the review corrections, the same 25,078 Run1A development entrances take
-187.215 s (133.953 entrances/s), one CPU worker excluding field loading.
+187.215 s (133.953 entrances/s) on one Apple M5 CPU core (single worker), excluding field loading.
 DS mu-minus: 1,088/1,098, ratio 0.9909 +/- 0.0219; mu-plus: 8/15, ratio
 0.5333 +/- 0.1633. Paired-shard errors; sparse positive deficit remains. No matched
 stock TS-only/GPU/SU speedup is measured. Settings and seed are unchanged, but
@@ -70,6 +70,9 @@ does not run transport or choose settings by proximity to stock. See the
 
 ## Frozen held-out result (2026-11-06)
 
+This is the one copy of the held-out numbers; other pages link here.
+
+
 After the development checks, the unchanged baseline was run once on the disjoint
 100-shard Run1A held-out reference: 500,000 counted Events, 25,334 known-root inputs.
 DS mu-minus 1,164/1,153 gives fast/stock 1.00954 +/- 0.02371; mu-plus 9/11 gives
@@ -77,8 +80,8 @@ DS mu-minus 1,164/1,153 gives fast/stock 1.00954 +/- 0.02371; mu-plus 9/11 gives
 and 12.128/21; mu-plus 4.015/4 and 10.030/11. Mu-minus elapsed-time overflow above
 500 ns is 5 stock/1 fast, retained in yields, outside plotted-bin chi2. No fast
 live/path-cap/missing-field outcomes. Stock DS pi-minus 7 versus fast 0 is a
-separate limitation. Transport cost: 174.989 s, 144.775 entrances/s, one CPU
-worker excluding field load; not an optimization speedup over the different
+separate limitation. Transport cost: 174.989 s, 144.775 entrances/s on
+one Apple M5 CPU core (single worker), excluding field load; not an optimization speedup over the different
 development sample. All held-out stock statuses are zero; 2,665 upstream ancestry
 gaps and 5 nested entrances are explicitly retained.
 This completes the opt-in comparison, not default promotion or convergence proof.

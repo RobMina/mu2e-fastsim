@@ -20,7 +20,7 @@ closure. All 1,118 stock DS mu/pi records resolve to the cohort.
 | DS mu-minus, fast / stock | 1,088 / 1,098; ratio 0.9909 +/- 0.0219 |
 | DS mu-plus, fast / stock | 8 / 15; ratio 0.5333 +/- 0.1633; sparse deficit |
 | Transport cost | 187.215 s for 25,078 entrances; 133.953 entrances/s |
-| Performance scope | One CPU worker; field loading excluded; no matched stock TS-only, GPU or SU benchmark |
+| Performance scope | One Apple M5 CPU core (single worker); field loading excluded; no matched stock TS-only, GPU or SU benchmark |
 
 Fast fates are 1,099 DS, 18,538 range-out, 210 muon decay, 5,225 wall and 6 upstream;
 there are no live, path-cap or missing-field outcomes. Settings and seed are
@@ -226,7 +226,7 @@ keeping the baseline for the subsequently completed frozen held-out test, not
 convergence or precision agreement of sparse positives. Equal seeds are not common-random
 histories: 267 mu-minus baseline-only / 252 tighter-only endpoints. Joint controls
 cannot isolate a numerical cause; no setting is selected by closeness to stock.
-Tighter transport cost is 398.133 s (62.989 entrances/s), one CPU worker,
+Tighter transport cost is 398.133 s (62.989 entrances/s), one Apple M5 CPU core (single worker),
 excluding field load; concurrent tests ran during part of this measurement. Keep the original
 baseline benchmark and development headline. Held-out was unopened at this checkpoint.
 
@@ -266,37 +266,9 @@ outcomes.
 
 ## Frozen Run1A held-out comparison (2026-11-06)
 
-The held-out comparison followed the development sensitivity check and baseline
-freeze. All 100 held-out shards have 500,000 finished Events and 500,000
-primary-proton events; 476,156 empty-source events remain in exposure.
-25,339 recorded forward entrance tracks become 25,334 known-root inputs, retaining
-5 nested states. Repeated forward crossings use the earliest-state rule.
-The exact held-out event/source sets are disjoint from development. All 1,171 stock
-DS mu/pi links resolve; 2,665 upstream compact-ancestry gaps remain. No geometry exclusions.
-Stock statuses are all zero, with no overflow/step-limit events including flow bins.
-
-| Endpoint | Stock | Fast | Fast/stock, paired-shard SE |
-|---|---:|---:|---:|
-| mu-minus, 12,515 negative inputs | 1,153 | 1,164 | 1.00954 +/- 0.02371 |
-| mu-plus, 12,819 positive inputs | 11 | 9 | 0.81818 +/- 0.16529 |
-
-Input-fraction differences are +0.087895 +/- 0.217615 and -0.015602 +/- 0.015615
-percentage points. Momentum/time diagonal chi2 are 14.2826/11 and 12.1275/21
-(mu-minus), 4.0147/4 and 10.0299/11 (mu-plus). Mu-minus time overflow above 500 ns
-is 5 stock/1 fast, included in yields but outside displayed bins/chi2; other muon
-flows are zero. Positive precision is limited; no calibrated p-value/equivalence
-claim. Stock has 7 DS pi-minus versus fast 0, separate from the muon headline.
-
-Frozen seed 20261105, 2.5 mm / 0.25 mm / 5%, 100 m max path; no post-inspection
-adjustments. Fast fates: 1,173 DS, 18,567 range-out, 220 muon decay, 5,369 wall,
-5 upstream; zero live/path-cap/missing-field. One CPU worker: 174.989 s,
-144.775 entrances/s excluding field load; not a speedup claim against the
-different development cohort. No matched stock TS-only/GPU/SU benchmark.
-Development results remain separate and unchanged.
-
-The opt-in charge-separated yield/momentum/time comparison is complete. Held-out
-assets are separately labeled; no default promotion, new simulation or continued
-tail tuning. The held-out set is now consumed, not reusable as a fresh tuning test.
+The once-only held-out comparison (yields, spectra, fates and cost) is recorded in one place: the
+[transport guide](../docs/ts-transport.md#frozen-held-out-result-2026-11-06). The held-out set is
+consumed, not a fresh tuning test.
 
 ## Tests
 
