@@ -109,3 +109,34 @@ def test_helix_fit_recovers_parameters():
     assert float(f["R"]) == pytest.approx(R, abs=1e-3) and float(f["lambda"]) == pytest.approx(lam, rel=1e-4)
     assert float(f["d0"]) == pytest.approx(np.hypot(cx, cy) - R, abs=1e-3)
     assert float(f["nsh"]) == n and float(f["chi2xy"]) < 1e-6
+
+
+F32_SCRIPT = r'''
+import sys, numpy as np
+sys.path.insert(0, sys.argv[1])
+import jax
+from trigger.device import helix
+jax.config.update("jax_enable_x64", False)          # what Chain(precision="float32") does
+import jax.numpy as jnp
+R, lam, cx, cy, fz0 = 250.0, 180.0, 120.0, -60.0, 0.4
+z = np.linspace(-1400, 1400, 40); ph = fz0 + z / lam
+x, y = cx + R * np.cos(ph), cy + R * np.sin(ph); n = len(z)
+hit = {"x": jnp.asarray(x), "y": jnp.asarray(y), "z": jnp.asarray(z), "udx": jnp.ones(n), "udy": jnp.zeros(n),
+       "uvar": jnp.full(n, 900.0), "vvar": jnp.full(n, 2.0), "uface": jnp.arange(n), "nsh": jnp.ones(n, int)}
+s = {"maxrpull": 5.0, "maxdr": 100.0, "maxchisq": 25.0, "cradres": 20.0, "cperpres": 12.0, "minnsh": 10,
+     "lmin": 30.0, "lmax": 1000.0, "lstep": 10.0, "minR": 100.0, "maxR": 600.0, "minCR": 100.0, "maxCR": 700.0,
+     "minabsl": 10.0, "maxabsl": 700.0, "helicities": (-1, 1)}
+f = helix._fit(hit, jnp.ones(n, bool), s, 1.0, jnp.asarray(z))
+assert f["R"].dtype == jnp.float32
+assert bool(f["ok"]) and abs(float(f["R"]) - R) < 0.05 and abs(float(f["lambda"]) / lam - 1) < 1e-3, f
+assert float(f["nsh"]) == n
+print("ok")
+'''
+
+
+def test_helix_fit_float32_subprocess():
+    """float32 mode flips JAX's process-wide x64 flag, so it runs in its own interpreter."""
+    pytest.importorskip("jax")
+    import subprocess
+    r = subprocess.run([sys.executable, "-c", F32_SCRIPT, str(ROOT)], capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0 and r.stdout.strip().endswith("ok"), r.stderr[-2000:]
