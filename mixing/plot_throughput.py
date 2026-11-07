@@ -1,8 +1,7 @@
-"""Make a slide-ready throughput plot from validated single-pass measurement receipts."""
+"""Plot separately scoped endpoint measurements from validated single-pass receipts."""
 import argparse
 import json
 from pathlib import Path
-import re
 
 import matplotlib
 
@@ -11,45 +10,67 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-def make_figure(report, output):
-    """Show actual process throughput, without claiming grid-slot equivalence."""
+ENDPOINT_SCOPE = ("Separate endpoint measurements, not a speedup comparison: devices, "
+                  "input boundaries and output schemas differ.")
+
+
+def hardware_label(metadata):
+    """Never infer hardware from a site, legacy schema, or private raw provenance."""
+    label = (metadata or {}).get("label")
+    if label is None:
+        return "hardware not recorded"
+    if not isinstance(label, str) or not label.strip() or any(c in label for c in "\r\n"):
+        raise ValueError("hardware metadata needs a nonempty single-line public label")
+    return label.strip()
+
+
+def validated_rates(report):
     runs = report["runs"]
     if len(runs) != 3 or any(run["validation"]["outputs"]["equal"] is not True for run in runs):
         raise ValueError("three validated single-pass measurements required")
-    hardware = (report.get("hardware") or {}).get("text", "")
     expected = ["fresh_private_cache", "populated_cache_fresh_process", "populated_cache_fresh_process"]
-    if ("A100" not in hardware or re.search(r"\bcpus=2\b", hardware) is None
-            or [run.get("cache_state") for run in runs] != expected
-            or report["stock"].get("endpoint") != "UVA historical 1 CPU; not grid or GPVM"):
-        raise ValueError("this figure requires the recorded UVA A100/2-CPU and historical 1-CPU configuration")
-    stock = report["stock"]["external_process"]["events_per_s"]
-    rates = np.array([stock] + [run["python_process"]["events_per_s"] for run in runs], dtype=float)
+    if [run.get("cache_state") for run in runs] != expected:
+        raise ValueError("expected a fresh cache followed by two populated-cache fresh processes")
+    rates = np.array([report["stock"]["external_process"]["events_per_s"]]
+                     + [run["python_process"]["events_per_s"] for run in runs], dtype=float)
     if not np.all(np.isfinite(rates) & (rates > 0)):
         raise ValueError("finite positive process rates required")
-    labels = ["Stock Offline\n1 UVA CPU", "Fast, fresh compilation cache\n1 A100 + 2 host CPUs",
-              "Fast, populated cache: run 1\n1 A100 + 2 host CPUs", "Fast, populated cache: run 2\n1 A100 + 2 host CPUs"]
-    with plt.rc_context({"font.size": 13, "font.family": "DejaVu Sans"}):
-        fig, ax = plt.subplots(figsize=(12, 6.5))
-        fig.subplots_adjust(left=.32, right=.94, top=.78, bottom=.27)
-        y = np.arange(len(rates))[::-1]
-        ax.barh(y, rates, color=["#85837e", "#7397c7", "#2a78d6", "#2a78d6"], height=.58)
-        ax.set_xscale("log")
-        ax.set_xlim(min(.5, rates.min() / 2), rates.max() * 1.65)
-        ax.set_yticks(y, labels)
-        ax.set_xlabel("Primary events / s — process launch through output and exit (log scale)")
-        ax.grid(axis="x", which="major", alpha=.2)
-        ax.set_axisbelow(True)
-        for edge in ("top", "right", "left"):
-            ax.spines[edge].set_visible(False)
-        ax.tick_params(axis="y", length=0)
-        for position, rate in zip(y, rates):
-            ax.text(rate * 1.06, position, f"{rate:.2f}", va="center", fontweight="bold")
-        fig.suptitle("Run 1A pileup: tracker digitisation + CRV response/reco", fontsize=19, y=.96)
-        fig.text(.5, .88, f"{report['events']:,} primary events per run, including empty detector events; single-pass fresh processes",
-                 ha="center", fontsize=13)
-        fig.text(.03, .12, "Existing detector-step inputs → tracker digis/ADCs + CRV digis, pulses and clusters.\n"
-                 "Includes loading, validation, sampling/mixing, response and output; excludes prior transport, staging and queue wait.\n"
-                 "Historical stock CPU vs GPU-backed fast path: different hardware, timing inputs and diagnostic schemas.\n"
+    return rates
+
+
+def make_figure(report, output):
+    """Use separate axes and boundaries; neither compute nor display a rate ratio."""
+    rates = validated_rates(report)
+    fast_label = hardware_label(report.get("hardware"))
+    stock_label = hardware_label(report["stock"].get("hardware"))
+    with plt.rc_context({"font.size": 11, "font.family": "DejaVu Sans"}):
+        fig, axes = plt.subplots(2, 1, figsize=(12, 8), gridspec_kw={"height_ratios": [1, 2]})
+        fig.subplots_adjust(left=.28, right=.94, top=.81, bottom=.25, hspace=1.2)
+        panels = [(axes[0], rates[:1], ["Historical stock"], ["#85837e"],
+                   f"Stock art process — {stock_label}\nNative mixing + framework/source I/O + native detector diagnostics"),
+                  (axes[1], rates[1:], ["Fresh compilation cache", "Populated cache: run 1", "Populated cache: run 2"],
+                   ["#7397c7", "#2a78d6", "#2a78d6"],
+                   f"Fast Python processes — {fast_label}\nCached source steps → sampling/mixing + detector response + reduced ROOT output")]
+        for ax, values, labels, colors, title in panels:
+            y = np.arange(len(values))[::-1]
+            ax.barh(y, values, color=colors, height=.58)
+            ax.set_xlim(0, values.max() * 1.25)
+            ax.set_yticks(y, labels)
+            ax.set_title(title, fontsize=11)
+            ax.set_xlabel("Primary events / s — process launch through output and exit")
+            ax.grid(axis="x", alpha=.2)
+            ax.set_axisbelow(True)
+            for edge in ("top", "right", "left"):
+                ax.spines[edge].set_visible(False)
+            ax.tick_params(axis="y", length=0)
+            for position, rate in zip(y, values):
+                ax.text(rate + values.max() * .025, position, f"{rate:.2f}", va="center", fontweight="bold")
+        fig.suptitle("Run 1A pileup: tracker digitisation + CRV response/reco", fontsize=18, y=.97)
+        fig.text(.5, .91, f"{report['events']:,} primary events per run, including empty detector events; independent axes",
+                 ha="center", fontsize=12)
+        fig.text(.03, .11, ENDPOINT_SCOPE + "\n"
+                 "Fast includes loading, validation, sampling/mixing, response and output; excludes prior extraction/transport, staging and queue wait.\n"
+                 "Fresh means private compilation caches, not cold storage; populated-cache runs are fresh processes, not in-process warm passes.\n"
                  "No calorimeter, trigger, track fitting or full art output; development result, not grid-slot equivalence.",
                  fontsize=10, va="center")
         fig.savefig(output, dpi=200)
@@ -57,15 +78,19 @@ def make_figure(report, output):
 
 
 def public_numbers(report):
-    """Export only collaborator-readable quantities, not internal paths or job IDs."""
+    """Whitelist public quantities; ignore obsolete fields in frozen legacy receipts."""
+    validated_rates(report)
     return {"events": report["events"], "denominator": report["denominator"],
             "boundary": report["boundary"], "excluded": report["excluded"],
             "cache_scope": report["cache_scope"], "comparison_scope": report["comparison_scope"],
+            "endpoint_scope": ENDPOINT_SCOPE,
             "status": "development only; not a certified grid/GPVM comparison",
-            "stock": {"endpoint": "historical UVA CPU, 1 core, 8 GB RAM",
+            "stock": {"endpoint": hardware_label(report["stock"].get("hardware")),
+                      "scope": report["stock"]["external_process"].get("scope", "external art process, native inputs and diagnostics"),
                       "process_wall_s": report["stock"]["external_process"]["wall_s"],
                       "events_per_s": report["stock"]["external_process"]["events_per_s"]},
-            "fast": [{"cache_state": run["cache_state"], "endpoint": "UVA A100-80GB + 2 host CPUs, 64 GB RAM",
+            "fast": [{"cache_state": run["cache_state"], "endpoint": hardware_label(report.get("hardware")),
+                      "scope": run["python_process"].get("scope", "external Python process, cached steps and reduced diagnostics"),
                       "process_wall_s": run["python_process"]["wall_s"],
                       "events_per_s": run["python_process"]["events_per_s"],
                       "container_wall_s": run["outer_container_process"]["wall_s"],
