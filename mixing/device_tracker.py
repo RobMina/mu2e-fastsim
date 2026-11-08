@@ -21,9 +21,10 @@ class Capacities:
     long_steps: int = None
     clusters_per_long_step: int = None
     end_tiers: tuple = None
+    charge_blocks_per_launch: int = None
 
     def __post_init__(self):
-        optional = ("long_steps", "clusters_per_long_step", "end_tiers")
+        optional = ("long_steps", "clusters_per_long_step", "end_tiers", "charge_blocks_per_launch")
         for name, value in vars(self).items():
             if name == "end_tiers" or (name in optional and value is None):
                 continue
@@ -147,7 +148,8 @@ def prepare(c, capacities, batch_events):
         if rel:
             result = {**result, "t_analog": result["t_analog"].astype(jnp.float64) + (nref * period)[:, None, None]}
         return result
-    ncharge = ((cap.drift_clusters + dj.CHARGE_BLOCK - 1) // dj.CHARGE_BLOCK) * dj.CHARGE_BLOCK
+    launch = dj.CHARGE_BLOCK * (cap.charge_blocks_per_launch or 1)
+    ncharge = ((cap.drift_clusters + launch - 1) // launch) * launch
     sentinel = np.iinfo(np.int64).max
 
     def sample(st, idx, bounded, minion, assets, key, capacity):
@@ -267,7 +269,13 @@ def prepare(c, capacities, batch_events):
             first, us_, pos_, ne_, time_ = inputs
             return charge_kernel.apply(assets["charge_kernel"],
                 random.key_data(random.fold_in(random.fold_in(key, 1), first)), us_, pos_, ne_, time_)
-        result = lax.map(block, arrays)
+        if cap.charge_blocks_per_launch is None:
+            result = lax.map(block, arrays)
+        else:   # groups of blocks per launch (as digi_jax CHARGE_BLOCKS); each block keeps its own key
+            g = cap.charge_blocks_per_launch
+            grouped = tuple(a.reshape((-1, g) + a.shape[1:]) for a in arrays)
+            result = lax.map(lambda group: jax.vmap(block)(group), grouped)
+            result = tuple(r.reshape((-1,) + r.shape[2:]) for r in result)
         gt, charge, wd = tuple(value.reshape((-1,) + value.shape[2:])[:cap.drift_clusters] for value in result)
         if rel:
             gt = (cref[:cap.drift_clusters, None] + gt.astype(jnp.float64)).astype(jnp.float32)

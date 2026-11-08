@@ -348,3 +348,26 @@ def test_float32_tracker_mode_in_subprocess():
                             env=env, cwd=here.parent, capture_output=True, text=True)
     assert result.returncode == 0, result.stdout[-6000:] + result.stderr[-3000:]
     assert " passed" in result.stdout or " skipped" in result.stdout
+
+
+@pytest.mark.parametrize("group", [2, 3])
+def test_batched_charge_blocks_equal_sequential(cond, group):
+    """charge_blocks_per_launch vmaps blocks with their own keys: same outputs as one block per step."""
+    n = 2 * 4096 + 17
+    us = np.full(n, 520, np.int64)
+    position = np.tile(cond.straw_mid[520], (n, 1)) + [100., 1., 0.]
+    position[:, 0] += np.linspace(-50., 50., n)
+    cluster = {"step": np.arange(n), "pos": position, "ne": 1 + np.arange(n) % 3, "mask": np.arange(n) < n - 5}
+    st = {"us": us, "time": np.linspace(400., 900., n)}
+    key = jax.random.key(7)
+    def run(capacities):
+        model = prepare(cond, capacities, 1)
+        return jax.device_get(jax.jit(model.drift)(jax.device_put(st), jax.device_put(cluster), key,
+                                                   jax.device_put(model.assets)))
+    a = run(Capacities(4, n, 1, 4, 1, 1))
+    b = run(Capacities(4, n, 1, 4, 1, 1, charge_blocks_per_launch=group))
+    assert not a[-1] and not b[-1]
+    for x, y in zip(a[:3], b[:3]):
+        np.testing.assert_array_equal(x, y)
+    with pytest.raises(ValueError, match="positive"):
+        Capacities(4, n, 1, 4, 1, 1, charge_blocks_per_launch=0)

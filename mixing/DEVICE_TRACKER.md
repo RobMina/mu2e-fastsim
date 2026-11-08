@@ -80,6 +80,14 @@ Per-slot cluster keys and per-straw electronics keys do not depend on the padded
 so both modes give the same clusters and digis as one wide capacity (tested exactly in
 float64; in float32 see below). Without these keys the adapter is unchanged.
 
+## Batched charge blocks (opt-in)
+
+`charge_blocks_per_launch: G` runs the drift/charge kernel on G blocks of 4,096 clusters
+per launch (vmapped, as the staged `digi_jax` runs `CHARGE_BLOCKS` per call) instead of one
+block per sequential step. Every block keeps its key (`fold_in(key, 1)` then its first
+cluster offset), so outputs equal the one-block path; `drift_clusters` is padded to a
+multiple of `G x 4096`. Without the key the drift is unchanged.
+
 ## float32
 
 With `TRKFASTSIM_DEVICE_FLOAT=core` and `MU2EFS_DEVICE_FLOAT=float32` the adapter follows the
