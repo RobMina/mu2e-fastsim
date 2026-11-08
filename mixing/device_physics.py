@@ -53,8 +53,8 @@ def combine(tracker, crv, timing, *, synthetic_inputs=False):
         times = {name: value[batch["signal_indices"]] for name, value in assets["timing"].items()}
         times["event_mask"] = batch["event_mask"]
         detector, reference_error = _crv_pdg(batch["collections"])
-        td, te = tracker.apply(batch["collections"]["tracker"], times, assets["tracker"], tracker_key)
-        cd, ce = crv.apply(detector, times, assets["crv"], crv_key)
+        td, te, tu = tracker.apply_with_usage(batch["collections"]["tracker"], times, assets["tracker"], tracker_key)
+        cd, ce, cu = crv.apply_with_usage(detector, times, assets["crv"], crv_key)
         trk_columns = {"ev": td["ev"], "mask": td["mask"], "sid": td["sid"].astype(jnp.uint32),
                        "pmp": td["pmp"].astype(jnp.uint32), "adc": td["adc"].astype(jnp.uint32),
                        "nadc": jnp.full(td["sid"].shape, td["adc"].shape[1], jnp.uint32),
@@ -64,7 +64,9 @@ def combine(tracker, crv, timing, *, synthetic_inputs=False):
                 trk_columns[name + str(end)] = td[name][:, end].astype(jnp.uint32)
         errors = {"truth_pdg": reference_error, **{"tracker/" + name: value for name, value in te.items()},
                   **{"crv/" + name: value for name, value in ce.items()}}
-        return {"tracker": trk_columns, **cd, "timing": times}, errors
+        usage = {**{"tracker/" + name: value for name, value in tu.items()},
+                 **{"crv/" + name: value for name, value in cu.items()}}
+        return {"tracker": trk_columns, **cd, "timing": times, "usage": usage}, errors
     return SimpleNamespace(kind="physics", support=["tracker_digis", "crv_reco"], apply=apply,
                            assets={"tracker": tracker.assets, "crv": crv.assets, "timing": timing},
                            metadata={"scope": "bounded physical tracker digis/ADCs and CRV digis/pulses/coincidences; no tracker reconstruction",
