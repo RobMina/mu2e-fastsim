@@ -187,6 +187,57 @@ def write_injector(path, steps, entries):
     tables.write(str(path), {"sgsteps": s[STEP_COLS], "particles": p}, as_ttree=True)
 
 
+DIGI_COLS = ("shape", "ion", "eion", "len", "width", "t", "x0", "y0", "z0", "x1", "y1", "z1")
+
+
+def _timing(event_timing, e0, ne):
+    return {} if event_timing is None else {"event_timing": {k: np.asarray(v)[e0:e0 + ne]
+                                                             for k, v in event_timing.items()}}
+
+
+def _concat(outs, cond):
+    from trkfastsim.digi import digi_jax
+    if not outs:
+        return digi_jax._empty(cond)
+    return {k: np.concatenate([o[k] for o in outs]) for k in outs[0]}
+
+
+_RESIDENT = []
+
+
+def _resident_steps():
+    """Jitted (flat, chunk) for DeviceChain._digitize_resident. flat(s, size): the valid steps of the [event, slot]
+    arrays in (event, slot) order as flat columns (DIGI_COLS, sid, ev) of length size, zero beyond them. chunk(st, a,
+    n, e0, size): rows a..a+n of those with ev - e0, zero beyond n (digi_resident.pad_steps' layout)."""
+    if not _RESIDENT:
+        from functools import partial
+        import jax
+        import jax.numpy as jnp
+
+        @partial(jax.jit, static_argnames=("size",))
+        def flat(s, size):
+            valid = s["valid"]
+            keep = jnp.arange(size) < jnp.sum(valid)
+            tr, sl = jnp.nonzero(valid, size=size, fill_value=0)
+            out = {k: s[k][tr, sl] for k in DIGI_COLS}
+            out["sid"] = ((s["plane"][tr, sl].astype(jnp.int64) << 10)
+                          | (s["panel"][tr, sl].astype(jnp.int64) << 7) | s["straw"][tr, sl])
+            out["ev"] = tr.astype(jnp.int64)
+            return {k: jnp.where(keep, v, jnp.zeros_like(v)) for k, v in out.items()}
+
+        @partial(jax.jit, static_argnames=("size",))
+        def chunk(st, a, n, e0, size):
+            i = jnp.arange(size)
+            keep = i < n
+            idx = jnp.where(keep, a + i, 0)
+            out = {k: v[idx] for k, v in st.items()}
+            out["ev"] = out["ev"] - e0
+            return {k: jnp.where(keep, v, jnp.zeros_like(v)) for k, v in out.items()}
+
+        _RESIDENT.append((flat, chunk))
+    return _RESIDENT[0]
+
+
 class DeviceChain:
     """Conversion electrons on one device: births (or stops) -> cechain_jax to the tracker entry -> fieldsteps_jax
     StrawGasSteps -> (optional) device digis -> reco response track observables. Built once (geometry, field maps,
@@ -278,53 +329,33 @@ class DeviceChain:
         are faster); a chunk beyond the digitiser's cluster capacity is split in two and retried. The random stream
         depends on the chunking (keys are folded with each chunk's first event)."""
         import jax
-        import jax.numpy as jnp
         from trkfastsim import devfloat
         from trkfastsim.digi import digi_jax
         chunk = self.digi_chunk if chunk is None else chunk
         s = res["tracker"].steps
-        resident = self.resident_digis and not devfloat.SINGLE
-        if resident:                                   # flat steps on the device, in (event, passage) order
-            from trkfastsim.digi import digi_resident
-            valid = s["valid"]
-            nv = int(valid.sum())
-            tr, sl = jnp.nonzero(valid, size=nv)
-            xp = jnp
-            digi_fn = digi_resident.digitize
-        else:
-            valid = np.asarray(s["valid"])
-            tr, sl = np.nonzero(valid)
-            xp = np
-            digi_fn = digi_jax.digitize
-        st = {k: xp.asarray(s[k])[tr, sl] for k in ("shape", "ion", "eion", "len", "width", "t", "x0", "y0", "z0",
-                                                    "x1", "y1", "z1")}
-        st["sid"] = ((xp.asarray(s["plane"])[tr, sl].astype(np.int64) << 10)
-                     | (xp.asarray(s["panel"])[tr, sl].astype(np.int64) << 7) | xp.asarray(s["straw"])[tr, sl])
-        st["ev"] = tr.astype(np.int64)
-        nev = valid.shape[0]
+        nev = s["valid"].shape[0]
         if event_timing is None and self.cond.onspill:
             event_timing = dict(pbtime=np.zeros(nev), event_length=np.full(nev, float(self.cond.eventWindowLength)))
         key = jax.random.fold_in(jax.random.PRNGKey(seed), 3)
+        if self.resident_digis and not devfloat.SINGLE:
+            return self._digitize_resident(s, nev, key, chunk, event_timing)
+        valid = np.asarray(s["valid"])
+        tr, sl = np.nonzero(valid)
+        st = {k: np.asarray(s[k])[tr, sl] for k in DIGI_COLS}
+        st["sid"] = ((np.asarray(s["plane"])[tr, sl].astype(np.int64) << 10)
+                     | (np.asarray(s["panel"])[tr, sl].astype(np.int64) << 7) | np.asarray(s["straw"])[tr, sl])
+        st["ev"] = tr.astype(np.int64)
         outs = []
         todo = [(e0, min(chunk, nev - e0)) for e0 in range(0, nev, chunk)]
         while todo:                                   # event chunks, as fastdigi.digitize_steps (cluster capacity)
             e0, ne = todo.pop(0)
-            if resident:                               # steps are in event order: a contiguous slice
-                a, b = (int(x) for x in jnp.searchsorted(st["ev"], jnp.array([e0, e0 + ne])))
-                m = np.zeros(0)
-                if b == a:
-                    continue
-                sub = {k: v[a:b] for k, v in st.items()}
-            else:
-                m = (st["ev"] >= e0) & (st["ev"] < e0 + ne)
-                if not m.any():
-                    continue
-                sub = {k: v[m] for k, v in st.items()}
+            m = (st["ev"] >= e0) & (st["ev"] < e0 + ne)
+            if not m.any():
+                continue
+            sub = {k: v[m] for k, v in st.items()}
             sub["ev"] = sub["ev"] - e0
-            kw = {} if event_timing is None else {"event_timing": {k: np.asarray(v)[e0:e0 + ne]
-                                                                   for k, v in event_timing.items()}}
             try:
-                d = digi_fn(sub, ne, self.cond, jax.random.fold_in(key, e0), **kw)
+                d = digi_jax.digitize(sub, ne, self.cond, jax.random.fold_in(key, e0), **_timing(event_timing, e0, ne))
             except OverflowError:                     # beyond the digitiser's cluster capacity: halve the chunk
                 if ne == 1:
                     raise
@@ -333,12 +364,46 @@ class DeviceChain:
                 continue
             d = {k: np.asarray(v) for k, v in d.items()}
             d["ev"] = d["ev"] + e0
-            rows = np.arange(a, b) if resident else np.flatnonzero(m)
+            rows = np.flatnonzero(m)
             d["step"] = rows[d["step"]] if len(d["step"]) else d["step"]   # row of the flat steps
             outs.append(d)
-        if not outs:
-            return digi_jax._empty(self.cond)
-        return {k: np.concatenate([o[k] for o in outs]) for k in outs[0]}
+        return _concat(outs, self.cond)
+
+    def _digitize_resident(self, s, nev, key, chunk, event_timing):
+        """digitize with digi_resident: the flat steps and every event chunk are made on the device at power-of-two
+        sizes (jitted; zero beyond the steps, as digi_resident pads them), and the digis come back at a power-of-two
+        length and are cut on the host, so new data recompiles nothing unless a size crosses a power of two. Same
+        steps, keys and chunks as the per-chunk slicing it replaces: the same digis bit for bit."""
+        import jax
+        import jax.numpy as jnp
+        from trkfastsim.digi import digi_resident as DR
+        flat, chunk_steps = _resident_steps()
+        start = np.concatenate([[0], np.cumsum(np.asarray(jnp.sum(s["valid"], axis=1)))])   # event -> first row
+        nv = int(start[-1])
+        st = flat({k: s[k] for k in DIGI_COLS + ("plane", "panel", "straw", "valid")}, DR._b(nv))
+        outs = []
+        todo = [(e0, min(chunk, nev - e0)) for e0 in range(0, nev, chunk)]
+        while todo:                                   # event chunks (steps are in event order: contiguous rows)
+            e0, ne = todo.pop(0)
+            a, b = int(start[e0]), int(start[e0 + ne])
+            if b == a:
+                continue
+            sub = chunk_steps(st, jnp.int64(a), jnp.int64(b - a), jnp.int64(e0), DR._b(b - a))
+            try:
+                d, cnt = DR.digitize(sub, ne, self.cond, jax.random.fold_in(key, e0), nstep=b - a, padded=True,
+                                     **_timing(event_timing, e0, ne))
+            except OverflowError:                     # beyond the digitiser's cluster capacity: halve the chunk
+                if ne == 1:
+                    raise
+                h = ne // 2
+                todo[:0] = [(e0, h), (e0 + h, ne - h)]
+                continue
+            d = {k: np.asarray(v)[:cnt] for k, v in d.items()}
+            d["ev"] = d["ev"] + e0
+            rows = np.arange(a, b)
+            d["step"] = rows[d["step"]] if len(d["step"]) else d["step"]   # row of the flat steps
+            outs.append(d)
+        return _concat(outs, self.cond)
 
     def observables(self, res, seed):
         """Reco response track observables per event (device arrays; trkfastsim.recoresp.device.apply)."""
@@ -373,18 +438,27 @@ def run(stops_or_births, seed, *, n=None, digis=True, event_timing=None, **chain
     return ch(births, seed, digis=digis, event_timing=event_timing)
 
 
-def bench_prepare(n):
-    """mu2efastsim.bench --prepare: the stop table named by $CETRACKER_STOPS, in host memory."""
+def bench_prepare(n, seed=None):
+    """mu2efastsim.bench --prepare: the stop table named by $CETRACKER_STOPS, in host memory. With seed (the bench's
+    --fresh-inputs passes seed=S+i before every pass), the n births of that seed are drawn here, outside the clock,
+    and bench_run uses the same seed for the chain."""
     import os
     with np.load(os.environ["CETRACKER_STOPS"]) as f:
-        return {k: np.asarray(f[k]) for k in ("x", "y", "z", "t")}, int(n)
+        stops = {k: np.asarray(f[k]) for k in ("x", "y", "z", "t")}
+    if seed is None:
+        return stops, int(n)
+    return DeviceChain.births(stops, int(n), int(seed)), int(n), int(seed)
 
 
 def bench_run(prepared, seed=1, digis=True, **chain_kw):
-    """mu2efastsim.bench entry point: n births drawn from the stops, then the whole device chain. Returns the device
-    outputs the timer waits on."""
-    stops, n = prepared
-    res = run(stops, seed, n=n, digis=digis, **chain_kw)
+    """mu2efastsim.bench entry point: n births drawn from the stops (or the births bench_prepare drew for its seed,
+    which then replaces `seed`), then the whole device chain. Returns the device outputs the timer waits on."""
+    if len(prepared) == 3:
+        births, n, seed = prepared
+        res = run(births, seed, digis=digis, **chain_kw)
+    else:
+        stops, n = prepared
+        res = run(stops, seed, n=n, digis=digis, **chain_kw)
     return dict(track=res.get("track"), nrow=res["nrow"], steps_len=res["tracker"].steps["len"],
                 digis=None if "digis" not in res else res["digis"]["adc"])
 
