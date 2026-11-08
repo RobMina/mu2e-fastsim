@@ -267,10 +267,12 @@ class DeviceChain:
         return dict(cechain=r, has_entry=has, x=r.x, p=pe, t=r.t, tracker=trk, nrow=nrow,
                     timing=dict(cechain_s=round(t_ce, 3), tracker_s=round(t_trk, 3)))
 
-    def digitize(self, res, seed, event_timing=None, chunk=500):
+    def digitize(self, res, seed, event_timing=None, chunk=2000):
         """Device digitiser on the chain's steps (trkfastsim.digi.digi_jax; its host packing reads the steps once).
         event_timing: pbtime and event_length per event (default 0 and the conditions' event window). Returns the
-        digis (host arrays, `ev` = event index of the batch)."""
+        digis (host arrays, `ev` = event index of the batch). chunk: events per digitiser call (fewer, larger calls
+        are faster); a chunk beyond the digitiser's cluster capacity is split in two and retried. The random stream
+        depends on the chunking (keys are folded with each chunk's first event)."""
         import jax
         from trkfastsim.digi import digi_jax
         s = res["tracker"].steps
@@ -286,16 +288,24 @@ class DeviceChain:
             event_timing = dict(pbtime=np.zeros(nev), event_length=np.full(nev, float(self.cond.eventWindowLength)))
         key = jax.random.fold_in(jax.random.PRNGKey(seed), 3)
         outs = []
-        for e0 in range(0, nev, chunk):                   # event chunks, as fastdigi.digitize_steps (cluster capacity)
-            m = (st["ev"] >= e0) & (st["ev"] < e0 + chunk)
+        todo = [(e0, min(chunk, nev - e0)) for e0 in range(0, nev, chunk)]
+        while todo:                                   # event chunks, as fastdigi.digitize_steps (cluster capacity)
+            e0, ne = todo.pop(0)
+            m = (st["ev"] >= e0) & (st["ev"] < e0 + ne)
+            if not m.any():
+                continue
             sub = {k: v[m] for k, v in st.items()}
             sub["ev"] = sub["ev"] - e0
-            ne = min(chunk, nev - e0)
             kw = {} if event_timing is None else {"event_timing": {k: np.asarray(v)[e0:e0 + ne]
                                                                    for k, v in event_timing.items()}}
-            if not len(sub["ev"]):
+            try:
+                d = digi_jax.digitize(sub, ne, self.cond, jax.random.fold_in(key, e0), **kw)
+            except OverflowError:                     # beyond the digitiser's cluster capacity: halve the chunk
+                if ne == 1:
+                    raise
+                h = ne // 2
+                todo[:0] = [(e0, h), (e0 + h, ne - h)]
                 continue
-            d = digi_jax.digitize(sub, ne, self.cond, jax.random.fold_in(key, e0), **kw)
             d["ev"] = d["ev"] + e0
             d["step"] = np.flatnonzero(m)[d["step"]] if len(d["step"]) else d["step"]   # row of the flat steps
             outs.append(d)
