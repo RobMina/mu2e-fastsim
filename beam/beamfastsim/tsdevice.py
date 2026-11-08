@@ -883,24 +883,52 @@ def _env(name):
     return v
 
 
-def bench_prepare(n):
+_BENCH_RESIDENT = {}
+
+
+def _bench_resident():
+    """References and chain for the bench hooks, loaded once per process and configuration."""
+    names = ("TSDEV_REFERENCE", "TSDEV_GDML", "TSDEV_FIELD_CONFIG", "TSDEV_OFFLINE_ROOT", "TSDEV_MAPS", "TSDEV_DS_GEOM",
+             "TSDEV_DS_OFFLINE_ROOT", "TSDEV_DS_MAP", "TSDEV_POOL", "TSDEV_DTYPE")
+    key = tuple(os.environ.get(name) for name in names)
+    if key not in _BENCH_RESIDENT:
+        ref = load_references(_env("TSDEV_REFERENCE").split(":"))
+        chain = load_chain(_env("TSDEV_GDML"), _env("TSDEV_FIELD_CONFIG"), _env("TSDEV_OFFLINE_ROOT"),
+                           _env("TSDEV_MAPS"), _env("TSDEV_DS_GEOM"), _env("TSDEV_DS_OFFLINE_ROOT"),
+                           _env("TSDEV_DS_MAP"),
+                           pool=int(os.environ["TSDEV_POOL"]) if os.environ.get("TSDEV_POOL") else None,
+                           dtype=os.environ.get("TSDEV_DTYPE", "float64"))
+        _BENCH_RESIDENT[key] = ref, chain
+    return _BENCH_RESIDENT[key]
+
+
+def bench_prepare(n, seed=None):
     """Shared-timer prepare: inputs, geometry and field loaded and on the device (reported as prepare_s).
     Paths from TSDEV_REFERENCE (one file, or several separated by ':' to stream them in one pass), TSDEV_GDML,
     TSDEV_FIELD_CONFIG, TSDEV_OFFLINE_ROOT, TSDEV_MAPS, TSDEV_DS_GEOM, TSDEV_DS_OFFLINE_ROOT, TSDEV_DS_MAP; TSDEV_POOL
-    sets the lanes in flight. Inputs tile the (joined) references cyclically to n rows."""
-    ref = load_references(_env("TSDEV_REFERENCE").split(":"))
-    idx = np.arange(n) % len(ref["pdg"])
-    chain = load_chain(_env("TSDEV_GDML"), _env("TSDEV_FIELD_CONFIG"), _env("TSDEV_OFFLINE_ROOT"),
-                       _env("TSDEV_MAPS"), _env("TSDEV_DS_GEOM"), _env("TSDEV_DS_OFFLINE_ROOT"), _env("TSDEV_DS_MAP"),
-                       pool=int(os.environ["TSDEV_POOL"]) if os.environ.get("TSDEV_POOL") else None,
-                       dtype=os.environ.get("TSDEV_DTYPE", "float64"))
+    sets the lanes in flight.
+
+    Without ``seed`` the inputs tile the (joined) references cyclically to n rows. With ``seed`` (the timer's
+    ``--fresh-inputs``) the n rows are drawn from the references with replacement by a generator seeded with
+    ``seed``, and the transport of that pass runs with ``seed`` too, so every pass has its own input order and its
+    own random histories. The references and the chain are loaded once per process and reused by later calls, as a
+    production job loads them once and then processes new events."""
+    ref, chain = _bench_resident()
+    rows = len(ref["pdg"])
+    if seed is None:
+        idx = np.arange(n) % rows
+    else:
+        idx = np.random.default_rng([20261108, int(seed)]).integers(0, rows, size=n)
     data = tuple(jnp.asarray(ref[k][idx]) for k in ("x", "p", "t", "pdg"))
-    return chain, data
+    return (chain, data) if seed is None else (chain, data, int(seed))
 
 
 def bench_chain(prepared, seed=20261107):
-    """Shared-timer entry point: one full pass TS entrance -> stops; returns the device stop arrays."""
-    chain, (x, p, t, pdg) = prepared
+    """Shared-timer entry point: one full pass TS entrance -> stops; returns the device stop arrays. A seeded
+    prepare (fresh inputs) carries the transport seed of its pass, which then replaces ``seed``."""
+    chain, (x, p, t, pdg) = prepared[:2]
+    if len(prepared) == 3:
+        seed = prepared[2]
     ts, ds = run_chain(chain, x, p, t, pdg, seed)
     return ts.fate, ds.fate, ds.x, ds.t, ds.foil
 
