@@ -27,6 +27,7 @@ def test_saved_comparison(tmp_path):
     assert missing["missing_reference"] and not missing["exact"]
 
 
+@pytest.mark.slow
 def test_fixed_shape_compiled_chunks_preserve_rng():
     jax = pytest.importorskip('jax')
     import jax.numpy as jnp

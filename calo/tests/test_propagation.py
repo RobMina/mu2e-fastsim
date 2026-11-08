@@ -12,6 +12,7 @@ def test_sequential_float32_cdf():
     np.testing.assert_array_equal(build_cdf(contents), expected)
 
 
+@pytest.mark.pr_params("jax")
 @pytest.mark.parametrize("backend", ["numpy", "jax"])
 def test_lower_bound_edges_and_depth_clamping(backend):
     fn = propagation_time

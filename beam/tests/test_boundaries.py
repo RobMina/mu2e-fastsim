@@ -14,6 +14,7 @@ def _state(prm, z=4000.0, direction=1.0):
         [0.0], [-1.0], prm)
 
 
+@pytest.mark.pr_params("7-4")
 @pytest.mark.parametrize("cap,chunk", [(7, 4), (3, 8), (8, 4)])
 def test_chunk_respects_exact_step_cap(cap, chunk):
     prm = transport.Params(ds=2.0, max_steps=cap, msc=False, decay=False)
@@ -25,6 +26,7 @@ def test_chunk_respects_exact_step_cap(cap, chunk):
     assert result.x[0, 2] == 5000.0 + 2.0 * cap
 
 
+@pytest.mark.pr_params("-1.0")
 @pytest.mark.parametrize("direction", [-1.0, 1.0])
 def test_exact_plane_endpoint_counts_once(monkeypatch, direction):
     def no_loss(key, mat, x0, p, u, length, active, prm):
@@ -49,6 +51,7 @@ def test_invalid_chunk_rejected(chunk):
                                 _state(prm), chunk=chunk)
 
 
+@pytest.mark.pr_params("-1.0-2.0")
 @pytest.mark.parametrize("ds", [2.0, 5.0])
 @pytest.mark.parametrize("direction", [-1.0, 1.0])
 def test_foil_stop_time_matches_crossing_position(monkeypatch, ds, direction):

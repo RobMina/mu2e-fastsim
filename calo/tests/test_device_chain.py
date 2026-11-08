@@ -111,6 +111,7 @@ def _queries(n=300, seed=5):
     return q
 
 
+@pytest.mark.pr_params("crystal-0", "geometric-3")
 @pytest.mark.parametrize("neighbors", [0, 3])
 @pytest.mark.parametrize("placement", ["crystal", "geometric"])
 def test_draw_and_placement_match_host(library, neighbors, placement):

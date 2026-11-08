@@ -18,6 +18,7 @@ def tables():
     return {charge: SJ.lane_tables(layers, positron=charge, msc=True) for charge in (False, True)}
 
 
+@pytest.mark.pr_params("True-True-True")
 @pytest.mark.parametrize('positron', [False, True])
 @pytest.mark.parametrize('field', [False, True])
 @pytest.mark.parametrize('msc', [False, True])

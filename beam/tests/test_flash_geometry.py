@@ -168,6 +168,7 @@ def test_includes_provenance_and_shared_loaders_unchanged(tmp_path, config):
     assert ce.z_ds == 4235.0 and scoped.z_ds == 4184.8
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("present", [False, True], ids=["absent", "installed"])
 def test_navigator_absent_tsda_has_no_absorbing_plane(tmp_path, config, present):
     jax = pytest.importorskip("jax")

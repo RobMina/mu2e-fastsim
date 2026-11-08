@@ -44,6 +44,7 @@ def test_single_and_double_pulses(pulse):
     np.testing.assert_allclose(fit["time"], fit["peak_time"] - pulse.delta_t - 2.5)
 
 
+@pytest.mark.slow
 def test_flat_digi_has_no_peak(pulse):
     samples = np.full((1, 30), 12, np.int64)
     fit = fit_digis(np.array([500]), samples, np.array([30]), pulse)
