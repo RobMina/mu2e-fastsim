@@ -188,3 +188,38 @@ def test_occupancy_output_rejected_without_device_backend(tmp_path):
                            device_output="occupancy")
     with pytest.raises(ValueError, match="only by the device backend"):
         run(args, Pool, Host)
+
+
+def test_capacity_usage_matches_tables_and_overflow_names_demand(template, cond, tmp_path):
+    """Demand counters ride in the batch metrics; an overflow names its demand and capacity and writes nothing."""
+    from types import SimpleNamespace
+    from trkfastsim.digi.digicond import Conditions
+    from mixing.device_backend import Backend
+    from mixing.stream_benchmark import run
+
+    c = Conditions(cond.s, cond.a)
+    c.s["onspill"] = True
+    capacity = tmp_path / "capacities.json"
+    capacity.write_text(json.dumps(CAPACITY))
+    args = SimpleNamespace(out=tmp_path / "out", frames_manifest=None, device_platform="cpu",
+                           device_kernel="mixing.device_integration:model", device_capacities=capacity,
+                           synthetic=False, backend="mixing.device_backend:Backend", events=4, batch_events=2,
+                           max_selected_rows=448, chunk=2, warmup_batches=0, seed=17, tracker_seed=19,
+                           sampling_seed=23, require_stage=[], template=template)
+    run(args, lambda manifest, **kwargs: source(c, **kwargs), Backend)
+    rows = [json.loads(line) for line in (args.out / "batches.jsonl").read_text().splitlines()]
+    for row in rows:
+        usage = row["backend"]["capacity_usage"]
+        for name in ("rows/tracker", "max_donors", "response/tracker/drift_clusters", "response/tracker/straws",
+                     "response/crv/photons", "response/crv/digis", "response/crv/reco_waveforms"):
+            assert name in usage, name
+        with uproot.open(args.out / row["directory"] / "fast.root") as root:
+            assert usage["response/crv/digis"] == root["crvfast/digis"].num_entries
+            sids = root["trkdigi/events"].arrays(["d_sid"], library="ak").d_sid
+            assert usage["response/tracker/straws"] >= len(np.unique(ak.to_numpy(ak.flatten(sids))))
+    small = json.loads(json.dumps(CAPACITY))
+    small["response"]["crv"]["digis"] = 1
+    capacity.write_text(json.dumps(small))
+    args.out = tmp_path / "overflow"
+    with pytest.raises(OverflowError, match=r"response/crv/crv_digis \(demand >= \d+, capacity 1\)"):
+        run(args, lambda manifest, **kwargs: source(c, **kwargs), Backend)
