@@ -335,3 +335,16 @@ def test_tiered_straw_electronics_exact(cond, helpers, onspill):
         Capacities(64, 2048, 8, 512, 8, 2, end_tiers=[(4, 512)])
     with pytest.raises(ValueError, match="pairs"):
         Capacities(64, 2048, 8, 4, 8, 2, end_tiers=[(4,)])
+
+
+def test_float32_tracker_mode_in_subprocess():
+    """Run the float32 device-versus-staged tests in a process whose tracker device float is float32."""
+    import os
+    import subprocess
+    here = Path(__file__).resolve().parent
+    env = {**os.environ, "TRKFASTSIM_DEVICE_FLOAT": "core", "MU2EFS_DEVICE_FLOAT": "float32", "JAX_ENABLE_X64": "1"}
+    result = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                             str(here / "test_mixing_device_tracker_float32.py")],
+                            env=env, cwd=here.parent, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout[-6000:] + result.stderr[-3000:]
+    assert " passed" in result.stdout or " skipped" in result.stdout
