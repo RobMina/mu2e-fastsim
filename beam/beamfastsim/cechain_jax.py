@@ -288,6 +288,13 @@ def _merge(st, new, mask):
     return jax.tree_util.tree_map(m, st, new)
 
 
+@partial(jax.jit, donate_argnums=(0,))
+def _copy_out(final, st, src, dst):
+    """final[f][dst] = st[f][src] for every output field, at a power-of-two index count: padding entries carry an
+    out-of-range dst and are dropped (one device call per launch, compiled per bucket size, not per count)."""
+    return {f: final[f].at[dst].set(st[f][src], mode="drop") for f in final}
+
+
 def transport(key, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True, layer_field=True, z_record=None,
               shell_curvature=True, dtype=np.float64, chunk=256, min_bucket=64, cand_frac=0.125, slab_frac=0.5,
               unroll=False, lanes=None, shrink=2, stats=None, device_out=False):
@@ -330,7 +337,7 @@ def transport(key, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
                     jnp.asarray(k0[j]), jnp.asarray(zl[j], dt))
     first = np.arange(min(n, m))
     st = block(first, first)
-    st["fate"] = st["fate"].at[first.size:].set(C.LOOPER)               # padding lanes are inert
+    st["fate"] = jnp.where(jnp.arange(m) >= first.size, C.LOOPER, st["fate"])   # padding lanes are inert
     idx = np.concatenate([first, np.full(m - first.size, -1)])
     nxt = first.size
     fields = OUT_FIELDS + (REC_FIELDS if z_record is not None else ())
@@ -355,12 +362,15 @@ def transport(key, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
         live = np.asarray(st["fate"]) == C.LIVE
         fin = np.flatnonzero((idx >= 0) & ~live)
         if fin.size:
-            fd = jnp.asarray(fin)
-            if device_out:
-                dst = jnp.asarray(idx[fin])
-                for f in fields:
-                    final[f] = final[f].at[dst].set(st[f][fd])
+            if device_out:                                             # padded: no shape depends on fin.size
+                kb = pow2(fin.size)
+                src = np.zeros(kb, np.int32)
+                src[:fin.size] = fin
+                dst = np.full(kb, n, np.int32)
+                dst[:fin.size] = idx[fin]
+                final = _copy_out(final, {f: st[f] for f in fields}, jnp.asarray(src), jnp.asarray(dst))
             else:
+                fd = jnp.asarray(fin)
                 for f in fields:
                     final[f][idx[fin]] = np.asarray(st[f][fd])
             idx[fin] = -1
@@ -384,7 +394,7 @@ def transport(key, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
             sel = np.concatenate([keep, np.full(mb - keep.size, keep[0])])
             sd = jnp.asarray(sel)
             st = jax.tree_util.tree_map(lambda a: a[sd] if getattr(a, "ndim", 0) > 0 else a, st)
-            st["fate"] = st["fate"].at[keep.size:].set(C.LOOPER)
+            st["fate"] = jnp.where(jnp.arange(mb) >= keep.size, C.LOOPER, st["fate"])   # no size-dependent scatter
             idx = np.concatenate([idx[keep], np.full(mb - keep.size, -1)])
             m = mb
     if stats is not None:
