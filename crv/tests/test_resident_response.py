@@ -61,6 +61,7 @@ def resident_path(geom, cfg, tabs, steps, pdg, cond, max_photons):
     return q, timers["photons"], rng.random(4)
 
 
+@pytest.mark.pr_params("8388608")
 @pytest.mark.parametrize("max_photons", [1 << 23, 64])
 def test_resident_equals_two_stage(max_photons):
     cpu = jax.devices("cpu")[0]

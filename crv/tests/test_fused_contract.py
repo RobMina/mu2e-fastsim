@@ -28,6 +28,7 @@ def test_named_windows_remain_supported():
     contract.validate_window((0, 200000), fused=False)
 
 
+@pytest.mark.pr_params("overflow")
 @pytest.mark.parametrize('flag', ['overflow', 'overflow_photons', 'overflow_sipm'])
 def test_chain_overflow_before_host_conversion(monkeypatch, flag):
     pytest.importorskip('jax')
@@ -52,6 +53,7 @@ def test_direct_device_rejects_unsupported(entry):
         getattr(device, entry)(None, None, None, None, cfg, None, None, None, None, None, None, None)
 
 
+@pytest.mark.pr_params("False")
 @pytest.mark.parametrize('keep', [False, True])
 def test_batch_refuses_overflow_even_in_timing_mode(monkeypatch, keep):
     jax = pytest.importorskip('jax')

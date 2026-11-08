@@ -87,6 +87,7 @@ def test_convex_column_matches_core():
         jt.pack([("unrecognised", planes, np.full(3, -2.), np.full(3, 2.))])
 
 
+@pytest.mark.slow
 def test_convex_column_replay_with_many_same_material_pieces():
     from mu2efastsim import world as wm
     rng = np.random.default_rng(24)
@@ -140,6 +141,7 @@ def test_slab_loss_distribution():
     assert np.isfinite(cand).all() and (cand >= 0).all()
 
 
+@pytest.mark.slow   # statistical (60,000 lanes, quantile tails)
 def test_world_slab_with_radiative_matches_numpy_default():
     from mu2efastsim import muradiative_jax as RJ
     n = 60000

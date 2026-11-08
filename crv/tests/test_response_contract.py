@@ -132,6 +132,7 @@ def test_exposure_window_mismatch_refused():
         r3.run_batch(None, 0, 1, None, chain.ChainConfig(), None, None, None, None, None, None, {}, window_ns=1)
 
 
+@pytest.mark.pr_params("photons")
 @pytest.mark.parametrize('source', ['photons', 'sipm'])
 def test_residual_gpu_overflow_fails_before_host_consumption(monkeypatch, source):
     jax = pytest.importorskip('jax')
@@ -149,6 +150,7 @@ def test_residual_gpu_overflow_fails_before_host_consumption(monkeypatch, source
     assert timers['response_overflow_batches'] == 1
 
 
+@pytest.mark.slow   # Python subprocess per case
 @pytest.mark.parametrize('valid', [True, False])
 def test_rendered_scoring_block_writes_metrics_only_for_valid_point(tmp_path, valid):
     import json

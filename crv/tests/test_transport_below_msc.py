@@ -45,6 +45,7 @@ def _run(monkeypatch, geom, gen, below, below_msc):
     return T.transport(gen, geom, np.random.default_rng(7), stage="C", world=[], below=below, below_msc=below_msc)[0]
 
 
+@pytest.mark.pr_params("slabs1")
 @pytest.mark.parametrize("slabs", [[], [(M.ALUMINIUM.name, 3., 3.5), (M.CONCRETE_MARS.name, 2.5, 3.)]])
 def test_without_scattering_equals_straight_line(monkeypatch, slabs):
     _stage_c(monkeypatch)
@@ -77,6 +78,7 @@ def test_range_out_in_gap_blocks_later_bars(monkeypatch):
     assert st.bar.tolist() == [0, 0]
 
 
+@pytest.mark.slow
 def test_slab_scattering_matches_highland(monkeypatch):
     """A 50 mm aluminium slab 1 m above a wide bar: plane-angle RMS = Highland, displacement from the lever arm."""
     _stage_c(monkeypatch)
@@ -100,6 +102,7 @@ def test_slab_scattering_matches_highland(monkeypatch):
     assert abs(np.corrcoef(ang, st.x0)[0, 1] - 974.5 / lever) < 0.02
 
 
+@pytest.mark.slow
 def test_bar_scattering_turns_later_bars(monkeypatch):
     """Ten thick bars: the bar material alone turns the track; the first bar's entry direction is the plane one."""
     _stage_c(monkeypatch, xx0=0.)

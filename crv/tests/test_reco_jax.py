@@ -11,6 +11,19 @@ jax = pytest.importorskip("jax")
 from crvfastsim.reco import pulsefit as PF                 # noqa: E402
 from crvfastsim.reco import pulsefit_jax as PJ             # noqa: E402
 
+# Small coincidence tiers for the chain_jax.run tests (the tiers of test_coinc_jax_per_sector_cuts). The default
+# coinc_jax.TIERS pad every chunk to their full row capacity (16384/8192/2048 rows per sector type), which set the time
+# and memory of these tests, not the event count. Groups beyond the last tier take the NumPy fallback, as in
+# production. The production tiers still run per PR in test_chain_reco_contract.
+TIERS_T = ((16, 6, 256), (64, 12, 64))
+
+
+@pytest.fixture
+def small_tiers(monkeypatch):
+    from crvfastsim.reco import coinc_jax as CJ
+    original = CJ.find_async
+    monkeypatch.setattr(CJ, "find_async", lambda *a, **kw: original(*a, **kw, tiers=TIERS_T))
+
 
 def _batch(W=300, L=36, seed=2):
     rng = np.random.default_rng(seed)
@@ -89,6 +102,7 @@ def test_coinc_jax_matches_numpy():
     assert CJ.cluster_keys(out) == ref
 
 
+@pytest.mark.slow   # production tiers; chunk invariance per PR in test_reco_dispatch
 def test_chain_jax_chunking_and_consistency():
     """Pipelined pulses -> coincidences: the clusters do not depend on the chunking and equal coinc_jax.find run on the
     chain's own pulses."""
@@ -113,7 +127,7 @@ def test_chain_jax_chunking_and_consistency():
     assert CJ.cluster_keys(ref) == key(a)
 
 
-def test_repro_bit_identical_per_seed():
+def test_repro_bit_identical_per_seed(small_tiers):
     """R5: the jitted stages are bit-identical for the same seed and differ for another seed."""
     from crvfastsim.reco import repro
     from crvfastsim.reco.cli import _coinc_geom
@@ -180,7 +194,7 @@ def test_coinc_jax_per_sector_cuts():
     from crvfastsim.reco import synth
     from crvfastsim.reco.cli import _coinc_geom
     G = _coinc_geom()
-    P = synth.coinc_events(600, G, seed=21, shower_frac=0.1, shower_mean=40)
+    P = synth.coinc_events(300, G, seed=21, shower_frac=0.1, shower_mean=40)
     status = np.zeros(4 * len(G.sector), np.int64)
     cuts = dict(C.EXTRACTED_V04)
     for m in ("M1", "M3", "M5", "M7"):
@@ -202,7 +216,7 @@ def test_coinc_jax_per_sector_cuts():
     assert CJ.cluster_keys(out) == ref
 
 
-def test_chain_jax_adds_db_time_offsets():
+def test_chain_jax_adds_db_time_offsets(small_tiers):
     """chain_jax.run shifts pulse times by the per-waveform DB time offset W['toff'] (CrvRecoPulsesFinder
     useTimeOffsetDB); with toff = 0 the clusters equal the run without it, and a uniform shift moves every cluster
     time by the same amount."""
@@ -235,9 +249,10 @@ def test_backend_tiers_skip_h32_on_oneapi(monkeypatch):
     assert CJ.is_oneapi() and CJ.backend_tiers(tiers) == (tiers[0], tiers[2])
 
 
-def test_chain_jax_detail_matches_numpy_finder():
-    """keep_pulses / with_pos (the EventNtuple view of the fast chain): per cluster, the JAX position equals coinc.py's
-    on the chain's own pulses, the default output is unchanged, and the member table points into the kept pulses."""
+def test_chain_jax_detail_matches_numpy_finder(small_tiers):
+    """keep_pulses / with_pos (the EventNtuple view of the fast chain): the clusters and, per cluster, the JAX position
+    equal coinc.py's on the chain's own pulses, the default output is unchanged, and the member table points into the
+    kept pulses."""
     from crvfastsim.reco import chain_jax, synth
     from crvfastsim.reco import coinc as C
     from crvfastsim.reco import coinc_jax as CJ
@@ -264,11 +279,12 @@ def test_chain_jax_detail_matches_numpy_finder():
             k = (int(o["cl_event"][i]), int(o["cl_type"][i]), mem)
             assert np.allclose(o["cl_pos"][i], ref[k], atol=1e-6)
             n += 1
+        assert len(o["cl_event"]) == len(ref)
         assert len(oc) == len(o["mem_idx"])
     assert n > 50
 
 
-def test_ntview_links_and_frame():
+def test_ntview_links_and_frame(small_tiers):
     """reco.ntview: crvHitIndex points at the pulse's own cluster, nHits/PEsPerLayer are member sums, positions are
     in the detector frame."""
     from crvfastsim import geometry

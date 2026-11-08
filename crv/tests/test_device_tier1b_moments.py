@@ -1,7 +1,10 @@
 """Moment algebra uses event-clustered contributions, not independent adjacent pairs."""
 import numpy as np
+import pytest
 
 from valhist.device_tier1b_moments import add, summarize
+
+pytestmark = pytest.mark.slow   # campaign and validation tooling, not the simulation chain: runs with --runslow
 
 
 def test_correlation_and_cluster_error():

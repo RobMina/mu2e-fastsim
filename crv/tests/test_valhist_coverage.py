@@ -12,6 +12,8 @@ from uproot.writing import identify
 
 from crvfastsim.validation.coverage import audit
 
+pytestmark = pytest.mark.slow   # campaign and validation tooling, not the simulation chain: runs with --runslow
+
 
 KEY = "Validation/CrvDigis_stock/hits"
 

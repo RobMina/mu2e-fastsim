@@ -42,6 +42,7 @@ def assert_metadata(fx, geom):
     assert not np.asarray(meta["valid"])[n:].any()
 
 
+@pytest.mark.pr_params("257")
 @pytest.mark.parametrize("n", [0, 1, 3, 63, 257])
 def test_random_order_multi_muon_and_padding(geom, n):
     rng = np.random.default_rng(421)
@@ -55,6 +56,7 @@ def test_random_order_multi_muon_and_padding(geom, n):
     assert_metadata(fx, geom)
 
 
+@pytest.mark.slow
 def test_holes_in_valid_lanes_do_not_add_muons(geom):
     jax, j = _jax()
     fx = _crossings(geom, [_ex(geom, 3, 4), _ex(geom, 2, 4), _ex(geom, 1, 4)])
@@ -70,6 +72,7 @@ def test_holes_in_valid_lanes_do_not_add_muons(geom):
         np.testing.assert_array_equal(np.asarray(got[2][name])[[0, 2, 4]], np.asarray(base[2][name])[:3])
 
 
+@pytest.mark.slow
 def test_visit_reentry_time_ties_and_upstream_boundary(geom):
     bars = [_ex(geom, 3, 4, module=0), _ex(geom, 3, 5, module=0), _ex(geom, 2, 5, module=1),
             _ex(geom, 3, 6, module=0), _ex(geom, 1, 5, module=1)]

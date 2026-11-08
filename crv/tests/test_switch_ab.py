@@ -6,6 +6,8 @@ import sys
 import numpy as np
 import pytest
 
+pytestmark = pytest.mark.slow   # campaign and validation tooling, not the simulation chain: runs with --runslow
+
 pytest.importorskip("uproot")
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))

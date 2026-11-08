@@ -29,6 +29,7 @@ def test_no_directory_changes_nothing():
     assert jax.config.jax_compilation_cache_dir == before["dir"]
 
 
+@pytest.mark.slow   # two Python subprocesses
 def test_second_process_hits_the_cache(tmp_path):
     cache = tmp_path / "cache"
     run = lambda: json.loads(subprocess.run([sys.executable, "-c", PROBE, str(cache)], check=True,

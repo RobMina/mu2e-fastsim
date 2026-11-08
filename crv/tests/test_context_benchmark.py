@@ -8,6 +8,8 @@ import sys
 
 import pytest
 
+pytestmark = pytest.mark.slow   # campaign and validation tooling, not the simulation chain: runs with --runslow
+
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "context_benchmark.py"
 SPEC = importlib.util.spec_from_file_location("context_campaign", SCRIPT)

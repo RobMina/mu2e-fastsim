@@ -78,6 +78,7 @@ def check_stock(args, window):
     return outputs, digis
 
 
+@pytest.mark.slow
 def test_pre_gate_trigger_does_not_hide_in_gate_continuation():
     args = dense_args(np.ones(35), 175.0)
     outputs, digis = check_stock(args, (200.0, 1500.0))
@@ -90,6 +91,7 @@ def test_pre_gate_trigger_does_not_hide_in_gate_continuation():
     assert legacy_times[legacy_times >= 200.0][0] == 325.0
 
 
+@pytest.mark.slow
 def test_upper_start_is_inclusive_and_tail_is_not_cropped():
     args = dense_args(np.ones(5), 1475.0)
     _, digis = check_stock(args, (1500.0, 1500.0))
@@ -110,6 +112,7 @@ def test_stock_nested_loops_resume_at_12_with_decrement():
     np.testing.assert_array_equal(unbounded[2], outputs[2])
 
 
+@pytest.mark.slow
 def test_literal_scan_mixed_lengths_phases_masks_and_threshold():
     values = np.random.default_rng(81).choice([0.0, 0.5, 0.75, 1.0], (6, 48))
     values[4] = 0.5  # strict > minVoltage, not >=
@@ -150,6 +153,7 @@ def legacy_dense(T, W, n, t_start, keep, tmpl, key, L, zs, precision, noise, min
     return wave, adc, starts, last
 
 
+@pytest.mark.pr_params("0.04")
 @pytest.mark.parametrize("noise", [0.0, 0.04])
 def test_default_is_bitwise_legacy_with_seeded_noise(noise):
     values = np.random.default_rng(53).uniform(0.0, 1.0, (3, 40))
@@ -182,6 +186,7 @@ def test_bucketed_synth_forwards_stock_gate(monkeypatch):
     assert empty["adc"].shape == (0, cfg.samples_zs)
 
 
+@pytest.mark.slow
 def test_synthesize_forwards_window_only_when_opted_in(monkeypatch):
     monkeypatch.setattr(J, "single_pe_template", lambda *unused: np.ones(7))
     cfg = replace(CFG, single_pe_max_time=7 * PERIOD)

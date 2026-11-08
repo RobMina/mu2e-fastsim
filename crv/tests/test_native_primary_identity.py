@@ -12,6 +12,8 @@ import pytest
 from multiprimary_fixtures import _frames, _tiny_counters, _write
 from crvfastsim import genassoc, geometry
 
+pytestmark = pytest.mark.slow   # campaign and validation tooling, not the simulation chain: runs with --runslow
+
 ROOT = Path(__file__).resolve().parents[1]
 
 

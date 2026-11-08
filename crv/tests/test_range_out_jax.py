@@ -21,6 +21,7 @@ def test_csda_interpolation_matches_reference():
         np.testing.assert_allclose(got, ref, rtol=2e-12, atol=2e-10)
 
 
+@pytest.mark.slow   # statistical (6 standard errors)
 @pytest.mark.parametrize("p,cut", [(40., .0872), (3000., .0872), (3000., .001)])
 def test_uncapped_delta_energy_law(p, cut):
     n = 20000
@@ -76,6 +77,7 @@ def test_fixed_loss_draws_match_numpy_bar_loop(monkeypatch):
     np.testing.assert_allclose(pin[keep], -ref.py0, rtol=2e-11, atol=2e-10)
 
 
+@pytest.mark.slow
 def test_stage_c_range_schema_and_repeat():
     g = geom()
     a = gen(9, p=80.)

@@ -64,6 +64,7 @@ def _rows(rng, R=3000):
             "n_ck_f": rng.integers(0, 2, R)}
 
 
+@pytest.mark.slow   # statistical (counts and means vs NumPy)
 def test_jax_substeps_match_numpy_statistically():
     jax = pytest.importorskip("jax")
     from crvfastsim.response import photons_jax as PJ
@@ -103,6 +104,7 @@ def test_sipm_recovery_reduces_second_firing():
     assert np.isclose(late.min(), v1) and np.isclose(late.max(), 1.0)
 
 
+@pytest.mark.slow   # statistical (3,000 SiPMs)
 def test_sipm_jax_matches_numpy_statistically():
     jax = pytest.importorskip("jax")
     from crvfastsim.response import sipm, sipm_jax

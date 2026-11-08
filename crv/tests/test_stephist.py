@@ -6,6 +6,8 @@ import pytest
 from valhist import placement_closure as P
 from valhist import stephist as H
 
+pytestmark = pytest.mark.slow   # campaign and validation tooling, not the simulation chain: runs with --runslow
+
 
 def test_root_bin_matches_taxis_findbin():
     x = np.array([-1.0, 0.0, 0.0019999, 0.002, 0.1999999, 0.2, 5.0, np.nan])

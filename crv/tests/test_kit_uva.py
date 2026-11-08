@@ -213,6 +213,7 @@ def test_static_names_match_the_chain_and_objective():
     assert {n: tuple(s) for n, s in KT._SHAPES.items()} == {n: tuple(R.SLOTS_OF.get(n, R.SLOTS)) for n in R.SHAPES}
 
 
+@pytest.mark.slow   # processes with sleeps
 def test_channel_slots_cap_across_processes(tmp_path):
     """At most N holders at once, counted across processes (each graph.run point is its own kit process)."""
     import multiprocessing as mp

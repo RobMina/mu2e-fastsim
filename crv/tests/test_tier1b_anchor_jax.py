@@ -48,6 +48,7 @@ def _events(geom):
     return fx
 
 
+@pytest.mark.slow
 def test_anchor_rows_match_reference(geom):
     jax, j = _jax()
     lib, _ = _tiny(geom)
@@ -72,6 +73,7 @@ def test_anchor_rows_match_reference(geom):
         np.testing.assert_array_equal(np.asarray(dax), A["axid"][rows_m])
 
 
+@pytest.mark.pr_params("3")
 @pytest.mark.parametrize("batch", [3, 64])
 def test_anchored_sample_replays_reference(geom, batch):
     lib = _anchor_lib(geom)

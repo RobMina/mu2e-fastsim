@@ -27,6 +27,7 @@ def _echo(args, cfg, *, pixel_override=None):
             "fired": np.ones(n, bool), "charge": np.ones(n), "pe": np.ones(n), "overflow": False}
 
 
+@pytest.mark.slow
 def test_attempt_moments_uniform_pixels_and_empty_labels(monkeypatch):
     captured = []
 
@@ -56,6 +57,7 @@ def test_attempt_moments_uniform_pixels_and_empty_labels(monkeypatch):
     assert np.any(pixels == 0)
 
 
+@pytest.mark.slow
 def test_optical_sentinel_and_dark_ancestry(monkeypatch):
     sentinel_counts = []
 
@@ -101,6 +103,7 @@ def test_optical_and_dark_share_device_recovery():
     np.testing.assert_array_equal(out["time"][dark], [1])
 
 
+@pytest.mark.slow   # statistical moments
 def test_empty_input_device_moments():
     cfg = sipm.SiPMConfig(thermal_rate=0.01, cross_talk=0, inactive=())
     out = _simulate(cfg, t_end=100, thermal_chans=np.arange(256))
@@ -126,6 +129,7 @@ def _device_args(cfg, times, slots=None, q_ct=0):
             cfg.capacitance, n, 16, 16, 16, n + 48)
 
 
+@pytest.mark.slow
 def test_preexisting_device_calls_and_shared_recovery():
     cfg = sipm.SiPMConfig(p1=1, p2=0.001, inactive=())
     args = _device_args(cfg, [0, 0, 20])
@@ -143,6 +147,7 @@ def test_preexisting_device_calls_and_shared_recovery():
     assert not np.any(result["fired"])
 
 
+@pytest.mark.slow
 def test_device_dark_crosstalk_descendants():
     cfg = sipm.SiPMConfig(p1=1, p2=0.001, inactive=())
     args = _device_args(cfg, [4], q_ct=1)

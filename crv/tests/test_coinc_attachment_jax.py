@@ -49,6 +49,7 @@ def basic():
         (0, 1, 104., 10., 0), (0, 1, 102., 10., 0), (0, 3, 103., 10., 0)]
 
 
+@pytest.mark.pr_params("tiers0-False")
 @pytest.mark.parametrize('split', [False, True])
 @pytest.mark.parametrize('tiers', [((16, 8, 2),), ((4, 1, 2),), ((8, 1, 2),), ((8, 1, 2), (16, 8, 2))])
 def test_full_finder_attachment_and_fallback(split, tiers):

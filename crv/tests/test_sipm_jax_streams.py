@@ -47,6 +47,7 @@ def test_split_equals_single_table():
         assert np.array_equal(np.asarray(ref[k]), np.asarray(spl[k])), k
 
 
+@pytest.mark.slow
 def test_long_overflow_is_flagged_and_retried():
     sj, cfg, args = _inputs()
     small = _run(sj, cfg, args, 8, 256, 16)

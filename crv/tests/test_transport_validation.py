@@ -9,6 +9,8 @@ import uproot
 
 from crvfastsim.validation import transport_validation as V
 
+pytestmark = pytest.mark.slow   # campaign and validation tooling, not the simulation chain: runs with --runslow
+
 
 def test_paired_error_includes_empty_events():
     universe = pd.DataFrame(dict(run=1, subrun=1, event=np.arange(4)))

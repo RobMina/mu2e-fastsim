@@ -15,6 +15,7 @@ from test_tier1b_topology import _crossings, _ex
 OPTS = dict(context=True, contain=True, point=True, topology=True, unvisited=True, nearmiss=True, chord=True)
 
 
+@pytest.mark.slow
 def test_main_support_context_fallback():
     jax, j = _jax()
     lib = dict(code=j.asarray([0] * 20 + [1] * 3 + [8] * 20),
@@ -25,6 +26,7 @@ def test_main_support_context_fallback():
     np.testing.assert_array_equal(p[:3], [10, 22, 23])
 
 
+@pytest.mark.slow
 def test_uv_finest_supported_else_coarsest_nonempty():
     jax, j = _jax()
     lib = {}
@@ -71,6 +73,7 @@ def test_closest_replays_reference_with_parallel_and_entering_rays(geom):
     np.testing.assert_allclose(objective, a[1], rtol=1e-11, atol=1e-8)
 
 
+@pytest.mark.pr_params("False")
 @pytest.mark.parametrize("empty", [False, True])
 def test_synthetic_strict_v3_replay_and_padding(geom, empty):
     lib, _ = _lib3(geom)

@@ -9,6 +9,8 @@ import numpy as np
 import pytest
 import uproot
 
+pytestmark = pytest.mark.slow   # campaign and validation tooling, not the simulation chain: runs with --runslow
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from valhist import library_variants as V  # noqa: E402
 

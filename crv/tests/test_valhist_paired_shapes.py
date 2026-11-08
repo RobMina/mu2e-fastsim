@@ -12,6 +12,8 @@ from uproot.writing import identify
 
 from crvfastsim.validation.paired_shapes import bootstrap_region, run
 
+pytestmark = pytest.mark.slow   # campaign and validation tooling, not the simulation chain: runs with --runslow
+
 
 KEY = "Validation/CrvReco/hits"
 

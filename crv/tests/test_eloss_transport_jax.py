@@ -53,6 +53,7 @@ POINTS = [
 ]
 
 
+@pytest.mark.pr_params("gauss-0")
 @pytest.mark.parametrize("seed", [0, 23])
 @pytest.mark.parametrize("mat,p0,length,tcut,branch", POINTS,
                          ids=["gauss", "gamma", "urban-gas", "urban-ps", "urban-concrete"])
@@ -88,6 +89,7 @@ def test_mixed_material_branches_and_zero_length_state():
     np.testing.assert_allclose(jnp.cumsum(actual), jnp.cumsum(expected), rtol=RTOL, atol=ATOL)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("shape", [(), (0,), (13,), (2, 7)])
 def test_zero_lengths_and_empty_batches(shape):
     p = jnp.full(shape, 3000.)
@@ -97,6 +99,7 @@ def test_zero_lengths_and_empty_batches(shape):
     np.testing.assert_array_equal(actual, np.zeros(shape))
 
 
+@pytest.mark.slow
 def test_standalone_jit_broadcast_and_dynamic_constants():
     f = jax.jit(fast.sample_loss)
     c = ref.stack_consts([M.POLYSTYRENE, M.CONCRETE_MARS], np.array([0, 1, 0]))
@@ -112,6 +115,7 @@ def test_standalone_jit_broadcast_and_dynamic_constants():
             ref.sample_loss(key, M.MILD_STEEL, jnp.full(71, 1.85), 1e-4, 1e9))
 
 
+@pytest.mark.pr_params("0")
 @pytest.mark.parametrize("rounds", [0, 1, ref.GAMMA_ROUNDS])
 def test_gamma_round_substreams_and_first_acceptance(rounds):
     # Includes alpha<1 boost, low acceptance and reference fallback when rounds=0.
@@ -136,6 +140,7 @@ def _sequential_poisson(key, lams, uu, w3, w, K):
     return count, ion
 
 
+@pytest.mark.pr_params("0")
 @pytest.mark.parametrize("K", [0, 1, ref.K_POISSON])
 def test_poisson_cap_counts_boundaries_and_round_substreams(K):
     # Includes exact-CDF boundaries, zero means, worst-case mean 8, and U=1
@@ -162,6 +167,7 @@ def test_bounded_poisson_has_no_runtime_loop():
     assert fast.GAMMA_ROUNDS == ref.GAMMA_ROUNDS == 10
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("K", [0, 1, ref.K_POISSON])
 def test_public_cap_and_mass_are_preserved(K):
     p = jnp.geomspace(100., 3000., 257)
@@ -172,6 +178,7 @@ def test_public_cap_and_mass_are_preserved(K):
     _paired(actual, expected)
 
 
+@pytest.mark.slow
 def test_optional_supplied_mean_matches_newer_core():
     if "mean" not in inspect.signature(ref.sample_loss).parameters:
         pytest.skip("caller-supplied mean requires newer core")

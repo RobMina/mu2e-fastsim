@@ -41,6 +41,7 @@ def test_range_table_ranges_out_and_agrees_far_from_it():
     assert np.all(np.diff(rg) > 0) and rg[0] == 0.0
 
 
+@pytest.mark.slow
 def test_deltas_take_kinetic_energy_but_not_the_deposit(monkeypatch):
     p = [3000.0] * 200
     a = _run(monkeypatch, p)
@@ -54,6 +55,7 @@ def test_deltas_take_kinetic_energy_but_not_the_deposit(monkeypatch):
     assert drop_b.mean() > drop_a.mean() * 1.1                # deltas above the cut leave the muon as well
 
 
+@pytest.mark.slow
 def test_slow_muon_stops_inside_a_bar_with_substeps(monkeypatch):
     st = _run(monkeypatch, [50.0] * 400, range_out=True)      # 11 MeV: stops in the 2nd bar
     stopped = st[st.p1 < 1.0]

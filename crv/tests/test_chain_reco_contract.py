@@ -29,6 +29,7 @@ def numpy_pulses(W, max_pulses=128):
                           replace(PF.RecoConfig(), max_pulses=max_pulses))
 
 
+@pytest.mark.pr_params("peaks0-24")
 @pytest.mark.parametrize('peaks,length', [((18,), 24), ((4, 20), 36), ((11,), 24),
                                           (tuple(range(4, 244, 24)), 252)])
 def test_dispatch_retries_full_waveform(peaks, length):
@@ -55,6 +56,7 @@ def test_reco_waveforms_carries_offsets():
     np.testing.assert_array_equal(grouped['toff'], cond.timeoffset[grouped['chan']])
 
 
+@pytest.mark.pr_params("False-True")
 @pytest.mark.parametrize('jax', [False, True])
 @pytest.mark.parametrize('explicit_offsets', [False, True])
 def test_chain_conditions_before_coincidences(monkeypatch, jax, explicit_offsets):
@@ -173,7 +175,9 @@ def test_mixed_long_and_short_recovery(quiet):
     np.testing.assert_allclose(tm, ref['time'], atol=1e-4)
 
 
-def test_conditions_real_coincidence_membership():
+@pytest.mark.pr_params("1")   # one chunk: the production tiers once per PR; three chunks run with --runslow
+@pytest.mark.parametrize('chunks', [1, 3])
+def test_conditions_real_coincidence_membership(chunks):
     pytest.importorskip('jax')
     from crvfastsim.reco import chain_jax, coinc_jax, synth
     from crvfastsim.reco.cli import _coinc_geom
@@ -196,9 +200,8 @@ def test_conditions_real_coincidence_membership():
         expected.update((int(e), r['sectortype'], tuple(sorted(r['pulses'])))
                         for r in coinc.find_event(p, G, status))
     assert expected
-    for chunks in (1, 3):
-        out, _ = chain_jax.run(W, G, status, n_chunks=chunks, batch=512, keep_pulses=True)
-        assert set().union(*(coinc_jax.cluster_keys(o) for o in out)) == expected
+    out, _ = chain_jax.run(W, G, status, n_chunks=chunks, batch=512, keep_pulses=True)
+    assert set().union(*(coinc_jax.cluster_keys(o) for o in out)) == expected
 
 
 @pytest.mark.parametrize('jax', [False, True])

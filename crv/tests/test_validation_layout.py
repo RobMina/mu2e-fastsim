@@ -18,6 +18,7 @@ def test_old_paths_alias_the_moved_module(old, name):
     assert importlib.import_module(f"{old}.{name}") is moved
 
 
+@pytest.mark.slow   # Python subprocess
 def test_old_module_path_still_runs_as_a_script():
     r = subprocess.run([sys.executable, "-m", "valhist.compare", "--help"], cwd=ROOT, capture_output=True, text=True)
     assert r.returncode == 0 and "merge" in r.stdout

@@ -46,6 +46,7 @@ def _run(monkeypatch, stage="A", **kwargs):
     return T.transport(_gen(), _geometry(), np.random.default_rng(1), stage=stage, world=[], **kwargs)[0]
 
 
+@pytest.mark.pr_params("A")
 @pytest.mark.parametrize("stage", ["A", "C"])
 def test_bar_exit_equals_next_entry_without_gap_loss(monkeypatch, stage):
     _mock_loss(monkeypatch)
@@ -70,6 +71,7 @@ def test_air_energy_combines_with_carried_bar_energy(monkeypatch, stage):
     np.testing.assert_allclose(st.p1, _p_after(p0, air_loss + 10. * (bar + 1)))
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("straggling", [False, True])
 def test_absorber_uses_energy_and_current_momentum(monkeypatch, straggling):
     _mock_loss(monkeypatch)

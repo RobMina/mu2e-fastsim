@@ -5,6 +5,8 @@ import pytest
 from crvfastsim.analyses import runchain
 from crvfastsim.validation import run1a_vseries as V
 
+pytestmark = pytest.mark.slow   # campaign and validation tooling, not the simulation chain: runs with --runslow
+
 
 def test_paired_ratio_identical_and_shifted():
     r = np.array([100., 120., 90., 110.])

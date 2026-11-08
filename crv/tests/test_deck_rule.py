@@ -5,6 +5,8 @@ import pytest
 from valhist import deck_rule as R
 from valhist import stephist as H
 
+pytestmark = pytest.mark.slow   # campaign and validation tooling, not the simulation chain: runs with --runslow
+
 
 def _acc(n, w2=None):
     n = np.asarray(n, float)

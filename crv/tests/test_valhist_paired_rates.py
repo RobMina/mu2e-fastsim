@@ -5,6 +5,8 @@ import pytest
 import uproot
 from crvfastsim.validation.paired_rates import paired_ratio, run
 
+pytestmark = pytest.mark.slow   # campaign and validation tooling, not the simulation chain: runs with --runslow
+
 
 def dump(path, order, clusters):
     keys = np.asarray(order, np.int32)

@@ -13,6 +13,8 @@ import pytest
 from crvfastsim.analyses import e2e_bench as B
 from crvfastsim.analyses import runchain as R
 
+pytestmark = pytest.mark.slow   # campaign and validation tooling, not the simulation chain: runs with --runslow
+
 
 def gen(keys=((1, 2, 3), (1, 2, 4), (1, 2, 5))):
     return pd.DataFrame(keys, columns=R.tables.KEY, dtype=np.int64)

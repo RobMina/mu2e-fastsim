@@ -3,6 +3,9 @@ import importlib.util
 from pathlib import Path
 
 import numpy as np
+import pytest
+
+pytestmark = pytest.mark.slow   # campaign and validation tooling, not the simulation chain: runs with --runslow
 
 P = Path(__file__).resolve().parents[1] / "scripts" / "compare_bench.py"
 spec = importlib.util.spec_from_file_location("bench_compare", P)

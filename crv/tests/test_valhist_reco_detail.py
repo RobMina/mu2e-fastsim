@@ -9,6 +9,8 @@ import uproot
 from crvfastsim.validation import reco_detail as R
 from crvfastsim.validation.pilot import digest
 
+pytestmark = pytest.mark.slow   # campaign and validation tooling, not the simulation chain: runs with --runslow
+
 
 def dump(path, *, change=False, seq=False, wf=False, sector=False, count=False,
          invalid=None, pe_shift=0., time_shift=0., empty=False, reorder=False, high_cycle=False):

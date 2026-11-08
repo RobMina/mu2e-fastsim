@@ -8,6 +8,7 @@ import jax.numpy as jnp
 from crvfastsim import crossings_jax as jc
 
 
+@pytest.mark.pr_params("1")
 @pytest.mark.parametrize("capacity", [1, 4, 8, 16])
 def test_bounded_selection_keeps_stable_rank_and_overflow(capacity):
     rng = np.random.default_rng(17)

@@ -56,6 +56,7 @@ def test_window_override():
     assert runconfig.get("run2_v10", "offspill").window == runconfig.OFFSPILL_WINDOW
 
 
+@pytest.mark.pr_params("run1a_v01")
 @pytest.mark.parametrize("name", ["run1a_v01", "run2_v10"])
 def test_two_level_crossings_equal_flat(name):
     g = _geom(name)
@@ -83,6 +84,7 @@ def test_nominal_conditions_cover_channels():
     assert len(c.status) == 4 * g.nbars and (c.status == 0).all() and c.feb.max() < 24
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("name", ["run1a_v01", "run2_v10"])
 def test_transport_runs(name):
     g = _geom(name)

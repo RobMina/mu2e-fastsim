@@ -8,6 +8,7 @@ from crvfastsim.tier1b_jax import _jax
 from crvfastsim.tier1b_csr_jax import prepare, layout, block
 
 
+@pytest.mark.pr_params("3")
 @pytest.mark.parametrize("batch", [1, 3, 7, 32])
 def test_complete_histories_zero_donors_and_padding(batch):
     jax, j = _jax()
@@ -27,6 +28,7 @@ def test_complete_histories_zero_donors_and_padding(batch):
     assert int(plan["total"]) == len(expected)
 
 
+@pytest.mark.slow
 def test_empty_history_and_empty_selection():
     jax, j = _jax()
     csr = prepare([], 3)

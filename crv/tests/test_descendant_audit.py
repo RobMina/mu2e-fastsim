@@ -7,6 +7,8 @@ import pytest
 
 from valhist import descendant_audit as A
 
+pytestmark = pytest.mark.slow   # campaign and validation tooling, not the simulation chain: runs with --runslow
+
 
 def fixture():
     geom = SimpleNamespace(nbars=3, sector=np.zeros(3, dtype=int), module=np.zeros(3, dtype=int),

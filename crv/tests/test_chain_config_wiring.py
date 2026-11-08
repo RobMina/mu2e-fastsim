@@ -79,6 +79,7 @@ def test_digis_passes_phase_width(monkeypatch, backend):
     np.testing.assert_array_equal(seen[0], expected)
 
 
+@pytest.mark.pr_params("custom-12-True")
 @pytest.mark.parametrize('jax', [False, True])
 @pytest.mark.parametrize('length', [12, 36])
 @pytest.mark.parametrize('policy', ['default', 'custom', 'no_offsets'])

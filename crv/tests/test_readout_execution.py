@@ -201,6 +201,7 @@ def _assert_same_stream(left, right):
     np.testing.assert_array_equal(next_a, next_b)
 
 
+@pytest.mark.pr_params("numpy-run1a_v01", "fused-run2_v10")
 def test_named_side_presence_survivors_and_all_absent(case):
     baseline = _execute(case, _conditions(case))[0]
     masked = _execute(case, _conditions(case, case["mask"]))[0]

@@ -7,6 +7,8 @@ import pandas as pd
 import pytest
 import uproot
 
+pytestmark = pytest.mark.slow   # campaign and validation tooling, not the simulation chain: runs with --runslow
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from mu2efastsim import tables as core_tables
 from crvfastsim import tier1b

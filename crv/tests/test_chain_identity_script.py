@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+pytestmark = pytest.mark.slow   # campaign and validation tooling, not the simulation chain: runs with --runslow
+
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 spec = importlib.util.spec_from_file_location("chain_identity", SCRIPTS / "chain_identity.py")
 ci = importlib.util.module_from_spec(spec)

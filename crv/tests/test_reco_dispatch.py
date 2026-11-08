@@ -38,6 +38,7 @@ def assert_exact(a, b):
             np.testing.assert_array_equal(a[key], b[key], err_msg=key)
 
 
+@pytest.mark.pr_params("tiers1-promoted-False-False")
 @pytest.mark.parametrize("attach", [False, True])
 @pytest.mark.parametrize("with_pos", [False, True])
 @pytest.mark.parametrize("tiers,expected", [
@@ -62,6 +63,7 @@ def test_partial_batch_exact_members_properties_and_recovery(attach, with_pos, t
     assert len(out["cl_event"]) == 5
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("fallback", [False, True])
 def test_split_and_whole_event_fallback_exact(fallback):
     cols = list(pulses(1))
@@ -105,6 +107,7 @@ def waveforms(count=5, length=12):
                 area=np.full(n, 400.), height=np.full(n, 11.), toff=sipm * 4.)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("length,rounds", [(12, 3), (12, 1), (36, 3)])
 def test_pulse_partial_batch_preserves_row_indices_and_all_redo_flags(length, rounds):
     W = waveforms(count=2, length=length)
@@ -130,6 +133,7 @@ def combine(outputs):
     return merged
 
 
+@pytest.mark.pr_params("True")
 @pytest.mark.parametrize("attach", [False, True])
 def test_chain_chunk_invariance_exact_outputs_and_member_links(monkeypatch, attach):
     # Keep this CPU regression small; production default tier caps are not changed.
@@ -154,6 +158,7 @@ def test_chain_chunk_invariance_exact_outputs_and_member_links(monkeypatch, atta
             assert_exact(reference, got)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("flag", ["rounds_exhausted", "window_overflow", "input_truncated"])
 def test_pulse_transfer_retains_each_recovery_flag(flag):
     W = waveforms(count=1)
@@ -167,6 +172,7 @@ def test_pulse_transfer_retains_each_recovery_flag(flag):
     assert CH._pulse_collect(pending, W, rows, PF.RecoConfig())[-1] == 1
 
 
+@pytest.mark.pr_params("16384-1")
 @pytest.mark.parametrize("batch,expected", [(8, 2), (6, 2), (16384, 1)])
 def test_launch_shape_stays_the_tier_batch(monkeypatch, batch, expected):
     # Instrument shapes without asking the CPU to run a giant production tier.

@@ -3,6 +3,8 @@ import pytest
 
 from valhist import deck_rerun as R
 
+pytestmark = pytest.mark.slow   # campaign and validation tooling, not the simulation chain: runs with --runslow
+
 
 def test_arms_and_pairs():
     assert R.arms_of(["new", "legacy"]) == ["a0", "a0p", "a0g", "a1_new", "e2e_new", "a1_legacy", "e2e_legacy"]

@@ -10,6 +10,8 @@ import uproot
 
 from crvfastsim.validation.event_shapes import main, run, shape, validate_edges
 
+pytestmark = pytest.mark.slow   # campaign and validation tooling, not the simulation chain: runs with --runslow
+
 
 def dump(path, events=(1, 2, 3, 4), cluster_events=(2, 2, 3),
          pe=(0.2, 1.2, 0.8), *, subrun=1, update=False, idx=None, counts=None):

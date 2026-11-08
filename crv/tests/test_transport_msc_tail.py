@@ -59,6 +59,7 @@ def test_defaults_unchanged(g):
     pd.testing.assert_frame_equal(a, b)
 
 
+@pytest.mark.slow
 def test_tail_widens_large_angles(g):
     gen, world = _gen(g, n=20000), _slab(6000.0, 6050.0)                     # 5 cm of concrete: tail-dominated q99.9
     base, _ = TR.transport(gen, g, np.random.default_rng(2), stage="C", world=world)
@@ -75,6 +76,7 @@ def test_sliced_only_runs(g):
     assert len(s) > 0 and (s.edep > 0).all()
 
 
+@pytest.mark.slow
 def test_all_muons(g):
     gen = _gen(g, n=3000)
     second = gen.iloc[::10].copy()                                        # every 10th event gets a second muon

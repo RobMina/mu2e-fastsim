@@ -9,6 +9,8 @@ import pytest
 
 from crvfastsim.analyses import transport_paths as P
 
+pytestmark = pytest.mark.slow   # campaign and validation tooling, not the simulation chain: runs with --runslow
+
 
 def box():
     return SimpleNamespace(sector=np.array([0]), sector_names=["S"], center=np.zeros((1, 3)),

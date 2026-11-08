@@ -7,6 +7,8 @@ from crvfastsim import tier1b
 from valhist import stepclosure as C
 from valhist import steplayers as S
 
+pytestmark = pytest.mark.slow   # campaign and validation tooling, not the simulation chain: runs with --runslow
+
 
 def test_ratio_error_uses_ratio_residual_not_raw_difference():
     r = np.array([1., 2., 3.])

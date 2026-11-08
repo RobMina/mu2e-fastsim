@@ -7,6 +7,8 @@ import pytest
 
 from crvfastsim.analyses.context_audit import content_fingerprint, freeze_arrays
 
+pytestmark = pytest.mark.slow   # campaign and validation tooling, not the simulation chain: runs with --runslow
+
 
 @pytest.mark.parametrize("workers", [2, 4, 8])
 def test_parallel_digest_matches_serial_for_complete_nested_payload(workers):

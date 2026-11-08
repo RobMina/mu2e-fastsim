@@ -18,6 +18,7 @@ def _clusters(rows, t_shift=0.0):
                                  with_pos=True))
 
 
+@pytest.mark.pr_params("87654.3")
 @pytest.mark.parametrize('t_shift', [0.0, 87_654.3])
 def test_centred_groups_give_the_same_clusters(monkeypatch, t_shift):
     rows = basic() + [(b, 0, 300. + 3 * b, 7., 0) for b in (1, 3, 5, 7)]

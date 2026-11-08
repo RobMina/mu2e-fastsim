@@ -12,6 +12,8 @@ import pytest
 from crvfastsim.analyses.context_audit import content_fingerprint as fingerprint
 from crvfastsim.analyses.context_audit import freeze_arrays
 
+pytestmark = pytest.mark.slow   # campaign and validation tooling, not the simulation chain: runs with --runslow
+
 
 @dataclass
 class Geometry:

@@ -43,6 +43,7 @@ def test_bucketed_noise_statistics():
     assert abs(sb / sa - 1) < 0.05 and abs(sa / cfg.noise - 1) < 0.1 and abs(sb / cfg.noise - 1) < 0.1
 
 
+@pytest.mark.slow
 def test_bucketed_matches_synthesize_with_label_tdc0():
     """chain.digis on oneAPI: bucketed synthesis with SiPM labels and a callable TDC0 == waveform_jax.synthesize."""
     from crvfastsim.reco import cli, waveform, waveform_jax as WJ
@@ -57,6 +58,7 @@ def test_bucketed_matches_synthesize_with_label_tdc0():
         assert np.array_equal(a[k], b[k]), k
 
 
+@pytest.mark.slow
 def test_chain_digis_bucketed_default_equals_unbucketed():
     """chain.digis now uses bucketed synthesis on every JAX backend (one padded call ran out of memory on A100s):
     noise off, the default and ChainConfig(unbucketed_synth=True) give the same digis (volt to rounding)."""
