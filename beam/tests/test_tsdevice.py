@@ -38,25 +38,6 @@ def test_geometry_parity(geometry):
     assert any(ref[name].any() for name in g.names)
 
 
-@pytest.mark.parametrize("fraction", [0.0, 0.02, 0.5])
-def test_candidate_columns_identical(geometry, monkeypatch, fraction):
-    """Gathered candidate lanes (with the all-lane fallback) give the every-lane columns to rounding: the interval
-    sum runs over a different array shape, so a few values differ in the last bits."""
-    g = dev.DeviceGeometry(geometry)
-    rng = np.random.default_rng(3)
-    a = rng.uniform([-500.0, -400.0, geometry.z_start], [4500.0, 400.0, geometry.z_end], (3000, 3))
-    b = a + rng.normal(0, 30, a.shape)
-    b[::7] = a[::7]                                   # zero-length chords, as finished lanes
-    monkeypatch.setattr(dev, "CANDIDATE_FRACTION", 0.0)
-    every = np.asarray(g.columns(jnp.asarray(a), jnp.asarray(b)))
-    monkeypatch.setattr(dev, "CANDIDATE_FRACTION", fraction)
-    got = np.asarray(g.columns(jnp.asarray(a), jnp.asarray(b)))
-    np.testing.assert_allclose(got, every, rtol=1e-13, atol=1e-12)
-    ref = geometry.columns(a, b)
-    for m, name in enumerate(g.names):
-        np.testing.assert_allclose(got[:, m], ref[name], rtol=1e-12, atol=1e-9)
-
-
 def test_field_parity(tmp_path):
     rng = np.random.default_rng(2)
     maps = [header(tmp_path, "a", grid=rng.normal(size=(4, 3, 5, 3)), reflect=True),
@@ -125,6 +106,16 @@ def test_rangeout_in_slab_and_material_cap():
     assert np.all(np.asarray(out.mpath) < 3)
     assert np.all(np.asarray(out.steps)[rangeout] > 10)     # material-capped steps
     np.testing.assert_array_equal(np.asarray(out.p)[rangeout], 0)
+
+
+def test_full_gather_bucket_defers_lanes(monkeypatch):
+    """With a small shrink bucket, over-cap lanes beyond it wait a step; every lane still ranges out."""
+    monkeypatch.setattr(dev, "SHRINK_LEVELS", (0.05,))
+    out = _run(Tube(slab=20.0), 13, 20.0, n=1000, settings=dev.Settings(step_mm=7.0, material_step_mm=0.1))
+    fate = np.asarray(out.fate)
+    assert np.all((fate == dev.RANGEOUT) | (fate == dev.MU_DECAY))
+    assert np.sum(np.asarray(out.waits)) > 0
+    assert not np.any(fate == dev.UNCONVERGED)
 
 
 def test_pion_decay_fraction():

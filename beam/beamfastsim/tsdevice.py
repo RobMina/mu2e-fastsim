@@ -53,8 +53,11 @@ MATERIAL_SLOTS = int(os.environ.get("TSDEV_MATERIAL_SLOTS", 2))  # materials sam
 STEPS_PER_ITERATION = int(os.environ.get("TSDEV_STEPS_PER_ITERATION", 1))
 UNROLL_LOSS = os.environ.get("TSDEV_UNROLL_LOSS", "1") == "1"
 MIN_BUCKET = int(os.environ.get("TSDEV_MIN_BUCKET", 1024))
-# Generic-solid columns on gathered candidate lanes (at most this fraction of the batch); 0 evaluates every lane.
-CANDIDATE_FRACTION = float(os.environ.get("TSDEV_CANDIDATE_FRACTION", 0.25))
+# Material-cap shortening cascade: per level, the lanes still over a cap gathered into at most this fraction of the
+# batch (every lane as the fallback); the last level runs the remaining rounds. "" runs every round on every lane.
+SHRINK_MARGIN_F32 = 1e-2
+CROSS_FRACTION = float(os.environ.get("TSDEV_CROSS_FRACTION", 1 / 64))   # DS-plane lanes re-measured per step
+SHRINK_LEVELS = tuple(float(v) for v in os.environ.get("TSDEV_SHRINK_LEVELS", "0.5,0.25,0.015625").split(",") if v)
 PLANE_TOL_F32 = 1e-2   # mm; float32 rounding of Mu2e coordinates near z = 4179 mm is ~5e-4 mm
 
 
@@ -74,15 +77,23 @@ def _ratio(num, den):
     return jnp.where(ok, num / jnp.where(ok, den, 1.0), _INF)
 
 
+def _mm(a, b):
+    """a @ b with a contracted 3-vector axis, written elementwise so that XLA fuses it with its neighbours (a
+    (N,3)@(3,3) matmul is a separate library call per use, which dominates the per-step latency)."""
+    if np.ndim(b) == 1:
+        return a[..., 0] * b[0] + a[..., 1] * b[1] + a[..., 2] * b[2]
+    return a[..., 0, None] * b[0] + a[..., 1, None] * b[1] + a[..., 2, None] * b[2]
+
+
 def _contains(s, p):
     """tsgeometry._Solid.contains on (K,3) jnp points."""
     if s.tag in ("subtraction", "intersection", "union"):
-        a, b = _contains(s.a, p), _contains(s.b, (p - s.t) @ s.R)
+        a, b = _contains(s.a, p), _contains(s.b, _mm(p - s.t, s.R))
         return a & ~b if s.tag == "subtraction" else (a & b if s.tag == "intersection" else a | b)
     if s.tag in ("box", "xtru"):
         hit = jnp.zeros(p.shape[0], bool)
         for q in s.planes:
-            hit = hit | jnp.all(p @ q[:, :3].T <= q[:, 3] + 1e-10, axis=1)
+            hit = hit | jnp.all(_mm(p, q[:, :3].T) <= q[:, 3] + 1e-10, axis=1)
         return hit
     radial = jnp.hypot(p[:, 0], p[:, 1])
     r = jnp.hypot(radial - s.extent, p[:, 2]) if s.tag == "torus" else radial
@@ -98,10 +109,10 @@ def _contains(s, p):
 def _cuts(s, o, d):
     """tsgeometry._Solid.cuts: chord parameters of every surface root, (N, k)."""
     if s.tag in ("subtraction", "intersection", "union"):
-        return jnp.concatenate([_cuts(s.a, o, d), _cuts(s.b, (o - s.t) @ s.R, d @ s.R)], axis=1)
+        return jnp.concatenate([_cuts(s.a, o, d), _cuts(s.b, _mm(o - s.t, s.R), _mm(d, s.R))], axis=1)
     if s.tag in ("box", "xtru"):
         q = np.concatenate(s.planes)
-        return _ratio(q[:, 3] - o @ q[:, :3].T, d @ q[:, :3].T)
+        return _ratio(q[:, 3] - _mm(o, q[:, :3].T), _mm(d, q[:, :3].T))
     cuts = [_ratio(-s.extent - o[:, 2], d[:, 2]), _ratio(s.extent - o[:, 2], d[:, 2])]
     a = jnp.sum(d[:, :2] ** 2, axis=1)
     b = jnp.sum(o[:, :2] * d[:, :2], axis=1)
@@ -112,7 +123,7 @@ def _cuts(s, o, d):
     if s.width < 2 * np.pi - 1e-12:
         for phi in (s.phi, s.phi + s.width):
             n = np.array([-np.sin(phi), np.cos(phi), 0.0])
-            cuts.append(_ratio(-(o @ n), d @ n))
+            cuts.append(_ratio(-_mm(o, n), _mm(d, n)))
     return jnp.stack(cuts, axis=1)
 
 
@@ -132,23 +143,26 @@ class DeviceGeometry:
         # plain full-phi tubes: one vectorised analytic interval computation (no sort)
         self._tubes = None
         if plain:
-            self._tubes = dict(R=jnp.asarray(np.stack([m[1] for m in plain])), t=jnp.asarray(np.stack([m[2] for m in plain])),
+            R = np.stack([m[1] for m in plain])
+            t = np.stack([m[2] for m in plain])
+            self._tubes = dict(R=R, tR=np.einsum("sj,sjk->sk", t, R), material=np.array([m[3] for m in plain]),
                                rmin=jnp.asarray([m[0].rmin for m in plain]), rmax=jnp.asarray([m[0].rmax for m in plain]),
                                ez=jnp.asarray([m[0].extent for m in plain]),
-                               onehot=jnp.asarray(np.eye(len(self.names))[[m[3] for m in plain]]))
+                               )
         self.z_start, self.z_end = float(geometry.z_start), float(geometry.z_end)
 
     def inside(self, x):
         hit = jnp.zeros(x.shape[0], bool)
         for s, R, t in self._vacuum:
-            hit = hit | _contains(s, (x - t) @ R)
+            hit = hit | _contains(s, _mm(x - t, R))
         return hit
 
     def _tube_columns(self, x0, delta, length):
         """Straight-chord lengths in every plain tube at once: |[0,1] & z-slab & r<=rmax| - |... & r<rmin|."""
         T = self._tubes
-        o = jnp.einsum("nj,sjk->nsk", x0, T["R"]) - jnp.einsum("sj,sjk->sk", T["t"], T["R"])[None]
-        d = jnp.einsum("nj,sjk->nsk", delta, T["R"])
+        R = T["R"]                                      # (S, 3, 3) numpy constants
+        o = sum(x0[:, None, j, None] * R[None, :, j, :] for j in range(3)) - T["tR"][None]
+        d = sum(delta[:, None, j, None] * R[None, :, j, :] for j in range(3))
         big = 1e300
         dz = d[..., 2]
         zs = jnp.abs(dz) > 1e-15
@@ -176,49 +190,42 @@ class DeviceGeometry:
         outer = jnp.clip(jnp.minimum(hi, o1) - jnp.maximum(lo, o0), 0.0, None)
         inner = jnp.clip(jnp.minimum(jnp.minimum(hi, o1), i1) - jnp.maximum(jnp.maximum(lo, o0), i0), 0.0, None)
         inner = jnp.where(T["rmin"] > 0, inner, 0.0)
-        return (length[:, None] * (outer - inner)) @ T["onehot"]
+        per = length[:, None] * (outer - inner)          # (N, S): one material per tube
+        return jnp.stack([jnp.sum(jnp.where(T["material"][None] == m, per, 0.0), axis=1)
+                          for m in range(len(self.names))], axis=1)
 
     @staticmethod
     def _generic_add(s, o, d, length):
-        """Straight-chord length inside one generic solid (local frame), sorting every surface root."""
-        c = _cuts(s, o, d)
-        ones = jnp.ones((o.shape[0], 1))
-        c = jnp.sort(jnp.clip(jnp.concatenate([0 * ones, c, ones], axis=1), 0, 1), axis=1)
-        mid = (c[:, 1:] + c[:, :-1]) / 2
+        """Straight-chord length inside one generic solid (local frame). Every surface root splits the chord; each
+        distinct root opens an interval that ends at the next larger root, and the interval's midpoint decides
+        whether it is inside. No sort: the next root is a fused min over all roots."""
+        n = o.shape[0]
+        c = jnp.clip(jnp.concatenate([jnp.zeros((n, 1)), _cuts(s, o, d), jnp.ones((n, 1))], axis=1), 0, 1)
+        k = c.shape[1]
+        ci, cj = c[:, :, None], c[:, None, :]
+        nxt = jnp.min(jnp.where(cj > ci, cj, 2.0), axis=2)
+        earlier = np.arange(k)[None, :] < np.arange(k)[:, None]          # [i, j]: j < i
+        first = ~jnp.any((cj == ci) & earlier[None], axis=2)
+        valid = first & (nxt <= 1.0)
+        mid = jnp.where(valid, 0.5 * (c + nxt), 0.0)
         p = o[:, None, :] + mid[:, :, None] * d[:, None, :]
         mask = _contains(s, p.reshape(-1, 3)).reshape(mid.shape)
-        return length * jnp.sum(jnp.diff(c, axis=1) * mask, axis=1)
+        return length * jnp.sum(jnp.where(valid & mask, nxt - c, 0.0), axis=1)
 
     def columns(self, x0, x1):
-        """(N, M) straight-chord material lengths. Generic (boolean, xtru, phi-segment) solids are evaluated only
-        on the lanes whose chord box meets the solid's box: up to CANDIDATE_FRACTION of the lanes are gathered,
-        with the all-lane evaluation as the fallback when more are candidates. Per-lane values agree with the
-        all-lane evaluation to rounding (the interval sum runs over a different shape)."""
-        delta = x1 - x0
+        """(N, M) straight-chord material lengths: analytic for the plain tubes, sort-free intervals otherwise."""
+        return self.columns_d(x0, x1 - x0)
+
+    def columns_d(self, x0, delta):
+        """columns() of the chord from x0 along the increment delta (exact in float32, where x1 - x0 is not)."""
         length = jnp.linalg.norm(delta, axis=1)
-        n = x0.shape[0]
-        out = jnp.zeros((n, len(self.names)))
+        out = jnp.zeros((x0.shape[0], len(self.names)))
         if self._tubes is not None:
             out = out + self._tube_columns(x0, delta, length)
-        k = int(np.ceil(n * CANDIDATE_FRACTION)) if CANDIDATE_FRACTION > 0 else n
         for s, R, t, m, lo, hi in self._matter:
-            o, d = (x0 - t) @ R, delta @ R
+            o, d = _mm(x0 - t, R), _mm(delta, R)
             cand = jnp.all((jnp.maximum(o, o + d) >= lo - 1e-9) & (jnp.minimum(o, o + d) <= hi + 1e-9), axis=1)
-            cand = cand & (length > 0)        # finished lanes have zero-length chords and no material
-            if k >= n:
-                out = out.at[:, m].add(jnp.where(cand, self._generic_add(s, o, d, length), 0.0))
-                continue
-
-            def subset(out, s=s, o=o, d=d, cand=cand, m=m):
-                idx = jnp.nonzero(cand, size=k, fill_value=n)[0]
-                safe = jnp.minimum(idx, n - 1)
-                add = self._generic_add(s, o[safe], d[safe], length[safe])
-                return out.at[idx, m].add(add, mode="drop")
-
-            def every(out, s=s, o=o, d=d, cand=cand, m=m):
-                return out.at[:, m].add(jnp.where(cand, self._generic_add(s, o, d, length), 0.0))
-
-            out = lax.cond(jnp.sum(cand) <= k, subset, every, out)
+            out = out.at[:, m].add(jnp.where(cand, self._generic_add(s, o, d, length), 0.0))
         return out
 
 
@@ -298,6 +305,7 @@ class TSState(NamedTuple):
     steps: object
     hist: object        # (N, M) cumulative x/X0 per material
     mpath: object
+    waits: object       # steps the lane was deferred (a gather bucket was full); its physics is unchanged
 
 
 class Settings(NamedTuple):
@@ -325,7 +333,8 @@ def _lifetime(pdg):
     return jnp.where(jnp.abs(pdg) == 211, phys.TAU_PI_NS, phys.TAU_MU_NS)
 
 
-def _rk4(field, x, u, kq, h, b0):
+def _rk4(field, x, u, kq, h, b0, relative=False):
+    """One RK4 step; returns (end point, or the increment when relative, unit direction, field coverage)."""
     h = h[:, None]
 
     def du(xx, uu):
@@ -339,9 +348,9 @@ def _rk4(field, x, u, kq, h, b0):
     k3u, ok3 = du(x + 0.5 * h * k2x, u + 0.5 * h * k2u)
     k4x = u + h * k3u
     k4u, ok4 = du(x + h * k3x, u + h * k3u)
-    xn = x + h / 6 * (u + 2 * k2x + 2 * k3x + k4x)
+    inc = h / 6 * (u + 2 * k2x + 2 * k3x + k4x)
     un = u + h / 6 * (k1u + 2 * k2u + 2 * k3u + k4u)
-    return xn, un / jnp.linalg.norm(un, axis=1, keepdims=True), ok2 & ok3 & ok4
+    return (inc if relative else x + inc), un / jnp.linalg.norm(un, axis=1, keepdims=True), ok2 & ok3 & ok4
 
 
 def _hermite(x0, u0, x1, u1, h, f):
@@ -361,11 +370,33 @@ def _highland_var(p, x_prev, x_new, mass):
     return (13.6 ** 2 / (beta2 * p * p)) * jnp.maximum(g(x_new) - g(x_prev), 0.0)
 
 
+def _first_round(field, geom, x0, u, kq, b0, live, h, xn, un, ok, cols, sc, it=0, margin=1e-6, relative=False):
+    """One round of the material-cap shortening (the shrink loop body at round `it`). relative: xn holds the
+    increment from x0 (float32)."""
+    changed = live & (sc < 1)
+    shrink = sc * (1 - margin)
+    h = jnp.where(changed, h * jnp.where(it >= 5, jnp.minimum(0.5, shrink), shrink), h)
+    xn2, un2, ok2 = _rk4(field, x0, u, kq, h, b0, relative)
+    pick = changed[:, None]
+    c2 = geom.columns_d(x0, xn2) if relative else geom.columns(x0, xn2)
+    return (h, jnp.where(pick, xn2, xn), jnp.where(pick, un2, un), jnp.where(changed, ok2, ok),
+            jnp.where(pick, c2, cols), None)
+
+
 def make_ts_step(field, geom, s):
     """One TS step for every lane (finished lanes are inert): (key, TSState) -> TSState."""
     # float32 (x64 off): DS-plane endpoints are tested this far upstream of the closed envelope face; 0 in float64
     plane_tol = 0.0 if jax.config.jax_enable_x64 else PLANE_TOL_F32
     step_cap = np.iinfo(np.int32).max if jax.config.jax_enable_x64 else s.max_steps_f32
+    # step shortening margin below a cap: 1e-6 in float64 (tstransport); float32 chords near |x| ~ 4 m carry ~5e-4 mm
+    # of rounding, so a 1e-6 margin would leave lanes just over the cap round after round
+    margin = 1e-6 if jax.config.jax_enable_x64 else SHRINK_MARGIN_F32
+    # float32 carries the step end as the increment from the start (positions near |x| ~ 4 m resolve only ~5e-4 mm,
+    # so x1 - x0 of a short step is mostly rounding); float64 keeps the end point, as tstransport
+    rel = not jax.config.jax_enable_x64
+
+    def cols_of(x0, e):
+        return geom.columns_d(x0, e) if rel else geom.columns(x0, e)
     M = len(geom.names)
     x0_mm = jnp.asarray(geom.x0)
     const_tab = [jnp.asarray(np.array([getattr(c, f) for c in geom.consts], float))
@@ -401,32 +432,77 @@ def make_ts_step(field, geom, s):
             sc = jnp.minimum(1.0, s.material_step_mm / jnp.maximum(length, 1e-30))
             return jnp.minimum(sc, s.loss_fraction * kin / jnp.maximum(mean, 1e-30))
 
-        # material caps: shorten the step in fixed rounds (straight-chord columns scale with the step length, so one
-        # round normally suffices); lanes still over a cap end as `unconverged` and are counted
-        xn, un, ok = _rk4(field, st.x, u, kq, h, b0)
-        cols = geom.columns(st.x, xn)
+        # material caps: shorten the step until no lane is over a cap; lanes still over a cap after SHRINK_ROUNDS end
+        # as `unconverged` and are counted
+        xn, un, ok = _rk4(field, st.x, u, kq, h, b0, rel)        # increment when rel (float32)
+        cols = cols_of(st.x, xn)
 
-        def shrink_cond(c):
-            h, xn, un, ok, cols, it = c
-            return (it < SHRINK_ROUNDS) & jnp.any(live & (scale_of(cols) < 1))
+        def scale_on(cols, dedx_, kin_):
+            mean = jnp.sum(dedx_ * cols, axis=1)
+            length = jnp.sum(cols, axis=1)
+            sc = jnp.minimum(1.0, s.material_step_mm / jnp.maximum(length, 1e-30))
+            return jnp.minimum(sc, s.loss_fraction * kin_ / jnp.maximum(mean, 1e-30))
 
-        def shrink_body(c):
-            h, xn, un, ok, cols, it = c
-            sc = scale_of(cols)
-            changed = live & (sc < 1)
-            shrink = sc * (1 - 1e-6)
-            h = jnp.where(changed, h * jnp.where(it >= 5, jnp.minimum(0.5, shrink), shrink), h)
-            xn2, un2, ok2 = _rk4(field, st.x, u, kq, h, b0)
-            pick = changed[:, None]
-            return (h, jnp.where(pick, xn2, xn), jnp.where(pick, un2, un), jnp.where(changed, ok2, ok),
-                    jnp.where(pick, geom.columns(st.x, xn2), cols), it + 1)
+        def shrink_loop(x0, u_, kq_, b0_, live_, dedx_, kin_, h_, xn_, un_, ok_, cols_, it0):
+            """Shorten over-cap steps of the given lanes until none is over a cap (at most SHRINK_ROUNDS rounds,
+            halving from round 5 on, as tstransport)."""
+            def cond(c):
+                h_, xn_, un_, ok_, cols_, it = c
+                return (it < SHRINK_ROUNDS) & jnp.any(live_ & (scale_on(cols_, dedx_, kin_) < 1))
 
-        h, xn, un, ok, cols, _ = lax.while_loop(shrink_cond, shrink_body, (h, xn, un, ok, cols, jnp.int32(0)))
-        unconverged = live & (scale_of(cols) < 1)
+            def body(c):
+                h_, xn_, un_, ok_, cols_, it = c
+                sc = scale_on(cols_, dedx_, kin_)
+                changed = live_ & (sc < 1)
+                shrink = sc * (1 - margin)
+                h_ = jnp.where(changed, h_ * jnp.where(it >= 5, jnp.minimum(0.5, shrink), shrink), h_)
+                xn2, un2, ok2 = _rk4(field, x0, u_, kq_, h_, b0_, rel)
+                pick = changed[:, None]
+                return (h_, jnp.where(pick, xn2, xn_), jnp.where(pick, un2, un_), jnp.where(changed, ok2, ok_),
+                        jnp.where(pick, cols_of(x0, xn2), cols_), it + 1)
+
+            return lax.while_loop(cond, body, (h_, xn_, un_, ok_, cols_, it0))
+
+        # Shortening cascade: each level gathers the lanes still over a cap into a bucket of at most a fixed
+        # fraction of the batch (falling back to every lane when more are pending); the first levels run one round
+        # each, the last runs the remaining rounds. Per-lane arithmetic is that of the every-lane loop.
+        n_lanes = h.shape[0]
+
+        def gathered(args, pending, frac, it0, rounds):
+            """Run the round(s) on the pending lanes, gathered into a bucket of at most frac of the batch (no
+            branch: a lane beyond the bucket is not processed and is reported in the returned mask)."""
+            k2 = min(n_lanes, max(256, int(np.ceil(n_lanes * frac))))
+
+            def run(x0, u_, kq_, b0_, live_, dedx_, kin_, h_, xn_, un_, ok_, cols_):
+                if rounds == 1:
+                    return _first_round(field, geom, x0, u_, kq_, b0_, live_, h_, xn_, un_, ok_, cols_,
+                                        jnp.where(live_, scale_on(cols_, dedx_, kin_), 1.0), it0, margin, rel)[:5]
+                return shrink_loop(x0, u_, kq_, b0_, live_, dedx_, kin_, h_, xn_, un_, ok_, cols_, it0)[:5]
+
+            if k2 >= n_lanes:
+                return run(st.x, u, kq, b0, pending, dedx, kin, *args), pending
+            idx = jnp.nonzero(pending, size=k2, fill_value=n_lanes)[0]
+            j = jnp.minimum(idx, n_lanes - 1)
+            out = run(st.x[j], u[j], kq[j], b0[j], pending[j] & (idx < n_lanes), dedx[j], kin[j], *(a[j] for a in args))
+            done = jnp.zeros(n_lanes, bool).at[idx].set(True, mode="drop")
+            return tuple(a.at[idx].set(v, mode="drop") for a, v in zip(args, out)), done
+
+        state = (h, xn, un, ok, cols)
+        levels = SHRINK_LEVELS if SHRINK_LEVELS else (1.0,)
+        deferred = jnp.zeros(n_lanes, bool)
+        for level, frac in enumerate(levels):
+            last = level == len(levels) - 1
+            pending = live & ~deferred & (scale_on(state[4], dedx, kin) < 1)
+            state, done = gathered(state, pending, frac, jnp.int32(level), SHRINK_ROUNDS - level if last else 1)
+            deferred = deferred | (pending & ~done)
+        h, xn, un, ok, cols = state
+        if rel:                                   # float32: keep the increment e, and the end point xn
+            e, xn = xn, st.x + xn
+        unconverged = live & ~deferred & (scale_of(cols) < 1)
 
         # DS plane (z_end on the DS side, x < 0): Newton on the Hermite arc for the step fraction, then one RK4 step
         # of that length, snapped onto the plane
-        cross = live & (st.x[:, 2] < geom.z_end) & (xn[:, 2] >= geom.z_end) & (xn[:, 0] < 0)
+        cross = live & ~deferred & (st.x[:, 2] < geom.z_end) & (xn[:, 2] >= geom.z_end) & (xn[:, 0] < 0)
         z0, z1, hz0, hz1 = st.x[:, 2], xn[:, 2], h * u[:, 2], h * un[:, 2]
         fr = jnp.clip((geom.z_end - z0) / jnp.where(cross, z1 - z0, 1.0), 0.0, 1.0)
         for _ in range(3):
@@ -435,16 +511,27 @@ def make_ts_step(field, geom, s):
             dz = (6 * f2 - 6 * fr) * z0 + (3 * f2 - 4 * fr + 1) * hz0 + (6 * fr - 6 * f2) * z1 + (3 * f2 - 2 * fr) * hz1
             fr = jnp.clip(fr + (geom.z_end - z) / jnp.where(jnp.abs(dz) > 1e-12, dz, 1e-12), 0.0, 1.0)
         hc = jnp.where(cross, h * fr, h)
-        xc, uc, okc = _rk4(field, st.x, u, kq, hc, b0)
+        xc, uc, okc = _rk4(field, st.x, u, kq, hc, b0, rel)
         pick = cross[:, None]
+        if rel:
+            ec = xc.at[:, 2].set(geom.z_end - st.x[:, 2])
+            e = jnp.where(pick, ec, e)
+            xc = st.x + xc
         xn = jnp.where(pick, xc.at[:, 2].set(geom.z_end), xn)
         un = jnp.where(pick, uc, un)
         ok = jnp.where(cross, okc, ok)
         h = hc
-        cols = jnp.where(pick, geom.columns(st.x, xn), cols)
-        fate = jnp.where(live & ~ok, FIELD_MISSING, fate)
+        kc = min(n_lanes, max(256, int(np.ceil(n_lanes * CROSS_FRACTION))))
+        if kc >= n_lanes:
+            cols = jnp.where(pick, cols_of(st.x, e if rel else xn), cols)
+        else:                         # DS-plane lanes beyond the bucket wait a step (deferred)
+            idx = jnp.nonzero(cross, size=kc, fill_value=n_lanes)[0]
+            j = jnp.minimum(idx, n_lanes - 1)
+            cols = cols.at[idx].set(cols_of(st.x[j], (e if rel else xn)[j]), mode="drop")
+            deferred = deferred | (cross & ~jnp.zeros(n_lanes, bool).at[idx].set(True, mode="drop"))
+        fate = jnp.where(live & ~deferred & ~ok, FIELD_MISSING, fate)
         fate = jnp.where(live & ok & unconverged, UNCONVERGED, fate)
-        live = fate == LIVE
+        live = (fate == LIVE) & ~deferred          # deferred lanes keep their state and retry next step
 
         # wall exits on the Hermite arc
         first_out = jnp.full(h.shape, jnp.nan)
@@ -503,7 +590,7 @@ def make_ts_step(field, geom, s):
 
         actual = h * travelled
         go = live
-        x = jnp.where(go[:, None], st.x + (xn - st.x) * travelled[:, None], st.x)
+        x = jnp.where(go[:, None], st.x + ((e if rel else xn - st.x) * travelled[:, None]), st.x)
         p = jnp.where(go[:, None], newp, st.p)
         path = st.path + jnp.where(go, actual, 0.0)
         steps = st.steps + go.astype(jnp.int32)
@@ -539,9 +626,10 @@ def make_ts_step(field, geom, s):
         fate = jnp.where(running & upstream, UPSTREAM, fate)
         outside = running & (crossed_wall | ~geom.inside(x)) & ~upstream & ~downstream
         fate = jnp.where(outside, WALL, fate)
-        fate = jnp.where((fate == LIVE) & go & ((path >= s.max_path_mm - 1e-8) | (steps >= step_cap)), PATH_LIMIT,
+        fate = jnp.where((fate == LIVE) & go & ((path >= s.max_path_mm - 1e-8) | (steps + st.waits >= step_cap)), PATH_LIMIT,
                          fate)
-        return TSState(x, p, t, pdg, fate.astype(jnp.int8), path, remaining, decayed, steps, hist, mpath)
+        waits = st.waits + (deferred & (st.fate == LIVE)).astype(jnp.int32)
+        return TSState(x, p, t, pdg, fate.astype(jnp.int8), path, remaining, decayed, steps, hist, mpath, waits)
 
     return step
 
@@ -649,7 +737,7 @@ def ts_initial(x, p, t, pdg, n_materials, key):
     return TSState(x.astype(fd), p.astype(fd), t.astype(fd), pdg.astype(jnp.int64 if fd == jnp.float64 else jnp.int32),
                    jnp.zeros(n, jnp.int8), jnp.zeros(n), jax.random.exponential(key, (n,), fd)
                    * _lifetime(pdg), jnp.zeros(n, bool), jnp.zeros(n, jnp.int32), jnp.zeros((n, n_materials)),
-                   jnp.zeros(n))
+                   jnp.zeros(n), jnp.zeros(n, jnp.int32))
 
 
 def transport_ts(ts_chunk, geom, x, p, t, pdg, key, min_bucket=None, pool=None):
@@ -778,6 +866,7 @@ def summarize(ts, ds):
     ts_fate, ds_fate, pdg = np.asarray(ts.fate), np.asarray(ds.fate), np.asarray(ts.pdg)
     return dict(n=int(len(ts_fate)),
                 ts_fates={name: int(np.sum(ts_fate == i)) for i, name in enumerate(FATES)},
+                ts_waits=int(np.sum(np.asarray(ts.waits))), ts_lanes_waited=int(np.sum(np.asarray(ts.waits) > 0)),
                 ds_entering_muons=int(np.sum((ts_fate == DS) & (np.abs(pdg) == 13))),
                 ds_pions=int(np.sum((ts_fate == DS) & (np.abs(pdg) == 211))),
                 ds_fates={name: int(np.sum(ds_fate == i)) for i, name in dst.FATES.items()},
