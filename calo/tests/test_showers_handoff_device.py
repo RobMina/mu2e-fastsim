@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 jax = pytest.importorskip("jax")
-pytest.importorskip("mu2efastsim.eslab_jax")
+# mu2efastsim.eslab_jax is imported by disk_front at call time, after the test hooks (mu2efastsim.testing) load
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
 
