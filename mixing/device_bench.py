@@ -14,7 +14,8 @@ occupancy_geometry, out, and optionally seeds, device_kernel, device_output, dev
   terminal transfer and the closed per-batch output files. The first pass also constructs the
   backend (condition tables, upload) and pays compilation, so it lands in the timer's `setup_s`.
 - Each pass writes `pass_metrics.json`: the summed compiled device step (dispatch to synchronisation) and the
-  summed terminal transfer, host checks and file writes.
+  summed terminal transfer, host checks and file writes, and the largest demand of every sized buffer
+  (`capacity_usage_max`, input to `python3 -m mixing.device_capacity`).
 - Passes do the same work on different realizations: signal positions wrap through the pool and
   donor cursors continue, as in `stream_benchmark`. They are not repeats of identical events.
 """
@@ -74,6 +75,7 @@ def run_pass(prepared):
     directory.mkdir()
     remaining, batches, total = events, 0, 0
     step_s = transfer_s = 0.0
+    usage = {}
     while remaining:
         size = min(remaining, prepared.args.batch_events)
         request = prepared.source.next_batch(size)
@@ -83,10 +85,13 @@ def run_pass(prepared):
         total += metrics["events"]
         step_s += metrics["response_s"]
         transfer_s += metrics["transfer_and_write_s"]
+        for name, value in metrics.get("capacity_usage", {}).items():
+            usage[name] = max(usage.get(name, 0), value)
         remaining -= size
         batches += 1
     backend.sync()
     prepared.passes += 1
-    summary = {"events": total, "batches": batches, "device_step_s": step_s, "transfer_and_write_s": transfer_s}
+    summary = {"events": total, "batches": batches, "device_step_s": step_s, "transfer_and_write_s": transfer_s,
+               "capacity_usage_max": usage}
     (directory / "pass_metrics.json").write_text(json.dumps(summary) + "\n")
     return summary
