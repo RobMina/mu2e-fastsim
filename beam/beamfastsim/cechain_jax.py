@@ -337,7 +337,7 @@ def transport(key, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
                     jnp.asarray(k0[j]), jnp.asarray(zl[j], dt))
     first = np.arange(min(n, m))
     st = block(first, first)
-    st["fate"] = st["fate"].at[first.size:].set(C.LOOPER)               # padding lanes are inert
+    st["fate"] = jnp.where(jnp.arange(m) >= first.size, C.LOOPER, st["fate"])   # padding lanes are inert
     idx = np.concatenate([first, np.full(m - first.size, -1)])
     nxt = first.size
     fields = OUT_FIELDS + (REC_FIELDS if z_record is not None else ())
@@ -394,7 +394,7 @@ def transport(key, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
             sel = np.concatenate([keep, np.full(mb - keep.size, keep[0])])
             sd = jnp.asarray(sel)
             st = jax.tree_util.tree_map(lambda a: a[sd] if getattr(a, "ndim", 0) > 0 else a, st)
-            st["fate"] = st["fate"].at[keep.size:].set(C.LOOPER)
+            st["fate"] = jnp.where(jnp.arange(mb) >= keep.size, C.LOOPER, st["fate"])   # no size-dependent scatter
             idx = np.concatenate([idx[keep], np.full(mb - keep.size, -1)])
             m = mb
     if stats is not None:
