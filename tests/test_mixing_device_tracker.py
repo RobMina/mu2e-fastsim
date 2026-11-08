@@ -247,3 +247,91 @@ def test_marker_jitter_crosses_event_block_and_masked_timing(cond, helpers):
                                                                       "event_length": times["event_length"][:-1]})
     for name in expected:
         np.testing.assert_allclose(actual[name], expected[name], rtol=0, atol=1e-6, err_msg=name)
+
+
+def _tier_steps(cond, helpers):
+    st = helpers._steps([helpers._step(cond, 520), helpers._step(cond, 521, ion=1), helpers._step(cond, 522),
+                         helpers._step(cond, 523), helpers._step(cond, 524, eion=1e-6), helpers._step(cond, 525)],
+                        ev=[0, 0, 1, 1, 2, 2])
+    st["shape"][1] = 3
+    return st
+
+
+def test_tiered_cluster_capacity_exact(cond, helpers):
+    """Long steps through the gathered tier give the same clusters, order and electrons as one wide capacity."""
+    import jax.numpy as jnp
+    from trkfastsim.digi import digitize as dg
+    st = _tier_steps(cond, helpers)
+    st["us"] = dg.unique_straw(st["sid"])
+    selected = np.ones(len(st["sid"]), bool)
+    wide = prepare(cond, Capacities(64, 2048, 8, 512, 4), 3)
+    tiered = prepare(cond, Capacities(2, 2048, 8, 512, 4, long_steps=6, clusters_per_long_step=64), 3)
+    key = jax.random.fold_in(jax.random.key(5), 0)
+    args = (jax.device_put(st), jnp.asarray(selected))
+    a, ae = jax.device_get(jax.jit(wide.clusters)(*args, jax.device_put(wide.assets), key))
+    b, be = jax.device_get(jax.jit(tiered.clusters)(*args, jax.device_put(tiered.assets), key))
+    assert not any(ae.values()) and not any(be.values()), (ae, be)
+    np.testing.assert_array_equal(a["mask"], b["mask"])
+    assert a["mask"].sum() > 20
+    for name in ("step", "pos", "ne"):
+        np.testing.assert_array_equal(a[name][a["mask"]], b[name][b["mask"]], err_msg=name)
+
+
+def test_tiered_capacity_digis_and_overflow(cond, helpers):
+    st = _tier_steps(cond, helpers)
+    times = timing([100000.] * 3)
+    a, ae = evaluate(prepare(cond, Capacities(64, 2048, 8, 512, 8, 2), 3), collection(st, 8), times)
+    b, be = evaluate(prepare(cond, Capacities(2, 2048, 8, 512, 8, 2, long_steps=6, clusters_per_long_step=64), 3),
+                     collection(st, 8), times)
+    assert not any(ae.values()) and not any(be.values())
+    assert len(a["sid"]) > 0
+    for name in a:
+        np.testing.assert_array_equal(a[name], b[name], err_msg=name)
+    _, errors = evaluate(prepare(cond, Capacities(2, 2048, 8, 512, 8, 2, long_steps=1, clusters_per_long_step=64), 3),
+                         collection(st, 8), times)
+    assert errors["long_steps"]
+    _, errors = evaluate(prepare(cond, Capacities(2, 2048, 8, 512, 8, 2, long_steps=6, clusters_per_long_step=3), 3),
+                         collection(st, 8), times)
+    assert errors["clusters_per_step"]
+    with pytest.raises(ValueError, match="together"):
+        Capacities(2, 2048, 8, 512, 8, 2, long_steps=6)
+    with pytest.raises(ValueError, match="exceed"):
+        Capacities(8, 2048, 8, 512, 8, 2, long_steps=6, clusters_per_long_step=8)
+
+
+@pytest.mark.parametrize("onspill", [False, True])
+def test_tiered_straw_electronics_exact(cond, helpers, onspill):
+    """Busy straws through the wide electronics tier give the same digis as one wide clusters_per_end."""
+    from trkfastsim.digi.digicond import Conditions
+    c = Conditions(cond.s, cond.a)
+    c.s["onspill"] = onspill
+    st = helpers._steps([helpers._step(c, 520), helpers._step(c, 520, t=40.), helpers._step(c, 521, ion=1),
+                         helpers._step(c, 522), helpers._step(c, 92, t=100.), helpers._step(c, 523, t=900.)],
+                        ev=[0, 0, 0, 1, 1, 2])
+    times = timing([1700., 1675., 1695.] if onspill else [100000.] * 3, [10., -5., 20.])
+    a, ae = evaluate(prepare(c, Capacities(64, 2048, 8, 512, 8, 2), 3), collection(st, 8), times)
+    tiered = Capacities(64, 2048, 8, 4, 8, 2, end_tiers=[(8, 512)])
+    b, be = evaluate(prepare(c, tiered, 3), collection(st, 8), times)
+    assert not any(ae.values()) and not any(be.values()), (ae, be)
+    assert len(a["sid"]) > 0
+    for name in a:
+        np.testing.assert_array_equal(a[name], b[name], err_msg=name)
+    both = Capacities(2, 2048, 8, 4, 8, 2, long_steps=6, clusters_per_long_step=64, end_tiers=[(8, 512)])
+    d, de = evaluate(prepare(c, both, 3), collection(st, 8), times)
+    assert not any(de.values())
+    for name in a:
+        np.testing.assert_array_equal(a[name], d[name], err_msg=name)
+    _, errors = evaluate(prepare(c, Capacities(64, 2048, 8, 4, 8, 2, end_tiers=[(1, 512)]), 3),
+                         collection(st, 8), times)
+    assert errors["end_tier_1_straws"]
+    three = Capacities(64, 2048, 8, 4, 8, 2, end_tiers=[(8, 16), (4, 512)])
+    e, ee = evaluate(prepare(c, three, 3), collection(st, 8), times)
+    assert not any(ee.values())
+    for name in a:
+        np.testing.assert_array_equal(a[name], e[name], err_msg=name)
+    _, errors = evaluate(prepare(c, Capacities(64, 2048, 8, 4, 8, 2, end_tiers=[(8, 16)]), 3), collection(st, 8), times)
+    assert errors["clusters_per_end"]
+    with pytest.raises(ValueError, match="increase"):
+        Capacities(64, 2048, 8, 512, 8, 2, end_tiers=[(4, 512)])
+    with pytest.raises(ValueError, match="pairs"):
+        Capacities(64, 2048, 8, 4, 8, 2, end_tiers=[(4,)])

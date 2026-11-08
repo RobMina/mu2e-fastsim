@@ -385,3 +385,47 @@ def test_all_empty_events_still_have_physical_dark_charges(setup):
     assert np.all(q["photon"][q["mask"]] == -1)
     assert np.all((q["time"][q["mask"]] >= 100) & (q["time"][q["mask"]] < 1500))
     assert set(q["chan"][q["mask"]] // CH.CHAN_MULT) == {0, 1, 2, 3}
+
+
+def _reference_charges(model, rng=None):
+    times = np.array([187.5] * 10 + [300.] * 10 + [1490.] * 10 + [310.] * 10)
+    labels = np.array([0] * 30 + [CH.CHAN_MULT] * 10)
+    charge = np.full(40, model.wcfg.single_pe_reference_charge)
+    if rng is not None:
+        times = times + rng.random(40) * 6
+        charge = charge * (1 + rng.random(40))
+    return dict(chan=labels, time=times, charge=charge, mask=np.ones(40, bool))
+
+
+@pytest.mark.parametrize("noise", [False, True])
+def test_scatter_waveform_matches_dense_digis(setup, noise):
+    """Opt-in scatter synthesis: same digis as the dense kernel (with and without noise, two events)."""
+    cfg = replace(setup[2], feb_phase_width=0., noise=noise)
+    dense = adapter(setup, cfg=cfg)
+    scatter = adapter(setup, {**capacity(), "waveform": "scatter"}, cfg=cfg)
+    assert dense.waveform == "dense" and scatter.waveform == "scatter"
+    assert scatter.metadata["waveform"] == "scatter"
+    _, timing = inputs(events=2)
+    for q in (_reference_charges(dense), _reference_charges(dense, np.random.default_rng(11))):
+        a, ea = run(dense.digis, q, timing, dense.assets, jax.random.key(5))
+        b, eb = run(scatter.digis, q, timing, scatter.assets, jax.random.key(5))
+        assert not any(ea.values()) and not any(eb.values()), (ea, eb)
+        assert a["mask"].sum() > 0
+        for name in a:
+            np.testing.assert_array_equal(a[name], b[name], err_msg=name)
+
+
+def test_scatter_waveform_needs_no_charge_capacity_and_validates_option(setup):
+    cfg = replace(setup[2], feb_phase_width=0.)
+    dense = adapter(setup, cfg=cfg)
+    small = adapter(setup, {**capacity(charges_per_cluster=1), "waveform": "scatter"}, cfg=cfg)
+    _, timing = inputs(events=2)
+    q = _reference_charges(dense)
+    a, _ = run(dense.digis, q, timing, dense.assets, jax.random.key(4))
+    b, errors = run(small.digis, q, timing, small.assets, jax.random.key(4))
+    assert not any(errors.values()), errors
+    assert b["mask"].sum() > 0
+    for name in a:
+        np.testing.assert_array_equal(a[name], b[name], err_msg=name)
+    with pytest.raises(ValueError, match="waveform"):
+        adapter(setup, {**capacity(), "waveform": "sparse"})

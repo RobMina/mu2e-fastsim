@@ -2,7 +2,8 @@
 
 A kernel factory is mandatory; existing host-staged physics drivers are not usable
 as kernels. Synthetic kernels require explicit opt-in and never advertise physical
-tracker/CRV support. ROOT serialization and final-output compaction stay on the host.
+tracker/CRV support. By default ROOT serialization and final-output compaction stay on
+the host; the opt-in occupancy output reduces the detector tables on the device instead.
 """
 from dataclasses import dataclass
 import json
@@ -14,6 +15,7 @@ import awkward as ak
 import numpy as np
 import uproot
 
+from . import device_occupancy
 from .device_source import Layout, pack_source, sample_overlay
 from .fast_detectors import save_sampling, write_output
 from .frames import IDS
@@ -100,6 +102,17 @@ class Backend:
             raise ValueError("--synthetic cannot relabel a physics kernel")
         self.assets = jax.device_put(model.assets, self.device)
         self._seeds = jax.device_put(np.array([args.sampling_seed, args.seed, args.tracker_seed], np.uint64), self.device)
+        self.output_mode = getattr(args, "device_output", None) or "root"
+        if self.output_mode not in ("root", "occupancy"):
+            raise ValueError("device output must be root or occupancy")
+        if self.output_mode == "occupancy":
+            if not {"tracker_digis", "crv_reco"} <= set(model.support):
+                raise ValueError("occupancy output needs a model with tracker digis and CRV reco")
+            geometry = getattr(args, "occupancy_geometry", None)
+            if not geometry:
+                raise ValueError("occupancy output requires --occupancy-geometry")
+            sector_map, self._sector_names, self._occupancy_geometry = device_occupancy.load_sector_map(geometry)
+            self.assets = {"model": self.assets, "sector_map": jax.device_put(sector_map, self.device)}
 
         def domain(seed, batch_index):
             key = jax.random.PRNGKey(jnp.uint32(seed))
@@ -116,6 +129,17 @@ class Backend:
                       "keys": mixed["keys"], "event_mask": mixed["event_mask"]}
             return result, next_state
 
+        if self.output_mode == "occupancy":
+            full, nsectors = execute, len(self._sector_names)
+
+            def execute(pools, state, assets, seeds, ordinal, batch_index, size):
+                result, next_state = full(pools, state, assets["model"], seeds, ordinal, batch_index, size)
+                occupancy, occupancy_errors = device_occupancy.reduce(result["output"], assets["sector_map"],
+                                                                      nsectors, self.layout.batch_events)
+                result = {**result, "output": occupancy, "receipt": device_occupancy.compact_receipt(result["receipt"]),
+                          "errors": {**result["errors"], **occupancy_errors}}
+                return result, next_state
+
         self._arguments = (self.pools, self.state, self.assets, self._seeds)
         probe = tuple(jax.device_put(np.array(value, dtype=dtype), self.device)
                       for value, dtype in ((0, np.uint64), (0, np.uint64), (args.batch_events, np.int64)))
@@ -131,6 +155,13 @@ class Backend:
             "capacity_policy": "fixed padded buffers, masks and explicit overflow rejection; no truncation acceptance or CPU fallback",
             "output_event_tables": [], "reconstruction": "not implemented",
         }
+        if self.output_mode == "occupancy":
+            self.metadata.update(
+                output_format="occupancy",
+                residency="device-resident sampling, overlay, response and occupancy reduction; one terminal device_get "
+                          "of per-event plane/sector counts and a compact receipt; no detector tables persisted",
+                occupancy={"tracker": "straw digis per plane (36)", "crv": "reconstructed pulses per sector",
+                           "sector_names": self._sector_names, **self._occupancy_geometry})
         source.metadata.update(residency="source snapshots uploaded once; next_batch emits scalar requests only",
                                rng=self.metadata["rng"], device_capacities=capacities)
         self.sync()
@@ -171,11 +202,18 @@ class Backend:
             receipt[field] = receipt[field][:request.count]
         for selection in receipt["selections"].values():
             for field in ("counts", "donors", "mask", "source_event_ids"):
-                selection[field] = selection[field][:request.count]
+                if field in selection:
+                    selection[field] = selection[field][:request.count]
         receipt.update(batch_index=request.batch_index, ordinal_start=request.ordinal_start,
                        version=2, rng=self.metadata["rng"], model_kind=self.metadata["model_kind"])
-        save_sampling(path.parent, receipt)
-        _write(path, keys, request.ordinal_start, host["output"])
+        if self.output_mode == "occupancy":
+            receipt["donors"] = "omitted: sequential donors follow from counts and initial_cursor"
+            save_sampling(path.parent, receipt)
+            device_occupancy.write(path.parent / "occupancy.npz", keys, request.ordinal_start,
+                                   host["output"], self._sector_names)
+        else:
+            save_sampling(path.parent, receipt)
+            _write(path, keys, request.ordinal_start, host["output"])
         self.source.commit(request)
         self.state = state
         return {"events": request.count, "response_s": response_s,

@@ -118,3 +118,73 @@ def test_truth_pdg_invalid_float_and_unsigned_not_silently_truncated():
                 "crv": {"mask": np.array([True]), "event": np.array([0]), "columns": {"sp": np.array([3])}}}
         _, failed = jax.device_get(jax.jit(_crv_pdg)(jax.device_put(cols)))
         assert failed
+
+
+def test_occupancy_output_equals_full_tables(template, cond, tmp_path):
+    """Same seeds and stream: on-device occupancy equals counts from the persisted full detector tables."""
+    from types import SimpleNamespace
+    from trkfastsim.digi.digicond import Conditions
+    from mixing import device_occupancy as occ
+    from mixing.device_backend import Backend
+    from mixing.stream_benchmark import run
+
+    c = Conditions(cond.s, cond.a)
+    c.s["onspill"] = True
+    capacity = tmp_path / "capacities.json"
+    capacity.write_text(json.dumps(CAPACITY))
+    geometry = tmp_path / "geometry.json"
+    geometry.write_text(json.dumps({"sector_names": ["EX"], "bars_per_sector": [4], "geometry": "fixture"}))
+    reports, outs = {}, {}
+    for mode in ("root", "occupancy"):
+        outs[mode] = tmp_path / mode
+        args = SimpleNamespace(out=outs[mode], frames_manifest=None, device_platform="cpu",
+                               device_kernel="mixing.device_integration:model", device_capacities=capacity,
+                               synthetic=False, backend="mixing.device_backend:Backend", events=5, batch_events=2,
+                               max_selected_rows=448, chunk=2, warmup_batches=1, seed=17, tracker_seed=19,
+                               sampling_seed=23, require_stage=[], template=template,
+                               device_output=mode, occupancy_geometry=geometry)
+        reports[mode] = run(args, lambda manifest, **kwargs: source(c, **kwargs), Backend)
+    assert reports["occupancy"]["backend"]["output_format"] == "occupancy"
+    assert "occupancy" in reports["occupancy"]["boundary"] and "output_format" not in reports["root"]["backend"]
+    paths = sorted(outs["root"].glob("*/fast.root"))
+    assert len(paths) == 4
+    for path in paths:
+        with uproot.open(path) as root:
+            trk = root["trkdigi/events"].arrays(library="ak")
+            events = root["crvfast/events"].arrays(library="np")
+        data = occ.read(outs["occupancy"] / path.parent.name / "occupancy.npz")
+        ids = np.column_stack([events[k] for k in ("run", "subrun", "event")]).astype(np.uint64)
+        np.testing.assert_array_equal(data["event_ids"], ids)
+        planes = np.zeros((len(ids), 36), int)
+        for row, sids in enumerate(ak.to_list(trk.d_sid)):
+            np.add.at(planes[row], (np.asarray(sids, int) & 0xFC00) >> 10, 1)
+        np.testing.assert_array_equal(data["planes"], planes)
+        np.testing.assert_array_equal(data["sectors"][:, 0], events["npulses"])
+        np.testing.assert_array_equal(data["crv_digis"], events["ndigis"])
+        np.testing.assert_array_equal(data["crv_clusters"], events["nclusters"])
+        sampling = (outs["occupancy"] / path.parent.name / "sampling.json").read_text()
+        assert "source_event_ids" not in sampling and "omitted" in sampling
+    assert not list(outs["occupancy"].glob("*/fast.root"))
+
+
+def test_occupancy_output_rejected_without_device_backend(tmp_path):
+    from types import SimpleNamespace
+    from mixing.stream_benchmark import run
+
+    class Host:
+        metadata = {"name": "host", "support": ["tracker_digis", "crv_reco"], "residency": "host"}
+        def __init__(self, args, source):
+            pass
+        def sync(self):
+            pass
+
+    class Pool:
+        population, metadata = 4, {}
+        def __init__(self, *args, **kwargs):
+            pass
+
+    args = SimpleNamespace(out=tmp_path / "out", frames_manifest=None, events=2, batch_events=2, max_selected_rows=8,
+                           chunk=1, warmup_batches=0, seed=1, tracker_seed=1, sampling_seed=1, require_stage=[],
+                           device_output="occupancy")
+    with pytest.raises(ValueError, match="only by the device backend"):
+        run(args, Pool, Host)
