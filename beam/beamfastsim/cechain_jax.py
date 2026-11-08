@@ -272,7 +272,43 @@ def _build(geom, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unro
 
     out = (jax.jit(init), run)
     _BUILT[key] = out
+    _STEPS[key] = (jax.jit(init), step)
     return out
+
+
+_STEPS = {}
+
+
+def lane_kernels(geom, field, h=10.0, s_max=30000.0, msc=True, layer_field=True, shell_curvature=True, dtype=np.float64,
+                 unroll=False):
+    """(init, step) of the chain for callers that drive it from their own device loop (e.g. a fused chain):
+    init(maps, x, u, T, t, k0, zl) -> lane state, step(maps, key, state, m_cand, m_slab) -> state after one
+    iteration (traceable). field: the device FieldMaps tuple or a constant 3-vector, as transport. Same kernels as
+    transport."""
+    dt = np.dtype(dtype)
+    const = None if (isinstance(field, (tuple, list)) and field and isinstance(field[0], FM.FieldMap)) else \
+        np.asarray(field, float)
+    _build(geom, dt, float(h), float(s_max), bool(msc), bool(layer_field), bool(shell_curvature), None, unroll, const)
+    key = (id(geom), dt.name, float(h), float(s_max), bool(msc), bool(layer_field), bool(shell_curvature), None, unroll,
+           None if const is None else tuple(np.asarray(const, float)))
+    return _STEPS[key]
+
+
+def start_tables(geom, x, u, p):
+    """Host start quantities of transport for births (x, u, p): kinetic energy T, the foil index k0 and the depth zl
+    in the foil, as transport computes them."""
+    b = geom.beam
+    x = np.asarray(x, float)
+    u = np.asarray(u, float)
+    u = u / np.linalg.norm(u, axis=1, keepdims=True)
+    n = x.shape[0]
+    T = np.sqrt(np.broadcast_to(np.asarray(p, float), (n,)) ** 2 + ME ** 2) - ME
+    k0 = G.foil_index(b, x[:, 0], x[:, 1], x[:, 2], tol=1e-3).astype(np.int32)
+    kc = np.clip(k0, 0, b.foil_z.size - 1)
+    L = 2 * b.foil_ht[kc]
+    zl = np.clip(np.where(u[:, 2] >= 0, x[:, 2] - (b.foil_z[kc] - b.foil_ht[kc]),
+                          (b.foil_z[kc] + b.foil_ht[kc]) - x[:, 2]), 0.0, L)
+    return x, u, T, k0, zl
 
 
 

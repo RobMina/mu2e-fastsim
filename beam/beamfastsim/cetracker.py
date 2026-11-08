@@ -198,11 +198,13 @@ class DeviceChain:
     trkfastsim.digi.digicond) or None (no digis). ce_unroll, ce_shrink: cechain_jax's unroll and bucket shrink
     factor (a large shrink compacts less often and compiles fewer bucket shapes). digi_chunk: events per digitiser
     call. resident_digis: use trkfastsim.digi.digi_resident (the same digis as digi_jax for the same keys and chunks,
-    with the packing on the device; float64 tracker device float only, else digi_jax)."""
+    with the packing on the device; float64 tracker device float only, else digi_jax). fused (opt-in): the CE chain
+    and the tracker transport in one device loop with refilled lane pools (beamfastsim.cechain_fused; CE and tracker
+    lanes fused_lanes); the same outputs and keys, statistically equivalent results."""
 
     def __init__(self, offline_root, maps, gdml, geom="Offline/Mu2eG4/geom/geom_2021_PhaseI_v03.txt",
                  response=None, digi_cond=None, dtype="float64", origin=ORIGIN, chord_mm=10.0, lanes=None,
-                 ce_unroll=True, ce_shrink=2, digi_chunk=2000, resident_digis=True):
+                 ce_unroll=True, ce_shrink=2, digi_chunk=2000, resident_digis=True, fused=False, fused_lanes=(32768, 16384)):
         import jax  # noqa: F401  (device backend)
         from mu2efastsim import ehelix
         from trkfastsim.sim import fieldsteps_jax as FJ
@@ -213,6 +215,7 @@ class DeviceChain:
         self.ce_shrink = ce_shrink                 # cechain_jax compaction: bucket shrink factor (2 = its default)
         self.digi_chunk = digi_chunk
         self.resident_digis = resident_digis       # trkfastsim.digi.digi_resident: same digis, packing on the device
+        self.fused, self.fused_lanes = fused, tuple(fused_lanes)   # beamfastsim.cechain_fused (opt-in)
         self.cg = cechain.from_offline(geom, offline_root)
         self.maps = cechain_jax.device_maps(maps, self.dt)
         org = np.asarray(origin, float)
@@ -254,6 +257,19 @@ class DeviceChain:
         else:
             x, u, p, t0 = (np.asarray(v, float) for v in births)
         key = jax.random.PRNGKey(seed)
+        if self.fused:
+            from . import cechain_fused
+            tic = time.perf_counter()
+            ce, trk = cechain_fused.transport(key, self.cg, self.maps, self.trk, x, u, p, t0, h=10.0, dtype=self.dt,
+                                              unroll=self.ce_unroll, ce_lanes=self.fused_lanes[0],
+                                              trk_lanes=self.fused_lanes[1])
+            r = cechain.Result(**ce)
+            has = r.fate == cechain.PLANE
+            pm = jnp.sqrt(r.T * (r.T + 2.0 * eioni.ME))
+            pe = r.u / jnp.linalg.norm(r.u, axis=1, keepdims=True) * pm[:, None]
+            t_all = time.perf_counter() - tic
+            return dict(cechain=r, has_entry=has, x=r.x, p=pe, t=r.t, tracker=trk, nrow=trk.steps["valid"].sum(axis=1),
+                        timing=dict(cechain_s=round(t_all, 3), tracker_s=0.0))
         tic = time.perf_counter()
         r = cechain_jax.transport(jax.random.fold_in(key, 0), self.cg, self.maps, x, u, p, t0, h=10.0,
                                   dtype=self.dt, lanes=self.lanes, unroll=self.ce_unroll, shrink=self.ce_shrink,
