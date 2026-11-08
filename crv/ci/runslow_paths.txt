@@ -1,0 +1,14 @@
+# Extended regular expressions (one per line) of paths whose contracts are checked only by @pytest.mark.slow tests.
+# A pull request that changes a matching file runs the suite with --runslow (core/ci/runslow.sh).
+# transport, eloss and range-out kernels: statistical and stage-C checks
+^crvfastsim/(transport|transport_jax|eloss_transport_jax|range_out_jax)\.py$
+# photon and SiPM device response: statistical checks, overflow retry, dark crosstalk
+^crvfastsim/response/(photons_jax|sipm_jax|device)\.py$
+# tier-1b device sampling
+^crvfastsim/tier1b(_jax|_csr_jax|_metadata_jax)?\.py$
+# reco chain on the production tiers, dispatch fallbacks, on-spill waveform
+^crvfastsim/reco/(chain_jax|coinc_jax|waveform_jax)\.py$
+^crvfastsim/onspill\.py$
+# campaign and validation tooling
+^crvfastsim/(validation|analyses)/
+^ci/runslow
