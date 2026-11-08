@@ -9,6 +9,7 @@ NeutralsFlash pools at the stock intensity law.
 |---|---|---|
 | `run1a_mix1bb_batch128.json` | 128 events | a full 40-80 GB GPU (electronics groups of 8,192 straws) |
 | `run1a_mix1bb_batch64.json` | 64 events | a 24 GB GPU slice (groups of 4,096 straws) |
+| `run1a_mix1bb_batch256.json` | 256 events | a 32-80 GB GPU (groups of 8,192 straws); SiPM cross-talk candidate buffers `ct1`-`ct3` at 1/8 of the earlier generous sizes |
 
 ## How they were made
 
@@ -20,6 +21,9 @@ NeutralsFlash pools at the stock intensity law.
   - 16 charge blocks per launch;
   - scatter CRV waveforms.
 - The two widest end tiers keep at least 256 and 16 straws, above their measured demand.
+- `run1a_mix1bb_batch256.json` comes from its own census: 42 batches of 256 events, margin 1.25. Its SiPM cross-talk
+  candidate buffers `ct1`-`ct3` have no demand counter. They were cut 8x from the generous sizes and checked over
+  full development and held-out passes; a further 4x overflowed. As with every buffer, an overflow rejects the batch.
 
 ## When a batch does not fit
 
