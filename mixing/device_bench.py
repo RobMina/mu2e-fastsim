@@ -9,6 +9,10 @@ truth, stock, photon_csv, tracker_conditions, batch_events, max_selected_rows, d
 occupancy_geometry, out, and optionally seeds, device_kernel, device_output, device_platform).
 
 - `prepare(N)` reads and validates the five frame pools into host memory once (timer `prepare_s`).
+- `prepare(N, seed=S)` (the timer's `--fresh-inputs`, called before every pass) reads the pools on its first call
+  and shares them, and the resident backend, with later calls in the process. Each call gets its own output
+  directory (`out/seed_<S>`) and its own sampling, response and tracker seeds (the configured ones plus S), which
+  replace the backend's seeds on the device before the pass (same shapes, so no new compilation by themselves).
 - Every pass streams N new realizations through one resident backend in fixed batches: device
   sampling, overlay, tracker/CRV response and (by default) device occupancy reduction, the one small
   terminal transfer and the closed per-batch output files. The first pass also constructs the
@@ -41,25 +45,56 @@ def configuration(path=None):
     return SimpleNamespace(**values)
 
 
-class Prepared:
-    """Host pools plus the lazily constructed resident backend and its batch counter."""
+SEED_NAMES = ("sampling_seed", "seed", "tracker_seed")
 
-    def __init__(self, args, source, events):
+
+class Prepared:
+    """Host pools plus the lazily constructed resident backend and its batch counter.
+
+    ``shared`` (seeded prepares) is the first Prepared of the process for this configuration: its pools and backend
+    are reused, and this object's seeds are put on the device before its pass."""
+
+    def __init__(self, args, source, events, shared=None):
         self.args, self.source, self.events, self.backend, self.passes = args, source, events, None, 0
+        self.shared = shared
 
     def ensure_backend(self):
+        if self.shared is not None:
+            backend = self.shared.ensure_backend()
+            if self.backend is None:
+                import numpy as np
+                seeds = np.array([getattr(self.args, name) for name in SEED_NAMES], np.uint64)
+                backend._seeds = backend.jax.device_put(seeds, backend.device)
+                backend._arguments = (backend.pools, backend.state, backend.assets, backend._seeds)
+                self.backend = backend
+            return self.backend
         if self.backend is None:
             from .device_backend import Backend
             self.backend = Backend(self.args, self.source)
         return self.backend
 
 
-def prepare(events, config=None):
-    """Read the frame pools once; no device work."""
+_SHARED = {}
+
+
+def prepare(events, config=None, seed=None):
+    """Read the frame pools once; no device work. With ``seed`` (fresh inputs): see the module doc."""
     from .device_backend import Source
-    args = configuration(config)
     if events < 1:
         raise ValueError("events must be positive")
+    if seed is not None:
+        if type(seed) is not int or seed < 0:
+            raise ValueError("seed must be a nonnegative integer")
+        key = str(Path(config or os.environ["MIXING_BENCH_CONFIG"]).resolve())
+        shared = _SHARED.get(key)
+        if shared is None:
+            shared = _SHARED[key] = prepare(events, config)
+        values = dict(vars(shared.args), out=shared.args.out / f"seed_{seed}")
+        values.update({name: getattr(shared.args, name) + seed for name in SEED_NAMES})
+        args = SimpleNamespace(**values)
+        args.out.mkdir(exist_ok=False)
+        return Prepared(args, shared.source, events, shared=shared)
+    args = configuration(config)
     args.out.mkdir(parents=True, exist_ok=False)
     source = Source(args.frames_manifest, seed=args.sampling_seed, max_selected_rows=args.max_selected_rows)
     if args.batch_events > source.population:
