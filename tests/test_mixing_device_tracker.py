@@ -377,6 +377,15 @@ def test_long_step_and_end_tiers_digis_equal_wide(wide, helpers):
     assert len(a["sid"]) > 0
     for name in a:
         np.testing.assert_array_equal(a[name], b[name], err_msg=name)
+    # tier validation (also in the slow tier tests)
+    with pytest.raises(ValueError, match="together"):
+        Capacities(2, 1024, 8, 512, 8, 2, long_steps=6)
+    with pytest.raises(ValueError, match="exceed"):
+        Capacities(8, 1024, 8, 512, 8, 2, long_steps=6, clusters_per_long_step=8)
+    with pytest.raises(ValueError, match="increase"):
+        Capacities(64, 1024, 8, 512, 8, 2, end_tiers=[(4, 512)])
+    with pytest.raises(ValueError, match="pairs"):
+        Capacities(64, 1024, 8, 4, 8, 2, end_tiers=[(4,)])
 
 
 def test_float32_tracker_mode_in_subprocess(request):
@@ -393,6 +402,7 @@ def test_float32_tracker_mode_in_subprocess(request):
     assert " passed" in result.stdout or " skipped" in result.stdout
 
 
+@pytest.mark.pr_params("2")   # two blocks per launch leave a padded remainder launch
 @pytest.mark.parametrize("group", [2, 3])
 def test_batched_charge_blocks_equal_sequential(cond, group):
     """charge_blocks_per_launch vmaps blocks with their own keys: same outputs as one block per step."""
