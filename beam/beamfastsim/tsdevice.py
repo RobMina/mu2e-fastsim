@@ -259,6 +259,14 @@ class DeviceField:
         self.grid = jnp.asarray(np.concatenate(flats))
         self.max_field_t = float(abs(self.scale) * max(np.linalg.norm(np.max(np.abs(f), axis=0)) for f in flats))
 
+    def with_grid(self, grid):
+        """The same bank reading its field values from `grid` (a traced argument inside a jitted function, so the
+        maps are not compiled into the executable as constants)."""
+        out = object.__new__(DeviceField)
+        out.__dict__.update(self.__dict__)
+        out.grid = grid
+        return out
+
     @classmethod
     def from_config(cls, config, offline_root, maps_dir):
         params = simpleconfig.read(str(config), str(offline_root))
@@ -712,12 +720,15 @@ def run_resident(run_chunk, state, live_of, kill, key, max_chunks=100000, min_bu
 
 
 def make_ts_chunk(field, geom, s, chunk=256):
-    """Jitted (key, TSState) -> TSState running up to `chunk` steps (STEPS_PER_ITERATION per loop iteration)."""
-    step = make_ts_step(field, geom, s)
+    """(key, TSState) -> TSState running up to `chunk` steps (STEPS_PER_ITERATION per loop iteration). The field
+    grid is an argument of the jitted function, not a closed-over constant: the executables stay small, compile
+    faster and load quickly from the persistent compilation cache."""
     iterations = max(1, chunk // STEPS_PER_ITERATION)
 
     @jax.jit
-    def run(key, st):
+    def run_grid(key, st, grid):
+        step = make_ts_step(field.with_grid(grid) if grid is not None else field, geom, s)
+
         def cond(c):
             i, st = c
             return (i < iterations) & jnp.any(st.fate == LIVE)
@@ -730,7 +741,8 @@ def make_ts_chunk(field, geom, s, chunk=256):
 
         return lax.while_loop(cond, body, (jnp.int32(0), st))[1]
 
-    return run
+    grid = getattr(field, "grid", None)          # duck-typed fields (tests) have no grid
+    return lambda key, st: run_grid(key, st, grid)
 
 
 def ts_initial(x, p, t, pdg, n_materials, key):
