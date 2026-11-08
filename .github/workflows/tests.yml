@@ -2,11 +2,23 @@
 # The "suite (...)" jobs are the required status checks of the main branch; the "no JAX (...)" jobs run the same
 # suites without JAX installed, where the JAX tests must skip cleanly.
 name: tests
+# Pull requests and pushes run the per-PR tier; on a pull request a suite whose own directory and dependencies (deps)
+# did not change only reports success. The nightly schedule (and a manual run with runslow) runs every suite with
+# --runslow (the @pytest.mark.slow tests); a pull request that changes a path matching a suite's `slow` pattern runs
+# that suite with --runslow too. JAX's persistent compilation cache is restored per suite from main's last run and
+# saved by runs on main.
 on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: "41 5 * * *"
   workflow_dispatch:
+    inputs:
+      runslow:
+        description: "also run the @pytest.mark.slow tests (--runslow)"
+        type: boolean
+        default: true
 permissions:
   contents: read
 concurrency:
@@ -24,53 +36,98 @@ jobs:
           - suite: core
             dir: core
             path: core:crv:beam
+            deps: '^(core|crv|beam)(/|$)'
+            slow: '^core/mu2efastsim/(eslab_jax|slab_jax|eslab|emsc|precision)[.]py$'
           - suite: crv
             dir: crv
             path: crv:core
+            deps: '^(crv|core)(/|$)'
+            slow: '^crv/crvfastsim/(transport|transport_jax|eloss_transport_jax|range_out_jax|tier1b[a-z_]*|onspill)[.]py$|^crv/crvfastsim/(response|reco|validation|analyses)/'
           - suite: tracker
             dir: tracker
             path: tracker:core:crv
+            deps: '^(tracker|core|crv)(/|$)'
+            slow: '^tracker/trkfastsim/(sim/(steps_jax|world_jax|fieldsteps_jax)|digi/(digi_jax|digi_clusters_jax)|devfloat)[.]py$'
           - suite: beam
             dir: beam
             path: beam:core
+            deps: '^(beam|core)(/|$)'
+            slow: '^beam/beamfastsim/(cechain|cechain_jax|flash_navigator_jax|tsdevice)[.]py$'
           - suite: umbrella
             dir: .
             path: beam:core:tracker:crv
+            deps: '.'
+            slow: '^mixing/device_[a-z_]+[.]py$|^trigger/device/'
           - suite: calo
             dir: calo
             path: calo:core
+            deps: '^(calo|core)(/|$)'
+            slow: '^calo/calofastsim/'
     env:
       JAX_PLATFORMS: cpu
       PYTHONDONTWRITEBYTECODE: "1"
+      JAX_COMPILATION_CACHE_DIR: ${{ github.workspace }}/.jax-cache
+      JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS: "0"
+      JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES: "0"
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 0
+      - name: Decide (run or skip; per-PR tier or --runslow)
+        id: tier
+        env:
+          EVENT: ${{ github.event_name }}
+          DISPATCH_RUNSLOW: ${{ inputs.runslow }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          DEPS: ${{ matrix.deps }}
+          SLOW: ${{ matrix.slow }}
+        run: bash .github/ci_tier.sh
       - uses: actions/setup-python@v5
+        if: steps.tier.outputs.run == 'true'
         with:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: core/ci/requirements.txt
       - name: Python packages
+        if: steps.tier.outputs.run == 'true'
         run: python -m pip install -q -r core/ci/requirements.txt
+      - name: Cache key month
+        id: month
+        run: echo "month=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+      - name: Restore the JAX compilation cache
+        if: steps.tier.outputs.run == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: .jax-cache
+          key: jax-${{ matrix.suite }}-${{ steps.month.outputs.month }}-${{ hashFiles('core/ci/requirements.txt') }}-${{ github.sha }}
+          restore-keys: jax-${{ matrix.suite }}-${{ steps.month.outputs.month }}-${{ hashFiles('core/ci/requirements.txt') }}-
       - name: Install beam as a package
-        if: matrix.suite == 'beam'
+        if: matrix.suite == 'beam' && steps.tier.outputs.run == 'true'
         run: |
           python -m pip install -q --no-deps ./beam
           cd "$RUNNER_TEMP" && python -c "import beamfastsim; print(beamfastsim.__file__)"
       - name: Public Offline files
+        if: steps.tier.outputs.run == 'true'
         run: |
           bash core/ci/offline_data.sh "$RUNNER_TEMP/offline_data"
           echo "MU2E_SEARCH_PATH=$RUNNER_TEMP/offline_data" >> "$GITHUB_ENV"
       - name: pytest
+        if: steps.tier.outputs.run == 'true'
         run: |
           export PYTHONPATH=$(echo "${{ matrix.path }}" | tr ':' '\n' | sed "s#^#$GITHUB_WORKSPACE/#" | paste -sd:)
           if [ "${{ matrix.suite }}" = umbrella ]; then
-            python -m pytest -q -p no:cacheprovider tests
+            python -m pytest -q -p no:cacheprovider ${{ steps.tier.outputs.args }} tests
             python -m pytest -q -p no:cacheprovider container/tests
           else
-            cd "${{ matrix.dir }}" && python -m pytest -q -p no:cacheprovider --durations=15 tests
+            cd "${{ matrix.dir }}" && python -m pytest -q -p no:cacheprovider --durations=15 ${{ steps.tier.outputs.args }} tests
           fi
+      - name: Save the JAX compilation cache (main only)
+        if: steps.tier.outputs.run == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/cache/save@v4
+        with:
+          path: .jax-cache
+          key: jax-${{ matrix.suite }}-${{ steps.month.outputs.month }}-${{ hashFiles('core/ci/requirements.txt') }}-${{ github.sha }}
   nojax:
     name: no JAX (${{ matrix.suite }})
     runs-on: ubuntu-24.04
@@ -82,21 +139,33 @@ jobs:
           - suite: core
             dir: core
             path: core:crv:beam
+            deps: '^(core|crv|beam)(/|$)'
+            slow: '^core/mu2efastsim/(eslab_jax|slab_jax|eslab|emsc|precision)[.]py$'
           - suite: crv
             dir: crv
             path: crv:core
+            deps: '^(crv|core)(/|$)'
+            slow: '^crv/crvfastsim/(transport|transport_jax|eloss_transport_jax|range_out_jax|tier1b[a-z_]*|onspill)[.]py$|^crv/crvfastsim/(response|reco|validation|analyses)/'
           - suite: tracker
             dir: tracker
             path: tracker:core:crv
+            deps: '^(tracker|core|crv)(/|$)'
+            slow: '^tracker/trkfastsim/(sim/(steps_jax|world_jax|fieldsteps_jax)|digi/(digi_jax|digi_clusters_jax)|devfloat)[.]py$'
           - suite: beam
             dir: beam
             path: beam:core
+            deps: '^(beam|core)(/|$)'
+            slow: '^beam/beamfastsim/(cechain|cechain_jax|flash_navigator_jax|tsdevice)[.]py$'
           - suite: umbrella
             dir: .
             path: beam:core:tracker:crv
+            deps: '.'
+            slow: '^mixing/device_[a-z_]+[.]py$|^trigger/device/'
           - suite: calo
             dir: calo
             path: calo:core
+            deps: '^(calo|core)(/|$)'
+            slow: '^calo/calofastsim/'
     env:
       JAX_PLATFORMS: cpu
       PYTHONDONTWRITEBYTECODE: "1"
@@ -104,21 +173,34 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 0
+      - name: Decide (run or skip)
+        id: tier
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          DEPS: ${{ matrix.deps }}
+          SLOW: ""
+        run: bash .github/ci_tier.sh
       - uses: actions/setup-python@v5
+        if: steps.tier.outputs.run == 'true'
         with:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: core/ci/requirements.txt
       - name: Python packages without JAX
+        if: steps.tier.outputs.run == 'true'
         run: |
           grep -v -E '^(jax|jaxlib)==' core/ci/requirements.txt > "$RUNNER_TEMP/requirements-nojax.txt"
           python -m pip install -q -r "$RUNNER_TEMP/requirements-nojax.txt"
           if python -c 'import jax' 2>/dev/null; then echo 'JAX is installed'; exit 1; fi
       - name: Public Offline files
+        if: steps.tier.outputs.run == 'true'
         run: |
           bash core/ci/offline_data.sh "$RUNNER_TEMP/offline_data"
           echo "MU2E_SEARCH_PATH=$RUNNER_TEMP/offline_data" >> "$GITHUB_ENV"
       - name: pytest
+        if: steps.tier.outputs.run == 'true'
         run: |
           export PYTHONPATH=$(echo "${{ matrix.path }}" | tr ':' '\n' | sed "s#^#$GITHUB_WORKSPACE/#" | paste -sd:)
           if [ "${{ matrix.suite }}" = umbrella ]; then
