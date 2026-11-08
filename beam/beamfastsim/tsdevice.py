@@ -21,7 +21,9 @@ Charged pions reaching the DS plane are counted, not transported (the DS stepper
 CLI (one process; three passes with the shared warm-rate timer when --bench is given):
   python3 -m beamfastsim.tsdevice --reference reference.npz --gdml ts.gdml --field-config CFG \
       --offline-root ROOT --maps MAPS --ds-geom Offline/Mu2eG4/geom/geom_run1_a.txt --ds-map DSMap.header \
-      --out chain.npz [--arm fast|stock-ds|saved-ts --saved fast.npz] [--bench bench.json]
+      --out chain.npz [--arm fast|stock-ds|saved-ts --saved fast.npz] [--pool LANES]
+Several --reference files stream through one resident pass (stream_chain): the lane pool refills from the next
+file, so compilation and the slow-lane tail are paid once per job.
 """
 import argparse
 from functools import partial
@@ -256,6 +258,14 @@ class DeviceField:
         self.reflect = jnp.asarray(np.array(refl))
         self.grid = jnp.asarray(np.concatenate(flats))
         self.max_field_t = float(abs(self.scale) * max(np.linalg.norm(np.max(np.abs(f), axis=0)) for f in flats))
+
+    def with_grid(self, grid):
+        """The same bank reading its field values from `grid` (a traced argument inside a jitted function, so the
+        maps are not compiled into the executable as constants)."""
+        out = object.__new__(DeviceField)
+        out.__dict__.update(self.__dict__)
+        out.grid = grid
+        return out
 
     @classmethod
     def from_config(cls, config, offline_root, maps_dir):
@@ -710,12 +720,15 @@ def run_resident(run_chunk, state, live_of, kill, key, max_chunks=100000, min_bu
 
 
 def make_ts_chunk(field, geom, s, chunk=256):
-    """Jitted (key, TSState) -> TSState running up to `chunk` steps (STEPS_PER_ITERATION per loop iteration)."""
-    step = make_ts_step(field, geom, s)
+    """(key, TSState) -> TSState running up to `chunk` steps (STEPS_PER_ITERATION per loop iteration). The field
+    grid is an argument of the jitted function, not a closed-over constant: the executables stay small, compile
+    faster and load quickly from the persistent compilation cache."""
     iterations = max(1, chunk // STEPS_PER_ITERATION)
 
     @jax.jit
-    def run(key, st):
+    def run_grid(key, st, grid):
+        step = make_ts_step(field.with_grid(grid) if grid is not None else field, geom, s)
+
         def cond(c):
             i, st = c
             return (i < iterations) & jnp.any(st.fate == LIVE)
@@ -728,7 +741,8 @@ def make_ts_chunk(field, geom, s, chunk=256):
 
         return lax.while_loop(cond, body, (jnp.int32(0), st))[1]
 
-    return run
+    grid = getattr(field, "grid", None)          # duck-typed fields (tests) have no grid
+    return lambda key, st: run_grid(key, st, grid)
 
 
 def ts_initial(x, p, t, pdg, n_materials, key):
@@ -805,6 +819,22 @@ def run_chain(chain, x, p, t, pdg, seed=20261107):
     return ts, ds
 
 
+def stream_chain(chain, batches, seed=20261107):
+    """Many input batches (e.g. one per input file) through one resident pass, in order. The TS lane pool
+    (chain.pool) refills from the next batch as lanes finish, so compilation and the slow-lane tail are paid once
+    per job, not once per batch; the DS stage then runs once over every DS-entering muon. A lane's random numbers
+    depend on its slot in the pool, so a batch streamed with others is a statistically equivalent, not identical,
+    sample to the same batch run alone. Returns one (TSState, DS State) pair per batch."""
+    sizes = [len(b["pdg"]) for b in batches]
+    if not sizes or min(sizes) == 0:
+        raise ValueError("stream_chain needs non-empty batches")
+    joined = {k: np.concatenate([np.asarray(b[k]) for b in batches]) for k in ("x", "p", "t", "pdg")}
+    ts, ds = run_chain(chain, joined["x"], joined["p"], joined["t"], joined["pdg"], seed)
+    edges = np.cumsum([0] + sizes)
+    return [(jax.tree_util.tree_map(lambda a, i=i: a[edges[i]:edges[i + 1]], ts),
+             jax.tree_util.tree_map(lambda a, i=i: a[edges[i]:edges[i + 1]], ds)) for i in range(len(sizes))]
+
+
 def run_ds_only(chain, x, p, t, pdg, enter, seed=20261107):
     """The DS stage alone from given DS-entrance states (e.g. stock), fresh muon lifetimes."""
     key = jax.random.PRNGKey(seed)
@@ -835,6 +865,17 @@ def load_reference(path, limit=None):
     return {k: (v[:n] if len(v) == len(r["pdg"]) else v) for k, v in r.items()}
 
 
+def load_references(paths, limit=None):
+    """Per-input-row arrays of several references, concatenated in order, with a `batch` index per row (the
+    position of its file in paths). Arrays that are not per input row (exposure tables) are dropped."""
+    refs = [load_reference(p, limit) for p in paths]
+    keys = [k for k, v in refs[0].items() if len(v) == len(refs[0]["pdg"])
+            and all(k in r and len(r[k]) == len(r["pdg"]) for r in refs)]
+    out = {k: np.concatenate([r[k] for r in refs]) for k in keys}
+    out["batch"] = np.concatenate([np.full(len(r["pdg"]), i) for i, r in enumerate(refs)])
+    return out
+
+
 def _env(name):
     v = os.environ.get(name)
     if not v:
@@ -844,9 +885,10 @@ def _env(name):
 
 def bench_prepare(n):
     """Shared-timer prepare: inputs, geometry and field loaded and on the device (reported as prepare_s).
-    Paths from TSDEV_REFERENCE, TSDEV_GDML, TSDEV_FIELD_CONFIG, TSDEV_OFFLINE_ROOT, TSDEV_MAPS, TSDEV_DS_GEOM,
-    TSDEV_DS_OFFLINE_ROOT, TSDEV_DS_MAP. Inputs tile the reference cyclically to n rows."""
-    ref = load_reference(_env("TSDEV_REFERENCE"))
+    Paths from TSDEV_REFERENCE (one file, or several separated by ':' to stream them in one pass), TSDEV_GDML,
+    TSDEV_FIELD_CONFIG, TSDEV_OFFLINE_ROOT, TSDEV_MAPS, TSDEV_DS_GEOM, TSDEV_DS_OFFLINE_ROOT, TSDEV_DS_MAP; TSDEV_POOL
+    sets the lanes in flight. Inputs tile the (joined) references cyclically to n rows."""
+    ref = load_references(_env("TSDEV_REFERENCE").split(":"))
     idx = np.arange(n) % len(ref["pdg"])
     chain = load_chain(_env("TSDEV_GDML"), _env("TSDEV_FIELD_CONFIG"), _env("TSDEV_OFFLINE_ROOT"),
                        _env("TSDEV_MAPS"), _env("TSDEV_DS_GEOM"), _env("TSDEV_DS_OFFLINE_ROOT"), _env("TSDEV_DS_MAP"),
@@ -876,7 +918,8 @@ def summarize(ts, ds):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--reference", required=True)
+    ap.add_argument("--reference", required=True, nargs="+",
+                    help="one or more references; several stream through one resident pass (column batch)")
     ap.add_argument("--gdml", required=True)
     ap.add_argument("--field-config", required=True)
     ap.add_argument("--offline-root", required=True)
@@ -898,10 +941,10 @@ def main(argv=None):
     t0 = time.perf_counter()
     chain = load_chain(a.gdml, a.field_config, a.offline_root, a.maps, a.ds_geom, a.ds_offline_root or a.offline_root,
                        a.ds_map, Settings(step_mm=a.step), pool=a.pool, dtype=a.dtype)
-    ref = load_reference(a.reference, a.limit)
+    ref = load_references(a.reference, a.limit)
     load_s = time.perf_counter() - t0
     t0 = time.perf_counter()
-    out = dict(id=ref["id"], shard=ref["shard"], pdg_in=ref["pdg"])
+    out = dict(id=ref["id"], shard=ref["shard"], pdg_in=ref["pdg"], batch=ref["batch"])
     if a.arm == "fast":
         ts, ds = run_chain(chain, ref["x"], ref["p"], ref["t"], ref["pdg"], a.seed)
         meta = summarize(ts, ds)

@@ -89,6 +89,7 @@ class Backend:
         capacities = json.loads(Path(args.device_capacities).read_text())
         if not {"max_donors", "rows"} <= set(capacities) or set(capacities) - {"max_donors", "rows", "response"}:
             raise ValueError("device capacities must contain max_donors and rows, with optional response")
+        self._capacities = capacities
         self.layout = Layout(args.batch_events, capacities["max_donors"], capacities["rows"], args.max_selected_rows)
         packed, law = pack_source(source, self.layout)
         self.pools = jax.device_put(packed, self.device)
@@ -125,7 +126,11 @@ class Backend:
                                                                ordinal, size, layout=self.layout, law=law)
             output, response_errors = model.apply(mixed, assets, domain(seeds[1], batch_index), domain(seeds[2], batch_index))
             errors = {**errors, **{"response/" + name: value for name, value in response_errors.items()}}
-            result = {"output": output, "receipt": receipt, "errors": errors,
+            usage = output.pop("usage", {}) if isinstance(output, dict) else {}
+            usage = {**{"rows/" + name: value for name, value in receipt["actual_rows"].items()},
+                     "max_donors": jnp.max(receipt["multiplicities"]), "selected_rows": receipt["selected_rows_total"],
+                     **{"response/" + name: value for name, value in usage.items()}}
+            result = {"output": output, "receipt": receipt, "errors": errors, "usage": usage,
                       "keys": mixed["keys"], "event_mask": mixed["event_mask"]}
             return result, next_state
 
@@ -191,9 +196,11 @@ class Backend:
         response_s = time.perf_counter() - started
         started = time.perf_counter()
         host = self.jax.device_get(result)
+        usage = {name: int(value) for name, value in host.pop("usage").items()}
         failed = [name for name, value in host["errors"].items() if np.any(value)]
         if failed:
-            raise OverflowError("device batch rejected: " + ", ".join(failed))
+            raise OverflowError("device batch rejected: " + ", ".join(_overflow_detail(name, usage, self._capacities)
+                                                                     for name in failed))
         keys = host["keys"][:request.count]
         if not np.array_equal(host["event_mask"], np.arange(self.layout.batch_events) < request.count):
             raise ValueError("device event mask differs from requested census")
@@ -216,7 +223,7 @@ class Backend:
             _write(path, keys, request.ordinal_start, host["output"])
         self.source.commit(request)
         self.state = state
-        return {"events": request.count, "response_s": response_s,
+        return {"events": request.count, "response_s": response_s, "capacity_usage": usage,
                 "transfer_and_write_s": time.perf_counter() - started, "terminal_device_get_calls": 1,
                 "model_kind": self.metadata["model_kind"]}
 
@@ -251,3 +258,23 @@ def _write(path, keys, ordinal, output):
     with uproot.update(path) as root:
         root.mktree("benchmark/events", {**dict(zip(IDS, keys.T)),
                     "realization": np.arange(n, dtype=np.uint64) + np.uint64(ordinal)})
+
+
+def _overflow_detail(flag, usage, capacities):
+    """'flag (demand D, capacity C)' where the flag maps to a sized buffer; demands read from a saturated buffer show '>='."""
+    name = flag.split("/")[-1]
+    if flag == "row_capacity":
+        parts = [f"{k[5:]} {v}/{capacities['rows'][k[5:]]}" for k, v in usage.items()
+                 if k.startswith("rows/") and v > capacities["rows"][k[5:]]]
+        return f"{flag} ({', '.join(parts) or 'see rows'})"
+    if flag == "donor_capacity":
+        return f"{flag} (demand {usage.get('max_donors')}, capacity {capacities['max_donors']})"
+    detector = flag.split("/")[1] if flag.startswith("response/") and flag.count("/") >= 2 else None
+    if detector:
+        key = name[4:] if detector == "crv" and name.startswith("crv_") else name
+        demand = usage.get(f"response/{detector}/{key}")
+        limit = capacities.get("response", {}).get(detector, {}).get(key)
+        if demand is not None and limit is not None:
+            relation = ">=" if demand >= limit else "="
+            return f"{flag} (demand {relation} {demand}, capacity {limit})"
+    return flag

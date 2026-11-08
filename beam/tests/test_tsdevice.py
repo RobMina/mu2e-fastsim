@@ -150,3 +150,26 @@ def test_resident_driver_compacts_and_keeps_rows():
     np.testing.assert_array_equal(np.asarray(out.x), np.arange(30.0).reshape(10, 3))
     np.testing.assert_array_equal(np.asarray(out.steps), 1)
     assert calls == [4, 4, 4]
+
+
+def test_load_references_and_stream_split(tmp_path, monkeypatch):
+    paths = []
+    for i, n in enumerate((3, 5)):
+        path = tmp_path / f"ref{i}.npz"
+        np.savez(path, x=np.full((n, 3), float(i)), p=np.ones((n, 3)), t=np.arange(n, dtype=float),
+                 pdg=np.full(n, 13), id=np.arange(n), shard=np.full(n, i), event_id=np.zeros((7, 3)))
+        paths.append(path)
+    ref = dev.load_references(paths)
+    np.testing.assert_array_equal(ref["batch"], [0, 0, 0, 1, 1, 1, 1, 1])
+    np.testing.assert_array_equal(ref["t"], [0, 1, 2, 0, 1, 2, 3, 4])
+    assert "event_id" not in ref                      # exposure tables are not per input row
+
+    def fake(chain, x, p, t, pdg, seed):
+        st = dev.TSState(*(jnp.asarray(t) for _ in dev.TSState._fields))
+        return st, st
+
+    monkeypatch.setattr(dev, "run_chain", fake)
+    batches = [{k: ref[k][ref["batch"] == b] for k in ("x", "p", "t", "pdg")} for b in (0, 1)]
+    out = dev.stream_chain(None, batches)
+    np.testing.assert_array_equal(np.asarray(out[0][0].t), [0, 1, 2])
+    np.testing.assert_array_equal(np.asarray(out[1][1].t), [0, 1, 2, 3, 4])
