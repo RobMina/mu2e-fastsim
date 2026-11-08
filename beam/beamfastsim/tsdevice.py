@@ -53,6 +53,8 @@ MATERIAL_SLOTS = int(os.environ.get("TSDEV_MATERIAL_SLOTS", 2))  # materials sam
 STEPS_PER_ITERATION = int(os.environ.get("TSDEV_STEPS_PER_ITERATION", 1))
 UNROLL_LOSS = os.environ.get("TSDEV_UNROLL_LOSS", "1") == "1"
 MIN_BUCKET = int(os.environ.get("TSDEV_MIN_BUCKET", 1024))
+# Generic-solid columns on gathered candidate lanes (at most this fraction of the batch); 0 evaluates every lane.
+CANDIDATE_FRACTION = float(os.environ.get("TSDEV_CANDIDATE_FRACTION", 0.25))
 PLANE_TOL_F32 = 1e-2   # mm; float32 rounding of Mu2e coordinates near z = 4179 mm is ~5e-4 mm
 
 
@@ -176,23 +178,47 @@ class DeviceGeometry:
         inner = jnp.where(T["rmin"] > 0, inner, 0.0)
         return (length[:, None] * (outer - inner)) @ T["onehot"]
 
+    @staticmethod
+    def _generic_add(s, o, d, length):
+        """Straight-chord length inside one generic solid (local frame), sorting every surface root."""
+        c = _cuts(s, o, d)
+        ones = jnp.ones((o.shape[0], 1))
+        c = jnp.sort(jnp.clip(jnp.concatenate([0 * ones, c, ones], axis=1), 0, 1), axis=1)
+        mid = (c[:, 1:] + c[:, :-1]) / 2
+        p = o[:, None, :] + mid[:, :, None] * d[:, None, :]
+        mask = _contains(s, p.reshape(-1, 3)).reshape(mid.shape)
+        return length * jnp.sum(jnp.diff(c, axis=1) * mask, axis=1)
+
     def columns(self, x0, x1):
+        """(N, M) straight-chord material lengths. Generic (boolean, xtru, phi-segment) solids are evaluated only
+        on the lanes whose chord box meets the solid's box: up to CANDIDATE_FRACTION of the lanes are gathered,
+        with the all-lane evaluation as the fallback when more are candidates. Per-lane values agree with the
+        all-lane evaluation to rounding (the interval sum runs over a different shape)."""
         delta = x1 - x0
         length = jnp.linalg.norm(delta, axis=1)
-        out = jnp.zeros((x0.shape[0], len(self.names)))
+        n = x0.shape[0]
+        out = jnp.zeros((n, len(self.names)))
         if self._tubes is not None:
             out = out + self._tube_columns(x0, delta, length)
+        k = int(np.ceil(n * CANDIDATE_FRACTION)) if CANDIDATE_FRACTION > 0 else n
         for s, R, t, m, lo, hi in self._matter:
             o, d = (x0 - t) @ R, delta @ R
             cand = jnp.all((jnp.maximum(o, o + d) >= lo - 1e-9) & (jnp.minimum(o, o + d) <= hi + 1e-9), axis=1)
-            c = _cuts(s, o, d)
-            ones = jnp.ones((o.shape[0], 1))
-            c = jnp.sort(jnp.clip(jnp.concatenate([0 * ones, c, ones], axis=1), 0, 1), axis=1)
-            mid = (c[:, 1:] + c[:, :-1]) / 2
-            p = o[:, None, :] + mid[:, :, None] * d[:, None, :]
-            mask = _contains(s, p.reshape(-1, 3)).reshape(mid.shape)
-            add = length * jnp.sum(jnp.diff(c, axis=1) * mask, axis=1)
-            out = out.at[:, m].add(jnp.where(cand, add, 0.0))
+            cand = cand & (length > 0)        # finished lanes have zero-length chords and no material
+            if k >= n:
+                out = out.at[:, m].add(jnp.where(cand, self._generic_add(s, o, d, length), 0.0))
+                continue
+
+            def subset(out, s=s, o=o, d=d, cand=cand, m=m):
+                idx = jnp.nonzero(cand, size=k, fill_value=n)[0]
+                safe = jnp.minimum(idx, n - 1)
+                add = self._generic_add(s, o[safe], d[safe], length[safe])
+                return out.at[idx, m].add(add, mode="drop")
+
+            def every(out, s=s, o=o, d=d, cand=cand, m=m):
+                return out.at[:, m].add(jnp.where(cand, self._generic_add(s, o, d, length), 0.0))
+
+            out = lax.cond(jnp.sum(cand) <= k, subset, every, out)
         return out
 
 
