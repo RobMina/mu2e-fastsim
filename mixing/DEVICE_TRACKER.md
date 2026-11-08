@@ -77,8 +77,22 @@ with the busiest one. Two optional capacity groups keep the same physics with le
   tier, `clusters_per_end` beyond the widest tier.
 
 Per-slot cluster keys and per-straw electronics keys do not depend on the padded width,
-so both modes give the same clusters and digis as one wide capacity (tested exactly).
-Without these keys the adapter is unchanged.
+so both modes give the same clusters and digis as one wide capacity (tested exactly in
+float64; in float32 see below). Without these keys the adapter is unchanged.
+
+## float32
+
+With `TRKFASTSIM_DEVICE_FLOAT=core` and `MU2EFS_DEVICE_FLOAT=float32` the adapter follows the
+staged float32 digitiser (`digi_jax`): cluster sampling and the charge kernel see positions
+relative to the straw middle, cluster times relative to whole `COMMON_PERIOD`s (restored in
+float64 afterwards), and the electronics kernel gets per-straw times relative to
+`n_ref * COMMON_PERIOD` with `n_ref` passed in and `t_analog` restored in float64.
+`device_kernels.lift` traces the core float32 kernels with their argument cast and creator
+scope. Against the staged float32 digitiser, digitised integers are equal and analog times
+agree to float32 rounding (the voltage sums run over the padded width, so the summation order
+depends on it; same for tiers versus one wide capacity). Tests:
+`tests/test_mixing_device_tracker_float32.py`, run in a float32 subprocess by
+`test_mixing_device_tracker.py`. Float64 is unchanged.
 
 ## Tests
 
