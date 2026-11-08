@@ -279,6 +279,7 @@ class TSState(NamedTuple):
 class Settings(NamedTuple):
     step_mm: float = 2.5
     max_path_mm: float = 100000.0
+    max_steps_f32: int = 40000  # float32 only: step cap (fate path_limit) for lanes that stall near range-out
     material_step_mm: float = 0.25
     loss_fraction: float = 0.05
 
@@ -340,6 +341,7 @@ def make_ts_step(field, geom, s):
     """One TS step for every lane (finished lanes are inert): (key, TSState) -> TSState."""
     # float32 (x64 off): DS-plane endpoints are tested this far upstream of the closed envelope face; 0 in float64
     plane_tol = 0.0 if jax.config.jax_enable_x64 else PLANE_TOL_F32
+    step_cap = np.iinfo(np.int32).max if jax.config.jax_enable_x64 else s.max_steps_f32
     M = len(geom.names)
     x0_mm = jnp.asarray(geom.x0)
     const_tab = [jnp.asarray(np.array([getattr(c, f) for c in geom.consts], float))
@@ -513,7 +515,8 @@ def make_ts_step(field, geom, s):
         fate = jnp.where(running & upstream, UPSTREAM, fate)
         outside = running & (crossed_wall | ~geom.inside(x)) & ~upstream & ~downstream
         fate = jnp.where(outside, WALL, fate)
-        fate = jnp.where((fate == LIVE) & go & (path >= s.max_path_mm - 1e-8), PATH_LIMIT, fate)
+        fate = jnp.where((fate == LIVE) & go & ((path >= s.max_path_mm - 1e-8) | (steps >= step_cap)), PATH_LIMIT,
+                         fate)
         return TSState(x, p, t, pdg, fate.astype(jnp.int8), path, remaining, decayed, steps, hist, mpath)
 
     return step
