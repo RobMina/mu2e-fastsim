@@ -192,3 +192,40 @@ def test_births_from_starts_number_interleaved_shards_in_row_order():
 def test_cli_starts_argument_rules(args, capsys, tmp_path):
     with pytest.raises(SystemExit):
         H.main(args + ["--outdir", str(tmp_path), "--gdml", "g", "--maps", "m", "--offline-root", "o"])
+
+
+def test_resident_chunks_equal_the_padded_slices_of_the_flat_steps():
+    """DeviceChain._digitize_resident's jitted flat steps and event chunks: the rows a per-chunk slice of the flat
+    valid steps gives, ev shifted by the chunk's first event, zero beyond (digi_resident's padding), at fixed sizes."""
+    jax = pytest.importorskip("jax")
+    jnp = jax.numpy
+    rng = np.random.default_rng(3)
+    nev, slots = 9, 6
+    valid = rng.uniform(size=(nev, slots)) < 0.5
+    valid[4] = False                                              # an event without steps
+    s = {k: rng.normal(size=(nev, slots)) for k in H.DIGI_COLS}
+    s["shape"] = rng.integers(0, 3, (nev, slots)).astype(np.int32)
+    s["ion"] = rng.integers(0, 2, (nev, slots)).astype(np.int32)
+    for k, hi in (("plane", 36), ("panel", 6), ("straw", 96)):
+        s[k] = rng.integers(0, hi, (nev, slots)).astype(np.int32)
+    s["valid"] = valid
+    tr, sl = np.nonzero(valid)
+    ref = {k: s[k][tr, sl] for k in H.DIGI_COLS}
+    ref["sid"] = ((s["plane"][tr, sl].astype(np.int64) << 10) | (s["panel"][tr, sl].astype(np.int64) << 7)
+                  | s["straw"][tr, sl])
+    ref["ev"] = tr.astype(np.int64)
+    nv = len(tr)
+    flat, chunk = H._resident_steps()
+    st = flat({k: jnp.asarray(v) for k, v in s.items()}, 64)
+    for k, v in ref.items():
+        got = np.asarray(st[k])
+        assert got.dtype == np.asarray(jnp.asarray(v)).dtype, k
+        assert np.array_equal(got[:nv], v) and not got[nv:].any(), k
+    start = np.concatenate([[0], np.cumsum(valid.sum(1))])
+    for e0, ne in ((0, 3), (3, 2), (5, 4), (4, 1)):
+        a, b = int(start[e0]), int(start[e0 + ne])
+        sub = chunk(st, jnp.int64(a), jnp.int64(b - a), jnp.int64(e0), 32)
+        for k, v in ref.items():
+            want = (v[a:b] - e0) if k == "ev" else v[a:b]
+            got = np.asarray(sub[k])
+            assert got.shape == (32,) and np.array_equal(got[:b - a], want) and not got[b - a:].any(), (k, e0)
