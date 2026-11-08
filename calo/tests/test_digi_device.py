@@ -38,6 +38,7 @@ def test_noise_off_matches_host(pulse):
         np.testing.assert_array_equal(dev[k], host[k])
 
 
+@pytest.mark.slow   # distribution comparison
 def test_noise_on_distributions(pulse):
     rng = np.random.default_rng(5)
     noise = rng.normal(12.5, 2.0, 10000)

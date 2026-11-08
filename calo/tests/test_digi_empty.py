@@ -35,6 +35,7 @@ def _assert_empty(digis):
     np.testing.assert_array_equal(digis["offsets"], [0])
 
 
+@pytest.mark.pr_params("jax-covered-True")
 @pytest.mark.parametrize("with_noise", [False, True])
 @pytest.mark.parametrize("case", ["empty_rows", "no_pes", "zero_scale", "subthreshold", "covered", "late_pes"])
 def test_digitize_no_accepted_peaks(pulse, backend, case, with_noise):
@@ -62,6 +63,7 @@ def test_digitize_no_accepted_peaks(pulse, backend, case, with_noise):
         assert rng.bit_generator.state == state
 
 
+@pytest.mark.pr_params("jax-2-0.5-float32", "jax-2-0.5-float64")
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
 @pytest.mark.parametrize("n_rows, amplitude", [(0, 0.0), (2, 0.0), (2, 0.5)])
 def test_no_noise_coverage_preserves_waveform(backend, dtype, n_rows, amplitude):

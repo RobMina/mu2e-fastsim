@@ -45,6 +45,7 @@ def test_vacuum_tracks_and_recording_plane_equal_the_numpy_chain(dtype, tol):
     assert b.rec_ok.all() and not (b.nfoil + b.nipa + b.nopa + b.nring).any()
 
 
+@pytest.mark.slow   # device fates; same check on the NumPy chain per PR
 def test_upstream_and_wall_losses_end_the_track():
     g = _geom(**VACUUM)
     x = np.tile([AXIS + 10.0, 0.0, 5700.0], (2, 1))
@@ -54,6 +55,7 @@ def test_upstream_and_wall_losses_end_the_track():
     assert res.path[0] < 5700.0 - g.z_up + 20.0 and res.path[1] < g.r_wall + 20.0
 
 
+@pytest.mark.slow   # statistical NumPy-device comparison, 1500 tracks
 def test_foil_births_shells_and_rings_agree_with_the_numpy_chain():
     # electrons born in the foils, isotropic, 1 T axial: fates, crossings and the plane energy as the NumPy chain
     rng = np.random.default_rng(2)
@@ -79,6 +81,7 @@ def test_foil_births_shells_and_rings_agree_with_the_numpy_chain():
     assert (b.t[pb] >= b.path[pb] / C.C_MM_NS - 1e-6).all()
 
 
+@pytest.mark.slow   # unroll build; chunking per PR: test_ce_capped_gather
 def test_refill_and_unroll_keep_the_vacuum_result():
     # refilling 64 lanes from 300 starts, and the unrolled loops, give the same deterministic vacuum transport
     rng = np.random.default_rng(5)
@@ -92,6 +95,7 @@ def test_refill_and_unroll_keep_the_vacuum_result():
             assert np.allclose(getattr(b, f), getattr(a, f), rtol=1e-10, atol=1e-9), f
 
 
+@pytest.mark.slow   # comparison CLI on two device runs
 def test_pair_comparison_of_two_runs_of_the_same_starts(tmp_path):
     # cecompare pair on two device runs of the same starts: same rows, paired yields and the start check
     from beamfastsim import cecompare as CC

@@ -36,6 +36,7 @@ def test_ce_uses_shared_helpers():
     assert CE.NCOUNT == TG.NCOUNT == 4
 
 
+@pytest.mark.slow
 def test_foil_identity_is_not_a_material_type(geom):
     specs, lengths, ipa, opa, ring, counts = TG.layer_types(geom)
     k = kernels(geom)
@@ -51,6 +52,7 @@ def test_foil_identity_is_not_a_material_type(geom):
     assert TG.layer_types(replace(geom, ring_t=0.))[4] == -1
 
 
+@pytest.mark.pr_params("-1.0-float64")
 @pytest.mark.parametrize('dtype', [np.float32, np.float64])
 @pytest.mark.parametrize('charge', [-1., 1.])
 def test_frames_preserve_foil_origin_shell_charge_and_local_vectors(geom, dtype, charge):
@@ -75,6 +77,7 @@ def test_frames_preserve_foil_origin_shell_charge_and_local_vectors(geom, dtype,
     np.testing.assert_allclose(world_B[2:, 2], 1. + charge * correction, rtol=tol, atol=tol)
 
 
+@pytest.mark.slow
 def test_layer_field_and_shell_curvature_are_independent_static_options(geom):
     x, u = jnp.array([[-3604., 0., 7000.]]), jnp.array([[.8, .6, 0.]])
     args = ((), x, u, jnp.array([100.]), jnp.array([2]), jnp.array([-1]))
@@ -95,6 +98,7 @@ def test_first_map_precedence_and_outside_zero():
     np.testing.assert_array_equal(TG.field((), [1., 2., 3.], x), np.tile([1., 2., 3.], (4, 1)))
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize('mask,size,indices,valid,chosen', [
     ([False, True, False, True], 3, [1, 3, 4], [True, True, False], [False, True, False, True]),
     ([False, True, True, True], 2, [1, 2], [True, True], [False, True, True, False]),
@@ -108,6 +112,7 @@ def test_gather_shape_and_slot_order(mask, size, indices, valid, chosen):
     np.testing.assert_array_equal(selected, chosen)
 
 
+@pytest.mark.slow
 def test_bracketed_shell_solver_and_opa_radius(geom):
     k = kernels(geom)
     x, u = jnp.array([[-3605., 0., 7000.]]), jnp.array([[1., 0., 0.]])

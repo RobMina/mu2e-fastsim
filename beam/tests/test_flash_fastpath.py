@@ -43,6 +43,7 @@ def test_cache_key_and_default():
     assert default is not _build(geom, True)
 
 
+@pytest.mark.slow
 def test_empty_candidates_preserve_frames_and_rng_iteration():
     geom = _geom(foil_z=(5000.,), ht=.0528, plane=5800.)
     x, u = _starts(6, z=5700.)
@@ -61,6 +62,7 @@ def test_empty_candidates_preserve_frames_and_rng_iteration():
     _compare(*runs)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("msc, field", [(False, (0., 0., 0.)), (True, (0., 0., 0.)), (True, (0., 0., 1.))])
 def test_foil_crossings_msc_finished_lanes_and_same_shape_chunks(msc, field):
     geom = _geom()
@@ -88,16 +90,20 @@ def test_foil_crossings_msc_finished_lanes_and_same_shape_chunks(msc, field):
     _compare(*runs)
 
 
-def test_shell_and_ring_crossings():
+# per PR: the default build crosses every shell and ring; with --runslow also the skip_empty A/B
+@pytest.mark.pr_params("default")
+@pytest.mark.parametrize("modes", [(False,), (False, True)], ids=["default", "skip_empty"])
+def test_shell_and_ring_crossings(modes):
     geom = replace(_geom(plane=8000.), ring_t=2., ring_hl=1.)
     x = np.array([[AXIS + 299.5, 0., 7000.], [AXIS + 899.5, 0., 7000.],
                   [AXIS + 297.5, 0., 6900.5], [AXIS + 40., 0., 7000.]])
     u = np.tile([1., 0., 0.], (4, 1))
     runs = []
-    for skip_empty in (False, True):
+    for skip_empty in modes:
         init, run = _build(geom, skip_empty, s_max=12.)
         steps, state = run((), KEY, _initial(init, x, u), jnp.int32(2000), 4, 4)
         assert not np.any(np.asarray(state["fate"]) == C.LIVE)
         assert np.all(np.asarray(state["cnt"]).sum(axis=0)[1:] > 0)
         runs.append((steps, state))
-    _compare(*runs)
+    if len(runs) > 1:
+        _compare(*runs)

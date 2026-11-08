@@ -46,6 +46,7 @@ def test_package_import_does_not_import_jax():
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.pr_params("jax-True-True")
 @pytest.mark.parametrize("birks", [False, True])
 @pytest.mark.parametrize("longitudinal", [False, True])
 def test_energy_source_order_and_switches(backend, birks, longitudinal):
@@ -71,6 +72,7 @@ def test_energy_source_order_and_switches(backend, birks, longitudinal):
         np.testing.assert_allclose(actual, expected, rtol=3e-6, atol=3e-6)
 
 
+@pytest.mark.slow
 def test_energy_dynamic_switch_arrays_and_unclipped_position(backend):
     actual = evaluate(backend, "corrected_energy", [2, 2], [4, 4], [-1, 3], 2, 1,
                       birks=np.array([True, False]),
@@ -78,6 +80,7 @@ def test_energy_dynamic_switch_arrays_and_unclipped_position(backend):
     np.testing.assert_array_equal(actual, np.array([4, 4], dtype=np.float32))
 
 
+@pytest.mark.slow
 def test_energy_scalar_and_empty(backend):
     scalar = evaluate(backend, "corrected_energy", 2, 1, 1, 2, 0.2)
     assert scalar.shape == () and scalar.dtype == np.float32
@@ -99,6 +102,7 @@ def test_means_shape_clamp_and_float32(backend):
         evaluate(backend, "photoelectron_mean", [1, 2], [1, 2, 3])
 
 
+@pytest.mark.slow
 def test_lround_halves_neighbors_and_large_values(backend):
     half = np.float32(0.5)
     means = np.array([0, np.nextafter(half, np.float32(0)), half, 1.5, 2.5,
@@ -121,6 +125,7 @@ TIMING = dict(pbtime=-3, mbtime=100, event_length=300, onspill=False,
               digitization_buffer=5, time_from_protons_to_dr_marker=2)
 
 
+@pytest.mark.pr_params("jax")
 def test_time_fmod_negative_single_shift_and_no_upper_reject(backend):
     times = np.array([-353, -253, -153, -3, 24, 50, 250], dtype=np.float64)
     folded, accepted = evaluate(backend, "fold_step_time", times, **TIMING)
@@ -133,6 +138,7 @@ def test_time_fmod_negative_single_shift_and_no_upper_reject(backend):
     np.testing.assert_array_equal(accepted, [False, False, True, True])
 
 
+@pytest.mark.slow
 def test_time_dynamic_spill_periods_and_empty(backend):
     folded, accepted = evaluate(backend, "fold_step_time", [-153, -153],
                                 **dict(TIMING, onspill=np.array([True, False])))
@@ -142,6 +148,7 @@ def test_time_dynamic_spill_periods_and_empty(backend):
     assert empty.shape == mask.shape == (0, 2)
 
 
+@pytest.mark.pr_params("jax")
 def test_timing_float32_correction_order(backend):
     options = dict(TIMING, pbtime=-0.3, mbtime=100,
                    digitization_start=2**24, digitization_end=2**24,
@@ -158,6 +165,7 @@ def test_timing_float32_correction_order(backend):
     np.testing.assert_array_equal(accepted, expected >= start)
 
 
+@pytest.mark.pr_params("jax")
 def test_weighted_given_membership_double_weights_float_storage(backend):
     values = np.array([[1.1, -4], [8.3, 2], [5.2, 7], [9.9, -1]], dtype=np.float64)
     errors = np.array([[0.13, 3], [1.7, 0.31], [0.77, 2.1], [3.3, 0.17]])
@@ -176,6 +184,7 @@ def test_weighted_given_membership_double_weights_float_storage(backend):
     assert np.all(np.isposinf(np.asarray(uncertainty)[2]))
 
 
+@pytest.mark.slow
 def test_weighted_broadcast_singleton_empty_and_no_selection(backend):
     result, error = evaluate(backend, "weighted_reco_digis", [3, 7], 2,
                              np.array([0, 1]), n_groups=2)
@@ -228,6 +237,7 @@ def test_jax_does_not_mutate_config_and_requires_source_double():
     assert jax.config.x64_enabled == original
 
 
+@pytest.mark.slow
 def test_very_late_finite_times_keep_double_fmod_not_float_or_clipping(backend):
     times = np.array([0., 2.**24 + .25, 6.359561891378894e14, 5.012094393544822e15], dtype=np.float64)
     options = dict(TIMING, pbtime=-.3, mbtime=1695., event_length=1795., onspill=True,
