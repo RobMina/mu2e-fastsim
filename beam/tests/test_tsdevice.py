@@ -108,6 +108,16 @@ def test_rangeout_in_slab_and_material_cap():
     np.testing.assert_array_equal(np.asarray(out.p)[rangeout], 0)
 
 
+def test_full_gather_bucket_defers_lanes(monkeypatch):
+    """With a small shrink bucket, over-cap lanes beyond it wait a step; every lane still ranges out."""
+    monkeypatch.setattr(dev, "SHRINK_LEVELS", (0.05,))
+    out = _run(Tube(slab=20.0), 13, 20.0, n=1000, settings=dev.Settings(step_mm=7.0, material_step_mm=0.1))
+    fate = np.asarray(out.fate)
+    assert np.all((fate == dev.RANGEOUT) | (fate == dev.MU_DECAY))
+    assert np.sum(np.asarray(out.waits)) > 0
+    assert not np.any(fate == dev.UNCONVERGED)
+
+
 def test_pion_decay_fraction():
     out = _run(Tube(), 211, 100.0, n=4000)
     prob = 1 - np.exp(-100 * phys.MPI / (100 * phys.C_MM_NS * phys.TAU_PI_NS))
