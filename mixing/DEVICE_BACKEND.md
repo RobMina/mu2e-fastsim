@@ -42,6 +42,8 @@ still does not supply new independent physics events.
 
 ## Bounded buffers and failure behavior
 
+Sizes measured for the Run 1A mixed configuration are in [capacities/](capacities/README.md).
+
 A JSON capacity file explicitly sets `max_donors` per event per stream and `rows`
 for every collection. The optional `response` object is required by the physical
 factory and contains separate `tracker` and `crv` capacity dictionaries. The compiled graph uses fixed shapes and masks, including

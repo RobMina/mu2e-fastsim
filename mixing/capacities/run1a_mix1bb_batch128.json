@@ -1,0 +1,65 @@
+{
+ "max_donors": 1689,
+ "rows": {
+  "particles": 439689,
+  "gen": 135224,
+  "tracker": 217994,
+  "crv": 86493
+ },
+ "response": {
+  "tracker": {
+   "clusters_per_step": 64,
+   "long_steps": 902,
+   "clusters_per_long_step": 1109,
+   "drift_clusters": 3039752,
+   "straws": 147456,
+   "clusters_per_end": 24,
+   "end_tiers": [
+    [
+     24576,
+     64
+    ],
+    [
+     16384,
+     192
+    ],
+    [
+     1304,
+     768
+    ],
+    [
+     256,
+     1536
+    ],
+    [
+     16,
+     6144
+    ]
+   ],
+   "pairs_per_straw": 8,
+   "electronics_batch": 8192,
+   "charge_blocks_per_launch": 16
+  },
+  "crv": {
+   "substeps": 163157,
+   "photons": 88105,
+   "thermal": 283233,
+   "ct1": 786432,
+   "ct2": 196608,
+   "ct3": 49152,
+   "pixel_short": 32,
+   "pixel_long_streams": 64,
+   "pixel_long_hits": 256,
+   "charge_clusters": 129495,
+   "charges_per_cluster": 553,
+   "waveform_samples": 256,
+   "digis": 4837,
+   "reco_waveforms": 4794,
+   "reco_samples": 192,
+   "pulse_rounds": 8,
+   "coinc_hits": 182,
+   "coinc_combinations": 64,
+   "waveform": "scatter"
+  }
+ }
+}
