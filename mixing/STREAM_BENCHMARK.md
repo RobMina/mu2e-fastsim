@@ -52,7 +52,7 @@ workload; choose disk allocation explicitly before submitting. File close means 
 to the filesystem, not forced durable storage (`fsync` on payloads is not requested).
 No production-scale memory/storage qualification has been performed. The separate
 device backend has passed a tiny synthetic CUDA integration, not physical-response
-validation.
+validation; see [DEVICE_BACKEND.md](DEVICE_BACKEND.md).
 
 ## Timing contract
 
@@ -113,6 +113,11 @@ individual fit components is not full reconstruction validation.
 The default source batch contains host detector inputs plus original identity/provenance.
 `device_backend.Backend` selects its own request-only source automatically and runs
 device sampling/overlay with an explicit pure-JAX response factory. The arithmetic
-fixture requires `--synthetic` and cannot satisfy physical stage requests. Physical
-track reconstruction remains absent; the shared tracker source and the old exact
-single-realization regression are unchanged.
+fixture requires `--synthetic` and cannot satisfy physical stage requests. The
+`mixing.device_physics:model` factory provides physical tracker digis and onspill CRV reco,
+with `response.tracker`/`response.crv` capacities in the device capacity JSON. See
+[DEVICE_BACKEND.md](DEVICE_BACKEND.md) for interfaces and tests. With
+`--device-output occupancy` the device backend reduces each batch to per-event plane and
+sector counts on the device and writes `occupancy.npz` instead of `fast.root`; the run's
+census check reads those files. Physical track reconstruction remains absent; the shared
+tracker source and the old exact single-realization regression are unchanged.
