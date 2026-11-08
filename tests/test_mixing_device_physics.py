@@ -89,6 +89,7 @@ def test_combined_physical_stream_roundtrip(template, cond, tmp_path):
     assert all(totals.values()), totals
 
 
+@pytest.mark.slow   # lifted kernels run inside the combined roundtrip
 def test_lifted_kernel_assets_are_explicit_operands():
     import jax.numpy as jnp
     from mixing.device_kernels import lift
@@ -120,6 +121,7 @@ def test_truth_pdg_invalid_float_and_unsigned_not_silently_truncated():
         assert failed
 
 
+@pytest.mark.slow   # two physical streams; reduction parity per PR (occupancy tests)
 def test_occupancy_output_equals_full_tables(template, cond, tmp_path):
     """Same seeds and stream: on-device occupancy equals counts from the persisted full detector tables."""
     from types import SimpleNamespace

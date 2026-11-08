@@ -15,7 +15,7 @@ from mixing.device_tracker import Capacities, prepare
 from mixing.device_backend import _audit_program
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse=True, scope="module")
 def x64():
     previous = jax.config.x64_enabled
     jax.config.update("jax_enable_x64", True)
@@ -63,10 +63,16 @@ def timing(lengths, pbtime=None):
             "event_mask": np.ones(len(lengths), bool)}
 
 
+@pytest.fixture(scope="module")
+def small(cond):
+    """One single-event model for the input-validation tests: each input structure compiles once, not once per test."""
+    return prepare(cond, Capacities(16, 128, 4, 128, 4), 1)
+
+
 def evaluate(model, rows, times, seed=3):
     args = jax.device_put((rows, times, model.assets, jax.random.key(seed)))
     _audit_program(jax.make_jaxpr(model.apply)(*args))
-    compiled = jax.jit(model.apply)
+    compiled = jax.jit(model.apply)   # same function object per model, so JAX reuses its compiled program
     with jax.transfer_guard("disallow"):
         result = compiled(*args)
         jax.block_until_ready(result)
@@ -74,6 +80,7 @@ def evaluate(model, rows, times, seed=3):
     return {name: value[output["mask"]] for name, value in output.items() if name != "mask"}, errors
 
 
+@pytest.mark.pr_params("True")   # onspill is the mixing mode
 @pytest.mark.parametrize("onspill", [False, True])
 def test_physical_outputs_match_staged_digis(cond, helpers, onspill):
     from trkfastsim.digi import digi_jax as reference
@@ -112,6 +119,7 @@ def test_cluster_compaction_and_electron_expansion_exact(cond, helpers):
         np.testing.assert_array_equal(result[name][result["mask"]], values)
 
 
+@pytest.mark.pr_params("pairs_per_straw")   # one compile per limit; this one also checks the flag remap
 @pytest.mark.parametrize("kind", ["drift_clusters", "clusters_per_step", "straws", "clusters_per_end", "pairs_per_straw"])
 def test_no_silent_capacity_truncation(cond, helpers, kind):
     limits = dict(clusters_per_step=64, drift_clusters=1024, straws=4,
@@ -129,6 +137,7 @@ def test_no_silent_capacity_truncation(cond, helpers, kind):
     assert errors[target]
 
 
+@pytest.mark.slow   # empty events per PR: test_mixing_device all_empty test
 def test_no_steps_empty_event_and_poisoned_padding(cond, helpers):
     st = helpers._steps([helpers._step(cond, 520)])
     rows = collection(st, 4)
@@ -140,35 +149,35 @@ def test_no_steps_empty_event_and_poisoned_padding(cond, helpers):
     assert len(got["sid"]) == 0
 
 
+@pytest.mark.slow   # input-error path per PR: selectors test [shape-nan]
 @pytest.mark.parametrize("field,value", [("eion", np.nan), ("len", -1.), ("sid", 65535)])
-def test_invalid_inputs_return_errors(cond, helpers, field, value):
+def test_invalid_inputs_return_errors(small, cond, helpers, field, value):
     st = helpers._steps([helpers._step(cond, 520)])
     st[field][0] = value
-    model = prepare(cond, Capacities(16, 128, 4, 128, 4), 1)
-    _, errors = evaluate(model, collection(st), timing([100000.]))
+    _, errors = evaluate(small, collection(st), timing([100000.]))
     assert errors["input"]
 
 
+@pytest.mark.pr_params("shape-nan")   # the per-PR input-error case
 @pytest.mark.parametrize("name,value", [("shape", np.nan), ("ion", np.nan), ("panel", 8), ("straw", 128)])
-def test_selectors_and_component_ids_cannot_alias(cond, helpers, name, value):
+def test_selectors_and_component_ids_cannot_alias(small, cond, helpers, name, value):
     st = helpers._steps([helpers._step(cond, 520)])
     sid = st["sid"]
     st.update(plane=sid >> 10, panel=(sid >> 7) & 7, straw=sid & 127)
     st[name] = np.array([value])
-    model = prepare(cond, Capacities(16, 128, 4, 128, 4), 1)
-    _, errors = evaluate(model, collection(st), timing([100000.]))
+    _, errors = evaluate(small, collection(st), timing([100000.]))
     assert errors["input"]
 
 
 @pytest.mark.parametrize("name", ["sid", "ev"])
-def test_fractional_ids_rejected_before_cast(cond, helpers, name):
+def test_fractional_ids_rejected_before_cast(small, cond, helpers, name):
     st = helpers._steps([helpers._step(cond, 520)])
     st[name] = st[name].astype(float) + .5
-    model = prepare(cond, Capacities(16, 128, 4, 128, 4), 1)
     with pytest.raises(ValueError, match="integer dtypes"):
-        evaluate(model, collection(st), timing([100000.]))
+        evaluate(small, collection(st), timing([100000.]))
 
 
+@pytest.mark.slow   # two compiles; block independence per PR: charge block test
 def test_larger_capacity_and_batch_preserve_output(cond, helpers):
     st = helpers._steps([helpers._step(cond, 520), helpers._step(cond, 521)], ev=[0, 2])
     times = timing([100000.] * 3)
@@ -179,6 +188,7 @@ def test_larger_capacity_and_batch_preserve_output(cond, helpers):
         np.testing.assert_allclose(a[name], b[name], atol=1e-6, rtol=0)
 
 
+@pytest.mark.slow   # ghost packing runs inside the onspill parity test per PR
 def test_ghost_packing_exact_at_boundaries(cond):
     from trkfastsim.digi.digicond import Conditions
     from trkfastsim.digi.timing import ghost_indices
@@ -234,6 +244,7 @@ def test_charge_block_keys_cross_4096_boundary(cond):
             np.testing.assert_array_max_ulp(actual[first:first + take], expected[:take], maxulp=1)
 
 
+@pytest.mark.slow   # the physical-output parity check at a 130-event shape
 def test_marker_jitter_crosses_event_block_and_masked_timing(cond, helpers):
     from trkfastsim.digi import digi_jax as dj
     st = helpers._steps([helpers._step(cond, 520), helpers._step(cond, 521)], ev=[0, 128])
@@ -277,6 +288,7 @@ def test_tiered_cluster_capacity_exact(cond, helpers):
         np.testing.assert_array_equal(a[name][a["mask"]], b[name][b["mask"]], err_msg=name)
 
 
+@pytest.mark.slow   # four compiles; tiered clusters per PR
 def test_tiered_capacity_digis_and_overflow(cond, helpers):
     st = _tier_steps(cond, helpers)
     times = timing([100000.] * 3)
@@ -299,6 +311,7 @@ def test_tiered_capacity_digis_and_overflow(cond, helpers):
         Capacities(8, 2048, 8, 512, 8, 2, long_steps=6, clusters_per_long_step=8)
 
 
+@pytest.mark.slow   # six compiles per case (opt-in end tiers)
 @pytest.mark.parametrize("onspill", [False, True])
 def test_tiered_straw_electronics_exact(cond, helpers, onspill):
     """Busy straws through the wide electronics tier give the same digis as one wide clusters_per_end."""
