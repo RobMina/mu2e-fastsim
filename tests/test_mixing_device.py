@@ -38,7 +38,7 @@ def args(tmp_path):
                            sampling_seed=23, require_stage=[])
 
 
-def test_real_compiled_integration_tail_wrap_and_output(args):
+def test_real_compiled_integration_tail_wrap_and_output(args, tmp_path):
     report = run(args, fake.source, device.Backend)
     assert report["events"] == 13 and report["warmup_events"] == 4
     assert report["measured_batches"] == 4
@@ -68,6 +68,12 @@ def test_real_compiled_integration_tail_wrap_and_output(args):
             trk = root["trkdigi/events"].arrays(library="ak")
             assert ak.all(ak.num(trk.d_adc) == 15 * ak.num(trk.d_sid))
             assert root["crvfast/events"].num_entries == row["events"]
+    # same seeds, second run: every output is equal
+    first, args.out = args.out, tmp_path / "second"
+    run(args, fake.source, device.Backend)
+    from mixing.direct_regression import compare_outputs
+    for path in first.glob("*/fast.root"):
+        compare_outputs(path, args.out / path.parent.name / "fast.root")
 
 
 def test_device_overlay_matches_independent_existing_host_oracle():
@@ -97,8 +103,14 @@ def test_device_overlay_matches_independent_existing_host_oracle():
             np.testing.assert_array_equal(actual["event"][actual["mask"]], np.repeat(np.arange(size), ak.to_numpy(ak.num(rows))))
             for field in ak.fields(rows):
                 np.testing.assert_array_equal(actual["columns"][field][actual["mask"]], ak.to_numpy(ak.flatten(rows[field])))
+    # an ordinal above 2**53 stays an exact integer key
+    fresh = jax.device_put({"first": np.array(True), "cursors": np.zeros(4, np.int64)})
+    ordinal = 2**53 + 1
+    batch, _, _, _ = execute(fresh, jnp.uint64(ordinal), jnp.int64(4))
+    np.testing.assert_array_equal(jax.device_get(batch["keys"]), src.signal.event_ids[(np.arange(4) + ordinal) % 5])
 
 
+@pytest.mark.pr_params("rows")   # one overflow clause per PR
 @pytest.mark.parametrize("failure", ["donors", "rows", "aggregate"])
 def test_overflow_has_no_output_or_state_commit(args, tmp_path, failure):
     src = fake.source(max_selected_rows=args.max_selected_rows)
@@ -131,6 +143,7 @@ def test_all_empty_and_partial_tail_no_padding_output(args, tmp_path):
         assert ak.sum(ak.num(root["trkdigi/events"]["d_sid"].array())) == 0
 
 
+@pytest.mark.slow   # the repeat runs inside the integration test
 def test_repeated_seed_invocations_equal_every_output(args, tmp_path):
     run(args, fake.source, device.Backend)
     first = args.out
@@ -173,6 +186,7 @@ def test_rejects_pure_host_callback_in_nested_jit():
         device._audit_program(jax.make_jaxpr(callback)(jnp.float64(1)))
 
 
+@pytest.mark.slow   # the high-ordinal check runs inside the oracle test
 def test_sampling_scalar_high_ordinal_not_promoted_to_float():
     import jax.numpy as jnp
     src = fake.source(max_selected_rows=4096)

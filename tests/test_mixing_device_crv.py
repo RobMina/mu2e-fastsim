@@ -101,9 +101,30 @@ def host(x):
     return jax.device_get(x)
 
 
+# One jitted callable per bound method (model.apply etc.): a bound method is a new object on every attribute access,
+# so jax.jit(model.apply) alone would trace and compile the same program again on every call.
+_JITTED = {}
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _drop_jitted():
+    yield
+    _JITTED.clear()
+
+
+def jitted(fn):
+    owner = getattr(fn, "__self__", None)
+    if owner is None:
+        return jax.jit(fn)
+    key = (id(owner), fn.__func__)
+    if key not in _JITTED:
+        _JITTED[key] = owner, jax.jit(fn)
+    return _JITTED[key][1]
+
+
 def run(fn, *args):
     resident = jax.device_put(args)
-    compiled = jax.jit(fn)
+    compiled = jitted(fn)
     with jax.transfer_guard("disallow"):
         out = compiled(*resident)
         jax.block_until_ready(out)
@@ -118,6 +139,7 @@ def test_stock_stepgate_unwrapped_and_period():
     np.testing.assert_array_equal(run(D._fold, np.array([-1695., -1., 1695., 1700.])), [0., 1694., 0., 5.])
 
 
+@pytest.mark.slow   # row parity per PR: reflector row geometry test
 def test_row_port_preserves_original_endpoints(setup):
     model = adapter(setup)
     collection, _ = inputs(rows=1)
@@ -202,6 +224,7 @@ def test_contiguous_digis_reco_and_independent_bunch_correction(setup):
     np.testing.assert_array_equal(other["pe"][other["mask"]], p["pe"][p["mask"]])
 
 
+@pytest.mark.slow   # full-apply compile; stage capacity flags per PR
 def test_capacities_reject_without_output_or_fallback(setup):
     model = adapter(setup, capacity(substeps=1, photons=1, thermal=1))
     collection, timing = inputs()
@@ -249,6 +272,7 @@ def test_coincidence_packing_matches_independent_numpy(setup):
     assert errors["crv_coinc_hits"]
 
 
+@pytest.mark.slow   # its own full-apply compile (thermal_rate=0)
 def test_empty_and_malformed_live_lanes(setup):
     cfg = replace(setup[2], sipm=replace(setup[2].sipm, thermal_rate=0.))
     model = adapter(setup, cfg=cfg)
@@ -269,6 +293,7 @@ def test_empty_and_malformed_live_lanes(setup):
     assert all(not table["mask"].any() for table in out.values())
 
 
+@pytest.mark.slow   # crvfastsim SiPM kernel, tested in the crv suite
 def test_shared_optical_dark_pixel_recovery():
     cum = np.ones(1)
     dead = np.zeros(SJ.NP2, bool)
@@ -281,6 +306,7 @@ def test_shared_optical_dark_pixel_recovery():
     assert not result["overflow"]
 
 
+@pytest.mark.slow   # charges compile; fold arithmetic per PR: stepgate test
 def test_fold_only_after_physical_optics_and_eventlength_independence(setup):
     model = adapter(setup, cfg=replace(setup[2], sipm=replace(setup[2].sipm, thermal_rate=0.)))
     collection, timing = inputs()
@@ -364,6 +390,7 @@ def test_each_waveform_and_reco_capacity_is_fatal(setup):
     assert errors["crv_pulse_rounds"]
 
 
+@pytest.mark.slow   # dark counts per PR: thermal all-physical test
 def test_thermal_physical_readout_not_optical_reflector(setup):
     geom, cond, cfg, counters, tabs, pmap = setup
     counters = {**counters, "crs.sipmsAtSide1EX": False}
@@ -376,6 +403,7 @@ def test_thermal_physical_readout_not_optical_reflector(setup):
     assert np.all(dark["chan"][dark["mask"]] % 2 == 0)
 
 
+@pytest.mark.slow   # charges compile; dark counts per PR: thermal all-physical test
 def test_all_empty_events_still_have_physical_dark_charges(setup):
     model = adapter(setup, capacity(thermal=128))
     collection, timing = inputs(events=4, active=False)
@@ -397,6 +425,7 @@ def _reference_charges(model, rng=None):
     return dict(chan=labels, time=times, charge=charge, mask=np.ones(40, bool))
 
 
+@pytest.mark.slow   # scatter = dense per PR: the no-charge-capacity scatter test
 @pytest.mark.parametrize("noise", [False, True])
 def test_scatter_waveform_matches_dense_digis(setup, noise):
     """Opt-in scatter synthesis: same digis as the dense kernel (with and without noise, two events)."""

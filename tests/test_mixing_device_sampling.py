@@ -133,10 +133,12 @@ def pearson_p(observed, expected, minimum=5.):
     return stats.chi2.sf(np.sum((observed - expected) ** 2 / expected), len(expected) - 1)
 
 
+@pytest.mark.pr_params("both_cuts")   # both cuts is the branch superset
 def test_intensity_is_the_exact_host_transform_of_the_device_uniforms(draws):
     assert draws.mismatches == 0
 
 
+@pytest.mark.slow   # statistical validation
 def test_intensity_follows_the_beam_weighted_truncated_law(draws):
     law, N = draws.law, draws.N
     assert N.min() >= law.cut_min and N.max() <= law.cut_max
@@ -158,6 +160,7 @@ def test_intensity_follows_the_beam_weighted_truncated_law(draws):
     assert abs(zscore(N - truncated_moment(law, 1, beam=False))) > 5 * Z_MAX
 
 
+@pytest.mark.slow   # statistical validation
 @pytest.mark.parametrize("column", range(4), ids=STREAMS)
 def test_multiplicities_are_poisson_given_the_intensity(draws, column):
     lam = draws.N * RATES[STREAMS[column]]
@@ -173,6 +176,7 @@ def test_multiplicities_are_poisson_given_the_intensity(draws, column):
     assert pearson_p(np.bincount(n, minlength=top), expected) > P_MIN
 
 
+@pytest.mark.slow   # statistical validation
 @pytest.mark.parametrize("pair", list(itertools.combinations(range(4), 2)),
                          ids=["-".join(STREAMS[i] for i in pair) for pair in itertools.combinations(range(4), 2)])
 def test_streams_share_the_intensity(draws, pair):
@@ -188,6 +192,7 @@ def test_streams_share_the_intensity(draws, pair):
     assert zscore(products) > 5 * Z_MAX
 
 
+@pytest.mark.slow   # statistical validation
 def test_device_and_host_samplers_agree(draws):
     rng = np.random.default_rng(20261107)
     host_N = draws.law.draw(rng, len(draws.N), beam_primary=True)
