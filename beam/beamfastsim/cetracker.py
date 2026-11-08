@@ -305,7 +305,7 @@ class DeviceChain:
         import jax
         from trkfastsim.recoresp import device as RD
         return RD.apply(self.resp, jax.random.fold_in(jax.random.PRNGKey(seed), 2), res["has_entry"], res["nrow"],
-                        res["x"], res["p"])
+                        res["x"], res["p"], res["t"])
 
     def __call__(self, births, seed, digis=True, event_timing=None):
         res = self.transport(births, seed)
