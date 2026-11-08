@@ -21,9 +21,10 @@ class Capacities:
     long_steps: int = None
     clusters_per_long_step: int = None
     end_tiers: tuple = None
+    charge_blocks_per_launch: int = None
 
     def __post_init__(self):
-        optional = ("long_steps", "clusters_per_long_step", "end_tiers")
+        optional = ("long_steps", "clusters_per_long_step", "end_tiers", "charge_blocks_per_launch")
         for name, value in vars(self).items():
             if name == "end_tiers" or (name in optional and value is None):
                 continue
@@ -147,7 +148,8 @@ def prepare(c, capacities, batch_events):
         if rel:
             result = {**result, "t_analog": result["t_analog"].astype(jnp.float64) + (nref * period)[:, None, None]}
         return result
-    ncharge = ((cap.drift_clusters + dj.CHARGE_BLOCK - 1) // dj.CHARGE_BLOCK) * dj.CHARGE_BLOCK
+    launch = dj.CHARGE_BLOCK * (cap.charge_blocks_per_launch or 1)
+    ncharge = ((cap.drift_clusters + launch - 1) // launch) * launch
     sentinel = np.iinfo(np.int64).max
 
     def sample(st, idx, bounded, minion, assets, key, capacity):
@@ -213,7 +215,10 @@ def prepare(c, capacities, batch_events):
         owner = jnp.maximum(mark[anchor], 0)
         valid = row < total
         result = {"step": cand_step[owner], "pos": cand_pos[owner],
-                  "ne": jnp.where(valid, cand_el[owner], 1), "mask": valid}
+                  "ne": jnp.where(valid, cand_el[owner], 1), "mask": valid,
+                  "usage": {"drift_clusters": total, "long_steps": long.sum(),
+                            "clusters_per_step": jnp.max(jnp.where(multi & ~long, nc, 0)),
+                            "clusters_per_long_step": jnp.max(jnp.where(long, nc, 0))}}
         return result, {**errors, "drift_clusters": total > cap.drift_clusters}
 
     def clusters(st, selected, assets, key):
@@ -247,7 +252,8 @@ def prepare(c, capacities, batch_events):
         owner = jnp.minimum(jnp.searchsorted(ends, row, side="right"), len(ends) - 1)
         valid = row < ends[-1]
         result = {"step": candidates[owner], "pos": positions[owner],
-                  "ne": jnp.where(valid, electrons[owner], 1), "mask": valid}
+                  "ne": jnp.where(valid, electrons[owner], 1), "mask": valid,
+                  "usage": {"drift_clusters": ends[-1], "clusters_per_step": jnp.max(jnp.where(multi, nc, 0))}}
         return result, {"clusters_per_step": overflow, "drift_clusters": ends[-1] > cap.drift_clusters}
 
     def drift(st, cluster, key, assets):
@@ -267,7 +273,13 @@ def prepare(c, capacities, batch_events):
             first, us_, pos_, ne_, time_ = inputs
             return charge_kernel.apply(assets["charge_kernel"],
                 random.key_data(random.fold_in(random.fold_in(key, 1), first)), us_, pos_, ne_, time_)
-        result = lax.map(block, arrays)
+        if cap.charge_blocks_per_launch is None:
+            result = lax.map(block, arrays)
+        else:   # groups of blocks per launch (as digi_jax CHARGE_BLOCKS); each block keeps its own key
+            g = cap.charge_blocks_per_launch
+            grouped = tuple(a.reshape((-1, g) + a.shape[1:]) for a in arrays)
+            result = lax.map(lambda group: jax.vmap(block)(group), grouped)
+            result = tuple(r.reshape((-1,) + r.shape[2:]) for r in result)
         gt, charge, wd = tuple(value.reshape((-1,) + value.shape[2:])[:cap.drift_clusters] for value in result)
         if rel:
             gt = (cref[:cap.drift_clusters, None] + gt.astype(jnp.float64)).astype(jnp.float32)
@@ -486,18 +498,30 @@ def prepare(c, capacities, batch_events):
         readall = ((st["sid"] & 127) >= c.allStraw) & jnp.isin(st["sid"] >> 10, assets["all_planes"])
         selected = safe & (st["eion"] > c.minstepE) & (inwin | readall)
         cluster, cluster_errors = clusters(st, selected, assets, random.fold_in(key, 0))
+        usage = {"steps": mask.sum(), **cluster.pop("usage")}
         gt, charge, wd, charge_error = drift(st, cluster, key, assets)
         if cap.end_tiers is None:
             packed, packing_errors = pack(st, cluster, gt, charge, wd, timing, key, assets)
             output, electronic_errors = electronics(packed, key, assets)
+            usage.update(straws=packed[8].sum(), clusters_per_end=jnp.max(packed[4]))
         else:
             packed, packing_errors = pack_tiered(st, cluster, gt, charge, wd, timing, key, assets)
             output, electronic_errors = electronics_tiered(packed, key, assets)
+            # Straw and end counts are read from the packed tiers, so they saturate at a capacity that overflowed
+            # (its flag then rejects the batch); otherwise they are the exact demand.
+            usage.update(straws=sum(tier[8].sum() for tier in packed),
+                         clusters_per_end=jnp.max(jnp.stack([jnp.max(tier[4]) for tier in packed])))
+            for k, tier in enumerate(packed[1:], start=1):
+                usage[f"end_tier_{k}_straws"] = tier[8].sum()
         errors = {"input": input_error, "timing": timing_error, "nonfinite_charge": charge_error,
                   **cluster_errors, **packing_errors, **electronic_errors}
+        return output, errors, usage
+
+    def apply_plain(collection, timing, assets, key):
+        output, errors, _ = apply(collection, timing, assets, key)
         return output, errors
 
-    return SimpleNamespace(assets=assets, apply=apply, clusters=clusters, drift=drift, pack=pack,
+    return SimpleNamespace(assets=assets, apply=apply_plain, apply_with_usage=apply, clusters=clusters, drift=drift, pack=pack,
                            electronics=electronics, capacities=cap,
                            metadata={"physics": "existing tracker JAX ionisation/drift/electronics kernels",
                                      "precision": df.NAME, "capacity_policy": "reject; no fallback",

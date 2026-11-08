@@ -165,7 +165,7 @@ class Adapter:
         values["nsub"] = jnp.where(selected, nsub, 0)
         return values, bar * 4 + (sensor + 1 if reflector < 0 else sensor)
 
-    def charges(self, collection, timing, assets, key):
+    def charges(self, collection, timing, assets, key, report=False):
         """Resident physical photons and thermal attempts through shared pixel histories."""
         c, cap = collection["columns"], self.capacities
         n = collection["mask"].shape[0]
@@ -205,6 +205,7 @@ class Adapter:
         clean = {name: jnp.where(active, value, 0) for name, value in c.items()}
         keys = jax.random.split(key, len(self.blocks) + 2)
         photons, sub_over, arrival_over = [], jnp.array(False), jnp.array(False)
+        sub_used, arrival_used = jnp.int64(0), jnp.int64(0)
         numeric_error = jnp.array(False)
         for block, blockkey in zip(self.blocks, keys):
             kr, ka, kb = jax.random.split(blockkey, 3)
@@ -217,10 +218,12 @@ class Adapter:
             tab = assets["tables"][ti]
             nb, const, offsets = self.table_static[ti]
             sub_over |= rows["nsub"].sum() > cap["substeps"]
+            sub_used = jnp.maximum(sub_used, rows["nsub"].sum())
             narr, bins, times, ri = PJ._kernel_a(rows, ka, tab["edges"], tab["prob"], cap["substeps"], nb, const, offsets)
             numeric_error |= jnp.any(narr < 0)
             narr = jnp.maximum(narr, 0)
             arrival_over |= narr.sum() > cap["photons"]
+            arrival_used = jnp.maximum(arrival_used, narr.sum())
             times, rr, valid = PJ._kernel_b(narr, bins, times, ri, kb, tab["cum"], tab["dsum"], cap["photons"])
             channel = channel[rr]
             times = _fold(times + timing["mc_pbtime"][ev[rr]])
@@ -250,6 +253,8 @@ class Adapter:
                       crv_substeps=sub_over, crv_photons=arrival_over, crv_thermal=thermal_over,
                       crv_optics_numeric=numeric_error,
                       crv_sipm_candidates=result["candidate_overflow"], crv_pixel_streams=result["stream_overflow"])
+        if report:
+            out["usage"] = {"substeps": sub_used, "photons": arrival_used, "thermal": dark["demand"]}
         return out, errors
 
     def _thermal(self, timing, assets, key):
@@ -266,9 +271,9 @@ class Adapter:
                  jax.random.randint(ky, (size,), 0, self.cfg.sipm.n_pixels_y))
         return dict(chan=event * CH.CHAN_MULT + channel,
                     time=lo - 100 + (hi - lo + 100) * jax.random.uniform(kt, (size,)),
-                    pixel=pixel, mask=jnp.arange(size) < count.sum()), count.sum() > size
+                    pixel=pixel, mask=jnp.arange(size) < count.sum(), demand=count.sum()), count.sum() > size
 
-    def digis(self, q, timing, assets, key):
+    def digis(self, q, timing, assets, key, report=False):
         """Device stock charge clustering, waveform synthesis, gated ZS and digi packing."""
         cap, w = self.capacities, self.wcfg
         C, Q, L, D = (cap[n] for n in ("charge_clusters", "charges_per_cluster", "waveform_samples", "digis"))
@@ -310,11 +315,15 @@ class Adapter:
                    bar=chan[r] % CH.CHAN_MULT // 4, sipm=chan[r] % 4,
                    starttdc=jnp.rint((st - tdc0[r]) / CH.PERIOD).astype(jnp.int64), adc=adc)
         order = jnp.lexsort((out["starttdc"], out["sipm"], out["bar"], out["ev"], ~out["mask"]))
-        return {k: v[order] for k, v in out.items()}, dict(crv_charge_clusters=new.sum() > C,
+        out = {k: v[order] for k, v in out.items()}
+        if report:
+            out["usage"] = {"charge_clusters": new.sum(), "charges_per_cluster": jnp.max(jnp.where(mask, pos + 1, 0)),
+                            "waveform_samples": jnp.max(jnp.where(counts > 0, need, 0)), "digis": starts.sum()}
+        return out, dict(crv_charge_clusters=new.sum() > C,
                     crv_cluster_charges=(jnp.array(False) if self.waveform == "scatter" else jnp.any(mask & (pos >= Q))),
                     crv_waveform_samples=jnp.any((counts > 0) & (need > L)), crv_digis=starts.sum() > D)
 
-    def pulses(self, d, timing, assets):
+    def pulses(self, d, timing, assets, report=False):
         """Concatenate contiguous digis before fitting; never fit each digi independently."""
         cap = self.capacities
         R, L = cap["reco_waveforms"], cap["reco_samples"]
@@ -347,16 +356,19 @@ class Adapter:
         new_event = out["mask"] & jnp.concatenate([jnp.array([True]), out["ev"][1:] != out["ev"][:-1]])
         _, index = _groups(new_event, out["mask"])
         out["idx"] = index
+        if report:
+            out["usage"] = {"reco_waveforms": new.sum(), "reco_samples": jnp.max(n)}
         return out, dict(crv_reco_waveforms=new.sum() > R, crv_reco_samples=jnp.any(n > L),
                          crv_pulse_rounds=jnp.any((n > 0) & p["rounds_exhausted"]),
                          crv_pulse_window=jnp.any((n > 0) & p["window_overflow"]))
 
-    def clusters(self, p, timing, assets):
+    def clusters(self, p, timing, assets, report=False):
         """Pack event/type groups on device and call the physical coincidence kernel."""
         B, H = timing["event_mask"].size, self.capacities["coinc_hits"]
         a = assets["coincidence"]
         ch = p["bar"] * 4 + p["sipm"]
         outputs, hit_over, comb_over = [], jnp.array(False), jnp.array(False)
+        hits_used = jnp.int64(0)
         for ti, (stype, ld, ns, uniform) in enumerate(self.coincidence_static):
             mask = p["mask"] & (a["stype"][ch] == stype)
             if self.fcfg.ignore_secondary_pulses:
@@ -382,6 +394,7 @@ class Adapter:
             result = CJ.find_dense(**args, tp=a["types"][ti]["tp"], cu=a["types"][ti]["cu"],
                                    ld=ld, ns=ns, uniform=uniform, K=self.capacities["coinc_combinations"])
             hit_over |= jnp.any(counts > H)
+            hits_used = jnp.maximum(hits_used, jnp.max(counts))
             comb_over |= jnp.any(result["overflow"])
             position = result["pos"].reshape(-1, 3)
             time = result["avgtime"] + (reference[:, None] if dprec.SINGLE else 0.)
@@ -390,15 +403,26 @@ class Adapter:
                     pe=result["pe"].ravel(), time=time.ravel(), poscalc=result["poscalc"].ravel(),
                     x=position[:, 0], y=position[:, 1], z=position[:, 2]))
         out = {name: jnp.concatenate([o[name] for o in outputs]) for name in outputs[0]}
+        if report:
+            out["usage"] = {"coinc_hits": hits_used}
         return out, dict(crv_coinc_hits=hit_over, crv_coinc_combinations=comb_over)
 
     def apply(self, collection, timing, assets, key):
         """Return fixed-size digis/pulses/clusters and fatal batch error flags."""
+        tables, errors, _ = self.apply_with_usage(collection, timing, assets, key)
+        return tables, errors
+
+    def apply_with_usage(self, collection, timing, assets, key):
+        """As apply, plus the demand behind each sized buffer (exact while within capacity)."""
         kq, kd = jax.random.split(key)
-        q, eq = self.charges(collection, timing, assets, kq)
-        d, ed = self.digis(q, timing, assets, kd)
-        p, ep = self.pulses(d, timing, assets)
-        c, ec = self.clusters(p, timing, assets)
+        q, eq = self.charges(collection, timing, assets, kq, report=True)
+        usage = dict(q.pop("usage"))
+        d, ed = self.digis(q, timing, assets, kd, report=True)
+        usage.update(d.pop("usage"))
+        p, ep = self.pulses(d, timing, assets, report=True)
+        usage.update(p.pop("usage"))
+        c, ec = self.clusters(p, timing, assets, report=True)
+        usage.update(c.pop("usage"))
         errors = {**eq, **ed, **ep, **ec}
         tables = {"digis": d, "pulses": p, "clusters": c}
         nonfinite = jnp.array(False)
@@ -410,7 +434,7 @@ class Adapter:
         errors["crv_nonfinite"] = nonfinite
         rejected = jnp.any(jnp.stack(list(errors.values())))
         tables = {name: {**table, "mask": table["mask"] & ~rejected} for name, table in tables.items()}
-        return tables, errors
+        return tables, errors, usage
 
 
 def prepare(geom, cond, cfg, counters, capacities, tabs, pmap):
