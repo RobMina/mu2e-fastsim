@@ -40,6 +40,7 @@ def test_truncation_fails_closed(table):
         validate_complete(capped)
 
 
+@pytest.mark.slow
 def test_inactive_parents_emit_nothing(table):
     result = slab_source(jax.random.PRNGKey(4), table, np.zeros(16, np.int32), initial(energy=0.0), msc=False)
     validate_complete(result)

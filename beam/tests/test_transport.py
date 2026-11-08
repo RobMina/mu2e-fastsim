@@ -24,6 +24,7 @@ def _geom(nfoil=0, ht=0.05, z0=6000.0):
                                  1e9, 1.0, 0.0, 0.0, 300.0, 0.5, 2e9, 2e9 + 1, 1e9, 3e9, 3e9 + 1)
 
 
+@pytest.mark.slow
 def test_trilinear_exact_on_linear_field():
     fm = _uniform_map()
     B = np.asarray(fm.B).copy()
@@ -76,6 +77,7 @@ def test_simpleconfig(tmp_path):
     assert c["a.b"] == 2.5 and c["v"] == [1.0, 2.0, 3.0] and c["s"] == "X" and c["t"] is True
 
 
+@pytest.mark.slow   # statistical; transport_all chunking per PR: test_chunk_respects_exact_step_cap
 def test_transport_all_matches_single_pass_fates():
     fm = _uniform_map(1.0)
     prm = transport.Params(ds=2.0, max_steps=3000, msc=False, decay=False, z_up=-1e9, r_wall=1e9)

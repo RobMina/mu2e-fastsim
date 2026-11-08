@@ -39,6 +39,7 @@ def slab_case():
     return g, x, u, pdg, r
 
 
+@pytest.mark.slow
 def test_vacuum_charge_conjugation_and_exact_endpoint(vacuum_geom):
     x, u = _starts(2, z=5700.)
     u[:] = [0.6, 0., 0.8]
@@ -83,6 +84,12 @@ def test_slab_birth_totals_across_crossings_and_overflow(slab_case):
                                T0 + st["nan"] * FN.ME, atol=1e-9)
     np.testing.assert_array_equal(r["diagnostics"]["annihilation_photons_omitted"], st["nan"])
     np.testing.assert_array_equal(r["diagnostics"]["delta_cascades_omitted"], st["nde"])
+
+
+@pytest.mark.slow   # a second build (capacity is static); the overflow refusal itself is checked host-only below
+def test_slab_birth_capacity_one_counts_overflow_and_fails_closed(slab_case):
+    g, x, u, pdg, r = slab_case
+    st, rec = r["state"], r["records"]
     small = target_source(KEY, g, [0., 0., 0.], x, u, 105., 0., pdg, capacity=1, msc=False, max_steps=5000)
     np.testing.assert_array_equal(small["count"], r["count"])
     np.testing.assert_array_equal(small["overflow"], np.maximum(np.asarray(r["count"]) - 1, 0))
@@ -92,6 +99,14 @@ def test_slab_birth_totals_across_crossings_and_overflow(slab_case):
         np.testing.assert_allclose(small["records"][name], rec[name][:, :1], atol=1e-10)
     with pytest.raises(ValueError, match="dropped births"):
         validate_complete(small)
+
+
+def test_validate_complete_rejects_overflow_capped_and_loopers():
+    ok = dict(overflow=np.zeros(3, np.int32), capped=np.zeros(3, bool), loopers=np.zeros(3, bool))
+    assert validate_complete(ok) is ok
+    for name, value in (("overflow", [0, 2, 0]), ("capped", [False, True, False]), ("loopers", [True, False, False])):
+        with pytest.raises(ValueError, match="Incomplete birth source"):
+            validate_complete(dict(ok, **{name: np.asarray(value)}))
 
 
 def test_late_source_time_unchanged_no_time_selection(slab_case):
@@ -116,6 +131,7 @@ def test_float32_keeps_float64_t0(vacuum_geom):
     assert 0. < float(r["state"]["t"][0]) < 0.01
 
 
+@pytest.mark.slow
 def test_caps_loopers_turn_limit_and_partial_slab_state(vacuum_geom):
     x, u = _starts(1, z=5700.)
     u[:] = [1., 0., 0.]
@@ -140,6 +156,7 @@ def test_caps_loopers_turn_limit_and_partial_slab_state(vacuum_geom):
     assert int(st["cnt"][0, 0]) == 0
 
 
+@pytest.mark.slow
 def test_finished_lanes_and_no_initial_annihilation_births(vacuum_geom):
     x, u = _starts(4, z=5700.)
     r = target_source(KEY, vacuum_geom, [0., 0., 0.], x, u, [0.01, 105., 0.01, 105.],
@@ -153,6 +170,7 @@ def test_finished_lanes_and_no_initial_annihilation_births(vacuum_geom):
     assert np.all(np.asarray(r["state"]["t"])[[0, 2]] == 0.)
 
 
+@pytest.mark.slow
 def test_unroll_equivalence(slab_case):
     g, x, u, pdg, reference = slab_case
     r = target_source(KEY, g, [0., 0., 0.], x, u, 105., 0., pdg, msc=False, max_steps=5000, unroll=True)
@@ -168,6 +186,7 @@ def test_empty_input_explicitly_rejected(vacuum_geom):
         target_source(KEY, vacuum_geom, [0., 0., 0.], np.empty((0, 3)), np.empty((0, 3)), [], [], [])
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("unroll", [False, True])
 def test_partial_magnetic_msc_step_matches_current_core(unroll):
     # A literal current-core one-step reference, for both charges, also exercises
@@ -206,6 +225,7 @@ def test_partial_magnetic_msc_step_matches_current_core(unroll):
                                    np.asarray(emitted.position)[valid] + x[ids][valid] - [0., 0., 2.5], atol=1e-9)
 
 
+@pytest.mark.slow
 def test_step_time_uses_continuous_loss_not_end_step_recoil():
     from beamfastsim.flash_navigator_jax import _slab_elapsed, _beta
     before = dict(T=np.array([100., 1.]), cont=np.zeros(2), path=np.array([2., 3.]))
@@ -218,6 +238,7 @@ def test_step_time_uses_continuous_loss_not_end_step_recoil():
     np.testing.assert_array_equal(_slab_elapsed(before, after), got)
 
 
+@pytest.mark.slow
 def test_initial_containing_foil_unequal_thickness_and_radial_exclusion():
     # The nearest centre is foil 0, but these axial coordinates lie in foil 1.
     g = _geom(foil_z=(5800., 5804.), ht=np.array([.05, 3.]), plane=5810.)

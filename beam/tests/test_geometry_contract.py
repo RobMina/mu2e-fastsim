@@ -28,6 +28,7 @@ def test_invalid_foil_arrays(changes):
         geometry.validate_foils(g, 5.0)
 
 
+@pytest.mark.pr_params("inf")
 @pytest.mark.parametrize("ds", [0.0, -1.0, np.nan, np.inf, 20.01])
 def test_invalid_step_or_spacing(ds):
     with pytest.raises(ValueError):

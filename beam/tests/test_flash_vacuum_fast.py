@@ -143,7 +143,10 @@ def test_vacuum_fast_is_opt_in_and_separate_cache_key():
     assert _build(geom, vacuum_fast=True) is not _build(geom, vacuum_fast=True, skip_empty=True)
 
 
-def test_pure_vacuum_nonzero_field_mixed_terminal_fates_and_lazy_flags():
+# per PR: the default against vacuum_fast alone; with --runslow also against the skip_empty modes
+@pytest.mark.pr_params("vacuum_fast")
+@pytest.mark.parametrize("modes", [({}, {"vacuum_fast": True}), MODES], ids=["vacuum_fast", "skip_empty"])
+def test_pure_vacuum_nonzero_field_mixed_terminal_fates_and_lazy_flags(modes):
     geom = replace(_geom(foil_z=(5000.,), ht=.05, plane=5710.),
                    z_up=5690., z_ds=0., r_wall=1000.)
     x, u = _starts(6, z=5700.)
@@ -160,8 +163,7 @@ def test_pure_vacuum_nonzero_field_mixed_terminal_fates_and_lazy_flags():
 
     steps, state = _run_modes(
         geom, x, u, 20, s_max=2., field=(0., 0., 1.), prepare=lazy,
-        T=[105., 105., 105., 105., .0001, 105.],
-        modes=MODES + ({"vacuum_fast": True},))
+        T=[105., 105., 105., 105., .0001, 105.], modes=modes)
     np.testing.assert_array_equal(state["fate"],
                                   [C.PLANE, C.WALL, C.UPSTREAM, C.LOOPER, C.STOPPED, C.PLANE])
     assert int(steps) == int(state["slab"]["it"]) == 3
@@ -173,11 +175,17 @@ def test_pure_vacuum_nonzero_field_mixed_terminal_fates_and_lazy_flags():
         assert not np.asarray(values).any()
 
 
+@pytest.fixture(scope="module")
+def thin_foil():
+    # one geometry object for every cap: builds are cached per geometry object, and the cap is a traced argument
+    return _geom(foil_z=(5800.,), ht=.05, plane=5805.)
+
+
+@pytest.mark.slow
 @pytest.mark.parametrize("cap", [2, 3, 4], ids=["before-entry", "at-entry", "after-entry"])
-def test_caps_before_at_and_after_thin_foil_entry(cap):
-    geom = _geom(foil_z=(5800.,), ht=.05, plane=5805.)
+def test_caps_before_at_and_after_thin_foil_entry(thin_foil, cap):
     x, u = _starts(4, z=5796.95)
-    steps, state = _run_modes(geom, x, u, cap, msc=True)
+    steps, state = _run_modes(thin_foil, x, u, cap, msc=True)
     assert int(steps) == int(state["slab"]["it"]) == cap
     np.testing.assert_array_equal(state["fate"], C.LIVE)
     if cap < 3:
@@ -193,6 +201,7 @@ def test_caps_before_at_and_after_thin_foil_entry(cap):
         assert np.all(np.asarray(state["slab"]["path"]) > 0.)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("positron", [False, True], ids=["electron", "positron"])
 def test_msc_foil_ipa_opa_ring_crossings_and_photons(positron):
     geom = _geom(foil_z=(5800., 5803.), ht=.25, plane=8000.)
@@ -215,6 +224,7 @@ def test_msc_foil_ipa_opa_ring_crossings_and_photons(positron):
     assert not np.asarray(state["inl"])[30:].any()
 
 
+@pytest.mark.slow
 def test_source_fallback_with_smaller_candidate_and_slab_batches():
     geom = _geom(foil_z=(5800.,), ht=.05, plane=5804.)
     x, u = _starts(8, z=5798.95)
@@ -228,6 +238,7 @@ def test_source_fallback_with_smaller_candidate_and_slab_batches():
     np.testing.assert_array_equal(state["cnt"][:, 0], 1)
 
 
+@pytest.mark.slow
 def test_long_vacuum_500_to_2000_step_chunks_with_short_path_lane():
     geom = _geom(foil_z=(5000.,), ht=.05, plane=8500.)
     geom = replace(geom, beam=replace(geom.beam, ipa_z0=9000., ipa_z1=10000.))

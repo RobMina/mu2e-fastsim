@@ -81,17 +81,33 @@ def test_calo_wall_is_inert_inside_the_bore_and_stops_through_a_thick_wall():
     info = {}
     hit = S.calo_accept([0.0, 0.0, 1.0], c, x, u, np.full(8, T), wall=w, info=info)
     assert not hit.any() and info["al"] == info["cf"] == 0
-    # 8 e- born in the bore inside disk 0's case (r = 162 mm, moving outward to r_max = 520 mm within the case)
-    x, u, _ = _helix_starts(520.0 - R, R, n=2, cos=cos, z=11895.0)
-    x, u = np.repeat(x[1:], 8, 0), np.repeat(u[1:], 8, 0)
-    vac = S.calo_accept([0.0, 0.0, 1.0], c, x, u, np.full(8, T))
-    info = {}
-    S.calo_accept([0.0, 0.0, 1.0], c, x, u, np.full(8, T), wall=w, rng=np.random.default_rng(3), info=info)
+    x, u = _wall_starts(R, cos)
     thick = S.CaloWall(w.case_lo, w.case_hi, 200.0, 356.0, 360.0, 200.0)   # 156 mm of Al along each whole case
     info2 = {}
     hit2 = S.calo_accept([0.0, 0.0, 1.0], c, x, u, np.full(8, T), wall=thick, rng=np.random.default_rng(3),
                          info=info2)
-    assert vac.all() and info["cf"] == 8 and info2["al"] == 8 and not hit2.any()
+    assert info2["al"] == 8 and not hit2.any()
+
+
+def _wall_starts(R, cos):
+    # 8 e- born in the bore inside disk 0's case (r = 162 mm, moving outward to r_max = 520 mm within the case)
+    x, u, _ = _helix_starts(520.0 - R, R, n=2, cos=cos, z=11895.0)
+    return np.repeat(x[1:], 8, 0), np.repeat(u[1:], 8, 0)
+
+
+@pytest.mark.slow   # opt-in calo_model='wall'; the bore and thick-wall cases above run per PR
+def test_calo_wall_stock_rings_are_crossed_by_electrons_that_reach_the_crystals_in_vacuum():
+    c = S.calo_from_config(CALO)
+    w = S.calo_wall_from_config(CALO, c)
+    T = 103.0
+    p = math.sqrt(T * (T + 2 * 0.51099895))
+    cos = 0.15
+    R = math.sqrt(1 - cos ** 2) * p / (0.299792458 * 1.0)
+    x, u = _wall_starts(R, cos)
+    vac = S.calo_accept([0.0, 0.0, 1.0], c, x, u, np.full(8, T))
+    info = {}
+    S.calo_accept([0.0, 0.0, 1.0], c, x, u, np.full(8, T), wall=w, rng=np.random.default_rng(3), info=info)
+    assert vac.all() and info["cf"] == 8
 
 
 def test_gaussian_kernel_and_density_kernel_keep_their_totals():

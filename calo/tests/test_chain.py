@@ -11,9 +11,14 @@ from calofastsim.readout import ReadoutConfig  # noqa: E402
 from test_cluster import _geometry  # noqa: E402
 
 
-def test_single_deposit_round_trip():
+@pytest.fixture(scope="module")
+def pulse():
+    # one pulse cache for the module: the compiled template fit is cached per pulse object
     x = (np.arange(6200) + 0.5) * 0.05
-    pulse = PulseCache.from_histogram((x / 20.0) ** 2 * np.exp(-x / 10.0), 0.0, 310.0, 5.0)
+    return PulseCache.from_histogram((x / 20.0) ** 2 * np.exp(-x / 10.0), 0.0, 310.0, 5.0)
+
+
+def test_single_deposit_round_trip(pulse):
     geom = _geometry()
     n_ev = 3
     timing = {"pbtime": np.full(n_ev, -200.0, np.float32), "mbtime": np.full(n_ev, 1695.0, np.float32),
@@ -32,12 +37,11 @@ def test_single_deposit_round_trip():
     assert list(cl["size"]) == [1, 2]
 
 
+@pytest.mark.pr_params("no_steps-False-jax")
 @pytest.mark.parametrize("backend", ["numpy", "jax"])
 @pytest.mark.parametrize("with_noise", [False, True])
 @pytest.mark.parametrize("case", ["no_events", "no_steps", "subthreshold"])
-def test_empty_digis_propagate_through_chain(backend, with_noise, case):
-    x = (np.arange(6200) + 0.5) * 0.05
-    pulse = PulseCache.from_histogram((x / 20.0) ** 2 * np.exp(-x / 10.0), 0.0, 310.0, 5.0)
+def test_empty_digis_propagate_through_chain(pulse, backend, with_noise, case):
     n_events = 0 if case == "no_events" else 3
     n_steps = 1 if case == "subthreshold" else 0
     timing = {"pbtime": np.full(n_events, -200.0, np.float32), "mbtime": np.full(n_events, 1695.0, np.float32),

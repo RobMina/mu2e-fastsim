@@ -11,6 +11,7 @@ from test_flash_target_jax import _geom, _starts, KEY
 from test_flash_vacuum_fast import _exact, _bucket_roundoff
 
 
+@pytest.mark.pr_params("4")
 @pytest.mark.parametrize("bucket", [1, 4, 16])
 def test_compact_tail_caps_padding_and_material_fallback(bucket):
     geom = _geom(foil_z=(5800., 5803.), ht=.25, plane=5810.)
@@ -32,6 +33,7 @@ def test_compact_tail_caps_padding_and_material_fallback(bucket):
     _bucket_roundoff(*outputs)
 
 
+@pytest.mark.slow
 def test_compact_vacuum_reaches_cap_and_preserves_dead_rows():
     geom = _geom(foil_z=(5000.,), ht=.05, plane=8500.)
     x, u = _starts(8, z=5700.)

@@ -230,6 +230,7 @@ def test_empty_charge_plot(tmp_path):
     assert (tmp_path / 'settings.png').read_bytes().startswith(b'\x89PNG')
 
 
+@pytest.mark.slow   # subprocess re-run
 def test_saved_only_cli_no_sidecars_or_transport(tmp_path):
     paths = [tmp_path / (name + '.npz') for name in ('reference', 'baseline', 'candidate')]
     for path, table in zip(paths, tables()):

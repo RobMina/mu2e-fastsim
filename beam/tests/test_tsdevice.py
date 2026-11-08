@@ -118,6 +118,7 @@ def test_full_gather_bucket_defers_lanes(monkeypatch):
     assert not np.any(fate == dev.UNCONVERGED)
 
 
+@pytest.mark.slow   # statistical, 4000 pions
 def test_pion_decay_fraction():
     out = _run(Tube(), 211, 100.0, n=4000)
     prob = 1 - np.exp(-100 * phys.MPI / (100 * phys.C_MM_NS * phys.TAU_PI_NS))

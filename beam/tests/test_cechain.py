@@ -1,4 +1,6 @@
 """Unit tests: conversion-electron chain to the tracker entry plane (beamfastsim.cechain) in a uniform field."""
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -40,6 +42,7 @@ def test_vacuum_helix_reaches_the_plane_with_unchanged_momentum_and_light_speed_
     assert (rplane <= rmax + 1e-6).all()
 
 
+@pytest.mark.slow   # NumPy msc chain through foils: minutes at any sample size
 def test_birth_in_a_foil_loses_energy_and_counts_the_crossing():
     rng = np.random.default_rng(2)
     g = _geom()
@@ -53,6 +56,26 @@ def test_birth_in_a_foil_loses_energy_and_counts_the_crossing():
     loss = T0 - res.T[reached]
     assert 0.0 <= loss.min() and np.median(loss) < 1.0
     assert set(np.unique(res.fate)) <= set(range(len(C.FATES)))
+
+
+def test_foil_births_without_msc_cross_foils_and_shells_to_the_plane():
+    # the per-PR material path of the NumPy chain (the msc version above runs with --runslow): births inside the
+    # foils, IPA and OPA crossings; msc off keeps the slab stepping short
+    rng = np.random.default_rng(9)
+    g = replace(_geom(foil_z=tuple(5800.0 + 22.0 * np.arange(5)), ipa=(300.0, 0.5, 6000.0, 7000.0)),
+                ring_t=9.525, ring_hl=6.35)
+    n = 6
+    k = rng.integers(0, 5, n)
+    r = np.sqrt(rng.uniform(21.5 ** 2, 75.0 ** 2, n))
+    ph = rng.uniform(0, 2 * np.pi, n)
+    x = np.stack([AXIS + r * np.cos(ph), r * np.sin(ph), g.beam.foil_z[k] + rng.uniform(-0.05, 0.05, n)], axis=1)
+    res = C.transport(rng, g, [0.0, 0.0, 1.0], x, C.isotropic(rng, n), C.P_CE_AL, 0.0, msc=False)
+    T0 = np.hypot(C.P_CE_AL, 0.511) - 0.511
+    assert (res.nfoil >= 1).all() and res.nipa.sum() > 0 and res.nopa.sum() > 0
+    assert (res.fate == C.PLANE).all()
+    assert np.allclose(res.x[:, 2], g.z_plane, atol=1e-6)
+    assert (res.T < T0).all() and (res.T > 0).all()
+    assert (res.t >= res.path / C.C_MM_NS - 1e-6).all()
 
 
 def test_helix_rmax_follows_the_charge_sign():

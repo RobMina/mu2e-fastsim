@@ -11,9 +11,16 @@ from test_flash_target_jax import _geom, _starts, KEY
 from test_flash_vacuum_fast import _exact
 
 
+@pytest.fixture(scope="module")
+def two_foils():
+    # one geometry object for both runners: builds are cached per geometry object
+    return _geom(foil_z=(5800., 5803.), ht=.25, plane=5810.)
+
+
+@pytest.mark.slow   # runner internals; public hybrid A/B per PR
 @pytest.mark.parametrize("adaptive", [False, True])
-def test_handoffs_caps_and_canonical_rng(adaptive):
-    geom = _geom(foil_z=(5800., 5803.), ht=.25, plane=5810.)
+def test_handoffs_caps_and_canonical_rng(two_foils, adaptive):
+    geom = two_foils
     x, u = _starts(8, z=5790.)
     init, run = FN._build(geom, np.float64, 1., 30000., False, True, True, False,
                           (0., 0., 1.), photon_capacity=32, skip_empty=True)

@@ -112,6 +112,7 @@ def _event(rng, n_ro):
     return ros
 
 
+@pytest.mark.pr_params("jax")
 @pytest.mark.parametrize("backend", ["numpy", "jax"])
 def test_noise_off_matches_reference(pulse, backend):
     if backend == "jax":
