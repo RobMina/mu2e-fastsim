@@ -55,8 +55,9 @@ def prepare(c, capacities, batch_events):
 
     apply(collection, timing, assets, key) returns (masked digi columns, errors).
     timing contains mc_pbtime, event_length and event_mask, including empty events.
-    Float64 is the supported tracker mode; float32 relative-frame handling is not
-    silently omitted. The current conditions' no-noise/no-crosstalk scope is retained.
+    The tracker device float follows trkfastsim.devfloat: float64, or float32 with the staged
+    digitiser's relative frames (positions to the straw middle, times to whole COMMON_PERIODs,
+    per-straw n_ref in the electronics). The no-noise/no-crosstalk scope is retained.
     """
     import jax
     import jax.numpy as jnp
@@ -70,8 +71,12 @@ def prepare(c, capacities, batch_events):
     for value in c.a.values():
         value.setflags(write=False)
     cap = capacities if isinstance(capacities, Capacities) else Capacities(**capacities)
-    if df.SINGLE or not jax.config.x64_enabled:
-        raise ValueError("resident tracker currently requires float64 and JAX_ENABLE_X64=1")
+    if not jax.config.x64_enabled:
+        raise ValueError("resident tracker requires JAX_ENABLE_X64=1")
+    rel = df.SINGLE   # float32: the staged digitiser's relative position and time frames
+    if rel:
+        df.check_common_period(c)
+    period = df.COMMON_PERIOD
     if type(batch_events) is not int or batch_events < 1:
         raise ValueError("batch_events must be positive")
     energies, probabilities = np.asarray(c.EIonize), np.asarray(c.intNProb)
@@ -96,7 +101,8 @@ def prepare(c, capacities, batch_events):
         spec((2,), np.uint32), spec(wave, np.float64), spec(wave, np.float64), spec(wave, np.float64),
         spec(wave, np.int64), spec((2 * batch,), np.int32), spec((batch,), np.int64),
         spec((batch,), bool), spec((batch,), np.int64), spec((batch,), bool), spec((batch,), np.float64),
-        event_end_tdc=spec((batch,), np.int64), window_end=spec((batch,), np.float64))
+        event_end_tdc=spec((batch,), np.int64), window_end=spec((batch,), np.float64),
+        **({"n_ref": spec((batch,), np.int64)} if rel else {}))
     assets = {"energies": energies, "probabilities": probabilities, "straw_dir": np.asarray(c.straw_dir),
               "all_planes": np.asarray(c.allPlanes, np.int64),
               "charge_kernel": charge_kernel.assets, "electronics_kernel": electronics_kernel.assets}
@@ -108,9 +114,39 @@ def prepare(c, capacities, batch_events):
             spec((2,), np.uint32), spec(lw, np.float64), spec(lw, np.float64), spec(lw, np.float64),
             spec(lw, np.int64), spec((2 * lb,), np.int32), spec((lb,), np.int64),
             spec((lb,), bool), spec((lb,), np.int64), spec((lb,), bool), spec((lb,), np.float64),
-            event_end_tdc=spec((lb,), np.int64), window_end=spec((lb,), np.float64)))
+            event_end_tdc=spec((lb,), np.int64), window_end=spec((lb,), np.float64),
+            **({"n_ref": spec((lb,), np.int64)} if rel else {})))
     if tier_kernels:
         assets["electronics_tier_kernels"] = tuple(kernel.assets for kernel in tier_kernels)
+    if rel:
+        assets["straw_mid"] = np.asarray(c.straw_mid, np.float64)
+
+    def sample_frame(st, idx, p0, p1, assets):
+        """float32: step points relative to their straw middle, as digi_clusters_jax.make_clusters."""
+        if not rel:
+            return p0, p1, None
+        ref = assets["straw_mid"][st["us"][idx]]
+        return p0 - ref, p1 - ref, ref
+
+    def absolute(pos, ref):
+        return pos if ref is None else pos.astype(jnp.float64) + ref[:, None, :]
+
+    def electronics_call(kernel, kernel_assets, key, t, q, w, step, count, width, batch, us, ra, skey, live,
+                         jitter, endtdc, lengths):
+        """One electronics block; float32 times relative to n_ref whole COMMON_PERIODs per straw, as digi_jax."""
+        extra = {}
+        if rel:
+            valid = jnp.arange(width)[None, None, :] < count[:, :, None]
+            first = jnp.min(jnp.where(valid, t, jnp.inf), axis=(1, 2))
+            nref = jnp.where(jnp.isfinite(first), jnp.floor(first / period), 0).astype(jnp.int64)
+            t = t - (nref * period)[:, None, None]
+            extra = {"n_ref": nref}
+        result = kernel.apply(kernel_assets, random.key_data(random.fold_in(key, 3)),
+            *tuple(v.reshape(2 * batch, width) for v in (t, q, w, step)),
+            count.reshape(-1), us, ra, skey, live, jitter, event_end_tdc=endtdc, window_end=lengths, **extra)
+        if rel:
+            result = {**result, "t_analog": result["t_analog"].astype(jnp.float64) + (nref * period)[:, None, None]}
+        return result
     ncharge = ((cap.drift_clusters + dj.CHARGE_BLOCK - 1) // dj.CHARGE_BLOCK) * dj.CHARGE_BLOCK
     sentinel = np.iinfo(np.int64).max
 
@@ -119,9 +155,11 @@ def prepare(c, capacities, batch_events):
         p1 = jnp.stack([st[name][idx] for name in ("x1", "y1", "z1")], axis=1)
         direction = assets["straw_dir"][st["us"][idx]] if c.randrad else jnp.zeros_like(p0)
         width = st["width"][idx] if c.randrad else jnp.zeros_like(st["width"][idx])
-        return dc._sample(key, idx, st["eion"][idx], bounded, minion, p0, p1, direction, width,
-                          c.EAverage, assets["energies"], assets["probabilities"],
-                          capacity, dc.MINION_UNROLL, dc.SEARCH_METHOD)
+        p0, p1, ref = sample_frame(st, idx, p0, p1, assets)
+        pos, ne = dc._sample(key, idx, st["eion"][idx], bounded, minion, p0, p1, direction, width,
+                             c.EAverage, assets["energies"], assets["probabilities"],
+                             capacity, dc.MINION_UNROLL, dc.SEARCH_METHOD)
+        return absolute(pos, ref), ne
 
     def clusters_tiered(st, selected, assets, key):
         """Two capacities with the same draws: per-slot keys do not depend on the padded width.
@@ -193,9 +231,11 @@ def prepare(c, capacities, batch_events):
         p1 = jnp.stack([st[name] for name in ("x1", "y1", "z1")], axis=1)
         direction = assets["straw_dir"][st["us"]] if c.randrad else jnp.zeros_like(p0)
         width = st["width"] if c.randrad else jnp.zeros_like(st["width"])
-        pos, ne = dc._sample(key, idx, st["eion"], bounded, minion, p0, p1, direction, width,
+        q0, q1, ref = sample_frame(st, idx, p0, p1, assets)
+        pos, ne = dc._sample(key, idx, st["eion"], bounded, minion, q0, q1, direction, width,
                              c.EAverage, assets["energies"], assets["probabilities"],
                              cap.clusters_per_step, dc.MINION_UNROLL, dc.SEARCH_METHOD)
+        pos = absolute(pos, ref)
         mask = jnp.arange(cap.clusters_per_step) < bounded[:, None]
         repeats = jnp.concatenate([single.astype(jnp.int64),
                     jnp.where(mask, jnp.where(minion[:, None], ne, 1), 0).reshape(-1)])
@@ -216,6 +256,10 @@ def prepare(c, capacities, batch_events):
         pos = jnp.pad(cluster["pos"], ((0, pad), (0, 0)))
         ne = jnp.pad(cluster["ne"], (0, pad), constant_values=1)
         times = jnp.pad(st["time"][cluster["step"]], (0, pad))
+        if rel:   # float32: positions relative to the straw middle, times to whole COMMON_PERIODs, as digi_jax
+            pos = pos - assets["straw_mid"][us]
+            cref = period * jnp.floor(times / period)
+            times = times - cref
         arrays = (jnp.arange(ncharge // dj.CHARGE_BLOCK, dtype=jnp.int64) * dj.CHARGE_BLOCK,
                   us.reshape(-1, dj.CHARGE_BLOCK), pos.reshape(-1, dj.CHARGE_BLOCK, 3),
                   ne.reshape(-1, dj.CHARGE_BLOCK), times.reshape(-1, dj.CHARGE_BLOCK))
@@ -225,6 +269,8 @@ def prepare(c, capacities, batch_events):
                 random.key_data(random.fold_in(random.fold_in(key, 1), first)), us_, pos_, ne_, time_)
         result = lax.map(block, arrays)
         gt, charge, wd = tuple(value.reshape((-1,) + value.shape[2:])[:cap.drift_clusters] for value in result)
+        if rel:
+            gt = (cref[:cap.drift_clusters, None] + gt.astype(jnp.float64)).astype(jnp.float32)
         error = jnp.any(cluster["mask"] & (~jnp.isfinite(charge) | ~jnp.all(jnp.isfinite(gt) & jnp.isfinite(wd), axis=1)))
         return gt, charge, wd, error
 
@@ -286,10 +332,8 @@ def prepare(c, capacities, batch_events):
         groups = tuple(value.reshape((-1, batch) + value.shape[1:]) for value in packed)
         def block(inputs):
             t, q, w, step, count, us, ra, skey, live, jitter, endtdc, lengths = inputs
-            result = electronics_kernel.apply(assets["electronics_kernel"], random.key_data(random.fold_in(key, 3)),
-                *tuple(value.reshape(2 * batch, cap.clusters_per_end) for value in (t, q, w, step)),
-                count.reshape(-1), us, ra, skey, live, jitter, event_end_tdc=endtdc, window_end=lengths)
-            return result
+            return electronics_call(electronics_kernel, assets["electronics_kernel"], key, t, q, w, step, count,
+                                    cap.clusters_per_end, batch, us, ra, skey, live, jitter, endtdc, lengths)
         result = lax.map(block, groups)
         output = {name: result[name].reshape((-1,) + result[name].shape[3:])
                   for name in ("adc", "tdc", "tot", "pmp", "step", "t_analog")}
@@ -376,9 +420,8 @@ def prepare(c, capacities, batch_events):
 
             def block(inputs):
                 t, q, w, step, count, us, ra, skey, live, jitter, endtdc, lengths = inputs
-                return kernel.apply(kernel_assets, random.key_data(random.fold_in(key, 3)),
-                    *tuple(v.reshape(2 * batch, width) for v in (t, q, w, step)),
-                    count.reshape(-1), us, ra, skey, live, jitter, event_end_tdc=endtdc, window_end=lengths)
+                return electronics_call(kernel, kernel_assets, key, t, q, w, step, count, width, batch,
+                                        us, ra, skey, live, jitter, endtdc, lengths)
             result = lax.map(block, groups)
             out = {name: result[name].reshape((-1,) + result[name].shape[3:])
                    for name in ("adc", "tdc", "tot", "pmp", "step", "t_analog")}
@@ -457,5 +500,5 @@ def prepare(c, capacities, batch_events):
     return SimpleNamespace(assets=assets, apply=apply, clusters=clusters, drift=drift, pack=pack,
                            electronics=electronics, capacities=cap,
                            metadata={"physics": "existing tracker JAX ionisation/drift/electronics kernels",
-                                     "precision": "float64", "capacity_policy": "reject; no fallback",
+                                     "precision": df.NAME, "capacity_policy": "reject; no fallback",
                                      "reconstruction": "not implemented"})
