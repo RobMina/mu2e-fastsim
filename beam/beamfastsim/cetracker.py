@@ -196,11 +196,13 @@ class DeviceChain:
     trkfastsim.recoresp.table), "default" (the tables shipped with trkfastsim.recoresp) or None (no track
     observables). digi_cond: device digitiser conditions (.npz,
     trkfastsim.digi.digicond) or None (no digis). ce_unroll, ce_shrink: cechain_jax's unroll and bucket shrink
-    factor (a large shrink compacts less often and compiles fewer bucket shapes)."""
+    factor (a large shrink compacts less often and compiles fewer bucket shapes). digi_chunk: events per digitiser
+    call. resident_digis: use trkfastsim.digi.digi_resident (the same digis as digi_jax for the same keys and chunks,
+    with the packing on the device; float64 tracker device float only, else digi_jax)."""
 
     def __init__(self, offline_root, maps, gdml, geom="Offline/Mu2eG4/geom/geom_2021_PhaseI_v03.txt",
                  response=None, digi_cond=None, dtype="float64", origin=ORIGIN, chord_mm=10.0, lanes=None,
-                 ce_unroll=True, ce_shrink=2):
+                 ce_unroll=True, ce_shrink=2, digi_chunk=2000, resident_digis=True):
         import jax  # noqa: F401  (device backend)
         from mu2efastsim import ehelix
         from trkfastsim.sim import fieldsteps_jax as FJ
@@ -209,6 +211,8 @@ class DeviceChain:
         self.lanes = lanes
         self.ce_unroll = ce_unroll
         self.ce_shrink = ce_shrink                 # cechain_jax compaction: bucket shrink factor (2 = its default)
+        self.digi_chunk = digi_chunk
+        self.resident_digis = resident_digis       # trkfastsim.digi.digi_resident: same digis, packing on the device
         self.cg = cechain.from_offline(geom, offline_root)
         self.maps = cechain_jax.device_maps(maps, self.dt)
         org = np.asarray(origin, float)
@@ -267,21 +271,35 @@ class DeviceChain:
         return dict(cechain=r, has_entry=has, x=r.x, p=pe, t=r.t, tracker=trk, nrow=nrow,
                     timing=dict(cechain_s=round(t_ce, 3), tracker_s=round(t_trk, 3)))
 
-    def digitize(self, res, seed, event_timing=None, chunk=2000):
+    def digitize(self, res, seed, event_timing=None, chunk=None):
         """Device digitiser on the chain's steps (trkfastsim.digi.digi_jax; its host packing reads the steps once).
         event_timing: pbtime and event_length per event (default 0 and the conditions' event window). Returns the
         digis (host arrays, `ev` = event index of the batch). chunk: events per digitiser call (fewer, larger calls
         are faster); a chunk beyond the digitiser's cluster capacity is split in two and retried. The random stream
         depends on the chunking (keys are folded with each chunk's first event)."""
         import jax
+        import jax.numpy as jnp
+        from trkfastsim import devfloat
         from trkfastsim.digi import digi_jax
+        chunk = self.digi_chunk if chunk is None else chunk
         s = res["tracker"].steps
-        valid = np.asarray(s["valid"])
-        tr, sl = np.nonzero(valid)
-        st = {k: np.asarray(s[k])[tr, sl] for k in ("shape", "ion", "eion", "len", "width", "t", "x0", "y0", "z0",
+        resident = self.resident_digis and not devfloat.SINGLE
+        if resident:                                   # flat steps on the device, in (event, passage) order
+            from trkfastsim.digi import digi_resident
+            valid = s["valid"]
+            nv = int(valid.sum())
+            tr, sl = jnp.nonzero(valid, size=nv)
+            xp = jnp
+            digi_fn = digi_resident.digitize
+        else:
+            valid = np.asarray(s["valid"])
+            tr, sl = np.nonzero(valid)
+            xp = np
+            digi_fn = digi_jax.digitize
+        st = {k: xp.asarray(s[k])[tr, sl] for k in ("shape", "ion", "eion", "len", "width", "t", "x0", "y0", "z0",
                                                     "x1", "y1", "z1")}
-        st["sid"] = ((np.asarray(s["plane"])[tr, sl].astype(np.int64) << 10)
-                     | (np.asarray(s["panel"])[tr, sl].astype(np.int64) << 7) | np.asarray(s["straw"])[tr, sl])
+        st["sid"] = ((xp.asarray(s["plane"])[tr, sl].astype(np.int64) << 10)
+                     | (xp.asarray(s["panel"])[tr, sl].astype(np.int64) << 7) | xp.asarray(s["straw"])[tr, sl])
         st["ev"] = tr.astype(np.int64)
         nev = valid.shape[0]
         if event_timing is None and self.cond.onspill:
@@ -291,23 +309,32 @@ class DeviceChain:
         todo = [(e0, min(chunk, nev - e0)) for e0 in range(0, nev, chunk)]
         while todo:                                   # event chunks, as fastdigi.digitize_steps (cluster capacity)
             e0, ne = todo.pop(0)
-            m = (st["ev"] >= e0) & (st["ev"] < e0 + ne)
-            if not m.any():
-                continue
-            sub = {k: v[m] for k, v in st.items()}
+            if resident:                               # steps are in event order: a contiguous slice
+                a, b = (int(x) for x in jnp.searchsorted(st["ev"], jnp.array([e0, e0 + ne])))
+                m = np.zeros(0)
+                if b == a:
+                    continue
+                sub = {k: v[a:b] for k, v in st.items()}
+            else:
+                m = (st["ev"] >= e0) & (st["ev"] < e0 + ne)
+                if not m.any():
+                    continue
+                sub = {k: v[m] for k, v in st.items()}
             sub["ev"] = sub["ev"] - e0
             kw = {} if event_timing is None else {"event_timing": {k: np.asarray(v)[e0:e0 + ne]
                                                                    for k, v in event_timing.items()}}
             try:
-                d = digi_jax.digitize(sub, ne, self.cond, jax.random.fold_in(key, e0), **kw)
+                d = digi_fn(sub, ne, self.cond, jax.random.fold_in(key, e0), **kw)
             except OverflowError:                     # beyond the digitiser's cluster capacity: halve the chunk
                 if ne == 1:
                     raise
                 h = ne // 2
                 todo[:0] = [(e0, h), (e0 + h, ne - h)]
                 continue
+            d = {k: np.asarray(v) for k, v in d.items()}
             d["ev"] = d["ev"] + e0
-            d["step"] = np.flatnonzero(m)[d["step"]] if len(d["step"]) else d["step"]   # row of the flat steps
+            rows = np.arange(a, b) if resident else np.flatnonzero(m)
+            d["step"] = rows[d["step"]] if len(d["step"]) else d["step"]   # row of the flat steps
             outs.append(d)
         if not outs:
             return digi_jax._empty(self.cond)
