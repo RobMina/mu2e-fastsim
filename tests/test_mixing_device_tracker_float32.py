@@ -38,6 +38,7 @@ def _steps(c, helpers):
                           ev=[0, 0, 0, 2, 2, 2, 1])
 
 
+@pytest.mark.pr_params("True")   # onspill is the mixing mode
 @pytest.mark.parametrize("onspill", [False, True])
 def test_float32_device_matches_staged_float32(cond, helpers, onspill):
     from trkfastsim.digi import digi_jax as reference
@@ -56,6 +57,7 @@ def test_float32_device_matches_staged_float32(cond, helpers, onspill):
     _same(got, expected)
 
 
+@pytest.mark.slow   # tiers per PR: the float64 test_long_step_and_end_tiers_digis_equal_wide
 def test_float32_tiered_capacities_equal_wide(cond, helpers):
     from trkfastsim.digi.digicond import Conditions
     c = Conditions(cond.s, cond.a)
