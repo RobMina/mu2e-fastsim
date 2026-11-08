@@ -88,6 +88,16 @@ block per sequential step. Every block keeps its key (`fold_in(key, 1)` then its
 cluster offset), so outputs equal the one-block path; `drift_clusters` is padded to a
 multiple of `G x 4096`. Without the key the drift is unchanged.
 
+## Saturation-grouped electronics (opt-in)
+
+`saturation_groups: true` (with `end_tiers`) orders each tier's straws so that those whose
+largest possible linear response exceeds the saturation voltage come first. The electronics
+kernel computes the saturation response for a whole group of straws whenever any straw in it
+saturates. Keeping saturating straws together lets most groups skip it. The estimate uses the
+kernel's own criterion in float64. It only reorders straws: the kernel still decides saturation
+per straw, every straw keeps its own keys, and outputs are sorted afterwards, so digis are
+identical with and without it.
+
 ## float32
 
 With `TRKFASTSIM_DEVICE_FLOAT=core` and `MU2EFS_DEVICE_FLOAT=float32` the adapter follows the

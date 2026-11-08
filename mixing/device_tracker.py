@@ -22,11 +22,16 @@ class Capacities:
     clusters_per_long_step: int = None
     end_tiers: tuple = None
     charge_blocks_per_launch: int = None
+    saturation_groups: bool = False
 
     def __post_init__(self):
         optional = ("long_steps", "clusters_per_long_step", "end_tiers", "charge_blocks_per_launch")
         for name, value in vars(self).items():
             if name == "end_tiers" or (name in optional and value is None):
+                continue
+            if name == "saturation_groups":
+                if type(value) is not bool:
+                    raise ValueError("tracker saturation_groups must be true or false")
                 continue
             if type(value) is not int or value < 1:
                 raise ValueError(f"tracker {name} must be a positive integer")
@@ -119,6 +124,12 @@ def prepare(c, capacities, batch_events):
             **({"n_ref": spec((lb,), np.int64)} if rel else {})))
     if tier_kernels:
         assets["electronics_tier_kernels"] = tuple(kernel.assets for kernel in tier_kernels)
+    if cap.saturation_groups:
+        if cap.end_tiers is None:
+            raise ValueError("tracker saturation_groups needs end_tiers")
+        assets["saturation"] = {"wire_points": np.asarray(c.a["wire_points"], np.float64),
+                                "linmax": np.asarray(c.a["linmax"], np.float64),
+                                "dvdi_thresh": np.asarray(c.a["dvdi_thresh"], np.float64)}
     if rel:
         assets["straw_mid"] = np.asarray(c.straw_mid, np.float64)
 
@@ -359,6 +370,29 @@ def prepare(c, capacities, batch_events):
                   "saturation_capacity": jnp.any(result["sat_overflow"])}
         return output, errors
 
+    def saturation_estimate(sorted_label, order, ghost_src, charge, wd, lo, hi, live, assets):
+        """Per straw: does either end's largest possible linear response exceed the saturation voltage?
+
+        The electronics kernel's own criterion (sum over the end's clusters of linmax x charge x dV/dI), evaluated in
+        float64 from the time-ordered ghost list. It only orders straws; a wrong estimate costs time, not digis.
+        """
+        a = assets["saturation"]
+        wp = a["wire_points"]
+        valid = sorted_label != sentinel
+        src = ghost_src[order]
+        index, end = src // 2, src % 2
+        sid = jnp.where(valid, sorted_label // 2, 0) % 65536
+        us = ((sid >> 10) * 6 + ((sid >> 7) & 7)) * 96 + (sid & 127)
+        w = wd[index, end].astype(jnp.float64)
+        dk = jnp.clip(jnp.searchsorted(wp, w, side="right") - 1, 0, wp.shape[0] - 2)
+        frac = 1 - (w - wp[dk]) / (wp[dk + 1] - wp[dk])
+        sn = us % 96
+        linear = (a["linmax"][dk, 0, sn] * frac + a["linmax"][dk + 1, 0, sn] * (1 - frac)) * charge[index]
+        linear = jnp.where(valid, linear * a["dvdi_thresh"][us], 0.)
+        total = jnp.concatenate([jnp.zeros(1), jnp.cumsum(linear)])
+        maxposs = total[hi] - total[lo]                               # [straws, 2]
+        return live & jnp.any(maxposs > c.saturationVoltage, axis=1)
+
     def pack_tiered(st, cluster, gt, charge, wd, timing, key, assets):
         """As pack, but a straw whose busiest end exceeds clusters_per_end goes to the narrowest end tier that holds it.
 
@@ -404,6 +438,16 @@ def prepare(c, capacities, batch_events):
         lengths = timing["event_length"][straw_ev]
         endtdc = jnp.clip(jnp.floor(lengths / c.TDCLSB), 0, c.maxTDC).astype(jnp.int64)
         busiest = jnp.where(live, counts.max(axis=1), 0)
+        saturating = saturation_estimate(sorted_label, order, ghost_src, charge, wd, lo, hi, live, assets) \
+            if cap.saturation_groups else None
+
+        def members(member, size):
+            """Member straw slots. With saturation_groups, straws likely to saturate come first, so the electronics
+            groups that hold none skip the saturation response; the kernel still decides saturation per lane, so
+            digis do not depend on this order."""
+            if saturating is None:
+                return jnp.nonzero(member, size=size, fill_value=0)[0]
+            return jnp.argsort(jnp.where(member, jnp.where(saturating, 0, 1), 2), stable=True)[:size]
 
         def gather(sel, slive, width):
             cnt = jnp.where(slive[:, None], counts[sel], 0)
@@ -417,12 +461,15 @@ def prepare(c, capacities, batch_events):
 
         edges = [cap.clusters_per_end] + [width for _, width in cap.end_tiers]
         tier = jnp.searchsorted(jnp.array(edges), busiest, side="left")   # 0 = narrow, k = end_tiers[k-1]
-        packed = [gather(jnp.arange(cap.straws), live & (tier == 0), cap.clusters_per_end)]
+        narrow = live & (tier == 0)
+        if saturating is None:
+            packed = [gather(jnp.arange(cap.straws), narrow, cap.clusters_per_end)]
+        else:
+            packed = [gather(members(narrow, cap.straws), jnp.arange(cap.straws) < narrow.sum(), cap.clusters_per_end)]
         errors = {"straws": nstraw > cap.straws, "clusters_per_end": jnp.any(live & (busiest > edges[-1]))}
         for k, (straws, width) in enumerate(cap.end_tiers, start=1):
             member = live & (tier == k)
-            sel = jnp.nonzero(member, size=straws, fill_value=0)[0]
-            packed.append(gather(sel, jnp.arange(straws) < member.sum(), width))
+            packed.append(gather(members(member, straws), jnp.arange(straws) < member.sum(), width))
             errors[f"end_tier_{k}_straws"] = member.sum() > straws
         return tuple(packed), errors
 

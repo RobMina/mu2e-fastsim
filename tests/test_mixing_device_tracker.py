@@ -371,3 +371,28 @@ def test_batched_charge_blocks_equal_sequential(cond, group):
         np.testing.assert_array_equal(x, y)
     with pytest.raises(ValueError, match="positive"):
         Capacities(4, n, 1, 4, 1, 1, charge_blocks_per_launch=0)
+
+
+@pytest.mark.parametrize("onspill", [False, True])
+def test_saturation_groups_same_digis(cond, helpers, onspill):
+    """Reordering straws by expected saturation leaves every digi unchanged."""
+    from trkfastsim.digi.digicond import Conditions
+    c = Conditions(cond.s, cond.a)
+    c.s["onspill"] = onspill
+    st = helpers._steps([helpers._step(c, 520, eion=3e-3), helpers._step(c, 520, t=40.), helpers._step(c, 521, ion=1),
+                         helpers._step(c, 522), helpers._step(c, 92, t=100.), helpers._step(c, 523, t=900., eion=5e-3),
+                         helpers._step(c, 524), helpers._step(c, 524, t=7.), helpers._step(c, 525, t=300.)],
+                        ev=[0, 0, 0, 1, 1, 2, 2, 2, 1])
+    times = timing([1700., 1675., 1695.] if onspill else [100000.] * 3, [10., -5., 20.])
+    base = dict(clusters_per_step=64, drift_clusters=4096, straws=8, clusters_per_end=16, pairs_per_straw=8,
+                electronics_batch=2, end_tiers=[(8, 64), (8, 1024)])
+    a, ae = evaluate(prepare(c, Capacities(**base), 3), collection(st, 16), times)
+    b, be = evaluate(prepare(c, Capacities(**base, saturation_groups=True), 3), collection(st, 16), times)
+    assert not any(ae.values()) and not any(be.values()), (ae, be)
+    assert len(a["sid"]) > 0
+    for name in a:
+        np.testing.assert_array_equal(a[name], b[name], err_msg=name)
+    with pytest.raises(ValueError, match="saturation_groups"):
+        Capacities(**base, saturation_groups=1)
+    with pytest.raises(ValueError, match="needs end_tiers"):
+        prepare(c, Capacities(64, 4096, 8, 16, 8, 2, saturation_groups=True), 3)
