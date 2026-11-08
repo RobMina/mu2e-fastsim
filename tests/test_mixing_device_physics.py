@@ -192,6 +192,8 @@ def test_occupancy_output_rejected_without_device_backend(tmp_path):
         run(args, Pool, Host)
 
 
+@pytest.mark.slow   # its own physical-stream compile (~40 s); per PR: test_mixing_device_capacity (demand
+#                     derivation, overflow detail) and test_combined_physical_stream_roundtrip
 def test_capacity_usage_matches_tables_and_overflow_names_demand(template, cond, tmp_path):
     """Demand counters ride in the batch metrics; an overflow names its demand and capacity and writes nothing."""
     from types import SimpleNamespace
