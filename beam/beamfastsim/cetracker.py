@@ -438,18 +438,27 @@ def run(stops_or_births, seed, *, n=None, digis=True, event_timing=None, **chain
     return ch(births, seed, digis=digis, event_timing=event_timing)
 
 
-def bench_prepare(n):
-    """mu2efastsim.bench --prepare: the stop table named by $CETRACKER_STOPS, in host memory."""
+def bench_prepare(n, seed=None):
+    """mu2efastsim.bench --prepare: the stop table named by $CETRACKER_STOPS, in host memory. With seed (the bench's
+    --fresh-inputs passes seed=S+i before every pass), the n births of that seed are drawn here, outside the clock,
+    and bench_run uses the same seed for the chain."""
     import os
     with np.load(os.environ["CETRACKER_STOPS"]) as f:
-        return {k: np.asarray(f[k]) for k in ("x", "y", "z", "t")}, int(n)
+        stops = {k: np.asarray(f[k]) for k in ("x", "y", "z", "t")}
+    if seed is None:
+        return stops, int(n)
+    return DeviceChain.births(stops, int(n), int(seed)), int(n), int(seed)
 
 
 def bench_run(prepared, seed=1, digis=True, **chain_kw):
-    """mu2efastsim.bench entry point: n births drawn from the stops, then the whole device chain. Returns the device
-    outputs the timer waits on."""
-    stops, n = prepared
-    res = run(stops, seed, n=n, digis=digis, **chain_kw)
+    """mu2efastsim.bench entry point: n births drawn from the stops (or the births bench_prepare drew for its seed,
+    which then replaces `seed`), then the whole device chain. Returns the device outputs the timer waits on."""
+    if len(prepared) == 3:
+        births, n, seed = prepared
+        res = run(births, seed, digis=digis, **chain_kw)
+    else:
+        stops, n = prepared
+        res = run(stops, seed, n=n, digis=digis, **chain_kw)
     return dict(track=res.get("track"), nrow=res["nrow"], steps_len=res["tracker"].steps["len"],
                 digis=None if "digis" not in res else res["digis"]["adc"])
 

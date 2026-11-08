@@ -229,3 +229,21 @@ def test_resident_chunks_equal_the_padded_slices_of_the_flat_steps():
             want = (v[a:b] - e0) if k == "ev" else v[a:b]
             got = np.asarray(sub[k])
             assert got.shape == (32,) and np.array_equal(got[:b - a], want) and not got[b - a:].any(), (k, e0)
+
+
+def test_bench_prepare_with_a_seed_draws_that_seeds_births(tmp_path, monkeypatch):
+    """bench --fresh-inputs: bench_prepare(n, seed=s) draws the births run() would draw for seed s; without a seed it
+    returns the stops as before."""
+    rng = np.random.default_rng(4)
+    stops = {"x": rng.normal(-3904, 20, 500), "y": rng.normal(0, 20, 500), "z": rng.uniform(5400, 6300, 500),
+             "t": rng.exponential(300, 500)}
+    np.savez(tmp_path / "stops.npz", **stops)
+    monkeypatch.setenv("CETRACKER_STOPS", str(tmp_path / "stops.npz"))
+    s, n = H.bench_prepare(64)
+    assert n == 64 and set(s) == {"x", "y", "z", "t"} and np.array_equal(s["z"], stops["z"])
+    births, n, seed = H.bench_prepare(64, seed=7)
+    assert (n, seed) == (64, 7)
+    for a, b in zip(births, H.DeviceChain.births(stops, 64, 7)):
+        assert np.array_equal(a, b)
+    other = H.bench_prepare(64, seed=8)[0]
+    assert not np.array_equal(births[0], other[0])
