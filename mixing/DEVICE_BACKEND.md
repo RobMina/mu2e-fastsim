@@ -83,6 +83,26 @@ ADCs are flattened per event. CRV digis use a fixed ADC width. Error flags are c
 before writing. Additional track-reconstruction event tables are not implemented
 in this adapter; requesting `track_reco` is rejected.
 
+## Occupancy output (opt-in)
+
+`--device-output occupancy --occupancy-geometry GEOMETRY.json` (default `root`) keeps the
+analysis output on the device too. Inside the same compiled batch, `device_occupancy.reduce`
+turns the masked detector tables into dense per-event arrays: straw digis per tracker plane
+(36), reconstructed CRV pulses per sector (bar map with the `counts.py --geometry` contract),
+and CRV digi and coincidence-cluster counts. The terminal transfer then carries only these
+arrays, the event identities, the error flags and a compact sampling receipt: per-donor
+arrays are dropped because sequential donors follow from the per-stream counts and the
+initial cursor. Each batch writes `sampling.{json,npz}` and `occupancy.npz`; no detector
+digis, ADC samples or pulses are persisted, and `fast.root` is not written. The run's census
+check verifies identities and realization ordinals from `occupancy.npz`.
+
+`python3 -m mixing.device_occupancy RUN --stock counts.npz --selection TEXT --out NEW.npz`
+pairs the measured batches of a finished run with saved stock counts by full event ID
+(`counts.align`). Run exactly one pool population of measured events, so that each signal ID
+appears once. `mixing.device_bench` wraps the same backend as entry points for the shared
+warm-rate timer (`mu2efastsim.bench`). Tests: `test_mixing_device_occupancy.py`, and in
+`test_mixing_device_physics.py` the same stream with both outputs must give identical counts.
+
 ## Reproducible synthetic integration
 
 From the umbrella with JAX/uproot/awkward dependencies installed:

@@ -61,6 +61,39 @@ crosstalk, DriftSingleElectrons or UseStatus modes are introduced. Float32 track
 mode is rejected rather than omitting its relative-frame corrections. CRV precision
 is configured independently as in the existing libraries.
 
+## Tiered capacities (opt-in)
+
+Real mixed events are dense and uneven: most steps have a few ionisation clusters and
+most straw ends a dozen, but minimum-ionising steps (exempt from `MaxNClusters`) and busy
+straws reach hundreds to thousands. One padded width for every lane makes the cost scale
+with the busiest one. Two optional capacity groups keep the same physics with less padding:
+
+- `long_steps` + `clusters_per_long_step`: steps with more than `clusters_per_step`
+  clusters are gathered into `[long_steps, clusters_per_long_step]`; the others stay in the
+  dense `[steps, clusters_per_step]` path. Overflow flags: `long_steps`, `clusters_per_step`.
+- `end_tiers: [[straws, width], ...]` with increasing widths above `clusters_per_end`:
+  each straw goes to the narrowest tier that holds its busiest end, and each tier runs the
+  unchanged electronics kernel at its own width. Overflow flags: `end_tier_K_straws` per
+  tier, `clusters_per_end` beyond the widest tier.
+
+Per-slot cluster keys and per-straw electronics keys do not depend on the padded width,
+so both modes give the same clusters and digis as one wide capacity (tested exactly in
+float64; in float32 see below). Without these keys the adapter is unchanged.
+
+## float32
+
+With `TRKFASTSIM_DEVICE_FLOAT=core` and `MU2EFS_DEVICE_FLOAT=float32` the adapter follows the
+staged float32 digitiser (`digi_jax`): cluster sampling and the charge kernel see positions
+relative to the straw middle, cluster times relative to whole `COMMON_PERIOD`s (restored in
+float64 afterwards), and the electronics kernel gets per-straw times relative to
+`n_ref * COMMON_PERIOD` with `n_ref` passed in and `t_analog` restored in float64.
+`device_kernels.lift` traces the core float32 kernels with their argument cast and creator
+scope. Against the staged float32 digitiser, digitised integers are equal and analog times
+agree to float32 rounding (the voltage sums run over the padded width, so the summation order
+depends on it; same for tiers versus one wide capacity). Tests:
+`tests/test_mixing_device_tracker_float32.py`, run in a float32 subprocess by
+`test_mixing_device_tracker.py`. Float64 is unchanged.
+
 ## Tests
 
 Actual-JAX CPU tests compare physical outputs to `digi_jax.digitize` on identical

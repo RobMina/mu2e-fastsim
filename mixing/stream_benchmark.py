@@ -32,11 +32,14 @@ def write_json(path, value):
         stream.write(json.dumps(json_values(value), indent=2, allow_nan=False) + "\n")
 
 
-def verify_batch(directory, ordinal_start, events, extra_tables=()):
+def verify_batch(directory, ordinal_start, events, extra_tables=(), output_format="root"):
     """Count closed highest-cycle output entries, never log counters or expected input counts."""
     receipt = json.loads((directory / "sampling.json").read_text())
     with np.load(directory / "sampling.npz", allow_pickle=False) as arrays:
         expected_ids = arrays[receipt["signal_event_ids"]["npz_key"]]
+    if output_format == "occupancy":
+        from .device_occupancy import census
+        return census(directory / "occupancy.npz", ordinal_start, events, expected_ids)
     census = summarize_fast(directory / "fast.root")
     if census["events"] != events or "tracker_digis" not in census:
         raise ValueError("finished combined detector census differs from batch")
@@ -86,6 +89,8 @@ def run(args, source_factory=None, backend_factory=None):
     required = {*([] if synthetic else ["tracker_digis", "crv_reco"]), *args.require_stage}
     if not required <= set(metadata["support"]):
         raise ValueError("backend does not support requested stages")
+    if getattr(args, "device_output", "root") == "occupancy" and metadata.get("output_format") != "occupancy":
+        raise ValueError("occupancy output is implemented only by the device backend")
     extra_tables = metadata.get("output_event_tables", [])
     if "track_reco" in required and not extra_tables:
         raise ValueError("track_reco backend must declare persisted event census tables")
@@ -137,7 +142,8 @@ def run(args, source_factory=None, backend_factory=None):
             row = json.loads(line)
             if row["ordinal_start"] != next_ordinal:
                 raise ValueError("batch realization sequence is not contiguous")
-            census = verify_batch(args.out / row["directory"], row["ordinal_start"], row["events"], extra_tables)
+            census = verify_batch(args.out / row["directory"], row["ordinal_start"], row["events"], extra_tables,
+                                  metadata.get("output_format", "root"))
             next_ordinal += census["events"]
             if row["phase"] == "measure":
                 verified += census["events"]
@@ -150,7 +156,10 @@ def run(args, source_factory=None, backend_factory=None):
               "setup_s": setup_s, "warmup_s": warmup_s, "measured_s": measured_s,
               "events_per_s": verified / measured_s, "pipeline_s": pipeline_s,
               "validation_s": time.perf_counter() - check_start, "backend": metadata,
-              "boundary": "persistent source selection/overlay, response, synchronization, sampling and closed ROOT writes, ledger writes; excludes setup/warmup and post-run readback",
+              "boundary": ("persistent source selection/overlay, response, device occupancy reduction, synchronization, "
+                           "sampling receipt and closed occupancy NPZ writes, ledger writes; excludes setup/warmup and post-run readback"
+                           if metadata.get("output_format") == "occupancy" else
+                           "persistent source selection/overlay, response, synchronization, sampling and closed ROOT writes, ledger writes; excludes setup/warmup and post-run readback"),
               "scope": metadata.get("scope", "finite-pool workload replay, not independent event generation"),
               "whole_job": "use mixing.process_timer externally; includes imports, setup, warmup, all writing, readback and shutdown",
               "baseline": None, "speedup": None}
@@ -176,6 +185,9 @@ def main(argv=None):
     parser.add_argument("--device-capacities", type=Path, help="JSON max_donors and per-collection rows")
     parser.add_argument("--device-platform", choices=("gpu", "cpu"), default="gpu")
     parser.add_argument("--synthetic", action="store_true", help="explicit integration-only model opt-in")
+    parser.add_argument("--device-output", choices=("root", "occupancy"), default="root",
+                        help="device backend only: full detector tables to ROOT (default) or on-device occupancy NPZ")
+    parser.add_argument("--occupancy-geometry", type=Path, help="bar_to_sector JSON (as counts --geometry) for occupancy output")
     args = parser.parse_args(argv)
     result = run(args)
     print(json.dumps({key: result[key] for key in ("events", "measured_s", "events_per_s")}))

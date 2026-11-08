@@ -101,6 +101,16 @@ truncated event. The fixed three-generation SiPM model is inherited from the
 existing physical JAX kernel and recorded in metadata; this adapter does not
 claim an unbounded cross-talk cascade or new stock closure.
 
+## Scatter waveform synthesis (opt-in)
+
+`"waveform": "scatter"` in the CRV capacity object replaces the dense
+`[charge_clusters, charges_per_cluster, waveform_samples]` gather of `synth_dense` with a
+flat scatter-add: each charge adds its template to the few samples it spans. Sample times,
+template indices, noise draws (same key and shape) and the gated digi scan are computed as
+in the dense kernel; only the summation order of overlapping charges differs. Digis are
+tested equal to the dense path, with and without noise. `charges_per_cluster` is unused in
+this mode. Default `"dense"` is unchanged.
+
 ## Scope and validation
 
 Supported: staged stock onspill ZS response through reduced coincidence outputs.

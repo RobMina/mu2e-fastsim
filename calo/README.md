@@ -108,6 +108,10 @@ steps_chain = dc.make_steps_chain(resp, caps)              # saved steps -> clus
 template fit (`templatefit._compiled(..., dtype)`, opt-in; the default fit is unchanged) and cluster sums in single
 precision; time folding, photoelectron times and integer keys keep the source types.
 
+`showers.handoff_device.disk_front(maps, disk_geometry(library), x, u, T, t, active)` steps device electron states
+(e.g. the tracker transport's exit states) to the first forward disk-front crossing inside the annulus, the device
+twin of `showers.handoff.disk_front` (midpoint-field helix steps, vacuum); its output feeds `make_chain`.
+
 Every collection has a static capacity (`Caps`); anything beyond it is counted in `overflow` and `run` raises.
 Pick capacities from a first batch. The waveform histograms each SiPM's photoelectrons over a short window in
 (sample, fine phase) and multiplies by the pulse table; only the summation order differs from the per-photoelectron

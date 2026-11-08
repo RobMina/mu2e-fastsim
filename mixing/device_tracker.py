@@ -18,13 +18,36 @@ class Capacities:
     clusters_per_end: int
     pairs_per_straw: int
     electronics_batch: int = 4
+    long_steps: int = None
+    clusters_per_long_step: int = None
+    end_tiers: tuple = None
 
     def __post_init__(self):
+        optional = ("long_steps", "clusters_per_long_step", "end_tiers")
         for name, value in vars(self).items():
+            if name == "end_tiers" or (name in optional and value is None):
+                continue
             if type(value) is not int or value < 1:
                 raise ValueError(f"tracker {name} must be a positive integer")
         if self.straws % self.electronics_batch:
             raise ValueError("tracker straws must be a multiple of electronics_batch")
+        if (self.long_steps is None) != (self.clusters_per_long_step is None):
+            raise ValueError("tracker long_steps and clusters_per_long_step are set together")
+        if self.long_steps is not None and self.clusters_per_long_step <= self.clusters_per_step:
+            raise ValueError("tracker clusters_per_long_step must exceed clusters_per_step")
+        if self.end_tiers is not None:
+            tiers = tuple(tuple(tier) for tier in self.end_tiers)
+            object.__setattr__(self, "end_tiers", tiers)
+            widths = [self.clusters_per_end] + [tier[1] if len(tier) == 2 else 0 for tier in tiers]
+            if not tiers or any(len(tier) != 2 or any(type(v) is not int or v < 1 for v in tier) for tier in tiers):
+                raise ValueError("tracker end_tiers must be (straws, clusters_per_end) positive integer pairs")
+            if any(b <= a for a, b in zip(widths, widths[1:])):
+                raise ValueError("tracker end_tiers widths must increase and exceed clusters_per_end")
+            if any(n % min(self.electronics_batch, n) for n, _ in tiers):
+                raise ValueError("tracker end_tiers straws must be multiples of electronics_batch")
+
+    def tier_batch(self, straws):
+        return min(self.electronics_batch, straws)
 
 
 def prepare(c, capacities, batch_events):
@@ -32,8 +55,9 @@ def prepare(c, capacities, batch_events):
 
     apply(collection, timing, assets, key) returns (masked digi columns, errors).
     timing contains mc_pbtime, event_length and event_mask, including empty events.
-    Float64 is the supported tracker mode; float32 relative-frame handling is not
-    silently omitted. The current conditions' no-noise/no-crosstalk scope is retained.
+    The tracker device float follows trkfastsim.devfloat: float64, or float32 with the staged
+    digitiser's relative frames (positions to the straw middle, times to whole COMMON_PERIODs,
+    per-straw n_ref in the electronics). The no-noise/no-crosstalk scope is retained.
     """
     import jax
     import jax.numpy as jnp
@@ -47,8 +71,12 @@ def prepare(c, capacities, batch_events):
     for value in c.a.values():
         value.setflags(write=False)
     cap = capacities if isinstance(capacities, Capacities) else Capacities(**capacities)
-    if df.SINGLE or not jax.config.x64_enabled:
-        raise ValueError("resident tracker currently requires float64 and JAX_ENABLE_X64=1")
+    if not jax.config.x64_enabled:
+        raise ValueError("resident tracker requires JAX_ENABLE_X64=1")
+    rel = df.SINGLE   # float32: the staged digitiser's relative position and time frames
+    if rel:
+        df.check_common_period(c)
+    period = df.COMMON_PERIOD
     if type(batch_events) is not int or batch_events < 1:
         raise ValueError("batch_events must be positive")
     energies, probabilities = np.asarray(c.EIonize), np.asarray(c.intNProb)
@@ -73,14 +101,124 @@ def prepare(c, capacities, batch_events):
         spec((2,), np.uint32), spec(wave, np.float64), spec(wave, np.float64), spec(wave, np.float64),
         spec(wave, np.int64), spec((2 * batch,), np.int32), spec((batch,), np.int64),
         spec((batch,), bool), spec((batch,), np.int64), spec((batch,), bool), spec((batch,), np.float64),
-        event_end_tdc=spec((batch,), np.int64), window_end=spec((batch,), np.float64))
+        event_end_tdc=spec((batch,), np.int64), window_end=spec((batch,), np.float64),
+        **({"n_ref": spec((batch,), np.int64)} if rel else {}))
     assets = {"energies": energies, "probabilities": probabilities, "straw_dir": np.asarray(c.straw_dir),
               "all_planes": np.asarray(c.allPlanes, np.int64),
               "charge_kernel": charge_kernel.assets, "electronics_kernel": electronics_kernel.assets}
+    tier_kernels = []
+    for straws, width in cap.end_tiers or ():
+        lb = cap.tier_batch(straws)
+        lw = (2 * lb, width)
+        tier_kernels.append(lift(dj._electronics_kernel(c, width, cap.pairs_per_straw, lb),
+            spec((2,), np.uint32), spec(lw, np.float64), spec(lw, np.float64), spec(lw, np.float64),
+            spec(lw, np.int64), spec((2 * lb,), np.int32), spec((lb,), np.int64),
+            spec((lb,), bool), spec((lb,), np.int64), spec((lb,), bool), spec((lb,), np.float64),
+            event_end_tdc=spec((lb,), np.int64), window_end=spec((lb,), np.float64),
+            **({"n_ref": spec((lb,), np.int64)} if rel else {})))
+    if tier_kernels:
+        assets["electronics_tier_kernels"] = tuple(kernel.assets for kernel in tier_kernels)
+    if rel:
+        assets["straw_mid"] = np.asarray(c.straw_mid, np.float64)
+
+    def sample_frame(st, idx, p0, p1, assets):
+        """float32: step points relative to their straw middle, as digi_clusters_jax.make_clusters."""
+        if not rel:
+            return p0, p1, None
+        ref = assets["straw_mid"][st["us"][idx]]
+        return p0 - ref, p1 - ref, ref
+
+    def absolute(pos, ref):
+        return pos if ref is None else pos.astype(jnp.float64) + ref[:, None, :]
+
+    def electronics_call(kernel, kernel_assets, key, t, q, w, step, count, width, batch, us, ra, skey, live,
+                         jitter, endtdc, lengths):
+        """One electronics block; float32 times relative to n_ref whole COMMON_PERIODs per straw, as digi_jax."""
+        extra = {}
+        if rel:
+            valid = jnp.arange(width)[None, None, :] < count[:, :, None]
+            first = jnp.min(jnp.where(valid, t, jnp.inf), axis=(1, 2))
+            nref = jnp.where(jnp.isfinite(first), jnp.floor(first / period), 0).astype(jnp.int64)
+            t = t - (nref * period)[:, None, None]
+            extra = {"n_ref": nref}
+        result = kernel.apply(kernel_assets, random.key_data(random.fold_in(key, 3)),
+            *tuple(v.reshape(2 * batch, width) for v in (t, q, w, step)),
+            count.reshape(-1), us, ra, skey, live, jitter, event_end_tdc=endtdc, window_end=lengths, **extra)
+        if rel:
+            result = {**result, "t_analog": result["t_analog"].astype(jnp.float64) + (nref * period)[:, None, None]}
+        return result
     ncharge = ((cap.drift_clusters + dj.CHARGE_BLOCK - 1) // dj.CHARGE_BLOCK) * dj.CHARGE_BLOCK
     sentinel = np.iinfo(np.int64).max
 
+    def sample(st, idx, bounded, minion, assets, key, capacity):
+        p0 = jnp.stack([st[name][idx] for name in ("x0", "y0", "z0")], axis=1)
+        p1 = jnp.stack([st[name][idx] for name in ("x1", "y1", "z1")], axis=1)
+        direction = assets["straw_dir"][st["us"][idx]] if c.randrad else jnp.zeros_like(p0)
+        width = st["width"][idx] if c.randrad else jnp.zeros_like(st["width"][idx])
+        p0, p1, ref = sample_frame(st, idx, p0, p1, assets)
+        pos, ne = dc._sample(key, idx, st["eion"][idx], bounded, minion, p0, p1, direction, width,
+                             c.EAverage, assets["energies"], assets["probabilities"],
+                             capacity, dc.MINION_UNROLL, dc.SEARCH_METHOD)
+        return absolute(pos, ref), ne
+
+    def clusters_tiered(st, selected, assets, key):
+        """Two capacities with the same draws: per-slot keys do not depend on the padded width.
+
+        Steps with at most clusters_per_step clusters use the dense [steps, clusters_per_step]
+        path; up to long_steps longer steps are gathered into [long_steps, clusters_per_long_step].
+        Clusters keep the single-capacity order (singles, then each step's clusters in step order).
+        """
+        n = len(selected)
+        idx = jnp.arange(n, dtype=jnp.int64)
+        single = selected & ((st["shape"] == 3) | (st["len"] < c.meanFreePath))
+        minion = st["ion"] == 0
+        nc, single_ne = dc._counts(key, idx, st["eion"], st["len"], single, minion,
+                                   c.meanFreePath, c.EAverage, energies[0], c.maxnclu)
+        multi = selected & ~single & (nc > 0)
+        long = multi & (nc > cap.clusters_per_step)
+        short_n = jnp.where(multi & ~long, nc, 0)
+        pos_s, ne_s = sample(st, idx, short_n, minion, assets, key, cap.clusters_per_step)
+        lidx = jnp.nonzero(long, size=cap.long_steps, fill_value=0)[0]
+        llive = jnp.arange(cap.long_steps) < long.sum()
+        long_n = jnp.where(llive, jnp.minimum(nc[lidx], cap.clusters_per_long_step), 0)
+        pos_l, ne_l = sample(st, lidx, long_n, minion[lidx], assets, key, cap.clusters_per_long_step)
+        errors = {"long_steps": long.sum() > cap.long_steps,
+                  "clusters_per_step": jnp.any(llive & (nc[lidx] > cap.clusters_per_long_step))}
+
+        def expand(n_, ne, mine):
+            slot = jnp.arange(ne.shape[1]) < n_[:, None]
+            return jnp.where(slot, jnp.where(mine[:, None], ne, 1), 0), jnp.where(mine[:, None], 1, ne)
+
+        rep_s, el_s = expand(short_n, ne_s, minion)
+        rep_l, el_l = expand(long_n, ne_l, minion[lidx])
+        per_step = rep_s.sum(axis=1).at[jnp.where(llive, lidx, n)].add(rep_l.sum(axis=1), mode="drop")
+        singles = single.astype(jnp.int64)
+        base = singles.sum() + jnp.cumsum(per_step) - per_step
+        start_s = base[:, None] + jnp.cumsum(rep_s, axis=1) - rep_s
+        start_l = base[lidx][:, None] + jnp.cumsum(rep_l, axis=1) - rep_l
+        start_1 = jnp.cumsum(singles) - singles
+        total = singles.sum() + per_step.sum()
+        # Candidate tables in one id space: singles, then short slots, then long slots.
+        cand_step = jnp.concatenate([idx, jnp.repeat(idx, cap.clusters_per_step), jnp.repeat(lidx, cap.clusters_per_long_step)])
+        cand_pos = jnp.concatenate([jnp.stack([st[name] for name in ("x0", "y0", "z0")], axis=1),
+                                    pos_s.reshape(-1, 3), pos_l.reshape(-1, 3)])
+        cand_el = jnp.concatenate([single_ne, el_s.reshape(-1), el_l.reshape(-1)])
+        cand_rep = jnp.concatenate([singles, rep_s.reshape(-1), rep_l.reshape(-1)])
+        cand_start = jnp.concatenate([start_1, start_s.reshape(-1), start_l.reshape(-1)])
+        row = jnp.arange(cap.drift_clusters, dtype=jnp.int64)
+        live = cand_rep > 0
+        mark = jnp.full(cap.drift_clusters, -1, jnp.int64).at[jnp.where(live, cand_start, cap.drift_clusters)].set(
+            jnp.arange(cand_rep.size, dtype=jnp.int64), mode="drop")
+        anchor = lax.cummax(jnp.where(mark >= 0, row, 0), axis=0)
+        owner = jnp.maximum(mark[anchor], 0)
+        valid = row < total
+        result = {"step": cand_step[owner], "pos": cand_pos[owner],
+                  "ne": jnp.where(valid, cand_el[owner], 1), "mask": valid}
+        return result, {**errors, "drift_clusters": total > cap.drift_clusters}
+
     def clusters(st, selected, assets, key):
+        if cap.long_steps is not None:
+            return clusters_tiered(st, selected, assets, key)
         idx = jnp.arange(len(selected), dtype=jnp.int64)
         single = selected & ((st["shape"] == 3) | (st["len"] < c.meanFreePath))
         minion = st["ion"] == 0
@@ -93,9 +231,11 @@ def prepare(c, capacities, batch_events):
         p1 = jnp.stack([st[name] for name in ("x1", "y1", "z1")], axis=1)
         direction = assets["straw_dir"][st["us"]] if c.randrad else jnp.zeros_like(p0)
         width = st["width"] if c.randrad else jnp.zeros_like(st["width"])
-        pos, ne = dc._sample(key, idx, st["eion"], bounded, minion, p0, p1, direction, width,
+        q0, q1, ref = sample_frame(st, idx, p0, p1, assets)
+        pos, ne = dc._sample(key, idx, st["eion"], bounded, minion, q0, q1, direction, width,
                              c.EAverage, assets["energies"], assets["probabilities"],
                              cap.clusters_per_step, dc.MINION_UNROLL, dc.SEARCH_METHOD)
+        pos = absolute(pos, ref)
         mask = jnp.arange(cap.clusters_per_step) < bounded[:, None]
         repeats = jnp.concatenate([single.astype(jnp.int64),
                     jnp.where(mask, jnp.where(minion[:, None], ne, 1), 0).reshape(-1)])
@@ -116,6 +256,10 @@ def prepare(c, capacities, batch_events):
         pos = jnp.pad(cluster["pos"], ((0, pad), (0, 0)))
         ne = jnp.pad(cluster["ne"], (0, pad), constant_values=1)
         times = jnp.pad(st["time"][cluster["step"]], (0, pad))
+        if rel:   # float32: positions relative to the straw middle, times to whole COMMON_PERIODs, as digi_jax
+            pos = pos - assets["straw_mid"][us]
+            cref = period * jnp.floor(times / period)
+            times = times - cref
         arrays = (jnp.arange(ncharge // dj.CHARGE_BLOCK, dtype=jnp.int64) * dj.CHARGE_BLOCK,
                   us.reshape(-1, dj.CHARGE_BLOCK), pos.reshape(-1, dj.CHARGE_BLOCK, 3),
                   ne.reshape(-1, dj.CHARGE_BLOCK), times.reshape(-1, dj.CHARGE_BLOCK))
@@ -125,6 +269,8 @@ def prepare(c, capacities, batch_events):
                 random.key_data(random.fold_in(random.fold_in(key, 1), first)), us_, pos_, ne_, time_)
         result = lax.map(block, arrays)
         gt, charge, wd = tuple(value.reshape((-1,) + value.shape[2:])[:cap.drift_clusters] for value in result)
+        if rel:
+            gt = (cref[:cap.drift_clusters, None] + gt.astype(jnp.float64)).astype(jnp.float32)
         error = jnp.any(cluster["mask"] & (~jnp.isfinite(charge) | ~jnp.all(jnp.isfinite(gt) & jnp.isfinite(wd), axis=1)))
         return gt, charge, wd, error
 
@@ -186,10 +332,8 @@ def prepare(c, capacities, batch_events):
         groups = tuple(value.reshape((-1, batch) + value.shape[1:]) for value in packed)
         def block(inputs):
             t, q, w, step, count, us, ra, skey, live, jitter, endtdc, lengths = inputs
-            result = electronics_kernel.apply(assets["electronics_kernel"], random.key_data(random.fold_in(key, 3)),
-                *tuple(value.reshape(2 * batch, cap.clusters_per_end) for value in (t, q, w, step)),
-                count.reshape(-1), us, ra, skey, live, jitter, event_end_tdc=endtdc, window_end=lengths)
-            return result
+            return electronics_call(electronics_kernel, assets["electronics_kernel"], key, t, q, w, step, count,
+                                    cap.clusters_per_end, batch, us, ra, skey, live, jitter, endtdc, lengths)
         result = lax.map(block, groups)
         output = {name: result[name].reshape((-1,) + result[name].shape[3:])
                   for name in ("adc", "tdc", "tot", "pmp", "step", "t_analog")}
@@ -202,6 +346,102 @@ def prepare(c, capacities, batch_events):
         errors = {"electronics_search_or_pairs": jnp.any(result["failed"]),
                   "saturation_capacity": jnp.any(result["sat_overflow"])}
         return output, errors
+
+    def pack_tiered(st, cluster, gt, charge, wd, timing, key, assets):
+        """As pack, but a straw whose busiest end exceeds clusters_per_end goes to the narrowest end tier that holds it.
+
+        Electronics draws are keyed per straw (event, sid), so the padded width does not change them.
+        """
+        cs, cmask = cluster["step"], cluster["mask"]
+        ukey = st["ev"][cs] * 65536 + st["sid"][cs]
+        sorted_key = jnp.sort(jnp.where(cmask, ukey, sentinel))
+        first = jnp.concatenate([jnp.array([True]), sorted_key[1:] != sorted_key[:-1]]) & (sorted_key != sentinel)
+        nstraw = first.sum()
+        which = jnp.nonzero(first, size=cap.straws, fill_value=0)[0]
+        live = jnp.arange(cap.straws) < nstraw
+        strawkey = jnp.where(live, sorted_key[which], 0)
+        straw_ev, straw_sid = strawkey // 65536, strawkey % 65536
+        upanel = (straw_sid >> 10) * 6 + ((straw_sid >> 7) & 7)
+        straw_us = upanel * 96 + (straw_sid & 127)
+        readall = ((straw_sid & 127) >= c.allStraw) & jnp.isin(straw_sid >> 10, assets["all_planes"])
+        base = jnp.arange(2 * cap.drift_clusters, dtype=jnp.int64)
+        original = gt.reshape(-1).astype(jnp.float32)
+        f64 = original.astype(jnp.float64)
+        valid = jnp.repeat(cmask, 2)
+        labels = jnp.repeat(ukey * 2, 2) + base % 2
+        if c.onspill:
+            buffer = (c.nADCSamples - c.nADCPresamples) * c.ADCPeriod
+            ghost_src = jnp.tile(base, 3)
+            ghost_time = jnp.concatenate([original, (f64 + c.mbtime).astype(jnp.float32),
+                                          (f64 - c.mbtime).astype(jnp.float32)])
+            valid = jnp.concatenate([valid, valid & (f64 < buffer), valid & (f64 > c.mbtime - buffer)])
+            labels = jnp.tile(labels, 3)
+        else:
+            ghost_src, ghost_time = base, original
+        labels = jnp.where(valid, labels, sentinel)
+        order = jnp.lexsort((ghost_time, labels))
+        sorted_label = labels[order]
+        wanted = strawkey[:, None] * 2 + jnp.arange(2)
+        lo = jnp.searchsorted(sorted_label, wanted, side="left")
+        hi = jnp.searchsorted(sorted_label, wanted, side="right")
+        counts = jnp.where(live[:, None], hi - lo, 0)
+        nblocks = (batch_events + dj.JITTER_BATCH - 1) // dj.JITTER_BATCH
+        jitter = lax.map(lambda block: dj._jitter_block(random.fold_in(random.fold_in(key, 2), block)),
+                         jnp.arange(nblocks, dtype=jnp.int64))
+        jitter = jitter.reshape(-1, 216)[straw_ev, upanel] * c.eventWindowMarkerROCJitter
+        lengths = timing["event_length"][straw_ev]
+        endtdc = jnp.clip(jnp.floor(lengths / c.TDCLSB), 0, c.maxTDC).astype(jnp.int64)
+        busiest = jnp.where(live, counts.max(axis=1), 0)
+
+        def gather(sel, slive, width):
+            cnt = jnp.where(slive[:, None], counts[sel], 0)
+            gi = order[jnp.minimum(lo[sel][:, :, None] + jnp.arange(width), len(order) - 1)]
+            index, ends = ghost_src[gi] // 2, ghost_src[gi] % 2
+            t, q, w, step = ghost_time[gi], charge[index], wd[index, ends], cs[index]
+            vp = slive[:, None, None] & (jnp.arange(width) < cnt[:, :, None])
+            t, q, w = tuple(jnp.where(vp, a, 0).astype(jnp.float64) for a in (t, q, w))
+            return (t, q, w, jnp.where(vp, step, 0), jnp.minimum(cnt, width).astype(jnp.int32),
+                    straw_us[sel], readall[sel], strawkey[sel], slive, jitter[sel], endtdc[sel], lengths[sel])
+
+        edges = [cap.clusters_per_end] + [width for _, width in cap.end_tiers]
+        tier = jnp.searchsorted(jnp.array(edges), busiest, side="left")   # 0 = narrow, k = end_tiers[k-1]
+        packed = [gather(jnp.arange(cap.straws), live & (tier == 0), cap.clusters_per_end)]
+        errors = {"straws": nstraw > cap.straws, "clusters_per_end": jnp.any(live & (busiest > edges[-1]))}
+        for k, (straws, width) in enumerate(cap.end_tiers, start=1):
+            member = live & (tier == k)
+            sel = jnp.nonzero(member, size=straws, fill_value=0)[0]
+            packed.append(gather(sel, jnp.arange(straws) < member.sum(), width))
+            errors[f"end_tier_{k}_straws"] = member.sum() > straws
+        return tuple(packed), errors
+
+    def electronics_tiered(packed, key, assets):
+        def tier(values, kernel, kernel_assets, width, batch):
+            groups = tuple(v.reshape((-1, batch) + v.shape[1:]) for v in values)
+
+            def block(inputs):
+                t, q, w, step, count, us, ra, skey, live, jitter, endtdc, lengths = inputs
+                return electronics_call(kernel, kernel_assets, key, t, q, w, step, count, width, batch,
+                                        us, ra, skey, live, jitter, endtdc, lengths)
+            result = lax.map(block, groups)
+            out = {name: result[name].reshape((-1,) + result[name].shape[3:])
+                   for name in ("adc", "tdc", "tot", "pmp", "step", "t_analog")}
+            out["mask"] = result["keep"].reshape(-1)
+            out["ev"] = jnp.repeat(values[7] // 65536, cap.pairs_per_straw)
+            out["sid"] = jnp.repeat(values[7] % 65536, cap.pairs_per_straw)
+            return out, jnp.any(result["failed"]), jnp.any(result["sat_overflow"])
+
+        parts = [tier(packed[0], electronics_kernel, assets["electronics_kernel"], cap.clusters_per_end,
+                      cap.electronics_batch)]
+        for values, kernel, kernel_assets, (straws, width) in zip(packed[1:], tier_kernels,
+                                                                   assets["electronics_tier_kernels"], cap.end_tiers):
+            parts.append(tier(values, kernel, kernel_assets, width, cap.tier_batch(straws)))
+        output = {name: jnp.concatenate([part[0][name] for part in parts]) for name in parts[0][0]}
+        fa = jnp.any(jnp.stack([part[1] for part in parts]))
+        sa = jnp.any(jnp.stack([part[2] for part in parts]))
+        order = jnp.lexsort((output["t_analog"][:, 0], output["sid"],
+                            jnp.where(output["mask"], output["ev"], sentinel)))
+        output = {name: value[order] for name, value in output.items()}
+        return output, {"electronics_search_or_pairs": fa, "saturation_capacity": sa}
 
     def apply(collection, timing, assets, key):
         st = dict(collection["columns"])
@@ -247,8 +487,12 @@ def prepare(c, capacities, batch_events):
         selected = safe & (st["eion"] > c.minstepE) & (inwin | readall)
         cluster, cluster_errors = clusters(st, selected, assets, random.fold_in(key, 0))
         gt, charge, wd, charge_error = drift(st, cluster, key, assets)
-        packed, packing_errors = pack(st, cluster, gt, charge, wd, timing, key, assets)
-        output, electronic_errors = electronics(packed, key, assets)
+        if cap.end_tiers is None:
+            packed, packing_errors = pack(st, cluster, gt, charge, wd, timing, key, assets)
+            output, electronic_errors = electronics(packed, key, assets)
+        else:
+            packed, packing_errors = pack_tiered(st, cluster, gt, charge, wd, timing, key, assets)
+            output, electronic_errors = electronics_tiered(packed, key, assets)
         errors = {"input": input_error, "timing": timing_error, "nonfinite_charge": charge_error,
                   **cluster_errors, **packing_errors, **electronic_errors}
         return output, errors
@@ -256,5 +500,5 @@ def prepare(c, capacities, batch_events):
     return SimpleNamespace(assets=assets, apply=apply, clusters=clusters, drift=drift, pack=pack,
                            electronics=electronics, capacities=cap,
                            metadata={"physics": "existing tracker JAX ionisation/drift/electronics kernels",
-                                     "precision": "float64", "capacity_policy": "reject; no fallback",
+                                     "precision": df.NAME, "capacity_policy": "reject; no fallback",
                                      "reconstruction": "not implemented"})
