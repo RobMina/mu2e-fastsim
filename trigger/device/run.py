@@ -15,6 +15,7 @@ Apply it with `decide --response` to held-out shards.
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 from pathlib import Path
 import sys
@@ -143,12 +144,51 @@ def cmd_response(args):
     print(json.dumps(out, indent=1))
 
 
+def cmd_response_binned(args):
+    """Opt-in binned response: per path one pass probability f[b] = stock passes / device passes of the events whose
+    best time cluster of the path's producer has its straw hits in bin b (device run without a response, on the stock
+    digis of the same events), capped at 1; bins with fewer than --min-count device passes merge with their lower
+    neighbour."""
+    manifest = json.loads((Path(args.prepared) / "manifest.json").read_text())
+    edges = [float(e) for e in args.edges]
+    acc = {}
+    for dev_path, logs in zip(args.device, args.logs_sets):
+        dev = json.loads(Path(dev_path).read_text())
+        ref, _ = pairmod.read_arm([Path(x) for x in sorted(glob.glob(logs))], manifest)
+        for key, passed in dev["decisions"].items():
+            k = tuple(int(v) for v in key.split("|"))
+            if k not in ref:
+                continue
+            for name, nsh in dev["path_vars"].get(key, {}).items():
+                if name not in ref[k]:
+                    continue
+                b = min(max(np.searchsorted(edges, nsh, side="right") - 1, 0), len(edges) - 2)
+                a = acc.setdefault(name, np.zeros((len(edges) - 1, 2)))
+                a[b, 0] += bool(ref[k][name]); a[b, 1] += name in passed
+    out = {}
+    for name, a in sorted(acc.items()):
+        e, cnt = list(edges), a.copy()
+        i = 1
+        while i < len(cnt):                          # merge sparse bins into their lower neighbour
+            if cnt[i, 1] < args.min_count:
+                cnt[i - 1] += cnt[i]; cnt = np.delete(cnt, i, 0); del e[i]
+            else:
+                i += 1
+        if len(cnt) > 1 and cnt[0, 1] < args.min_count:
+            cnt[1] += cnt[0]; cnt = np.delete(cnt, 0, 0); del e[1]
+        f = [float(min(1.0, s / d)) if d > 0 else 1.0 for s, d in cnt]
+        out[name] = {"final": {"var": "tc_nsh", "edges": e, "f": f},
+                     "basis": {"stock_passes": cnt[:, 0].tolist(), "device_passes": cnt[:, 1].tolist()}}
+    Path(args.output).write_text(json.dumps(out, indent=1))
+    print(json.dumps({n: [round(x, 3) for x in r["final"]["f"]] for n, r in out.items()}, indent=1))
+
+
 def cmd_decide(args):
     cfg = menu.parse_fcl(Path(args.menu).read_text())
     cond = conditions(args.dump[0], args.tree)
     resp = json.loads(Path(args.response).read_text()) if args.response else {}
     ch = chainmod.Chain(cfg, cond, args.tc_mva, response=resp, debug=args.check_hits, precision=args.precision)
-    report, device, stages, stage_flags = {}, {}, {}, {}
+    report, device, stages, stage_flags, path_vars = {}, {}, {}, {}, {}
     t_dev = 0.0
     for dump in args.dump:
         keys, ev, stock = load_dump(dump, args.tree)
@@ -165,6 +205,8 @@ def cmd_decide(args):
         dec = {k: np.concatenate([o[k] for o in outs]) for k in outs[0]}
         aux = {k: np.concatenate([a[k] for a in auxs]) for k in auxs[0]}
         dec = ch.finish(dec, aux, len(keys))
+        for i, key in enumerate(keys):            # time-cluster straw hits per path (binned response variable)
+            path_vars["|".join(map(str, key))] = {n: int(aux[f"{n}:tcnsh"][i]) for n in ch.plan if f"{n}:tcnsh" in aux}
         for i, key in enumerate(keys):            # deterministic stage results (before response-layer draws)
             stage_flags["|".join(map(str, key))] = {
                 st: sorted(n for n in ch.plan if f"{n}:{st}" in aux and aux[f"{n}:{st}"][i])
@@ -198,6 +240,7 @@ def cmd_decide(args):
         exact = {p: r["stock_only"] + r["device_only"] for p, r in paired["paths"].items()}
         result["discordant"] = exact
     result["stage_flags"] = stage_flags
+    result["path_vars"] = path_vars
     result["decisions"] = {"|".join(map(str, k)): [p for p, v in sorted(d.items()) if v] for k, d in device.items()}
     Path(args.output).write_text(json.dumps(result, indent=1, default=float))
     if "paired" in result:
@@ -216,6 +259,13 @@ def main(argv=None):
     k.add_argument("--device", required=True)
     k.add_argument("--menu", required=True)
     k.add_argument("--output", required=True)
+    rb = sub.add_parser("response-binned", help="opt-in per-path pass probability binned in the time-cluster straw hits")
+    rb.add_argument("--device", nargs="+", required=True, help="decide outputs without a response, on stock digis")
+    rb.add_argument("--logs-sets", nargs="+", required=True, help="replay-log glob of each --device run, in order")
+    rb.add_argument("--prepared", required=True)
+    rb.add_argument("--edges", nargs="+", default=[0, 15, 20, 25, 30, 35, 40, 45, 50, 60, 80, 1000])
+    rb.add_argument("--min-count", type=int, default=200)
+    rb.add_argument("--output", required=True)
     d = sub.add_parser("decide")
     d.add_argument("--dump", nargs="+", required=True)
     d.add_argument("--tree", default="trigph")
@@ -230,7 +280,7 @@ def main(argv=None):
     d.add_argument("--check-hits", action="store_true")
     d.add_argument("--output", required=True)
     args = ap.parse_args(argv)
-    {"response": cmd_response, "decide": cmd_decide}[args.cmd](args)
+    {"response": cmd_response, "response-binned": cmd_response_binned, "decide": cmd_decide}[args.cmd](args)
 
 
 if __name__ == "__main__":
