@@ -29,4 +29,4 @@ def test_capacity_file_contract(path):
     options = {name: crv.pop(name) for name in list(crv) if name in device_crv.OPTIONS}
     assert set(crv) == set(device_crv.CAPACITIES)
     assert all(type(v) is int and v > 0 for v in crv.values())
-    assert options == {"waveform": "scatter"}
+    assert options == {"waveform": "scatter", "digi_starts": "rows", "pulse_scan": "bounded"}
