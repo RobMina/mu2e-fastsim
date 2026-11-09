@@ -41,8 +41,8 @@ From: python:3.13-slim-bookworm
     if [ "@VARIANT@" = cpu ]; then
         python -m pip install -q -r $REQ
     else
-        sed 's/^jax==/jax[cuda12]==/' $REQ > /tmp/requirements-gpu.txt
-        python -m pip install -q -r /tmp/requirements-gpu.txt && rm /tmp/requirements-gpu.txt
+        GPUREQ=$(mktemp) && sed 's/^jax==/jax[cuda12]==/' $REQ > "$GPUREQ"
+        python -m pip install -q -r "$GPUREQ" && rm "$GPUREQ"
         for w in @TRIM@; do python -m pip uninstall -q -y "$w" || true; done
     fi
     for p in core crv tracker; do python -m pip install -q --no-deps /opt/mu2e-fastsim/$p; done
