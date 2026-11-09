@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trkfastsim"
+version = "0.0.1"
+description = "Geant4-free tracker simulation and fast reconstruction for the Mu2e extracted (KPP) configuration"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+dependencies = ["mu2efastsim", "numpy", "pandas", "uproot", "awkward", "scipy"]
+
+[project.optional-dependencies]
+jax = ["jax"]
+parquet = ["pyarrow"]
+test = ["pytest", "pyarrow"]
+
+[tool.setuptools.packages.find]
+include = ["trkfastsim*"]
+
+[tool.setuptools.package-data]
+"trkfastsim.reco" = ["data/*.json"]
+"trkfastsim.recoresp" = ["data/*.npz", "data/*.md"]
