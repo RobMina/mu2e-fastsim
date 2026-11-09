@@ -174,28 +174,65 @@ class Backend:
     def sync(self):
         self.jax.block_until_ready((self.pools, self.state, self.assets, self._seeds))
 
-    def run(self, request, outdir):
-        """Dispatch one compiled graph, then download only its terminal products/receipt."""
-        path = Path(outdir) / "fast.root"
-        if not path.parent.is_dir():
-            raise FileNotFoundError(path.parent)
-        if path.exists():
-            raise FileExistsError(path)
+    def _check(self, request):
         if (request.ordinal_start, request.batch_index) != (self.source._ordinal, self.source._batch_index):
             raise ValueError("stale device request")
         if not 1 <= request.count <= self.layout.batch_events:
             raise ValueError("request exceeds device batch capacity")
         if request.ordinal_start + request.count > np.iinfo(np.int64).max:
             raise ValueError("realization ordinal exceeds int64")
-        started = time.perf_counter()
+
+    def _dispatch(self, request):
         scalars = tuple(self.jax.device_put(np.array(value, dtype=dtype), self.device) for value, dtype in
                         ((request.ordinal_start, np.uint64), (request.batch_index, np.uint64), (request.count, np.int64)))
         with self.jax.transfer_guard("disallow"):
-            result, state = self.execute(self.pools, self.state, self.assets, self._seeds, *scalars)
-            self.jax.block_until_ready((result, state))
+            return self.execute(self.pools, self.state, self.assets, self._seeds, *scalars)
+
+    @staticmethod
+    def _path(outdir):
+        path = Path(outdir) / "fast.root"
+        if not path.parent.is_dir():
+            raise FileNotFoundError(path.parent)
+        if path.exists():
+            raise FileExistsError(path)
+        return path
+
+    def run(self, request, outdir):
+        """Dispatch one compiled graph, then download only its terminal products/receipt."""
+        path = self._path(outdir)
+        self._check(request)
+        started = time.perf_counter()
+        result, state = self._dispatch(request)
+        self.jax.block_until_ready((result, state))
         response_s = time.perf_counter() - started
         started = time.perf_counter()
-        host = self.jax.device_get(result)
+        usage = self._finish(request, self.jax.device_get(result), path)
+        self.source.commit(request)
+        self.state = state
+        return {"events": request.count, "response_s": response_s, "capacity_usage": usage,
+                "transfer_and_write_s": time.perf_counter() - started, "terminal_device_get_calls": 1,
+                "model_kind": self.metadata["model_kind"]}
+
+    def dispatch(self, request):
+        """Pipelined use: dispatch one batch without waiting for it; the source and the device state advance now.
+
+        collect() downloads, checks and writes it; call it in dispatch order, after dispatching the next batch, so
+        the host work overlaps the device. The outputs are those of run(); a rejected batch raises in collect()."""
+        self._check(request)
+        result, state = self._dispatch(request)
+        self.source.commit(request)
+        self.state = state
+        return SimpleNamespace(request=request, result=result)
+
+    def collect(self, pending, outdir):
+        path = self._path(outdir)
+        started = time.perf_counter()
+        usage = self._finish(pending.request, self.jax.device_get(pending.result), path)
+        return {"events": pending.request.count, "capacity_usage": usage, "pipelined": True,
+                "wait_transfer_and_write_s": time.perf_counter() - started, "terminal_device_get_calls": 1,
+                "model_kind": self.metadata["model_kind"]}
+
+    def _finish(self, request, host, path):
         usage = {name: int(value) for name, value in host.pop("usage").items()}
         failed = [name for name, value in host["errors"].items() if np.any(value)]
         if failed:
@@ -221,11 +258,7 @@ class Backend:
         else:
             save_sampling(path.parent, receipt)
             _write(path, keys, request.ordinal_start, host["output"])
-        self.source.commit(request)
-        self.state = state
-        return {"events": request.count, "response_s": response_s, "capacity_usage": usage,
-                "transfer_and_write_s": time.perf_counter() - started, "terminal_device_get_calls": 1,
-                "model_kind": self.metadata["model_kind"]}
+        return usage
 
 
 def _rows(table, events):

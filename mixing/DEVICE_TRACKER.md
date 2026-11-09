@@ -121,6 +121,17 @@ Measured on real batches of 256 mixed events (A100, full digis): tracker apply 1
 in float32 and float64. At an occupancy-only output XLA already drops the TOT, ADC and saturation work, so the key
 then changes little.
 
+## Packed sorts (opt-in)
+
+`pack_sort: "packed"` makes the two tracker orderings single-key sorts, which XLA runs as radix sorts on a GPU:
+- the per-straw-end cluster order, `lexsort((time, label))` over the clusters and their ghosts, becomes one stable
+  sort of a uint64 key, with the label in the high 32 bits and the float32 time's order bits in the low 32 bits;
+- the output order, `lexsort((t_analog, sid, event))`, becomes two stable sorts, by time and then by (event, straw).
+
+Times follow `lax.sort`'s float order (-0 equal to +0, NaNs last), so the orders, and hence the digis, are those of
+the lexsorts. Labels must fit in 32 bits (batch_events x 131,072 < 2**32). Measured on one batch of 256 mixed events
+(A100): tracker 0.36 s -> 0.24 s at an occupancy-only output, 0.91 s -> 0.80 s for full digis.
+
 ## Batched charge blocks (opt-in)
 
 `charge_blocks_per_launch: G` runs the drift/charge kernel on G blocks of 4,096 clusters
