@@ -70,3 +70,20 @@ def test_float32_tiered_capacities_equal_wide(cond, helpers):
     assert not any(ae.values()) and not any(be.values())
     assert len(a["sid"]) > 0
     _same(b, a)
+
+
+def test_float32_flat_clusters_equal_dense(cond, helpers):
+    """float32 roundoff is where a reshaped draw would show: the flat path gives the dense path's digis exactly."""
+    from trkfastsim.digi.digicond import Conditions
+    from test_mixing_device_tracker import FLAT, _flat_cluster_steps
+    c = Conditions(cond.s, cond.a)
+    c.s["onspill"] = True
+    st = _flat_cluster_steps(c, helpers)
+    times = timing([1700., 1675., 1695.], [10., -5., 20.])
+    dense = Capacities(8, 2048, 8, 4, 8, 2, long_steps=6, clusters_per_long_step=64, end_tiers=[(8, 16), (4, 512)])
+    a, ae = evaluate(prepare(c, dense, 3), collection(st, 8), times)
+    b, be = evaluate(prepare(c, Capacities(**{**vars(dense), **FLAT}), 3), collection(st, 8), times)
+    assert not any(ae.values()) and not any(be.values()), (ae, be)
+    assert len(a["sid"]) > 0
+    for name in a:
+        np.testing.assert_array_equal(a[name], b[name], err_msg=name)

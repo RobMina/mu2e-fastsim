@@ -25,6 +25,11 @@ NeutralsFlash pools at the stock intensity law.
   candidate buffers `ct1`-`ct3` have no demand counter. They were cut 8x from the generous sizes and checked over
   full development and held-out passes; a further 4x overflowed. As with every buffer, an overflow rejects the batch.
 
+- **Flat cluster sampling** (`flat_clusters`, `minion_steps`, `minion_search: "compare_all"`, `minion_unroll: 4`;
+  see [../DEVICE_TRACKER.md](../DEVICE_TRACKER.md)) is sized the same way: 1.25 times the largest demand over full
+  development and held-out passes (22 batches of 128 events or 11 of 256 each). The batch-64 file takes 0.6 of the
+  batch-128 sizes. These keys change the time, not the digis.
+
 ## When a batch does not fit
 
 A batch whose demand exceeds any capacity is rejected as a whole. No output is written for it, nothing is truncated,

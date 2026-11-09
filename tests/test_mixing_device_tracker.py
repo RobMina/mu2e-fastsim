@@ -388,6 +388,48 @@ def test_long_step_and_end_tiers_digis_equal_wide(wide, helpers):
         Capacities(64, 1024, 8, 4, 8, 2, end_tiers=[(4,)])
 
 
+def _flat_cluster_steps(c, helpers):
+    """Minimum-ionising and non-minimum-ionising multi-cluster steps, a single, an empty and a read-all step."""
+    return helpers._steps([helpers._step(c, 520), helpers._step(c, 520, t=40.), helpers._step(c, 521, ion=1),
+                           helpers._step(c, 522, eion=3e-4), helpers._step(c, 92, t=100.), helpers._step(c, 523, t=900.),
+                           helpers._step(c, 524, eion=1e-6), helpers._step(c, 525, ion=1, eion=5e-4)],
+                          ev=[0, 0, 0, 1, 1, 2, 2, 2])
+
+
+FLAT = {"flat_clusters": 256, "minion_steps": 8, "minion_search": "compare_all", "minion_unroll": 3}
+
+
+@pytest.mark.pr_params("True")   # onspill is the mixing mode
+@pytest.mark.parametrize("onspill", [False, True])
+def test_flat_clusters_equal_dense(wide, helpers, onspill):
+    """flat_clusters/minion_steps and the minimum-ionising loop knobs give the wide model's digis exactly."""
+    c, model = wide(onspill)
+    st = _flat_cluster_steps(c, helpers)
+    times = timing([1700., 1675., 1695.] if onspill else [100000.] * 3, [10., -5., 20.])
+    a, ae = evaluate(model, collection(st, 8), times)
+    assert not any(ae.values()), ae
+    assert len(a["sid"]) > 0
+    for short in (2, 8):   # most steps long, or most short
+        caps = Capacities(short, 1024, 8, 4, 8, 2, long_steps=6, clusters_per_long_step=64,
+                          end_tiers=[(8, 16), (4, 512)], **FLAT)
+        b, be = evaluate(prepare(c, caps, 3), collection(st, 8), times)
+        assert not any(be.values()), be
+        for name in a:
+            np.testing.assert_array_equal(a[name], b[name], err_msg=f"{name} clusters_per_step={short}")
+    for name, value in (("flat_clusters", 1), ("minion_steps", 1)):   # every step short, so both have demand
+        caps = Capacities(64, 1024, 8, 512, 8, 2, long_steps=6, clusters_per_long_step=128, **{**FLAT, name: value})
+        _, errors = evaluate(prepare(c, caps, 3), collection(st, 8), times)
+        assert errors[name], name
+    with pytest.raises(ValueError, match="together"):
+        Capacities(8, 1024, 8, 512, 8, 2, long_steps=6, clusters_per_long_step=64, flat_clusters=16)
+    with pytest.raises(ValueError, match="long-step tier"):
+        Capacities(8, 1024, 8, 512, 8, 2, flat_clusters=16, minion_steps=4)
+    with pytest.raises(ValueError, match="minion_search"):
+        Capacities(8, 1024, 8, 512, 8, 2, minion_search="binary")
+    with pytest.raises(ValueError, match="minion_unroll"):
+        Capacities(8, 1024, 8, 512, 8, 2, minion_unroll=0)
+
+
 def test_float32_tracker_mode_in_subprocess(request):
     """Run the float32 device-versus-staged tests in a process whose tracker device float is float32."""
     import os
