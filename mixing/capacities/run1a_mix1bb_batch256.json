@@ -65,7 +65,9 @@
    "pulse_rounds": 8,
    "coinc_hits": 187,
    "coinc_combinations": 64,
-   "waveform": "scatter"
+   "waveform": "scatter",
+   "digi_starts": "rows",
+   "pulse_scan": "bounded"
   }
  }
 }
