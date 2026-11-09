@@ -101,6 +101,26 @@ Measured on one real batch of 256 mixed events (A100, occupancy boundary): track
 0.68 s -> 0.36 s with all three, and digis bit-identical to the dense path in float32
 and float64.
 
+## Flat digitisation (opt-in)
+
+The electronics kernel digitises pair by pair: `pairs_per_straw` passes over every straw of a launch, each
+evaluating the TOT and ADC voltage sums for every lane, and the saturation response for every lane once any end in
+the launch saturates. A real batch has about one threshold-crossing pair per straw, so most of that work is
+padding.
+
+- `digit_entries_per_straw: f` (a float in (0, `pairs_per_straw`]): each launch of B straws digitises the flat list
+  of its present (straw, pair) entries, at most `ceil(f x B)`, with the pair loop's per-straw, per-stage, per-pair
+  keys and arithmetic.
+- The digital dead time is applied afterwards, per straw in pair order, as the loop does.
+- Saturated ends are compacted into chunks of 2 x B rows, the loop's own row count, which keeps the float32 response
+  sums bit-identical. A chunk with no saturated end is skipped.
+- Overflow flag: `digit_entries_per_straw`. The demand counter of the same name is the largest per-launch entry count
+  over B.
+
+Measured on real batches of 256 mixed events (A100, full digis): tracker apply 1.28 s -> 0.94 s, digis bit-identical
+in float32 and float64. At an occupancy-only output XLA already drops the TOT, ADC and saturation work, so the key
+then changes little.
+
 ## Batched charge blocks (opt-in)
 
 `charge_blocks_per_launch: G` runs the drift/charge kernel on G blocks of 4,096 clusters
