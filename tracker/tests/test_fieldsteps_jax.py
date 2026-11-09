@@ -140,9 +140,9 @@ def test_thin_materials_are_the_numpy_set():
 
 def test_a_chord_budget_caps_the_slow_loopers_only():
     """max_chords: tracks still live after the budget end CAPPED with their records; fast tracks that finished within
-    it are unchanged."""
+    it are unchanged. No loss and no scattering, so the loopers drift a fixed ~1 mm per turn and need ~1,000 chords."""
     B = np.array([0.0, 0.0, 1.0])
-    _, _, trk = _setup(B)
+    _, _, trk = _setup(B, eloss_on=False, msc=False)
     o, d = _lines(20, np.random.default_rng(12))
     lo = np.c_[np.zeros(4), np.linspace(-20, 20, 4), np.zeros(4)]              # 5 MeV/c loopers, almost transverse
     ld = np.tile([1.0, 0.0, 0.01], (4, 1)) / np.linalg.norm([1.0, 0.0, 0.01])
@@ -151,9 +151,9 @@ def test_a_chord_budget_caps_the_slow_loopers_only():
     a = FJ.transport(trk, jax.random.PRNGKey(13), x, p, np.zeros(24))
     b = FJ.transport(trk, jax.random.PRNGKey(13), x, p, np.zeros(24), max_chords=256)
     sa, sb = np.asarray(a.final["status"]), np.asarray(b.final["status"])
-    assert (sb[20:] == FJ.CAPPED).all() and (sa[20:] != FJ.CAPPED).all()
+    assert (sb[20:] == FJ.CAPPED).all() and (sa[20:] == FJ.LEFT).all()
     assert b.stats["iterations"] == 256 and a.stats["iterations"] > 256
     for k in ("valid", "eion", "x0", "t"):
         assert np.array_equal(np.asarray(a.steps[k])[:20], np.asarray(b.steps[k])[:20]), k
     va, vb = np.asarray(a.steps["valid"])[20:], np.asarray(b.steps["valid"])[20:]
-    assert vb.any() and (vb.sum(1) <= va.sum(1)).all()
+    assert vb.any() and (vb.sum(1) <= va.sum(1)).all() and (vb.sum() < va.sum())
