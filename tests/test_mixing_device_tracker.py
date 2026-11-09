@@ -461,6 +461,44 @@ def test_flat_digit_entries_equal_pair_loop(wide, helpers, onspill):
             Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=bad)
 
 
+@pytest.mark.pr_params("True")   # onspill is the mixing mode
+@pytest.mark.parametrize("onspill", [False, True])
+def test_packed_sort_equals_lexsort(wide, helpers, onspill):
+    """pack_sort 'packed' (single-key sorts) gives the lexsort path's digis, narrow and with end tiers."""
+    c, model = wide(onspill)
+    st = _flat_cluster_steps(c, helpers)
+    times = timing([1700., 1675., 1695.] if onspill else [100000.] * 3, [10., -5., 20.])
+    a, ae = evaluate(model, collection(st, 8), times)
+    assert not any(ae.values()) and len(a["sid"]) > 0, ae
+    for caps in (Capacities(64, 1024, 8, 512, 8, 2, pack_sort="packed"),
+                 Capacities(64, 1024, 8, 4, 8, 2, end_tiers=[(8, 16), (4, 512)], pack_sort="packed")):
+        b, be = evaluate(prepare(c, caps, 3), collection(st, 8), times)
+        assert not any(be.values()), be
+        for name in a:
+            np.testing.assert_array_equal(a[name], b[name], err_msg=name)
+    with pytest.raises(ValueError, match="pack_sort"):
+        Capacities(64, 1024, 8, 512, 8, 2, pack_sort="radix")
+
+
+def test_packed_sort_keys_order_like_lexsort(cond):
+    """The packed keys order -0.0/+0.0 (equal), negatives, infinities, NaNs (last), ties and sentinels as lexsort."""
+    import jax.numpy as jnp
+    lexsorted, packed = (prepare(cond, Capacities(4, 64, 8, 4, 8, 2, pack_sort=mode), 3) for mode in ("lexsort", "packed"))
+    sentinel = np.iinfo(np.int64).max
+    rng = np.random.default_rng(5)
+    values = np.array([0., -0., 1.5, -1.5, np.inf, -np.inf, np.nan, -np.nan, 1e-30, -1e-30, 3.25], np.float64)
+    t = rng.choice(values, 400)
+    labels = rng.choice(np.array([0, 1, 2, 7, 2**28, sentinel]), 400)
+    for model in (lexsorted, packed):
+        assert callable(model.cluster_order)
+    np.testing.assert_array_equal(packed.cluster_order(jnp.asarray(t, jnp.float32), jnp.asarray(labels)),
+                                  jnp.lexsort((jnp.asarray(t, jnp.float32), jnp.asarray(labels))))
+    sid = rng.integers(0, 36 * 1024, 400)
+    ev = rng.choice(np.array([0, 3, 255, sentinel]), 400)
+    np.testing.assert_array_equal(packed.output_order(jnp.asarray(t), jnp.asarray(sid), jnp.asarray(ev)),
+                                  jnp.lexsort((jnp.asarray(t), jnp.asarray(sid), jnp.asarray(ev))))
+
+
 def test_float32_tracker_mode_in_subprocess(request):
     """Run the float32 device-versus-staged tests in a process whose tracker device float is float32."""
     import os

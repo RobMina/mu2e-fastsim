@@ -32,6 +32,8 @@ NeutralsFlash pools at the stock intensity law.
 - **Flat digitisation** (`digit_entries_per_straw` 1.182) is 1.25 times the largest per-launch demand, 0.945 entries
   per straw, over full development and held-out passes at batch 128 and 256. Launches are 8,192 straws at batch 128
   and 256 and 4,096 at batch 64, so the same fraction is used for all three files.
+- **`pack_sort: "packed"`** replaces the tracker's multi-key sorts with single-key sorts in the same order; it has no
+  size.
 
 ## When a batch does not fit
 
