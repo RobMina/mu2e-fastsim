@@ -321,7 +321,8 @@ def test_run_configs(tmp_path):
     b0, _ = kit.chain_point.render(CP.validate(P), 0)
     assert "--run-config" not in b0 and "crvcalib_sim_best_v1_5_run1400.csv" in b0 and "LookupTable_4550_0" not in b0
     p1 = CP.validate({**P, "gen_set": 2, "run_config": 2, "shard_offset": 0})
-    assert CP.small_inputs(p1) == ["geometry/mu2e_run1a_v01.gdml"]
+    assert CP.small_inputs(p1) == [*CP.RUN1A_CONDITIONS, "geometry/mu2e_run1a_v01.gdml"]   # never nominal for Run 1A
+    assert CP.small_inputs({**p1, "run_config": 1})[:2] == list(CP.RUN1A_CONDITIONS)
 
 
 def test_chain_flags(tmp_path):

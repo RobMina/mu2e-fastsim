@@ -37,7 +37,8 @@ The fast response must use the reference's conditions. The Run 1A stock job read
 `CRVConditions/data/{calib,status,photonyield}_run1a_v01.txt` and the channel map `run1a_v01.txt`;
 `scripts/offline_conditions_csv.py` converts them to the `--calib` / `--deviation` CSVs. `--calib nominal` treats every
 channel as live and ignores the 45 channels with status bit 1 ("ignore in reconstruction"), which shows up as about
-1 % more pulses than stock in both sectors.
+1 % more pulses than stock in both sectors. `runchain` therefore refuses `--calib nominal` for `run1a_v01` and
+`run1b_v01` (`RunConfig.conditions`).
 
 The reference release matters too: Offline before v13_40_00 shares one photon generator, and one scintillation yield,
 between sectors with the same lookup table (Run 1A T2 then runs at T1's yield; Offline#1956).

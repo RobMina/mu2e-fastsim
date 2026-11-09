@@ -82,13 +82,17 @@ TIER1B_PARAM = ("strict_v5",)                              # parameter tier1b ->
 CALIB = "geometry/crvcalib_sim_best_v1_5_run1400.csv"
 DEVIATION = "geometry/crvphoton_sim_best_v1_5_run1400.csv"
 GDML = "geometry/mu2e_extracted_v04.gdml"
-# run configurations (crvfastsim.runconfig): name, GDML under the FNAL data root, lookup tables, extracted CRY?
-RUN_CONFIGS = {0: ("extracted_v04", GDML, ("6000_0", "2370_1", "3200_0"), True),
-               1: ("run1a_v01", "geometry/mu2e_run1a_v01.gdml", ("6000_0",), False),
-               2: ("run1b_v01", "geometry/mu2e_run1a_v01.gdml", ("6000_0",), False),
+# run configurations (crvfastsim.runconfig), GDML under the FNAL data root
+# Run 1A stock conditions (Offline CRVConditions *_run1a_v01.txt) converted by crv scripts/offline_conditions_csv.py;
+# crv runchain refuses --calib nominal for run1a_v01/run1b_v01 (RunConfig.conditions)
+RUN1A_CONDITIONS = ("conditions_run1a_v01/crvcalib_run1a_v01.csv", "conditions_run1a_v01/crvphoton_run1a_v01.csv")
+# name, GDML, lookup tables, conditions (calib, deviation) CSVs or None = nominal constants (run2_v10: no stock table)
+RUN_CONFIGS = {0: ("extracted_v04", GDML, ("6000_0", "2370_1", "3200_0"), (CALIB, DEVIATION)),
+               1: ("run1a_v01", "geometry/mu2e_run1a_v01.gdml", ("6000_0",), RUN1A_CONDITIONS),
+               2: ("run1b_v01", "geometry/mu2e_run1a_v01.gdml", ("6000_0",), RUN1A_CONDITIONS),
                3: ("run2_v10", "geometry/mu2e_run2_v10.gdml",
                    ("4550_0", "1045_1", "3040_0", "3200_0", "6000_1", "6000_0", "5000_1", "6900_1", "5700_0", "2370_1",
-                    "2100_1", "1550_1"), False)}
+                    "2100_1", "1550_1"), None)}
 NATIVE_GEN_SET = 4
 DEVICE_GEN_SET = 5
 GENERATED_SETS = (NATIVE_GEN_SET, DEVICE_GEN_SET)
@@ -192,7 +196,7 @@ def validate(params: Dict[str, Any]) -> Dict[str, int]:
     if out["gen_events"]:
         raise ValueError("fastsimkit: gen_events requires generated gen_set=4 or 5")
     del out["gen_events"]
-    if (out["gen_set"] in EXTRACTED_GEN_SETS) != RUN_CONFIGS[out["run_config"]][3]:
+    if (out["gen_set"] in EXTRACTED_GEN_SETS) != (RUN_CONFIGS[out["run_config"]][0] == "extracted_v04"):
         raise ValueError(f"fastsimkit: chain_point gen_set {out['gen_set']} is not a CRY sample of run_config "
                          f"{out['run_config']} ({RUN_CONFIGS[out['run_config']][0]})")
     n = len(GEN_SETS[out["gen_set"]][1])
@@ -225,10 +229,10 @@ def point_bytes(p: Dict[str, int]) -> float:
 
 
 def small_inputs(p: Dict[str, int]) -> List[str]:
-    """Per sub-job inputs besides the library and the gen tables: the CRVCalib/CRVPhoton CSVs (extracted only; other
-    configurations run with nominal constants) and the configuration's GDML world."""
+    """Per sub-job inputs besides the library and the gen tables: the configuration's CRVCalib/CRVPhoton CSVs (none for
+    run2_v10, which runs with nominal constants) and its GDML world."""
     rc = RUN_CONFIGS[p.get("run_config", 0)]
-    return ([CALIB, DEVIATION] if rc[3] else []) + [rc[1]]
+    return list(rc[3] or ()) + [rc[1]]
 
 
 def wait_budget_s(p: Dict[str, int], mbps: Optional[float] = None) -> int:
@@ -321,7 +325,7 @@ class ChainPoint:
         tables = _TABLES.replace("@tables@", " ".join(f"LookupTable_{t}" for t in rc[2]) + " photonMap.root")
         body = BODY.replace("@common@", _COMMON).replace("@tables@", tables)
         body = body.replace("@runtime_a@", APPTAINER_RUNTIME["a"]).replace("@runtime_t@", APPTAINER_RUNTIME["t"])
-        conds = (f'--calib "$L/{Path(CALIB).name}" --deviation "$L/{Path(DEVIATION).name}"' if rc[3]
+        conds = (f'--calib "$L/{Path(rc[3][0]).name}" --deviation "$L/{Path(rc[3][1]).name}"' if rc[3]
                  else "--calib nominal")
         lib = library_files(p)
         t1b = f'--tier1b {tier1b_set(p)} --tier1b-dir "$S"'

@@ -189,5 +189,5 @@ pinned backing and inputs, with SHA256 manifests; a directory name is not proven
 Submit each with an explicit account/partition and bounded resources, for example `sbatch -A ACCOUNT -p standard
 --cpus-per-task=1 --mem=8G --time=00:30:00 --export=ALL,... scripts/uva_digitable_art.sh`. Actual validation used one
 core and ~2.4 GiB aggregate Slurm RSS for the art sequence. These are sample
-measurements, not arbitrary-input memory bounds. Select tests with the shared `testselect` on the exact snapshot;
-the project Python image has no git, so pass the selected file list and run isolated pytest processes inside it.
+measurements, not arbitrary-input memory bounds. Select tests with the shared `testselect` on the exact snapshot
+(the project image has git) and run the selected files in isolated pytest processes inside it.

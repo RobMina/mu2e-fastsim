@@ -1,5 +1,6 @@
 #!/bin/bash
-# CI tier of one suite of the tests workflow. Writes run=true|false and args to $GITHUB_OUTPUT.
+# CI tier of one suite of the tests workflow. Writes run=true|false, args and tier=pr|slow|weekly (the JAX compilation
+# cache key) to $GITHUB_OUTPUT.
 #   weekly schedule (WEEKLY_CRON) or a manual run with weekly: the core suite runs only the @pytest.mark.weekly
 #     validations (--runweekly -m weekly); every other job skips (no other suite has weekly tests, and pytest would
 #     exit 5 with none selected);
@@ -42,5 +43,7 @@ if [ "$weekly" = true ]; then
     echo "weekly tier: only the core suite has weekly validations: skipping"
   fi
 fi
-echo "run=$run args=${args:-per-PR}"
-{ echo "run=$run"; echo "args=$args"; } >> "${GITHUB_OUTPUT:-/dev/null}"
+tier=pr
+case "$args" in *--runweekly*) tier=weekly ;; *--runslow*) tier=slow ;; esac
+echo "run=$run args=${args:-per-PR} tier=$tier"
+{ echo "run=$run"; echo "args=$args"; echo "tier=$tier"; } >> "${GITHUB_OUTPUT:-/dev/null}"

@@ -169,13 +169,19 @@ KIT_PARAMS = {
 }
 
 
+# Tasks registered only when their package is importable but not on the core suite's path (core:crv:beam), where
+# core main's reference was rendered: left out of the grid, so an environment with every package (the image) renders
+# the same cases.
+NOT_IN_GRID = {"tracker_point"}
+
+
 def kit_cases(cases):
     from mu2efastsim.endpoints import Resources
     from mu2efastsim.endpoints.kit import TASKS, FastsimKit
     from mu2efastsim.endpoints.slurm_ssh import SlurmSSHEndpoint
     tests = _module(CORE / "tests" / "test_endpoints.py", "_identity_test_endpoints")
     eaf_tests = _module(CORE / "tests" / "test_endpoint_eaf.py", "_identity_test_endpoint_eaf")
-    names = sorted(TASKS)
+    names = sorted(set(TASKS) - NOT_IN_GRID)
     with tempfile.TemporaryDirectory() as d:     # Slurm: what each task renders and sends (no delegates)
         c = Case(Path(d))
         fake = tests.FakeSite()
