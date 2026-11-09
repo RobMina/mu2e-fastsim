@@ -39,6 +39,14 @@ DEFAULT_COUNTERS = "Offline/Mu2eG4/geom/crv_counters_extracted_v04.txt"
 SECTOR_TYPES = {1: "EX", 2: "T1", 3: "T2", 4: "M"}
 
 
+def resident_default(resident_response, jax, fused_response=False):
+    """Whether runchain keeps the photons on the device into the SiPM stage: None (the default) means on the JAX path
+    unless the fused response is chosen. Same draws and charges as the two-stage twins (byte-identical outputs)."""
+    if resident_response is None:
+        return bool(jax) and not fused_response
+    return bool(resident_response)
+
+
 def check_conditions(rc, calib):
     """Refuse --calib nominal for a configuration whose stock job reads its own conditions (RunConfig.conditions):
     nominal conditions count the channels the status table ignores as live (Run 1A: 45 of 5120, about 1 % more pulses
@@ -51,8 +59,10 @@ def check_conditions(rc, calib):
 
 
 def _resolve(library, calib, deviation, gdml, jax, counters, run_config, window, fused_response=False,
-             tier1b_set=None, tier1b_dir=None, resident_response=False, device_refit=False):
-    """Resolve setup arguments without loading large assets or drawing random numbers."""
+             tier1b_set=None, tier1b_dir=None, resident_response=None, device_refit=False):
+    """Resolve setup arguments without loading large assets or drawing random numbers.
+
+    resident_response: resident_default (None: on with jax unless fused_response; False: the two-stage path)."""
     if not calib:
         raise SystemExit("runchain needs --calib (a CRVCalib CSV or nominal)")
     from .transport import default_gdml
@@ -63,7 +73,7 @@ def _resolve(library, calib, deviation, gdml, jax, counters, run_config, window,
     cfg = rc.chain_config(jax=bool(jax)) if rc.name != runconfig.DEFAULT or window else chain.ChainConfig(jax=bool(jax))
     if fused_response:
         cfg = dataclasses.replace(cfg, fused_response=True)
-    if resident_response:
+    if resident_default(resident_response, jax, fused_response):
         cfg = dataclasses.replace(cfg, resident_response=True)
     if device_refit:
         cfg = dataclasses.replace(cfg, device_refit=True)
@@ -114,7 +124,7 @@ class PreparedContext:
 
 def prepare(library=None, calib=None, deviation=None, gdml=None, jax=False, counters=None,
             run_config=None, window=None, benchmark=None, fused_response=False,
-            below_margin=None, tier1b_set=None, tier1b_dir=None, resident_response=False, device_refit=False):
+            below_margin=None, tier1b_set=None, tier1b_dir=None, resident_response=None, device_refit=False):
     """Load and seal reusable CSV setup."""
     if fused_response:
         raise ValueError("prepared context does not support memory-dependent fused response batching")
@@ -305,7 +315,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
     bench_start = time.perf_counter() if benchmark is not None else None
     rc, cfg, gdml_path, time_window, spec = _resolve(library, calib, deviation, gdml, jax, counters, run_config, window,
                                                      kw.get("fused_response", False), tier1b_set, tier1b_dir,
-                                                     kw.get("resident_response", False), kw.get("device_refit", False))
+                                                     kw.get("resident_response"), kw.get("device_refit", False))
     for warning in time_window["warnings"]:
         print(f"# time window: {warning}", flush=True)
     if benchmark is not None:

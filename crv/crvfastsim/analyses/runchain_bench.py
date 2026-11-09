@@ -42,8 +42,9 @@ def main(argv=None):
     p.add_argument("--prefetch", action="store_true")
     p.add_argument("--device-refit", action="store_true",
                    help="flagged waveforms refit on the device first (ChainConfig.device_refit)")
-    p.add_argument("--resident-response", action="store_true",
-                   help="photons stay on the device into the SiPM stage (ChainConfig.resident_response)")
+    p.add_argument("--resident-response", action=argparse.BooleanOptionalAction, default=None,
+                   help="photons stay on the device into the SiPM stage (ChainConfig.resident_response); default "
+                        "on (runchain's default with --jax); --no-resident-response: the two-stage path")
     p.add_argument("--compile-cache", metavar="DIR")
     p.add_argument("--passes", type=int, default=3)
     p.add_argument("--out", required=True, help="timer report JSON")
@@ -78,8 +79,8 @@ def main(argv=None):
     events = sum(counts.values())
     setup = dict(library=a.library, calib=a.calib, deviation=a.deviation, gdml=a.gdml, jax=True,
                  run_config=a.run_config, window=a.window, tier1b_set=a.tier1b_set, tier1b_dir=a.tier1b_dir)
-    if a.resident_response:
-        setup["resident_response"] = True
+    if a.resident_response is not None:
+        setup["resident_response"] = a.resident_response
     if a.device_refit:
         setup["device_refit"] = True
     outdir = a.outdir or str(Path(a.out).with_suffix("")) + "_runchain"
