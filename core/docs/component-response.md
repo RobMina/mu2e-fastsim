@@ -87,8 +87,13 @@ all particle/event keys, repeated trials and visits, empty outcomes, unsupported
 finite boundaries, volume mapping, and a two-component handoff with outgoing transport and changed placement.
 They do **not** measure statistical agreement with Geant4. Run `python3 -m pytest tests/test_component_response.py`.
 
-Next: reuse saved Geant4 products before considering new training, and certify component records only where the
-actual saved states and coverage support them. Purpose-built capture follows separately.
+Next: reuse saved Geant4 products before considering new training. The opt-in
+[`SavedG4TableDumper`](../art/README.md) exports retained particle states/ancestry, raw step collections,
+trajectories, surface steps and CRV summaries without running G4. The initial inspected reference files contain
+more than the legacy flat banks, but their trajectory thinning, particle compression and detector-event selection
+prevent claiming complete exits or unbiased zero-response trials from those files alone. Export evidence first;
+certify component records only where actual saved states and coverage support them. New simulation is not a
+prerequisite for the extraction work. Purpose-built capture follows separately.
 
 Then an opt-in detector adapter must remove double counting and validate one unchanged bank against nominal and
 altered layouts. Finite-state support in this prototype is intentionally narrow; a useful continuous entrance-state
