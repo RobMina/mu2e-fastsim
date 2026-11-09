@@ -226,8 +226,15 @@ def test_pool_draw_leaves_the_t0_stream_unchanged():
 
 def test_shipped_pool_table_is_the_default_table_plus_pools():
     a, b = RT.load(), RT.load(RT.POOLS)
-    assert set(b) - set(a) == {"pool_res", "pool_idx", "pool_start", "pool_count"}
+    assert set(b) - set(a) == {"pool_res", "pool_idx", "pool_start", "pool_count", "reference"}
+    assert "CE" in str(b["reference"])
     for k in a:
         assert np.array_equal(a[k], b[k]), k
     assert b["pool_res"].shape[1] == len(RT.RES + RT.QUAL) and (b["pool_count"] > 0).all()
     assert int(b["pool_idx"].max()) < len(b["pool_res"])
+
+
+def test_reference_text_is_stored_only_when_given():
+    d = _reference(5000, np.random.default_rng(34))
+    assert "reference" not in RT.build(d)
+    assert str(RT.build(d, reference="synthetic dev")["reference"]) == "synthetic dev"

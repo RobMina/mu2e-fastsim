@@ -12,4 +12,4 @@ the table.
 `ce_loophelix_run1a_pools.npz` (opt-in): the same tables, built from the same events, plus each bin's pool
 (`table --pools`: `pool_res`, `pool_idx`, `pool_start`, `pool_count`). A response table with pools draws the seven
 residual and quality quantities jointly from one reference track of the bin pool instead of the Gaussian copula and
-inverse CDFs. Every array the default file holds is identical in both files.
+inverse CDFs. Every array the default file holds is identical in both files; the pool file also records its `reference` text.

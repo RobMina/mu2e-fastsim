@@ -100,12 +100,13 @@ def _copula(rows):
 
 
 def build(df, nrow_edges=NROW_EDGES, tandip_edges=TANDIP_EDGES, min_count=40, min_eff=10, axis_xy=(-3904.0, 0.0),
-          bz=1.0, pools=False, pool_max=POOL_MAX):
+          bz=1.0, pools=False, pool_max=POOL_MAX, reference=""):
     """Response tables from the reference events df (one row per generated event): has_entry, nrow, p_true, tandip_t,
     d0_t, rmax_t (entry truth), fit (bool), and for fitted tracks p_reco, pz, tandip, d0, rmax, pdg, fitcon, chi2ndf,
     nactive. Returns a dict of NumPy arrays (save with np.savez). pools (opt-in): also store each bin's pool for the
     empirical joint draw (pool_res [M, 7] in the order RES + QUAL, pool_idx, pool_start/pool_count [ne, nt]); a pool
-    wider than pool_max (a merged bin) keeps a fixed-seed subsample of pool_max tracks."""
+    wider than pool_max (a merged bin) keeps a fixed-seed subsample of pool_max tracks. reference: a provenance text
+    (the reference arm and events) stored as `reference` when given."""
     keep_pools = bool(pools)       # (the helper below is also called pools)
     ne, nt = len(nrow_edges) - 1, len(tandip_edges) - 1
     d = df[df.has_entry.astype(bool)]
@@ -178,6 +179,8 @@ def build(df, nrow_edges=NROW_EDGES, tandip_edges=TANDIP_EDGES, min_count=40, mi
         out[f"icdf_{k}"] = icdf[k]
     if teff is not None:
         out["time_edges"], out["time_eff"] = np.asarray(TIME_EDGES, float), teff
+    if reference:
+        out["reference"] = np.array(str(reference))
     if keep_pools:
         out["pool_res"] = pool_res
         out["pool_idx"] = np.concatenate(pool_idx).astype(np.int32) if pool_idx else np.zeros(0, np.int32)
@@ -289,13 +292,14 @@ def main(argv=None):
     ap.add_argument("--events-out", help="optional per-event reference table (.csv.gz)")
     ap.add_argument("--bz", type=float, default=1.0)
     ap.add_argument("--min-count", type=int, default=40)
+    ap.add_argument("--reference", default="", help="provenance text stored in the table (reference arm and events)")
     ap.add_argument("--pools", action="store_true",
                     help="also store each bin's pool for the empirical joint draw (opt-in; default copula + inverse CDFs)")
     a = ap.parse_args(argv)
     dirs = sorted(sum((glob.glob(d) for d in a.steps_dirs), []))
     d = reference_events([f"{x}/states.root" for x in dirs], [f"{x}/g4entries.root" for x in dirs],
                          [f"{x}/g4prim_field.root" for x in dirs], a.nts, bz=a.bz)
-    tab = build(d, min_count=a.min_count, bz=a.bz, pools=a.pools)
+    tab = build(d, min_count=a.min_count, bz=a.bz, pools=a.pools, reference=a.reference)
     save(a.out, tab)
     if a.events_out:
         d.to_csv(a.events_out, index=False)
