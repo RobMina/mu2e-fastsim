@@ -249,7 +249,7 @@ class DeviceChain:
     trkfastsim.digi.digicond) or None (no digis). ce_unroll, ce_shrink: cechain_jax's unroll and bucket shrink
     factor (a large shrink compacts less often and compiles fewer bucket shapes). digi_chunk: events per digitiser
     call (default 8,000; the random stream depends on the chunking, the distributions do not). resident_digis: use trkfastsim.digi.digi_resident (the same digis as digi_jax for the same keys and chunks,
-    with the packing on the device; float64 tracker device float only, else digi_jax)."""
+    with the packing on the device; both tracker device floats)."""
 
     def __init__(self, offline_root, maps, gdml, geom="Offline/Mu2eG4/geom/geom_2021_PhaseI_v03.txt",
                  response=None, digi_cond=None, dtype="float64", origin=ORIGIN, chord_mm=10.0, lanes=None,
@@ -329,7 +329,6 @@ class DeviceChain:
         are faster); a chunk beyond the digitiser's cluster capacity is split in two and retried. The random stream
         depends on the chunking (keys are folded with each chunk's first event)."""
         import jax
-        from trkfastsim import devfloat
         from trkfastsim.digi import digi_jax
         chunk = self.digi_chunk if chunk is None else chunk
         s = res["tracker"].steps
@@ -337,7 +336,7 @@ class DeviceChain:
         if event_timing is None and self.cond.onspill:
             event_timing = dict(pbtime=np.zeros(nev), event_length=np.full(nev, float(self.cond.eventWindowLength)))
         key = jax.random.fold_in(jax.random.PRNGKey(seed), 3)
-        if self.resident_digis and not devfloat.SINGLE:
+        if self.resident_digis:
             return self._digitize_resident(s, nev, key, chunk, event_timing)
         valid = np.asarray(s["valid"])
         tr, sl = np.nonzero(valid)
