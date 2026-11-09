@@ -42,7 +42,8 @@
    "flat_clusters": 1266903,
    "minion_steps": 12029,
    "minion_search": "compare_all",
-   "minion_unroll": 4
+   "minion_unroll": 4,
+   "pack_sort": "packed"
   },
   "crv": {
    "substeps": 97895,

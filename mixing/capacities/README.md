@@ -29,6 +29,8 @@ NeutralsFlash pools at the stock intensity law.
   see [../DEVICE_TRACKER.md](../DEVICE_TRACKER.md)) is sized the same way: 1.25 times the largest demand over full
   development and held-out passes (22 batches of 128 events or 11 of 256 each). The batch-64 file takes 0.6 of the
   batch-128 sizes. These keys change the time, not the digis.
+- **`pack_sort: "packed"`** replaces the tracker's multi-key sorts with single-key sorts in the same order; it has no
+  size.
 
 ## When a batch does not fit
 
