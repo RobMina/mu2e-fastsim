@@ -80,6 +80,27 @@ Per-slot cluster keys and per-straw electronics keys do not depend on the padded
 so both modes give the same clusters and digis as one wide capacity (tested exactly in
 float64; in float32 see below). Without these keys the adapter is unchanged.
 
+## Flat cluster sampling (opt-in)
+
+The dense path draws every step's `clusters_per_step` slots, including steps with no
+clusters and the padding past each step's count, and runs the minimum-ionising electron
+loops on every row. Real mixed batches use about 3 M of 16 M dense slots.
+
+- `flat_clusters` + `minion_steps` (set together, with the long-step tier): the short
+  steps' clusters are drawn as a flat list of live (step, slot) pairs, at most
+  `flat_clusters` of them, and the minimum-ionising loops run on the short
+  minimum-ionising steps only, at most `minion_steps`. The per-slot and per-step keys,
+  the arithmetic and the cluster order are those of the dense path, so the clusters are
+  the same. Overflow flags: `flat_clusters`, `minion_steps`.
+- `minion_search: "compare_all"` and `minion_unroll: N`: the minimum-ionising loops'
+  truncated-draw search in one comparison pass instead of a device loop per call, and N
+  loop bodies per device-loop iteration. Both are `digi_clusters_jax` knobs that leave
+  the outputs unchanged (the same indices; extra bodies past a lane's end are identity).
+
+Measured on one real batch of 256 mixed events (A100, occupancy boundary): tracker
+0.68 s -> 0.36 s with all three, and digis bit-identical to the dense path in float32
+and float64.
+
 ## Batched charge blocks (opt-in)
 
 `charge_blocks_per_launch: G` runs the drift/charge kernel on G blocks of 4,096 clusters

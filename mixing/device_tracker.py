@@ -22,11 +22,20 @@ class Capacities:
     clusters_per_long_step: int = None
     end_tiers: tuple = None
     charge_blocks_per_launch: int = None
+    flat_clusters: int = None
+    minion_steps: int = None
+    minion_unroll: int = None
+    minion_search: str = None
 
     def __post_init__(self):
-        optional = ("long_steps", "clusters_per_long_step", "end_tiers", "charge_blocks_per_launch")
+        optional = ("long_steps", "clusters_per_long_step", "end_tiers", "charge_blocks_per_launch", "flat_clusters",
+                    "minion_steps", "minion_unroll", "minion_search")
         for name, value in vars(self).items():
             if name == "end_tiers" or (name in optional and value is None):
+                continue
+            if name == "minion_search":
+                if value not in ("scan", "compare_all"):
+                    raise ValueError("tracker minion_search must be 'scan' or 'compare_all'")
                 continue
             if type(value) is not int or value < 1:
                 raise ValueError(f"tracker {name} must be a positive integer")
@@ -36,6 +45,10 @@ class Capacities:
             raise ValueError("tracker long_steps and clusters_per_long_step are set together")
         if self.long_steps is not None and self.clusters_per_long_step <= self.clusters_per_step:
             raise ValueError("tracker clusters_per_long_step must exceed clusters_per_step")
+        if (self.flat_clusters is None) != (self.minion_steps is None):
+            raise ValueError("tracker flat_clusters and minion_steps are set together")
+        if self.flat_clusters is not None and self.long_steps is None:
+            raise ValueError("tracker flat_clusters needs the long-step tier (long_steps)")
         if self.end_tiers is not None:
             tiers = tuple(tuple(tier) for tier in self.end_tiers)
             object.__setattr__(self, "end_tiers", tiers)
@@ -92,6 +105,9 @@ def prepare(c, capacities, batch_events):
     if not np.isfinite(c.mbtime) or c.mbtime <= 0:
         raise ValueError("tracker mbtime must be finite and positive")
     from .device_kernels import lift
+    # minimum-ionising loop knobs; both leave the outputs unchanged (digi_clusters_jax)
+    unroll = cap.minion_unroll or dc.MINION_UNROLL
+    method = cap.minion_search or dc.SEARCH_METHOD
     spec = jax.ShapeDtypeStruct
     charge_kernel = lift(dj._charge_kernel(c), spec((2,), np.uint32), spec((dj.CHARGE_BLOCK,), np.int64),
                          spec((dj.CHARGE_BLOCK, 3), np.float64), spec((dj.CHARGE_BLOCK,), np.int64),
@@ -160,7 +176,7 @@ def prepare(c, capacities, batch_events):
         p0, p1, ref = sample_frame(st, idx, p0, p1, assets)
         pos, ne = dc._sample(key, idx, st["eion"][idx], bounded, minion, p0, p1, direction, width,
                              c.EAverage, assets["energies"], assets["probabilities"],
-                             capacity, dc.MINION_UNROLL, dc.SEARCH_METHOD)
+                             capacity, unroll, method)
         return absolute(pos, ref), ne
 
     def clusters_tiered(st, selected, assets, key):
@@ -221,7 +237,95 @@ def prepare(c, capacities, batch_events):
                             "clusters_per_long_step": jnp.max(jnp.where(long, nc, 0))}}
         return result, {**errors, "drift_clusters": total > cap.drift_clusters}
 
+    def clusters_flat(st, selected, assets, key):
+        """clusters_tiered with the short steps drawn as a flat list of live (step, slot) pairs, at most flat_clusters,
+        and the minimum-ionising loops run on the short minimum-ionising steps only, at most minion_steps.
+
+        Same per-slot and per-step keys, the same arithmetic and the same cluster order, so the same clusters; the
+        dense path draws every row's clusters_per_step slots. Either overflow rejects the batch.
+        """
+        n = len(selected)
+        idx = jnp.arange(n, dtype=jnp.int64)
+        single = selected & ((st["shape"] == 3) | (st["len"] < c.meanFreePath))
+        minion = st["ion"] == 0
+        nc, single_ne = dc._counts(key, idx, st["eion"], st["len"], single, minion,
+                                   c.meanFreePath, c.EAverage, energies[0], c.maxnclu)
+        multi = selected & ~single & (nc > 0)
+        long = multi & (nc > cap.clusters_per_step)
+        short_n = jnp.where(multi & ~long, nc, 0)
+        lidx = jnp.nonzero(long, size=cap.long_steps, fill_value=0)[0]
+        llive = jnp.arange(cap.long_steps) < long.sum()
+        long_n = jnp.where(llive, jnp.minimum(nc[lidx], cap.clusters_per_long_step), 0)
+        pos_l, ne_l = sample(st, lidx, long_n, minion[lidx], assets, key, cap.clusters_per_long_step)
+        # flat short slots, in step then slot order
+        ends = jnp.cumsum(short_n)
+        nshort = ends[-1]
+        r = jnp.arange(cap.flat_clusters, dtype=jnp.int64)
+        fstep = jnp.minimum(jnp.searchsorted(ends, r, side="right"), n - 1)
+        first = ends[fstep] - short_n[fstep]
+        fslot = r - first
+        flive = r < nshort
+        p0 = jnp.stack([st[name] for name in ("x0", "y0", "z0")], axis=1)
+        p1 = jnp.stack([st[name] for name in ("x1", "y1", "z1")], axis=1)
+        direction = assets["straw_dir"][st["us"]] if c.randrad else jnp.zeros_like(p0)
+        width = st["width"] if c.randrad else jnp.zeros_like(st["width"])
+        q0, q1, ref = sample_frame(st, idx, p0, p1, assets)
+        pos_f, ne_f = dc._sample_flat(key, fstep, fslot, st["eion"], short_n, minion, q0, q1, direction, width,
+                                      c.EAverage)
+        pos_f = pos_f if ref is None else pos_f.astype(jnp.float64) + ref[fstep]
+        # minimum-ionising electron counts: the per-step loops on the short minimum-ionising steps only
+        mmask = multi & ~long & minion
+        midx = jnp.nonzero(mmask, size=cap.minion_steps, fill_value=0)[0]
+        mlive = jnp.arange(cap.minion_steps) < mmask.sum()
+        mine, _ = dc._minion_clusters(dc._step_keys(key, midx), assets["energies"], assets["probabilities"],
+                                      st["eion"][midx], jnp.where(mlive, short_n[midx], 0), cap.clusters_per_step,
+                                      unroll, method)
+        mrow = jnp.zeros(n, jnp.int64).at[jnp.where(mlive, midx, n)].set(jnp.arange(cap.minion_steps), mode="drop")
+        fmin = minion[fstep]
+        ne_f = jnp.where(fmin, mine[mrow[fstep], jnp.minimum(fslot, cap.clusters_per_step - 1)], ne_f)
+        errors = {"long_steps": long.sum() > cap.long_steps,
+                  "clusters_per_step": jnp.any(llive & (nc[lidx] > cap.clusters_per_long_step)),
+                  "flat_clusters": nshort > cap.flat_clusters, "minion_steps": mmask.sum() > cap.minion_steps}
+
+        def expand(n_, ne, mine):
+            slot = jnp.arange(ne.shape[1]) < n_[:, None]
+            return jnp.where(slot, jnp.where(mine[:, None], ne, 1), 0), jnp.where(mine[:, None], 1, ne)
+
+        rep_f = jnp.where(flive, jnp.where(fmin, ne_f, 1), 0)
+        el_f = jnp.where(fmin, 1, ne_f)
+        rep_l, el_l = expand(long_n, ne_l, minion[lidx])
+        per_step = (jnp.zeros(n, rep_f.dtype).at[jnp.where(flive, fstep, n)].add(rep_f, mode="drop")
+                    .at[jnp.where(llive, lidx, n)].add(rep_l.sum(axis=1), mode="drop"))
+        singles = single.astype(jnp.int64)
+        base = singles.sum() + jnp.cumsum(per_step) - per_step
+        within = jnp.cumsum(rep_f) - rep_f
+        start_f = base[fstep] + within - within[jnp.minimum(first, cap.flat_clusters - 1)]
+        start_l = base[lidx][:, None] + jnp.cumsum(rep_l, axis=1) - rep_l
+        start_1 = jnp.cumsum(singles) - singles
+        total = singles.sum() + per_step.sum()
+        cand_step = jnp.concatenate([idx, fstep, jnp.repeat(lidx, cap.clusters_per_long_step)])
+        cand_pos = jnp.concatenate([p0, pos_f, pos_l.reshape(-1, 3)])
+        cand_el = jnp.concatenate([single_ne, el_f, el_l.reshape(-1)])
+        cand_rep = jnp.concatenate([singles, rep_f, rep_l.reshape(-1)])
+        cand_start = jnp.concatenate([start_1, start_f, start_l.reshape(-1)])
+        row = jnp.arange(cap.drift_clusters, dtype=jnp.int64)
+        live = cand_rep > 0
+        mark = jnp.full(cap.drift_clusters, -1, jnp.int64).at[jnp.where(live, cand_start, cap.drift_clusters)].set(
+            jnp.arange(cand_rep.size, dtype=jnp.int64), mode="drop")
+        anchor = lax.cummax(jnp.where(mark >= 0, row, 0), axis=0)
+        owner = jnp.maximum(mark[anchor], 0)
+        valid = row < total
+        result = {"step": cand_step[owner], "pos": cand_pos[owner],
+                  "ne": jnp.where(valid, cand_el[owner], 1), "mask": valid,
+                  "usage": {"drift_clusters": total, "long_steps": long.sum(),
+                            "clusters_per_step": jnp.max(jnp.where(multi & ~long, nc, 0)),
+                            "clusters_per_long_step": jnp.max(jnp.where(long, nc, 0)),
+                            "flat_clusters": nshort, "minion_steps": mmask.sum()}}
+        return result, {**errors, "drift_clusters": total > cap.drift_clusters}
+
     def clusters(st, selected, assets, key):
+        if cap.flat_clusters is not None:
+            return clusters_flat(st, selected, assets, key)
         if cap.long_steps is not None:
             return clusters_tiered(st, selected, assets, key)
         idx = jnp.arange(len(selected), dtype=jnp.int64)
@@ -239,7 +343,7 @@ def prepare(c, capacities, batch_events):
         q0, q1, ref = sample_frame(st, idx, p0, p1, assets)
         pos, ne = dc._sample(key, idx, st["eion"], bounded, minion, q0, q1, direction, width,
                              c.EAverage, assets["energies"], assets["probabilities"],
-                             cap.clusters_per_step, dc.MINION_UNROLL, dc.SEARCH_METHOD)
+                             cap.clusters_per_step, unroll, method)
         pos = absolute(pos, ref)
         mask = jnp.arange(cap.clusters_per_step) < bounded[:, None]
         repeats = jnp.concatenate([single.astype(jnp.int64),

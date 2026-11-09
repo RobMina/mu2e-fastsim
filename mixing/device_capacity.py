@@ -15,7 +15,7 @@ import json
 import math
 from pathlib import Path
 
-TRACKER_SIZED = ("drift_clusters", "straws", "long_steps", "clusters_per_long_step")
+TRACKER_SIZED = ("drift_clusters", "straws", "long_steps", "clusters_per_long_step", "flat_clusters", "minion_steps")
 CRV_SIZED = ("substeps", "photons", "thermal", "charge_clusters", "digis", "reco_waveforms", "coinc_hits")
 CRV_FLOOR = ("charges_per_cluster", "waveform_samples", "reco_samples")   # never below the template
 

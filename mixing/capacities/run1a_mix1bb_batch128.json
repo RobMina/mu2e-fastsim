@@ -38,7 +38,11 @@
    ],
    "pairs_per_straw": 8,
    "electronics_batch": 8192,
-   "charge_blocks_per_launch": 16
+   "charge_blocks_per_launch": 16,
+   "flat_clusters": 2111504,
+   "minion_steps": 20048,
+   "minion_search": "compare_all",
+   "minion_unroll": 4
   },
   "crv": {
    "substeps": 163157,

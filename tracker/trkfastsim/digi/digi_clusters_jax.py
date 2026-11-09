@@ -178,6 +178,29 @@ def _sample(key, idx, eion, nc, minion, p0, p1, sdir, width, eaverage, energies,
     return pos, ne
 
 
+@_jit
+def _sample_flat(key, step, slot, eion, nc, minion, p0, p1, sdir, width, eaverage):
+    """_sample's positions and non-minion electron counts for flat (step, slot) pairs: the same per-slot keys and
+    arithmetic, without the [steps, capacity] padding. Per-step inputs are indexed by `step`; minion counts come from
+    _minion_clusters on those steps."""
+    keys = _fold(_step_keys(key, step), 2)
+    slot_keys = jax.vmap(random.fold_in)(keys, slot.astype(jnp.uint32))
+    u = _uniform(slot_keys)
+    path = p1 - p0
+    q1 = jnp.cross(path, sdir)
+    n1 = jnp.linalg.norm(q1, axis=1)
+    q1 /= jnp.where(n1 > 0, n1, 1.0)[:, None]
+    q2 = jnp.cross(path, q1)
+    n2 = jnp.linalg.norm(q2, axis=1)
+    q2 /= jnp.where(n2 > 0, n2, 1.0)[:, None]
+    normals = jax.vmap(lambda k: df.draw(random.normal, k, (2,)))(_fold(slot_keys, 0))
+    pos = p0[step] + u[:, None] * path[step]
+    pos += width[step][:, None] * (q1[step] * normals[:, :1] + q2[step] * normals[:, 1:])
+    means = jnp.where(minion, 0.0, eion / (jnp.maximum(nc, 1).astype(eion.dtype) * eaverage))[step]
+    ne = jnp.maximum(_poisson(_fold(slot_keys, 1), means), 1)
+    return pos, ne
+
+
 def _sample_batch(capacity):
     return max(1, min(BATCH_SIZE, MAX_SAMPLE_LANES // capacity))
 
