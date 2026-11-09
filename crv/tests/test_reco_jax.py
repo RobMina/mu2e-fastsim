@@ -308,3 +308,24 @@ def test_ntview_links_and_frame(small_tiers):
     y = ak.to_numpy(ak.flatten(p["crvpulses.pos.fCoordinates.fY"]))
     z = ak.to_numpy(ak.flatten(p["crvpulses.pos.fCoordinates.fZ"]))
     assert y.min() > 4000 and np.abs(z).max() < 5000
+
+
+def test_bounded_scan_matches_dense():
+    """bounded=True (peak scans to the longest waveform, rounds until none finds a pulse) changes no found pulse."""
+    adc, n, start, ped, area, height = _batch(W=120)
+    L = adc.shape[1]
+    adc = np.concatenate([adc, np.full((adc.shape[0], 2 * L), 2045, np.int64)], 1)   # padding past every n
+    n = n.copy()
+    n[7] = 24
+    args = [np.asarray(a) for a in (adc, n, start, ped, area, height)]
+    cfg = PF.RecoConfig()
+    dense = jax.device_get(PJ.reconstruct_dense(*args, cfg=cfg))
+    bounded = jax.device_get(PJ.reconstruct_dense(*args, cfg=cfg, bounded=True))
+    assert dense["npulse"].max() < cfg.max_pulses        # some rounds are skipped
+    found = dense["found"]
+    assert found.any() and (~found).any()
+    for k in ("found", "npulse", "ped", "pedfromdb", "wf_near_threshold", "window_overflow", "rounds_exhausted"):
+        np.testing.assert_array_equal(bounded[k], dense[k], err_msg=k)
+    for k, v in dense.items():
+        if v.shape == found.shape and k != "found":
+            np.testing.assert_array_equal(bounded[k][found], v[found], err_msg=k)

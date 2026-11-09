@@ -458,3 +458,23 @@ def test_scatter_waveform_needs_no_charge_capacity_and_validates_option(setup):
         np.testing.assert_array_equal(a[name], b[name], err_msg=name)
     with pytest.raises(ValueError, match="waveform"):
         adapter(setup, {**capacity(), "waveform": "sparse"})
+
+
+def test_exact_restructure_options_match_default(setup):
+    """digi_starts="rows" and pulse_scan="bounded" give the same kept digis, pulses and clusters as the defaults."""
+    collection, timing = inputs()
+    timing["event_mask"][1] = False
+    outs = {}
+    for name, options in (("default", {}), ("exact", {"digi_starts": "rows", "pulse_scan": "bounded"})):
+        model = adapter(setup, capacity(waveform="scatter", **options))
+        out, errors = run(model.apply, collection, timing, model.assets, jax.random.key(23))
+        assert not any(errors.values()), [k for k, v in errors.items() if v]
+        outs[name] = out
+    for table, cols in outs["default"].items():
+        mask = cols["mask"]
+        assert mask.sum() > 0, table
+        np.testing.assert_array_equal(outs["exact"][table]["mask"], mask, err_msg=table)
+        for col, value in cols.items():
+            np.testing.assert_array_equal(outs["exact"][table][col][mask], value[mask], err_msg=f"{table}/{col}")
+    with pytest.raises(ValueError, match="digi_starts"):
+        adapter(setup, capacity(digi_starts="sparse"))
