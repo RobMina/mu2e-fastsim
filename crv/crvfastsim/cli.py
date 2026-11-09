@@ -164,9 +164,10 @@ def build_parser():
             sp.add_argument("--device-refit", action="store_true",
                             help="with --jax: waveforms the short pulse fit flags are refit on the device at full "
                                  "length before any numpy refit (reco.chain_jax._device_refit)")
-            sp.add_argument("--resident-response", action="store_true",
+            sp.add_argument("--resident-response", action=argparse.BooleanOptionalAction, default=None,
                             help="with --jax: photons stay on the device into the SiPM stage (same charges as the "
-                                 "two-stage twins; response.resident)")
+                                 "two-stage twins; response.resident). Default: on with --jax unless "
+                                 "--fused-response; --no-resident-response keeps the two-stage path")
             sp.add_argument("--fused-response", action="store_true",
                             help="with --jax: photons -> SiPM charges in one device pass (response.device, as reco-r3)")
             sp.add_argument("--emit", default=None, metavar="JSON", help="per-shard accumulators for runchain-merge")
