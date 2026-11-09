@@ -106,6 +106,7 @@ def build(df, nrow_edges=NROW_EDGES, tandip_edges=TANDIP_EDGES, min_count=40, mi
     nactive. Returns a dict of NumPy arrays (save with np.savez). pools (opt-in): also store each bin's pool for the
     empirical joint draw (pool_res [M, 7] in the order RES + QUAL, pool_idx, pool_start/pool_count [ne, nt]); a pool
     wider than pool_max (a merged bin) keeps a fixed-seed subsample of pool_max tracks."""
+    keep_pools = bool(pools)       # (the helper below is also called pools)
     ne, nt = len(nrow_edges) - 1, len(tandip_edges) - 1
     d = df[df.has_entry.astype(bool)]
     teff = None
@@ -135,7 +136,7 @@ def build(df, nrow_edges=NROW_EDGES, tandip_edges=TANDIP_EDGES, min_count=40, mi
     chol = np.zeros((ne, nt, len(RES + QUAL), len(RES + QUAL)))
     level = np.zeros((ne, nt), np.int8)        # 0 own bin, 1/2 +-1/+-2 tan(dip) bins, 3 nrow row, 4 all
     count = np.zeros((ne, nt), np.int64)
-    if pools:
+    if keep_pools:
         qrows = np.flatnonzero(qual)
         pos = np.full(len(d), -1, np.int64)
         pos[qrows] = np.arange(len(qrows))
@@ -162,7 +163,7 @@ def build(df, nrow_edges=NROW_EDGES, tandip_edges=TANDIP_EDGES, min_count=40, mi
             for k in RES + QUAL + tuple(extra):
                 icdf[k][i, j] = _icdf(res[k][sel_q[lq]])
             chol[i, j] = _copula(np.stack([res[k][sel_q[lq]] for k in RES + QUAL], 1))
-            if pools:
+            if keep_pools:
                 ix = pos[np.flatnonzero(sel_q[lq])]
                 if len(ix) > pool_max:
                     ix = np.sort(prng.choice(ix, pool_max, replace=False))
@@ -177,7 +178,7 @@ def build(df, nrow_edges=NROW_EDGES, tandip_edges=TANDIP_EDGES, min_count=40, mi
         out[f"icdf_{k}"] = icdf[k]
     if teff is not None:
         out["time_edges"], out["time_eff"] = np.asarray(TIME_EDGES, float), teff
-    if pools:
+    if keep_pools:
         out["pool_res"] = pool_res
         out["pool_idx"] = np.concatenate(pool_idx).astype(np.int64) if pool_idx else np.zeros(0, np.int64)
         out["pool_start"], out["pool_count"] = pool_start, pool_count
