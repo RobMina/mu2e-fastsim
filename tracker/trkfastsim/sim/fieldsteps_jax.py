@@ -801,11 +801,13 @@ class Result(NamedTuple):
     stats: dict      # cap counters (must be 0 except waits) and loop counts
 
 
-def transport(trk, key, x, p, t, active=None, rounds_it=256, min_bucket=64, shrink=2, stats=None):
+def transport(trk, key, x, p, t, active=None, rounds_it=256, min_bucket=64, shrink=2, stats=None, max_chords=None):
     """Field-on StrawGasSteps of electrons on the device. x [n, 3] (Mu2e frame), p [n, 3] momentum [MeV/c], t [n] [ns]:
     device or host arrays; active [n] bool (default all): tracks to transport (the others get no steps, status 0).
     Between launches of `rounds_it` chords the live lanes are compacted into power-of-two buckets (host reads one
-    lane count; the data stay on the device). Returns Result with device arrays."""
+    lane count; the data stay on the device). max_chords (opt-in): stop after about that many chords (a whole number
+    of launches); tracks still live then end with status CAPPED and keep their records. Returns Result with device
+    arrays."""
     dt = trk.dt
     x = jnp.asarray(x, dt) - jnp.asarray(trk.origin, dt)
     pv = jnp.asarray(p, dt)
@@ -837,6 +839,10 @@ def transport(trk, key, x, p, t, active=None, rounds_it=256, min_bucket=64, shri
         live = s["status"] == LIVE
         nlive = int(jnp.sum(live))
         timeline.append((bucket, round(time.perf_counter() - tl0, 3)))
+        if max_chords is not None and it >= max_chords and nlive:     # chord budget: the live lanes end here
+            s["status"] = jnp.where(live, CAPPED, s["status"])
+            live = jnp.zeros_like(live)
+            nlive = 0
         wl = jnp.where(~live & (lane < n), lane, n)                    # finished real lanes (n: dropped)
         for k in final:
             final[k] = final[k].at[wl].set(s[k], mode="drop")
