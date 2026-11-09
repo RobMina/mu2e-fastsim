@@ -1,4 +1,4 @@
-"""Photons -> SiPM charges with the photons resident on the device (ChainConfig.resident_response; runchain's default with --jax).
+"""Photons -> SiPM charges with the photons resident on the device (ChainConfig.resident_response; runchain --jax).
 
 The two-stage JAX twins hand every arrival photon to the host between the stages: photons_jax.make_photons returns
 host arrays (about 19 M photons per 50k generated Run 1A cosmics), chain.charges masks and labels them on the host,
