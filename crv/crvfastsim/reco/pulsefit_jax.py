@@ -53,8 +53,11 @@ def _gumbel(t, A, mu, b):
     return A * jnp.exp(-z - jnp.exp(-z))
 
 
-def _peak(y, n, start, active, min_adc):
-    """One FindNextPeak for all rows: y [W,L], n/start [W] int, active [W] bool."""
+def _peak(y, n, start, active, min_adc, bound=None):
+    """One FindNextPeak for all rows: y [W,L], n/start [W] int, active [W] bool.
+
+    bound: None scans all L samples; a traced count scans only the first min(bound, L) (steps past every row's n change
+    nothing, so bound = max(n) gives the same result)."""
     W, L = y.shape
 
     def step(c, b):
@@ -78,7 +81,11 @@ def _peak(y, n, start, active, min_adc):
 
     z = jnp.zeros(W, bool)
     zi = jnp.zeros(W, jnp.int64)
-    (found, _, ps, pe, _), _ = lax.scan(step, (z, z, zi, zi, ~active), jnp.arange(L))
+    if bound is None:
+        (found, _, ps, pe, _), _ = lax.scan(step, (z, z, zi, zi, ~active), jnp.arange(L))
+    else:
+        found, _, ps, pe, _ = lax.fori_loop(jnp.int64(0), jnp.minimum(bound, L).astype(jnp.int64),
+                                            lambda b, c: step(c, b)[0], (z, z, zi, zi, ~active))
     return found, ps, pe
 
 
@@ -185,15 +192,20 @@ def _fit(t, y, w, p0, lo, hi, lm_iter, gn_iter):
     return _to_ext(u, lo, hi), chi2, conv, hess_ok
 
 
-def reconstruct_dense(adc, n, start_tdc, pedestal_db, calib_area, calib_height, cfg=RecoConfig()):
+def reconstruct_dense(adc, n, start_tdc, pedestal_db, calib_area, calib_height, cfg=RecoConfig(), bounded=False):
     """adc [W,L] (padded), n, start_tdc, pedestal_db, calib_area, calib_height [W]. Dense outputs [W, P].
-    Recompiles only for a new (W, L) or a new STATIC_FIELDS value; the other settings of cfg are data."""
+    Recompiles only for a new (W, L) or a new STATIC_FIELDS value; the other settings of cfg are data.
+
+    bounded=True: the peak scans stop at the longest waveform and the rounds stop once no row found a pulse (a row
+    that finds none never finds one later). Found pulses and every field of them are unchanged; the fields of
+    rounds that are not run are zero instead of the unused fallback values."""
     return _reconstruct_dense(adc, n, start_tdc, pedestal_db, calib_area, calib_height, knobs_of(cfg),
-                              P=cfg.max_pulses, sb=cfg.samples_before, sa=cfg.samples_after, lm=cfg.lm_iterations)
+                              P=cfg.max_pulses, sb=cfg.samples_before, sa=cfg.samples_after, lm=cfg.lm_iterations,
+                              bounded=bounded)
 
 
-@partial(dprec.jit, static_argnames=("P", "sb", "sa", "lm"))
-def _reconstruct_dense(adc, n, start_tdc, pedestal_db, calib_area, calib_height, cfg, P, sb, sa, lm):
+@partial(dprec.jit, static_argnames=("P", "sb", "sa", "lm", "bounded"))
+def _reconstruct_dense(adc, n, start_tdc, pedestal_db, calib_area, calib_height, cfg, P, sb, sa, lm, bounded=False):
     W, L = adc.shape
     cfg = _Knobs(cfg)
     PW = sb + sa + 1 + PLATEAU_SLOTS
@@ -207,7 +219,7 @@ def _reconstruct_dense(adc, n, start_tdc, pedestal_db, calib_area, calib_height,
 
     def round_(carry, _):
         y, start, active, failed_before, near, overflow = carry
-        found, ps, pe = _peak(y, n, start, active, cfg.min_adc_difference)
+        found, ps, pe = _peak(y, n, start, active, cfg.min_adc_difference, bound=jnp.max(n) if bounded else None)
         fs, fe = _window(y, n, ps, pe, found, sb, sa)
         overflow = overflow | (found & (fe - fs + 1 > PW))
         yps = jnp.take_along_axis(y, ps[:, None], 1)[:, 0]
@@ -249,7 +261,21 @@ def _reconstruct_dense(adc, n, start_tdc, pedestal_db, calib_area, calib_height,
         return (y, start, found, jnp.where(found, failed_seq, failed_before), near, overflow), rec
 
     init = (y0, jnp.zeros(W, jnp.int64), jnp.ones(W, bool), jnp.zeros(W, bool), near0, jnp.zeros(W, bool))
-    (y, _, _, _, near, overflow), recs = lax.scan(round_, init, None, length=P)
+    if bounded:
+        shapes = jax.eval_shape(lambda c: round_(c, None)[1], init)
+        recs0 = {k: jnp.zeros((P,) + v.shape, v.dtype) for k, v in shapes.items()}
+
+        def more(state):
+            r, carry, _ = state
+            return (r < P) & jnp.any(carry[2])
+
+        def run_round(state):
+            r, carry, recs = state
+            carry, rec = round_(carry, None)
+            return r + 1, carry, {k: recs[k].at[r].set(rec[k]) for k in recs}
+        _, (y, _, _, _, near, overflow), recs = lax.while_loop(more, run_round, (jnp.int64(0), init, recs0))
+    else:
+        (y, _, _, _, near, overflow), recs = lax.scan(round_, init, None, length=P)
     out = {k: v.T for k, v in recs.items()}                  # [W, P]
     out["npulse"] = out["found"].sum(1)
     out["ped"] = ped
