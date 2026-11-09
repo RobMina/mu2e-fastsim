@@ -72,10 +72,10 @@ class Endpoint:
 def setup(tmp_path, monkeypatch, site_env):
     calls = []
     def prepare(ep, path, ref, **kw):
-        calls.append(kw["modules"])
+        calls.append(kw.get("modules") or ())
         return {"path": path + ".snapshots/" + "e" * 32, "requested_ref": ref,
-                "umbrella_commit": "a" * 40, "submodules": {m: "b" * 40 for m in kw["modules"]},
-                "policy": {"name": "retained-readonly-git-v1", "modules": list(kw["modules"]), "branch": ""}}
+                "umbrella_commit": "a" * 40, "submodules": {m: "b" * 40 for m in kw.get("modules") or ()},
+                "policy": {"name": "retained-readonly-git-v1", "modules": list(kw.get("modules") or ()), "branch": ""}}
     monkeypatch.setattr(kit_uva, "prepare_code", prepare)
     monkeypatch.setattr(kit_uva, "resolve_image", lambda ep, path: {
         "path": path, "sha256": "d" * 64, "size": 100, "policy": "verify-before-run-not-snapshot"})
@@ -95,7 +95,7 @@ def start(setup):
 
 def test_submit_stream_and_results(setup):
     kit, handler, ep = start(setup)
-    assert setup[4] == [("core", "tracker")]
+    assert setup[4] == [()]
     body = ep.submissions[0][1]
     assert "PYTHONPATH=$CODE/core:$CODE/tracker" in body and "beam" not in body
     assert "--retain-ntuple" not in body and "--nv" not in body

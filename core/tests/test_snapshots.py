@@ -1,4 +1,9 @@
-"""Snapshot/guard tests use local fixture repositories, never SSH or a network."""
+"""Snapshot/guard tests use local fixture repositories, never SSH or a network.
+
+Most tests exercise the generic submodule rules of hependpoints.snapshots through the Mu2e adapter, on an umbrella
+fixture with core/crv/tracker submodules (SUBMODULE_RULES, the rules of the former Mu2e umbrella). The tests with the
+`monorepo` fixture use the Mu2e rules themselves: one repository, no submodules.
+"""
 import json
 import os
 from pathlib import Path
@@ -8,7 +13,12 @@ import subprocess
 import pytest
 
 from mu2efastsim.endpoints import EndpointError
+from mu2efastsim.endpoints import mu2e_config as cfg
 from mu2efastsim.endpoints import snapshots
+from mu2efastsim.endpoints.snapshots import SourceRepo
+
+SUBMODULE_RULES = dict(modules=("core", "crv", "tracker"), default_modules=("core", "crv", "tracker"),
+                       branch_modules=("core", "crv"), require_modules=True)
 
 
 def git(repo, *args):
@@ -40,6 +50,28 @@ class LocalEndpoint:
         if result.returncode:
             raise EndpointError(result.stderr.decode())
         return result.stdout.decode()
+
+
+@pytest.fixture(autouse=True)
+def _submodule_rules(request, monkeypatch):
+    if "monorepo" not in request.fixturenames:
+        monkeypatch.setattr(snapshots, "_repo", lambda: SourceRepo(url=snapshots.UMBRELLA_URL, **SUBMODULE_RULES))
+
+
+@pytest.fixture
+def monorepo(tmp_path, monkeypatch):
+    repo = init(tmp_path / "repository")
+    for name in ("core", "crv", "tracker"):
+        (repo / name).mkdir()
+        (repo / name / "source.py").write_text(f"NAME = '{name}'\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "packages")
+    git(repo, "checkout", "-qb", "experiment")
+    (repo / "crv" / "source.py").write_text("NAME = 'experiment'\n")
+    git(repo, "commit", "-qam", "experiment")
+    git(repo, "checkout", "-q", "main")
+    monkeypatch.setattr(snapshots, "UMBRELLA_URL", str(repo))
+    return repo
 
 
 @pytest.fixture
@@ -459,3 +491,29 @@ def test_guard_agrees_with_main_guard(tmp_path, repositories, case):
     accepted = case in ("good", "branch-override")
     assert (ours.returncode == 0) == accepted and (theirs.returncode == 0) == accepted, (ours.stderr, theirs.stderr)
     assert (ours.stdout == "runtime-reached") == accepted and (theirs.stdout == "runtime-reached") == accepted
+
+
+def test_mu2e_rules_have_no_modules():
+    repo = cfg.source_repo()
+    assert (repo.modules, repo.default_modules, repo.branch_modules, repo.require_modules) == ((), (), (), False)
+
+
+@pytest.mark.parametrize("ref", ["main", "experiment"])
+def test_mu2e_snapshot_is_the_whole_repository_at_the_ref(tmp_path, monorepo, ref):
+    snapshot = prepare(tmp_path, ref)
+    root = Path(snapshot["path"])
+    assert snapshot["umbrella_commit"] == git(monorepo, "rev-parse", ref)
+    assert snapshot["submodules"] == {} and snapshot["policy"]["modules"] == []
+    assert (root / "core" / "source.py").read_text() == "NAME = 'core'\n"
+    assert (root / "crv" / "source.py").read_text() == ("NAME = 'experiment'\n" if ref == "experiment" else "NAME = 'crv'\n")
+    assert guard(snapshot).stdout == "runtime-reached"
+    writable(root / "crv" / "source.py")
+    (root / "crv" / "source.py").write_text("tampered")
+    assert guard(snapshot).returncode != 0
+
+
+def test_mu2e_rules_refuse_a_module_selection_before_endpoint_use(tmp_path, monorepo):
+    ep = LocalEndpoint()
+    with pytest.raises(ValueError):
+        snapshots.prepare_code(ep, str(tmp_path / "base"), "main", modules=("core",))
+    assert not ep.calls

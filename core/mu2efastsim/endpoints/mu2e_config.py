@@ -1,7 +1,7 @@
 """Mu2e configuration of the experiment-neutral hep-endpoints package.
 
 Everything Mu2e-specific that used to live in the endpoint adapters: the job variable and token prefixes, the public
-umbrella repository and its module list, the EAF fast-chain environment (Mu2e ana python, venv with JAX, PYTHONPATH of
+repository, the EAF fast-chain environment (Mu2e ana python, venv with JAX, PYTHONPATH of
 core/crv/tracker), the UVA GPU types with their charge rates and the automatic GPU choice, and the defaults of the
 local state directories. Site settings (hosts, accounts, storage paths) still come only from the environment, through
 mu2efastsim.site.
@@ -18,15 +18,16 @@ from hependpoints.snapshots import SourceRepo
 ENVIRONMENT = JobEnvironment(var_prefix="M2FS", job_prefix="m2fs")
 OUT_VAR = ENVIRONMENT.out_var
 
-# Public code snapshots: the umbrella and its selectable modules; a branch override moves core and crv only.
+# Public code snapshots: one repository with every package in it (no submodules), so no modules to select and no
+# per-module branch override; a different branch is a different ref.
 UMBRELLA_URL = "https://github.com/RobMina/mu2e-fastsim.git"
-MODULES = ("core", "crv", "tracker")
-BRANCH_MODULES = ("core", "crv")
+MODULES = ()
+BRANCH_MODULES = ()
 
 
 def source_repo(url: str = UMBRELLA_URL) -> SourceRepo:
     return SourceRepo(url=url, modules=MODULES, default_modules=MODULES, branch_modules=BRANCH_MODULES,
-                      require_modules=True)
+                      require_modules=False)
 
 
 # UVA GPU types: partition, SU per GPU-hour / core-hour / GB-hour (rc-website data/service.yaml and the Slurm billing

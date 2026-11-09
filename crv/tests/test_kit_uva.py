@@ -265,8 +265,8 @@ def _artifacts(monkeypatch):
     """Only remote artifact preparation is mocked; binding/manifests/verification remain production code."""
     monkeypatch.setattr(KU, "prepare_code", lambda ep, path, ref, **kw: {
         "path": path + ".snapshots/" + "e" * 32, "umbrella_commit": "a" * 40,
-        "submodules": {m: "b" * 40 for m in kw["modules"]}, "requested_ref": ref,
-        "policy": {"name": "retained-readonly-git-v1", "modules": list(kw["modules"]),
+        "submodules": {m: "b" * 40 for m in kw.get("modules") or ()}, "requested_ref": ref,
+        "policy": {"name": "retained-readonly-git-v1", "modules": list(kw.get("modules") or ()),
                    "branch": kw.get("branch", "")}})
     monkeypatch.setattr(KU, "resolve_image", lambda ep, path: {
         "path": path, "sha256": "d" * 64, "size": 100, "policy": "verify-before-run-not-snapshot"})
@@ -311,6 +311,15 @@ def test_retry_uses_frozen_body_ref_image_and_inputs(tmp_path, monkeypatch):
     d.submit("retry", {"task": "crv_response", "seed": 1})
     assert d._rec("retry") == original and site.body == body
     assert site.next_id == 7001
+
+
+def test_branch_replaces_the_snapshot_ref(tmp_path):
+    _, _, kit, _ = make(tmp_path)
+    d = kit._delegates["crv_response"]
+    d.code_ref, d.branch = "release", ""
+    assert d.ensure_code()["requested_ref"] == "release"
+    d.branch = "feature"
+    assert d.ensure_code()["requested_ref"] == "feature"
 
 
 def test_stream_mismatch_cancels_against_original_expectations(tmp_path):

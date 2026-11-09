@@ -5,15 +5,15 @@ calibration and data reference, the background model; ~530 MB) are never stored 
 writes ``<job dir>/inbox`` (node, tmpfs dir) and the kit pipes each file from the FNAL host through the kit host into
 that tmpfs (``ssh <fnal> cat`` -> ``srun --overlap ... cat >``), checks its md5 and touches ``ready``; the job's EXIT trap
 deletes the tmpfs dir and writes ``out/cleanup.txt``, without which ``results`` refuses. The lookup tables come from the
-CVMFS Stratum-1 inside the job. Code: a retained read-only snapshot of the umbrella on the endpoint (FASTSIMKIT_CRV_CODE at
-FASTSIMKIT_CRV_CODE_REF, submodules at their pins, or FASTSIMKIT_CRV_BRANCH checked out in core and crv) run in the
+CVMFS Stratum-1 inside the job. Code: a retained read-only snapshot of the repository on the endpoint (FASTSIMKIT_CRV_CODE
+at FASTSIMKIT_CRV_BRANCH if set, else at FASTSIMKIT_CRV_CODE_REF) run in the
 image (FASTSIMKIT_SIF). Inputs are cached once per node in /dev/shm (see WAIT), so later points on a node stream nothing. The kit host must
 reach both the endpoint and the FNAL host by ssh for the point's lifetime.
 
 Environment (see site.env.example): FASTSIMKIT_FNAL_HOST (required: the FNAL host the inputs stream from),
 FASTSIMKIT_CRV_DATA (default mu2efastsim.site.crv_data()), FASTSIMKIT_CRV_CODE (default
 <FASTSIMKIT_SCRATCH>/crv_response_code_kit), FASTSIMKIT_CRV_CODE_REF (umbrella ref, default main),
-FASTSIMKIT_CRV_BRANCH (optional), FASTSIMKIT_JAX_CACHE (JAX compilation cache, default
+FASTSIMKIT_CRV_BRANCH (optional; replaces the ref), FASTSIMKIT_JAX_CACHE (JAX compilation cache, default
 <FASTSIMKIT_SCRATCH>/jaxcache, "" = off), FASTSIMKIT_DEVICE_FLOAT (float32 or float64, default float32).
 A missing required variable raises mu2efastsim.site.SiteConfigError.
 """
@@ -212,7 +212,7 @@ class CrvResponseStream:
         return {"ok": True, "message": ""}
 
     def ensure_code(self):
-        return prepare_code(self.ep, self.code, self.code_ref, modules=('core', 'crv'), branch=self.branch)
+        return prepare_code(self.ep, self.code, self.branch or self.code_ref)
 
     def submit(self, name, params) -> Dict[str, Any]:
         p = validate(params)
