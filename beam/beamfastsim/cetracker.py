@@ -249,12 +249,16 @@ class DeviceChain:
     trkfastsim.digi.digicond) or None (no digis). ce_unroll, ce_shrink: cechain_jax's unroll and bucket shrink
     factor (a large shrink compacts less often and compiles fewer bucket shapes). digi_chunk: events per digitiser
     call (default 8,000; the random stream depends on the chunking, the distributions do not). resident_digis: use trkfastsim.digi.digi_resident (the same digis as digi_jax for the same keys and chunks,
-    with the packing on the device; both tracker device floats)."""
+    with the packing on the device; both tracker device floats). albedo: the downstream albedo of the tracked electrons
+    (trkfastsim.sim.albedo): "default" (the shipped Geant4 Run 1A library, on by default), a library .npz or
+    albedo.Library, or None (off: the transport before the albedo); albedo_species "all" (the electron and its shower
+    electrons) or "ce" (the electron's own returns); albedo_max_chords: chord budget of the return transport (None:
+    no budget)."""
 
     def __init__(self, offline_root, maps, gdml, geom="Offline/Mu2eG4/geom/geom_2021_PhaseI_v03.txt",
                  response=None, digi_cond=None, dtype="float64", origin=ORIGIN, chord_mm=10.0, lanes=None,
                  ce_unroll=True, ce_shrink=2, digi_chunk=8000, resident_digis=True, complete_outer_wall=False,
-                 albedo=None, albedo_species="all", albedo_max_chords=None):
+                 albedo="default", albedo_species="all", albedo_max_chords=8192):
         import jax  # noqa: F401  (device backend)
         from mu2efastsim import ehelix
         from trkfastsim.sim import fieldsteps_jax as FJ
@@ -281,10 +285,11 @@ class DeviceChain:
         if digi_cond is not None:
             from trkfastsim.digi import digicond
             self.cond = digicond.Conditions.load(digi_cond)
-        self.alb = None                            # trkfastsim.sim.albedo: downstream returns (off by default)
+        self.alb = None                            # trkfastsim.sim.albedo: downstream returns (None: off)
         if albedo is not None:
             from trkfastsim.sim import albedo as AL
-            lib = albedo if isinstance(albedo, AL.Library) else AL.Library.load(albedo)
+            lib = (albedo if isinstance(albedo, AL.Library)
+                   else AL.Library.load() if isinstance(albedo, str) and albedo == "default" else AL.Library.load(albedo))
             self.alb = AL.DeviceLibrary(lib.select(albedo_species), self.dt)
             self.alb_max_chords = albedo_max_chords
             self.alb_bz = float(ehelix.field_at(field, np.array([[AL.AXIS_XY[0], AL.AXIS_XY[1], AL.VD_Z]]))[0][2])
@@ -535,6 +540,8 @@ def main(argv=None):
     ap.add_argument("--complete-outer-wall", action="store_true",
                     help="tracker transport: the complete outer-minus-gas straw wall, wall-only chords included "
                          "(opt-in; default the gas-gated wall)")
+    ap.add_argument("--albedo", default="default",
+                    help="device tracker: downstream albedo library ('default': the shipped one; 'none': off)")
     ap.add_argument("--tracker", choices=("numpy", "device"), default="numpy",
                     help="tracker transport: NumPy fieldsteps (default) or the device twin (needs --backend device)")
     a = ap.parse_args(argv)
@@ -562,7 +569,8 @@ def main(argv=None):
         if a.backend != "device":
             raise SystemExit("--tracker device needs --backend device")
         ch = DeviceChain(a.offline_root, a.maps, a.gdml, geom=a.geom, dtype=a.device_float, origin=a.origin,
-                         chord_mm=a.chord_mm, lanes=a.lanes, complete_outer_wall=a.complete_outer_wall)
+                         chord_mm=a.chord_mm, lanes=a.lanes, complete_outer_wall=a.complete_outer_wall,
+                         albedo=None if a.albedo == "none" else a.albedo)
         tic = time.perf_counter()
         res = ch.transport(g, a.seed)
         t_ce, t_trk = res["timing"]["cechain_s"], res["timing"]["tracker_s"]
