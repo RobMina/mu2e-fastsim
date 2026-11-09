@@ -119,3 +119,10 @@ def test_merge_appends_after_the_last_record_and_drops_beyond_the_cap():
     assert t[0, 4:].tolist() == [100.0, 101.0]
     assert v[1].tolist() == [True, True, True, True, False, False] and t[1, 2:4].tolist() == [106.0, 107.0]
     assert np.array_equal(t[2], np.asarray(steps["t"])[2])
+
+
+def test_the_shipped_library_loads_with_its_counts():
+    lib = AL.Library.load()
+    assert AL.DEFAULT.exists() and lib.bin_exits.sum() == 36649 and len(lib.g_bin) == 1305 and len(lib.r) == 1550
+    assert int(lib.isce.sum()) == 370 and len(lib.select("ce").g_bin) == 352
+    assert lib.bin_exits.shape == (AL.NBIN,) and (lib.g_count > 0).all()
