@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+# analysis and job products, never source
+*.root
+*.art
+*.db
+*.sif
+*.log
+output/
+plots/
+build/
+backing
+# local site settings (copy site.env.example)
+site.env
+# scons state from the muse area
+*.dblite

@@ -1,0 +1,12 @@
+# Profile the stock extracted digitisation (CRV response chain included).
+#include "Production/JobConfig/digitize/Extracted.fcl"
+
+services.TimeTracker.printSummary : true
+services.TimeTracker.dbOutput : { filename : "timing_digi.db" overwrite : true }
+services.MemoryTracker : { dbOutput : { filename : "mem_digi.db" overwrite : true } }
+services.SeedService.baseSeed : 20261016
+services.DbService.purpose : Sim_best
+services.DbService.version : v1_5
+outputs.Output.fileName : "dig.mu2e.CosmicCRYExtractedProf.v0.001400_00000001.art"
+# keep every event so per-event CRV costs are not biased by the trigger selection
+outputs.Output.SelectEvents : [ "DigitizePath" ]

@@ -1,0 +1,14 @@
+# V2 fast arm (path A): the stock extracted digitisation + CRV reco, but with the CrvSteps of a crvfastsim table
+# instead of Geant4's. Run on the G4 dts file of the same events; compare with dump_crvreco_from_dts.fcl on that file.
+# Usage: mu2e -c CrvFastSim/fcl/dump_crvreco_from_fasttable.fcl -s dts....art -T crvreco_fast.root
+#        with physics.producers.fastCrvSteps.tableFile set to the fastC table of that shard (override at the end).
+#include "CrvFastSim/fcl/dump_crvreco_from_dts.fcl"
+
+physics.producers.fastCrvSteps : { module_type : CrvStepsFromTable tableFile : "fastC.root" }
+physics.producers.CrvPhotons.crvStepModuleLabels : [ "fastCrvSteps" ]
+physics.producers.CrvPhotons.crvStepProcessNames : [ "Digitize" ]
+# CRV-only path: no compressDigiMCs (its Ptrs would point into the G4 SimParticles); the dumper reads CrvWaveforms
+physics.DigitizePath : [ PBISim, EWMProducer, fastCrvSteps, CrvPhotons, CrvSiPMCharges, CrvWaveforms, CrvDigi,
+                         CrvRecoPulses, CrvCoincidenceClusterFinder ]
+physics.trigger_paths : [ DigitizePath ]
+services.TFileService.fileName : "crvreco_fast.root"

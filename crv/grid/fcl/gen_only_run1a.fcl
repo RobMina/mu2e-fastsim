@@ -1,0 +1,8 @@
+# CRY primaries only for the fast sim, run1a CRV configuration: gen_only_extracted.fcl with the stock run1a cosmic geometry
+# (Production/JobConfig/cosmic/geom_cosmic_run1_a.txt) and the default CRY configuration of the Run 1A / Run 2 cosmic S1 jobs
+# (Cosmic.generateCRY: defaultCRYconfig.txt, target box z -5..21 m around the DS; the extracted box misses this CRV).
+#include "gen_only_extracted.fcl"
+physics.producers.generate.inputFile : "Offline/EventGenerator/defaultConfigs/defaultCRYconfig.txt"
+services.GeometryService.inputFile : "Production/JobConfig/cosmic/geom_cosmic_run1_a.txt"
+physics.producers.g4run.physics.minRangeRegionCuts : { }
+outputs.GenOutput.fileName : "gen.owner.CosmicCRYrun1aGen.version.sequencer.art"

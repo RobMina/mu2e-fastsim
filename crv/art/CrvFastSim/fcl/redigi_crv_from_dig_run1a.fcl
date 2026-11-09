@@ -1,0 +1,33 @@
+# Stock Run 1A CRV response + reco re-run on the CrvSteps a digitisation job kept (compressDigiMCs), then
+# CrvRecoTableDumper. Control for F-fast: the same step set through the stock chain, so the stock-vs-fast difference on
+# kept steps is separated from what the kept-step selection itself loses. Run 1A settings of MDC2025au (Offline
+# v13_33_00 epilogs run1a_v01, Sim_best v1_3, geom_run1_a_stickman); EWM and ProtonBunchTimeMC read from the input.
+# Usage: mu2e -c CrvFastSim/fcl/redigi_crv_from_dig_run1a.fcl -s dig.mu2e.CeMLeadingLogMix1BB.MDC2025au_best_v1_3.<...>.art -T crvredigi.root
+#include "Offline/fcl/minimalMessageService.fcl"
+#include "Offline/fcl/standardServices.fcl"
+#include "Offline/CRVResponse/fcl/prolog.fcl"
+#include "Offline/CRVReco/fcl/prolog.fcl"
+process_name : crvredigi
+source : { module_type : RootInput }
+services : @local::Services.SimAndReco
+services.TFileService.fileName : "crvredigi.root"
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_run1_a_stickman.txt"
+services.DbService.purpose : Sim_best
+services.DbService.version : v1_3
+services.DbService.verbose : 0
+services.SeedService.baseSeed : 7311
+physics : {
+  producers : {
+    @table::CrvDAQPackage.producers
+    @table::CrvRecoPackage.producers
+  }
+  analyzers : { crvdump : { module_type : CrvRecoTableDumper mc : true } }
+  p1 : [ @sequence::CrvDAQPackage.CrvDAQSequence, @sequence::CrvRecoPackage.CrvRecoSequence ]
+  e1 : [ crvdump ]
+  trigger_paths : [ p1 ]
+  end_paths : [ e1 ]
+}
+physics.producers.CrvPhotons.crvStepModuleLabels : [ "compressDigiMCs" ]
+physics.producers.CrvPhotons.crvStepProcessNames : [ "" ]
+#include "Offline/CRVResponse/fcl/epilog_run1a_v01.fcl"
+#include "Offline/CRVReco/fcl/epilog_run1a_v01.fcl"

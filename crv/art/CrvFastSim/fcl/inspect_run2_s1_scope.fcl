@@ -1,0 +1,19 @@
+# Read persisted DS-entry steps and volume names without conversion or transport.
+#include "Offline/fcl/minimalMessageService.fcl"
+process_name : s1scope
+source : { module_type : RootInput }
+services : { message : @local::default_message }
+physics : {
+  analyzers : {
+    scope : {
+      module_type : PrintModule
+      verbose : 1
+      PrintEvent : true
+      PrintSubRun : true
+      stepPointMCPrinter : { verbose : 1 inputTags : [ "cosmicFilter:crvStage1:Primary" ] }
+      physicalVolumePrinter : { verbose : 2 inputTags : [ "compressPV::Primary" ] }
+    }
+  }
+  inspect : [ scope ]
+  end_paths : [ inspect ]
+}

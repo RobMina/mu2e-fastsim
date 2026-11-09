@@ -1,0 +1,6 @@
+# Run1A stock text conditions preserve the run-1400 identity of the transport reference.
+#include "dump_named_crvreco.fcl"
+services.GeometryService.inputFile : "Production/JobConfig/cosmic/geom_cosmic_run1_a.txt"
+services.DbService.textFile : [ "Offline/CRVConditions/data/status_run1a_v01.txt", "Offline/CRVConditions/data/photonyield_run1a_v01.txt", "Offline/CRVConditions/data/calib_run1a_v01.txt" ]
+#include "Offline/CRVResponse/fcl/epilog_run1a_v01.fcl"
+#include "Offline/CRVReco/fcl/epilog_run1a_v01.fcl"

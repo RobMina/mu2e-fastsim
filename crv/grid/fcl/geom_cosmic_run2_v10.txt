@@ -1,0 +1,8 @@
+// Run 2 cosmic world for the fast-sim gen tables: geom_run2.txt (crv_counters_v10) with the expanded cosmic world
+// (Production geom_cosmic.txt includes geom_common.txt, which is the Run 1A stickman world).
+#include "Offline/Mu2eG4/geom/geom_run2.txt"
+
+double world.minimalMargin.xmin = 500000;
+double world.minimalMargin.xmax = 500000;
+double world.minimalMargin.zmin = 500000;
+double world.minimalMargin.zmax = 500000;

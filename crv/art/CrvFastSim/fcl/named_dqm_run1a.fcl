@@ -1,0 +1,27 @@
+# Histogram replay on Run1A tables; Run2 is not a supported CRVDQMRun1 layout.
+#include "Offline/CRVDQM/fcl/prolog.fcl"
+#include "dump_named_crvreco_run1a.fcl"
+physics.producers.CrvDigi : { module_type : CrvDigisFromTable tableFile : "table.root" }
+physics.producers.CrvRecoPulses : { module_type : CrvRecoPulsesFromTable tableFile : "table.root" }
+physics.producers.CrvCoincidenceClusterFinder : { module_type : CrvCoincidenceClustersFromTable tableFile : "table.root" pulseTag : "CrvRecoPulses" }
+physics.p1 : [ EWMProducer, CrvDigi, CrvRecoPulses, CrvCoincidenceClusterFinder ]
+physics.analyzers : {
+  crvDigiDQM : {
+    module_type : DqmCrvDigi
+    digiTag : "CrvDigi"
+    statusTag : ""
+    configuration : "run1a"
+    catalogueFile : ""
+    dqm : @local::CRVDQM.Digi
+  }
+  crvRecoDQM : {
+    module_type : DqmCrvReco
+    clusterTag : "CrvCoincidenceClusterFinder"
+    pulseTag : "CrvRecoPulses"
+    configuration : "run1a"
+    catalogueFile : ""
+    dqm : @local::CRVDQM.Reco
+  }
+  crvdump : { module_type : CrvRecoTableDumper mc : false }
+}
+physics.e1 : [ crvDigiDQM, crvRecoDQM, crvdump ]

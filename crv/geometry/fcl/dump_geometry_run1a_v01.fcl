@@ -1,0 +1,12 @@
+# GDML export of the geom_run1_a.txt world (CRV config run1a_v01) for mu2e-crv-fastsim: 1 event, the whole world to GDML and every CRV
+# bar placement printed (crs.verbosityLevel 5). Region cuts of the extracted job dropped (no CRSmother_CRV_EX here).
+#include "Production/JobConfig/cosmic/ExtractedCRY.fcl"
+
+source.firstRun : 1400
+services.GeometryService.inputFile : "geom_dump_run1a_v01.txt"
+physics.producers.g4run.physics.minRangeRegionCuts : { }
+physics.producers.g4run.debug.writeGDML : true
+physics.producers.g4run.debug.GDMLFileName : "mu2e_run1a_v01.gdml"
+outputs : {}
+physics.EndPath : [ ]
+physics.end_paths : [ ]

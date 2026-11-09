@@ -1,0 +1,9 @@
+// Stock geom_run2.txt world (CRV config run2_v10) for the fast-sim GDML export, plus CRV bar-placement printout.
+#include "Offline/Mu2eG4/geom/geom_run2.txt"
+
+double world.minimalMargin.xmin = 500000;
+double world.minimalMargin.xmax = 500000;
+double world.minimalMargin.zmin = 500000;
+double world.minimalMargin.zmax = 500000;
+
+int crs.verbosityLevel = 5;
