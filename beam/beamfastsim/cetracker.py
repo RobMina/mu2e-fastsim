@@ -254,7 +254,7 @@ class DeviceChain:
     def __init__(self, offline_root, maps, gdml, geom="Offline/Mu2eG4/geom/geom_2021_PhaseI_v03.txt",
                  response=None, digi_cond=None, dtype="float64", origin=ORIGIN, chord_mm=10.0, lanes=None,
                  ce_unroll=True, ce_shrink=2, digi_chunk=8000, resident_digis=True, complete_outer_wall=False,
-                 albedo=None, albedo_species="all"):
+                 albedo=None, albedo_species="all", albedo_max_chords=None):
         import jax  # noqa: F401  (device backend)
         from mu2efastsim import ehelix
         from trkfastsim.sim import fieldsteps_jax as FJ
@@ -286,6 +286,7 @@ class DeviceChain:
             from trkfastsim.sim import albedo as AL
             lib = albedo if isinstance(albedo, AL.Library) else AL.Library.load(albedo)
             self.alb = AL.DeviceLibrary(lib.select(albedo_species), self.dt)
+            self.alb_max_chords = albedo_max_chords
             self.alb_bz = float(ehelix.field_at(field, np.array([[AL.AXIS_XY[0], AL.AXIS_XY[1], AL.VD_Z]]))[0][2])
 
     @staticmethod
@@ -355,7 +356,9 @@ class DeviceChain:
             return trk, dict(stats, dropped=0)
         size = max(64, 1 << int(np.ceil(np.log2(stats["total"]))))
         rr = self.alb.returns(g, phi, te, jnp.arange(g.shape[0]), size)
-        ret = FJ.transport(self.trk, jax.random.fold_in(key, 1), rr["x"], rr["p"], rr["t"], active=rr["valid"])
+        ret = FJ.transport(self.trk, jax.random.fold_in(key, 1), rr["x"], rr["p"], rr["t"], active=rr["valid"],
+                           max_chords=self.alb_max_chords)
+        stats["capped"] = int(jnp.sum((ret.final["status"] == FJ.CAPPED) & rr["valid"]))
         steps, dropped = AL.merge_records(trk.steps, ret.steps, rr["track"], rr["valid"], FJ.R_CAP)
         stats["dropped"] = int(dropped)
         stats["return_rows"] = int(jnp.sum(ret.steps["valid"] & rr["valid"][:, None]))
