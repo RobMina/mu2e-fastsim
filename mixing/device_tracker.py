@@ -27,10 +27,11 @@ class Capacities:
     minion_unroll: int = None
     minion_search: str = None
     digit_entries_per_straw: float = None
+    pack_sort: str = None
 
     def __post_init__(self):
         optional = ("long_steps", "clusters_per_long_step", "end_tiers", "charge_blocks_per_launch", "flat_clusters",
-                    "minion_steps", "minion_unroll", "minion_search")
+                    "minion_steps", "minion_unroll", "minion_search", "pack_sort")
         for name, value in vars(self).items():
             if name == "end_tiers" or (name in optional and value is None):
                 continue
@@ -41,6 +42,10 @@ class Capacities:
             if name == "digit_entries_per_straw":
                 if value is not None and (type(value) not in (int, float) or not 0 < value <= self.pairs_per_straw):
                     raise ValueError("tracker digit_entries_per_straw must be in (0, pairs_per_straw]")
+                continue
+            if name == "pack_sort":
+                if value not in ("lexsort", "packed"):
+                    raise ValueError("tracker pack_sort must be 'lexsort' or 'packed'")
                 continue
             if type(value) is not int or value < 1:
                 raise ValueError(f"tracker {name} must be a positive integer")
@@ -181,6 +186,37 @@ def prepare(c, capacities, batch_events):
         if rel:
             result = {**result, "t_analog": result["t_analog"].astype(jnp.float64) + (nref * period)[:, None, None]}
         return result
+    packed_sort = cap.pack_sort == "packed"
+    if packed_sort and batch_events * 65536 * 2 >= 2**32 - 1:
+        raise ValueError("tracker pack_sort 'packed' needs (event, straw, end) labels below 2**32")
+
+    def monotone(x, bits):
+        """Unsigned keys in the order lax.sort gives floats: -0 equal to +0, NaNs last."""
+        ftype, utype = (jnp.float32, jnp.uint32) if bits == 32 else (jnp.float64, jnp.uint64)
+        x = x.astype(ftype)
+        x = jnp.where(x == 0, ftype(0), jnp.where(jnp.isnan(x), ftype(np.nan), x))
+        u = lax.bitcast_convert_type(x, utype)
+        sign = utype(1) << utype(bits - 1)
+        return jnp.where((u & sign) != 0, ~u, u | sign)
+
+    def cluster_order(ghost_time, labels):
+        """jnp.lexsort((ghost_time, labels)); with pack_sort 'packed' one stable sort of a uint64 key (label high,
+        the float32 time's order bits low), the same order."""
+        if not packed_sort:
+            return jnp.lexsort((ghost_time, labels))
+        high = jnp.where(labels == sentinel, jnp.uint64(2**32 - 1), labels.astype(jnp.uint64))
+        return jnp.argsort((high << jnp.uint64(32)) | monotone(ghost_time, 32).astype(jnp.uint64), stable=True)
+
+    def output_order(t0, sid, evkey):
+        """jnp.lexsort((t0, sid, evkey)); with pack_sort 'packed' two stable single-key sorts (time, then
+        (event, straw)), the same order."""
+        if not packed_sort:
+            return jnp.lexsort((t0, sid, evkey))
+        first = jnp.argsort(monotone(t0, 64), stable=True)
+        ev = jnp.where(evkey == sentinel, jnp.uint64(2**32), evkey.astype(jnp.uint64))
+        second = jnp.argsort(((ev << jnp.uint64(16)) | sid.astype(jnp.uint64))[first], stable=True)
+        return first[second]
+
     launch = dj.CHARGE_BLOCK * (cap.charge_blocks_per_launch or 1)
     ncharge = ((cap.drift_clusters + launch - 1) // launch) * launch
     sentinel = np.iinfo(np.int64).max
@@ -435,7 +471,7 @@ def prepare(c, capacities, batch_events):
         else:
             ghost_src, ghost_time = base, original
         labels = jnp.where(valid, labels, sentinel)
-        order = jnp.lexsort((ghost_time, labels))
+        order = cluster_order(ghost_time, labels)
         sorted_label = labels[order]
         wanted = strawkey[:, None] * 2 + jnp.arange(2)
         lo = jnp.searchsorted(sorted_label, wanted, side="left")
@@ -473,8 +509,8 @@ def prepare(c, capacities, batch_events):
         output["mask"] = result["keep"].reshape(-1)
         output["ev"] = jnp.repeat(packed[7] // 65536, cap.pairs_per_straw)
         output["sid"] = jnp.repeat(packed[7] % 65536, cap.pairs_per_straw)
-        order = jnp.lexsort((output["t_analog"][:, 0], output["sid"],
-                            jnp.where(output["mask"], output["ev"], sentinel)))
+        order = output_order(output["t_analog"][:, 0], output["sid"],
+                             jnp.where(output["mask"], output["ev"], sentinel))
         output = {name: value[order] for name, value in output.items()}
         errors = {"electronics_search_or_pairs": jnp.any(result["failed"]),
                   "saturation_capacity": jnp.any(result["sat_overflow"])}
@@ -515,7 +551,7 @@ def prepare(c, capacities, batch_events):
         else:
             ghost_src, ghost_time = base, original
         labels = jnp.where(valid, labels, sentinel)
-        order = jnp.lexsort((ghost_time, labels))
+        order = cluster_order(ghost_time, labels)
         sorted_label = labels[order]
         wanted = strawkey[:, None] * 2 + jnp.arange(2)
         lo = jnp.searchsorted(sorted_label, wanted, side="left")
@@ -579,8 +615,8 @@ def prepare(c, capacities, batch_events):
         output = {name: jnp.concatenate([part[0][name] for part in parts]) for name in parts[0][0]}
         fa = jnp.any(jnp.stack([part[1] for part in parts]))
         sa = jnp.any(jnp.stack([part[2] for part in parts]))
-        order = jnp.lexsort((output["t_analog"][:, 0], output["sid"],
-                            jnp.where(output["mask"], output["ev"], sentinel)))
+        order = output_order(output["t_analog"][:, 0], output["sid"],
+                             jnp.where(output["mask"], output["ev"], sentinel))
         output = {name: value[order] for name, value in output.items()}
         errors = {"electronics_search_or_pairs": fa, "saturation_capacity": sa}
         if flat_flags:
@@ -659,6 +695,7 @@ def prepare(c, capacities, batch_events):
         return output, errors
 
     return SimpleNamespace(assets=assets, apply=apply_plain, apply_with_usage=apply, clusters=clusters, drift=drift, pack=pack,
+                           cluster_order=cluster_order, output_order=output_order,
                            electronics=electronics, capacities=cap,
                            metadata={"physics": "existing tracker JAX ionisation/drift/electronics kernels",
                                      "precision": df.NAME, "capacity_policy": "reject; no fallback",
