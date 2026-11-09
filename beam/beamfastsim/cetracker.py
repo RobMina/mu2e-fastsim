@@ -329,7 +329,9 @@ class DeviceChain:
         nrow = trk.steps["valid"].sum(axis=1)       # the conversion electron's rows (the response layer's input)
         out = {}
         if self.alb is not None:
-            trk, out["albedo"] = self._albedo(trk, jax.random.fold_in(key, 4))
+            # the response tables count every row of the Geant4 conversion electron, its own albedo included
+            trk, out["albedo"], ce_rows = self._albedo(trk, jax.random.fold_in(key, 4))
+            nrow = nrow + ce_rows
         t_trk = time.perf_counter() - tic
         return dict(cechain=r, has_entry=has, x=r.x, p=pe, t=r.t, tracker=trk, nrow=nrow,
                     timing=dict(cechain_s=round(t_ce, 3), tracker_s=round(t_trk, 3)), **out)
@@ -337,7 +339,8 @@ class DeviceChain:
     def _albedo(self, trk, key):
         """Downstream albedo (trkfastsim.sim.albedo): tracks that left the tracker downstream pick a Geant4 exit of
         their bin; its returns are transported from the tracker's back plane and their records appended to the
-        track's rows (beyond R_CAP dropped and counted). One host read (the return count)."""
+        track's rows (beyond R_CAP dropped and counted). Returns (tracker result, stats, the rows of the electron's
+        own returns per track, before the R_CAP cut). One host read (the return count)."""
         import jax
         import jax.numpy as jnp
         from trkfastsim.sim import albedo as AL, fieldsteps_jax as FJ
@@ -353,7 +356,7 @@ class DeviceChain:
         h = jax.device_get(dict(total=jnp.sum(cnt), exits=jnp.sum(ex), picked=jnp.sum(g >= 0)))
         stats = {k: int(v) for k, v in h.items()}
         if not stats["total"]:
-            return trk, dict(stats, dropped=0)
+            return trk, dict(stats, dropped=0), jnp.zeros_like(trk.steps["valid"].sum(axis=1))
         size = max(64, 1 << int(np.ceil(np.log2(stats["total"]))))
         rr = self.alb.returns(g, phi, te, jnp.arange(g.shape[0]), size)
         ret = FJ.transport(self.trk, jax.random.fold_in(key, 1), rr["x"], rr["p"], rr["t"], active=rr["valid"],
@@ -361,8 +364,10 @@ class DeviceChain:
         stats["capped"] = int(jnp.sum((ret.final["status"] == FJ.CAPPED) & rr["valid"]))
         steps, dropped = AL.merge_records(trk.steps, ret.steps, rr["track"], rr["valid"], FJ.R_CAP)
         stats["dropped"] = int(dropped)
+        rows = jnp.sum(ret.steps["valid"], axis=1) * (rr["valid"] & rr["isce"])
+        ce_rows = jnp.zeros(g.shape[0], rows.dtype).at[rr["track"]].add(rows, mode="drop")   # integer: exact
         stats["return_rows"] = int(jnp.sum(ret.steps["valid"] & rr["valid"][:, None]))
-        return trk._replace(steps=steps), stats
+        return trk._replace(steps=steps), stats, ce_rows.astype(trk.steps["valid"].sum(axis=1).dtype)
 
     def digitize(self, res, seed, event_timing=None, chunk=None):
         """Device digitiser on the chain's steps (trkfastsim.digi.digi_jax; its host packing reads the steps once).
