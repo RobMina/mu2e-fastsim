@@ -10,6 +10,7 @@ from mixing.device_backend import _overflow_detail
 TEMPLATE = {"max_donors": 8, "rows": {"tracker": 100, "crv": 50},
             "response": {"tracker": {"clusters_per_step": 64, "long_steps": 16, "clusters_per_long_step": 1024,
                                      "drift_clusters": 1000, "straws": 1024, "clusters_per_end": 32, "flat_clusters": 500, "minion_steps": 16,
+                                     "digit_entries_per_straw": 2.0,
                                      "end_tiers": [[256, 96], [8, 6144]], "pairs_per_straw": 8, "electronics_batch": 64},
                          "crv": {"substeps": 100, "photons": 100, "thermal": 10, "ct1": 7, "charge_clusters": 20,
                                  "charges_per_cluster": 256, "waveform_samples": 256, "digis": 9, "reco_waveforms": 9,
@@ -22,6 +23,7 @@ def test_derive_scales_measured_demand_and_keeps_layout():
              "response/tracker/end_tier_1_straws": 70, "response/tracker/end_tier_2_straws": 1,
              "response/tracker/clusters_per_end": 2000, "response/tracker/clusters_per_step": 20,
              "response/tracker/flat_clusters": 4000, "response/tracker/minion_steps": 40,
+             "response/tracker/digit_entries_per_straw_milli": 930,
              "response/crv/photons": 1000, "response/crv/digis": 40, "response/crv/charges_per_cluster": 10,
              "response/crv/reco_samples": 500}
     caps = dcap.derive(TEMPLATE, usage, 1.25)
@@ -29,7 +31,7 @@ def test_derive_scales_measured_demand_and_keeps_layout():
     t = caps["response"]["tracker"]
     assert t["drift_clusters"] == 10000 and t["straws"] == 1152 and t["straws"] % 64 == 0
     assert t["long_steps"] == 4 and t["clusters_per_long_step"] == 375
-    assert t["flat_clusters"] == 5000 and t["minion_steps"] == 50
+    assert t["flat_clusters"] == 5000 and t["minion_steps"] == 50 and t["digit_entries_per_straw"] == 1.163
     assert t["end_tiers"] == [[128, 96], [2, 6144]]           # widths kept, counts multiples of their batch
     assert t["clusters_per_step"] == 64 and t["clusters_per_end"] == 32   # padding choices kept
     c = caps["response"]["crv"]
