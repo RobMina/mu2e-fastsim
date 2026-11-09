@@ -147,15 +147,18 @@ def run(args, source_factory=None, backend_factory=None):
             ledger.flush()
 
         def drive(phase, sizes):
-            """--device-pipeline: dispatch batch k + 1 before collecting batch k (same batches and outputs)."""
+            """--device-pipeline: batch k is collected on one worker thread while batch k + 1 is dispatched (a GPU
+            execution holds its calling thread); same batches, outputs and ledger order."""
+            from concurrent.futures import ThreadPoolExecutor
             pending = None
-            for size in sizes:
-                item = dispatch(phase, size)
+            with ThreadPoolExecutor(max_workers=1) as writer:
+                for size in sizes:
+                    item = dispatch(phase, size)
+                    if pending is not None:
+                        pending.result()
+                    pending = writer.submit(collect, item)
                 if pending is not None:
-                    collect(pending)
-                pending = item
-            if pending is not None:
-                collect(pending)
+                    pending.result()
 
         sizes = [min(args.batch_events, args.events - start) for start in range(0, args.events, args.batch_events)]
         warm_start = time.perf_counter()

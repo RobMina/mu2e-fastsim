@@ -136,27 +136,35 @@ def run_pass(prepared):
 
 
 def _run_pipelined(prepared, backend, directory):
-    """device_pipeline: dispatch batch k + 1 before downloading and writing batch k (Backend.dispatch/collect), so
-    the host transfer, checks and writes overlap the device. Same batches, keys and outputs as the serial loop."""
+    """device_pipeline: batch k is downloaded, checked and written (Backend.collect) on one worker thread while the
+    main thread dispatches batch k + 1. A GPU execution holds its calling thread (the while-loop predicates are read
+    back), so the overlap needs the thread. Same batches, keys and outputs as the serial loop; one batch in flight."""
+    from concurrent.futures import ThreadPoolExecutor
     remaining, batches, total, collect_s = prepared.events, 0, 0, 0.0
     usage, pending = {}, None
-    while remaining or pending is not None:
-        dispatched = None
-        if remaining:
+    with ThreadPoolExecutor(max_workers=1) as writer:
+        while remaining:
             size = min(remaining, prepared.args.batch_events)
             request = prepared.source.next_batch(size)
             batch_dir = directory / f"batch_{request.batch_index:08d}"
             batch_dir.mkdir()
-            dispatched = (backend.dispatch(request), batch_dir)
+            handle = backend.dispatch(request)
             remaining -= size
+            if pending is not None:
+                metrics = pending.result()
+                total += metrics["events"]
+                collect_s += metrics["wait_transfer_and_write_s"]
+                for name, value in metrics.get("capacity_usage", {}).items():
+                    usage[name] = max(usage.get(name, 0), value)
+                batches += 1
+            pending = writer.submit(backend.collect, handle, batch_dir)
         if pending is not None:
-            metrics = backend.collect(*pending)
+            metrics = pending.result()
             total += metrics["events"]
             collect_s += metrics["wait_transfer_and_write_s"]
             for name, value in metrics.get("capacity_usage", {}).items():
                 usage[name] = max(usage.get(name, 0), value)
             batches += 1
-        pending = dispatched
     backend.sync()
     prepared.passes += 1
     summary = {"events": total, "batches": batches, "pipelined": True, "wait_transfer_and_write_s": collect_s,

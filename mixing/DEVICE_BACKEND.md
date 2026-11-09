@@ -110,7 +110,8 @@ warm-rate timer (`mu2efastsim.bench`). Tests: `test_mixing_device_occupancy.py`,
 By default each batch is dispatched, waited for, downloaded, checked and written before the next one is dispatched,
 so the host transfer and the ROOT write sit between device steps. `--device-pipeline` (stream benchmark) or
 `"device_pipeline": true` (bench configuration) uses `Backend.dispatch(request)` and `Backend.collect(handle, dir)`:
-- batch k + 1 is dispatched before batch k is downloaded and written, so the host work overlaps the device;
+- batch k is downloaded, checked and written on one worker thread while the main thread dispatches batch k + 1.
+  A GPU execution holds its calling thread (XLA reads while-loop predicates back), so the overlap needs the thread;
 - the source and the device state advance at dispatch, so the batches, keys and outputs are those of the serial
   loop;
 - a rejected batch still raises, in `collect`, and stops the run;
