@@ -185,14 +185,14 @@ def _truncate(cfg):
 
 def run_device_sipm(args, cfg, *, pixel_override=None):
     """device_sipm with the default long table, retried once with measured buckets on a stream overflow."""
-    trunc = _truncate(cfg)
+    kw = {"truncate": True} if _truncate(cfg) else {}    # lrint: the same call (and compile-cache key) as before
     r = device_sipm(*args, STREAM_L, LONG_SL, LONG_LL, cfg.n_pixels_x, cfg.n_pixels_y,
-                    pixel_override=pixel_override, truncate=trunc)
+                    pixel_override=pixel_override, **kw)
     if bool(r["stream_overflow"]):
         b = long_buckets(r)
         if b is not None:
             r = device_sipm(*args, STREAM_L, *b, cfg.n_pixels_x, cfg.n_pixels_y,
-                            pixel_override=pixel_override, truncate=trunc)
+                            pixel_override=pixel_override, **kw)
     return r
 
 

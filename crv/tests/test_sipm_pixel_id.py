@@ -104,6 +104,25 @@ def test_device_truncate_saturates_like_numpy_on_a_crowded_sipm():
     assert pe["truncate"] < pe["lrint"] * 0.99
 
 
+def test_device_retry_keeps_the_mapping(monkeypatch):
+    pytest.importorskip("jax")
+    from crvfastsim.response import sipm_jax as sj
+    seen = []
+
+    def device(*args, pixel_override=None, **kw):
+        seen.append(kw)
+        return {"stream_overflow": len(seen) == 1, "n_long_streams": 2, "max_long_stream": 65}
+
+    monkeypatch.setattr(sj, "device_sipm", device)
+    sj.run_device_sipm((), sipm.SiPMConfig(pixel_id="truncate"))
+    assert seen == [{"truncate": True}, {"truncate": True}]
+    seen.clear()
+    sj.run_device_sipm((), sipm.SiPMConfig())
+    assert seen == [{}, {}]                               # lrint: the call of main, no new keyword
+    with pytest.raises(ValueError, match="pixel_id"):
+        sj.run_device_sipm((), sipm.SiPMConfig(pixel_id="round"))
+
+
 @pytest.mark.slow   # statistical (3,000 SiPMs)
 def test_device_truncate_matches_numpy_truncate_statistically():
     jax = pytest.importorskip("jax")
