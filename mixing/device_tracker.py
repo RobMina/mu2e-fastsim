@@ -27,6 +27,7 @@ class Capacities:
     minion_unroll: int = None
     minion_search: str = None
     digit_entries_per_straw: float = None
+    flat_saturation_rows: str = None
     pack_sort: str = None
 
     def __post_init__(self):
@@ -38,6 +39,10 @@ class Capacities:
             if name == "minion_search":
                 if value not in ("scan", "compare_all"):
                     raise ValueError("tracker minion_search must be 'scan' or 'compare_all'")
+                continue
+            if name == "flat_saturation_rows":
+                if value is not None and value not in ("lanes", "straws"):
+                    raise ValueError("tracker flat_saturation_rows must be 'lanes' or 'straws'")
                 continue
             if name == "digit_entries_per_straw":
                 if value is not None and (type(value) not in (int, float) or not 0 < value <= self.pairs_per_straw):
@@ -79,9 +84,13 @@ class Capacities:
             return None
         return int(np.ceil(self.digit_entries_per_straw * batch))
 
-
-def _entries(entries):
-    return {} if entries is None else {"entries": entries}
+    def flat_kernel(self, batch):
+        """Electronics-kernel keyword arguments of the flat digitisation for a launch of `batch` straws."""
+        entries = self.digit_entries(batch)
+        if entries is None:
+            return {}
+        rows = {} if self.flat_saturation_rows in (None, "lanes") else {"saturation_rows": batch}
+        return {"entries": entries, **rows}
 
 
 def prepare(c, capacities, batch_events):
@@ -135,7 +144,7 @@ def prepare(c, capacities, batch_events):
     batch = cap.electronics_batch
     wave = (2 * batch, cap.clusters_per_end)
     electronics_kernel = lift(dj._electronics_kernel(c, cap.clusters_per_end, cap.pairs_per_straw, batch,
-                                                     **_entries(cap.digit_entries(batch))),
+                                                     **cap.flat_kernel(batch)),
         spec((2,), np.uint32), spec(wave, np.float64), spec(wave, np.float64), spec(wave, np.float64),
         spec(wave, np.int64), spec((2 * batch,), np.int32), spec((batch,), np.int64),
         spec((batch,), bool), spec((batch,), np.int64), spec((batch,), bool), spec((batch,), np.float64),
@@ -149,7 +158,7 @@ def prepare(c, capacities, batch_events):
         lb = cap.tier_batch(straws)
         lw = (2 * lb, width)
         tier_kernels.append(lift(dj._electronics_kernel(c, width, cap.pairs_per_straw, lb,
-                                                        **_entries(cap.digit_entries(lb))),
+                                                        **cap.flat_kernel(lb)),
             spec((2,), np.uint32), spec(lw, np.float64), spec(lw, np.float64), spec(lw, np.float64),
             spec(lw, np.int64), spec((2 * lb,), np.int32), spec((lb,), np.int64),
             spec((lb,), bool), spec((lb,), np.int64), spec((lb,), bool), spec((lb,), np.float64),

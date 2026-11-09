@@ -114,6 +114,10 @@ padding.
 - The digital dead time is applied afterwards, per straw in pair order, as the loop does.
 - Saturated ends are compacted into chunks of 2 x B rows, the loop's own row count, which keeps the float32 response
   sums bit-identical. A chunk with no saturated end is skipped.
+- `flat_saturation_rows: "straws"` uses chunks of B rows instead. About 40 % of the 2 x B rows are live in a real
+  batch, so this halves the padded saturation work. It was measured bit-identical in float32 and float64; B / 2
+  rows drift by roundoff in float32, because the response sums depend on the reduction shapes. The default
+  (`"lanes"`) keeps 2 x B.
 - Overflow flag: `digit_entries_per_straw`. The demand counter `digit_entries_per_straw_milli` is the largest
   per-launch entry count over B, in thousandths (batch metrics are integers).
 
