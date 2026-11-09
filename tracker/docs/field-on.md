@@ -109,7 +109,8 @@ loss by 1.5-2 % above 10 GeV/c); the steps differ by
 `fieldsteps.transport(..., complete_outer_wall=True)` includes finite-cylinder wall-only crossings and exact wall
 lever moments in loss, scattering and tails. It replaces the gas-gated wall contribution rather than adding it;
 gas-step creation, wire handling, material fractions and current radiative/gas defaults are independent. The
-option is Python-only and **defaults to False**. Gas and wire MSC lever moments still use the crossing midpoint
+option **defaults to False**; the device twin has the same opt-in (`fieldsteps_jax.Tracker(..., complete_outer_wall=True)`,
+`DeviceChain(complete_outer_wall=True)`, `cetracker --complete-outer-wall`). Gas and wire MSC lever moments still use the crossing midpoint
 `s_mid` approximation; exact wall moments do not make those contributions exact. Candidate expansion is not
 memory-bounded by the subtraction batch size.
 
@@ -154,6 +155,12 @@ record buffers out (`[tracks, R_CAP]` sgsteps columns plus `valid`; `to_frame` g
 counted in the returned statistics. With loss and scattering off it reproduces the NumPy rows to rounding (float64);
 with them on it is statistically equivalent (independent random streams). Tables are built once per process
 (`Tracker.from_gdml`); compiling the chord loop takes minutes on a GPU, so use the JAX persistent compile cache.
+
+With `complete_outer_wall=True` the device wall material is the complete outer-minus-gas wall of every straw the chord
+passes (`fieldwall.WallIndex`, wall-only chords included), summed over the straw window of each candidate panel; it
+equals `WallIndex` to 1e-9 mm per chord in float64 (a few um on near-tangent chords in float32). On Run 1A DIO electrons (NumPy fieldsteps, 11k events, same entries)
+the gas-gated default loses 6 % less momentum in the tracker than Geant4 (median 0.605 vs 0.650 MeV/c over the track);
+the complete wall gives 0.636. The loss tail above 2 MeV stays lighter than Geant4's (7.4 % vs 9.1 % of tracks).
 
 `recoresp` is a reco response layer for conversion electrons: `recoresp.table` measures, from a reference arm run
 through stock LoopHelix reconstruction, the fit and fit-quality efficiencies and the residual distributions (momentum
