@@ -6,7 +6,7 @@
 
 `config.json` holds the `stream_benchmark` arguments by their long names (frames_manifest, expanded,
 truth, stock, photon_csv, tracker_conditions, batch_events, max_selected_rows, device_capacities,
-occupancy_geometry, out, and optionally seeds, device_kernel, device_output, device_platform).
+occupancy_geometry, out, and optionally seeds, device_kernel, device_output, device_platform, device_pipeline).
 
 - `prepare(N)` reads and validates the five frame pools into host memory once (timer `prepare_s`).
 - `prepare(N, seed=S)` (the timer's `--fresh-inputs`, called before every pass) reads the pools on its first call
@@ -31,6 +31,7 @@ from types import SimpleNamespace
 PATHS = ("frames_manifest", "expanded", "truth", "stock", "photon_csv", "tracker_conditions",
          "device_capacities", "occupancy_geometry", "out")
 DEFAULTS = {"device_kernel": "mixing.device_physics:model", "device_output": "occupancy", "device_platform": "gpu",
+            "device_pipeline": False,
             "sampling_seed": 20261106, "seed": 20261106, "tracker_seed": 20261105, "chunk": 32, "synthetic": False}
 
 
@@ -111,6 +112,8 @@ def run_pass(prepared):
     remaining, batches, total = events, 0, 0
     step_s = transfer_s = 0.0
     usage = {}
+    if prepared.args.device_pipeline:
+        return _run_pipelined(prepared, backend, directory)
     while remaining:
         size = min(remaining, prepared.args.batch_events)
         request = prepared.source.next_batch(size)
@@ -127,6 +130,44 @@ def run_pass(prepared):
     backend.sync()
     prepared.passes += 1
     summary = {"events": total, "batches": batches, "device_step_s": step_s, "transfer_and_write_s": transfer_s,
+               "capacity_usage_max": usage}
+    (directory / "pass_metrics.json").write_text(json.dumps(summary) + "\n")
+    return summary
+
+
+def _run_pipelined(prepared, backend, directory):
+    """device_pipeline: batch k is downloaded, checked and written (Backend.collect) on one worker thread while the
+    main thread dispatches batch k + 1. A GPU execution holds its calling thread (the while-loop predicates are read
+    back), so the overlap needs the thread. Same batches, keys and outputs as the serial loop; one batch in flight."""
+    from concurrent.futures import ThreadPoolExecutor
+    remaining, batches, total, collect_s = prepared.events, 0, 0, 0.0
+    usage, pending = {}, None
+    with ThreadPoolExecutor(max_workers=1) as writer:
+        while remaining:
+            size = min(remaining, prepared.args.batch_events)
+            request = prepared.source.next_batch(size)
+            batch_dir = directory / f"batch_{request.batch_index:08d}"
+            batch_dir.mkdir()
+            handle = backend.dispatch(request)
+            remaining -= size
+            if pending is not None:
+                metrics = pending.result()
+                total += metrics["events"]
+                collect_s += metrics["wait_transfer_and_write_s"]
+                for name, value in metrics.get("capacity_usage", {}).items():
+                    usage[name] = max(usage.get(name, 0), value)
+                batches += 1
+            pending = writer.submit(backend.collect, handle, batch_dir)
+        if pending is not None:
+            metrics = pending.result()
+            total += metrics["events"]
+            collect_s += metrics["wait_transfer_and_write_s"]
+            for name, value in metrics.get("capacity_usage", {}).items():
+                usage[name] = max(usage.get(name, 0), value)
+            batches += 1
+    backend.sync()
+    prepared.passes += 1
+    summary = {"events": total, "batches": batches, "pipelined": True, "wait_transfer_and_write_s": collect_s,
                "capacity_usage_max": usage}
     (directory / "pass_metrics.json").write_text(json.dumps(summary) + "\n")
     return summary
