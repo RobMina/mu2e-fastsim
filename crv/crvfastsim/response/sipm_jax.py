@@ -121,20 +121,24 @@ LONG_LL = 64      # ... and their length; on overflow the caller retries once wi
 LONG_CELLS_MAX = 1 << 26  # long-table cells beyond which the chunk goes to the host path instead (memory guard)
 
 
-@partial(dprec.jit, static_argnames=("NB", "M1", "M2", "M3", "Ntot", "L", "SL", "LL", "nx", "ny", "gens"))
+@partial(dprec.jit, static_argnames=("NB", "M1", "M2", "M3", "Ntot", "L", "SL", "LL", "nx", "ny", "gens", "truncate"))
 def device_sipm(slot, t, valid, key, cum, ncol, dead, q_ct, vov, tau, p1, p2, cap,
-                NB, M1, M2, M3, Ntot, L, SL, LL, nx, ny, gens=GENERATIONS, *, pixel_override=None):
+                NB, M1, M2, M3, Ntot, L, SL, LL, nx, ny, gens=GENERATIONS, *, pixel_override=None, truncate=False):
     """All of the SiPM stage in one jitted call, fixed shapes, no host round trip.
 
     slot [NB] SiPM slot per photon, t [NB], valid [NB]; cum: normalised cumulative photon map; ncol: its row length.
     pixel_override: optional [NB] flat pixel ids (x * NPIX + y); -1 retains the optical draw.
+    truncate: pixel id of the GetRandom2 point by truncation (SiPMConfig.pixel_id "truncate", the map bin) instead of
+    lrint (bin or bin + 1); the same random numbers are drawn either way.
     Returns per hit (photons first, then cross-talk candidates): slot, time, root photon index, fired, charge, pe, and
     an overflow flag (a candidate buffer filled up, or the long-stream table [SL, LL] was too small: retry with
     long_buckets(r), else rerun those inputs on the host path).
     """
     kp, kx, ku, *kg = jax.random.split(key, 3 + gens)
     b_ = jnp.searchsorted(cum, jax.random.uniform(kp, (NB,)), side="right")
-    h = jax.random.uniform(kx, (2, NB)) >= 0.5                       # GetRandom2 + lrint
+    h = jax.random.uniform(kx, (2, NB)) >= 0.5                       # GetRandom2 + lrint (sipm.draw_pixels)
+    if truncate:
+        h = jnp.zeros_like(h)
     pix = (b_ // ncol + h[0]) * NPIX + (b_ % ncol + h[1])
     if pixel_override is not None:
         pix = jnp.where(pixel_override >= 0, pixel_override, pix)
@@ -171,15 +175,24 @@ def long_buckets(r):
     return None if SL * LL > LONG_CELLS_MAX else (SL, LL)
 
 
+def _truncate(cfg):
+    from .sipm import PIXEL_IDS
+    pid = getattr(cfg, "pixel_id", "lrint")
+    if pid not in PIXEL_IDS:
+        raise ValueError(f"sipm_jax: pixel_id must be one of {PIXEL_IDS}, got {pid!r}")
+    return pid == "truncate"
+
+
 def run_device_sipm(args, cfg, *, pixel_override=None):
     """device_sipm with the default long table, retried once with measured buckets on a stream overflow."""
+    trunc = _truncate(cfg)
     r = device_sipm(*args, STREAM_L, LONG_SL, LONG_LL, cfg.n_pixels_x, cfg.n_pixels_y,
-                    pixel_override=pixel_override)
+                    pixel_override=pixel_override, truncate=trunc)
     if bool(r["stream_overflow"]):
         b = long_buckets(r)
         if b is not None:
             r = device_sipm(*args, STREAM_L, *b, cfg.n_pixels_x, cfg.n_pixels_y,
-                            pixel_override=pixel_override)
+                            pixel_override=pixel_override, truncate=trunc)
     return r
 
 
