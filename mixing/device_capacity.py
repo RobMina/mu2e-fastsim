@@ -54,6 +54,10 @@ def derive(template, usage, margin):
             key = f"response/tracker/{name}"
             if key in usage and name in tracker and tracker[name] is not None:
                 tracker[name] = max(1, grow(usage[key]))
+        key = "response/tracker/digit_entries_per_straw_milli"
+        if key in usage and tracker.get("digit_entries_per_straw") is not None:
+            tracker["digit_entries_per_straw"] = min(tracker["pairs_per_straw"],
+                                                     math.ceil(margin * usage[key]) / 1000)
         if tracker.get("clusters_per_long_step") is not None:
             tracker["clusters_per_long_step"] = max(tracker["clusters_per_long_step"], tracker["clusters_per_step"] + 1)
         batch = tracker.get("electronics_batch", 1)
