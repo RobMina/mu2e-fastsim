@@ -1,4 +1,10 @@
-"""digi_resident: the device-resident packing gives exactly digi_jax's digis for the same steps and key."""
+"""digi_resident: the device-resident packing gives exactly digi_jax's digis for the same steps and key, in the tracker
+device float of the process (float64 default; float32 in a subprocess below)."""
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -8,7 +14,6 @@ from trkfastsim.digi import digi_jax as DJ, digi_resident as DR  # noqa: E402
 from trkfastsim.digi import digicond as DC  # noqa: E402
 from test_digi import cond, _step, _steps  # noqa: E402,F401
 
-pytestmark = pytest.mark.skipif(df.SINGLE, reason="digi_resident: float64 tracker device float only")
 
 
 def _random_steps(c, rng, nev=6, per_event=40):
@@ -124,3 +129,18 @@ def test_no_steps_in_the_window_gives_the_empty_layout(cond):
     a = DJ._empty(c)
     for k in a:
         assert np.asarray(b[k]).shape == a[k].shape
+
+
+@pytest.mark.skipif(df.SINGLE, reason="runs this module in a float32 subprocess")
+def test_float32_digis_equal_digi_jax(tmp_path):
+    """Following the core float32 (TRKFASTSIM_DEVICE_FLOAT=core): the device-made relative positions and times give
+    digi_jax's float32 digis bit for bit, off spill, padded, and with the per-batch loop."""
+    tests = Path(__file__).resolve().parent
+    env = dict(os.environ, MU2EFS_DEVICE_FLOAT="float32", TRKFASTSIM_DEVICE_FLOAT="core", JAX_PLATFORMS="cpu",
+               PYTHONPATH=os.pathsep.join([str(tests), str(tests.parent), os.environ.get("PYTHONPATH", "")]))
+    env.pop("TRKFASTSIM_DRAW64", None)
+    r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", str(Path(__file__).resolve()),
+                        "-k", "offspill or padded or without_host_reads", "-m", "not slow"],
+                       cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout[-3000:] + r.stderr[-2000:]
+    assert "3 passed" in r.stdout, r.stdout[-2000:]
