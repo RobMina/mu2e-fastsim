@@ -1,7 +1,12 @@
 """testselect: changed modules select exactly the test files that import them, directly or transitively."""
+import shutil
 import subprocess
 
+import pytest
+
 from mu2efastsim import testselect as TS
+
+pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git (the fixtures are git repositories)")
 
 
 def _repo(tmp, files):
