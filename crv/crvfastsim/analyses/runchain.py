@@ -39,6 +39,17 @@ DEFAULT_COUNTERS = "Offline/Mu2eG4/geom/crv_counters_extracted_v04.txt"
 SECTOR_TYPES = {1: "EX", 2: "T1", 3: "T2", 4: "M"}
 
 
+def check_conditions(rc, calib):
+    """Refuse --calib nominal for a configuration whose stock job reads its own conditions (RunConfig.conditions):
+    nominal conditions count the channels the status table ignores as live (Run 1A: 45 of 5120, about 1 % more pulses
+    than stock) and drop the time offsets and photon-yield deviations."""
+    if calib == "nominal" and rc.conditions:
+        raise SystemExit(f"runchain: {rc.name} uses the {rc.conditions} conditions of its stock job; --calib nominal is "
+                         f"refused (it counts the channels the {rc.conditions} status table ignores as live). Pass the "
+                         f"converted CSVs: --calib/--deviation from scripts/offline_conditions_csv.py on "
+                         f"CRVConditions/data/{{calib,status,photonyield}}_{rc.conditions}.txt")
+
+
 def _resolve(library, calib, deviation, gdml, jax, counters, run_config, window, fused_response=False,
              tier1b_set=None, tier1b_dir=None, resident_response=False, device_refit=False):
     """Resolve setup arguments without loading large assets or drawing random numbers."""
@@ -46,6 +57,7 @@ def _resolve(library, calib, deviation, gdml, jax, counters, run_config, window,
         raise SystemExit("runchain needs --calib (a CRVCalib CSV or nominal)")
     from .transport import default_gdml
     rc, time_window = resolve_runchain_window(run_config, window)
+    check_conditions(rc, calib)
     if counters:
         rc = dataclasses.replace(rc, counters=counters)
     cfg = rc.chain_config(jax=bool(jax)) if rc.name != runconfig.DEFAULT or window else chain.ChainConfig(jax=bool(jax))
@@ -153,7 +165,8 @@ def _load_setup(rc, cfg, gdml_path, explicit_gdml, spec, calib, deviation, jax, 
         raise SystemExit(f"runchain: conditions cover {len(cond.status)} channels, {rc.name} has {4 * geom.nbars}; "
                          "pass the configuration's conditions CSVs (--calib/--deviation: the converted conditions of the "
                          "input release, or scripts/offline_conditions_csv.py on the Offline CRVConditions text files); "
-                         "--calib nominal treats every channel as live")
+                         "--calib nominal is only for configurations without stock conditions (it treats every "
+                         "channel as live)")
     cond = readout.apply(cond, geom, ccfg)   # physically absent SiPMs make no charges (Offline hasCMB)
     tagger = rc.tagger_bar(geom) if rc.name != runconfig.DEFAULT else None
     bar_cut = rc.bar_cut(geom)

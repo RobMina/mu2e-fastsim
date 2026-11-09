@@ -93,6 +93,8 @@ class RunConfig:
                                       # extracted_v04 default since 2026-10-30, --legacy-transport turns it off
     geom_text: str = ""               # Offline geometry file of the world the GDML was made from
     add_opposite_side_pulses: bool = True
+    conditions: str = ""              # Offline CRVConditions text set of the stock job ({calib,status,photonyield}_<set>.txt);
+                                      # set: runchain refuses --calib nominal (it counts the status-ignored channels as live)
 
     def counters_path(self):
         from . import geometry
@@ -158,7 +160,7 @@ RUN1A_V01 = RunConfig(
     "run1a_v01", "Offline/Mu2eG4/geom/crv_counters_run1a_v01.txt", f"{GEOM_DIR}/mu2e_run1a_v01.gdml",
     RUN1A_SECTORS, 0.90, RUN1A_CUTS, False, ONSPILL_WINDOW, lib_group={"T1": "EX", "T2": "EX"}, showers=False,
     delta_cut_mev=0.361, below_world=True,
-    geom_text="Offline/Mu2eG4/geom/geom_run1_a.txt")
+    geom_text="Offline/Mu2eG4/geom/geom_run1_a.txt", conditions="run1a_v01")
 # Run 1B: the CRV and everything above it (building, hatch blocks) are Run 1A's; the relocated tracker and DS2 are inside
 # the CRV and never seen by the transport, so the Run 1A GDML serves (the stock cosmic job does not build the Run 1B
 # world: "Failed to retrieve ... MECOStyleProtonAbsorber", the PA is disabled in geom_run1_b_v01)
