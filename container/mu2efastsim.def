@@ -30,13 +30,19 @@ From: python:3.13-slim-bookworm
 %post
     set -e
     export PIP_NO_CACHE_DIR=1
-    apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
+    # git: the test suites run in this image, and the snapshot and test-selection tests build git fixtures
+    apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates git \
+        && rm -rf /var/lib/apt/lists/*
     python -m pip install -q --upgrade pip
-    # VARIANT gpu: JAX with the pip CUDA 12 wheels, minus the ones the kernels never load (TRIM, below); cpu: no CUDA
+    # The CI test environment, pinned (core/ci/requirements.txt: numpy, scipy, pandas, awkward, uproot, matplotlib,
+    # pyarrow, PyYAML, pytest, hep-endpoints). VARIANT gpu: JAX with the pip CUDA 12 wheels, minus the ones the kernels
+    # never load (TRIM, below); cpu: the CPU JAX of the file.
+    REQ=/opt/mu2e-fastsim/core/ci/requirements.txt
     if [ "@VARIANT@" = cpu ]; then
-        python -m pip install -q "jax==0.11.2" numpy pandas awkward uproot matplotlib pytest
+        python -m pip install -q -r $REQ
     else
-        python -m pip install -q "jax[cuda12]==0.11.2" numpy pandas awkward uproot matplotlib pytest
+        sed 's/^jax==/jax[cuda12]==/' $REQ > /tmp/requirements-gpu.txt
+        python -m pip install -q -r /tmp/requirements-gpu.txt && rm /tmp/requirements-gpu.txt
         for w in @TRIM@; do python -m pip uninstall -q -y "$w" || true; done
     fi
     for p in core crv tracker; do python -m pip install -q --no-deps /opt/mu2e-fastsim/$p; done
@@ -50,5 +56,7 @@ From: python:3.13-slim-bookworm
 
 %test
     python -c "import mu2efastsim, crvfastsim, crvfastsim.cli, crvfastsim.reco.chain_jax, jax; print('jax', jax.__version__)"
+    python -c "import pyarrow, scipy, yaml, hependpoints; print('pyarrow', pyarrow.__version__)"
+    git --version
     cd /opt/cry/data && sha256sum -c /opt/cry/DATA.sha256
     python -c "from mu2efastsim import cry_tables; cry_tables.load(); print('device CRY table verified')"
