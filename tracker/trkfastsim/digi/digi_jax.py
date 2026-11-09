@@ -140,6 +140,14 @@ def _charge_blocks_kernel(c):
     return run
 
 
+def _saturation_rows(batch, saturation_rows=None):
+    """Rows per compacted saturation chunk of the flat digitisation: the loop's 2 * batch, or with "auto" batch rows
+    in float64 only (bit-identical there over full passes; float32 response sums drift, so float32 keeps 2 * batch)."""
+    if saturation_rows not in (None, "auto"):
+        raise ValueError("saturation_rows must be None or 'auto'")
+    return batch if saturation_rows == "auto" and not df.SINGLE else 2 * batch
+
+
 @lru_cache(maxsize=32)
 def _electronics_kernel(c, cap, pair_cap, batch, entries=None, saturation_rows=None):
     """entries: None digitises pair by pair over every lane (default); an int digitises the flat list of present
@@ -147,9 +155,7 @@ def _electronics_kernel(c, cap, pair_cap, batch, entries=None, saturation_rows=N
     compacted into chunks of 2 * batch rows, the loop's lane count; saturation_rows="auto" uses batch rows in float64,
     where they were measured bit-identical over full passes (in float32 they drift by roundoff, so 2 * batch stays).
     An entry overflow is flagged in entry_overflow, never truncated."""
-    if saturation_rows not in (None, "auto"):
-        raise ValueError("saturation_rows must be None or 'auto'")
-    srows = batch if saturation_rows == "auto" and not df.SINGLE else 2 * batch
+    srows = _saturation_rows(batch, saturation_rows)
     rb, sr, LB = c.responseBins, c.sampleRate, c.clusterLookbackTime
     R = batch * 2
     rows = jnp.arange(R)

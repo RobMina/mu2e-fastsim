@@ -503,6 +503,16 @@ def test_packed_sort_keys_order_like_lexsort(cond):
                                   jnp.lexsort((jnp.asarray(t), jnp.asarray(sid), jnp.asarray(ev))))
 
 
+def test_auto_saturation_rows_float64_only():
+    """flat_saturation_rows 'auto': batch rows per saturation chunk in float64, the loop's 2 x batch otherwise."""
+    from trkfastsim import devfloat as df
+    from trkfastsim.digi import digi_jax as dj
+    assert not df.SINGLE
+    assert dj._saturation_rows(8192) == 2 * 8192 and dj._saturation_rows(8192, "auto") == 8192
+    with pytest.raises(ValueError, match="saturation_rows"):
+        dj._saturation_rows(8192, "half")
+
+
 def test_float32_tracker_mode_in_subprocess(request):
     """Run the float32 device-versus-staged tests in a process whose tracker device float is float32."""
     import os

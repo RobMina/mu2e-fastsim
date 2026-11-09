@@ -108,3 +108,10 @@ def test_float32_flat_digit_entries_equal_pair_loop(cond, helpers):
     assert len(a["sid"]) > 0
     for name in a:
         np.testing.assert_array_equal(a[name], b[name], err_msg=name)
+
+
+def test_float32_auto_saturation_rows_keep_two_per_straw():
+    """flat_saturation_rows 'auto' never shrinks the saturation chunks in float32 (they drift there)."""
+    from trkfastsim.digi import digi_jax as dj
+    assert df.SINGLE
+    assert dj._saturation_rows(8192, "auto") == dj._saturation_rows(8192) == 2 * 8192
