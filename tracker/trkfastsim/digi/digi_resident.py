@@ -10,7 +10,10 @@ and sorts, and the final compaction and sort. These run as jitted stages on arra
 new chunk recompiles only when a size crosses a power of two; the host reads only counts and the per-batch failure
 flags that digi_jax also reads.
 
-The tracker device float must be float64 (devfloat default); in float32 mode use digi_jax.digitize.
+Both tracker device floats (devfloat). In float32 mode the precision-aware forms digi_jax applies on the host in
+float64 are made on the device in float64, with the same operations: cluster positions relative to their straw's
+middle, cluster times relative to whole COMMON_PERIODs, and electronics times relative to a per-straw reference
+n_ref * COMMON_PERIOD (from the straw's first cluster time), added back to t_analog after the kernel.
 """
 from functools import lru_cache, partial
 
@@ -81,6 +84,12 @@ def _window(c):
     return run
 
 
+@lru_cache(maxsize=8)
+def _straw_mid(c):
+    """Straw middles (float64 device table) for the float32-mode relative positions."""
+    return jnp.asarray(np.asarray(c.straw_mid, np.float64))
+
+
 @partial(jax.jit, static_argnames=("size",))
 def _compact(mask, size):
     return jnp.nonzero(mask, size=size, fill_value=0)[0]
@@ -103,13 +112,18 @@ def _cluster_prep(c):
     return run
 
 
-@partial(jax.jit, static_argnames=("cap", "k"))
-def _class_slots(key, mm, nmm, idx, eion, nc, minion, p0, p1, sdir, width, eaverage, energies, probabilities, cap, k):
-    """DC._sample on the multi steps mm[:nmm] (padded to k); the kept slots with their sort key local * 2^13 + slot."""
+@partial(jax.jit, static_argnames=("cap", "k", "rel"))
+def _class_slots(key, mm, nmm, idx, eion, nc, minion, p0, p1, sdir, width, eaverage, energies, probabilities, ref, cap,
+                 k, rel):
+    """DC._sample on the multi steps mm[:nmm] (padded to k); the kept slots with their sort key local * 2^13 + slot.
+    rel (float32 mode): p0, p1 are relative to the step's straw middle ref; the positions come back absolute (float64),
+    as digi_clusters_jax.make_clusters returns them."""
     lane = jnp.arange(k) < nmm
     m = jnp.where(lane, mm, 0)
     pos, ne = DC._sample(key, idx[m], eion[m], jnp.where(lane, nc[m], 0), minion[m], p0[m], p1[m], sdir[m], width[m],
                          eaverage, energies, probabilities, cap, MINION_UNROLL, SEARCH_METHOD)
+    if rel:
+        pos = pos.astype(jnp.float64) + ref[m][:, None, :]
     slot = jnp.arange(cap)[None, :]
     keep = lane[:, None] & (slot < nc[m][:, None])
     skey = jnp.where(keep, m[:, None] * 8192 + slot, BIG)
@@ -154,6 +168,9 @@ def make_clusters(key, c, st, idx, nidx):
         width = st["width"][idx].astype(jnp.float64)
     else:
         sdir, width = jnp.zeros((ib, 3)), jnp.zeros(ib)
+    rel = bool(df.SINGLE)   # float32: sample relative to the step's straw middle (digi_clusters_jax.make_clusters)
+    ref = _straw_mid(c)[st["_us"][idx]] if rel else jnp.zeros((1, 3))
+    q0, q1 = (p0 - ref, p1 - ref) if rel else (p0, p1)
     keys, poss, nes = [], [], []
     if n_multi:
         ncmax = int(jnp.max(jnp.where(multi, nc, 0)))
@@ -173,8 +190,8 @@ def make_clusters(key, c, st, idx, nidx):
                 nm = min(lanes, nsel - s0)
                 k = _b(nm, 16)
                 mm = jax.lax.dynamic_slice(_padto(mm_all, max(mm_all.shape[0], s0 + k)), (s0,), (k,))
-                sk, ps, ns_ = _class_slots(key, mm, nm, idx, eion, nc, minion, p0, p1, sdir, width, c.EAverage,
-                                           energies, probabilities, cap_used, k)
+                sk, ps, ns_ = _class_slots(key, mm, nm, idx, eion, nc, minion, q0, q1, sdir, width, c.EAverage,
+                                           energies, probabilities, ref, cap_used, k, rel)
                 keys.append(sk); poss.append(ps); nes.append(ns_)
     if keys:
         n_slots = sum(int(x.shape[0]) for x in keys)
@@ -196,6 +213,17 @@ def make_clusters(key, c, st, idx, nidx):
     pos_out = jnp.where(from_single[:, None], p0[s_rows[sj]], pos_m)
     ne_out = jnp.where(from_single, single_ne[s_rows[sj]], ne_m)
     return cs, pos_out, ne_out, ncl
+
+
+@jax.jit
+def _relative_clusters(smid, us, cs, pos, ctime):
+    cref = df.COMMON_PERIOD * jnp.floor(ctime / df.COMMON_PERIOD)
+    return pos - smid[us[cs]], ctime - cref, cref
+
+
+@jax.jit
+def _absolute_times(cref, gt):
+    return (cref[:, None] + gt.astype(jnp.float64)).astype(jnp.float32)
 
 
 # --------------------------------------------------------------------------- stage D: straw instances and ghosts
@@ -249,9 +277,11 @@ def _offspill_tables(inst, ncl, ns_b):
 
 # --------------------------------------------------------------------------- stage E: per-batch packing
 
-@partial(jax.jit, static_argnames=("cap", "batch", "onspill"))
-def _pack(which, nb, cap, batch, onspill, tabs, gt, charge, wd, cs, straw):
-    """digi_jax's per-batch t, q, w, steps, n (zeros beyond nb) and the straw arguments."""
+@partial(jax.jit, static_argnames=("cap", "batch", "onspill", "rel"))
+def _pack(which, nb, cap, batch, onspill, tabs, gt, charge, wd, cs, straw, rel=False):
+    """digi_jax's per-batch t, q, w, steps, n (zeros beyond nb) and the straw arguments, and n_ref per lane: rel
+    (float32 mode) gives t relative to n_ref * COMMON_PERIOD, n_ref = floor(the straw's first cluster time / period)
+    (zero beyond nb); otherwise n_ref is zero and t absolute."""
     lane = jnp.arange(batch) < nb
     w_ = jnp.where(lane, which, 0)
     ar = jnp.arange(cap)[None, :]
@@ -279,24 +309,31 @@ def _pack(which, nb, cap, batch, onspill, tabs, gt, charge, wd, cs, straw):
     z = lambda a: jnp.where(lane.reshape((-1,) + (1,) * (a.ndim - 1)), a, 0)
     t, q, w, s = (z(jnp.stack(x, 1)) for x in (T, Q, W, S))
     n = z(jnp.stack(N, 1)).astype(jnp.int32)
+    nref = jnp.zeros(batch, jnp.int64)
+    if rel:      # digi_jax float32: first valid time of either end, floored to whole periods; all slots shifted
+        first_t = jnp.where(ar[None] < n[:, :, None], t, jnp.inf).min(axis=(1, 2))
+        nref = jnp.where(lane, jnp.floor(first_t / df.COMMON_PERIOD), 0).astype(jnp.int64)
+        t = t - (nref * df.COMMON_PERIOD)[:, None, None]
     straw_us, straw_ra, ukey, jitter, lengths = straw
     st_args = (z(straw_us[w_]), z(straw_ra[w_]), z(ukey[w_]), z(jitter[w_]))
     return (t.reshape(2 * batch, cap), q.reshape(2 * batch, cap), w.reshape(2 * batch, cap),
-            s.reshape(2 * batch, cap), n.ravel(), *st_args, lane, jnp.where(lane, lengths[w_], 0.0))
+            s.reshape(2 * batch, cap), n.ravel(), *st_args, lane, jnp.where(lane, lengths[w_], 0.0), nref)
 
 
 @partial(jax.jit, static_argnames=("pair_cap", "batch"), donate_argnames=("buf",))
-def _append(buf, offset, result, which, straw_ev, straw_sid, pair_cap, batch):
+def _append(buf, offset, result, which, straw_ev, straw_sid, nref, pair_cap, batch):
     """Kept digis of one batch (row-major, as np.nonzero) written into the output buffers at offset."""
-    return _append_rows(buf, offset, result, which, straw_ev, straw_sid, pair_cap, batch)
+    return _append_rows(buf, offset, result, which, straw_ev, straw_sid, nref, pair_cap, batch)
 
 
-def _append_rows(buf, offset, result, which, straw_ev, straw_sid, pair_cap, batch):
+def _append_rows(buf, offset, result, which, straw_ev, straw_sid, nref, pair_cap, batch):
     keep = result["keep"].ravel()
     m = batch * pair_cap
     kp = jnp.nonzero(keep, size=m, fill_value=0)[0]
     bi, pi = kp // pair_cap, kp % pair_cap
     out = {k: result[k][bi, pi] for k in ("adc", "tdc", "tot", "pmp", "step", "t_analog")}
+    if df.SINGLE:   # digi_jax float32: t_analog absolute again, in float64
+        out["t_analog"] = out["t_analog"].astype(jnp.float64) + (nref[bi] * df.COMMON_PERIOD)[:, None]
     out["ev"] = straw_ev[which[bi]]
     out["sid"] = straw_sid[which[bi]]
     return {k: jax.lax.dynamic_update_slice(buf[k], out[k].astype(buf[k].dtype), (offset,) + (0,) * (out[k].ndim - 1))
@@ -317,19 +354,20 @@ def _pack_at(whichs, nbs, i, cap, batch, onspill, timed, tabs, gt, charge, wd, c
     """_pack of batch i of a bucket (whichs [nbatch, batch], nbs [nbatch] on the device), with the electronics
     kernel's timing arguments gathered from per-straw values made once per call (selections only, no arithmetic)."""
     which = whichs[i]
-    t, q, w, stp, n, su, sr, sk, ji, live, lens = _pack(which, nbs[i], cap, batch, onspill, tabs, gt, charge, wd, cs,
-                                                        straw)
+    t, q, w, stp, n, su, sr, sk, ji, live, lens, nref = _pack(which, nbs[i], cap, batch, onspill, tabs, gt, charge, wd,
+                                                              cs, straw, bool(df.SINGLE))
     targs = {}
     if timed:
         targs = {"window_end": jnp.where(live, lens, ewl),
                  "event_end_tdc": jnp.where(live, tdc_all[jnp.where(live, which, 0)], tdc_dead)}
-    return (t, q, w, stp, n, su, sr, sk, live, ji), targs, which
+    args = (t, q, w, stp, n, su, sr, sk, live, ji) + ((nref,) if df.SINGLE else ())
+    return args, targs, which, nref
 
 
 @partial(jax.jit, static_argnames=("pair_cap", "batch"), donate_argnames=("buf",))
-def _append_acc(buf, acc, result, which, straw_ev, straw_sid, pair_cap, batch):
+def _append_acc(buf, acc, result, which, straw_ev, straw_sid, nref, pair_cap, batch):
     """_append at the device offset acc["offset"]; the batch's flags and counters accumulate in acc (no host read)."""
-    buf, kept = _append_rows(buf, acc["offset"], result, which, straw_ev, straw_sid, pair_cap, batch)
+    buf, kept = _append_rows(buf, acc["offset"], result, which, straw_ev, straw_sid, nref, pair_cap, batch)
     i64 = lambda x: jnp.asarray(x).astype(jnp.int64)
     return buf, {"offset": acc["offset"] + i64(kept),
                  "failed": acc["failed"] | jnp.asarray(result["failed"]).astype(bool),
@@ -342,7 +380,8 @@ def _append_acc(buf, acc, result, which, straw_ev, straw_sid, pair_cap, batch):
 def _buffers(c, result, size):
     tmpl = {"adc": ((c.nADCSamples,), result["adc"].dtype), "tdc": ((2,), result["tdc"].dtype),
             "tot": ((2,), result["tot"].dtype), "pmp": ((), result["pmp"].dtype),
-            "step": ((2,), result["step"].dtype), "t_analog": ((2,), result["t_analog"].dtype),
+            "step": ((2,), result["step"].dtype),
+            "t_analog": ((2,), jnp.float64 if df.SINGLE else result["t_analog"].dtype),
             "ev": ((), jnp.int64), "sid": ((), jnp.int64)}
     return {k: jnp.zeros((size,) + sh, dt) for k, (sh, dt) in tmpl.items()}
 
@@ -381,15 +420,15 @@ def _waveforms_async(c, plan, key3, tabs, gt, charge, wd, cs, straw, straw_ev, s
         whichs, nbs_d = jnp.asarray(wh.reshape(nbt, batch)), jnp.asarray(nbs)
         kern = DJ._electronics_kernel(c, cap, 4, batch)
         for i in range(nbt):
-            args, targs, which = _pack_at(whichs, nbs_d, i, cap, batch, onspill, timed, tabs, gt, charge, wd, cs,
-                                          straw, *tv)
+            args, targs, which, nref = _pack_at(whichs, nbs_d, i, cap, batch, onspill, timed, tabs, gt, charge, wd,
+                                                cs, straw, *tv)
             result = kern(key3, *args, **targs)
             if buf is None:
                 buf = _buffers(c, result, size)
                 z = jnp.int64(0)
                 acc = {"offset": z, "failed": jnp.bool_(False), "sat": jnp.bool_(False), "pairs": z, "nan_ends": z,
                        "saturated_ends": z}
-            buf, acc = _append_acc(buf, acc, result, which, straw_ev, straw_sid, 4, batch)
+            buf, acc = _append_acc(buf, acc, result, which, straw_ev, straw_sid, nref, 4, batch)
             nbatch += 1
     return buf, acc, nbatch
 
@@ -405,8 +444,9 @@ def _waveforms_sync(c, plan, key3, tabs, gt, charge, wd, cs, straw, straw_ev, st
             wh = bucket_h[b0:b0 + batch]
             nb = len(wh)
             which = jnp.asarray(np.pad(wh, (0, batch - nb)))
-            t, q, w, stp, n, su, sr, sk, ji, live, lens = _pack(which, nb, cap, batch, bool(c.onspill), tabs, gt,
-                                                                 charge, wd, cs, straw)
+            t, q, w, stp, n, su, sr, sk, ji, live, lens, nref = _pack(which, nb, cap, batch, bool(c.onspill), tabs,
+                                                                       gt, charge, wd, cs, straw, bool(df.SINGLE))
+            extra = (nref,) if df.SINGLE else ()
             timing_args = {}
             if event_timing is not None:
                 lens = jnp.where(live, lens, float(c.eventWindowLength))
@@ -417,7 +457,7 @@ def _waveforms_sync(c, plan, key3, tabs, gt, charge, wd, cs, straw, straw_ev, st
             pair_cap = 4
             while True:
                 result = DJ._electronics_kernel(c, cap, pair_cap, batch)(
-                    key3, t, q, w, stp, n, su, sr, sk, live, ji, **timing_args)
+                    key3, t, q, w, stp, n, su, sr, sk, live, ji, *extra, **timing_args)
                 if bool(result["sat_overflow"]):
                     raise RuntimeError("JAX ADC saturation time bucket overflow; no output returned")
                 if not bool(result["failed"]):
@@ -431,7 +471,7 @@ def _waveforms_sync(c, plan, key3, tabs, gt, charge, wd, cs, straw, straw_ev, st
                 if buf is not None:
                     new = {k: jax.lax.dynamic_update_slice(new[k], buf[k], (0,) * new[k].ndim) for k in new}
                 buf = new
-            buf, kept = _append(buf, jnp.int64(offset), result, which, straw_ev, straw_sid, pair_cap, batch)
+            buf, kept = _append(buf, jnp.int64(offset), result, which, straw_ev, straw_sid, nref, pair_cap, batch)
             offset += int(kept)
             if stats is not None:
                 for field, val in (("pairs", result["pairs"]), ("nan_crossing_ends", result["nan_ends"]),
@@ -459,8 +499,6 @@ def digitize(st, nev, c, key, stats=None, *, event_timing=None, nstep=None, padd
     nstep: st is already padded (pad_steps: the first nstep rows are the steps, the rest zero, length _b(nstep)), so
     no array of a data-dependent length is made here. padded: return (digis at a power-of-two length, count) and
     leave the cut to the caller (host side), so the call compiles nothing per output size."""
-    if df.SINGLE:
-        raise NotImplementedError("digi_resident: float64 tracker device float only (use digi_jax.digitize)")
     if nstep is None:
         nstep = int(np.shape(st["ev"])[0])
         s = pad_steps(st, nstep)
@@ -489,6 +527,8 @@ def digitize(st, nev, c, key, stats=None, *, event_timing=None, nstep=None, padd
         return _empty(c, padded)
     tb = cs.shape[0]
     ctime = time[cs]
+    if df.SINGLE:   # digi_jax float32: positions relative to the straw middle, times to whole COMMON_PERIODs (float64)
+        pos, ctime, cref = _relative_clusters(_straw_mid(c), us, cs, pos, ctime)
     group = DJ.CHARGE_BLOCK * DJ.CHARGE_BLOCKS
     kern = DJ._charge_blocks_kernel(c)
     gt_l, ch_l, wd_l = [], [], []
@@ -503,6 +543,8 @@ def digitize(st, nev, c, key, stats=None, *, event_timing=None, nstep=None, padd
         gt_l.append(r[0]); ch_l.append(r[1]); wd_l.append(r[2])
     gt, charge, wd = (_padto(jnp.concatenate(x), tb) if sum(y.shape[0] for y in x) < tb else
                       jnp.concatenate(x)[:tb] for x in (gt_l, ch_l, wd_l))
+    if df.SINGLE:
+        gt = _absolute_times(cref, gt)
     inst, ukey, ns = _instances(s["ev"], s["sid"], cs, ncl, _b(ncl))      # ns <= ncl
     ns = int(ns)
     ns_b = _b(ns)
