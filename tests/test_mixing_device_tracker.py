@@ -430,6 +430,37 @@ def test_flat_clusters_equal_dense(wide, helpers, onspill):
         Capacities(8, 1024, 8, 512, 8, 2, minion_unroll=0)
 
 
+def _flat_digit_steps(c, helpers):
+    """Three pairs on one straw (digital dead time), a saturated non-minimum-ionising straw, a read-all straw."""
+    rows = [helpers._step(c, 520, t=t) for t in (300., 700., 1100.)]
+    rows += [helpers._step(c, 1000, eion=.04, ion=1), helpers._step(c, 92, t=100.), helpers._step(c, 523, t=900.)]
+    return helpers._steps(rows, ev=[0, 0, 0, 1, 1, 2])
+
+
+@pytest.mark.pr_params("True")   # onspill is the mixing mode
+@pytest.mark.parametrize("onspill", [False, True])
+def test_flat_digit_entries_equal_pair_loop(wide, helpers, onspill):
+    """digit_entries_per_straw digitises the flat (straw, pair) entry list, also in the end tiers: the same digis."""
+    c, model = wide(onspill)
+    st = _flat_digit_steps(c, helpers)
+    times = timing([1700., 1675., 1695.] if onspill else [100000.] * 3, [10., -5., 20.])
+    a, ae = evaluate(model, collection(st, 8), times)
+    assert not any(ae.values()), ae
+    assert len(a["sid"]) > 0 and np.bincount(a["sid"]).max() >= 2
+    for caps in (Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2),
+                 Capacities(64, 1024, 8, 4, 8, 2, end_tiers=[(4, 512)], digit_entries_per_straw=2.5)):
+        b, be = evaluate(prepare(c, caps, 3), collection(st, 8), times)
+        assert not any(be.values()), be
+        for name in a:
+            np.testing.assert_array_equal(a[name], b[name], err_msg=name)
+    _, errors = evaluate(prepare(c, Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=0.5), 3),
+                         collection(st, 8), times)
+    assert errors["digit_entries_per_straw"]
+    for bad in (0, 9, "1"):
+        with pytest.raises(ValueError, match="digit_entries_per_straw"):
+            Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=bad)
+
+
 @pytest.mark.pr_params("True")   # onspill is the mixing mode
 @pytest.mark.parametrize("onspill", [False, True])
 def test_packed_sort_equals_lexsort(wide, helpers, onspill):

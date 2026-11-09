@@ -8,6 +8,9 @@ device as fixed-shape per-track record buffers. Per chord, as fieldsteps.transpo
   * chord of the local helix, field at the helix midpoint, length min(chord_mm, sqrt(8 rho sagitta_mm));
   * straw gas crossings of the chord (candidate panels by z, then their 96 straws), the wall chord (outer cylinder
     minus gas), the wire and plating chords at the closest approach;
+  * opt-in `complete_outer_wall` (Tracker): the wall material is the complete outer-minus-gas wall of every
+    crossed straw, wall-only chords included (fieldsteps.transport(complete_outer_wall=True), fieldwall.WallIndex);
+    the default keeps the gas-gated wall of the K_CHORD gas crossings;
   * the support column of the coaxial shells (exact z clipping, phi sectors by the same nsub-point sampling as
     world.CoaxialShells.column), only for chords that reach the smallest shell radius;
   * energy loss per material at the chord-start momentum: restricted Moller + Seltzer-Berger mean with Urban
@@ -86,6 +89,7 @@ class Cfg(NamedTuple):
     msc: bool
     bnomc: float
     pstraw: float
+    complete_wall: bool = False   # opt-in: the complete outer-minus-gas wall of every crossed straw (fieldwall)
 
 
 def _shell_groups(coax, mi, origin, chord_mm):
@@ -168,7 +172,8 @@ class Tracker:
     THIN = (materials.MYLAR, materials.ALUMINIUM_6061, None, materials.TUNGSTEN, materials.GOLD)   # None: the gas
 
     def __init__(self, geom, field_grid, interior, envelope, origin, bnom, chord_mm=10.0, sagitta_mm=0.02,
-                 max_path_mm=30000.0, wire=True, gas=None, dtype=np.float64, eloss_on=True, msc=True):
+                 max_path_mm=30000.0, wire=True, gas=None, dtype=np.float64, eloss_on=True, msc=True,
+                 complete_outer_wall=False):
         dt = np.dtype(dtype)
         self.dt = dt
         self.origin = np.asarray(origin, float)
@@ -229,7 +234,8 @@ class Tracker:
                        float(f_metal), float(rw), float(rw_in), m_sup, int(getattr(interior, "nsub", 8)),
                        float(rflag), tuple(g["zcap"] for g in groups), tuple(g["smax"] for g in groups),
                        tuple(g["rmin"] for g in groups), tuple(g["rmax"] for g in groups),
-                       bool(eloss_on), bool(msc), float(bmag * fs.ehelix.K), float(bmag * fs.ehelix.K * geom.radius))
+                       bool(eloss_on), bool(msc), float(bmag * fs.ehelix.K), float(bmag * fs.ehelix.K * geom.radius),
+                       bool(complete_outer_wall))
 
     @classmethod
     def from_gdml(cls, gdml, field_header, origin, **kw):
@@ -357,6 +363,22 @@ def _straws(T, cfg, pwidth, x, c, L):
     inside_len = nz | (jnp.abs(wa) <= h)
     s_in, s_out = jnp.maximum(jnp.maximum(s0, zl), 0.0), jnp.minimum(s1, zh)
     keep = sv & good & inside_len & (s_out > s_in) & (s_in < L[:, None])
+    wall_all = None
+    if cfg.complete_wall:
+        # complete wall (fieldwall.WallIndex): outer cylinder minus gas, both clipped to the chord and the straw length,
+        # summed over every candidate straw of the window, so wall-only chords count and K_CHORD does not truncate it
+        Ao = jnp.where(par, 1.0, A)
+        Co_all = vv - cfg.r_out ** 2
+        disc_o = B * B - 4 * Ao * Co_all
+        good_o = jnp.where(par, Co_all <= 0, disc_o > 0)
+        sq_o = jnp.sqrt(jnp.where(good_o & ~par, disc_o, 0.0))
+        oa0 = jnp.where(par, -jnp.inf, (-B - sq_o) / (2 * Ao))
+        oa1 = jnp.where(par, jnp.inf, (-B + sq_o) / (2 * Ao))
+        oa0 = jnp.maximum(jnp.maximum(oa0, zl), 0.0)
+        oa1 = jnp.minimum(jnp.minimum(oa1, zh), L[:, None])
+        outer = jnp.where(sv & good_o & inside_len, jnp.clip(oa1 - oa0, 0.0, None), 0.0)
+        gas_c = jnp.where(sv & good & inside_len, jnp.clip(jnp.minimum(s_out, L[:, None]) - s_in, 0.0, None), 0.0)
+        wall_all = jnp.sum(jnp.clip(outer - gas_c, 0.0, None), 1)
     nk = keep.sum(1)
     kover = jnp.sum(nk > K_CHORD)
     key = jnp.where(keep, s_in, jnp.inf)
@@ -382,8 +404,11 @@ def _straws(T, cfg, pwidth, x, c, L):
     wire = jnp.where(own, 2 * jnp.sqrt(jnp.clip(cfg.rw_in ** 2 - bb ** 2, 0, None)) / ua, 0.0)
     plate = jnp.where(own, 2 * jnp.sqrt(jnp.clip(cfg.rw ** 2 - bb ** 2, 0, None)) / ua, 0.0) - wire
     del sg
-    return dict(js=js, s_in=jnp.where(kv, s_in, 0.0), s_out=jnp.where(kv, s_out, 0.0), v=kv, gas=gas, wall=wall,
-                wire=wire, plate=plate), pover + wover, kover
+    out = dict(js=js, s_in=jnp.where(kv, s_in, 0.0), s_out=jnp.where(kv, s_out, 0.0), v=kv, gas=gas, wall=wall,
+               wire=wire, plate=plate)
+    if wall_all is not None:
+        out["wall_all"] = wall_all
+    return out, pover + wover, kover
 
 
 def _support(T, cfg, groups, x, c, L):
@@ -611,7 +636,10 @@ def _chord(tk_, s, rec, lane, key, it):
     sp, pover, kover = _straws(T, cfg, pwidth, x, c, L)
     v = sp["v"] & go[:, None]
     fm = cfg.f_metal
-    wall = jnp.sum(jnp.where(v, sp["wall"], 0.0), 1)
+    if cfg.complete_wall:
+        wall = jnp.where(go, sp["wall_all"], 0.0)
+    else:
+        wall = jnp.sum(jnp.where(v, sp["wall"], 0.0), 1)
     thin = jnp.stack([wall * (1 - fm), wall * fm, jnp.sum(jnp.where(v, sp["gas"], 0.0), 1),
                       jnp.sum(jnp.where(v, sp["wire"], 0.0), 1), jnp.sum(jnp.where(v, sp["plate"], 0.0), 1)], 1)
     ln_all = jnp.concatenate([sup, thin], 1) * go[:, None]                 # [n, M]: support, then the thin parts

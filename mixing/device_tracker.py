@@ -26,6 +26,7 @@ class Capacities:
     minion_steps: int = None
     minion_unroll: int = None
     minion_search: str = None
+    digit_entries_per_straw: float = None
     pack_sort: str = None
 
     def __post_init__(self):
@@ -37,6 +38,10 @@ class Capacities:
             if name == "minion_search":
                 if value not in ("scan", "compare_all"):
                     raise ValueError("tracker minion_search must be 'scan' or 'compare_all'")
+                continue
+            if name == "digit_entries_per_straw":
+                if value is not None and (type(value) not in (int, float) or not 0 < value <= self.pairs_per_straw):
+                    raise ValueError("tracker digit_entries_per_straw must be in (0, pairs_per_straw]")
                 continue
             if name == "pack_sort":
                 if value not in ("lexsort", "packed"):
@@ -67,6 +72,16 @@ class Capacities:
 
     def tier_batch(self, straws):
         return min(self.electronics_batch, straws)
+
+    def digit_entries(self, batch):
+        """Flat digitisation entries per electronics launch of `batch` straws (None: the pair-by-pair loop)."""
+        if self.digit_entries_per_straw is None:
+            return None
+        return int(np.ceil(self.digit_entries_per_straw * batch))
+
+
+def _entries(entries):
+    return {} if entries is None else {"entries": entries}
 
 
 def prepare(c, capacities, batch_events):
@@ -119,7 +134,8 @@ def prepare(c, capacities, batch_events):
                          spec((dj.CHARGE_BLOCK,), np.float64))
     batch = cap.electronics_batch
     wave = (2 * batch, cap.clusters_per_end)
-    electronics_kernel = lift(dj._electronics_kernel(c, cap.clusters_per_end, cap.pairs_per_straw, batch),
+    electronics_kernel = lift(dj._electronics_kernel(c, cap.clusters_per_end, cap.pairs_per_straw, batch,
+                                                     **_entries(cap.digit_entries(batch))),
         spec((2,), np.uint32), spec(wave, np.float64), spec(wave, np.float64), spec(wave, np.float64),
         spec(wave, np.int64), spec((2 * batch,), np.int32), spec((batch,), np.int64),
         spec((batch,), bool), spec((batch,), np.int64), spec((batch,), bool), spec((batch,), np.float64),
@@ -132,7 +148,8 @@ def prepare(c, capacities, batch_events):
     for straws, width in cap.end_tiers or ():
         lb = cap.tier_batch(straws)
         lw = (2 * lb, width)
-        tier_kernels.append(lift(dj._electronics_kernel(c, width, cap.pairs_per_straw, lb),
+        tier_kernels.append(lift(dj._electronics_kernel(c, width, cap.pairs_per_straw, lb,
+                                                        **_entries(cap.digit_entries(lb))),
             spec((2,), np.uint32), spec(lw, np.float64), spec(lw, np.float64), spec(lw, np.float64),
             spec(lw, np.int64), spec((2 * lb,), np.int32), spec((lb,), np.int64),
             spec((lb,), bool), spec((lb,), np.int64), spec((lb,), bool), spec((lb,), np.float64),
@@ -497,6 +514,9 @@ def prepare(c, capacities, batch_events):
         output = {name: value[order] for name, value in output.items()}
         errors = {"electronics_search_or_pairs": jnp.any(result["failed"]),
                   "saturation_capacity": jnp.any(result["sat_overflow"])}
+        if cap.digit_entries_per_straw is not None:
+            errors["digit_entries_per_straw"] = jnp.any(result["entry_overflow"])
+            output["_digit_entries_per_straw"] = jnp.ceil(1000 * jnp.max(result["pairs"]) / batch)
         return output, errors
 
     def pack_tiered(st, cluster, gt, charge, wd, timing, key, assets):
@@ -567,6 +587,8 @@ def prepare(c, capacities, batch_events):
         return tuple(packed), errors
 
     def electronics_tiered(packed, key, assets):
+        flat_flags, flat_usage = [], []
+
         def tier(values, kernel, kernel_assets, width, batch):
             groups = tuple(v.reshape((-1, batch) + v.shape[1:]) for v in values)
 
@@ -580,6 +602,9 @@ def prepare(c, capacities, batch_events):
             out["mask"] = result["keep"].reshape(-1)
             out["ev"] = jnp.repeat(values[7] // 65536, cap.pairs_per_straw)
             out["sid"] = jnp.repeat(values[7] % 65536, cap.pairs_per_straw)
+            if cap.digit_entries_per_straw is not None:
+                flat_flags.append(jnp.any(result["entry_overflow"]))
+                flat_usage.append(jnp.ceil(1000 * jnp.max(result["pairs"]) / batch))
             return out, jnp.any(result["failed"]), jnp.any(result["sat_overflow"])
 
         parts = [tier(packed[0], electronics_kernel, assets["electronics_kernel"], cap.clusters_per_end,
@@ -593,7 +618,11 @@ def prepare(c, capacities, batch_events):
         order = output_order(output["t_analog"][:, 0], output["sid"],
                              jnp.where(output["mask"], output["ev"], sentinel))
         output = {name: value[order] for name, value in output.items()}
-        return output, {"electronics_search_or_pairs": fa, "saturation_capacity": sa}
+        errors = {"electronics_search_or_pairs": fa, "saturation_capacity": sa}
+        if flat_flags:
+            errors["digit_entries_per_straw"] = jnp.any(jnp.stack(flat_flags))
+            output["_digit_entries_per_straw"] = jnp.max(jnp.stack(flat_usage))
+        return output, errors
 
     def apply(collection, timing, assets, key):
         st = dict(collection["columns"])
@@ -653,6 +682,10 @@ def prepare(c, capacities, batch_events):
                          clusters_per_end=jnp.max(jnp.stack([jnp.max(tier[4]) for tier in packed])))
             for k, tier in enumerate(packed[1:], start=1):
                 usage[f"end_tier_{k}_straws"] = tier[8].sum()
+        if "_digit_entries_per_straw" in output:
+            output = dict(output)
+            # integer demand counter (batch metrics are integers): thousandths of an entry per straw
+            usage["digit_entries_per_straw_milli"] = output.pop("_digit_entries_per_straw")
         errors = {"input": input_error, "timing": timing_error, "nonfinite_charge": charge_error,
                   **cluster_errors, **packing_errors, **electronic_errors}
         return output, errors, usage

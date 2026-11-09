@@ -43,6 +43,7 @@
    "minion_steps": 20048,
    "minion_search": "compare_all",
    "minion_unroll": 4,
+   "digit_entries_per_straw": 1.182,
    "pack_sort": "packed"
   },
   "crv": {
