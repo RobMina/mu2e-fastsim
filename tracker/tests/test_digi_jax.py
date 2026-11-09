@@ -99,3 +99,28 @@ def test_nonfinite_input_and_waveform_capacity_fail_closed(cond, monkeypatch):
     monkeypatch.setattr(DJ, "MAX_ROW_CLUSTERS", 1)
     with pytest.raises(OverflowError, match="MAX_ROW_CLUSTERS"):
         DJ.digitize(st, 1, cond, jax.random.key(1))
+
+
+def test_flat_entries_equal_pair_loop(cond):
+    """entries= digitises the flat list of (straw, pair) entries: the same kept digis as the pair-by-pair loop, for a
+    straw with several pairs (digital dead time between them) next to a saturated straw; too few entries is flagged."""
+    import jax.numpy as jnp
+    t = np.array([[1000., 1010., 1500., 3000.], [1001., 1011., 1501., 3001.],
+                  [1200., 1205., 1210., 1215.], [1201., 1206., 1211., 1216.]])
+    q = np.array([[.5] * 4, [.5] * 4, [80.] * 4, [80.] * 4])
+    wd = np.array([[400.] * 4, [600.] * 4, [300.] * 4, [700.] * 4])
+    step = np.tile(np.arange(4), (4, 1))
+    args = tuple(map(jnp.asarray, (t, q, wd, step, np.array([4, 4, 4, 4]), np.array([520, 1000]),
+                                   np.array([False, False]), np.array([520, 1000]), np.array([True, True]),
+                                   np.array([.3, -.2]))))
+    key = jax.random.key(4)
+    loop = jax.device_get(DJ._electronics_kernel(cond, 4, 4, 2)(key, *args))
+    flat = jax.device_get(DJ._electronics_kernel(cond, 4, 4, 2, entries=8)(key, *args))
+    assert not loop["failed"] and not flat["failed"] and not flat["entry_overflow"]
+    assert loop["saturated_ends"] > 0 and loop["pairs"] >= 3, (loop["saturated_ends"], loop["pairs"])
+    np.testing.assert_array_equal(flat["keep"], loop["keep"])
+    keep = loop["keep"]
+    for name in ("tdc", "tot", "adc", "pmp", "step", "t_analog"):
+        np.testing.assert_array_equal(flat[name][keep], loop[name][keep], err_msg=name)
+    short = jax.device_get(DJ._electronics_kernel(cond, 4, 4, 2, entries=1)(key, *args))
+    assert short["entry_overflow"]
