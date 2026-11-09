@@ -224,7 +224,7 @@ def apply_numpy(tab, rng, has_entry, nrow, x, p, q=-1.0, t=None):
     fit = np.asarray(has_entry, bool) & (u[0] < eff)
     qual = fit & (u[1] < tab["eff_q"][bn, bt])
     if "pool_res" in tab:      # empirical joint draw: one reference track's vector of the bin pool (own stream)
-        up = np.random.default_rng(rng.integers(0, 2 ** 63)).random(len(nrow))
+        up = np.random.Generator(rng.bit_generator.jumped()).random(len(nrow))   # does not advance rng (t0 unchanged)
         cnt = tab["pool_count"][bn, bt]
         j = tab["pool_start"][bn, bt] + np.minimum((up * cnt).astype(np.int64), np.maximum(cnt - 1, 0))
         row = tab["pool_res"][tab["pool_idx"][np.minimum(j, len(tab["pool_idx"]) - 1)]]

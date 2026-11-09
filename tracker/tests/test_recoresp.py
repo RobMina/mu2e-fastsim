@@ -206,3 +206,19 @@ def test_device_pool_draw_matches_the_numpy_pool_draw():
     assert abs(np.quantile(a, 0.05) - np.quantile(b, 0.05)) < 0.1
     vals = set(np.round(tab["pool_res"][:, 0], 9))
     assert all(round(float(r), 9) in vals for r in a[:200])         # device residuals are pool rows too
+
+
+def test_pool_draw_leaves_the_t0_stream_unchanged():
+    rng = np.random.default_rng(31)
+    d = _reference(20000, rng)
+    d["t_t"] = rng.uniform(500, 1500, len(d))
+    d["t0"] = np.where(d.fit, d.t_t + rng.normal(1.2, 0.4, len(d)), np.nan)
+    a, b = RT.build(d), RT.build(d, pools=True)
+    v = _reference(3000, np.random.default_rng(32))
+    x, p = _xp(v)
+    t = np.full(len(v), 800.0)
+    oa = RT.apply_numpy(a, np.random.default_rng(33), v.has_entry.to_numpy(), v.nrow.to_numpy(), x, p, t=t)
+    ob = RT.apply_numpy(b, np.random.default_rng(33), v.has_entry.to_numpy(), v.nrow.to_numpy(), x, p, t=t)
+    for k in ("fit", "qual"):
+        assert np.array_equal(oa[k], ob[k])
+    assert np.array_equal(oa["t0"], ob["t0"], equal_nan=True)
