@@ -1,5 +1,5 @@
 # Extended regular expressions (one per line) of paths whose contracts are checked only by @pytest.mark.slow tests.
-# A pull request that changes a matching file runs the suite with --runslow.
+# A pull request that changes a matching file runs the suite with --runslow (.github/ci_tier.sh).
 # electron slab lane compaction (chunk) and its NumPy distribution parity
 ^mu2efastsim/eslab_jax\.py$
 # Pallas slab and path kernels (CUDA-only in production; interpreter tests are slow)

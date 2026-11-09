@@ -1,5 +1,5 @@
 # Extended regular expressions (one per line) of paths whose contracts are checked only by @pytest.mark.slow tests.
-# A pull request that changes a matching file runs the suite with --runslow (core/ci/runslow.sh).
+# A pull request that changes a matching file runs the suite with --runslow (.github/ci_tier.sh).
 # transport, eloss and range-out kernels: statistical and stage-C checks
 ^crvfastsim/(transport|transport_jax|eloss_transport_jax|range_out_jax)\.py$
 # photon and SiPM device response: statistical checks, overflow retry, dark crosstalk

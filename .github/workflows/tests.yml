@@ -1,24 +1,30 @@
-# Test pinned submodule commits and the umbrella on pull requests and main.
-# The "suite (...)" jobs are the required status checks of the main branch; the "no JAX (...)" jobs run the same
-# suites without JAX installed, where the JAX tests must skip cleanly.
+# Test every package of the repository on pull requests and main, one job per suite.
+# The "suite (...)" jobs are the status checks of the main branch; the "no JAX (...)" jobs run the same suites without
+# JAX installed, where the JAX tests must skip cleanly.
 name: tests
 # Pull requests and pushes run the per-PR tier; on a pull request a suite whose own directory and dependencies (deps)
 # did not change only reports success. The nightly schedule (and a manual run with runslow) runs every suite with
-# --runslow (the @pytest.mark.slow tests); a pull request that changes a path matching a suite's `slow` pattern runs
-# that suite with --runslow too. JAX's persistent compilation cache is restored per suite from main's last run and
-# saved by runs on main.
+# --runslow (the @pytest.mark.slow tests); a pull request that changes a path listed in the suite's
+# ci/runslow_paths.txt runs that suite with --runslow too. The weekly schedule (and a manual run with weekly) runs only
+# the @pytest.mark.weekly validations of the core suite (--runweekly -m weekly). Tiers: .github/ci_tier.sh.
+# JAX's persistent compilation cache is restored per suite from main's last run and saved by runs on main.
 on:
   pull_request:
   push:
     branches: [main]
   schedule:
-    - cron: "41 5 * * *"
+    - cron: "41 5 * * *"    # nightly: --runslow
+    - cron: "11 3 * * 0"    # weekly (Sunday): core suite, --runweekly -m weekly (WEEKLY_CRON in ci_tier.sh)
   workflow_dispatch:
     inputs:
       runslow:
         description: "also run the @pytest.mark.slow tests (--runslow)"
         type: boolean
         default: true
+      weekly:
+        description: "run only the @pytest.mark.weekly validations of the core suite (--runweekly -m weekly); overrides runslow"
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -37,32 +43,26 @@ jobs:
             dir: core
             path: core:crv:beam
             deps: '^(core|crv|beam)(/|$)'
-            slow: '^core/mu2efastsim/(eslab_jax|slab_jax|eslab|emsc|precision)[.]py$'
           - suite: crv
             dir: crv
             path: crv:core
             deps: '^(crv|core)(/|$)'
-            slow: '^crv/crvfastsim/(transport|transport_jax|eloss_transport_jax|range_out_jax|tier1b[a-z_]*|onspill)[.]py$|^crv/crvfastsim/(response|reco|validation|analyses)/'
           - suite: tracker
             dir: tracker
-            path: tracker:core:crv
-            deps: '^(tracker|core|crv)(/|$)'
-            slow: '^tracker/trkfastsim/(sim/(steps_jax|world_jax|fieldsteps_jax)|digi/(digi_jax|digi_clusters_jax)|devfloat)[.]py$'
+            path: tracker:core
+            deps: '^(tracker|core)(/|$)'
           - suite: beam
             dir: beam
             path: beam:core
             deps: '^(beam|core)(/|$)'
-            slow: '^beam/beamfastsim/(cechain|cechain_jax|flash_navigator_jax|tsdevice)[.]py$'
           - suite: umbrella
             dir: .
             path: beam:core:tracker:crv
             deps: '.'
-            slow: '^mixing/device_[a-z_]+[.]py$|^trigger/device/'
           - suite: calo
             dir: calo
-            path: calo:core
-            deps: '^(calo|core)(/|$)'
-            slow: '^calo/calofastsim/'
+            path: calo:beam:core
+            deps: '^(calo|core|beam)(/|$)'
     env:
       JAX_PLATFORMS: cpu
       PYTHONDONTWRITEBYTECODE: "1"
@@ -72,16 +72,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
           fetch-depth: 0
       - name: Decide (run or skip; per-PR tier or --runslow)
         id: tier
         env:
           EVENT: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
           DISPATCH_RUNSLOW: ${{ inputs.runslow }}
+          DISPATCH_WEEKLY: ${{ inputs.weekly }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           DEPS: ${{ matrix.deps }}
-          SLOW: ${{ matrix.slow }}
+          SUITE: ${{ matrix.suite }}
+          DIR: ${{ matrix.dir }}
         run: bash .github/ci_tier.sh
       - uses: actions/setup-python@v5
         if: steps.tier.outputs.run == 'true'
@@ -140,47 +142,44 @@ jobs:
             dir: core
             path: core:crv:beam
             deps: '^(core|crv|beam)(/|$)'
-            slow: '^core/mu2efastsim/(eslab_jax|slab_jax|eslab|emsc|precision)[.]py$'
           - suite: crv
             dir: crv
             path: crv:core
             deps: '^(crv|core)(/|$)'
-            slow: '^crv/crvfastsim/(transport|transport_jax|eloss_transport_jax|range_out_jax|tier1b[a-z_]*|onspill)[.]py$|^crv/crvfastsim/(response|reco|validation|analyses)/'
           - suite: tracker
             dir: tracker
-            path: tracker:core:crv
-            deps: '^(tracker|core|crv)(/|$)'
-            slow: '^tracker/trkfastsim/(sim/(steps_jax|world_jax|fieldsteps_jax)|digi/(digi_jax|digi_clusters_jax)|devfloat)[.]py$'
+            path: tracker:core
+            deps: '^(tracker|core)(/|$)'
           - suite: beam
             dir: beam
             path: beam:core
             deps: '^(beam|core)(/|$)'
-            slow: '^beam/beamfastsim/(cechain|cechain_jax|flash_navigator_jax|tsdevice)[.]py$'
           - suite: umbrella
             dir: .
             path: beam:core:tracker:crv
             deps: '.'
-            slow: '^mixing/device_[a-z_]+[.]py$|^trigger/device/'
           - suite: calo
             dir: calo
-            path: calo:core
-            deps: '^(calo|core)(/|$)'
-            slow: '^calo/calofastsim/'
+            path: calo:beam:core
+            deps: '^(calo|core|beam)(/|$)'
     env:
       JAX_PLATFORMS: cpu
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
           fetch-depth: 0
       - name: Decide (run or skip)
         id: tier
         env:
           EVENT: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+          DISPATCH_WEEKLY: ${{ inputs.weekly }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           DEPS: ${{ matrix.deps }}
-          SLOW: ""
+          SUITE: ${{ matrix.suite }}
+          DIR: ${{ matrix.dir }}
+          NOJAX: "true"
         run: bash .github/ci_tier.sh
       - uses: actions/setup-python@v5
         if: steps.tier.outputs.run == 'true'
