@@ -92,6 +92,10 @@ report = bench.run(run_chain, events=20000, inputs=bench.fresh_inputs(draw_input
 | `compile_per_pass`, `compile_source` | JAX compiles of each pass from `jax.monitoring` (below), else null |
 | `max_rss_mb`, `python`, `jax`, `slurm_job_id`, `time_utc`, `command` | provenance |
 
+The report does not record the code version. Cite the mu2e-fastsim commit the run used (`git rev-parse HEAD` in
+the checkout) beside each result. One SHA covers core, crv, tracker and the workflow packages, which live in this one
+repository.
+
 ## Compile counts
 
 When JAX is loaded, one `jax.monitoring` listener counts, for each pass: `backend_compiles` and `backend_compile_s`
@@ -104,5 +108,5 @@ run should show zero compiles in passes 2..P, and a fresh-input run shows what n
 ## Cold start
 
 The timer measures inside one process. To time a fresh process through exit (interpreter start, imports, compile
-cache), wrap the whole command with a process timer such as the umbrella's `mixing/process_timer.py` and report
+cache), wrap the whole command with a process timer such as `mixing/process_timer.py` in this repository and report
 that wall time beside `setup_s`.
