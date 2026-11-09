@@ -20,7 +20,12 @@ and holds per bin:
     to the plateau; the bin tables above are then built from plateau events (entry time >= T_PLATEAU) only;
   * the correlation of the seven residual and quality quantities as a Gaussian copula: the Cholesky factor of the correlation matrix of
     their normal scores (rank -> standard normal), so a draw keeps e.g. the tan(dip)-d0-r_max correlations that the
-    fiducial cuts see.
+    fiducial cuts see;
+  * optionally (`build(..., pools=True)`, opt-in): the pool of each bin itself, as indices into the quality tracks'
+    residual vectors. A table with pools draws the seven quantities jointly as one reference track's vector (an
+    empirical joint draw) instead of copula + inverse CDFs. It keeps the tail dependence the Gaussian copula does
+    not: a large momentum outlier of the stock fit usually comes with an off-cut d0 / r_max / tan(dip) and fails the
+    fiducial cuts.
 
 A fast track is then: fit with eff_fit, quality with eff_q, correlated uniforms from the copula, residuals by inverse
 CDF of those uniforms, added to its own entry
@@ -46,6 +51,8 @@ EXTRA = ("dt0",)                             # drawn on their own (outside the c
 TIME_EDGES = (0.0, 150.0, 175.0, 200.0, 210.0, 220.0, 230.0, 240.0, 250.0, 275.0, 300.0, 1e9)   # entry time [ns]
 T_PLATEAU = 300.0       # entry times from here on are past the digitisation-window turn-on
 CE_CUTS = dict(tandip=(0.5774, 1.0), d0=(-80.0, 105.0), rmax=(450.0, 680.0), fitcon=1e-3)
+POOL_MAX = 20000        # pools=True: largest stored pool per bin (merged bins keep a subsample)
+POOL_SEED = 20261109
 
 
 def qnodes(nq=NQ):
@@ -93,10 +100,12 @@ def _copula(rows):
 
 
 def build(df, nrow_edges=NROW_EDGES, tandip_edges=TANDIP_EDGES, min_count=40, min_eff=10, axis_xy=(-3904.0, 0.0),
-          bz=1.0):
+          bz=1.0, pools=False, pool_max=POOL_MAX):
     """Response tables from the reference events df (one row per generated event): has_entry, nrow, p_true, tandip_t,
     d0_t, rmax_t (entry truth), fit (bool), and for fitted tracks p_reco, pz, tandip, d0, rmax, pdg, fitcon, chi2ndf,
-    nactive. Returns a dict of NumPy arrays (save with np.savez)."""
+    nactive. Returns a dict of NumPy arrays (save with np.savez). pools (opt-in): also store each bin's pool for the
+    empirical joint draw (pool_res [M, 7] in the order RES + QUAL, pool_idx, pool_start/pool_count [ne, nt]); a pool
+    wider than pool_max (a merged bin) keeps a fixed-seed subsample of pool_max tracks."""
     ne, nt = len(nrow_edges) - 1, len(tandip_edges) - 1
     d = df[df.has_entry.astype(bool)]
     teff = None
@@ -126,6 +135,13 @@ def build(df, nrow_edges=NROW_EDGES, tandip_edges=TANDIP_EDGES, min_count=40, mi
     chol = np.zeros((ne, nt, len(RES + QUAL), len(RES + QUAL)))
     level = np.zeros((ne, nt), np.int8)        # 0 own bin, 1/2 +-1/+-2 tan(dip) bins, 3 nrow row, 4 all
     count = np.zeros((ne, nt), np.int64)
+    if pools:
+        qrows = np.flatnonzero(qual)
+        pos = np.full(len(d), -1, np.int64)
+        pos[qrows] = np.arange(len(qrows))
+        pool_res = np.stack([res[k][qrows] for k in RES + QUAL], 1)
+        pool_idx, pool_start, pool_count = [], np.zeros((ne, nt), np.int64), np.zeros((ne, nt), np.int64)
+        prng = np.random.default_rng(POOL_SEED)
     def pools(i, j):
         """Event selections of growing width: the bin, then +-1, +-2 neighbouring tan(dip) bins, the nrow row, all."""
         sel = [(bn == i) & (np.abs(bt - j) <= w) for w in (0, 1, 2)]
@@ -146,6 +162,13 @@ def build(df, nrow_edges=NROW_EDGES, tandip_edges=TANDIP_EDGES, min_count=40, mi
             for k in RES + QUAL + tuple(extra):
                 icdf[k][i, j] = _icdf(res[k][sel_q[lq]])
             chol[i, j] = _copula(np.stack([res[k][sel_q[lq]] for k in RES + QUAL], 1))
+            if pools:
+                ix = pos[np.flatnonzero(sel_q[lq])]
+                if len(ix) > pool_max:
+                    ix = np.sort(prng.choice(ix, pool_max, replace=False))
+                pool_start[i, j] = sum(len(a) for a in pool_idx)
+                pool_count[i, j] = len(ix)
+                pool_idx.append(ix)
     out = dict(nrow_edges=np.asarray(nrow_edges, float), tandip_edges=np.asarray(tandip_edges, float),
                qnodes=qnodes(), eff_fit=eff_fit, eff_q=eff_q, level=level, count=count, chol=chol,
                axis_xy=np.asarray(axis_xy, float), bz=np.float64(bz),
@@ -154,6 +177,10 @@ def build(df, nrow_edges=NROW_EDGES, tandip_edges=TANDIP_EDGES, min_count=40, mi
         out[f"icdf_{k}"] = icdf[k]
     if teff is not None:
         out["time_edges"], out["time_eff"] = np.asarray(TIME_EDGES, float), teff
+    if pools:
+        out["pool_res"] = pool_res
+        out["pool_idx"] = np.concatenate(pool_idx).astype(np.int64) if pool_idx else np.zeros(0, np.int64)
+        out["pool_start"], out["pool_count"] = pool_start, pool_count
     return out
 
 
@@ -196,7 +223,14 @@ def apply_numpy(tab, rng, has_entry, nrow, x, p, q=-1.0, t=None):
         eff = eff * tab["time_eff"][np.clip(np.digitize(t, tab["time_edges"]) - 1, 0, len(tab["time_eff"]) - 1)]
     fit = np.asarray(has_entry, bool) & (u[0] < eff)
     qual = fit & (u[1] < tab["eff_q"][bn, bt])
-    draw = {k: _sample(tab[f"icdf_{k}"], bn, bt, ndtr(z[i])) for i, k in enumerate(RES + QUAL)}
+    if "pool_res" in tab:      # empirical joint draw: one reference track's vector of the bin pool (own stream)
+        up = np.random.default_rng(rng.integers(0, 2 ** 63)).random(len(nrow))
+        cnt = tab["pool_count"][bn, bt]
+        j = tab["pool_start"][bn, bt] + np.minimum((up * cnt).astype(np.int64), np.maximum(cnt - 1, 0))
+        row = tab["pool_res"][tab["pool_idx"][np.minimum(j, len(tab["pool_idx"]) - 1)]]
+        draw = {k: row[:, i] for i, k in enumerate(RES + QUAL)}
+    else:
+        draw = {k: _sample(tab[f"icdf_{k}"], bn, bt, ndtr(z[i])) for i, k in enumerate(RES + QUAL)}
     c = tab["cuts"]
     obs = dict(fit=fit, qual=qual, p_true=ptrue, p_reco=ptrue + draw["dp"], tandip=td + draw["dtandip"],
                d0=d0 + draw["dd0"], rmax=rmax + draw["drmax"], fitcon=draw["fitcon"], chi2ndf=draw["chi2ndf"],
@@ -253,11 +287,13 @@ def main(argv=None):
     ap.add_argument("--events-out", help="optional per-event reference table (.csv.gz)")
     ap.add_argument("--bz", type=float, default=1.0)
     ap.add_argument("--min-count", type=int, default=40)
+    ap.add_argument("--pools", action="store_true",
+                    help="also store each bin's pool for the empirical joint draw (opt-in; default copula + inverse CDFs)")
     a = ap.parse_args(argv)
     dirs = sorted(sum((glob.glob(d) for d in a.steps_dirs), []))
     d = reference_events([f"{x}/states.root" for x in dirs], [f"{x}/g4entries.root" for x in dirs],
                          [f"{x}/g4prim_field.root" for x in dirs], a.nts, bz=a.bz)
-    tab = build(d, min_count=a.min_count, bz=a.bz)
+    tab = build(d, min_count=a.min_count, bz=a.bz, pools=a.pools)
     save(a.out, tab)
     if a.events_out:
         d.to_csv(a.events_out, index=False)
