@@ -121,17 +121,60 @@ def run(args, source_factory=None, backend_factory=None):
             ledger.write(json.dumps(json_values(row), allow_nan=False) + "\n")
             ledger.flush()
             return row
+        pipelined = getattr(args, "device_pipeline", False)
+        if pipelined and not hasattr(backend, "dispatch"):
+            raise ValueError("--device-pipeline needs a backend with dispatch/collect (the device backend)")
+
+        def dispatch(phase, size):
+            started = time.perf_counter()
+            batch = source.next_batch(size)
+            prepare_s = time.perf_counter() - started
+            directory = args.out / f"{phase}_{batch.batch_index:08d}"
+            directory.mkdir()
+            if metadata.get("sampling_receipt_owner") != "backend":
+                save_sampling(directory, batch.provenance)
+            return phase, size, batch, directory, prepare_s, started, backend.dispatch(batch)
+
+        def collect(item):
+            phase, size, batch, directory, prepare_s, started, handle = item
+            metrics = backend.collect(handle, directory)
+            if metrics["events"] != size:
+                raise ValueError("backend returned wrong event count")
+            row = {"phase": phase, "directory": directory.name, "batch_index": batch.batch_index,
+                   "ordinal_start": batch.ordinal_start, "events": size, "prepare_s": prepare_s,
+                   "batch_s": time.perf_counter() - started, "backend": metrics}
+            ledger.write(json.dumps(json_values(row), allow_nan=False) + "\n")
+            ledger.flush()
+
+        def drive(phase, sizes):
+            """--device-pipeline: dispatch batch k + 1 before collecting batch k (same batches and outputs)."""
+            pending = None
+            for size in sizes:
+                item = dispatch(phase, size)
+                if pending is not None:
+                    collect(pending)
+                pending = item
+            if pending is not None:
+                collect(pending)
+
+        sizes = [min(args.batch_events, args.events - start) for start in range(0, args.events, args.batch_events)]
         warm_start = time.perf_counter()
-        for _ in range(args.warmup_batches):
-            process("warmup", args.batch_events)
+        if pipelined:
+            drive("warmup", [args.batch_events] * args.warmup_batches)
+        else:
+            for _ in range(args.warmup_batches):
+                process("warmup", args.batch_events)
         backend.sync()
         warmup_s = time.perf_counter() - warm_start
         begin = time.perf_counter()
-        remaining = args.events
-        while remaining:
-            size = min(remaining, args.batch_events)
-            process("measure", size)
-            remaining -= size
+        if pipelined:
+            drive("measure", sizes)
+        else:
+            remaining = args.events
+            while remaining:
+                size = min(remaining, args.batch_events)
+                process("measure", size)
+                remaining -= size
         backend.sync()
     measured_s = time.perf_counter() - begin
     pipeline_s = time.perf_counter() - job_start
@@ -188,6 +231,8 @@ def main(argv=None):
     parser.add_argument("--device-output", choices=("root", "occupancy"), default="root",
                         help="device backend only: full detector tables to ROOT (default) or on-device occupancy NPZ")
     parser.add_argument("--occupancy-geometry", type=Path, help="bar_to_sector JSON (as counts --geometry) for occupancy output")
+    parser.add_argument("--device-pipeline", action="store_true",
+                        help="device backend only: dispatch the next batch before writing the previous one")
     args = parser.parse_args(argv)
     result = run(args)
     print(json.dumps({key: result[key] for key in ("events", "measured_s", "events_per_s")}))

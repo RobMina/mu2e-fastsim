@@ -227,3 +227,48 @@ def test_capacity_usage_matches_tables_and_overflow_names_demand(template, cond,
     args.out = tmp_path / "overflow"
     with pytest.raises(OverflowError, match=r"response/crv/crv_digis \(demand >= \d+, capacity 1\)"):
         run(args, lambda manifest, **kwargs: source(c, **kwargs), Backend)
+
+
+@pytest.mark.parametrize("mode", ["root", "occupancy"])
+def test_pipelined_output_equals_serial(template, cond, tmp_path, mode):
+    """--device-pipeline dispatches batch k + 1 before writing batch k: the same files, byte for byte per array."""
+    from types import SimpleNamespace
+    from trkfastsim.digi.digicond import Conditions
+    from mixing.device_backend import Backend
+    from mixing.stream_benchmark import run
+
+    c = Conditions(cond.s, cond.a)
+    c.s["onspill"] = True
+    capacity = tmp_path / "capacities.json"
+    capacity.write_text(json.dumps(CAPACITY))
+    geometry = tmp_path / "geometry.json"
+    geometry.write_text(json.dumps({"sector_names": ["EX"], "bars_per_sector": [4], "geometry": "fixture"}))
+    outs = {}
+    for pipelined in (False, True):
+        outs[pipelined] = tmp_path / f"pipe_{pipelined}"
+        args = SimpleNamespace(out=outs[pipelined], frames_manifest=None, device_platform="cpu",
+                               device_kernel="mixing.device_integration:model", device_capacities=capacity,
+                               synthetic=False, backend="mixing.device_backend:Backend", events=5, batch_events=2,
+                               max_selected_rows=448, chunk=2, warmup_batches=1, seed=17, tracker_seed=19,
+                               sampling_seed=23, require_stage=[], template=template, device_output=mode,
+                               occupancy_geometry=geometry, device_pipeline=pipelined)
+        report = run(args, lambda manifest, **kwargs: source(c, **kwargs), Backend)
+        assert report["events"] == 5
+    rows = {p: [json.loads(line) for line in (outs[p] / "batches.jsonl").read_text().splitlines()] for p in outs}
+    assert [r["directory"] for r in rows[False]] == [r["directory"] for r in rows[True]]
+    assert all(r["backend"].get("pipelined") for r in rows[True])
+    for row in rows[False]:
+        a, b = outs[False] / row["directory"], outs[True] / row["directory"]
+        if mode == "occupancy":
+            x, y = np.load(a / "occupancy.npz"), np.load(b / "occupancy.npz")
+            assert sorted(x.files) == sorted(y.files)
+            for name in x.files:
+                np.testing.assert_array_equal(x[name], y[name], err_msg=name)
+        else:
+            with uproot.open(a / "fast.root") as ra, uproot.open(b / "fast.root") as rb:
+                assert sorted(ra.keys()) == sorted(rb.keys())
+                for name, tree in ra.items(filter_classname="TTree"):
+                    for branch in tree.keys():
+                        assert (ak.to_list(tree[branch].array(library="ak"))
+                                == ak.to_list(rb[name][branch].array(library="ak"))), f"{name}/{branch}"
+        assert (a / "sampling.json").read_text() == (b / "sampling.json").read_text()
