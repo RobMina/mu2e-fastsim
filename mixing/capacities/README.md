@@ -29,6 +29,9 @@ NeutralsFlash pools at the stock intensity law.
   see [../DEVICE_TRACKER.md](../DEVICE_TRACKER.md)) is sized the same way: 1.25 times the largest demand over full
   development and held-out passes (22 batches of 128 events or 11 of 256 each). The batch-64 file takes 0.6 of the
   batch-128 sizes. These keys change the time, not the digis.
+- **Flat digitisation** (`digit_entries_per_straw` 1.182) is 1.25 times the largest per-launch demand, 0.945 entries
+  per straw, over full development and held-out passes at batch 128 and 256. Launches are 8,192 straws at batch 128
+  and 256 and 4,096 at batch 64, so the same fraction is used for all three files.
 
 ## When a batch does not fit
 
