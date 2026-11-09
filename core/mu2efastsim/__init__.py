@@ -1,7 +1,7 @@
 """mu2efastsim -- detector-independent core of the Mu2e Geant4-free fast simulation (extracted / KPP configuration).
 
-Shared by the CRV (mu2e-crv-fastsim) and tracker (mu2e-tracker-fastsim) stages, which sit beside it as submodules of
-the mu2e-fastsim umbrella repository. Definitions live once in these modules, documented in ``README.md``:
+Shared by the CRV (crvfastsim) and tracker (trkfastsim) stages, which sit beside it in the mu2e-fastsim
+repository. Definitions live once in these modules, documented in ``README.md``:
 
     eloss      muon energy loss in thin layers matched to Geant4 11.3.2 (restricted Bethe, Urban fluctuations, Birks,
                delta rays, radiation length, Highland angle)

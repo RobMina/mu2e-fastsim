@@ -9,7 +9,7 @@ are in [`../docs/plan.md`](../docs/plan.md) (historical); this file is the livin
 .venv/bin/python3 -m crvfastsim <subcommand> <inputs> [--compare REF ...] [--outdir DIR] [--emit X.json | --merge]
 ```
 
-`crvfastsim` builds on `mu2efastsim` (the `core/` submodule of the umbrella `mu2e-fastsim`: energy loss, materials,
+`crvfastsim` builds on `mu2efastsim` (the `core/` package of `mu2e-fastsim`: energy loss, materials,
 world, generic crossings/transport/tables, statistics, plots, key matching, the IRI job tools). Put both on the path:
 from the umbrella root, `export PYTHONPATH=$M2FS_CODE/core:$M2FS_CODE/crv:$M2FS_CODE/tracker` (what `site.env` does), or
 `pip install -e core -e crv` in a venv. Needs numpy, pandas, uproot, matplotlib, jax (CPU is enough) and pytest.

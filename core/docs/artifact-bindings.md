@@ -11,9 +11,9 @@ implied by the fixture tests.
 After parameter/resource admission, a new handle resolves:
 
 - A fresh public-code clone under `<configured-code>.snapshots/<uuid>`, detached
-  at the exact requested umbrella commit with the selected recursive submodule
-  commits. The optional CRV branch override resolves exact core/CRV commits.
-  Branches, tags and commit IDs are locators; the resolved commits are evidence.
+  at the exact commit of the requested ref (the repository has no submodules; the
+  optional CRV branch override is that ref). Branches, tags and commit IDs are
+  locators; the resolved commit is evidence.
 - Each streamed file's source locator/argv, destination, size, MD5 and SHA-256.
   These are **pinned expectations**, not snapshots of the mutable FNAL source.
   Replacement after resolution must match the saved expectations or fail.

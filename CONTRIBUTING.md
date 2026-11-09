@@ -1,7 +1,6 @@
 # Contributing
 
-All changes to `main` of the four repositories (this umbrella, `mu2e-fastsim-core`, `mu2e-crv-fastsim`,
-`mu2e-tracker-fastsim`) go through a pull request with passing tests and a review. Nobody pushes to `main` directly.
+All changes to `main` go through a pull request with passing tests and a review. Nobody pushes to `main` directly.
 
 ## Workflow
 
@@ -12,15 +11,8 @@ All changes to `main` of the four repositories (this umbrella, `mu2e-fastsim-cor
    A change that moves a chain's validation result or its speed also updates that chain's row in
    [`docs/performance.md`](docs/performance.md): validity as summary statistics with errors (never raw histogram
    contents), throughput as events per second with the stock comparison defined there.
-4. The `tests` workflow runs on the pull request. A review and a green `tests` run are required before merging.
-5. After a submodule's pull request merges, open an umbrella pull request that moves its pin; the umbrella's tests run
-   the pinned commits together.
-
-## Changes that span repositories
-
-Use the **same branch name** in every repository involved. Each repository's CI checks out its siblings at that branch
-when it exists there, otherwise at `main` (`core/ci/checkout_siblings.sh`). Merge in dependency order: core, then
-crv, then tracker, then the umbrella pin.
+4. The `tests` workflow runs on the pull request: each suite whose directory or dependencies changed. A review and a
+   green `tests` run are required before merging. A change that spans packages is one pull request.
 
 ## Tests
 
@@ -35,7 +27,7 @@ no private data are available there, so:
 - CI runs every suite twice: with the pinned packages and without JAX (`pytest (no JAX)`, `no JAX (...)`), where every
   JAX test must skip cleanly (`pytest.importorskip("jax")`).
 
-To reproduce CI locally from a directory holding the four checkouts side by side:
+To reproduce one CI suite from the repository root:
 
 ```bash
 python3 -m pip install -r core/ci/requirements.txt

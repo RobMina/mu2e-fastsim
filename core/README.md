@@ -3,12 +3,10 @@
 Detector-independent core of the Mu2e Geant4-free fast simulation: muon energy loss and fluctuations matched to
 Geant4 11.3.2, materials, the passive world from a GDML export, straight-line crossings, multiple scattering and slab
 transport, the flat-table interchange format, statistics, the CRY cosmic generator backends, the compute-endpoint
-adapters with the Mu2eBO kit (`fastsimkit`), and the site configuration and test tooling of all four repositories.
+adapters with the Mu2eBO kit (`fastsimkit`), and the site configuration and test tooling of every package.
 
-A submodule of the umbrella [`mu2e-fastsim`](https://github.com/RobMina/mu2e-fastsim), next to
-[`mu2e-crv-fastsim`](https://github.com/RobMina/mu2e-crv-fastsim) and
-[`mu2e-tracker-fastsim`](https://github.com/RobMina/mu2e-tracker-fastsim); work from a clone of the umbrella. This
-repository holds code only: no Mu2e-internal conditions, tables, data or results.
+The `core/` package of [`mu2e-fastsim`](https://github.com/RobMina/mu2e-fastsim), beside `crv/` and `tracker/`; work
+from a clone of that repository. Code only: no Mu2e-internal conditions, tables, data or results.
 
 ## Status
 
@@ -28,7 +26,7 @@ Details: [`docs/validation.md`](docs/validation.md), [`docs/limitations.md`](doc
 ## Quickstart
 
 ```bash
-git clone --recurse-submodules https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
+git clone https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
 export PYTHONPATH=$PWD/core
 python3 -m pytest -q -p no:cacheprovider core/tests       # no inputs needed; JAX tests skip without JAX
 ```
@@ -74,13 +72,13 @@ No site, user or storage path is built into the package. Every path, host and ac
 [`site.env.example`](https://github.com/RobMina/mu2e-fastsim/blob/main/site.env.example)). Code that needs an unset
 variable raises `mu2efastsim.site.SiteConfigError` naming it; shell scripts stop with `${VAR:?...}`.
 `mu2efastsim.testing.check_site_paths`, run by every repository's `tests/test_no_site_paths.py`, keeps user names and
-site paths out of the four repositories.
+site paths out of the repository.
 
 ## Tests and CI
 
-CI (`.github/workflows/tests.yml`) runs the suite on every pull request twice: with the pinned packages of
-`ci/requirements.txt` (CPU JAX) and without JAX, where JAX tests must skip. Sibling repositories are checked out at
-the same-named branch when it exists (`ci/checkout_siblings.sh`). Rules: the umbrella's `CONTRIBUTING.md`.
+CI (the repository's `.github/workflows/tests.yml`, suite `core`) runs the suite on every pull request that touches
+core, crv or beam, twice: with the pinned packages of `ci/requirements.txt` (CPU JAX) and without JAX, where JAX tests
+must skip. Rules: the repository's `CONTRIBUTING.md`.
 
 ## Studies kept off main
 

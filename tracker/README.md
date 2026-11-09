@@ -5,10 +5,8 @@ field) cosmic configuration: transport of the primary muon through the world and
 straws, a Geant4 secondary library, a port of the stock digitisation, and ports of the stock hit reco, time
 clustering, line finding and line fit, with an EventNtuple-compatible output. NumPy, with JAX twins for GPUs.
 
-Stage 2 of the umbrella [`mu2e-fastsim`](https://github.com/RobMina/mu2e-fastsim) (submodule `tracker/`), beside
-[`mu2e-crv-fastsim`](https://github.com/RobMina/mu2e-crv-fastsim); physics primitives come from
-[`mu2e-fastsim-core`](https://github.com/RobMina/mu2e-fastsim-core). Work from a clone of the umbrella. This
-repository holds code only: no Mu2e-internal conditions, tables, data or results.
+Stage 2 of [`mu2e-fastsim`](https://github.com/RobMina/mu2e-fastsim) (directory `tracker/`), beside `crv/`; physics
+primitives come from `core/`. Work from a clone of that repository. This directory holds code only: no Mu2e-internal conditions, tables, data or results.
 
 ## Status
 
@@ -28,7 +26,7 @@ validated: [`docs/limitations.md`](docs/limitations.md).
 ## Quickstart
 
 ```bash
-git clone --recurse-submodules https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
+git clone https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
 cp site.env.example site.env        # fill M2FS_INPUTS (verified input release), M2FS_DATA (outputs); source it
 source site.env
 python3 -m pytest -q -p no:cacheprovider tracker/tests      # JAX tests skip without JAX

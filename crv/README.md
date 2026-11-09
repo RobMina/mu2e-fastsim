@@ -5,11 +5,10 @@ cosmic configuration: fast CrvSteps (muon transport plus a Geant4 secondary libr
 SiPM charges), waveforms and digis, pulse and coincidence reconstruction, in NumPy with JAX twins for GPUs. It feeds
 CRV MC/data and design studies (Mu2eBO) without art or Geant4, and reproduces the stock Offline chain stage by stage.
 
-Stage 1 of the umbrella [`mu2e-fastsim`](https://github.com/RobMina/mu2e-fastsim) (submodule `crv/`), which pins
-compatible commits; detector-independent physics comes from [`mu2e-fastsim-core`](https://github.com/RobMina/mu2e-fastsim-core)
-(package `mu2efastsim`). Work from a clone of the umbrella.
+Stage 1 of [`mu2e-fastsim`](https://github.com/RobMina/mu2e-fastsim) (directory `crv/`); detector-independent physics
+comes from `core/` (package `mu2efastsim`). Work from a clone of that repository.
 
-This repository holds code only: no Mu2e-internal conditions, tables, data or results.
+This directory holds code only: no Mu2e-internal conditions, tables, data or results.
 
 ## Status
 
@@ -33,7 +32,7 @@ one grid job 0.92.
 ## Quickstart
 
 ```bash
-git clone --recurse-submodules https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
+git clone https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
 cp site.env.example site.env        # fill M2FS_INPUTS (verified input release), M2FS_DATA (outputs); source it
 source site.env
 python3 -m pytest -q -p no:cacheprovider crv/tests          # JAX tests skip without JAX

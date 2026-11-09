@@ -176,7 +176,7 @@ def _ignored(path, root, patterns, is_dir):
 def check_site_paths(root, skip_top=(), skip_files=()):
     """List "file:line: match in text" for every user name or site path in the repository at ``root``.
 
-    ``skip_top``: top-level directories that are separate repositories (the umbrella's submodules). This module and
+    ``skip_top``: top-level directories to leave out (e.g. nested repositories). This module and
     ``skip_files`` are not scanned. Binary files are skipped.
     """
     root = Path(root).resolve()

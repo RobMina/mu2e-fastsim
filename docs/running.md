@@ -6,9 +6,9 @@ input release (`$M2FS_INPUTS`) and writes into an output area (`$M2FS_DATA`); no
 ## 1. Clone
 
 ```bash
-git clone --recurse-submodules https://github.com/RobMina/mu2e-fastsim.git
+git clone https://github.com/RobMina/mu2e-fastsim.git
 cd mu2e-fastsim
-git submodule update --init --recursive     # keep the recorded pins; never --remote in a reproduction
+git checkout <commit>                       # a reproduction: the commit recorded with the result
 ```
 
 ## 2. Python environment
