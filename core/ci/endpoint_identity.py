@@ -11,7 +11,8 @@ their state directories (records, intents, kit task records). Temporary paths, s
 timestamps are normalized. Streamed tasks (chain_point, crv_response, beam_point) need crv and the umbrella's beam
 on PYTHONPATH; their cases are left out when those packages are missing. Renderings are written to a scratch area,
 never committed: tests/test_endpoint_identity.py renders in-process and compares per-case SHA-256 digests with
-tests/data/endpoint_identity_main.sha256.json, the digests of core main's rendering (with KNOWN_TEXT applied).
+tests/data/endpoint_identity_main.sha256.json, the digests of core main's rendering (with KNOWN_TEXT and KNOWN_RE
+applied).
 """
 from __future__ import annotations
 
@@ -280,8 +281,17 @@ KNOWN_TEXT = [
      '        git(temporary, "submodule", "update", "--quiet", "--init", "--recursive", "--", *modules)'),
     ('if branch and name in ("core", "crv"):', 'if branch and name in request.get("branch_modules", []):'),
 ]
+# Intentional differences from the monorepo move (one repository, no submodules): snapshots select no modules and
+# carry no submodule pins, and the snapshot check gets no branch modules. As (pattern, replacement) on the rendered
+# text at any escaping depth.
+_Q = r'\\*"'
+_NAMES = rf'(?:{_Q}(?:core|crv|tracker){_Q}(?:, )?)+'
+KNOWN_RE = [
+    (re.compile(rf'({_Q}(?:branch_)?modules{_Q}: )\[{_NAMES}\]'), r"\1[]"),
+    (re.compile(rf'({_Q}submodules{_Q}: )\{{(?:{_Q}(?:core|crv|tracker){_Q}: {_Q}b{{40}}{_Q}(?:, )?)+\}}'), r"\1{}"),
+]
 VERIFY = re.compile(r'(\{\\"action\\": \\"verify\\", \\"snapshot\\": .*?\\"policy\\": \{[^{}]*\}\})\}')
-DIGEST = re.compile(r'(\\?"(?:spec_sha|request_sha|binding_sha)\\?": \\?")[0-9a-f]{16,64}')
+DIGEST = re.compile(r'(\\?"(?:spec_sha|request_sha|binding_sha|manifest_sha)\\?": \\?")[0-9a-f]{16,64}')
 
 
 def apply_known(case: dict) -> dict:
@@ -291,6 +301,8 @@ def apply_known(case: dict) -> dict:
         for old, rep in KNOWN_TEXT:
             new = new.replace(_esc(old), _esc(rep))
         new = VERIFY.sub(lambda m: m.group(1) + ', \\"branch_modules\\": [\\"core\\", \\"crv\\"]}', new)
+        for pattern, rep in KNOWN_RE:
+            new = pattern.sub(rep, new)
         return new
     changed = any(fix(v) != v for v in [*case["traffic"], *case["files"].values()])
     mask = (lambda t: DIGEST.sub(r"\1<SHA>", t)) if changed else (lambda t: t)

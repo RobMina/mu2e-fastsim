@@ -1,8 +1,10 @@
 """Endpoint behaviour identical to core main before the move to hep-endpoints: job scripts, headers, sbatch arguments,
 records, intents, kit task records and refusals over a grid of submissions (ci/endpoint_identity.py), rendered
 in-process and compared per case with the SHA-256 digests of core main's rendering
-(tests/data/endpoint_identity_main.sha256.json); the only allowed differences are the listed KNOWN_TEXT ones. On a
-mismatch, render both versions with the script and diff them with --compare --known."""
+(tests/data/endpoint_identity_main.sha256.json); the only allowed differences are the listed KNOWN_TEXT ones and the
+monorepo move's KNOWN_RE ones (snapshots without modules; the digests of the two streamed cases were regenerated from
+the rendering just before that move, which matched the earlier digests). On a mismatch, render both versions with the
+script and diff them with --compare --known."""
 import importlib.util
 import json
 from pathlib import Path
