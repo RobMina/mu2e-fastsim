@@ -450,7 +450,7 @@ def test_flat_digit_entries_equal_pair_loop(wide, helpers, onspill):
     for caps in (Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2),
                  Capacities(64, 1024, 8, 4, 8, 2, end_tiers=[(4, 512)], digit_entries_per_straw=2.5),
                  Capacities(64, 1024, 8, 4, 8, 2, end_tiers=[(4, 512)], digit_entries_per_straw=2.5,
-                            flat_saturation_rows="straws")):
+                            flat_saturation_rows="auto")):
         b, be = evaluate(prepare(c, caps, 3), collection(st, 8), times)
         assert not any(be.values()), be
         for name in a:

@@ -144,11 +144,12 @@ def _charge_blocks_kernel(c):
 def _electronics_kernel(c, cap, pair_cap, batch, entries=None, saturation_rows=None):
     """entries: None digitises pair by pair over every lane (default); an int digitises the flat list of present
     (straw, pair) entries, at most `entries` per call, with the same keys and arithmetic. Saturated ends are
-    compacted into chunks of `saturation_rows` rows (default 2 * batch, the loop's lane count; batch rows were
-    measured bit-identical too). An entry overflow is flagged in entry_overflow, never truncated."""
-    srows = 2 * batch if saturation_rows is None else int(saturation_rows)
-    if entries is not None and not 1 <= srows:
-        raise ValueError("saturation_rows must be positive")
+    compacted into chunks of 2 * batch rows, the loop's lane count; saturation_rows="auto" uses batch rows in float64,
+    where they were measured bit-identical over full passes (in float32 they drift by roundoff, so 2 * batch stays).
+    An entry overflow is flagged in entry_overflow, never truncated."""
+    if saturation_rows not in (None, "auto"):
+        raise ValueError("saturation_rows must be None or 'auto'")
+    srows = batch if saturation_rows == "auto" and not df.SINGLE else 2 * batch
     rb, sr, LB = c.responseBins, c.sampleRate, c.clusterLookbackTime
     R = batch * 2
     rows = jnp.arange(R)
@@ -481,9 +482,9 @@ def _electronics_kernel(c, cap, pair_cap, batch, entries=None, saturation_rows=N
                 volts = volt(times, "adc", lattice=int(round(c.ADCPeriod * sr)), lanes=L)
                 sat = (maxposs[lane] > c.saturationVoltage) & jnp.repeat(present, 2)
                 nsat = sat.sum()
-                # saturated ends are compacted into chunks of srows rows, enough for every entry; the float32
-                # response sums depend on the reduction shapes, so srows is the loop's 2 * batch by default (batch
-                # rows were measured bit-identical too; batch / 2 drifts by roundoff); empty chunks are skipped
+                # saturated ends are compacted into chunks of srows rows, enough for every entry; the response sums
+                # depend on the reduction shapes: 2 * batch (the loop's) is exact in both dtypes, batch rows in
+                # float64 only (float32 drifts by roundoff over full passes); empty chunks are skipped
                 chunks = -(-(2 * entries) // srows)
                 sidx = jnp.nonzero(sat, size=chunks * srows, fill_value=0)[0]
                 slive = jnp.arange(chunks * srows) < nsat

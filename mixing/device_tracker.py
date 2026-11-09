@@ -41,8 +41,8 @@ class Capacities:
                     raise ValueError("tracker minion_search must be 'scan' or 'compare_all'")
                 continue
             if name == "flat_saturation_rows":
-                if value is not None and value not in ("lanes", "straws"):
-                    raise ValueError("tracker flat_saturation_rows must be 'lanes' or 'straws'")
+                if value is not None and value not in ("lanes", "auto"):
+                    raise ValueError("tracker flat_saturation_rows must be 'lanes' or 'auto'")
                 continue
             if name == "digit_entries_per_straw":
                 if value is not None and (type(value) not in (int, float) or not 0 < value <= self.pairs_per_straw):
@@ -89,7 +89,7 @@ class Capacities:
         entries = self.digit_entries(batch)
         if entries is None:
             return {}
-        rows = {} if self.flat_saturation_rows in (None, "lanes") else {"saturation_rows": batch}
+        rows = {} if self.flat_saturation_rows in (None, "lanes") else {"saturation_rows": "auto"}
         return {"entries": entries, **rows}
 
 
