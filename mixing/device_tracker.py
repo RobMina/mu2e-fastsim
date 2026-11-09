@@ -480,7 +480,7 @@ def prepare(c, capacities, batch_events):
                   "saturation_capacity": jnp.any(result["sat_overflow"])}
         if cap.digit_entries_per_straw is not None:
             errors["digit_entries_per_straw"] = jnp.any(result["entry_overflow"])
-            output["_digit_entries_per_straw"] = jnp.max(result["pairs"]) / batch
+            output["_digit_entries_per_straw"] = jnp.ceil(1000 * jnp.max(result["pairs"]) / batch)
         return output, errors
 
     def pack_tiered(st, cluster, gt, charge, wd, timing, key, assets):
@@ -568,7 +568,7 @@ def prepare(c, capacities, batch_events):
             out["sid"] = jnp.repeat(values[7] % 65536, cap.pairs_per_straw)
             if cap.digit_entries_per_straw is not None:
                 flat_flags.append(jnp.any(result["entry_overflow"]))
-                flat_usage.append(jnp.max(result["pairs"]) / batch)
+                flat_usage.append(jnp.ceil(1000 * jnp.max(result["pairs"]) / batch))
             return out, jnp.any(result["failed"]), jnp.any(result["sat_overflow"])
 
         parts = [tier(packed[0], electronics_kernel, assets["electronics_kernel"], cap.clusters_per_end,
@@ -648,7 +648,8 @@ def prepare(c, capacities, batch_events):
                 usage[f"end_tier_{k}_straws"] = tier[8].sum()
         if "_digit_entries_per_straw" in output:
             output = dict(output)
-            usage["digit_entries_per_straw"] = output.pop("_digit_entries_per_straw")
+            # integer demand counter (batch metrics are integers): thousandths of an entry per straw
+            usage["digit_entries_per_straw_milli"] = output.pop("_digit_entries_per_straw")
         errors = {"input": input_error, "timing": timing_error, "nonfinite_charge": charge_error,
                   **cluster_errors, **packing_errors, **electronic_errors}
         return output, errors, usage
