@@ -222,3 +222,12 @@ def test_pool_draw_leaves_the_t0_stream_unchanged():
     for k in ("fit", "qual"):
         assert np.array_equal(oa[k], ob[k])
     assert np.array_equal(oa["t0"], ob["t0"], equal_nan=True)
+
+
+def test_shipped_pool_table_is_the_default_table_plus_pools():
+    a, b = RT.load(), RT.load(RT.POOLS)
+    assert set(b) - set(a) == {"pool_res", "pool_idx", "pool_start", "pool_count"}
+    for k in a:
+        assert np.array_equal(a[k], b[k]), k
+    assert b["pool_res"].shape[1] == len(RT.RES + RT.QUAL) and (b["pool_count"] > 0).all()
+    assert int(b["pool_idx"].max()) < len(b["pool_res"])

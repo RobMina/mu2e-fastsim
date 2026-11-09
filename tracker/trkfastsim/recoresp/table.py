@@ -180,7 +180,7 @@ def build(df, nrow_edges=NROW_EDGES, tandip_edges=TANDIP_EDGES, min_count=40, mi
         out["time_edges"], out["time_eff"] = np.asarray(TIME_EDGES, float), teff
     if keep_pools:
         out["pool_res"] = pool_res
-        out["pool_idx"] = np.concatenate(pool_idx).astype(np.int64) if pool_idx else np.zeros(0, np.int64)
+        out["pool_idx"] = np.concatenate(pool_idx).astype(np.int32) if pool_idx else np.zeros(0, np.int32)
         out["pool_start"], out["pool_count"] = pool_start, pool_count
     return out
 
@@ -190,6 +190,7 @@ def save(path, tab):
 
 
 DEFAULT = Path(__file__).with_name("data") / "ce_loophelix_run1a.npz"
+POOLS = Path(__file__).with_name("data") / "ce_loophelix_run1a_pools.npz"   # the same tables plus the pools (opt-in)
 
 
 def load(path=DEFAULT):
