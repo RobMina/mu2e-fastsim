@@ -253,7 +253,8 @@ class DeviceChain:
 
     def __init__(self, offline_root, maps, gdml, geom="Offline/Mu2eG4/geom/geom_2021_PhaseI_v03.txt",
                  response=None, digi_cond=None, dtype="float64", origin=ORIGIN, chord_mm=10.0, lanes=None,
-                 ce_unroll=True, ce_shrink=2, digi_chunk=8000, resident_digis=True, complete_outer_wall=False):
+                 ce_unroll=True, ce_shrink=2, digi_chunk=8000, resident_digis=True, complete_outer_wall=False,
+                 albedo=None, albedo_species="all"):
         import jax  # noqa: F401  (device backend)
         from mu2efastsim import ehelix
         from trkfastsim.sim import fieldsteps_jax as FJ
@@ -280,6 +281,12 @@ class DeviceChain:
         if digi_cond is not None:
             from trkfastsim.digi import digicond
             self.cond = digicond.Conditions.load(digi_cond)
+        self.alb = None                            # trkfastsim.sim.albedo: downstream returns (off by default)
+        if albedo is not None:
+            from trkfastsim.sim import albedo as AL
+            lib = albedo if isinstance(albedo, AL.Library) else AL.Library.load(albedo)
+            self.alb = AL.DeviceLibrary(lib.select(albedo_species), self.dt)
+            self.alb_bz = float(ehelix.field_at(field, np.array([[AL.AXIS_XY[0], AL.AXIS_XY[1], AL.VD_Z]]))[0][2])
 
     @staticmethod
     def births(stops, n, seed):
@@ -318,10 +325,41 @@ class DeviceChain:
         pe = un * pm[:, None]
         tic = time.perf_counter()
         trk = FJ.transport(self.trk, jax.random.fold_in(key, 1), r.x, pe, r.t, active=has)
+        nrow = trk.steps["valid"].sum(axis=1)       # the conversion electron's rows (the response layer's input)
+        out = {}
+        if self.alb is not None:
+            trk, out["albedo"] = self._albedo(trk, jax.random.fold_in(key, 4))
         t_trk = time.perf_counter() - tic
-        nrow = trk.steps["valid"].sum(axis=1)
         return dict(cechain=r, has_entry=has, x=r.x, p=pe, t=r.t, tracker=trk, nrow=nrow,
-                    timing=dict(cechain_s=round(t_ce, 3), tracker_s=round(t_trk, 3)))
+                    timing=dict(cechain_s=round(t_ce, 3), tracker_s=round(t_trk, 3)), **out)
+
+    def _albedo(self, trk, key):
+        """Downstream albedo (trkfastsim.sim.albedo): tracks that left the tracker downstream pick a Geant4 exit of
+        their bin; its returns are transported from the tracker's back plane and their records appended to the
+        track's rows (beyond R_CAP dropped and counted). One host read (the return count)."""
+        import jax
+        import jax.numpy as jnp
+        from trkfastsim.sim import albedo as AL, fieldsteps_jax as FJ
+        f = trk.final
+        x = jnp.stack([f["x"], f["y"], f["z"]], 1).astype(jnp.float64)
+        pv = jnp.stack([f["px"], f["py"], f["pz"]], 1).astype(jnp.float64)
+        p = jnp.linalg.norm(pv, axis=1)
+        u = pv / jnp.maximum(p, 1e-12)[:, None]
+        ex = (f["status"] == FJ.LEFT) & (f["z"] > AL.VD_Z - 1.0) & (f["pz"] > 0)
+        g, phi, te = self.alb.pick(jax.random.fold_in(key, 0), x, u, jnp.maximum(p, 1e-6),
+                                   f["t"].astype(jnp.float64), ex, self.alb_bz)
+        cnt = jnp.where(g >= 0, self.alb.g_count[jnp.maximum(g, 0)], 0)
+        h = jax.device_get(dict(total=jnp.sum(cnt), exits=jnp.sum(ex), picked=jnp.sum(g >= 0)))
+        stats = {k: int(v) for k, v in h.items()}
+        if not stats["total"]:
+            return trk, dict(stats, dropped=0)
+        size = max(64, 1 << int(np.ceil(np.log2(stats["total"]))))
+        rr = self.alb.returns(g, phi, te, jnp.arange(g.shape[0]), size)
+        ret = FJ.transport(self.trk, jax.random.fold_in(key, 1), rr["x"], rr["p"], rr["t"], active=rr["valid"])
+        steps, dropped = AL.merge_records(trk.steps, ret.steps, rr["track"], rr["valid"], FJ.R_CAP)
+        stats["dropped"] = int(dropped)
+        stats["return_rows"] = int(jnp.sum(ret.steps["valid"] & rr["valid"][:, None]))
+        return trk._replace(steps=steps), stats
 
     def digitize(self, res, seed, event_timing=None, chunk=None):
         """Device digitiser on the chain's steps (trkfastsim.digi.digi_jax; its host packing reads the steps once).
