@@ -1,0 +1,15 @@
+# Diagnostic paired replay; override table paths, maxEvents and event-window length in the job FCL.
+#include "CrvFastSim/fcl/redigi_crv_from_dig_run1a.fcl"
+process_name : crvreplay
+source : { module_type : EmptyEvent firstRun : 1430 firstSubRun : 0 firstEvent : 1 maxEvents : 300 }
+physics.producers.EWMProducer : {
+  module_type : CrvReplayEventFromTable
+  tableFile : "mixed_replay.root"
+  eventWindowLength : 1700
+}
+physics.producers.fastCrvSteps : { module_type : CrvStepsFromTable tableFile : "mixed_replay.root" }
+physics.producers.CrvPhotons.crvStepModuleLabels : [ "fastCrvSteps" ]
+physics.producers.CrvPhotons.crvStepProcessNames : [ "crvreplay" ]
+physics.p1 : [ EWMProducer, fastCrvSteps, CrvPhotons, CrvSiPMCharges, CrvWaveforms, CrvDigi,
+               CrvRecoPulses, CrvCoincidenceClusterFinder ]
+services.TFileService.fileName : "crvreplay.root"

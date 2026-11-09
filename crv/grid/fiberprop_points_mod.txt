@@ -1,0 +1,3 @@
+# Per-module check of the light-propagation knobs: T1 module 0 only (bars 256-319), module 1 must stay nominal.
+# Same code and files as fiberprop_points_ab.txt; fast-chain counterpart atten_T10=0.58 on Polaris.
+at10_058 atten_T10=0.58

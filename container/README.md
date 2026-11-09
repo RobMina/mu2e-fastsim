@@ -16,7 +16,7 @@ apptainer exec --cleanenv mu2efastsim.sif python -m pytest -q /opt/mu2e-fastsim/
 apptainer exec --nv mu2efastsim.sif crvfastsim reco-bench synthetic --stage chain --max-events 200000   # GPU node
 ```
 
-- `build.sh` exports the umbrella and submodules with `git archive` at their checked-out commits (recorded in
+- `build.sh` exports the repository with `git archive` at the checked-out commit (recorded in
   `/opt/mu2e-fastsim/VERSION`), so nothing untracked (site.env, work areas, build outputs, data) can enter the image.
 - `fetch_offline_data.sh <dest>` is also usable on its own on a site without CVMFS.
 - Polaris compute nodes: `module use /soft/spack/base/0.8.1/install/modulefiles/Core; module load apptainer`

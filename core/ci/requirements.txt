@@ -1,0 +1,13 @@
+# Test environment of the CI workflows (and the project image): CPU JAX, pinned so results do not drift.
+jax==0.11.2
+numpy==2.5.4
+scipy==1.18.1
+pandas==3.0.6
+awkward==2.9.1
+uproot==5.7.7
+matplotlib==3.11.0
+pyarrow==25.0.0
+PyYAML==6.0.3
+pytest==9.1.1
+# hep-endpoints: the endpoint adapters under mu2efastsim.endpoints (kit host only); same pin as pyproject.toml
+hep-endpoints @ git+https://github.com/RobMina/hep-endpoints.git@536656008f457eefb5939cdbe1095cbdf445857d

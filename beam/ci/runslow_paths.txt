@@ -1,0 +1,6 @@
+# Extended regular expressions (one per line, starting with ^, relative to beam/) of paths whose contracts are checked
+# only by @pytest.mark.slow tests. A pull request that changes a matching file runs the suite with --runslow
+# (.github/ci_tier.sh).
+# CE chain, flash navigator and TS device transport
+^beamfastsim/(cechain|cechain_jax|flash_navigator_jax|tsdevice)\.py$
+^ci/runslow

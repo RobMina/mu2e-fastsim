@@ -1,0 +1,80 @@
+"""steps -- run the fast StrawGasStep generator (trkfastsim.sim.steps) on generated primaries, one table file per input.
+
+Input: gen tables of the G4 reference (`gen` + `subruns` trees: crvfastsim's gen.*.root from the gen stream, or the
+tracker dumper's gen_tables.*.root). Output: fasttrk.<input>.root with the sgsteps/particles/gen/subruns trees in the
+StrawGasStepTableDumper layout, same (run, subrun, event) keys, so `v1compare FAST --compare G4` matches events.
+
+    steps gen.001400_00000001.root [...] --gdml mu2e_extracted_v04.gdml --outdir DIR [--seed N] [--stage C|A]
+
+--stage C (default): GDML world material and multiple scattering down to the tracker, with per-band |p| in the
+Highland scattering (--no-sliced-msc: one |p| for the column); A: straight from the generated vertex.
+Stage C includes the tracker's support structure (TrackerInterior: loss and scattering per segment between straws)
+unless --no-interior; --no-interior-msc keeps the loss but no scattering in it. The single-scattering tail above
+the Gaussian core (world column and interior) is on by default (--no-msc-tail: Gaussian only); --tail-k K puts its
+threshold at K theta0.
+--library LIB.root: add the G4 library's secondaries (buildlib): in-straw and off-axis (--no-offaxis: in-straw only);
+output prefix fasttrk<stage>L.
+--backend jax: world/interior transport, crossings and gas eIon on the JAX device (trkfastsim.sim.steps_jax);
+numpy (default) is the reference. Generator selection, library pasting and output-table assembly stay numpy.
+"""
+import os
+
+import numpy as np
+
+from mu2efastsim import tables as core_tables
+from trkfastsim import geometry, tables
+from trkfastsim.sim import library as lib_mod, steps as st, surfaces
+
+GDML_NAME = "crv_fastsim/geometry/mu2e_extracted_v04.gdml"   # under $M2FS_DATA (crv/geometry/README.md)
+
+
+def default_gdml():
+    data = os.environ.get("M2FS_DATA")
+    if not data:
+        raise SystemExit("pass --gdml or set M2FS_DATA (source site.env)")
+    return os.path.join(data, GDML_NAME)
+
+
+def run(inputs, outdir, seed=1, gdml=None, stage="C", library=None, no_offaxis=False, offaxis_plane_bin=6, library_drop_muons=False, offaxis_plane_sign=False, offaxis_shift_from_muon=False, instraw_fine_length=False, tag="",
+        sliced_msc=True, no_interior=False, near_margin=st.FOOTPRINT_MARGIN, no_interior_msc=False, msc_tail=True, kink_xx0=st.KINK_XX0,
+        tail_k=None, no_surfsteps=False, kink_sup_xx0=st.KINK_SUP_XX0, no_calo=False, world_mods=None, exit_scatter=True, backend="numpy", scatter_in=False, **kw):
+    gdml = gdml or default_gdml()
+    geom = geometry.from_gdml(gdml)
+    world = st.load_world(gdml, geom, mods=world_mods) if stage == "C" else None
+    if world_mods:
+        print(f"# world modification: {world_mods}", flush=True)
+    interior = st.TrackerInterior(gdml, geom, calo=not no_calo) if stage == "C" and not no_interior else None
+    if interior is not None:
+        print(f"# tracker interior: {len(interior.shells.coax)} support shells ({interior.shells.n_coaxial} coaxial), "
+              f"{len(interior.shells.calo) if interior.shells.calo is not None else 0} calorimeter pieces"
+              , flush=True)
+    lib = lib_mod.read(library) if library else None
+    for i, f in enumerate(tables.expand(inputs)):
+        rng = np.random.default_rng([int(seed), i])
+        gen = tables.read(f, "gen")
+        sub = tables.read(f, "subruns")
+        sampler = (lib_mod.InStrawSampler(lib, np.random.default_rng([int(seed), i, 1]), drop_muons=library_drop_muons,
+                                              fine_length=instraw_fine_length)
+                   if lib else None)
+        offaxis = (lib_mod.OffAxisSampler(lib, np.random.default_rng([int(seed), i, 2]), plane_bin_width=offaxis_plane_bin,
+                                            drop_muons=library_drop_muons,
+                                            plane_sign=offaxis_plane_sign, shift_from_muon=offaxis_shift_from_muon)
+                   if lib and not no_offaxis else None)
+        sgs, parts = st.make_steps(gen, geom, rng, stage=stage, world=world, sampler=sampler, offaxis=offaxis,
+                                   sliced_msc=sliced_msc, interior=interior, near_margin=near_margin,
+                                   interior_msc=not no_interior_msc, msc_tail=msc_tail, tail_k=tail_k,
+                                   kink_xx0=kink_xx0, kink_sup_xx0=kink_sup_xx0, exit_scatter=exit_scatter,
+                                   backend=backend,
+                                   **({"scatter_in": True} if scatter_in else {}))
+        if interior is not None:
+            print(f"#   interior: {getattr(st.make_steps, 'interior_stats', {})}", flush=True)
+        print(f"#   timing [s] ({backend}): " + ", ".join(f"{k} {v:.3f}" for k, v in st.make_steps.timing.items()), flush=True)
+        if offaxis is not None:
+            print(f"#   off-axis: {getattr(st.make_steps, 'offaxis_stats', {})}", flush=True)
+        name = f"fasttrk{stage}{'L' if lib else ''}{tag}." + os.path.basename(f).replace("gen_tables.", "").replace("gen.", "")
+        verts = getattr(st.make_steps, "path_vertices", None) if stage == "C" and not no_interior_msc else None
+        surf = surfaces.surface_steps(sgs, verts) if not no_surfsteps else None
+        core_tables.write(os.path.join(outdir, name), {"sgsteps": sgs, "particles": parts, "gen": gen,
+                                                        "subruns": sub, "surfsteps": surf}, as_ttree=True)
+        print(f"# {f}: {len(parts):,} primary muons, {sgs[tables.KEY].drop_duplicates().shape[0]:,} with straw "
+              f"crossings, {len(sgs):,} steps", flush=True)

@@ -10,17 +10,25 @@ Geant4-free, GPU-ready fast simulation and fast reconstruction for Mu2e design a
 - the **muon beam** from the detector-solenoid entrance to the stopping target (stop fraction and stop profile).
 
 Each stage reproduces its stock Offline counterpart on identical inputs, so it can stand in for Geant4 + art in a
-Mu2eBO optimisation loop or a MC/data study. This umbrella pins compatible commits of three submodules and holds the
-beam stage, the project image and the shared docs. Code only: no Mu2e-internal conditions, tables, data or results.
+Mu2eBO optimisation loop or a MC/data study. One repository holds every stage, the project image and the shared docs.
+Code only: no Mu2e-internal conditions, tables, data or results.
 
 ## Architecture
 
-| Repository | Path | What it holds |
+| Path | Package | What it holds |
 |---|---|---|
-| [mu2e-fastsim-core](https://github.com/RobMina/mu2e-fastsim-core) | `core/` | physics primitives (Geant4-matched energy loss, materials, scattering, world, crossings), tables and statistics, CRY backends, endpoint adapters and the Mu2eBO kit `fastsimkit`, site configuration, test tooling |
-| [mu2e-crv-fastsim](https://github.com/RobMina/mu2e-crv-fastsim) | `crv/` | CRV stage: transport, tier-1b secondary library, photons, SiPM charges, waveforms, pulses, coincidences |
-| [mu2e-tracker-fastsim](https://github.com/RobMina/mu2e-tracker-fastsim) | `tracker/` | tracker stage: transport, secondaries, digitisation, hit reco, line finding and fit, EventNtuple |
-| this repository | `beam/`, `container/` | beam stage (`beamfastsim`), the Apptainer image, the Offline-on-Slurm runner |
+| `core/` | `mu2efastsim` | physics primitives (Geant4-matched energy loss, materials, scattering, world, crossings), tables and statistics, CRY backends, endpoint adapters and the Mu2eBO kit `fastsimkit`, site configuration, test tooling |
+| `crv/` | `crvfastsim` | CRV stage: transport, tier-1b secondary library, photons, SiPM charges, waveforms, pulses, coincidences |
+| `tracker/` | `trkfastsim` | tracker stage: transport, secondaries, digitisation, hit reco, line finding and fit, EventNtuple |
+| `calo/` | `calofastsim` | calorimeter response, propagation and hits (opt-in) |
+| `beam/` | `beamfastsim` | beam stage: muon beam transport to the stopping target; the conversion-electron chain |
+| `mixing/`, `trigger/` | | pileup mixing before digitisation (opt-in); the stock trigger-menu replay |
+| `container/` | | the Apptainer image, the Offline-on-Slurm runner |
+
+Layers: `core` imports no other package; the detectors (`crv`, `tracker`, `calo`) import `core`; the workflows
+(`beam`, `mixing`, `trigger`) import anything (`tests/test_import_direction.py`). The core, crv and tracker histories
+were merged in from their former repositories (`mu2e-fastsim-core`, `mu2e-crv-fastsim`, `mu2e-tracker-fastsim`);
+`#NN` references in those commits point to pull requests there.
 
 Every stage is NumPy by default with JAX twins for CPU and GPU; stages exchange flat tables keyed by
 `(run, subrun, event)`. Diagram and ownership: [`docs/architecture.md`](docs/architecture.md).
@@ -45,7 +53,7 @@ request the input release `mu2e-fastsim-inputs-v1.2` as described in [`setup/REA
 need no inputs:
 
 ```bash
-git clone --recurse-submodules https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
+git clone https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
 python3 -m venv .venv && .venv/bin/pip install -q -e core -e crv -e tracker -e beam -r core/ci/requirements.txt
 .venv/bin/python -m pytest -q -p no:cacheprovider core/tests
 ```
@@ -79,7 +87,7 @@ and the beam and tracker JAX code stay float64.
 
 ## Configuration
 
-`site.env.example` is the one site template of all four repositories: every path, host and account comes from it;
+`site.env.example` is the one site template of every package: every path, host and account comes from it;
 nothing falls back to a built-in location, and a missing variable stops the command with its name. Each repository's
 `tests/test_no_site_paths.py` (shared checker in core) keeps user names and site paths out of the code.
 

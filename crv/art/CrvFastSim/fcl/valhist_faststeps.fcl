@@ -1,0 +1,36 @@
+# Arm A1 of the stock-equivalent validation: fast CrvSteps (CrvStepsFromTable, tier 1a + 1b table) through the stock
+# CRV digitisation + reco, then the same histogram makers as valhist_stock.fcl. Run on the GEN-stream art file of the
+# shard (every generated event), with physics.producers.fastCrvSteps.tableFile set at the end.
+# Usage: mu2e -c <job>.fcl -s gen....art -T valhist.root
+#include "Offline/CRVDQM/fcl/prolog.fcl"
+#include "CrvFastSim/fcl/dump_crvreco_from_fasttable.fcl"
+
+physics.analyzers : {
+  Validation : { module_type : Validation validation_level : 2 }
+  crvDigiDQM : {
+    module_type   : DqmCrvDigi
+    digiTag       : "CrvDigi"
+    statusTag     : ""
+    configuration : "extracted"
+    catalogueFile : ""
+    dqm           : @local::CRVDQM.Digi
+  }
+  crvRecoDQM : {
+    module_type   : DqmCrvReco
+    clusterTag    : "CrvCoincidenceClusterFinder"
+    pulseTag      : "CrvRecoPulses"
+    configuration : "extracted"
+    catalogueFile : ""
+    dqm           : @local::CRVDQM.Reco
+  }
+  dqmCrv : {
+    module_type : DqmCrv
+    digiTag     : "CrvDigi"
+    recoTag     : "CrvRecoPulses"
+    clusTag     : "CrvCoincidenceClusterFinder"
+  }
+}
+physics.ValPath : [ Validation, crvDigiDQM, crvRecoDQM, dqmCrv ]
+physics.end_paths : [ ValPath ]
+services.TFileService.fileName : "valhist.root"
+services.SeedService.baseSeed : 20261023

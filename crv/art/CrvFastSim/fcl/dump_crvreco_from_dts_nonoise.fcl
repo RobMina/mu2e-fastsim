@@ -1,0 +1,5 @@
+# dump_crvreco_from_dts.fcl with the electronic noise of CrvWaveforms switched off: the reference for the noise-free
+# waveform check (crvfastsim.reco vr1). Everything else, including the random seeds, as the noisy job.
+#include "CrvFastSim/fcl/dump_crvreco_from_dts.fcl"
+physics.producers.CrvWaveforms.noise : 0.0
+services.TFileService.fileName : "crvreco_nonoise.root"

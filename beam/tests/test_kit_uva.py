@@ -187,8 +187,8 @@ def _artifacts(monkeypatch):
     """Only remote artifact preparation is mocked; binding/manifests/verification remain production code."""
     monkeypatch.setattr(kit_uva, "prepare_code", lambda ep, path, ref, **kw: {
         "path": path + ".snapshots/" + "e" * 32, "umbrella_commit": "a" * 40,
-        "submodules": {m: "b" * 40 for m in kw["modules"]}, "requested_ref": ref,
-        "policy": {"name": "retained-readonly-git-v1", "modules": list(kw["modules"]),
+        "submodules": {m: "b" * 40 for m in kw.get("modules") or ()}, "requested_ref": ref,
+        "policy": {"name": "retained-readonly-git-v1", "modules": list(kw.get("modules") or ()),
                    "branch": kw.get("branch", "")}})
     monkeypatch.setattr(kit_uva, "resolve_image", lambda ep, path: {
         "path": path, "sha256": "d" * 64, "size": 100, "policy": "verify-before-run-not-snapshot"})

@@ -1,0 +1,3 @@
+# As digi_from_fasttable.fcl but writes every PrimaryFilter-accepted event (no trigger-menu selection): the same sample a G4 dts gives.
+#include "TrkFastSim/fcl/digi_from_fasttable.fcl"
+outputs.Output.SelectEvents : [ "DigitizePath" ]  # PrimaryFilter-accepted events only, ignoring the trigger menu

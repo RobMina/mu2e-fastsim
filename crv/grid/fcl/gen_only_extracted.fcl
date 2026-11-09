@@ -1,0 +1,24 @@
+# CRY primaries only for the fast sim (no Geant4 tracking): the generator, the generated-event count and the live time
+# of the stock extracted cosmic configuration, every generated event written to the gen stream (as g4ref_v1's
+# GenOutput). CosmicCRY needs the WorldG4 geometry, which g4run adds at beginRun, so g4run stays in the job on its own
+# path behind a filter that rejects every event: Geant4 is initialised once and never tracks anything.
+#include "Production/JobConfig/cosmic/ExtractedCRY.fcl"
+source.firstRun : 1400
+physics.filters.noG4 : { module_type : BlockingPrescaler  blockSize : 1  stepSize : 1000000000  offset : 1000000000 }
+physics.GenPath : [ generate, genCounter, cosmicTimeOffset ]   # the dumper reads the time-offset GenParticles (as in g4ref_v1)
+physics.G4InitPath : [ noG4, g4run ]
+physics.PrimaryPath : @erase
+physics.trigger_paths : [ GenPath, G4InitPath ]
+outputs : {
+  GenOutput : {
+    module_type : RootOutput
+    fileName : "gen.owner.desc.version.sequencer.art"
+    SelectEvents : [ GenPath ]
+    outputCommands : [ "drop *_*_*_*",
+                       "keep mu2e::GenParticles_*_*_*",
+                       "keep mu2e::CosmicLivetime_*_*_*",
+                       "keep mu2e::GenEventCount_*_*_*" ]
+  }
+}
+physics.EndPath : [ genCountLogger, GenOutput ]
+physics.end_paths : [ EndPath ]

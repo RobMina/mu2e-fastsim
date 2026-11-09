@@ -1,0 +1,21 @@
+# Print every CrvStep and SimParticle (one line each) of the profiling dts file, for the CRV content census.
+#include "Offline/fcl/minimalMessageService.fcl"
+
+process_name : printcrv
+source : { module_type : RootInput }
+services : {
+  message : @local::default_message
+  GlobalConstantsService : { inputFile : "Offline/GlobalConstantsService/data/globalConstants_01.txt" }
+}
+physics : {
+  analyzers : {
+    printModule : {
+      module_type : PrintModule
+      PrintEvent : true
+      crvStepPrinter : { verbose : 1 eCut : 0.0 }
+      simParticlePrinter : { verbose : 1 pCut : 0.0 }
+    }
+  }
+  e1 : [ printModule ]
+  end_paths : [ e1 ]
+}

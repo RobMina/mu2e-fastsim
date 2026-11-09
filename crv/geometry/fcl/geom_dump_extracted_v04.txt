@@ -1,0 +1,9 @@
+// Stock extracted cosmic geometry with the version pinned to v04, plus CRV bar-placement printout.
+#include "Offline/Mu2eG4/geom/geom_common_extracted_v04.txt"
+
+double world.minimalMargin.xmin = 500000;
+double world.minimalMargin.xmax = 500000;
+double world.minimalMargin.zmin = 500000;
+double world.minimalMargin.zmax = 500000;
+
+int crs.verbosityLevel = 5;

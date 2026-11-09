@@ -1,0 +1,20 @@
+{
+  "template": {
+    "code": "",
+    "setup": "/cvmfs/mu2e.opensciencegrid.org/Musings/SimJob/MDC2025ad/setup.sh",
+    "tbs": {
+      "subrunkey": "",
+      "event_id": {"source.maxEvents": 2147483647},
+      "outfiles": {"outputs.out.fileName": "dts.mu2e.NeutralsFlashCat.MDC2025ad.sequence.art"},
+      "inputs": {"source.fileNames": [5000, null]},
+      "sequencer_from_index": true
+    },
+    "jobname": "cnf.mu2e.NeutralsFlashCat.MDC2025ad.0.tar"
+  },
+  "filenames_path": ["tbs", "inputs", "source.fileNames", 1],
+  "group_size_path": ["tbs", "inputs", "source.fileNames", 0],
+  "sequencer_path": ["tbs", "sequencer_from_index"],
+  "max_events_path": ["tbs", "event_id", "source.maxEvents"],
+  "expected_items": null,
+  "exact_jobpars_bytes": 360000549
+}

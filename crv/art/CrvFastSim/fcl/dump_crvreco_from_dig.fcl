@@ -1,0 +1,32 @@
+# Stock CRV reco on KPP data digis (the unpack stage's dig.art), then CrvRecoTableDumper with mc false; no art output.
+# Reference for crvfastsim.reco on data: every digi (not SelectReco's cluster-only copy), pulses, clusters, conditions.
+# CRV settings as the KPP run 124155 data reco: Offline's text-file CRV status and calib of 2026-06-30, v04 geometry,
+# epilog_extracted_v04 operating point; plus ignoreSecondaryPulses true (CRV-only analysis).
+# Usage: mu2e -c CrvFastSim/fcl/dump_crvreco_from_dig.fcl -s dig.<tag>.art -T crvreco_data.root
+#include "Production/JobConfig/reco/Extracted.fcl"
+
+physics.analyzers.crvdump : { module_type : CrvRecoTableDumper mc : false }
+physics.RecoPath : [ @sequence::Reconstruction.CrvReco ]
+physics.trigger_paths : [ RecoPath ]
+physics.DumpPath : [ crvdump ]
+physics.end_paths : [ DumpPath ]
+outputs : {}
+
+services.TFileService.fileName : "crvreco_data.root"
+services.GeometryService.inputFile : "Offline/Mu2eG4/geom/geom_common_extracted_v04.txt"
+services.DbService.purpose : "TRACKER_VST"
+services.DbService.version : "v2_0"
+services.ProditionsService.crvStatus.useDb : true
+services.ProditionsService.crvCalib.useDb : true
+services.DbService.textFile : [
+  "Offline/CRVConditions/data/status_extracted_20260630.txt",
+  "Offline/CRVConditions/data/calib_extracted_20260630.txt"
+]
+services.DbService.verbose : 0
+services.ProditionsService.trackerPanelMap.useDb : false
+services.ProditionsService.strawElectronics.useDb : false
+services.ProditionsService.alignedTracker.useDb : false
+services.ProditionsService.trackerStatus.Settings.useDb : false
+
+#include "Offline/CRVReco/fcl/epilog_extracted_v04.fcl"
+physics.producers.CrvCoincidenceClusterFinder.ignoreSecondaryPulses : true

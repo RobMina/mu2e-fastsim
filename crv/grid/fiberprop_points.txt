@@ -1,0 +1,7 @@
+# Offline PRs crv-fiber-speed + crv-fiber-atten, stock arm on the five V-R5 files (990-1122): per point NAME then
+# knobs (speed_<KEY> / atten_<KEY> become a per-point CRVPropagation text table, submit_vr5_stock.sh). nominal first:
+# --test runs it on 990 as the full-file default identity check against crvonly_v05 (no nominal cluster jobs: the
+# crvonly_v05 ntuples of 990-1122 are the baseline). Code: crv_febphase + both PRs, museTarball/tmp.IlcyfNasbt.
+nominal
+sp108 speed_EX=1.08
+at058 atten_T1=0.58

@@ -1,0 +1,14 @@
+# Arms A2/A3/A4/E2E of the stock-equivalent validation: CRV products from a CrvRecoTableDumper-layout table
+# (crvfastsim valhist/fasttables.py, or a stock dump for the round trip) via the *FromTable producers, then the same
+# histogram makers as valhist_stock.fcl. Same base job as the stock arm (geometry, conditions, coincidence settings).
+# Run on the art file whose events the table holds (G4 dts, or the gen stream for fast steps). Set at the end:
+#   physics.producers.{CrvDigi,CrvRecoPulses,CrvCoincidenceClusterFinder}.tableFile
+# Arm A2 (fast digis, stock reco) does not use this file: valhist_digisfromtable.fcl replaces only CrvDigi.
+#include "CrvFastSim/fcl/valhist_stock.fcl"
+
+physics.producers.CrvDigi : { module_type : CrvDigisFromTable tableFile : "table.root" }
+physics.producers.CrvRecoPulses : { module_type : CrvRecoPulsesFromTable tableFile : "table.root" }
+physics.producers.CrvCoincidenceClusterFinder : { module_type : CrvCoincidenceClustersFromTable
+                                                  tableFile : "table.root" pulseTag : "CrvRecoPulses" }
+physics.FromPath : [ PBISim, EWMProducer, CrvDigi, CrvRecoPulses, CrvCoincidenceClusterFinder ]
+physics.trigger_paths : [ FromPath ]

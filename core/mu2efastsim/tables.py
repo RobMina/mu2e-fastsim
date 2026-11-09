@@ -1,0 +1,72 @@
+"""Flat-table I/O in the art dumper layout: trees in the TFileService directory ``dump/``, keyed by (run, subrun, event).
+
+Detector packages define their own step trees (CrvStep, StrawGasStep) on top of the shared ``particles`` (SimParticle),
+``gen`` (generated primary of every event) and ``subruns`` (CosmicLivetime) trees.
+"""
+import glob
+import os
+
+import pandas as pd
+import uproot
+
+KEY = ["run", "subrun", "event"]
+DIR = "dump"
+PRIMARY_MUON_PDG = 13
+
+
+def expand(inputs):
+    out = []
+    for p in inputs:
+        out += sorted(glob.glob(p)) or [p]
+    return out
+
+
+def read(path, tree, columns=None):
+    with uproot.open(path) as f:
+        return f[f"{DIR}/{tree}"].arrays(columns, library="pd")
+
+
+def read_many(paths, tree, columns=None):
+    return pd.concat([read(p, tree, columns) for p in expand(paths)], ignore_index=True)
+
+
+def livetime(paths):
+    """Total CosmicLivetime [s] over the subruns of the given files."""
+    s = read_many(paths, "subruns")
+    return float(s.drop_duplicates(["run", "subrun"]).livetime.sum())
+
+
+def primary_muons(gen):
+    """The generated primary muon of each event: one row per event (events with no muon are dropped)."""
+    mu = gen[gen.pdg.abs() == PRIMARY_MUON_PDG]
+    return mu.drop_duplicates(KEY).reset_index(drop=True)
+
+
+def all_primary_muons(gen):
+    """Every generated muon, one row per muon, ordered by event and gen index, with `mukey` = its SimParticle key:
+    1 for the first muon of an event (the one primary_muons gives), 2, 3, ... for further muons of the same event.
+    CRY makes about 0.3 % multi-muon events, which G4 transports in full."""
+    mu = gen[gen.pdg.abs() == PRIMARY_MUON_PDG]
+    order = [c for c in KEY + ["idx"] if c in mu.columns]
+    mu = mu.sort_values(order, kind="stable").reset_index(drop=True)
+    mu["mukey"] = mu.groupby(KEY, sort=False).cumcount().to_numpy() + 1
+    return mu
+
+
+def write(path, trees, as_ttree=False):
+    """Write {tree name: DataFrame} into directory dump/ of a new ROOT file (empty or None frames are skipped).
+
+    as_ttree: write TTrees (uproot >= 5.7 writes RNTuple by default; art/ROOT readers such as the table-source art
+    modules need TTrees).
+    """
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with uproot.recreate(path) as f:
+        for name, df in trees.items():
+            if df is not None and len(df):
+                cols = {c: df[c].to_numpy() for c in df.columns}
+                if as_ttree:
+                    f.mktree(f"{DIR}/{name}", {c: v.dtype for c, v in cols.items()})
+                    f[f"{DIR}/{name}"].extend(cols)
+                else:
+                    f[f"{DIR}/{name}"] = cols
+    print(f"wrote {path}")

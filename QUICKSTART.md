@@ -23,7 +23,7 @@ Start a server at <https://analytics-hub.fnal.gov> (any profile; a GPU slice run
 
 ```bash
 mkdir -p "$M2FS_DATA" && cd "$M2FS_DATA/.."
-git clone --recurse-submodules https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
+git clone https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
 source site/eaf.env && python3 site/check.py eaf
 /cvmfs/mu2e.opensciencegrid.org/env/ana/current/bin/python -m venv --system-site-packages "$M2FS_VENV"
 "$M2FS_VENV/bin/pip" install -q "jax==0.11.2" -e core -e crv -e tracker -e beam
@@ -43,7 +43,7 @@ in to any `mu2egpvm0N`, paste the three exports, then:
 
 ```bash
 mkdir -p "$M2FS_DATA" && cd "$M2FS_DATA/.."
-git clone --recurse-submodules https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
+git clone https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
 source site/gpvm.env && python3 site/check.py gpvm
 /cvmfs/mu2e.opensciencegrid.org/env/ana/current/bin/python -m venv --system-site-packages "$M2FS_VENV"
 "$M2FS_VENV/bin/pip" install -q "jax==0.11.2" -e core -e crv -e tracker -e beam
@@ -67,14 +67,14 @@ the login host should return at once (an ssh `ControlMaster` connection to the G
    from this repository and copy it to `$FASTSIMKIT_SIF` on the cluster. It is not on CVMFS and not downloadable.
 
    ```bash
-   git clone --recurse-submodules https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
+   git clone https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
    container/build.sh "$PWD/mu2efastsim.sif"       # GPU variant, 3.5 GB; VARIANT=cpu for CPU nodes (container/README.md)
    ```
 
 2. **The kit host**: clone, venv with the kit dependencies, the preset with your cluster account:
 
    ```bash
-   git clone --recurse-submodules https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
+   git clone https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
    python3 -m venv .venv && source .venv/bin/activate     # python3 is now the venv's, as the kit block below needs
    pip install -q -e core -e crv -e tracker -e beam
    export FASTSIMKIT_FNAL_HOST=YOUR_GPVM FASTSIMKIT_SLURM_HOST=YOUR_LOGIN_HOST \
@@ -161,7 +161,7 @@ started server, default profile). Wall times:
 | Step | GPVM (4-core VM) | EAF (default server, 2 CPUs) |
 |---|---:|---:|
 | server start | - | 73 s |
-| clone with submodules | 8 s | 4 s |
+| clone | 8 s | 4 s |
 | `site/check.py` | 0 s | 0 s |
 | venv on the Mu2e ana Python | 10 s | 19 s |
 | `pip install` (JAX and the four packages) | 55 s | 39 s |

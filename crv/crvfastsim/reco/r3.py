@@ -1,0 +1,305 @@
+"""R3: one Mu2eBO point end to end (response + waveforms + reco + objective) on cached CrvSteps, timed per stage.
+
+One process per accelerator (the node script sets the visible device). The cached G4 CrvStep tables
+(CrvStepTableDumper, e.g. prod_as_tables/crvsteps.*.root) are read once (pdg joined at load), then replayed with fresh
+seeds until `target` events with CRV steps have been processed (the R3 unit: an event with at least one CrvStep).
+Replays differ only in their random numbers; the cost per event depends on the steps, not on the event being new.
+
+Chain per batch of whole events: response (JAX: fused device photons -> SiPM charges, response/device.py; numpy:
+chain.charges) -> waveforms/digis (chain.digis) -> reco waveforms (chain.reco_waveforms) -> pulses + clusters
+(chain.clusters) -> objective histograms (crvfastsim.objective.crvresponse on reco.ntview, with --objective). The output JSON has the per-stage times, the per-pass walls (pass 0 includes compilation),
+the events, and the response accumulator for a later merge against data.
+
+Timers: setup_s (geometry, conditions, lookup tables), io_s (read tables, pdg join), response_s, digis_s, group_s
+(digis -> reco waveforms), reco_s (pulses + coincidences), view_s + objective_s, wall_s. Host glue inside a stage is
+in that stage.
+"""
+import json
+import os
+import time
+
+import numpy as np
+
+from .. import chain, geometry, tables
+
+DEFAULT_COUNTERS = "Offline/Mu2eG4/geom/crv_counters_extracted_v04.txt"
+
+
+def load_cache(paths, timers):
+    """Step tables -> list of (steps sorted by event key, pdg per step, event key per step, events)."""
+    t0 = time.perf_counter()
+    out = []
+    for p in tables.expand(paths):
+        st = tables.read(p, "steps")
+        pa = tables.read(p, "particles", tables.KEY + ["key", "pdg"])
+        pdg = st.merge(pa.rename(columns={"key": "sp"}), on=tables.KEY + ["sp"], how="left").pdg.fillna(0).to_numpy()
+        ek = chain.event_key(st).astype(np.int64)
+        o = np.argsort(ek, kind="stable")
+        st, pdg, ek = st.iloc[o].reset_index(drop=True), pdg[o], ek[o]
+        try:                                  # events of the source file, CrvSteps or not (gen tree of the dumper)
+            g = tables.read(p, "gen", tables.KEY)
+            ngen = len(np.unique(chain.event_key(g)))
+        except Exception:
+            ngen = None
+        events, first = np.unique(ek, return_index=True)
+        event_keys = st[tables.KEY].to_numpy(dtype=np.int64)[first]
+        gen_keys = g.drop_duplicates(tables.KEY).to_numpy(dtype=np.int64) if ngen is not None else None
+        out.append(dict(path=p, steps=st, pdg=pdg, ek=ek, events=events, ngen=ngen,
+                        event_keys=event_keys, gen_keys=gen_keys))
+    timers["io_s"] = timers.get("io_s", 0.0) + time.perf_counter() - t0
+    return out
+
+
+def _add(T, k, t0):
+    T[k] = T.get(k, 0.0) + time.perf_counter() - t0
+
+
+def _bg_without_waveforms(events, cfg, rng, objective, T):
+    """Background for events of the batch that produced no waveform (no pulses, no clusters): straight into the
+    out-of-time histograms."""
+    smp = chain.background_sampler(cfg, rng)
+    if smp is None or objective is None or not len(events):
+        return
+    B = smp(np.asarray(events, np.int64))
+    objective["mod"].fill_oot_only(objective["state"], B["bar"], B["pe"], B["seq"])
+    T["background_pulses_nowf"] = T.get("background_pulses_nowf", 0) + len(B["ev"])
+
+
+def validate_response(cfg):
+    """Refuse response settings outside the extracted R3 implementation's supported envelope."""
+    unsupported = [k for k in ("thermal_rate", "trap0_prob", "trap1_prob") if getattr(cfg.sipm, k) != 0]
+    if unsupported:
+        raise ValueError(f"reco-r3: unsupported SiPM processes: {unsupported}")
+    if tuple(cfg.window) != (0.0, 1e5):
+        raise ValueError("reco-r3: only the extracted (0, 100000) ns window is supported")
+
+
+def _capture_empty(capture, event_keys, source_index):
+    """Capture no-cluster exposure without changing the background-only objective path."""
+    import awkward as ak
+    from ..objective import crvline
+    counts = np.zeros(len(event_keys), dtype=np.int64)
+    c = ak.zip({k: ak.unflatten(np.empty((0, 4)) if k.endswith('[4]') else np.empty(0, np.int64), counts)
+                for k in crvline.COINC_BR}, depth_limit=1)
+    p = ak.zip({k: ak.unflatten(np.empty(0, np.int64), counts) for k in crvline.PULSE_BR}, depth_limit=1)
+    capture.add(c, p, crvline.fit_arrays(c, p), event_keys, source_index=source_index)
+
+
+def run_batch(c, a, b, cond, cfg, geom, ccfg, tabs, pmap, rng, key, T, objective=None, window_ns=1e5, time_shift=None):
+    """Events [a, b) of the step-sorted table c through the chain. Returns events processed."""
+    validate_response(cfg)
+    if window_ns != cfg.window[1] - cfg.window[0]:
+        raise ValueError("reco-r3: objective exposure must match the response window")
+    lo = np.searchsorted(c["ek"], c["events"][a])
+    hi = np.searchsorted(c["ek"], c["events"][b - 1], side="right")
+    st, pdg, ek = c["steps"].iloc[lo:hi].reset_index(drop=True), c["pdg"][lo:hi], c["ek"][lo:hi]
+    t0 = time.perf_counter()
+    if cfg.jax:
+        import jax
+        from ..response import device as DV
+        key, k_r, k_w = jax.random.split(key, 3)
+        rs = DV.response_batched(st, pdg, geom, cfg.response, cfg.sipm, tabs, cond.deviation, cond.status, ek, rng,
+                                 k_r, pmap)
+        if any(bool(r["overflow"]) for r in rs):
+            T["response_overflow_batches"] = T.get("response_overflow_batches", 0) + 1
+            raise RuntimeError("reco-r3: residual response overflow; refusing truncated output")
+        Q = DV.to_host_batches(rs)
+        del rs
+    else:
+        k_w = None
+        Q = chain.charges(st, None, geom, cond, cfg, rng, tabs=tabs, pmap=pmap, pdg=pdg)
+    _add(T, "response_s", t0)
+    T["charges"] = T.get("charges", 0) + len(Q["time"])
+    if not len(Q["time"]):
+        if objective is not None:
+            objective["mod"].add_empty_events(objective["state"], b - a, window_ns)
+            _bg_without_waveforms(c["events"][a:b], cfg, rng, objective, T)
+            if objective.get("joint") is not None:
+                _capture_empty(objective["joint"], c["event_keys"][a:b], objective["source_index"])
+        return b - a, key
+    t0 = time.perf_counter()
+    D = chain.digis(Q, cond, cfg, rng, key=k_w)
+    _add(T, "digis_s", t0)
+    if not len(D["chan"]):
+        if objective is not None:
+            objective["mod"].add_empty_events(objective["state"], b - a, window_ns)
+            _bg_without_waveforms(c["events"][a:b], cfg, rng, objective, T)
+            if objective.get("joint") is not None:
+                _capture_empty(objective["joint"], c["event_keys"][a:b], objective["source_index"])
+        return b - a, key
+    t0 = time.perf_counter()
+    W = chain.reco_waveforms(D, cond)
+    W["toff"] = cond.timeoffset[W["chan"]]
+    if time_shift is not None:                     # module / FEB time calibration (objective.timecal), data frame
+        W["toff"] = W["toff"] + time_shift[W["chan"]]
+    _add(T, "group_s", t0)
+    T["waveforms"] = T.get("waveforms", 0) + len(W["ev"])
+    t0 = time.perf_counter()
+    outs, _ = chain.clusters(W, cond, geom, ccfg, cfg, timers=T.setdefault("reco_detail", {}),
+                             detail=objective is not None, rng=rng)
+    _add(T, "reco_s", t0)
+    T["clusters"] = T.get("clusters", 0) + int(sum(len(o["cl_event"]) for o in outs))
+    if objective is not None:
+        from . import ntview
+        t0 = time.perf_counter()
+        cc, pp, _ = ntview.build(outs, geom, events=c["events"][a:b])
+        _add(T, "view_s", t0)
+        t0 = time.perf_counter()
+        measured = objective["mod"].accumulate_arrays(cc, pp, objective["state"], window_ns)
+        if objective.get("joint") is not None:
+            objective["joint"].add(cc, pp, measured, c["event_keys"][a:b], source_index=objective["source_index"])
+        _bg_without_waveforms(np.setdiff1d(c["events"][a:b], W["ev"]), cfg, rng, objective, T)
+        _add(T, "objective_s", t0)
+    return b - a, key
+
+
+def run(steps, calib=None, deviation=None, target=1_000_000, jax=False, seed=1, batch_events=2000, counters=None,
+        emit=None, objective=False, noise=None, max_passes=1000, time_limit=None, v05=False, knobs=None, background=None,
+        time_shift=None, response_config=None, joint_capture=None):
+    """v05: the crvonly_v05 digitisation settings (one FEB clock phase per event, CRVTime net zero), as reco-vr4eff,
+    for comparisons with the v05 EventNtuples."""
+    from .. import response_config as RC
+    if joint_capture is not None and (not objective or max_passes != 1):
+        raise ValueError('joint capture requires objective=True and exactly one pass')
+    effective = RC.apply_knobs(RC.parse(response_config), knobs)
+    if v05:
+        effective['timing'].update(phase_scope='per_event', timeoffset_mode='zero')
+    if noise is not None:
+        effective['noise'] = bool(noise)
+    for name, value in dict(calib=calib, deviation=deviation, counters=counters,
+                            background=background, time_shift=time_shift).items():
+        if value is not None:
+            effective['assets'][name] = str(value)
+    RC.validate(effective)
+    assets = effective['assets']
+    calib, deviation, background, time_shift = (assets[k] for k in ('calib', 'deviation', 'background', 'time_shift'))
+    if not calib:
+        raise ValueError('reco-r3 requires a calibration asset (--calib or config assets.calib)')
+    T = {}
+    t_all = time.perf_counter()
+    t0 = time.perf_counter()
+    cpath = geometry.find_counters(assets['counters'] or DEFAULT_COUNTERS)
+    geom = geometry.from_offline_config(cpath)
+    ccfg = geometry.parse_simpleconfig(open(cpath).read())
+    cond = chain.Conditions.from_csv(calib, deviation)
+    import dataclasses
+    if effective['timing']['phase_scope'] == 'per_event':
+        cond = dataclasses.replace(cond, roc=np.zeros_like(cond.roc), feb=np.zeros_like(cond.feb))
+    if effective['timing']['timeoffset_mode'] == 'zero':
+        cond = dataclasses.replace(cond, timeoffset=np.zeros_like(cond.timeoffset))
+    bg = None
+    if background:
+        from .background import BackgroundModel
+        bg = BackgroundModel.load(background)
+    cfg = RC.build(effective, jax=bool(jax), background=bg)
+    validate_response(cfg)
+    tshift = None
+    if time_shift:                                 # timecal JSON: mc_channel_shift, per channel [ns], added in the reco
+        import json as _json
+        tshift = np.asarray(_json.load(open(time_shift))["mc_channel_shift"], float)
+    from ..response import photons as PH
+    from ..response import sipm as SI
+    tabs = PH.load_tables(cfg.response, directory=assets['lookup_dir'])
+    pmap = SI.photon_map(assets['photon_map'] or
+                          (os.path.join(assets['lookup_dir'], 'photonMap.root') if assets['lookup_dir'] else None))
+    RC.validate_loaded_assets(effective, tabs, pmap)
+    key = None
+    if jax:
+        import jax as J
+        from ..response import photons_jax
+        tabs = {k: photons_jax.DeviceTable(v) for k, v in tabs.items()}
+        key = J.random.PRNGKey(int(seed))
+    resolved = RC.record(effective)
+    resolved['assets'] = RC.asset_manifest(effective, counters=cpath)
+    obj = None
+    if objective:
+        from ..objective import crvresponse
+        obj = {"mod": crvresponse, "state": crvresponse.new_state()}
+    _add(T, "setup_s", t0)
+    cache = load_cache(steps, T)
+    if joint_capture is not None:
+        if target != sum(len(c['events']) for c in cache) or any(c['gen_keys'] is None for c in cache):
+            raise ValueError('joint capture requires full one-pass inputs with generated-event identities')
+        obj['joint'] = joint_capture
+    per_cache = [0] * len(cache)
+    per_pass, done, p = [], 0, 0
+    while done < target and p < max_passes:
+        tp = time.perf_counter()
+        n_pass = 0
+        for i, c in enumerate(cache):
+            if joint_capture is not None:
+                obj['source_index'] = i
+            rng = np.random.default_rng([int(seed), p, i])
+            ne = len(c["events"])
+            for a in range(0, ne, batch_events):
+                b = min(ne, a + batch_events, a + (target - done))
+                n, key = run_batch(c, a, b, cond, cfg, geom, ccfg, tabs, pmap, rng, key, T, obj,
+                                   window_ns=cfg.window[1] - cfg.window[0], time_shift=tshift)
+                done += n
+                n_pass += n
+                per_cache[i] += n
+                if done >= target or (time_limit and time.perf_counter() - t_all > time_limit):
+                    break
+            if done >= target or (time_limit and time.perf_counter() - t_all > time_limit):
+                break
+        per_pass.append({"pass": p, "events": n_pass, "wall_s": time.perf_counter() - tp})
+        p += 1
+        if time_limit and time.perf_counter() - t_all > time_limit:
+            break
+    # events of the source files with no CRV steps, in proportion to the replayed events of each table
+    empty = None
+    if all(c["ngen"] is not None for c in cache):
+        empty = int(round(sum(k * (c["ngen"] - len(c["events"])) / len(c["events"]) for k, c in zip(per_cache, cache))))
+        if obj is not None:
+            obj["mod"].add_empty_events(obj["state"], empty, cfg.window[1] - cfg.window[0])
+            _bg_without_waveforms(-1 - np.arange(empty, dtype=np.int64), cfg, np.random.default_rng([int(seed), 99]),
+                                  obj, T)
+    if joint_capture is not None:
+        if done != target:
+            raise ValueError('joint capture stopped before complete exposure')
+        for i, c in enumerate(cache):
+            dtype = np.dtype([(k, '<i8') for k in tables.KEY])
+            gen = np.ascontiguousarray(c['gen_keys']).view(dtype).reshape(-1)
+            used = np.ascontiguousarray(c['event_keys']).view(dtype).reshape(-1)
+            absent = np.setdiff1d(gen, used).view('<i8').reshape(-1, 3)
+            if len(absent):
+                _capture_empty(joint_capture, absent, i)
+    wall = time.perf_counter() - t_all
+    warm = [x for x in per_pass[1:] if x["events"]]
+    res = {"events_with_steps": done, "events_without_steps": empty, "target": target, "wall_s": wall, "passes": per_pass,
+           "events_per_s": done / wall if wall else 0.0,
+           "warm_events_per_s": (sum(x["events"] for x in warm) / sum(x["wall_s"] for x in warm)) if warm else None,
+           "cache_files": [c["path"] for c in cache], "cache_events": int(sum(len(c["events"]) for c in cache)),
+           "timers": T, "resolved_config": resolved, "jax": bool(jax), "noise": cfg.noise, "v05": bool(v05), "knobs": dict(knobs or {}), "background": background, "time_shift": time_shift, "batch_events": batch_events, "seed": seed,
+           "ms_per_event": {k[:-2]: 1e3 * v / max(done, 1) for k, v in T.items()
+                            if isinstance(v, float) and k.endswith("_s")}}
+    if jax:
+        import jax as J
+        res["device"] = str(J.devices()[0])
+    if obj is not None:
+        res["response_state"] = obj["state"]
+    if emit:
+        os.makedirs(os.path.dirname(emit) or ".", exist_ok=True)
+        json.dump(res, open(emit, "w"), default=float)
+    short = {k: res[k] for k in ("events_with_steps", "wall_s", "events_per_s", "warm_events_per_s")}
+    print(json.dumps(short), "\nms/event", json.dumps({k: round(v, 3) for k, v in res["ms_per_event"].items()}))
+    return res
+
+
+def merge(paths, wall=None):
+    """Node total from the per-process JSONs: events, per-job wall (given, or the slowest process), node rate,
+    projected time for 1 M events, merged response accumulator."""
+    J = [json.load(open(f)) for f in tables.expand(paths)]
+    ev = sum(j["events_with_steps"] for j in J)
+    slow = max(j["wall_s"] for j in J)
+    w = float(wall) if wall else slow
+    warm = [j["warm_events_per_s"] for j in J if j.get("warm_events_per_s")]
+    out = {"processes": len(J), "events_with_steps": ev, "wall_s": w, "slowest_process_s": slow,
+           "node_events_per_s": ev / w if w else 0.0, "node_warm_events_per_s": float(sum(warm)) if warm else None,
+           "minutes_for_1M": (1e6 / (ev / w)) / 60.0 if ev and w else None,
+           "devices": sorted({str(j.get("device")) for j in J})}
+    states = [j["response_state"] for j in J if "response_state" in j]
+    if states:
+        from ..objective import crvresponse
+        out["response_state"] = crvresponse.merge_states(states)
+    return out

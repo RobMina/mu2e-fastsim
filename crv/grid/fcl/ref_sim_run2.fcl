@@ -1,0 +1,9 @@
+# G4 reference for the fast-sim validation, run2 CRV configuration: the stock CRY cosmic chain of ref_sim_extracted.fcl
+# with the run2 cosmic world (geom_cosmic_run2_v10.txt), the default CRY configuration of the Run 1A / Run 2 cosmic S1 jobs
+# (defaultCRYconfig.txt) and their production cut (minRangeCut 1 mm, no CRSmother region cuts: Production
+# JobConfig/cosmic/S1DSStops.fcl and resampling_epilog.fcl). Field off (as the extracted job; the transport is straight).
+#include "ref_sim_extracted.fcl"
+physics.producers.generate.inputFile : "Offline/EventGenerator/defaultConfigs/defaultCRYconfig.txt"
+services.GeometryService.inputFile : "geom_cosmic_run2_v10.txt"
+physics.producers.g4run.physics.minRangeCut : 1.0
+physics.producers.g4run.physics.minRangeRegionCuts : { CalorimeterMother : 0.1 TrackerMother : 0.001 }

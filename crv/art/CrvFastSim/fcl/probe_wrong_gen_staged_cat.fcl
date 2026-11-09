@@ -1,0 +1,3 @@
+# Negative control: staged-Cat policy must retain the generator ProductID guard.
+#include "CrvFastSim/fcl/probe_wrong_gen_retained_primary.fcl"
+physics.analyzers.dump.associationPolicy : "staged_cat"

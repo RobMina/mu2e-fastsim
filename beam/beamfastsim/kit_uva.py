@@ -190,7 +190,7 @@ class BeamPointStream:
         return old
 
     def ensure_code(self):
-        return prepare_code(self.ep, self.code, self.code_ref, modules=('core',))
+        return prepare_code(self.ep, self.code, self.code_ref)
 
     def submit(self, name, params, geometry=None) -> Dict[str, Any]:
         p = validate(params, self.TASK)

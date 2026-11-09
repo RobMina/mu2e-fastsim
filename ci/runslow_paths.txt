@@ -1,0 +1,7 @@
+# Extended regular expressions (one per line, starting with ^, relative to the repository root) of paths of the
+# umbrella suite (mixing, trigger, tests/) whose contracts are checked only by @pytest.mark.slow tests. A pull request
+# that changes a matching file runs the umbrella suite with --runslow (.github/ci_tier.sh).
+# device mixing and the device trigger
+^mixing/device_[a-z_]+\.py$
+^trigger/device/
+^ci/runslow

@@ -1,0 +1,5 @@
+# Extended regular expressions (one per line, starting with ^, relative to calo/) of paths whose contracts are checked
+# only by @pytest.mark.slow tests. A pull request that changes a matching file runs the suite with --runslow
+# (.github/ci_tier.sh).
+^calofastsim/
+^ci/runslow

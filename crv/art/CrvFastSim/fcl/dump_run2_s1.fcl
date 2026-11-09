@@ -1,0 +1,41 @@
+# Convert retained S1 CRV StepPointMCs without transport and dump validated truth-linked tables.
+#include "Offline/fcl/minimalMessageService.fcl"
+process_name : s1dump
+source : { module_type : RootInput }
+services : {
+  message : @local::default_message
+  TFileService : { fileName : "s1steps.root" }
+  GlobalConstantsService : { inputFile : "Offline/GlobalConstantsService/data/globalConstants_01.txt" }
+}
+physics : {
+  producers : {
+    retainedCrvSteps : {
+      module_type : CrvStepsFromStepPointMCs
+      stepPointsInstance : "CRV"
+      stepPointsModuleLabels : [ "cosmicFilter" ]
+      removeNeutralParticles : true
+      useTotalEDep : false
+    }
+  }
+  analyzers : {
+    dump : {
+      module_type : CrvStepTableDumper
+      crvSteps : "retainedCrvSteps"
+      simParticles : "cosmicFilter"
+      genParticles : "generate"
+      livetime : "generate"
+      fullGeneratorStream : false
+    }
+    exposure : {
+      module_type : PrintModule
+      verbose : 0
+      PrintEvent : false
+      PrintSubRun : true
+      CosmicLivetimePrinter : { verbose : 1 }
+    }
+  }
+  convert : [ retainedCrvSteps ]
+  inspect : [ dump, exposure ]
+  trigger_paths : [ convert ]
+  end_paths : [ inspect ]
+}

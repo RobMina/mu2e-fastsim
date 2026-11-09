@@ -1,0 +1,4 @@
+# Run2 uses the stock cosmicSimReco text-condition payloads with the reference cosmic world.
+#include "dump_named_crvreco.fcl"
+services.GeometryService.inputFile : "geom_cosmic_run2_v10.txt"
+services.DbService.textFile : [ "Offline/CRVConditions/data/status_nominal_v10.txt", "Offline/CRVConditions/data/photonyield_nominal_v10.txt", "Offline/CRVConditions/data/calib_nominal_v10.txt" ]

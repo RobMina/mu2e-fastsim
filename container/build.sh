@@ -1,10 +1,10 @@
 #!/bin/bash
-# Build the mu2e-fastsim Apptainer image from this umbrella checkout on a machine with apptainer and user namespaces
+# Build the mu2e-fastsim Apptainer image from this checkout on a machine with apptainer and user namespaces
 # (a Mu2e GPVM, or a Polaris compute node). usage: [VARIANT=gpu|cpu] [TRIM="..."] container/build.sh [out.sif]
 # gpu (default): JAX + pip CUDA 12 wheels without TRIM (default: NCCL, NVSHMEM, which no kernel loads; cuDNN and cuFFT
 # must stay: the JAX CUDA plugin checks both at start and falls back to CPU without them); TRIM="" keeps them all. cpu: CPU-only JAX (FermiGrid, local, CI). ~2-10 min.
-# Only git-tracked files of the umbrella and its submodules go in (a `git archive` export at the checked-out commits):
-# never site.env, work areas, build products or Mu2e-internal data.
+# Only git-tracked files go in (a `git archive` export of the checked-out commit): never site.env, work areas, build
+# products or Mu2e-internal data.
 set -e
 cd "$(dirname "$0")/.."
 OUT=$(realpath -m "${1:-mu2efastsim.sif}")
@@ -14,11 +14,7 @@ export APPTAINER_TMPDIR=${APPTAINER_TMPDIR:-$(mktemp -d "${TMPDIR:-/tmp}/apptain
 export APPTAINER_CACHEDIR=${APPTAINER_CACHEDIR:-$APPTAINER_TMPDIR/cache}
 STAGE=$(mktemp -d "$APPTAINER_TMPDIR/stage.XXXX"); trap 'rm -rf "$STAGE"' EXIT
 git archive HEAD | tar -x -C "$STAGE"
-for p in core crv tracker; do
-  [ -f $p/pyproject.toml ] || { echo "submodule $p missing"; exit 2; }
-  mkdir -p "$STAGE/$p" && git -C $p archive HEAD | tar -x -C "$STAGE/$p"
-done
-{ git log -1 --format="umbrella %H"; git submodule status; } > "$STAGE/VERSION"
+git log -1 --format="mu2e-fastsim %H" > "$STAGE/VERSION"
 cat "$STAGE/VERSION"; du -sh "$STAGE"
 VARIANT=${VARIANT:-gpu}
 TRIM=${TRIM-nvidia-nccl-cu12 nvidia-nvshmem-cu12}   # cuFFT and cuDNN stay: the JAX CUDA plugin checks both at start
