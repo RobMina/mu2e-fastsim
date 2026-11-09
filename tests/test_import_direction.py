@@ -5,7 +5,8 @@ calofastsim) import core and each other; the workflows (beamfastsim, mixing, tri
 file under a package directory counts (package code, tests, scripts), and in it every import statement (function-local
 ones included) and every importlib.import_module, pytest.importorskip or __import__ call with a literal module name;
 relative imports stay inside their package. Not counted: names built at run time and `python -m <package>` command
-lines. The umbrella's own tests/ and container/ are not checked.
+lines. The umbrella's own tests/ and container/ are not checked, nor build output (build/, *.egg-info) and hidden
+directories, so the check gives the same answer in an installed tree (the image) as in a checkout.
 
 KNOWN lists today's exceptions as (file, imported package). It may only shrink: a new upward import fails, and so
 does a KNOWN entry that no longer occurs (delete it from the list).
@@ -67,12 +68,18 @@ def imported_packages(path):
     return found
 
 
+def _skipped(relative):
+    return any(part == "build" or part.endswith(".egg-info") or part.startswith(".") for part in relative.split("/"))
+
+
 def upward_imports():
     """(file, package) for every import of a package in a higher layer than the file's directory."""
     out = set()
     for directory, layer in DIRECTORY.items():
         for path in sorted((ROOT / directory).rglob("*.py")):
             relative = path.relative_to(ROOT).as_posix()
+            if _skipped(relative):
+                continue
             for package in imported_packages(path):
                 if LAYER[package] > layer:
                     out.add((relative, package))
