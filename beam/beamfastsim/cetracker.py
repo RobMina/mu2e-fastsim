@@ -157,7 +157,7 @@ def run_cechain(g, geom, maps, seed=1, backend="numpy", step=10.0, device_float=
     return cechain.transport(rng, geom, cechain.field_maps(maps), x, u, p, t0, h=step)
 
 
-def tracker_steps(start, gdml, maps, seed=1, origin=ORIGIN, chord_mm=10.0):
+def tracker_steps(start, gdml, maps, seed=1, origin=ORIGIN, chord_mm=10.0, complete_outer_wall=False):
     """Field-on tracker StrawGasSteps of the hand-off starts (trkfastsim.sim.fieldsteps, electron loss model, the
     tracker support from the GDML). Uses the tracker default StrawGas material (gas state). The tracker field is the
     first map of `maps` alone, which must be the DS map (checked: |B| at the origin >= B_DS_MIN). Returns
@@ -176,7 +176,7 @@ def tracker_steps(start, gdml, maps, seed=1, origin=ORIGIN, chord_mm=10.0):
                          "the DS map must come first")
     return fs.transport(np.random.default_rng(np.random.SeedSequence([seed, 1])), start, geom, field, support,
                         chord_mm=chord_mm, sagitta_mm=0.02, envelope=env, origin=org, bnom=bnom,
-                        loss=fs.electron_loss, tail=False)
+                        loss=fs.electron_loss, tail=False, complete_outer_wall=complete_outer_wall)
 
 
 def write_injector(path, steps, entries):
@@ -253,7 +253,7 @@ class DeviceChain:
 
     def __init__(self, offline_root, maps, gdml, geom="Offline/Mu2eG4/geom/geom_2021_PhaseI_v03.txt",
                  response=None, digi_cond=None, dtype="float64", origin=ORIGIN, chord_mm=10.0, lanes=None,
-                 ce_unroll=True, ce_shrink=2, digi_chunk=8000, resident_digis=True):
+                 ce_unroll=True, ce_shrink=2, digi_chunk=8000, resident_digis=True, complete_outer_wall=False):
         import jax  # noqa: F401  (device backend)
         from mu2efastsim import ehelix
         from trkfastsim.sim import fieldsteps_jax as FJ
@@ -270,7 +270,8 @@ class DeviceChain:
         field = ehelix.grid_field(*ehelix.read_g4bl(maps[0]))
         if np.linalg.norm(ehelix.field_at(field, org[None])[0]) < B_DS_MIN:
             raise ValueError(f"first map {maps[0]}: the DS map must come first")
-        self.trk = FJ.Tracker.from_gdml(gdml, maps[0], org, chord_mm=chord_mm, dtype=self.dt)
+        self.trk = FJ.Tracker.from_gdml(gdml, maps[0], org, chord_mm=chord_mm, dtype=self.dt,
+                                        complete_outer_wall=complete_outer_wall)
         self.resp = None
         if response is not None:
             from trkfastsim.recoresp import device as RD, table as RT
@@ -486,6 +487,9 @@ def main(argv=None):
                                      "(diospec starts) or RPC (rpcspec) electrons, one event per row")
     ap.add_argument("--shards", nargs=2, type=int, metavar=("FIRST", "LAST"),
                     help="with --starts: keep these diospec shards (inclusive)")
+    ap.add_argument("--complete-outer-wall", action="store_true",
+                    help="tracker transport: the complete outer-minus-gas straw wall, wall-only chords included "
+                         "(opt-in; default the gas-gated wall)")
     ap.add_argument("--tracker", choices=("numpy", "device"), default="numpy",
                     help="tracker transport: NumPy fieldsteps (default) or the device twin (needs --backend device)")
     a = ap.parse_args(argv)
@@ -513,7 +517,7 @@ def main(argv=None):
         if a.backend != "device":
             raise SystemExit("--tracker device needs --backend device")
         ch = DeviceChain(a.offline_root, a.maps, a.gdml, geom=a.geom, dtype=a.device_float, origin=a.origin,
-                         chord_mm=a.chord_mm, lanes=a.lanes)
+                         chord_mm=a.chord_mm, lanes=a.lanes, complete_outer_wall=a.complete_outer_wall)
         tic = time.perf_counter()
         res = ch.transport(g, a.seed)
         t_ce, t_trk = res["timing"]["cechain_s"], res["timing"]["tracker_s"]
@@ -534,7 +538,8 @@ def main(argv=None):
         np.savez_compressed(out / "cechain.npz", **{k: v for k, v in r._asdict().items() if v is not None},
                             **{k: g[k].to_numpy() for k in KEY})
         tic = time.perf_counter()
-        steps, final = tracker_steps(ent, a.gdml, a.maps, seed=a.seed, origin=a.origin, chord_mm=a.chord_mm)
+        steps, final = tracker_steps(ent, a.gdml, a.maps, seed=a.seed, origin=a.origin, chord_mm=a.chord_mm,
+                                     complete_outer_wall=a.complete_outer_wall)
         t_trk = time.perf_counter() - tic
     write_injector(out / "fasttrk_field.root", steps, ent)
     fin = final.reset_index(drop=True)
@@ -549,6 +554,8 @@ def main(argv=None):
                   ce_fates={f: int((r.fate == k).sum()) for k, f in enumerate(cechain.FATES)},
                   entries=len(ent), steps=len(steps), events_with_steps=int(len(steps[KEY].drop_duplicates())),
                   ce_transport_s=round(t_ce, 3), tracker_transport_s=round(t_trk, 3))
+    if a.complete_outer_wall:
+        report["complete_outer_wall"] = True
     (out / "handoff.json").write_text(json.dumps(report, indent=1) + "\n")
     print(json.dumps(report, indent=1))
 
