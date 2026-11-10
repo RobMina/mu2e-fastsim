@@ -1,0 +1,17 @@
+# Plan (c) M0 reference: per-stage dump of the stock OffSpill CE chain, appended to a rendered reco.fcl (a recoresp
+# manifest's reco "lines" can #include it). Runs StrawHitTableDumper in the reco job itself, because the reco output
+# (mcs) drops the intermediate products. Hit index spaces: s_ = makeSH, p_ = makePH; tc_ind is in the hits of its own
+# collection: makePH for TimeClusterFinderDe and CalTimePeakFinderDe, makeSH for TZClusterFinder; hs_ind, kh_ind = makeSH.
+physics.analyzers.stagedump : {
+  module_type : StrawHitTableDumper
+  ProtonBunchTimeTag : @local::physics.producers.makeSH.ProtonBunchTimeTag
+  DumpTracks : true
+  TimeClusterTags : [ "TimeClusterFinderDe", "CalTimePeakFinderDe", "TZClusterFinder" ]
+  DumpLineSeeds : false
+  HelixSeedTags : [ "HelixFinderDe", "CalHelixFinderDe", "AgnosticHelixFinder", "MHDe" ]
+  KalSeedTag : "KKDe"
+  FitType : LoopHelix
+}
+services.TFileService.fileName : "stages.root"
+physics.StageDumpPath : [ stagedump ]
+physics.end_paths : [ EndPath, StageDumpPath ]   # every event: LHFilter comes after KKDe in LHPath

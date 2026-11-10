@@ -8,6 +8,7 @@ Musing `SimJob MDC2025ay`, so no Offline checkout is touched. Same layout as `cr
 | `StrawGasStepTableDumper` | the tracker truth of a dts file -> flat TTrees in `dump/`: `sgsteps`, `surfsteps`, `vdsteps`, `trajpts`, `particles`, `gen`, `subruns`. uproot cannot read these art products directly (memberwise `SimParticle`/`GenParticle`, the `MCTrajectory` map) |
 | `StrawDigiTableDumper` | lossless detector-only `trkdigi/events`; optional `compareTo` checks every original/replayed digi field and ADC sample in the same art event |
 | `StrawDigisFromTable` | ordered StrawDigi and aligned ADC waveform collections from a lossless table, matched by full event identity; no redigitisation or invented truth |
+| `StrawHitTableDumper` | digis, stock `makeSH`/`makePH` ComboHits and the StrawResponse constants -> flat `events` / `conditions` trees. With `DumpTracks`: time clusters (`TimeClusterTags`, several collections), line seeds (`DumpLineSeeds`), helix seeds (`HelixSeedTags`) and the KalSeed fits with hits and straws (`FitType` KinematicLine or LoopHelix, `kl_lh_*`). `fcl/dump_recostages_ce.fcl` adds it to the stock OffSpill CE reco job (per-stage reference; compare with `trkfastsim.reco.stagecompare`) |
 
 ## Trees
 
