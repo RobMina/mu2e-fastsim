@@ -4,6 +4,8 @@ Per event with a tracker entry: a fit with probability eff_fit of its (nrow, tan
 eff_q, then the residuals and fit-quality outputs drawn by inverse CDF from the bin's tables and added to the event's
 own entry truth, and the CE fiducial cuts on the smeared tan(dip), d0 and r_max. The seven drawn quantities are
 correlated through the bin's Gaussian copula.
+With pools, one reference track of the bin is drawn instead; with all-track pools (`pool_dir`), the quality pass is
+that track's direction and its fit consistency above the table's cut (`cuts[6]`, which can be changed at run time).
 """
 from typing import NamedTuple
 
@@ -35,6 +37,7 @@ class Tables(NamedTuple):
     pool_idx: object = None   # [L] rows of pool_res, bin by bin
     pool_start: object = None  # [ne, nt]
     pool_count: object = None  # [ne, nt]
+    pool_dir: object = None   # [M] bool, all-track pools (pools="all"): the direction part of the quality cut
 
 
 def to_device(tab, dtype=np.float64):
@@ -48,7 +51,8 @@ def to_device(tab, dtype=np.float64):
                   jnp.asarray(tab["time_eff"], dt) if "time_eff" in tab else None,
                   *((jnp.asarray(tab["pool_res"], dt), jnp.asarray(tab["pool_idx"], jnp.int32),
                      jnp.asarray(tab["pool_start"], jnp.int32), jnp.asarray(tab["pool_count"], jnp.int32))
-                    if "pool_res" in tab else (None, None, None, None)))
+                    if "pool_res" in tab else (None, None, None, None)),
+                  jnp.asarray(tab["pool_dir"], bool) if "pool_dir" in tab else None)
 
 
 def entry_truth(x, p, axis_xy, bz, q=-1.0):
@@ -97,7 +101,10 @@ def apply(tb, key, has_entry, nrow, x, p, t=None):
         up = jax.random.uniform(jax.random.fold_in(key, 11), (x.shape[0],), dt)
         cnt = tb.pool_count[bn, bt]
         j = tb.pool_start[bn, bt] + jnp.minimum((up * cnt).astype(jnp.int32), jnp.maximum(cnt - 1, 0))
-        draw = tb.pool_res[tb.pool_idx[jnp.clip(j, 0, tb.pool_idx.shape[0] - 1)]].T
+        pr = tb.pool_idx[jnp.clip(j, 0, tb.pool_idx.shape[0] - 1)]
+        draw = tb.pool_res[pr].T
+        if tb.pool_dir is not None:  # all-track pools: the quality selection on the drawn track, at run time
+            qual = fit & tb.pool_dir[pr] & (draw[4] > tb.cuts[6])
     c = tb.cuts
     nan = jnp.asarray(jnp.nan, dt)
     obs = dict(p_reco=ptrue + draw[0], tandip=td + draw[1], d0=d0 + draw[2], rmax=rmax + draw[3],
