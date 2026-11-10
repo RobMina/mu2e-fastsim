@@ -26,8 +26,10 @@ cd "$W"
 [ -s "$DTS" ]
 for f in digi reco ntuple; do cp "$FCLDIR/$f.fcl" fcl/$f.fcl; done
 cp "$FCLDIR/manifest.json" manifest.json
+[ ! -d "$FCLDIR/files" ] || cp "$FCLDIR"/files/* .          # input files of the manifest (found by name)
 cat > chain.sh <<CH
 set -eo pipefail
+export MU2E_SEARCH_PATH="$W:\$MU2E_SEARCH_PATH"   # input files of the manifest, found by name (DbService text files)
 export TMPDIR=\$(dirname "\$OFFLINE_CACHE_PATH")/tmp
 export SQLITE_TMPDIR=\$TMPDIR
 mkdir -p "\$TMPDIR"

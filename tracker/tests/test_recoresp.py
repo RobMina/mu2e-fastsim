@@ -423,3 +423,21 @@ def test_registered_tables_are_fetched_into_the_cache_and_checked(tmp_path, monk
     with pytest.raises(FileNotFoundError):
         RT.resolve("no_such_table")
     assert RT.registry() == {} or all(len(k) == RC.HASH_LEN for k in RT.registry())
+
+
+def test_manifest_input_files_enter_the_hash_by_content_and_are_staged(tmp_path):
+    import hashlib
+    from trkfastsim.recoresp import config as RC
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir(), b.mkdir()
+    for d in (a, b):
+        (d / "t.txt").write_text("TABLE TrkPreampStraw\n0,1,2\n")
+    h = hashlib.sha256((a / "t.txt").read_bytes()).hexdigest()
+    m1 = dict(MANIFEST, files={"t.txt": {"source": str(a / "t.txt"), "sha256": h}})
+    m2 = dict(MANIFEST, files={"t.txt": {"source": str(b / "t.txt"), "sha256": h}})
+    assert RC.digest(m1) == RC.digest(m2) != RC.digest(MANIFEST)       # the source path does not enter the hash
+    RC.main(["render", __import__("json").dumps(m1), str(tmp_path / "fcl")])
+    assert (tmp_path / "fcl" / "files" / "t.txt").read_text().startswith("TABLE TrkPreampStraw")
+    (a / "t.txt").write_text("changed\n")
+    with pytest.raises(ValueError):                                    # a changed input file is refused
+        RC.stage_files(m1, tmp_path / "x")

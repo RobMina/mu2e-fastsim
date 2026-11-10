@@ -11,6 +11,8 @@ A manifest (JSON) holds:
                  {"include": base FCL, "lines": [FHiCL lines appended after the include]}: output names, and any
                  change of a stock input (a straw-status list, a fit setting)
   sample         the Geant4 reference sample: {"dataset": ..., "development": [sequencers], "held_out": [...]}
+  files          (optional) input files of the chain by name: {"source": path, "sha256": ...}; staged next to the FCL
+                 files by `render` and found by name in the job's working directory; the hash covers name and sha256
   table          build options (`pools`, `min_count`)
 
 The hash covers every field (canonical JSON: sorted keys, no whitespace), so a change of any stock input gives a new
@@ -53,7 +55,11 @@ def load(m):
 
 
 def canonical(m):
-    return json.dumps(load(m), sort_keys=True, separators=(",", ":"))
+    """Canonical JSON of a manifest. Input files (`files`) enter by name and content hash, not by their source path."""
+    m = load(m)
+    if "files" in m:
+        m["files"] = {k: {"sha256": v["sha256"]} for k, v in m["files"].items()}
+    return json.dumps(m, sort_keys=True, separators=(",", ":"))
 
 
 def digest(m):
@@ -103,6 +109,18 @@ def register(table_path, registry_path=None, url_base=URL_BASE):
     return e
 
 
+def stage_files(m, dest):
+    """Copy the manifest's input files (`files`: name -> {source, sha256}) into dest, checking each sha256. The
+    stock chain finds them by name in its working directory (e.g. DbService text-file overrides)."""
+    import shutil
+    for name, f in load(m).get("files", {}).items():
+        Path(dest).mkdir(parents=True, exist_ok=True)
+        out = Path(dest) / name
+        shutil.copyfile(f["source"], out)
+        if hashlib.sha256(out.read_bytes()).hexdigest() != f["sha256"]:
+            raise ValueError(f"input file {name}: sha256 differs from the manifest")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python3 -m trkfastsim.recoresp.config", description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -124,6 +142,7 @@ def main(argv=None):
         o.mkdir(parents=True, exist_ok=True)
         for st in STAGES:
             (o / f"{st}.fcl").write_text(render(m, st))
+        stage_files(m, o / "files")
         (o / "manifest.json").write_text(json.dumps(m, indent=1, sort_keys=True) + "\n")
     print(digest(m))
 
