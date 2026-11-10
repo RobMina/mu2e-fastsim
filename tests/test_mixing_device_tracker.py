@@ -448,7 +448,9 @@ def test_flat_digit_entries_equal_pair_loop(wide, helpers, onspill):
     assert not any(ae.values()), ae
     assert len(a["sid"]) > 0 and np.bincount(a["sid"]).max() >= 2
     for caps in (Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2),
-                 Capacities(64, 1024, 8, 4, 8, 2, end_tiers=[(4, 512)], digit_entries_per_straw=2.5)):
+                 Capacities(64, 1024, 8, 4, 8, 2, end_tiers=[(4, 512)], digit_entries_per_straw=2.5),
+                 Capacities(64, 1024, 8, 4, 8, 2, end_tiers=[(4, 512)], digit_entries_per_straw=2.5,
+                            flat_saturation_rows="auto")):
         b, be = evaluate(prepare(c, caps, 3), collection(st, 8), times)
         assert not any(be.values()), be
         for name in a:
@@ -459,6 +461,8 @@ def test_flat_digit_entries_equal_pair_loop(wide, helpers, onspill):
     for bad in (0, 9, "1"):
         with pytest.raises(ValueError, match="digit_entries_per_straw"):
             Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=bad)
+    with pytest.raises(ValueError, match="flat_saturation_rows"):
+        Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2, flat_saturation_rows="half")
 
 
 @pytest.mark.pr_params("True")   # onspill is the mixing mode
@@ -497,6 +501,16 @@ def test_packed_sort_keys_order_like_lexsort(cond):
     ev = rng.choice(np.array([0, 3, 255, sentinel]), 400)
     np.testing.assert_array_equal(packed.output_order(jnp.asarray(t), jnp.asarray(sid), jnp.asarray(ev)),
                                   jnp.lexsort((jnp.asarray(t), jnp.asarray(sid), jnp.asarray(ev))))
+
+
+def test_auto_saturation_rows_float64_only():
+    """flat_saturation_rows 'auto': batch rows per saturation chunk in float64, the loop's 2 x batch otherwise."""
+    from trkfastsim import devfloat as df
+    from trkfastsim.digi import digi_jax as dj
+    assert not df.SINGLE
+    assert dj._saturation_rows(8192) == 2 * 8192 and dj._saturation_rows(8192, "auto") == 8192
+    with pytest.raises(ValueError, match="saturation_rows"):
+        dj._saturation_rows(8192, "half")
 
 
 def test_float32_tracker_mode_in_subprocess(request):

@@ -99,7 +99,19 @@ def test_float32_flat_digit_entries_equal_pair_loop(cond, helpers):
     a, ae = evaluate(prepare(c, Capacities(64, 1024, 8, 512, 8, 2), 3), collection(st, 8), times)
     b, be = evaluate(prepare(c, Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2), 3),
                      collection(st, 8), times)
+    d, de = evaluate(prepare(c, Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2,
+                                           flat_saturation_rows="auto"), 3), collection(st, 8), times)
+    assert not any(de.values()), de
+    for name in a:
+        np.testing.assert_array_equal(a[name], d[name], err_msg=name)
     assert not any(ae.values()) and not any(be.values()), (ae, be)
     assert len(a["sid"]) > 0
     for name in a:
         np.testing.assert_array_equal(a[name], b[name], err_msg=name)
+
+
+def test_float32_auto_saturation_rows_keep_two_per_straw():
+    """flat_saturation_rows 'auto' never shrinks the saturation chunks in float32 (they drift there)."""
+    from trkfastsim.digi import digi_jax as dj
+    assert df.SINGLE
+    assert dj._saturation_rows(8192, "auto") == dj._saturation_rows(8192) == 2 * 8192
