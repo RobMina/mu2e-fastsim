@@ -16,9 +16,10 @@ The library, built from Geant4 dumper tables:
   offset from the crossing's along-wire point, the transverse offset from its wire, the chord components.
 
 On the device, every gas record of a track picks a Geant4 crossing of its length bin uniformly, with replacement; most
-crossings have no attributed steps (8.9 % of CE crossings have some in the Run 1A development library). The picked crossing's steps are placed in straw js + dk
-of the record's panel (dropped outside it), at the record's along-wire point plus the offsets, and appended to the
-track's rows (albedo.merge_records). The steps are electrons of the event; the response layer's nrow is not changed.
+crossings have no attributed steps (8.9 % of CE crossings have some in the Run 1A development library). The
+picked crossing's steps are placed in straw js + dk of the record's panel (dropped outside it), at the record's
+along-wire point plus the offsets, and appended to the track's rows (albedo.merge_records). The steps are electrons
+of the event; the response layer's nrow is not changed.
 """
 from dataclasses import dataclass
 from pathlib import Path
