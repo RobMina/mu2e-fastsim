@@ -170,6 +170,15 @@ device and applies the CE fiducial cuts to the smeared values. The shipped table
 development events only; check agreement on independent events. It extrapolates only as far as its reference:
 conversion electrons in the Run 1A tracker.
 
+Opt-in empirical joint draw (`table.build(..., pools=True)`, shipped as `recoresp/data/ce_loophelix_run1a_pools.npz`,
+`DeviceChain(response="pools")`): each bin also stores its pool of reference quality tracks, and the response draws
+one reference track's full vector (momentum, tan(dip), d0, r_max residuals and the fit-quality outputs) instead of the
+Gaussian copula and inverse CDFs. The copula keeps rank correlations but not tail dependence: a large momentum residual
+of the stock fit usually comes with an off-cut d0, r_max or tan(dip) and fails the fiducial cuts. On Run 1A DIO
+electrons (stock reconstruction of 200 dts files, response applied to the same events' Geant4 truth), the copula puts
++2 to +6 % more CE-selected tracks above 100 MeV/c than stock; with pools the ratio is 0.99-1.00 on both halves, and
+above 95 MeV/c and overall it is unchanged.
+
 ## Open
 
 - An unbiased reference for muons above 1 GeV/c and for side entries (the selection above).

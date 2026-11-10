@@ -31,6 +31,10 @@ class Tables(NamedTuple):
     icdf_dt0: object = None   # [ne, nt, NQ] t0 at the front - entry time, or None (older tables)
     time_edges: object = None  # entry-time turn-on of the fit efficiency, or None (older tables)
     time_eff: object = None
+    pool_res: object = None   # [M, K] quality-track residual vectors (tables built with pools=True), or None
+    pool_idx: object = None   # [L] rows of pool_res, bin by bin
+    pool_start: object = None  # [ne, nt]
+    pool_count: object = None  # [ne, nt]
 
 
 def to_device(tab, dtype=np.float64):
@@ -41,7 +45,10 @@ def to_device(tab, dtype=np.float64):
                   jnp.asarray(tab["cuts"], dt), jnp.asarray(tab["axis_xy"], dt), float(tab["bz"]),
                   jnp.asarray(tab["icdf_dt0"], dt) if "icdf_dt0" in tab else None,
                   jnp.asarray(tab["time_edges"], dt) if "time_eff" in tab else None,
-                  jnp.asarray(tab["time_eff"], dt) if "time_eff" in tab else None)
+                  jnp.asarray(tab["time_eff"], dt) if "time_eff" in tab else None,
+                  *((jnp.asarray(tab["pool_res"], dt), jnp.asarray(tab["pool_idx"], jnp.int32),
+                     jnp.asarray(tab["pool_start"], jnp.int32), jnp.asarray(tab["pool_count"], jnp.int32))
+                    if "pool_res" in tab else (None, None, None, None)))
 
 
 def entry_truth(x, p, axis_xy, bz, q=-1.0):
@@ -86,6 +93,11 @@ def apply(tb, key, has_entry, nrow, x, p, t=None):
     w = f - i
     kk = jnp.arange(K)[:, None]
     draw = tb.icdf[kk, bn[None], bt[None], i] * (1 - w) + tb.icdf[kk, bn[None], bt[None], i + 1] * w
+    if tb.pool_res is not None:      # empirical joint draw (tables built with pools): own key, one pool row per event
+        up = jax.random.uniform(jax.random.fold_in(key, 11), (x.shape[0],), dt)
+        cnt = tb.pool_count[bn, bt]
+        j = tb.pool_start[bn, bt] + jnp.minimum((up * cnt).astype(jnp.int32), jnp.maximum(cnt - 1, 0))
+        draw = tb.pool_res[tb.pool_idx[jnp.clip(j, 0, tb.pool_idx.shape[0] - 1)]].T
     c = tb.cuts
     nan = jnp.asarray(jnp.nan, dt)
     obs = dict(p_reco=ptrue + draw[0], tandip=td + draw[1], d0=d0 + draw[2], rmax=rmax + draw[3],
