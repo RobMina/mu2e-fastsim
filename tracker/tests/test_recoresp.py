@@ -238,3 +238,20 @@ def test_reference_text_is_stored_only_when_given():
     d = _reference(5000, np.random.default_rng(34))
     assert "reference" not in RT.build(d)
     assert str(RT.build(d, reference="synthetic dev")["reference"]) == "synthetic dev"
+
+
+def test_shipped_fulldts_table_has_the_default_bins_and_pools():
+    a, b = RT.load(), RT.load(RT.NAMED["fulldts"])
+    assert set(b) == set(RT.load(RT.POOLS))
+    for k in ("nrow_edges", "tandip_edges", "qnodes", "time_edges", "cuts", "axis_xy", "count"):
+        assert np.array_equal(a[k], b[k]), k          # the same development events, binned in the CE's own rows
+    assert "full G4" in str(b["reference"])
+    assert b["pool_res"].shape[1] == len(RT.RES + RT.QUAL) and (b["pool_count"] > 0).all()
+    assert int(b["pool_idx"].max()) < len(b["pool_res"])
+    w = a["count"]                                     # the full events' extra hits lower the quality pass
+    assert (b["eff_q"] * w).sum() < (a["eff_q"] * w).sum() - 0.03 * w.sum()
+
+
+def test_named_tables_resolve_to_shipped_files():
+    assert RT.NAMED["default"] == RT.DEFAULT and RT.NAMED["pools"] == RT.POOLS
+    assert all(p.exists() for p in RT.NAMED.values())
