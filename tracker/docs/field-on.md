@@ -181,8 +181,9 @@ above 95 MeV/c and overall it is unchanged.
 
 Default response, full events (`recoresp/data/ce_loophelix_run1a_fulldts_pools.npz`, `DeviceChain(response="default")`
 or `"fulldts"`; the conversion electron's own steps only: `"ceonly"`, with pools `"pools"`):
-the same development events and bins, measured with every Geant4 StrawGasStep of the event (delta rays, other
-secondaries, the calorimeter albedo) through stock reconstruction, with pools. The device transport supplies only the
+the same bins, built from 21 development dts files (59k events, three times the CE-only tables' sample), measured
+with every Geant4 StrawGasStep of the event (delta rays, other secondaries, the calorimeter albedo) through stock
+reconstruction, with pools. The device transport supplies only the
 conversion electron and its albedo, so this table carries the effect of the other secondaries on the fit.
 
 ## Open

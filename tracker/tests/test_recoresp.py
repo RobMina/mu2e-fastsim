@@ -243,8 +243,9 @@ def test_reference_text_is_stored_only_when_given():
 def test_shipped_fulldts_table_has_the_default_bins_and_pools():
     a, b = RT.load(RT.CEONLY), RT.load(RT.NAMED["fulldts"])
     assert set(b) == set(RT.load(RT.POOLS))
-    for k in ("nrow_edges", "tandip_edges", "qnodes", "time_edges", "cuts", "axis_xy", "count"):
-        assert np.array_equal(a[k], b[k]), k          # the same development events, binned in the CE's own rows
+    for k in ("nrow_edges", "tandip_edges", "qnodes", "time_edges", "cuts", "axis_xy"):
+        assert np.array_equal(a[k], b[k]), k          # the same bins, in the CE's own rows
+    assert (b["count"] >= a["count"]).all() and b["count"].sum() > 2.5 * a["count"].sum()   # 21 dts files, not 7
     assert "full G4" in str(b["reference"])
     assert b["pool_res"].shape[1] == len(RT.RES + RT.QUAL) and (b["pool_count"] > 0).all()
     assert int(b["pool_idx"].max()) < len(b["pool_res"])
