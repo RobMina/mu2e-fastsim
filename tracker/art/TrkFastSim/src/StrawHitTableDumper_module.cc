@@ -1,4 +1,7 @@
 // Dump StrawDigis, stock makeSH/makePH ComboHits and the StrawResponse constants to flat TTrees (T-VR1 reference).
+// With DumpTracks also the reco stages after the hits: time clusters (one or more collections), line seeds
+// (CosmicTrackSeed, optional), helix seeds (HelixSeed, optional, one or more collections) and the KalSeed fits with
+// their hits and straws, the fit parameters as KinematicLine or LoopHelix (FitType).
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -9,7 +12,9 @@
 #include "art/Framework/Principal/Event.h"
 #include "art_root_io/TFileService.h"
 #include "canvas/Utilities/InputTag.h"
+#include "cetlib_except/exception.h"
 #include "fhiclcpp/types/Atom.h"
+#include "fhiclcpp/types/Sequence.h"
 
 #include "Offline/DataProducts/inc/EventWindowMarker.hh"
 #include "Offline/DataProducts/inc/StrawEnd.hh"
@@ -17,6 +22,7 @@
 #include "Offline/ProditionsService/inc/ProditionsHandle.hh"
 #include "Offline/RecoDataProducts/inc/ComboHit.hh"
 #include "Offline/RecoDataProducts/inc/CosmicTrackSeed.hh"
+#include "Offline/RecoDataProducts/inc/HelixSeed.hh"
 #include "Offline/RecoDataProducts/inc/KalSeed.hh"
 #include "Offline/RecoDataProducts/inc/TimeCluster.hh"
 #include "Offline/DataProducts/inc/StrawIdMask.hh"
@@ -43,6 +49,14 @@ class StrawHitTableDumper : public art::EDAnalyzer {
     fhicl::Atom<art::InputTag> tc{Name("TimeClusterTag"), Comment("time clusters"), "SimpleTimeCluster"};
     fhicl::Atom<art::InputTag> seed{Name("CosmicTrackSeedTag"), Comment("line seeds"), "LineFinder"};
     fhicl::Atom<art::InputTag> kal{Name("KalSeedTag"), Comment("line fits"), "KKLine"};
+    fhicl::Sequence<art::InputTag> tcs{Name("TimeClusterTags"),
+        Comment("time-cluster collections, in tc_coll order (empty: TimeClusterTag alone)"), std::vector<art::InputTag>{}};
+    fhicl::Atom<bool> lineSeeds{Name("DumpLineSeeds"), Comment("with DumpTracks: the CosmicTrackSeeds"), true};
+    fhicl::Sequence<art::InputTag> hs{Name("HelixSeedTags"),
+        Comment("with DumpTracks: HelixSeed collections, in hs_coll order (empty: none)"), std::vector<art::InputTag>{}};
+    fhicl::Atom<std::string> fitType{Name("FitType"),
+        Comment("KalSeed segment parameters: KinematicLine (d0 phi0 z0 theta t0 mom) or LoopHelix (rad lam cx cy phi0 t0)"),
+        "KinematicLine"};
   };
   using Parameters = art::EDAnalyzer::Table<Config>;
   explicit StrawHitTableDumper(Parameters const& c);
@@ -54,18 +68,25 @@ class StrawHitTableDumper : public art::EDAnalyzer {
   void fillCH(ComboHitCollection const& col, bool panel);
   void fillTracks(art::Event const& e);
   art::InputTag sdTag_, shTag_, phTag_, pbtTag_, ewmTag_, tcTag_, seedTag_, kalTag_;
-  bool dumpTracks_;
-  // time clusters: hit counts, t0, flat makeSH indices
-  std::vector<int> tcn_, tcind_;
+  std::vector<art::InputTag> tcTags_, hsTags_;
+  bool dumpTracks_, lineSeeds_, loopHelix_;
+  // time clusters: collection (index in TimeClusterTags), hit counts, t0, flat indices into the collection's hits
+  std::vector<int> tccoll_, tcn_, tcind_;
   std::vector<float> tct0_, tct0err_;
   // line seeds: time-cluster index, status word, t0 and the line (A0, 0, B0) + s (A1, -1, B1), flat makeSH indices
   std::vector<int> sdtc_, sdn_, sdind_;
   std::vector<unsigned> sdstat_;
   std::vector<double> sdt0_, sda0_, sdb0_, sda1_, sdb1_;
-  // KalSeed fits: status, chi2, ndof, consistency, t0, KinematicLine at the segment nearest t0, hit counts
+  // helix seeds: collection (index in HelixSeedTags), time-cluster collection (index in TimeClusterTags, -1: other)
+  // and key, status word, t0, RobustHelix parameters and chi2s, flat makeSH indices
+  std::vector<int> hscoll_, hstccoll_, hstc_, hsn_, hsind_;
+  std::vector<unsigned> hsstat_;
+  std::vector<float> hst0_, hst0err_;
+  std::vector<double> hsrad_, hslam_, hscx_, hscy_, hsfz0_, hschi2xy_, hschi2zphi_;
+  // KalSeed fits: status, chi2, ndof, consistency, t0, the segment nearest t0 (FitType parameters, momentum), hit counts
   std::vector<unsigned> klstat_;
   std::vector<int> klndof_, klnhit_, klnact_;
-  std::vector<float> klchi2_, klcon_, klt0_, klt0err_;
+  std::vector<float> klchi2_, klcon_, klt0_, klt0err_, klmom_, klmomerr_;
   std::vector<double> klpar_[6], klerr_[6];
   // KalSeed hits: track index, makeSH index, strawId, ambiguity, active, fit DOCA, drift radius, fit dt
   std::vector<int> khtrk_, khind_, khsid_, khamb_, khact_;
@@ -103,7 +124,12 @@ class StrawHitTableDumper : public art::EDAnalyzer {
 
 StrawHitTableDumper::StrawHitTableDumper(Parameters const& c)
     : art::EDAnalyzer{c}, sdTag_(c().sd()), shTag_(c().sh()), phTag_(c().ph()), pbtTag_(c().pbt()), ewmTag_(c().ewm()),
-      tcTag_(c().tc()), seedTag_(c().seed()), kalTag_(c().kal()), dumpTracks_(c().dumpTracks()) {}
+      tcTag_(c().tc()), seedTag_(c().seed()), kalTag_(c().kal()), tcTags_(c().tcs()), hsTags_(c().hs()),
+      dumpTracks_(c().dumpTracks()), lineSeeds_(c().lineSeeds()), loopHelix_(c().fitType() == "LoopHelix") {
+  if (c().fitType() != "LoopHelix" && c().fitType() != "KinematicLine")
+    throw cet::exception("TRKDIGITABLE") << "FitType must be KinematicLine or LoopHelix, not " << c().fitType();
+  if (tcTags_.empty()) tcTags_.push_back(tcTag_);
+}
 
 void StrawHitTableDumper::beginJob() {
   art::ServiceHandle<art::TFileService> tfs;
@@ -131,7 +157,7 @@ void StrawHitTableDumper::beginJob() {
   }
   if (dumpTracks_) {
     for (auto [n, v] : std::vector<std::pair<const char*, std::vector<int>*>>{
-             {"tc_n", &tcn_}, {"tc_ind", &tcind_}, {"sd_tc", &sdtc_}, {"sd_n", &sdn_}, {"sd_ind", &sdind_},
+             {"tc_coll", &tccoll_}, {"tc_n", &tcn_}, {"tc_ind", &tcind_}, {"sd_tc", &sdtc_}, {"sd_n", &sdn_}, {"sd_ind", &sdind_},
              {"kl_ndof", &klndof_}, {"kl_nhit", &klnhit_}, {"kl_nactive", &klnact_}, {"kh_trk", &khtrk_},
              {"kh_ind", &khind_}, {"kh_sid", &khsid_}, {"kh_ambig", &khamb_}, {"kh_active", &khact_}})
       ev_->Branch(n, v);
@@ -139,7 +165,8 @@ void StrawHitTableDumper::beginJob() {
     ev_->Branch("kl_status", &klstat_);
     for (auto [n, v] : std::vector<std::pair<const char*, std::vector<float>*>>{
              {"tc_t0", &tct0_}, {"tc_t0err", &tct0err_}, {"kl_chi2", &klchi2_}, {"kl_fitcon", &klcon_},
-             {"kl_t0", &klt0_}, {"kl_t0err", &klt0err_}, {"kh_doca", &khdoca_}, {"kh_rdrift", &khrdrift_},
+             {"kl_t0", &klt0_}, {"kl_t0err", &klt0err_}, {"kl_segmom", &klmom_}, {"kl_segmomerr", &klmomerr_},
+             {"kh_doca", &khdoca_}, {"kh_rdrift", &khrdrift_},
              {"kh_dt", &khdt_}, {"kh_rdt", &khrdt_}, {"kh_sderr", &khsderr_}, {"kh_rdoca", &khrdoca_},
              {"kh_signqual", &khsignq_}, {"kh_driftqual", &khdriftq_}, {"kh_cdrift", &khcdrift_},
              {"kh_udocavar", &khudocavar_}, {"kh_wdot", &khwdot_},
@@ -152,10 +179,25 @@ void StrawHitTableDumper::beginJob() {
     for (auto [n, v] : std::vector<std::pair<const char*, std::vector<double>*>>{
              {"sd_t0", &sdt0_}, {"sd_a0", &sda0_}, {"sd_b0", &sdb0_}, {"sd_a1", &sda1_}, {"sd_b1", &sdb1_}})
       ev_->Branch(n, v);
-    const char* pn[6] = {"d0", "phi0", "z0", "theta", "t0", "mom"};  // KinKal::KinematicLine::ParamIndex order
+    const char* pkl[6] = {"d0", "phi0", "z0", "theta", "t0", "mom"};  // KinKal::KinematicLine::ParamIndex order
+    const char* plh[6] = {"rad", "lam", "cx", "cy", "phi0", "t0"};    // KinKal::LoopHelix::ParamIndex order
+    const char* const* pn = loopHelix_ ? plh : pkl;
+    std::string pre = loopHelix_ ? "kl_lh_" : "kl_";               // kl_lh_t0 apart from the KalSeed kl_t0
     for (int i = 0; i < 6; ++i) {
-      ev_->Branch((std::string("kl_") + pn[i]).c_str(), &klpar_[i]);
-      ev_->Branch((std::string("kl_") + pn[i] + "err").c_str(), &klerr_[i]);
+      ev_->Branch((pre + pn[i]).c_str(), &klpar_[i]);
+      ev_->Branch((pre + pn[i] + "err").c_str(), &klerr_[i]);
+    }
+    if (!hsTags_.empty()) {
+      for (auto [n, v] : std::vector<std::pair<const char*, std::vector<int>*>>{
+               {"hs_coll", &hscoll_}, {"hs_tccoll", &hstccoll_}, {"hs_tc", &hstc_}, {"hs_n", &hsn_}, {"hs_ind", &hsind_}})
+        ev_->Branch(n, v);
+      ev_->Branch("hs_status", &hsstat_);
+      ev_->Branch("hs_t0", &hst0_);
+      ev_->Branch("hs_t0err", &hst0err_);
+      for (auto [n, v] : std::vector<std::pair<const char*, std::vector<double>*>>{
+               {"hs_rad", &hsrad_}, {"hs_lam", &hslam_}, {"hs_cx", &hscx_}, {"hs_cy", &hscy_}, {"hs_fz0", &hsfz0_},
+               {"hs_chi2xy", &hschi2xy_}, {"hs_chi2zphi", &hschi2zphi_}})
+        ev_->Branch(n, v);
     }
   }
   cond_ = tfs->make<TTree>("conditions", "StrawResponse/StrawElectronics/geometry used by makeSH (first event)");
@@ -256,23 +298,52 @@ void StrawHitTableDumper::fillCH(ComboHitCollection const& col, bool panel) {
 }
 
 void StrawHitTableDumper::fillTracks(art::Event const& e) {
-  for (auto* v : {&tcn_, &tcind_, &sdtc_, &sdn_, &sdind_, &klndof_, &klnhit_, &klnact_, &khtrk_, &khind_, &khsid_,
+  for (auto* v : {&tccoll_, &tcn_, &tcind_, &sdtc_, &sdn_, &sdind_, &klndof_, &klnhit_, &klnact_, &khtrk_, &khind_, &khsid_,
                   &khamb_, &khact_}) v->clear();
   for (auto* v : {&sdstat_, &klstat_}) v->clear();
   for (auto* v : {&ksttrk_, &kstsid_, &kstact_}) v->clear();
   for (auto* v : {&ksttoca_, &kstwall_, &kstgas_, &kstwire_, &kstradlen_, &khsignq_, &khdriftq_, &khcdrift_,
                   &khudocavar_, &khwdot_}) v->clear();
-  for (auto* v : {&tct0_, &tct0err_, &klchi2_, &klcon_, &klt0_, &klt0err_, &khdoca_, &khrdrift_, &khdt_, &khrdt_, &khsderr_,
+  for (auto* v : {&tct0_, &tct0err_, &klchi2_, &klcon_, &klt0_, &klt0err_, &klmom_, &klmomerr_, &khdoca_, &khrdrift_, &khdt_, &khrdt_, &khsderr_,
                   &khrdoca_}) v->clear();
   for (auto* v : {&sdt0_, &sda0_, &sdb0_, &sda1_, &sdb1_}) v->clear();
   for (int i = 0; i < 6; ++i) { klpar_[i].clear(); klerr_[i].clear(); }
-  auto const& tcH = e.getValidHandle<TimeClusterCollection>(tcTag_);
-  for (auto const& tc : *tcH) {
-    tcn_.push_back(tc.nhits());
-    for (auto i : tc.hits()) tcind_.push_back(i);
-    tct0_.push_back(tc.t0().t0()); tct0err_.push_back(tc.t0().t0Err());
+  for (auto* v : {&hscoll_, &hstccoll_, &hstc_, &hsn_, &hsind_}) v->clear();
+  hsstat_.clear(); hst0_.clear(); hst0err_.clear();
+  for (auto* v : {&hsrad_, &hslam_, &hscx_, &hscy_, &hsfz0_, &hschi2xy_, &hschi2zphi_}) v->clear();
+  std::vector<art::ProductID> tcIds;
+  for (size_t ic = 0; ic < tcTags_.size(); ++ic) {
+    auto const& tcH = e.getValidHandle<TimeClusterCollection>(tcTags_[ic]);
+    tcIds.push_back(tcH.id());
+    for (auto const& tc : *tcH) {
+      tccoll_.push_back(ic);
+      tcn_.push_back(tc.nhits());
+      for (auto i : tc.hits()) tcind_.push_back(i);
+      tct0_.push_back(tc.t0().t0()); tct0err_.push_back(tc.t0().t0Err());
+    }
   }
-  for (auto const& sd : *e.getValidHandle<CosmicTrackSeedCollection>(seedTag_)) {
+  for (size_t ih = 0; ih < hsTags_.size(); ++ih) {
+    for (auto const& hs : *e.getValidHandle<HelixSeedCollection>(hsTags_[ih])) {
+      hscoll_.push_back(ih);
+      int tcc = -1;
+      if (hs.timeCluster().isNonnull())
+        for (size_t ic = 0; ic < tcIds.size(); ++ic)
+          if (hs.timeCluster().id() == tcIds[ic]) tcc = ic;
+      hstccoll_.push_back(tcc);
+      hstc_.push_back(hs.timeCluster().isNonnull() ? int(hs.timeCluster().key()) : -1);
+      hsstat_.push_back(uint32_t(std::stoul(hs.status().hex(), nullptr, 16)));
+      hst0_.push_back(hs.t0().t0()); hst0err_.push_back(hs.t0().t0Err());
+      auto const& h = hs.helix();
+      hsrad_.push_back(h.radius()); hslam_.push_back(h.lambda()); hscx_.push_back(h.centerx());
+      hscy_.push_back(h.centery()); hsfz0_.push_back(h.fz0());
+      hschi2xy_.push_back(h.chi2dXY()); hschi2zphi_.push_back(h.chi2dZPhi());
+      std::vector<StrawHitIndex> idx;
+      if (!hs.hits().empty()) hs.hits().fillStrawHitIndices(idx, StrawIdMask::uniquestraw);
+      hsn_.push_back(idx.size());
+      hsind_.insert(hsind_.end(), idx.begin(), idx.end());
+    }
+  }
+  if (lineSeeds_) for (auto const& sd : *e.getValidHandle<CosmicTrackSeedCollection>(seedTag_)) {
     sdtc_.push_back(sd.timeCluster().isNonnull() ? int(sd.timeCluster().key()) : -1);
     sdstat_.push_back(uint32_t(std::stoul(sd.status().hex(), nullptr, 16)));
     auto const& fp = sd.track().FitParams;
@@ -288,10 +359,17 @@ void StrawHitTableDumper::fillTracks(art::Event const& e) {
     klchi2_.push_back(ks.chisquared()); klndof_.push_back(ks.nDOF()); klcon_.push_back(ks.fitConsistency());
     klt0_.push_back(ks.t0Val()); klt0err_.push_back(std::sqrt(ks.t0Var()));
     auto seg = ks.segments().empty() ? ks.segments().end() : ks.nearestSegment(ks.t0Val());
+    bool noseg = seg == ks.segments().end();
+    klmom_.push_back(noseg ? 0 : seg->mom()); klmomerr_.push_back(noseg ? -1 : seg->momerr());
     for (int i = 0; i < 6; ++i) {
-      if (seg == ks.segments().end()) { klpar_[i].push_back(0); klerr_[i].push_back(-1); continue; }
-      auto kl = seg->kinematicLine();
-      klpar_[i].push_back(kl.paramVal(i)); klerr_[i].push_back(std::sqrt(kl.paramVar(i)));
+      if (noseg) { klpar_[i].push_back(0); klerr_[i].push_back(-1); continue; }
+      if (loopHelix_) {
+        auto lh = seg->loopHelix();
+        klpar_[i].push_back(lh.paramVal(i)); klerr_[i].push_back(std::sqrt(lh.paramVar(i)));
+      } else {
+        auto kl = seg->kinematicLine();
+        klpar_[i].push_back(kl.paramVal(i)); klerr_[i].push_back(std::sqrt(kl.paramVar(i)));
+      }
     }
     int nact = 0;
     for (auto const& h : ks.hits()) {
