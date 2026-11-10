@@ -67,22 +67,9 @@ def test_cetracker_fidelity_preset_takes_the_complete_wall(monkeypatch, tmp_path
     assert kw["albedo"] is None and kw["complete_outer_wall"] is True
 
 
-def test_cetracker_fidelity_preset_skips_the_response_it_does_not_apply(monkeypatch, tmp_path):
-    kw = _cetracker_main(monkeypatch, tmp_path, ["--approx-preset", "fidelity"])
-    assert "response" not in kw
-    with pytest.raises(SystemExit):
-        _cetracker_main(monkeypatch, tmp_path, ["--approx", "response_draw=empirical"])
-
-
-def test_empirical_response_draw_replaces_the_default_tables_only():
-    sel = BA.W2.select(overrides={"response_draw": "empirical"})
-    assert sel.apply_kwargs({"response": "default"}) == {"response": "pools"}
-    assert sel.apply_kwargs({"response": "pools"}) == {"response": "pools"}
-    with pytest.raises(ValueError, match="give response explicitly"):
-        sel.apply_kwargs({})
-    with pytest.raises(ValueError, match="give response explicitly"):
-        sel.apply_kwargs({"response": "my_table.npz"})
-    assert BA.W2.select().apply_kwargs({"response": "default"}) == {"response": "default"}
+def test_tracker_levels_leave_the_response_tables_alone():
+    for preset in A.PRESETS:
+        assert BA.W2.select(preset).apply_kwargs({"response": "default"})["response"] == "default"
 
 
 def test_cetracker_refuses_an_option_against_the_level(monkeypatch, tmp_path):
@@ -109,7 +96,7 @@ def test_bench_run_forwards_levels_to_the_device_chain(monkeypatch):
     kw = BA.W2.select("fidelity").apply_kwargs({"offline_root": "o", "response": "default"})
     with pytest.raises(Reached):
         H.bench_run(({"x": np.zeros(1)}, 1), **kw)
-    assert seen == {"offline_root": "o", "response": "pools", "complete_outer_wall": True}
+    assert seen == {"offline_root": "o", "response": "default", "complete_outer_wall": True}
 
 
 def test_tsdevice_stock_ds_entrance_reaches_the_ds_only_arm(monkeypatch, tmp_path):
@@ -154,7 +141,5 @@ def test_records_are_json_and_list_the_fixed_approximations():
     assert BA.W2.select("fidelity").record()["no_stock_path"] == ["calo_albedo", "straw_wall"]
 
 
-def test_fidelity_preset_without_a_response_keeps_the_copula():
-    sel = BA.W2.select("fidelity")
-    assert sel.apply_kwargs({}) == {"complete_outer_wall": True}
-    assert sel.record()["levels"]["response_draw"] == "copula"
+def test_fidelity_preset_without_a_response_sets_only_the_wall():
+    assert BA.W2.select("fidelity").apply_kwargs({}) == {"complete_outer_wall": True}

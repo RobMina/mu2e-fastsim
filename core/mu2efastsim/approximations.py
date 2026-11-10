@@ -50,8 +50,8 @@ class Approximation:
     None: no level closer to stock exists yet). ``alternative`` is PORT, STOCK_ART or NONE, ``stock`` says in words
     what stock does or which path gives it, and ``switch`` names the existing switch the levels drive.
     ``replaces`` ({name: values}) marks an argument a level changes from one of ``values`` to its own: the keyword
-    must be given with one of them (the level refines an option the run chose, e.g. response="default" to
-    response="pools") and is refused when absent, so a level never turns an output on by itself.
+    must be given with one of them (the level refines an option the run chose, e.g. one table name to another)
+    and is refused when absent, so a level never turns an output on by itself.
     """
     name: str
     description: str

@@ -59,14 +59,16 @@ def crv_pass(steps, pdg, timing, geom, counters, cond, cfg, tabs, pmap, seed, ch
     return join(result), {"seconds": time.perf_counter() - start, "stages": metrics}
 
 
-def write_output(path, keys, timing, crv, tracker=None):
+def write_output(path, keys, timing, crv, tracker=None, extra=None, compression=None):
+    """CRV and tracker tables (and `extra` {tree: columns}) to one ROOT file; compression None keeps uproot's default
+    (ZLIB 1), otherwise an uproot compression object (decoded arrays are the same, file bytes differ)."""
     D, P, C = crv
     def keyed(rows):
         ev = np.asarray(rows["ev"], np.int64)
         result = {name: keys[ev, i] for i, name in enumerate(("run", "subrun", "event"))}
         result.update({k: v for k, v in rows.items() if k != "ev"})
         return result
-    with uproot.recreate(path) as root:
+    with uproot.recreate(path, **({} if compression is None else {"compression": compression})) as root:
         events = {name: keys[:, i] for i, name in enumerate(("run", "subrun", "event"))}
         events.update(mc_pbtime=timing.mc_pbtime, reco_pbtime=timing.reco_pbtime, event_length=timing.event_length)
         for name, rows in (("digis", D), ("pulses", P), ("clusters", C)):
@@ -75,6 +77,8 @@ def write_output(path, keys, timing, crv, tracker=None):
         root.mktree("crvfast/events", events)
         if tracker is not None:
             root.mktree("trkdigi/events", tracker)
+        for name, columns in (extra or {}).items():
+            root.mktree(name, columns)
 
 
 def save_sampling(out, provenance):

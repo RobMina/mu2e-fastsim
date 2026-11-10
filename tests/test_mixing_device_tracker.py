@@ -437,6 +437,25 @@ def _flat_digit_steps(c, helpers):
     return helpers._steps(rows, ev=[0, 0, 0, 1, 1, 2])
 
 
+def _saturated_steps(c, helpers):
+    """Saturated ends in several electronics launches (two straws per launch in the tests), with unsaturated ones."""
+    rows = [helpers._step(c, sid, eion=.04, ion=1, t=t) for sid, t in ((1000, 400.), (1003, 650.), (1100, 500.),
+                                                                     (300, 800.), (2050, 450.), (520, 900.))]
+    rows += [helpers._step(c, 92, t=100.), helpers._step(c, 523, t=900.)]
+    return helpers._steps(rows, ev=[0, 0, 1, 1, 2, 2, 0, 1])   # 8 straws: the test models' capacity
+
+
+SATURATION_POOL_CAPS = (
+    dict(digit_entries_per_straw=2, flat_saturation_pool="tier"),
+    dict(digit_entries_per_straw=2, flat_saturation_rows="auto", flat_saturation_pool="tier"),
+    dict(end_tiers=[(8, 512)], digit_entries_per_straw=2.5, flat_saturation_pool="tier"),
+)
+
+
+def _pool_caps(kw):
+    return Capacities(64, 1024, 8, 8 if "end_tiers" in kw else 512, 8, 2, **kw)
+
+
 @pytest.mark.pr_params("True")   # onspill is the mixing mode
 @pytest.mark.parametrize("onspill", [False, True])
 def test_flat_digit_entries_equal_pair_loop(wide, helpers, onspill):
@@ -463,6 +482,38 @@ def test_flat_digit_entries_equal_pair_loop(wide, helpers, onspill):
             Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=bad)
     with pytest.raises(ValueError, match="flat_saturation_rows"):
         Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2, flat_saturation_rows="half")
+
+
+@pytest.mark.pr_params("True")   # onspill is the mixing mode
+@pytest.mark.parametrize("onspill", [False, True])
+def test_flat_saturation_pool_equals_per_launch(wide, helpers, onspill):
+    """flat_saturation_pool 'tier' saturates the ends of all launches of a kernel shape together: the same digis as
+    per-launch saturation and as the pair loop, narrow and with end tiers."""
+    c, model = wide(onspill)
+    st = _saturated_steps(c, helpers)
+    times = timing([1700., 1675., 1695.] if onspill else [100000.] * 3, [10., -5., 20.])
+    a, ae = evaluate(model, collection(st, 16), times)
+    assert not any(ae.values()), {k for k, v in ae.items() if v}
+    assert len(a["sid"]) > 0 and np.any(a["pmp"] > 0)
+    for kw in SATURATION_POOL_CAPS:
+        base = {k: v for k, v in kw.items() if k != "flat_saturation_pool"}
+        for caps in (_pool_caps(base), _pool_caps(kw)):
+            b, be = evaluate(prepare(c, caps, 3), collection(st, 16), times)
+            assert not any(be.values()), {k for k, v in be.items() if v}
+            for name in a:
+                np.testing.assert_array_equal(a[name], b[name], err_msg=f"{kw} {name}")
+
+
+def test_flat_saturation_pool_options():
+    with pytest.raises(ValueError, match="flat_saturation_pool"):
+        Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2, flat_saturation_pool="batch")
+    with pytest.raises(ValueError, match="flat digitisation"):
+        Capacities(64, 1024, 8, 512, 8, 2, flat_saturation_pool="tier")
+    assert Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2,
+                      flat_saturation_pool="tier").flat_kernel(2) == {"entries": 4, "saturation_pool": True}
+    # 'auto' pools in float32 only (this process is float64; the float32 file checks the other side)
+    assert Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2,
+                      flat_saturation_pool="auto").flat_kernel(2) == {"entries": 4}
 
 
 @pytest.mark.pr_params("True")   # onspill is the mixing mode

@@ -39,8 +39,8 @@ The presets:
 - **Levels map to existing options.** Each other level sets options the chain already has, for example
   `runchain --below-msc` or `cetracker --complete-outer-wall`.
 - **Conflicts are refused.** An option given explicitly with a different value is refused. The exception is a level
-  that refines an option the run chose, such as `response="default"` to `"pools"`. Such a level needs that option
-  given and never turns an output on by itself.
+  declared to refine an option the run chose (`replaces`, for example one table name to another). Such a level needs
+  that option given and never turns an output on by itself.
 - **Missing levels are refused.** A level an approximation does not have is refused, and so is an approximation that
   has no switch. Nothing is invented where no path exists.
 - **Bench entry points.** The shared timer (`python3 -m mu2efastsim.bench`) finds the declarations in
@@ -110,9 +110,8 @@ behaviour and any stock-art route outside the chain's levels:
 | W1 | `ds_layer_physics` (no switch) | always on | - | no level | thin-plane foils with per-layer Highland and restricted loss (stock: Geant4 in the foil geometry) | - |
 | W2-W4 | `calo_albedo`: tracker returns from the calorimeter (backscatter): sampled from a Geant4-built library, or none; the NumPy tracker has no albedo | library, none | none | library | none: Geant4 transport through the calorimeter; no stock path in the chain (the library is built from it) | cetracker --albedo (device tracker); DeviceChain(albedo=) |
 | W2-W4 | `straw_wall`: straw wall material: counted only on chords that cross the gas (default), or the complete outer-minus-gas wall with wall-only chords | gas_chords, complete | gas_chords | complete | none: Geant4 straw walls; the complete wall is the closer model | cetracker --complete-outer-wall; DeviceChain(complete_outer_wall=) |
-| W2-W4 | `response_draw`: reco response layer, residual and quality draw: Gaussian copula with inverse CDFs, or the empirical joint draw of one reference track's vector (keeps the tail dependence); with response="default" only | copula, empirical | copula | empirical | stock art: stock LoopHelix on the injector file (StrawGasStepsFromTable, stock digis) | DeviceChain(response="pools") (Python and bench only; the cetracker CLI applies no response) |
-| W2-W4 | `primary_only_steps` (no switch) | always on | - | no level | no delta rays, conversions or other secondaries in the tracker; stock StrawGasSteps from the production reco are the stock-art path | - |
-| W2-W4 | `reco_response` (no switch) | always on | - | no level | no track fit: efficiency and residuals from stock LoopHelix tables; stock art: the injector (fasttrk_field.root) through StrawGasStepsFromTable, stock digis and LoopHelix | - |
+| W2-W4 | `primary_only_steps` (no switch) | always on | - | no level | no delta rays, conversions or other secondaries in the tracker besides the albedo (DeviceChain(deltas=) takes a Geant4 delta-ray library .npz, opt-in; no level until the library ships); stock StrawGasSteps from the production reco are the stock-art path | - |
+| W2-W4 | `reco_response` (no switch) | always on | - | no level | no track fit: efficiency and residuals drawn from stock LoopHelix tables (default: measured on the full Geant4 events, with the empirical joint draw; CE-only tables by name, DeviceChain(response="ceonly")); stock art: the injector (fasttrk_field.root) through StrawGasStepsFromTable, stock digis and LoopHelix | - |
 | W2-W4 | `target_slab_physics` (no switch) | always on | - | no level | flat slabs, constant field per layer, shell curvature as an axial field, no secondaries (stock: Geant4 in the target geometry) | - |
 | W2-W4 | `rpc_internal_electron_only` (no switch) | always on | - | no level | W4: internal conversion only, the positron dropped (stock: external RPC with photon transport and both leptons) | - |
 | W5 | `muon_eloss`: stage-C muon energy loss: the run configuration's model (range-out with sub-stepped bars where range_out is set) or one bar loss at the entry momentum | run_config, entry_momentum | run_config | run_config | stock art: Geant4 CrvSteps from art through runchain --steps-input (response and reco only) | runchain --legacy-transport |
@@ -128,7 +127,7 @@ behaviour and any stock-art route outside the chain's levels:
 | W7 | `direct_front_entries_only` (no switch) | always on | - | no level | only direct disk-front entries get a response; stock CaloShowerSteps through device_chain.make_steps_chain / steps_batch (exact on stock steps) | - |
 | W7 | `template_fit_single_pass` (no switch) | always on | - | no level | Newton template fit without the second pass for chi2/ndf > 1 (stock: TMinuit with the refit) | - |
 | W8 | `compact_helix_fit` (no switch) | always on | - | no level | compact device helix fit in place of RobustHelixFinder/AgnosticHelixFinder; stock trigger replay on the same digis (trigger/replay.py --straw-digi-tag, trigger/hybrid pairing) | - |
-| W8 | `kalseed_response` (no switch) | always on | - | no level | KalSeedFilter as cuts plus a per-path pass probability (decide --response; without it probability 1); stock trigger replay on the same digis (trigger/replay.py --straw-digi-tag, trigger/hybrid pairing) | - |
+| W8 | `kalseed_response` (no switch) | always on | - | no level | KalSeedFilter as cuts plus a per-path pass probability (decide --response; without it probability 1; opt-in rows binned in time-cluster hits and helix momentum for the apr helix paths from run response-binned); stock trigger replay on the same digis (trigger/replay.py --straw-digi-tag, trigger/hybrid pairing) | - |
 | W8 | `exact_weighted_median` (no switch) | always on | - | no level | time clusters use the exact weighted median where stock uses the P2 estimate; stock trigger replay on the same digis (trigger/replay.py --straw-digi-tag, trigger/hybrid pairing) | - |
 | W8 | `tracker_path_subset` (no switch) | always on | - | no level | 20 single-helix tracker paths of 52 on the device; the replay runs all 52 | - |
 | W8 | `no_delta_finder` (no switch) | always on | - | no level | DeltaFinder skipped (exact without pileup); stock trigger replay on the same digis (trigger/replay.py --straw-digi-tag, trigger/hybrid pairing) | - |
@@ -142,9 +141,11 @@ behaviour and any stock-art route outside the chain's levels:
 - **W2-W4.** One declaration serves the stops (W2), DIO (W3) and RPC (W4) electrons of `cetracker`.
   - The albedo levels act on the device tracker; the NumPy tracker has none.
   - `straw_wall=complete` is the existing opt-in complete outer wall.
-  - `response_draw=empirical` is the opt-in empirical joint draw (`DeviceChain(response="pools")`). It replaces
-    `response="default"` and is refused when no response is requested. The fidelity preset leaves it at the copula
-    there, and in `cetracker`, which applies no response layer. The record keeps the reason.
+  - The response layer is not a level. Its default tables are measured on the full Geant4 events and draw residuals
+    and quality jointly from reference tracks (pools); the CE-only tables (`DeviceChain(response="ceonly")`) remain
+    available by name.
+  - `DeviceChain(deltas=)` appends Geant4 delta-ray straw steps from a library. It becomes a level once the library
+    ships with the package; until then the primary-only steps are listed without a switch.
   - The stock route for the response layer and the primary-only steps is the stock reconstruction of the injector
     file. It is a separate job, not a level.
 - **W5.**

@@ -29,6 +29,19 @@ python3 -m trigger.device.run decide --dump hold/*/trgdump.root --menu replay.fc
     --response response.json --logs hold/*/replay.log --prepared PREPARED --output hold.json --check-hits
 ```
 
+Opt-in binned response for the apr paths with a helix stage (AgnosticHelixFinder is not ported, and one scalar factor
+from CE does not carry to other samples): decide without `--response` on the development shards of each sample, then
+
+```bash
+python3 -m trigger.device.run response-binned --device ce_dev.json dio_dev.json \
+    --logs-sets "ce_dev/*/replay.log" "dio_dev/*/replay.log" --prepared PREPARED --base response.json \
+    --output response_binned.json
+```
+
+Each `apr_(Trk|Hlx)` path (`--paths`) gets one pass probability, binned in the straw hits of the event's best time
+cluster (`--edges`) and the momentum of the best device helix (`--edges-p`); it replaces that path's hs/ks factors.
+Every other path keeps its row from `--base`, so its decisions are unchanged. Without the file the default is unchanged.
+
 Inputs: `trgdump.root` from `StrawHitTableDumper` (tracker package) run in the replay job on the trigger's own
 collections (`StrawHitTag: TrigMakeSH`, `PanelHitTag: TrigMakePH`, tree `trigph` (`--tree` for another name)), which also gives the stock hits for
 `--check-hits`; `replay.fcl`, `manifest.json` and `inventory.json` from `trigger/replay.py`; the `TimeCluster.weights.xml`

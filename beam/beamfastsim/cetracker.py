@@ -244,8 +244,9 @@ class DeviceChain:
     tracker and response tables); each call runs one batch. Per-event outputs stay device arrays.
 
     offline_root, maps (G4BL headers, DS map first), gdml: as the CLI. response: reco response tables (.npz,
-    trkfastsim.recoresp.table), "default" (the tables shipped with trkfastsim.recoresp), "pools" (the same with the
-    pools: the opt-in empirical joint draw) or None (no track
+    trkfastsim.recoresp.table), "default" (the shipped default: "fulldts", the response of the full Geant4 events, every
+    StrawGasStep, with pools), "ceonly" (the conversion electron's own steps, the earlier default), "pools" or
+    "ceonly_pools" (the same with pools), a recoresp.table.NAMED name, or None (no track
     observables). digi_cond: device digitiser conditions (.npz,
     trkfastsim.digi.digicond) or None (no digis). ce_unroll, ce_shrink: cechain_jax's unroll and bucket shrink
     factor (a large shrink compacts less often and compiles fewer bucket shapes). digi_chunk: events per digitiser
@@ -254,12 +255,13 @@ class DeviceChain:
     (trkfastsim.sim.albedo): "default" (the shipped Geant4 Run 1A library, on by default), a library .npz or
     albedo.Library, or None (off: the transport before the albedo); albedo_species "all" (the electron and its shower
     electrons) or "ce" (the electron's own returns); albedo_max_chords: chord budget of the return transport (None:
-    no budget)."""
+    no budget). deltas: delta-ray straw steps (trkfastsim.sim.deltas): None (off, default), "default" (the shipped
+    Geant4 library) or a library .npz / deltas.Library."""
 
     def __init__(self, offline_root, maps, gdml, geom="Offline/Mu2eG4/geom/geom_2021_PhaseI_v03.txt",
                  response=None, digi_cond=None, dtype="float64", origin=ORIGIN, chord_mm=10.0, lanes=None,
                  ce_unroll=True, ce_shrink=2, digi_chunk=8000, resident_digis=True, complete_outer_wall=False,
-                 albedo="default", albedo_species="all", albedo_max_chords=8192):
+                 albedo="default", albedo_species="all", albedo_max_chords=8192, deltas=None):
         import jax  # noqa: F401  (device backend)
         from mu2efastsim import ehelix
         from trkfastsim.sim import fieldsteps_jax as FJ
@@ -281,7 +283,7 @@ class DeviceChain:
         self.resp = None
         if response is not None:
             from trkfastsim.recoresp import device as RD, table as RT
-            tab = RT.load() if response == "default" else RT.load(RT.POOLS) if response == "pools" else RT.load(response)
+            tab = RT.load(RT.NAMED.get(response, response) if isinstance(response, str) else response)
             self.resp = RD.to_device(tab, self.dt)
         self.cond = None
         if digi_cond is not None:
@@ -295,6 +297,12 @@ class DeviceChain:
             self.alb = AL.DeviceLibrary(lib.select(albedo_species), self.dt)
             self.alb_max_chords = albedo_max_chords
             self.alb_bz = float(ehelix.field_at(field, np.array([[AL.AXIS_XY[0], AL.AXIS_XY[1], AL.VD_Z]]))[0][2])
+        self.dl = None                             # trkfastsim.sim.deltas: delta-ray straw steps (None: off)
+        if deltas is not None:
+            from trkfastsim.sim import deltas as DL
+            lib = (deltas if isinstance(deltas, DL.Library)
+                   else DL.Library.load() if isinstance(deltas, str) and deltas == "default" else DL.Library.load(deltas))
+            self.dl = DL.DeviceLibrary(lib, self.dt)
 
     @staticmethod
     def births(stops, n, seed):
@@ -339,9 +347,31 @@ class DeviceChain:
             # the response tables count every row of the Geant4 conversion electron, its own albedo included
             trk, out["albedo"], ce_rows = self._albedo(trk, jax.random.fold_in(key, 4))
             nrow = nrow + ce_rows
+        if self.dl is not None:                    # after the albedo: the returns' crossings get deltas too
+            trk, out["deltas"] = self._deltas(trk, jax.random.fold_in(key, 5))
         t_trk = time.perf_counter() - tic
         return dict(cechain=r, has_entry=has, x=r.x, p=pe, t=r.t, tracker=trk, nrow=nrow,
                     timing=dict(cechain_s=round(t_ce, 3), tracker_s=round(t_trk, 3)), **out)
+
+    def _deltas(self, trk, key):
+        """Delta-ray straw steps (trkfastsim.sim.deltas) for every gas record: a Geant4 crossing of the record's path
+        length bin, its attributed steps placed relative to the record and appended to the track's rows (beyond R_CAP
+        dropped and counted). One host read (the step count)."""
+        import jax
+        import jax.numpy as jnp
+        from trkfastsim.sim import albedo as AL, deltas as DL, fieldsteps_jax as FJ
+        g = self.dl.pick(key, trk.steps)
+        total = int(jnp.sum(jnp.where(g >= 0, self.dl.g_count[jnp.maximum(g, 0)], 0)))
+        if not total:
+            return trk, dict(steps=0, kept=0, dropped=0, overflow=0, outside=0)
+        # buffer from the batch size only (one compiled shape per batch shape); steps beyond it are dropped, counted
+        size = max(4096, 1 << int(np.ceil(np.log2(g.shape[0] * DL.STEPS_PER_EVENT))))
+        ext, row, ok = self.dl.make(g, trk.steps, self.trk.T, size)
+        steps, dropped = AL.merge_records(trk.steps, ext, row, ok, FJ.R_CAP)
+        h = jax.device_get(dict(kept=jnp.sum(ok), dropped=dropped))
+        over = max(total - size, 0)
+        return trk._replace(steps=steps), dict(steps=total, kept=int(h["kept"]), dropped=int(h["dropped"]), overflow=over,
+                                               outside=total - over - int(h["kept"]))
 
     def _albedo(self, trk, key):
         """Downstream albedo (trkfastsim.sim.albedo): tracks that left the tracker downstream pick a Geant4 exit of
@@ -552,11 +582,6 @@ def main(argv=None):
     a = ap.parse_args(argv)
     try:
         selection = approximations.from_args(a, W2)
-        if selection.levels["response_draw"] != "copula":      # this command applies no response layer
-            if "response_draw" in selection.overrides:
-                raise ValueError("response_draw: the cetracker command applies no response layer (use DeviceChain "
-                                 "or the bench entry with response=\"default\")")
-            selection.set_effective("response_draw", "copula", "the cetracker command applies no response layer")
         selection.apply_namespace(a, ap)
     except ValueError as e:
         ap.error(str(e))

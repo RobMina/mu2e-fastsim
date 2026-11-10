@@ -43,20 +43,15 @@ _TRACKER = (
         levels=("gas_chords", "complete"), default="gas_chords", sets={"complete": {"complete_outer_wall": True}},
         fidelity="complete", alternative=NONE, stock="Geant4 straw walls; the complete wall is the closer model",
         switch="cetracker --complete-outer-wall; DeviceChain(complete_outer_wall=)"),
-    Approximation(
-        "response_draw", "reco response layer, residual and quality draw: Gaussian copula with inverse CDFs, or "
-        "the empirical joint draw of one reference track's vector (keeps the tail dependence); with "
-        "response=\"default\" only",
-        levels=("copula", "empirical"), default="copula", sets={"empirical": {"response": "pools"}},
-        replaces={"response": ("default",)}, fidelity="empirical", alternative=STOCK_ART,
-        stock="stock LoopHelix on the injector file (StrawGasStepsFromTable, stock digis)",
-        switch="DeviceChain(response=\"pools\") (Python and bench only; the cetracker CLI applies no response)"),
 )
 _TRACKER_FIXED = {
-    "primary_only_steps": "no delta rays, conversions or other secondaries in the tracker; stock StrawGasSteps from "
-                          "the production reco are the stock-art path",
-    "reco_response": "no track fit: efficiency and residuals from stock LoopHelix tables; stock art: the injector "
-                     "(fasttrk_field.root) through StrawGasStepsFromTable, stock digis and LoopHelix",
+    "primary_only_steps": "no delta rays, conversions or other secondaries in the tracker besides the albedo "
+                          "(DeviceChain(deltas=) takes a Geant4 delta-ray library .npz, opt-in; no level until the "
+                          "library ships); stock StrawGasSteps from the production reco are the stock-art path",
+    "reco_response": "no track fit: efficiency and residuals drawn from stock LoopHelix tables (default: measured on "
+                     "the full Geant4 events, with the empirical joint draw; CE-only tables by name, "
+                     "DeviceChain(response=\"ceonly\")); stock art: the injector (fasttrk_field.root) through "
+                     "StrawGasStepsFromTable, stock digis and LoopHelix",
     "target_slab_physics": "flat slabs, constant field per layer, shell curvature as an axial field, no "
                            "secondaries (stock: Geant4 in the target geometry)",
 }

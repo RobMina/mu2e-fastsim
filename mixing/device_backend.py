@@ -104,6 +104,9 @@ class Backend:
         self.assets = jax.device_put(model.assets, self.device)
         self._seeds = jax.device_put(np.array([args.sampling_seed, args.seed, args.tracker_seed], np.uint64), self.device)
         self.output_mode = getattr(args, "device_output", None) or "root"
+        self.output_compression = getattr(args, "output_compression", None)
+        if self.output_compression not in (None, *COMPRESSIONS):
+            raise ValueError(f"output compression must be one of {sorted(COMPRESSIONS)}")
         if self.output_mode not in ("root", "occupancy"):
             raise ValueError("device output must be root or occupancy")
         if self.output_mode == "occupancy":
@@ -257,7 +260,7 @@ class Backend:
                                    host["output"], self._sector_names)
         else:
             save_sampling(path.parent, receipt)
-            _write(path, keys, request.ordinal_start, host["output"])
+            _write(path, keys, request.ordinal_start, host["output"], self.output_compression)
         return usage
 
 
@@ -274,8 +277,14 @@ def _rows(table, events):
     return rows
 
 
-def _write(path, keys, ordinal, output):
-    """Final-output compaction only: no detector calculation or intermediate upload."""
+COMPRESSIONS = {"zstd1": lambda: uproot.ZSTD(1), "lz4": lambda: uproot.LZ4(1), "none": lambda: None}
+
+
+def _write(path, keys, ordinal, output, compression=None):
+    """Final-output compaction only: no detector calculation or intermediate upload.
+
+    compression None writes as before (uproot default ZLIB 1, benchmark tree added in a second open); a COMPRESSIONS
+    name writes every tree in one open with that compression: the same decoded arrays, other file bytes."""
     n = len(keys)
     crv = tuple(_rows(output[name], n) for name in ("digis", "pulses", "clusters"))
     tracker = _rows(output["tracker"], n)
@@ -287,10 +296,14 @@ def _write(path, keys, ordinal, output):
             values = values[order]
             columns["d_" + name] = ak.unflatten(values.reshape(-1), counts * values.shape[1]) if values.ndim == 2 else ak.unflatten(values, counts)
     timing = SimpleNamespace(**{name: output["timing"][name][:n] for name in ("mc_pbtime", "reco_pbtime", "event_length")})
-    write_output(path, keys, timing, crv, columns)
-    with uproot.update(path) as root:
-        root.mktree("benchmark/events", {**dict(zip(IDS, keys.T)),
-                    "realization": np.arange(n, dtype=np.uint64) + np.uint64(ordinal)})
+    benchmark = {**dict(zip(IDS, keys.T)), "realization": np.arange(n, dtype=np.uint64) + np.uint64(ordinal)}
+    if compression is None:
+        write_output(path, keys, timing, crv, columns)
+        with uproot.update(path) as root:
+            root.mktree("benchmark/events", benchmark)
+        return
+    write_output(path, keys, timing, crv, columns, extra={"benchmark/events": benchmark},
+                 compression=COMPRESSIONS[compression]() or uproot.compression.ZLIB(0))
 
 
 def _overflow_detail(flag, usage, capacities):

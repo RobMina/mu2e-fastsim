@@ -235,6 +235,8 @@ def main(argv=None):
     parser.add_argument("--device-output", choices=("root", "occupancy"), default="root",
                         help="device backend only: full detector tables to ROOT (default) or on-device occupancy NPZ")
     parser.add_argument("--occupancy-geometry", type=Path, help="bar_to_sector JSON (as counts --geometry) for occupancy output")
+    parser.add_argument("--output-compression", choices=("zstd1", "lz4", "none"),
+                        help="device backend ROOT output only: compression (default: uproot ZLIB 1)")
     parser.add_argument("--device-pipeline", action="store_true",
                         help="device backend only: dispatch the next batch before writing the previous one")
     from mu2efastsim import approximations
