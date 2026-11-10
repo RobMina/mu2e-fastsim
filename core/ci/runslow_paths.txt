@@ -9,3 +9,5 @@
 # float32 device mode and job-side imports
 ^mu2efastsim/precision\.py$
 ^ci/runslow
+# field-by-field sweeps of the secondary zero-step capture fixture
+^mu2efastsim/capture_secondary_zero_step\.py$
