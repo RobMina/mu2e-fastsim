@@ -124,6 +124,7 @@ def test_quick_uses_a_quarter(release):
     assert main(["--quick", "--only", "ce,crv"], run) == 0
     assert [c[c.index("--batch") + 1] for c in run.calls[:2]] == ["262144", "1024"]
     assert run.calls[0][run.calls[0].index("--n") + 1] == str(2 * 262144)
+    assert run.calls[2][run.calls[2].index("--max-events") + 1] == "250"
 
 
 def test_gpu_batch_follows_the_sm_count(release):
@@ -133,7 +134,6 @@ def test_gpu_batch_follows_the_sm_count(release):
     assert main(["--only", "ce"], run, cores=14) == 0
     g = run.calls[0]
     assert g[g.index("--batch") + 1] == "131072" and g[g.index("--lanes") + 1] == "65536"
-    assert run.calls[2][run.calls[2].index("--max-events") + 1] == "250"
 
 
 def test_outside_tolerance_and_failed_chain(release, capsys):
