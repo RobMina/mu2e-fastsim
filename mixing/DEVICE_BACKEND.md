@@ -119,6 +119,14 @@ so the host transfer and the ROOT write sit between device steps. `--device-pipe
 
 Per-batch metrics then report `wait_transfer_and_write_s` instead of separate device and transfer times.
 
+## Output compression (opt-in)
+
+ROOT output uses uproot's default compression (ZLIB level 1), and the benchmark tree is added in a second open of the
+file. `--output-compression zstd1|lz4|none` (stream benchmark) or `"output_compression"` (bench configuration) writes
+every tree in one open with that compression: the decoded trees and branches are the same, but the file bytes differ.
+On one real batch of 256 mixed events with full digis, the write takes 0.25 s with ZLIB 1 (5.4 MB), 0.10 s with
+ZSTD 1 (4.9 MB), 0.08 s with LZ4 (7.1 MB) and 0.05 s uncompressed (15.8 MB).
+
 ## Reproducible synthetic integration
 
 From the umbrella with JAX/uproot/awkward dependencies installed:
