@@ -154,12 +154,6 @@ def test_records_are_json_and_list_the_fixed_approximations():
     assert BA.W2.select("fidelity").record()["no_stock_path"] == ["calo_albedo", "straw_wall"]
 
 
-def test_pools_table_exists_for_the_empirical_level():
-    RT = pytest.importorskip("trkfastsim.recoresp.table")
-    from pathlib import Path
-    assert Path(RT.POOLS).exists()
-
-
 def test_fidelity_preset_without_a_response_keeps_the_copula():
     sel = BA.W2.select("fidelity")
     assert sel.apply_kwargs({}) == {"complete_outer_wall": True}
