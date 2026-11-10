@@ -380,7 +380,7 @@ def table_markdown(workflows):
             rows.append(f"| {w.name} | `{a.name}`: {a.description}{note} | {', '.join(levels)} | {a.fast or a.default} "
                         f"| {a.fidelity or 'no path yet'} | {a.alternative}: {a.stock} | {a.switch} |")
         for name, stock in w.fixed.items():
-            rows.append(f"| {w.name} | `{name}` (no switch) | always on | - | no path yet | none: {stock} | - |")
+            rows.append(f"| {w.name} | `{name}` (no switch) | always on | - | no level | {stock} | - |")
     return "\n".join(rows) + "\n"
 
 
