@@ -27,7 +27,8 @@ determinism setting and device model, and the tracker's effective float and sett
 
 Float32 matmuls and einsums (the plane-clipping products `o.n` and `d.n`) run in full float32: core's float32 mode
 sets JAX's `default_matmul_precision` to `highest`, instead of XLA's TF32 default on Ampere and later (relative error
-about 6e-4, 0.5 mm at 800 mm).
+about 6e-4, 0.5 mm at 800 mm). The DriftANN/BkgANN MLP (`reco/driftann.py`) is float32 in both settings, as stock's
+SOFIE, and asks for `precision="highest"` itself.
 
 ## Precision-aware forms (float32 only)
 

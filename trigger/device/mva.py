@@ -41,7 +41,7 @@ def evaluate(net, x):
         x = (x - net["offset"]) * net["scale"] - F32(1.0)
     one = jnp.ones(x.shape[:-1] + (1,), F32)
     for k, w in enumerate(net["layers"]):
-        y = jnp.concatenate([x, one], axis=-1) @ jnp.asarray(w)
+        y = jnp.matmul(jnp.concatenate([x, one], axis=-1), jnp.asarray(w), precision="highest")   # float32 as stock, no TF32
         if k < len(net["layers"]) - 1:
             y = F32(1.0) / (F32(1.0) + jnp.exp(-y)) if net["act"] == "sigmoid" else jnp.tanh(y)
         x = y

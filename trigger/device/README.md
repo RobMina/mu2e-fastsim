@@ -54,4 +54,5 @@ per-event loop; events without digis keep their place.
 `--precision float32` (bench: `TRIGGER_DEVICE_PRECISION=float32`) runs every device array in 32-bit, including
 the double-precision intermediates of the stock hit reconstruction; the default `float64` keeps the stock types.
 JAX's x64 flag is process-wide, so a process runs one precision. float32 also sets the process-wide
-`jax_default_matmul_precision` to `highest`, so the MVA and helix matmuls do not run on TF32 tensor cores.
+`jax_default_matmul_precision` to `highest`, so the helix matmuls do not run on TF32 tensor cores. The time-cluster MVA
+is float32 in both precisions, as stock, and asks for `precision="highest"` itself.

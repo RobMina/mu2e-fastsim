@@ -64,6 +64,8 @@ def test_mlp_matches_numpy(tmp_path):
     h = 1 / (1 + np.exp(-(np.c_[xn, np.ones(2)] @ w0)))
     ref = 1 / (1 + np.exp(-(np.c_[h, np.ones(2)] @ w1)[:, 0]))
     np.testing.assert_allclose(np.asarray(mva.evaluate(net, x)), ref, rtol=1e-6)
+    import jax
+    assert "HIGHEST" in jax.jit(lambda v: mva.evaluate(net, v)).lower(x).as_text()   # float32 matmuls, no TF32
 
 
 def test_panel_combine_greedy():
