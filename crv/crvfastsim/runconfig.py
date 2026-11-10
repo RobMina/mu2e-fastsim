@@ -95,6 +95,8 @@ class RunConfig:
     add_opposite_side_pulses: bool = True
     conditions: str = ""              # Offline CRVConditions text set of the stock job ({calib,status,photonyield}_<set>.txt);
                                       # set: runchain refuses --calib nominal (it counts the status-ignored channels as live)
+    sipm_pixel_id: str = "lrint"      # SiPM photon-map point -> pixel id of the stock reference release (sipm.PIXEL_IDS):
+                                      # "truncate" from Offline v13_40_00 (7e72638), "lrint" up to v13_39_00
 
     def counters_path(self):
         from . import geometry
@@ -127,9 +129,14 @@ class RunConfig:
                                    ignore_secondary_pulses=self.ignore_secondary_pulses,
                                    add_opposite_side_pulses=self.add_opposite_side_pulses)
 
+    def sipm(self):
+        from .response import sipm as SI
+        return dataclasses.replace(SI.SiPMConfig(), pixel_id=self.sipm_pixel_id)
+
     def chain_config(self, **kw):
         from . import chain
-        return chain.ChainConfig(response=self.response(), finder=self.finder(), window=self.window, **kw)
+        return chain.ChainConfig(response=self.response(), finder=self.finder(), sipm=self.sipm(), window=self.window,
+                                 **kw)
 
     def bar_cut(self, geom):
         """[nbars] delta production threshold [MeV] for the transport, or None for the extracted default."""
@@ -160,7 +167,9 @@ RUN1A_V01 = RunConfig(
     "run1a_v01", "Offline/Mu2eG4/geom/crv_counters_run1a_v01.txt", f"{GEOM_DIR}/mu2e_run1a_v01.gdml",
     RUN1A_SECTORS, 0.90, RUN1A_CUTS, False, ONSPILL_WINDOW, lib_group={"T1": "EX", "T2": "EX"}, showers=False,
     delta_cut_mev=0.361, below_world=True,
-    geom_text="Offline/Mu2eG4/geom/geom_run1_a.txt", conditions="run1a_v01")
+    geom_text="Offline/Mu2eG4/geom/geom_run1_a.txt", conditions="run1a_v01", sipm_pixel_id="truncate")
+# the Run 1A stock reference is Offline v13_41_00 (CRV1/W5 V-series): its SiPM pixel ids are truncated (7e72638); with
+# lrint the fast SiPM saturated less, +0.25 % cluster PE on the same Geant4 steps, rising to +1 % above 200 PE per SiPM
 # Run 1B: the CRV and everything above it (building, hatch blocks) are Run 1A's; the relocated tracker and DS2 are inside
 # the CRV and never seen by the transport, so the Run 1A GDML serves (the stock cosmic job does not build the Run 1B
 # world: "Failed to retrieve ... MECOStyleProtonAbsorber", the PA is disabled in geom_run1_b_v01)

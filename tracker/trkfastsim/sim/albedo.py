@@ -20,14 +20,20 @@ exits and delayed by the fast exit's time. The returns are then started on the V
 transport. Exits without returns are the large majority of every bin, so the return probability, the multiplicity and
 the joint return spectrum (momentum, direction, radius, delay) all come from Geant4 per bin. A return that leaves
 downstream again is not returned a second time (Geant4's later returns of the same exit are in its list).
+
+The shipped Run 1A library is data/albedo_run1a_v1.npz (DEFAULT; provenance in data/README.md), the default of
+beamfastsim.cetracker.DeviceChain (species "all", chord budget DEFAULT_MAX_CHORDS).
 """
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
 AXIS_XY = (-3904.0, 0.0)        # tracker axis (Mu2e frame) [mm]
 VD_BACK = 15                    # virtual detector at the tracker's downstream end (TT_Back)
 VD_Z = 11810.5                  # its Mu2e z [mm]
+DEFAULT = Path(__file__).with_name("data") / "albedo_run1a_v1.npz"   # the shipped Run 1A library
+DEFAULT_MAX_CHORDS = 8192       # chord budget of the return transport (97 % of the return rows of no budget)
 R_EDGES = np.array([0.0, 335.0, 400.0, 500.0, 600.0, 719.0, 1e9])      # calorimeter disk 0: 335 to 719 mm
 COS_EDGES = np.array([-1.0, 0.55, 0.65, 0.75, 1.01])
 KB = 0.299792458                # MeV/c per (T mm)
@@ -76,7 +82,7 @@ class Library:
                             source=np.array(self.source), r_edges=R_EDGES, cos_edges=COS_EDGES)
 
     @classmethod
-    def load(cls, path):
+    def load(cls, path=DEFAULT):
         with np.load(path, allow_pickle=False) as z:
             if not (np.array_equal(z["r_edges"], R_EDGES) and np.array_equal(z["cos_edges"], COS_EDGES)):
                 raise ValueError(f"{path}: library built with other bins")

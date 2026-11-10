@@ -111,6 +111,18 @@ in the dense kernel; only the summation order of overlapping charges differs. Di
 tested equal to the dense path, with and without noise. `charges_per_cluster` is unused in
 this mode. Default `"dense"` is unchanged.
 
+## Bounded digi listing and pulse scans (opt-in)
+
+Two CRV capacity options restructure padded scans without changing results:
+- `"digi_starts": "rows"`: digi starts are listed from the rows of the [charge_clusters, waveform_samples] start table
+  that hold one, instead of a `nonzero` over the whole table. The scatter synthesis' gated scan stops at the longest
+  waveform. The (row, sample) list is the same, fill values included.
+- `"pulse_scan": "bounded"`: the `pulsefit_jax` peak scans stop at the longest reco waveform. The fit rounds stop once
+  no waveform found a pulse; a waveform that finds none never finds one later. The found pulses are the same.
+
+On an A100 at batch 256 the CRV stage goes 0.183 -> 0.102 s (float32) and 0.227 -> 0.133 s (float64). Full-pass
+outputs are identical to the defaults (dev and held-out, both dtypes). The Run 1A capacity files set both.
+
 ## Scope and validation
 
 Supported: staged stock onspill ZS response through reduced coincidence outputs.

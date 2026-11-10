@@ -1,8 +1,10 @@
 """SiPM charges from photon arrivals: a port of Offline CRVResponse MakeCrvSiPMCharges + CrvSiPMChargeGenerator.
 
 Stock model, per SiPM (an event queue in time order):
-  * each photon lands on a pixel drawn from the fibre photon map (TH2F 40 x 40, GetRandom2 then lrint, so a pixel id
-    can be 40); pixels in the inactive 4 x 4 centre are dead; photons after the window end are dropped;
+  * each photon lands on a pixel drawn from the fibre photon map (TH2F 40 x 40, GetRandom2 for a point, then a pixel
+    id: SiPMConfig.pixel_id "truncate" = static_cast<int>, the map's own [i, i+1) bins, Offline v13_40_00 and later
+    (7e72638); "lrint" = rounding, half a pixel off the bins so a pixel id can be 40, Offline v13_39_00 and earlier);
+    pixels in the inactive 4 x 4 centre are dead; photons after the window end are dropped;
   * a pixel fires with probability p1 (1 - exp(-v / p2)), where v = Vov (1 - exp(-(t - t_last) / tau)) recovers after
     its previous discharge (v = Vov if never fired); a firing gives charge C v, i.e. v / Vov PE;
   * each firing schedules cross-talk at the same time on each existing 4-neighbour with probability
@@ -17,7 +19,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-NPIX = 41  # pixel ids 0..40 (lrint of a coordinate in [0, 40] can give 40)
+NPIX = 41  # pixel ids 0..40 (lrint of a coordinate in [0, 40] can give 40; truncation gives 0..39)
+PIXEL_IDS = ("lrint", "truncate")
 
 
 @dataclass
@@ -36,6 +39,8 @@ class SiPMConfig:
     trap0_lifetime: float = 5.0
     trap1_lifetime: float = 50.0
     inactive: tuple = field(default_factory=lambda: tuple((x, y) for x in range(18, 22) for y in range(18, 22)))
+    pixel_id: str = "lrint"   # photon-map point -> pixel id, by stock release (PIXEL_IDS, module docstring); the
+                              # run configurations set it to the release of their stock reference (runconfig)
 
     def p_fire(self, v):
         return self.p1 * (1.0 - np.exp(-v / self.p2))
@@ -51,12 +56,18 @@ def photon_map(path=None):
         return f["photonMap"].to_numpy()[0].astype(float)
 
 
-def draw_pixels(pmap, n, rng):
-    """GetRandom2 + lrint: a bin by content, a uniform point in it, rounded to the nearest integer pixel."""
+def draw_pixels(pmap, n, rng, pixel_id="lrint"):
+    """GetRandom2: a bin by content and a uniform point in it; then the pixel id of the point. "lrint" rounds it to the
+    nearest integer (bin i -> pixel i or i + 1), "truncate" keeps the bin (pixel i). Both draw the same numbers."""
+    if pixel_id not in PIXEL_IDS:
+        raise ValueError(f"SiPM pixel_id must be one of {PIXEL_IDS}, got {pixel_id!r}")
     cum = np.cumsum(pmap.ravel())
     b = np.searchsorted(cum, rng.random(n) * cum[-1], side="right")
     bx, by = b // pmap.shape[1], b % pmap.shape[1]
-    return bx + (rng.random(n) >= 0.5), by + (rng.random(n) >= 0.5)
+    hx, hy = rng.random(n) >= 0.5, rng.random(n) >= 0.5
+    if pixel_id == "truncate":
+        return bx, by
+    return bx + hx, by + hy
 
 
 def _neighbours(x, y, cfg):
@@ -86,7 +97,7 @@ def simulate(chan, time, photon, pmap, cfg, rng, t_end=1e5, t_start=0.0, thermal
         time = np.r_[time, t_start + (t_end - t_start) * rng.random(len(tc))]
         photon = np.r_[photon, np.full(len(tc), -1)]
         dark = np.r_[dark, np.ones(len(tc), bool)]
-    px, py = draw_pixels(pmap, len(chan), rng)
+    px, py = draw_pixels(pmap, len(chan), rng, cfg.pixel_id)
     if dark.any():
         px[dark] = rng.integers(0, cfg.n_pixels_x, dark.sum())
         py[dark] = rng.integers(0, cfg.n_pixels_y, dark.sum())

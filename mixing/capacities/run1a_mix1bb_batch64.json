@@ -44,7 +44,8 @@
    "minion_search": "compare_all",
    "minion_unroll": 4,
    "digit_entries_per_straw": 1.182,
-   "pack_sort": "packed"
+   "pack_sort": "packed",
+   "flat_saturation_rows": "auto"
   },
   "crv": {
    "substeps": 97895,
@@ -65,7 +66,9 @@
    "pulse_rounds": 8,
    "coinc_hits": 184,
    "coinc_combinations": 64,
-   "waveform": "scatter"
+   "waveform": "scatter",
+   "digi_starts": "rows",
+   "pulse_scan": "bounded"
   }
  }
 }

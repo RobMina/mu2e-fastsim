@@ -18,7 +18,7 @@ CAPACITIES = ("substeps", "photons", "thermal", "ct1", "ct2", "ct3", "pixel_shor
               "pixel_long_streams", "pixel_long_hits", "charge_clusters", "charges_per_cluster",
               "waveform_samples", "digis", "reco_waveforms", "reco_samples", "pulse_rounds",
               "coinc_hits", "coinc_combinations")
-OPTIONS = {"waveform": ("dense", "scatter")}
+OPTIONS = {"waveform": ("dense", "scatter"), "digi_starts": ("dense", "rows"), "pulse_scan": ("dense", "bounded")}
 STEP_FLOATS = ("edep", "x0", "y0", "z0", "x1", "y1", "z1", "px0", "py0", "pz0", "p1", "len")
 PERIOD = 1695.0
 
@@ -41,7 +41,7 @@ def _groups(new, mask):
 
 
 def _synth_scatter(time, weight, group, use, t_start, keep, tmpl, key, C, L, zs, precision, noise, min_voltage,
-                   window_start, window_end):
+                   window_start, window_end, bounded=False):
     """Same waveforms and digi starts as `waveform_jax.synth_dense(stock_scan=True)`, built per charge.
 
     Each charge adds weight * template(t_sample - t_charge) to the few samples its template spans
@@ -77,7 +77,15 @@ def _synth_scatter(time, weight, group, use, t_start, keep, tmpl, key, C, L, zs,
         start = win[:, i] & (next_i <= i) & (ts[:, i] >= window_start) & (ts[:, i] <= window_end)
         return jnp.where(start, i + zs, next_i), start
 
-    _, starts = lax.scan(step, jnp.zeros(C, jnp.int64), jnp.arange(L))
+    if bounded:   # samples past every row's last are never above threshold: the gated scan stops at max(last)
+        def body(i, state):
+            next_i, starts = state
+            next_i, start = step(next_i, i)
+            return next_i, lax.dynamic_update_slice(starts, start[None, :], (i, 0))
+        _, starts = lax.fori_loop(jnp.int64(0), jnp.minimum(jnp.max(last), L).astype(jnp.int64), body,
+                                  (jnp.zeros(C, jnp.int64), jnp.zeros((L, C), bool)))
+    else:
+        _, starts = lax.scan(step, jnp.zeros(C, jnp.int64), jnp.arange(L))
     return wave, starts.T, last
 
 
@@ -114,6 +122,8 @@ class Adapter:
     nfeb: int
     pmap_ncol: int
     waveform: str = "dense"
+    digi_mode: str = "dense"
+    pulse_mode: str = "dense"
     kind: str = "physics"
     support: tuple = ("crv_digis", "crv_reco")
 
@@ -124,6 +134,8 @@ class Adapter:
                     sipm_cross_talk_generations=SJ.GENERATIONS, device_float=dprec.NAME,
                     rng="JAX keys; not NumPy/stock byte replay; shape-dependent",
                     waveform=self.waveform,
+                    **({"digi_starts": self.digi_mode} if self.digi_mode != "dense" else {}),
+                    **({"pulse_scan": self.pulse_mode} if self.pulse_mode != "dense" else {}),
                     unsupported=["traps", "NZS", "background", "fused response"],
                     validation="local kernel/packing tests; no production closure or memory qualification")
 
@@ -299,13 +311,24 @@ class Adapter:
         if self.waveform == "scatter":
             wave, starts, last = _synth_scatter(q["time"], q["charge"] / w.single_pe_reference_charge, group,
                     mask & (group < C), start, keep, assets["template"], kn, C, L, w.samples_zs, w.single_pe_precision,
-                    w.noise if self.cfg.noise else 0., w.min_voltage, self.cfg.window[0], self.cfg.window[1])
+                    w.noise if self.cfg.noise else 0., w.min_voltage, self.cfg.window[0], self.cfg.window[1],
+                    bounded=self.digi_mode == "rows")
         else:
             wave, _, starts, last = WJ.synth_dense(T, W, jnp.minimum(counts, Q), start, keep, assets["template"], kn,
                     L, w.samples_zs, w.single_pe_precision, w.noise if self.cfg.noise else 0., w.min_voltage,
                     w.adc_conversion, w.pedestal, w.min_adc, w.max_adc,
                     window_start=self.cfg.window[0], window_end=self.cfg.window[1], stock_scan=True)
-        r, i = jnp.nonzero(starts, size=D, fill_value=0)
+        if self.digi_mode == "rows":
+            # The same (row, sample) list as nonzero over [C, L], from the rows that hold a start (at most D of them
+            # can contribute to the first D entries); padding entries get nonzero's fill value 0.
+            has = starts.any(1)
+            rows = jnp.nonzero(has, size=D, fill_value=0)[0]
+            sub = starts[rows] & (jnp.arange(D) < has.sum())[:, None]
+            rr, i = jnp.nonzero(sub, size=D, fill_value=0)
+            ok = jnp.arange(D) < starts.sum()
+            r, i = jnp.where(ok, rows[rr], 0), jnp.where(ok, i, 0)
+        else:
+            r, i = jnp.nonzero(starts, size=D, fill_value=0)
         cols = i[:, None] + jnp.arange(w.samples_zs)[None, :]
         length = jnp.maximum(jnp.floor((span + w.single_pe_max_time) / CH.PERIOD).astype(jnp.int64), last)
         volt = jnp.where(cols < jnp.minimum(length[r, None], L), wave[r[:, None], jnp.minimum(cols, L - 1)], 0.)
@@ -338,7 +361,8 @@ class Adapter:
         first = jnp.nonzero(new, size=R, fill_value=0)[0]
         channels, event = ch[first], d["ev"][first]
         p = FJ.reconstruct_dense(adc, jnp.minimum(n, L), d["starttdc"][first], assets["pedestal"][channels],
-                                assets["pulsearea"][channels], assets["pulseheight"][channels], cfg=self.pcfg)
+                                assets["pulsearea"][channels], assets["pulseheight"][channels], cfg=self.pcfg,
+                                **({"bounded": True} if self.pulse_mode == "bounded" else {}))
         valid = p["found"] & (n > 0)[:, None]
         if self.pcfg.ignore_channels:
             valid &= ((assets["raw_status"][channels] & 0b010) == 0)[:, None]
@@ -442,6 +466,9 @@ def prepare(geom, cond, cfg, counters, capacities, tabs, pmap):
 
     `capacities` may also carry the option `waveform`: "dense" (default, the shared
     `synth_dense` kernel) or "scatter" (`_synth_scatter`; `charges_per_cluster` is then unused).
+    Exact restructures, same results: `digi_starts` "rows" (digi starts listed from the rows that hold one, and the
+    scatter synthesis' gated scan stops at the longest waveform) and `pulse_scan` "bounded" (pulse-fit peak scans stop
+    at the longest reco waveform, rounds stop once no waveform found a pulse).
     """
     if not jax.config.jax_enable_x64:
         raise ValueError("JAX_ENABLE_X64=1 is required")
@@ -564,4 +591,5 @@ def prepare(geom, cond, cfg, counters, capacities, tabs, pmap):
         leaf.setflags(write=False)
     return Adapter(assets, cap, tuple(blocks), tuple(statics),
                    tuple((int(t), p.ld, p.ns, p.uniform) for t, p in params.items()),
-                   cfg, w, pcfg, fcfg, geom.nbars, len(ufeb), pmap.shape[1], options["waveform"])
+                   cfg, w, pcfg, fcfg, geom.nbars, len(ufeb), pmap.shape[1], options["waveform"],
+                   options["digi_starts"], options["pulse_scan"])

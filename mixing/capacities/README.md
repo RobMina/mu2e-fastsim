@@ -35,6 +35,12 @@ NeutralsFlash pools at the stock intensity law.
 - **`pack_sort: "packed"`** replaces the tracker's multi-key sorts with single-key sorts in the same order; it has no
   size.
 
+- **CRV `digi_starts: "rows"` and `pulse_scan: "bounded"`** (see [../DEVICE_CRV.md](../DEVICE_CRV.md)) list digi starts
+  from the occupied rows and stop the pulse-fit scans at the longest waveform. They have no size and change the
+  time, not the outputs.
+- **`flat_saturation_rows: "auto"`**: saturation chunks of one row per straw in float64 (exact there); float32 keeps
+  two per straw.
+
 ## When a batch does not fit
 
 A batch whose demand exceeds any capacity is rejected as a whole. No output is written for it, nothing is truncated,
