@@ -101,8 +101,22 @@ def test_load_reads_a_written_dump(tmp_path):
     ev = ak.Array(_events(6, n=3))
     p = tmp_path / "stages.root"
     with uproot.recreate(p) as f:
-        f["events"] = {k: ev[k] for k in ev.fields}
+        f["stagedump/events"] = {k: ev[k] for k in ev.fields}     # TFileService directory = module label
     D = SC.load([str(p)])
     assert len(D["keys"]) == 3 and "kl_lh_rad" in D["fields"]
     r = SC.compare(D, D)
     assert r["fits"]["matched"] == 3
+
+
+def test_duplicate_objects_with_the_same_straws_match_in_order():
+    a = _events(7, n=2)
+    for e in a:                                                # a second, identical fit in every event
+        for k in [k for k in e if k.startswith("kl_")]:
+            e[k] = np.concatenate([e[k], e[k]])
+        n = len(e["kh_trk"])
+        for k in [k for k in e if k.startswith("kh_")]:
+            e[k] = np.concatenate([e[k], e[k]])
+        e["kh_trk"][n:] = 1
+    r = SC.compare(_dump(a), _dump(a))
+    assert r["fits"]["matched"] == 4 and r["fits"]["status_equal"]["frac"] == 1.0
+

@@ -36,7 +36,9 @@ def load(paths, tree=TREE):
     """The dump's branches as one awkward record array over the files, plus the event keys."""
     arrs = []
     for p in paths:
-        t = uproot.open(p)[tree]
+        f = uproot.open(p)
+        names = [k.split(";")[0] for k in f.keys()]
+        t = f[tree if tree in names else next(k for k in names if k.endswith("/" + tree))]   # e.g. stagedump/events
         arrs.append(t.arrays([k for k in t.keys() if not k.startswith("d_adc") and k != "d_nadc"]))
     ev = ak.concatenate(arrs) if len(arrs) > 1 else arrs[0]
     keys = np.stack([ak.to_numpy(ev[k]).astype(np.int64) for k in ("run", "subrun", "event")], 1)
@@ -107,12 +109,25 @@ def match(da, db, ia, ib, nev_a, nev_b):
     s = j.groupby(["ce", "obj_a", "obj_b"]).size().rename("shared").reset_index()
     s = s.join(na, on=["ce", "obj_a"]).join(nb, on=["ce", "obj_b"])
     s = s[(s.shared >= MIN_SHARED) & (2 * s.shared >= np.minimum(s.na, s.nb))]
-    best_a = s.sort_values(["shared"], ascending=False, kind="stable").drop_duplicates(["ce", "obj_a"])
-    best_b = s.sort_values(["shared"], ascending=False, kind="stable").drop_duplicates(["ce", "obj_b"])
-    m = best_a.merge(best_b, on=["ce", "obj_a", "obj_b", "shared", "na", "nb"])
+    s = s.assign(gap=(s.obj_a - s.obj_b).abs())      # ties (duplicate objects with the same straws): by object order
+    o = s.sort_values(["shared", "gap"], ascending=[False, True], kind="stable")
+    best_a, best_b = o.drop_duplicates(["ce", "obj_a"]), o.drop_duplicates(["ce", "obj_b"])
+    m = best_a.merge(best_b, on=["ce", "obj_a", "obj_b", "shared", "na", "nb", "gap"])
     m["jaccard"] = m.shared / (m.na + m.nb - m.shared)
     m["ev_a"], m["ev_b"] = ia[m.ce.to_numpy()], ib[m.ce.to_numpy()]
     return m
+
+
+def _bits(a, b):
+    """Per status bit set in either arm: the fraction of matched objects where the bit agrees."""
+    a, b = np.asarray(a, np.uint64), np.asarray(b, np.uint64)
+    out = {}
+    for k in range(32):
+        m = np.uint64(1 << k)
+        x, y = (a & m) > 0, (b & m) > 0
+        if (x | y).any():
+            out[str(k)] = {"set_a": float(x.mean()), "set_b": float(y.mean()), "equal": float((x == y).mean())}
+    return out
 
 
 def _per_object(ev, prefix_n, cols, sel=None):
@@ -211,7 +226,8 @@ def compare_hs(A, B, ia, ib):
         mm = m.merge(ta.rename(columns={"ev": "ev_a", "obj": "obj_a"}), on=["ev_a", "obj_a"]) \
               .merge(tb.rename(columns={"ev": "ev_b", "obj": "obj_b"}), on=["ev_b", "obj_b"], suffixes=("_a", "_b"))
         r = {"objects": [int(na.sum()), int(nb.sum())], "count_equal": _frac(na == nb), "matched": int(len(m)),
-             "jaccard": _q(m.jaccard), "status_equal": _frac(mm.hs_status_a == mm.hs_status_b)}
+             "jaccard": _q(m.jaccard), "status_equal": _frac(mm.hs_status_a == mm.hs_status_b),
+             "status_bits": _bits(mm.hs_status_a, mm.hs_status_b)}
         for p in HS_PAR:
             r["d_" + p] = _q(mm[f"hs_{p}_a"] - mm[f"hs_{p}_b"])
         out[str(int(c))] = r
@@ -232,6 +248,7 @@ def compare_fit(A, B, ia, ib):
           .merge(tb.rename(columns={"ev": "ev_b", "obj": "obj_b"}), on=["ev_b", "obj_b"], suffixes=("_a", "_b"))
     r = {"objects": [int(na.sum()), int(nb.sum())], "count_equal": _frac(na == nb), "matched": int(len(m)),
          "jaccard": _q(m.jaccard), "status_equal": _frac(mm.kl_status_a == mm.kl_status_b),
+         "status_bits": _bits(mm.kl_status_a, mm.kl_status_b),
          "chi2ndf_rel": _q((mm.kl_chi2_a / mm.kl_ndof_a) / (mm.kl_chi2_b / mm.kl_ndof_b) - 1),
          "fitcon_diff": _q(mm.kl_fitcon_a - mm.kl_fitcon_b), "nactive_diff": _q(mm.kl_nactive_a - mm.kl_nactive_b)}
     for p in pars + ["segmom"]:
