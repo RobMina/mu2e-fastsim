@@ -359,17 +359,19 @@ class DeviceChain:
         dropped and counted). One host read (the step count)."""
         import jax
         import jax.numpy as jnp
-        from trkfastsim.sim import albedo as AL, fieldsteps_jax as FJ
+        from trkfastsim.sim import albedo as AL, deltas as DL, fieldsteps_jax as FJ
         g = self.dl.pick(key, trk.steps)
         total = int(jnp.sum(jnp.where(g >= 0, self.dl.g_count[jnp.maximum(g, 0)], 0)))
         if not total:
-            return trk, dict(steps=0, dropped=0, outside=0)
-        size = max(256, 1 << int(np.ceil(np.log2(total))))
+            return trk, dict(steps=0, kept=0, dropped=0, overflow=0, outside=0)
+        # buffer from the batch size only (one compiled shape per batch shape); steps beyond it are dropped, counted
+        size = max(4096, 1 << int(np.ceil(np.log2(g.shape[0] * DL.STEPS_PER_EVENT))))
         ext, row, ok = self.dl.make(g, trk.steps, self.trk.T, size)
         steps, dropped = AL.merge_records(trk.steps, ext, row, ok, FJ.R_CAP)
         h = jax.device_get(dict(kept=jnp.sum(ok), dropped=dropped))
-        return trk._replace(steps=steps), dict(steps=total, kept=int(h["kept"]), dropped=int(h["dropped"]),
-                                               outside=total - int(h["kept"]))
+        over = max(total - size, 0)
+        return trk._replace(steps=steps), dict(steps=total, kept=int(h["kept"]), dropped=int(h["dropped"]), overflow=over,
+                                               outside=total - over - int(h["kept"]))
 
     def _albedo(self, trk, key):
         """Downstream albedo (trkfastsim.sim.albedo): tracks that left the tracker downstream pick a Geant4 exit of

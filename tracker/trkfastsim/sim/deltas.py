@@ -32,6 +32,7 @@ Z_DS = 11750.0                                                 # Mu2e z: born be
 NSTRAW = 96
 PDG_E = 11
 DEFAULT = Path(__file__).with_name("data") / "deltas_run1a_v1.npz"
+STEPS_PER_EVENT = 8      # step buffer per event of a batch (Run 1A CE: 5.3 on average); fixes the compiled shapes
 STEP = ("dk", "eion", "len", "width", "shape", "ion", "dt", "pmag", "du", "dv", "dw", "su", "sv", "sw")
 
 
