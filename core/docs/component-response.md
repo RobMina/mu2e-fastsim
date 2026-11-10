@@ -93,7 +93,8 @@ trajectories, surface steps and CRV summaries without running G4. The initial in
 more than the legacy flat banks, but their trajectory thinning, particle compression and detector-event selection
 prevent claiming complete exits or unbiased zero-response trials from those files alone. Export evidence first;
 certify component records only where actual saved states and coverage support them. New simulation is not a
-prerequisite for the extraction work. Purpose-built capture follows separately.
+prerequisite for the extraction work. Purpose-built capture and its checkers are in the
+[component-training pilot](component-training.md).
 
 Then an opt-in detector adapter must remove double counting and validate one unchanged bank against nominal and
 altered layouts. Finite-state support in this prototype is intentionally narrow; a useful continuous entrance-state
