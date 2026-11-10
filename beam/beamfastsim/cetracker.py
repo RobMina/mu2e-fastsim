@@ -244,9 +244,9 @@ class DeviceChain:
     tracker and response tables); each call runs one batch. Per-event outputs stay device arrays.
 
     offline_root, maps (G4BL headers, DS map first), gdml: as the CLI. response: reco response tables (.npz,
-    trkfastsim.recoresp.table), "default" (the tables shipped with trkfastsim.recoresp), "pools" (the same with the
-    pools: the opt-in empirical joint draw), "fulldts" (opt-in: the response of the full Geant4 events, every
-    StrawGasStep, with pools) or None (no track
+    trkfastsim.recoresp.table), "default" (the shipped default: "fulldts", the response of the full Geant4 events, every
+    StrawGasStep, with pools), "ceonly" (the conversion electron's own steps, the earlier default), "pools" or
+    "ceonly_pools" (the same with pools), a recoresp.table.NAMED name, or None (no track
     observables). digi_cond: device digitiser conditions (.npz,
     trkfastsim.digi.digicond) or None (no digis). ce_unroll, ce_shrink: cechain_jax's unroll and bucket shrink
     factor (a large shrink compacts less often and compiles fewer bucket shapes). digi_chunk: events per digitiser

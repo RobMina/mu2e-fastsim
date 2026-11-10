@@ -192,12 +192,14 @@ def save(path, tab):
     np.savez_compressed(Path(path), **tab)
 
 
-DEFAULT = Path(__file__).with_name("data") / "ce_loophelix_run1a.npz"
-POOLS = Path(__file__).with_name("data") / "ce_loophelix_run1a_pools.npz"   # the same tables plus the pools (opt-in)
-# opt-in: the response of the full Geant4 events (every StrawGasStep: delta rays, other secondaries, the calorimeter
-# albedo), on the same development events and bins as DEFAULT, with pools
+# the response of the full Geant4 events (every StrawGasStep: delta rays, other secondaries, the calorimeter albedo),
+# with pools: the default
 FULLDTS = Path(__file__).with_name("data") / "ce_loophelix_run1a_fulldts_pools.npz"
-NAMED = {"default": DEFAULT, "pools": POOLS, "fulldts": FULLDTS}   # the shipped tables by name
+DEFAULT = FULLDTS
+# the conversion electron's own Geant4 steps only (the earlier default), on the same events and bins; and with pools
+CEONLY = Path(__file__).with_name("data") / "ce_loophelix_run1a.npz"
+POOLS = Path(__file__).with_name("data") / "ce_loophelix_run1a_pools.npz"
+NAMED = {"default": DEFAULT, "fulldts": FULLDTS, "ceonly": CEONLY, "pools": POOLS, "ceonly_pools": POOLS}
 
 
 def load(path=DEFAULT):
