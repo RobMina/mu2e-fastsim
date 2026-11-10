@@ -8,3 +8,8 @@ reconstruction and EventNtuple. Bins: step rows (`nrow_edges`) x entry tan(dip) 
 `bz` = 1.0117 T at the tracker origin. Includes the t0 residual and the fit-efficiency turn-on in the entry time (no tracks below about 210 ns: the
 digitisation window); the bin tables use entry times from 300 ns on. Validation on independent events is not part of
 the table.
+
+`ce_loophelix_run1a_pools.npz` (opt-in): the same tables, built from the same events, plus each bin's pool
+(`table --pools`: `pool_res`, `pool_idx`, `pool_start`, `pool_count`). A response table with pools draws the seven
+residual and quality quantities jointly from one reference track of the bin pool instead of the Gaussian copula and
+inverse CDFs. Every array the default file holds is identical in both files; the pool file also records its `reference` text.

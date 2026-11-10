@@ -244,7 +244,8 @@ class DeviceChain:
     tracker and response tables); each call runs one batch. Per-event outputs stay device arrays.
 
     offline_root, maps (G4BL headers, DS map first), gdml: as the CLI. response: reco response tables (.npz,
-    trkfastsim.recoresp.table), "default" (the tables shipped with trkfastsim.recoresp) or None (no track
+    trkfastsim.recoresp.table), "default" (the tables shipped with trkfastsim.recoresp), "pools" (the same with the
+    pools: the opt-in empirical joint draw) or None (no track
     observables). digi_cond: device digitiser conditions (.npz,
     trkfastsim.digi.digicond) or None (no digis). ce_unroll, ce_shrink: cechain_jax's unroll and bucket shrink
     factor (a large shrink compacts less often and compiles fewer bucket shapes). digi_chunk: events per digitiser
@@ -280,7 +281,8 @@ class DeviceChain:
         self.resp = None
         if response is not None:
             from trkfastsim.recoresp import device as RD, table as RT
-            self.resp = RD.to_device(RT.load() if response == "default" else RT.load(response), self.dt)
+            tab = RT.load() if response == "default" else RT.load(RT.POOLS) if response == "pools" else RT.load(response)
+            self.resp = RD.to_device(tab, self.dt)
         self.cond = None
         if digi_cond is not None:
             from trkfastsim.digi import digicond

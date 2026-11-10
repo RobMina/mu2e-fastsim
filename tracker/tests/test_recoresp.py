@@ -126,3 +126,115 @@ def test_entry_time_turn_on_removes_tracks_before_the_window():
     late = t > 300
     on = RT.apply_numpy(tab, np.random.default_rng(3), v.has_entry.to_numpy(), v.nrow.to_numpy(), x, p, t=t)
     assert abs(fit[late].mean() - on["fit"][late].mean()) < 0.02
+
+
+def _xp(v):
+    return v[["e_x", "e_y", "e_z"]].to_numpy(), v[["e_px", "e_py", "e_pz"]].to_numpy()
+
+
+def test_pools_are_opt_in_and_leave_the_other_tables_unchanged():
+    d = _reference(20000, np.random.default_rng(20))
+    a, b = RT.build(d), RT.build(d, pools=True)
+    assert not any(k.startswith("pool_") for k in a)
+    assert {k for k in b if k.startswith("pool_")} == {"pool_res", "pool_idx", "pool_start", "pool_count"}
+    for k in a:
+        assert np.array_equal(a[k], b[k]), k
+    assert b["pool_res"].shape[1] == len(RT.RES + RT.QUAL)
+    assert (b["pool_count"] > 0).all() and (b["pool_count"] <= RT.POOL_MAX).all()
+
+
+def test_pool_draw_is_one_reference_track_vector_of_the_bin():
+    d = _reference(20000, np.random.default_rng(21))
+    tab = RT.build(d, pools=True)
+    v = _reference(3000, np.random.default_rng(22))
+    x, p = _xp(v)
+    o = RT.apply_numpy(tab, np.random.default_rng(23), v.has_entry.to_numpy(), v.nrow.to_numpy(), x, p)
+    _, td, d0, rmax = RT.entry_truth(x, p, tab["axis_xy"], float(tab["bz"]))
+    ne, nt = tab["eff_fit"].shape
+    bn = np.clip(np.digitize(v.nrow.to_numpy(), tab["nrow_edges"]) - 1, 0, ne - 1)
+    bt = np.clip(np.digitize(td, tab["tandip_edges"]) - 1, 0, nt - 1)
+    q = o["qual"]
+    vec = np.c_[o["p_reco"] - o["p_true"], o["tandip"] - td, o["d0"] - d0, o["rmax"] - rmax, o["fitcon"], o["chi2ndf"],
+                o["nactive"]][q]
+    for r, i, j in zip(vec[:300], bn[q][:300], bt[q][:300]):
+        s, c = tab["pool_start"][i, j], tab["pool_count"][i, j]
+        rows = tab["pool_res"][tab["pool_idx"][s:s + c]]
+        assert np.isclose(rows, r, rtol=0, atol=1e-9).all(1).any()
+
+
+def test_pool_draw_keeps_the_tail_dependence_the_copula_loses():
+    """Momentum outliers that the stock fit gives an off-cut r_max: the CE-selected outlier fraction is ~0 in the
+    reference and in the pool draw; the Gaussian copula lets many of them through."""
+    def ref(n, seed):
+        rng = np.random.default_rng(seed)
+        d = _reference(n, rng)
+        out = d.fit.to_numpy() & (rng.uniform(size=n) < 0.05)
+        d.loc[out, "p_reco"] = d.p_true[out] + 2.0 + rng.exponential(0.5, out.sum())
+        d.loc[out, "rmax"] = d.rmax_t[out] + 300.0                      # fails the r_max cut
+        return d
+    d = ref(60000, 24)
+    v = ref(30000, 25)
+    x, p = _xp(v)
+    c = RT.CE_CUTS
+    sel = v.fit & (v.fitcon > c["fitcon"]) & v.tandip.between(*c["tandip"]) & v.d0.between(*c["d0"]) & \
+        v.rmax.between(*c["rmax"])
+    stock = float((sel & (v.p_reco - v.p_true > 1.0)).sum() / sel.sum())
+    frac = {}
+    for pools in (False, True):
+        o = RT.apply_numpy(RT.build(d, pools=pools), np.random.default_rng(26), v.has_entry.to_numpy(), v.nrow.to_numpy(),
+                           x, p)
+        frac[pools] = float((o["ce"] & (o["p_reco"] - o["p_true"] > 1.0)).sum() / o["ce"].sum())
+    assert stock < 0.002 and frac[True] < 0.002
+    assert frac[False] > 0.005
+
+
+def test_device_pool_draw_matches_the_numpy_pool_draw():
+    jax = pytest.importorskip("jax")
+    from trkfastsim.recoresp import device as RD
+    d = _reference(20000, np.random.default_rng(27))
+    tab = RT.build(d, pools=True)
+    v = _reference(20000, np.random.default_rng(28))
+    x, p = _xp(v)
+    on = RT.apply_numpy(tab, np.random.default_rng(29), v.has_entry.to_numpy(), v.nrow.to_numpy(), x, p)
+    od = RD.apply(RD.to_device(tab), jax.random.PRNGKey(30), jax.numpy.asarray(v.has_entry.to_numpy()),
+                  jax.numpy.asarray(v.nrow.to_numpy()), jax.numpy.asarray(x), jax.numpy.asarray(p))
+    od = {k: np.asarray(a) for k, a in od.items()}
+    for k in ("fit", "qual", "ce"):
+        assert abs(od[k].mean() - on[k].mean()) < 0.012, k
+    a, b = (o["p_reco"][o["qual"]] - o["p_true"][o["qual"]] for o in (od, on))
+    assert abs(np.median(a) - np.median(b)) < 0.02
+    assert abs(np.quantile(a, 0.05) - np.quantile(b, 0.05)) < 0.1
+    vals = set(np.round(tab["pool_res"][:, 0], 9))
+    assert all(round(float(r), 9) in vals for r in a[:200])         # device residuals are pool rows too
+
+
+def test_pool_draw_leaves_the_t0_stream_unchanged():
+    rng = np.random.default_rng(31)
+    d = _reference(20000, rng)
+    d["t_t"] = rng.uniform(500, 1500, len(d))
+    d["t0"] = np.where(d.fit, d.t_t + rng.normal(1.2, 0.4, len(d)), np.nan)
+    a, b = RT.build(d), RT.build(d, pools=True)
+    v = _reference(3000, np.random.default_rng(32))
+    x, p = _xp(v)
+    t = np.full(len(v), 800.0)
+    oa = RT.apply_numpy(a, np.random.default_rng(33), v.has_entry.to_numpy(), v.nrow.to_numpy(), x, p, t=t)
+    ob = RT.apply_numpy(b, np.random.default_rng(33), v.has_entry.to_numpy(), v.nrow.to_numpy(), x, p, t=t)
+    for k in ("fit", "qual"):
+        assert np.array_equal(oa[k], ob[k])
+    assert np.array_equal(oa["t0"], ob["t0"], equal_nan=True)
+
+
+def test_shipped_pool_table_is_the_default_table_plus_pools():
+    a, b = RT.load(), RT.load(RT.POOLS)
+    assert set(b) - set(a) == {"pool_res", "pool_idx", "pool_start", "pool_count", "reference"}
+    assert "CE" in str(b["reference"])
+    for k in a:
+        assert np.array_equal(a[k], b[k]), k
+    assert b["pool_res"].shape[1] == len(RT.RES + RT.QUAL) and (b["pool_count"] > 0).all()
+    assert int(b["pool_idx"].max()) < len(b["pool_res"])
+
+
+def test_reference_text_is_stored_only_when_given():
+    d = _reference(5000, np.random.default_rng(34))
+    assert "reference" not in RT.build(d)
+    assert str(RT.build(d, reference="synthetic dev")["reference"]) == "synthetic dev"
