@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -167,7 +168,10 @@ def cmd_response_binned(args):
     capped at 1 (device run without a response, on the stock digis of the same events). Bins: the straw hits of the
     event's best time cluster of the path's producer, and for paths with a helix stage also the momentum of the event's
     best device helix (--edges-p rows). Sparse hit bins merge with their lower neighbour; a momentum row with fewer than
-    --min-count device passes in all takes the path's one-dimensional (hits only) factors."""
+    --min-count device passes in all takes the path's one-dimensional (hits only) factors. Only paths matching --paths
+    get binned rows; with --base (a scalar response from `response`), the binned rows are added to it and every other
+    path keeps its scalar hs/ks factors."""
+    sel = re.compile(args.paths)
     manifest = json.loads((Path(args.prepared) / "manifest.json").read_text())
     edges, edges_p = [float(e) for e in args.edges], [float(e) for e in args.edges_p]
     nb, npb = len(edges) - 1, len(edges_p) - 1
@@ -180,7 +184,7 @@ def cmd_response_binned(args):
             if k not in ref:
                 continue
             for name, var in dev["path_vars"].get(key, {}).items():
-                if name not in ref[k]:
+                if name not in ref[k] or not sel.search(name):
                     continue
                 nsh, hp = (var, -1.0) if not isinstance(var, list) else var
                 b = min(max(int(np.searchsorted(edges, nsh, side="right")) - 1, 0), nb - 1)
@@ -190,7 +194,7 @@ def cmd_response_binned(args):
                 a["1d"][b] += (st, dv)
                 if jp >= 0:
                     a["2d"][jp, b] += (st, dv)
-    out = {}
+    out = json.loads(Path(args.base).read_text()) if args.base else {}
     for name, a in sorted(acc.items()):
         e1, c1 = _merge(a["1d"], edges, args.min_count)
         row = {"final": {"var": "tc_nsh", "edges": e1, "f": _f(c1)},
@@ -207,9 +211,9 @@ def cmd_response_binned(args):
                 f2.append([fr[min(max(int(np.searchsorted(er, lo, side="right")) - 1, 0), len(fr) - 1)] for lo in e1[:-1]])
             row["final"] = {"var": "tc_nsh x helix_p", "edges": e1, "edges_p": edges_p, "f": f2}
             row["basis"]["rows_device_passes"] = a["2d"][:, :, 1].sum(1).tolist()
-        out[name] = row
+        out[name] = {**out.get(name, {}), **row}
     Path(args.output).write_text(json.dumps(out, indent=1))
-    print(json.dumps({n: r["final"]["f"] for n, r in out.items()}, indent=1)[:4000])
+    print(json.dumps({n: r["final"]["f"] for n, r in out.items() if "final" in r}, indent=1)[:4000])
 
 
 def cmd_decide(args):
@@ -297,6 +301,8 @@ def main(argv=None):
     rb.add_argument("--edges", nargs="+", default=[0, 15, 20, 25, 30, 35, 40, 45, 50, 60, 80, 1000])
     rb.add_argument("--edges-p", nargs="+", default=[0, 90, 98, 101, 1e6], help="helix-momentum rows [MeV/c]")
     rb.add_argument("--min-count", type=int, default=200)
+    rb.add_argument("--paths", default=r"^apr_(Trk|Hlx)", help="regex of the paths that get binned rows")
+    rb.add_argument("--base", help="scalar response (from `response`) that the binned rows are added to")
     rb.add_argument("--output", required=True)
     d = sub.add_parser("decide")
     d.add_argument("--dump", nargs="+", required=True)
