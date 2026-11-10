@@ -41,6 +41,10 @@ PE tail above 2000 PE (0.923 +- 0.014 -> 0.991 +- 0.014), and the adjacent-layer
 - **Run 1A needs the converted Run 1A conditions** (`--calib`/`--deviation` from `scripts/offline_conditions_csv.py`):
   `--calib nominal` counts the 45 channels that the Run 1A status table marks "ignore in reconstruction" as live, which
   gives about 1 % more pulses than stock; `runchain` refuses it for `run1a_v01` and `run1b_v01`.
+- **SiPM pixel ids follow the stock release** (`RunConfig.sipm_pixel_id`): `run1a_v01` and `run1b_v01` truncate the
+  photon-map point, as Offline v13_40_00 and later; `extracted_v04` and `run2_v10` keep the `lrint` of earlier
+  releases, the release of their references so far. Truncation crowds the photons onto fewer pixels: about 1 % less
+  charge above 200 PE per SiPM, 0.25 % less cluster PE on Run 1A cosmics ([`run1a-vseries.md`](run1a-vseries.md)).
 - **Run 2 V1 fails** (primary-muon crossings vs Geant4, 1 M events): the CRV that wraps the DS needs below-plane
   scatter-in; the experimental marcher is on branch `park/named-run2`. Run 1A V1 passes.
 - No magnetic field: the transport is straight-line plus multiple scattering, valid for the extracted configuration.

@@ -7,6 +7,9 @@ def validate_sipm(cfg):
     unsupported = [k for k in ('thermal_rate', 'trap0_prob', 'trap1_prob') if getattr(cfg, k) != 0]
     if unsupported:
         raise ValueError(f'CRV response: unsupported SiPM processes: {unsupported}')
+    from .sipm import PIXEL_IDS
+    if getattr(cfg, 'pixel_id', 'lrint') not in PIXEL_IDS:
+        raise ValueError(f'CRV response: SiPM pixel_id must be one of {PIXEL_IDS}, got {cfg.pixel_id!r}')
 
 
 def validate_window(window, fused=False):

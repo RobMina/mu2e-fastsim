@@ -41,7 +41,12 @@ channel as live and ignores the 45 channels with status bit 1 ("ignore in recons
 `run1b_v01` (`RunConfig.conditions`).
 
 The reference release matters too: Offline before v13_40_00 shares one photon generator, and one scintillation yield,
-between sectors with the same lookup table (Run 1A T2 then runs at T1's yield; Offline#1956).
+between sectors with the same lookup table (Run 1A T2 then runs at T1's yield; Offline#1956). From v13_40_00 the SiPM
+model also truncates the photon-map point to a pixel id (Offline 7e72638); before, `lrint` rounded it half a pixel off
+the map's bins, spreading the photons over more pixels. `run1a_v01` and `run1b_v01` use the truncation
+(`RunConfig.sipm_pixel_id`, `SiPMConfig.pixel_id`), since their stock reference is v13_41_00; the other
+configurations keep `lrint`. With `lrint`, on the same Geant4 steps, the fast SiPM charge was 0.06 % above stock at
+20-40 PE per SiPM, 0.3 % at 80-100 PE and about 1 % above 200 PE, and the cluster PE 0.25 % above stock.
 
 Shape statistics merge tail bins until each reference bin holds 25 entries. The pull errors come from n shards, so
 chi2/ndf has the null expectation (n - 1)/(n - 3), reported as `chi2_ndf_null`.
