@@ -50,6 +50,22 @@ def test_overrides_after_preset_and_refusals():
         w.select("fastest")
 
 
+def test_replaces_needs_the_given_value():
+    w = A.Workflow("WR", "", (A.Approximation("draw", "", levels=("a", "b"), default="a", sets={"b": {"k": "B"}},
+                                              replaces={"k": ("A",)}),))
+    sel = w.select(overrides={"draw": "b"})
+    assert sel.apply_kwargs({"k": "A"}) == {"k": "B"}
+    with pytest.raises(ValueError, match="give k explicitly"):
+        sel.apply_kwargs({})
+    sel.set_effective("draw", "a", "not applied here")
+    assert sel.arguments() == {} and sel.apply_kwargs({}) == {}
+    w2 = A.Workflow("WR", "", (A.Approximation("draw", "", levels=("a", "b"), default="a", sets={"b": {"k": "B"}},
+                                               replaces={"k": ("A",)}, fidelity="b"),))
+    sel = w2.select("fidelity")
+    assert sel.apply_kwargs({}) == {} and sel.record()["effective"]["draw"]["level"] == "a"
+    assert w2.select("fidelity").apply_kwargs({"k": "A"}) == {"k": "B"}
+
+
 def test_yaml_booleans_map_to_on_off():
     assert _workflow().select(overrides={"extra": False}).levels["extra"] == "off"
     assert _workflow().select(overrides={"extra": True}).levels["extra"] == "on"

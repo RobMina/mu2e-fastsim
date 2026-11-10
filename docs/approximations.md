@@ -38,7 +38,9 @@ The presets:
   before. The test suites check that the default levels set nothing.
 - **Levels map to existing options.** Each other level sets options the chain already has, for example
   `runchain --below-msc` or `cetracker --complete-outer-wall`.
-- **Conflicts are refused.** An option given explicitly with a different value is refused.
+- **Conflicts are refused.** An option given explicitly with a different value is refused. The exception is a level
+  that refines an option the run chose, such as `response="default"` to `"pools"`. Such a level needs that option
+  given and never turns an output on by itself.
 - **Missing levels are refused.** A level an approximation does not have is refused, and so is an approximation that
   has no switch. Nothing is invented where no path exists.
 - **Bench entry points.** The shared timer (`python3 -m mu2efastsim.bench`) finds the declarations in
@@ -108,6 +110,9 @@ The alternative column says what gives the stock result:
 - **W2-W4.** One declaration serves the stops (W2), DIO (W3) and RPC (W4) electrons of `cetracker`.
   - The albedo levels act on the device tracker; the NumPy tracker has none.
   - `straw_wall=complete` is the existing opt-in complete outer wall.
+  - `response_draw=empirical` is the opt-in empirical joint draw (`DeviceChain(response="pools")`). It replaces
+    `response="default"` and is refused when no response is requested. The fidelity preset leaves it at the copula
+    there, and in `cetracker`, which applies no response layer. The record keeps the reason.
   - The stock route for the response layer and the primary-only steps is the stock reconstruction of the injector
     file. It is a separate job, not a level.
 - **W5.**

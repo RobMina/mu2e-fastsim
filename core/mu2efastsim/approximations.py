@@ -49,6 +49,9 @@ class Approximation:
     string "none" for None). The default level sets nothing. ``fast`` and ``fidelity`` name the levels the presets select (``fidelity``
     None: no level closer to stock exists yet). ``alternative`` is PORT, STOCK_ART or NONE, ``stock`` says in words
     what stock does or which path gives it, and ``switch`` names the existing switch the levels drive.
+    ``replaces`` ({name: values}) marks an argument a level changes from one of ``values`` to its own: the keyword
+    must be given with one of them (the level refines an option the run chose, e.g. response="default" to
+    response="pools") and is refused when absent, so a level never turns an output on by itself.
     """
     name: str
     description: str
@@ -62,6 +65,7 @@ class Approximation:
     stock: str = ""
     switch: str = ""
     performance_only: bool = False   # the levels give the same output (a speed switch listed for completeness)
+    replaces: Mapping[str, Tuple[object, ...]] = field(default_factory=dict)
 
     def __post_init__(self):
         if self.default not in self.levels:
@@ -149,12 +153,20 @@ class Selection:
     overrides: Dict[str, object]
     effective: Dict[str, Dict[str, str]] = field(default_factory=dict)
 
+    def _replaces(self):
+        out, levels = {}, self.effective_levels()
+        for a in self.workflow.approximations:
+            if levels[a.name] != a.default:
+                out.update({key: (values, a) for key, values in a.replaces.items()})
+        return out
+
     def arguments(self, surface="kwargs"):
         """{name: value} the selected non-default levels set (empty at the default levels); ``surface`` "cli" gives
-        the command-line values."""
-        out = {}
+        the command-line values. Effective levels (set_effective) count: a level a command cannot apply is set back
+        before the arguments are taken."""
+        out, levels = {}, self.effective_levels()
         for a in self.workflow.approximations:
-            level = self.levels[a.name]
+            level = levels[a.name]
             sets = a.cli.get(level, a.sets.get(level, {})) if surface == "cli" else a.sets.get(level, {})
             for key, value in sets.items():
                 if key in out and out[key] != value:
@@ -196,12 +208,25 @@ class Selection:
     def apply_kwargs(self, kwargs, accepted=None):
         """``kwargs`` with the selected arguments added. A key already in ``kwargs`` with a different value is
         refused, and so is a non-default level whose argument the entry point does not take (``accepted``: the names
-        it takes, None to skip the check)."""
+        it takes, None to skip the check). A ``replaces`` argument that is not given: refused for a level set by
+        name; a level the preset chose stays at its default (recorded under ``effective``)."""
         out = dict(kwargs)
+        replaces = self._replaces()
+        for key, (values, a) in replaces.items():
+            if key not in out and a.name not in self.overrides:
+                self.set_effective(a.name, a.default, f"{key} not given: the preset level needs one of {list(values)}")
+        replaces = self._replaces()
         for key, value in self.arguments().items():
             if accepted is not None and key not in accepted:
                 raise ValueError(f"{self.workflow.name}: this entry point takes no {key!r}, so the selected level "
                                  f"cannot reach it; use the workflow's chain entry point")
+            if key in replaces:
+                values = replaces[key][0]
+                if key not in out or (out[key] not in values and out[key] != value):
+                    raise ValueError(f"{self.workflow.name}: the selected level changes {key} from one of "
+                                     f"{list(values)} to {value!r}; give {key} explicitly")
+                out[key] = value
+                continue
             if key in out and out[key] != value:
                 raise ValueError(f"{self.workflow.name}: {key}={out[key]!r} given, but the approximations set "
                                  f"{key}={value!r}")

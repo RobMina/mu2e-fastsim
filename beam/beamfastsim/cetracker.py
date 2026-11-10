@@ -552,6 +552,11 @@ def main(argv=None):
     a = ap.parse_args(argv)
     try:
         selection = approximations.from_args(a, W2)
+        if selection.levels["response_draw"] != "copula":      # this command applies no response layer
+            if "response_draw" in selection.overrides:
+                raise ValueError("response_draw: the cetracker command applies no response layer (use DeviceChain "
+                                 "or the bench entry with response=\"default\")")
+            selection.set_effective("response_draw", "copula", "the cetracker command applies no response layer")
         selection.apply_namespace(a, ap)
     except ValueError as e:
         ap.error(str(e))

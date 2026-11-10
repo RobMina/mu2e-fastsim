@@ -43,6 +43,14 @@ _TRACKER = (
         levels=("gas_chords", "complete"), default="gas_chords", sets={"complete": {"complete_outer_wall": True}},
         fidelity="complete", alternative=NONE, stock="Geant4 straw walls; the complete wall is the closer model",
         switch="cetracker --complete-outer-wall; DeviceChain(complete_outer_wall=)"),
+    Approximation(
+        "response_draw", "reco response layer, residual and quality draw: Gaussian copula with inverse CDFs, or "
+        "the empirical joint draw of one reference track's vector (keeps the tail dependence); with "
+        "response=\"default\" only",
+        levels=("copula", "empirical"), default="copula", sets={"empirical": {"response": "pools"}},
+        replaces={"response": ("default",)}, fidelity="empirical", alternative=STOCK_ART,
+        stock="stock LoopHelix on the injector file (StrawGasStepsFromTable, stock digis)",
+        switch="DeviceChain(response=\"pools\") (Python and bench only; the cetracker CLI applies no response)"),
 )
 _TRACKER_FIXED = {
     "primary_only_steps": "no delta rays, conversions or other secondaries in the tracker; stock StrawGasSteps from "
