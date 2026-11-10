@@ -34,7 +34,10 @@ class Chain:
         self.cond_dev, self.tot_bins = hits.device_conditions(cond)
         self.fz = helix.face_z(cond)
         self.net = mva.load(tc_mva_path)
-        self.response = response or {}          # {path: {"hs": f, "ks": f}}: response-layer pass probabilities
+        # {path: {"hs": f, "ks": f}}: response-layer pass probabilities; or, opt-in, {path: {"final": {"var": "tc_nsh",
+        # "edges": [...], "f": [...]}}}: one pass probability for the path, binned in the straw hits of the event's
+        # best time cluster of the path's producer, applied to the path's own device decision (then hs/ks are not used)
+        self.response = response or {}
         self.salt = salt
         # stage settings, shared between paths that use the same producer
         self.sh = hits.sh_settings(self.mods["TrigMakeSH"])
@@ -80,11 +83,13 @@ class Chain:
                 hxs[(p["tc"], p["helix"])] = helix.helices(ph, tcs[p["tc"]], helix.settings(self.mods[p["helix"]]), self.fz)
         out, aux = {}, {}
         ev = batch["event"]
+        tc_nsh = {lbl: jnp.max(jnp.where(tc["valid"], tc["nsh"], 0), axis=1) for lbl, tc in tcs.items()}
         for k, (name, p) in enumerate(sorted(self.plan.items())):
             tc = tcs[p["tc"]]
             ok = batch["valid_event"]
             hx = hxs.get((p["tc"], p["helix"]))
             hs_mask = None
+            binned = self.response.get(name, {}).get("final")
             for role, lbl, fc in p["filters"]:
                 if role == "tc":
                     if p["family"] == "apr":   # TZClusterFinder makes no cluster below clusterThresh straw hits
@@ -98,7 +103,7 @@ class Chain:
                     hs_mask = hp
                     ok = ok & (jnp.sum(hp, axis=1) >= int(fc.get("minNHelices", 1)))
                     aux[name + ":hs_raw"] = ok
-                    f = float(self.response.get(name, {}).get("hs", 1.0))
+                    f = 1.0 if binned else float(self.response.get(name, {}).get("hs", 1.0))
                     if f < 1.0:
                         ok = ok & (paths.draw(ev, self.salt + 1000 + k) < f)
                     aux[name + ":hs"] = ok
@@ -106,9 +111,26 @@ class Chain:
                     mom = float(self.mods[p["ksf"]].get("HelixMask", {}).get("MinHelixMom", 0.0)) if p["ksf"] else 0.0
                     ok = ok & paths.kalseed_pass(hx, fc, mom, 1.0, ev, self.salt + k)
                     aux[name + ":ks_raw"] = ok
-                    f = float(self.response.get(name, {}).get("ks", 1.0))
+                    f = 1.0 if binned else float(self.response.get(name, {}).get("ks", 1.0))
                     if f < 1.0:
                         ok = ok & (paths.draw(ev, self.salt + k) < f)
+            aux[name + ":tcnsh"] = tc_nsh[p["tc"]]
+            fdt = jnp.float32 if self.precision == "float32" else jnp.float64
+            hp = jnp.max(jnp.where(hx["ok"], hx["p"], 0.0), axis=1).astype(fdt) if hx is not None else None
+            if hp is not None:
+                aux[name + ":help"] = hp
+            if binned:
+                aux[name + ":raw"] = ok
+                fb = jnp.asarray(binned["f"], fdt)
+                edges = jnp.asarray(binned["edges"], fdt)
+                ib = jnp.clip(jnp.searchsorted(edges, tc_nsh[p["tc"]].astype(fdt), side="right") - 1, 0, fb.shape[-1] - 1)
+                if "edges_p" in binned and hp is not None:   # 2D: helix momentum rows x time-cluster hits
+                    ep = jnp.asarray(binned["edges_p"], fdt)
+                    jp = jnp.clip(jnp.searchsorted(ep, hp, side="right") - 1, 0, fb.shape[0] - 1)
+                    fe = fb[jp, ib]
+                else:
+                    fe = fb[ib]
+                ok = ok & (paths.draw(ev, self.salt + 2000 + k) < fe)
             out[name] = ok
             if hs_mask is not None:
                 aux[name + ":hsmask"] = hs_mask
