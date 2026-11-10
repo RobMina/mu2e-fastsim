@@ -28,6 +28,9 @@ import numpy as np, jax, jax.numpy as jnp
 jax.config.update("jax_enable_x64", True)
 from mu2efastsim import precision as dprec, eloss_jax, materials
 assert dprec.SINGLE and dprec.FLOAT == np.float32 and 0 < dprec.TINY < 1e-37
+m32 = jnp.ones((4, 4), jnp.float32)                         # float32 matmuls: full float32, not XLA's TF32 default
+assert dprec.MATMUL == "highest" and "HIGHEST" in jax.jit(lambda a: a @ a).lower(m32).as_text()
+assert "HIGHEST" not in jax.jit(lambda a: jnp.matmul(a, a, precision=dprec.TF32_EXACT)).lower(m32).as_text()
 assert jnp.zeros(2).dtype == np.float64 and jax.random.uniform(jax.random.key(0), (2,)).dtype == np.float64  # outside kernels
 
 @dprec.jit
@@ -61,7 +64,7 @@ def test_float32_mode_scoped_to_kernels_shared_kernels_follow_inputs(tmp_path):
     out = {}
     for mode in ("float32", "float64"):
         # float32 is the default: that leg runs with the variable unset and also checks the provenance record
-        env = {k: v for k, v in os.environ.items() if k != "MU2EFS_DEVICE_FLOAT"}
+        env = {k: v for k, v in os.environ.items() if k not in ("MU2EFS_DEVICE_FLOAT", "JAX_DEFAULT_MATMUL_PRECISION")}
         env.update(PYTHONPATH=str(ROOT), **({} if mode == "float32" else {"MU2EFS_DEVICE_FLOAT": mode}))
         code = f"OUT = {str(tmp_path / mode)!r}\n" + (FLOAT32_CHECK + DEFAULT_PROVENANCE if mode == "float32" else
                                                    FLOAT32_CHECK.split("assert dprec.SINGLE")[0] + FLOAT64_PART)
@@ -72,6 +75,7 @@ def test_float32_mode_scoped_to_kernels_shared_kernels_follow_inputs(tmp_path):
 
 
 FLOAT64_PART = r'''
+assert dprec.MATMUL is None and "HIGHEST" not in jax.jit(lambda a: a @ a).lower(jnp.ones((4, 4), jnp.float32)).as_text()
 d64 = eloss_jax.dedx_restricted(materials.POLYSTYRENE, np.array([101.0, 500.0]), 1e9)
 s64 = eloss_jax.sample_loss(jax.random.key(1), materials.POLYSTYRENE, np.array([101.0, 500.0]), np.array([10.0, 10.0]), 1e9)
 np.save(OUT, np.concatenate([np.asarray(d64), np.asarray(s64)]))
@@ -82,7 +86,7 @@ print("ok")
 DEFAULT_PROVENANCE = r'''
 from mu2efastsim import precision as p
 d = p.provenance()
-assert p.SINGLE and d['device_float'] == 'float32' and d['device_kind'], d
+assert p.SINGLE and d['device_float'] == 'float32' and d['device_kind'] and d['matmul_precision'] == 'highest', d
 print("ok")
 '''
 

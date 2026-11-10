@@ -200,7 +200,7 @@ def _closure(A):
     R = A.astype(jnp.float32)
     n = int(np.ceil(np.log2(max(A.shape[-1], 2))))
     for _ in range(n):
-        R = (jnp.matmul(R, R, precision=jax.lax.Precision.HIGHEST) > 0).astype(jnp.float32)
+        R = (jnp.matmul(R, R, precision=dprec.TF32_EXACT) > 0).astype(jnp.float32)   # 0/1 products: exact
     return R > 0
 
 
@@ -218,7 +218,7 @@ def _attach_opposite(lab, kept, filt, comp, idx, bar, sipm, first, t, enabled, w
     same_bar = bar[:, :, None] == bar[:, None, :]
     same_side = side[:, :, None] == side[:, None, :]
     occupied = jnp.matmul((same_bar & same_side).astype(jnp.float32),
-                          jnp.swapaxes(members.astype(jnp.float32), 1, 2)) > 0
+                          jnp.swapaxes(members.astype(jnp.float32), 1, 2), precision=dprec.TF32_EXACT) > 0
     anchor_occupied = jnp.take_along_axis(occupied, jnp.maximum(lab, 0)[:, None, :], axis=2)
     eligible = (enabled & filt & ~kept & first)[:, :, None] & (kept & first)[:, None, :]
     eligible &= same_bar & ~same_side & ~anchor_occupied

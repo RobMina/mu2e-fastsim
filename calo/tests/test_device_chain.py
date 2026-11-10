@@ -324,3 +324,12 @@ def test_float32_fit_and_clusters_close_to_double():
     np.testing.assert_allclose(b["energy"], a["energy"], rtol=2e-3)
     np.testing.assert_allclose(b["time"], a["time"], atol=0.05)
     np.testing.assert_allclose(np.column_stack((b["x"], b["y"])), np.column_stack((a["x"], a["y"])), atol=0.5)
+
+
+def test_float32_products_ask_for_highest_matmul_precision():
+    """float32 frames, pulse-table product and centroids run in full float32 (not TF32); float64 keeps XLA's default."""
+    def centroid(w, pos):
+        return jnp.einsum("bhc,bhk->bck", w, pos, precision=dc._physics(w, pos))
+    for dtype, highest in ((jnp.float32, True), (jnp.float64, False)):
+        x = jnp.ones((2, 3, 4), dtype)
+        assert ("HIGHEST" in jax.jit(centroid).lower(x, x).as_text()) is highest
