@@ -2,11 +2,16 @@
 // Run with module label compressDetStepMCs on the gen stream of the same CRY primaries; events matched by (run, subrun, event).
 // One SimParticle tree for both detectors: the CRV table is read here too, so CrvStepsFromTable is not used in this chain.
 // Tables: dump/sgsteps + dump/particles (trkfastsim.steps), optional dump/surfsteps, dump/trajpts; CRV dump/steps + dump/particles.
+// Opt-in (copyCaloShowerSteps / copyCrvSteps, default off): copy the input's Geant4 CaloShowerSteps / CrvSteps into this
+// tree, so only the tracker steps are replaced. Each copied step's SimParticle and its ancestors are copied with their
+// keys shifted by copyKeyOffset (the input primary, copyPrimaryKey, is the tree's primaryKey; with offset 0 a key already in the tree must be the
+// same particle, same PDG, and is shared), parent / daughter Ptrs remapped into this collection, the rest unchanged.
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -94,6 +99,10 @@ class StrawGasStepsFromTable : public art::EDProducer {
     fhicl::Atom<long> trkKeyOffset{fhicl::Name("trkKeyOffset"), fhicl::Comment("added to tracker SimParticle keys other than primaryKey (0 = keys as in the table)"), 0};
     fhicl::Atom<long> primaryKey{fhicl::Name("primaryKey"), fhicl::Comment("key of the primary muon, shared by both tables"), 1};
     fhicl::Atom<bool> makeTrajectories{fhicl::Name("makeTrajectories"), fhicl::Comment("without a trajpts tree, synthesise MCTrajectories of primaries from their steps"), true};
+    fhicl::Atom<art::InputTag> copyCaloShowerSteps{fhicl::Name("copyCaloShowerSteps"), fhicl::Comment("input CaloShowerSteps to copy into this tree (e.g. compressDetStepMCs::<dts process>); empty = none (default)"), art::InputTag()};
+    fhicl::Atom<art::InputTag> copyCrvSteps{fhicl::Name("copyCrvSteps"), fhicl::Comment("input CrvSteps to copy into this tree; empty = none (default); not with crvTableFile"), art::InputTag()};
+    fhicl::Atom<long> copyPrimaryKey{fhicl::Name("copyPrimaryKey"), fhicl::Comment("input key of the primary the copied steps share with the tree's primaryKey (-1: primaryKey)"), -1};
+    fhicl::Atom<long> copyKeyOffset{fhicl::Name("copyKeyOffset"), fhicl::Comment("added to the keys of the copied SimParticles other than primaryKey (0: input keys; a key in the tree must then be the same particle)"), 0};
   };
   using Parameters = art::EDProducer::Table<Config>;
   explicit StrawGasStepsFromTable(const Parameters& conf);
@@ -115,9 +124,12 @@ class StrawGasStepsFromTable : public art::EDProducer {
   };
   void readParticles(TTree* t, bool trk);
   long remap(long k) const { return (k < 0 || k == primKey_ || trkOff_ == 0) ? k : k + trkOff_; }
+  template <class MakePtr>
+  void copyDetSteps(art::Event& event, SimParticleCollection& sims, MakePtr const& ptr, CaloShowerStepCollection& caloOut,
+                    CrvStepCollection& crvOut) const;
 
-  art::InputTag genTag_;
-  long trkOff_, primKey_;
+  art::InputTag genTag_, caloTag_, crvTag_;
+  long trkOff_, primKey_, copyOff_, copyPrimKey_;
   bool makeTraj_;
   std::map<Key, std::vector<Sgs>> sgs_;
   std::map<Key, std::vector<Crv>> crv_;
@@ -154,8 +166,15 @@ void StrawGasStepsFromTable::readParticles(TTree* t, bool trk) {
 }
 
 StrawGasStepsFromTable::StrawGasStepsFromTable(const Parameters& conf)
-    : art::EDProducer(conf), genTag_(conf().genParticles()), trkOff_(conf().trkKeyOffset()), primKey_(conf().primaryKey()),
+    : art::EDProducer(conf), genTag_(conf().genParticles()), caloTag_(conf().copyCaloShowerSteps()), crvTag_(conf().copyCrvSteps()),
+      trkOff_(conf().trkKeyOffset()), primKey_(conf().primaryKey()), copyOff_(conf().copyKeyOffset()),
+      copyPrimKey_(conf().copyPrimaryKey()),
       makeTraj_(conf().makeTrajectories()) {
+  if (!crvTag_.empty() && !conf().crvTableFile().empty())
+    throw cet::exception("TRKFASTSIM") << "copyCrvSteps and crvTableFile both set: one source of CrvSteps";
+  if (copyOff_ < 0) throw cet::exception("TRKFASTSIM") << "copyKeyOffset must be >= 0";
+  if (!caloTag_.empty()) consumes<CaloShowerStepCollection>(caloTag_);
+  if (!crvTag_.empty()) consumes<CrvStepCollection>(crvTag_);
   produces<SimParticleCollection>();
   produces<StrawGasStepCollection>();
   produces<CrvStepCollection>();
@@ -223,13 +242,14 @@ void StrawGasStepsFromTable::produce(art::Event& event) {
   auto crvOut = std::make_unique<CrvStepCollection>();
   auto trajOut = std::make_unique<MCTrajectoryCollection>();
   auto surfOut = std::make_unique<SurfaceStepCollection>();
+  auto caloOut = std::make_unique<CaloShowerStepCollection>();
   Key key(event.run(), event.subRun(), event.event());
+  auto pid = event.getProductID<SimParticleCollection>();
+  auto* getter = event.productGetter(pid);
+  auto ptr = [&](long k) { return art::Ptr<SimParticle>(pid, std::size_t(k), getter); };
   auto ip = parts_.find(key);
   if (ip != parts_.end()) {
     GeomHandle<DetectorSystem> det;
-    auto pid = event.getProductID<SimParticleCollection>();
-    auto* getter = event.productGetter(pid);
-    auto ptr = [&](long k) { return art::Ptr<SimParticle>(pid, std::size_t(k), getter); };
     auto const& parts = ip->second;
     auto known = [&](long k) { return parts.count(k) != 0; };
     static const std::vector<Sgs> noSgs;
@@ -347,13 +367,81 @@ void StrawGasStepsFromTable::produce(art::Event& event) {
   } else if (sgs_.count(key) || crv_.count(key)) {
     throw cet::exception("TRKFASTSIM") << "steps without particles in event " << event.id();
   }
+  if (!caloTag_.empty() || !crvTag_.empty()) copyDetSteps(event, *sims, ptr, *caloOut, *crvOut);
   event.put(std::move(sims));
   event.put(std::move(sgsOut));
   event.put(std::move(crvOut));
   event.put(std::move(trajOut));
   event.put(std::move(surfOut));
   event.put(std::make_unique<StepPointMCCollection>(), "virtualdetector");
-  event.put(std::make_unique<CaloShowerStepCollection>());
+  event.put(std::move(caloOut));
+}
+
+// copyCaloShowerSteps / copyCrvSteps: the input's steps into this tree (header comment)
+template <class MakePtr>
+void StrawGasStepsFromTable::copyDetSteps(art::Event& event, SimParticleCollection& sims, MakePtr const& ptr,
+                                          CaloShowerStepCollection& caloOut, CrvStepCollection& crvOut) const {
+  std::vector<CaloShowerStep> calo;
+  std::vector<CrvStep> crv;
+  if (!caloTag_.empty()) calo = event.getProduct<CaloShowerStepCollection>(caloTag_);
+  if (!crvTag_.empty()) crv = event.getProduct<CrvStepCollection>(crvTag_);
+  std::set<long> tree;                                        // keys of the table's particles
+  for (auto const& [k, p] : sims) tree.insert(long(k.asInt()));
+  long const inPrim = copyPrimKey_ < 0 ? primKey_ : copyPrimKey_;
+  auto outKey = [&](long k) { return k == inPrim ? primKey_ : k + copyOff_; };
+  std::map<long, long> out;                                   // input key -> key in this tree
+  std::map<long, art::Ptr<SimParticle>> copied;               // input key -> input particle, for the copied ones
+  // a step's particle and its ancestors, up to the first one that is in the tree (shared) or has no parent
+  art::ProductID inPid;                                       // keys are per collection: every input Ptr must share one
+  auto add = [&](art::Ptr<SimParticle> p) {
+    for (; p.isNonnull(); p = p->parent()) {
+      if (inPid == art::ProductID()) inPid = p.id();
+      if (p.id() != inPid)
+        throw cet::exception("TRKFASTSIM") << "copied steps and their ancestors span several SimParticle collections in " << event.id();
+      long k = long(p.key());
+      if (out.count(k)) return;
+      long o = outKey(k);
+      if (tree.count(o)) {
+        if (o != primKey_ && copyOff_ != 0)
+          throw cet::exception("TRKFASTSIM") << "copied SimParticle key " << o << " (input " << k << ") collides with the tree in "
+                                             << event.id() << "; raise copyKeyOffset";
+        auto const& t = sims[cet::map_vector_key(static_cast<unsigned long>(o))];
+        if (t.pdgId() != p->pdgId())
+          throw cet::exception("TRKFASTSIM") << "input SimParticle " << k << " (PDG " << p->pdgId() << ") is not tree particle " << o
+                                             << " (PDG " << t.pdgId() << ") in " << event.id();
+        out[k] = o;                                           // the same particle: shared
+        return;
+      }
+      out[k] = o;
+      copied[k] = p;
+    }
+  };
+  for (auto const& s : calo) add(s.simParticle());
+  for (auto const& s : crv) add(s.simParticle());
+  for (auto const& [k, p] : copied) {
+    long o = out.at(k);
+    SimParticle c = *p;
+    c.id() = cet::map_vector_key(static_cast<unsigned long>(o));
+    auto ipar = p->parent().isNonnull() ? out.find(long(p->parent().key())) : out.end();
+    c.parent() = ipar == out.end() ? art::Ptr<SimParticle>() : ptr(ipar->second);
+    c.daughters().clear();
+    for (auto const& d : p->daughters())
+      if (copied.count(long(d.key()))) c.daughters().push_back(ptr(out.at(long(d.key()))));
+    sims[cet::map_vector_key(static_cast<unsigned long>(o))] = c;
+    if (ipar != out.end() && !copied.count(ipar->first))        // hangs from a tree particle: a daughter there too
+      sims[cet::map_vector_key(static_cast<unsigned long>(ipar->second))].addDaughter(ptr(o));
+  }
+  auto remapped = [&](art::Ptr<SimParticle> const& p) { return ptr(out.at(long(p.key()))); };
+  for (auto s : calo) {
+    s.setSimParticle(remapped(s.simParticle()));
+    caloOut.push_back(s);
+  }
+  for (auto const& s : crv)
+    crvOut.emplace_back(s.barIndex(), s.visibleEDep(), s.startTime(), s.endTime(), s.startPos(), s.endPos(), s.startMom(),
+                        s.endMom(), s.pathLength(), remapped(s.simParticle()));
+  if (!calo.empty() || !crv.empty())
+    mf::LogDebug("TRKFASTSIM") << event.id() << ": copied " << calo.size() << " CaloShowerSteps, " << crv.size() << " CrvSteps, "
+                               << copied.size() << " SimParticles";
 }
 
 }  // namespace mu2e

@@ -8,6 +8,7 @@ Musing `SimJob MDC2025ay`, so no Offline checkout is touched. Same layout as `cr
 | `StrawGasStepTableDumper` | the tracker truth of a dts file -> flat TTrees in `dump/`: `sgsteps`, `surfsteps`, `vdsteps`, `trajpts`, `particles`, `gen`, `subruns`. uproot cannot read these art products directly (memberwise `SimParticle`/`GenParticle`, the `MCTrajectory` map) |
 | `StrawDigiTableDumper` | lossless detector-only `trkdigi/events`; optional `compareTo` checks every original/replayed digi field and ADC sample in the same art event |
 | `StrawDigisFromTable` | ordered StrawDigi and aligned ADC waveform collections from a lossless table, matched by full event identity; no redigitisation or invented truth |
+| `StrawGasStepsFromTable` | path A: fast StrawGasStep (+ optional CrvStep) tables -> the products `compressDetStepMCs` writes, for stock digi + reco; opt-in copy of the input's Geant4 calorimeter / CRV steps (below) |
 
 ## Trees
 
@@ -40,6 +41,28 @@ $TRKFS_CODE/art/dump_ref.sh files.txt $M2FS_DATA/trk_fastsim/tables
 
 The grid campaign of CRY primaries without Geant4 (gen tables for fast runs of a chosen live time) is in `../grid/`
 (`grid/README.md`); its dump step uses `dump_sgsteps_gen.fcl` from this area.
+
+## Geant4 calorimeter and CRV steps in path A (opt-in)
+
+By default `StrawGasStepsFromTable` writes an empty `CaloShowerStepCollection` (and CrvSteps only from `crvTableFile`),
+so the calorimeter-seeded reconstruction (`CalTimePeakFinder*`, `CalHelixFinder*`, the Cpr/Mpr trigger paths and the
+calo-seeded helices merged into the offline fits) has no input. To replace only the tracker steps of a dts:
+
+| parameter | default | meaning |
+|---|---|---|
+| `copyCaloShowerSteps` | empty (off) | input `CaloShowerStep`s to copy, e.g. `"compressDetStepMCs::<dts process>"` |
+| `copyCrvSteps` | empty (off) | input `CrvStep`s to copy; not together with `crvTableFile` |
+| `copyPrimaryKey` | -1 (= `primaryKey`) | input key of the primary that the copied steps share with the table's `primaryKey` |
+| `copyKeyOffset` | 0 | added to the keys of the copied `SimParticle`s other than the primary |
+
+Each copied step's `SimParticle` and its ancestors are copied into the injector's collection with their keys shifted by
+`copyKeyOffset`, the input primary becoming the table's `primaryKey`; parent and daughter `Ptr`s are remapped into the
+injector's collection and every other field is copied unchanged. With `copyKeyOffset : 0` a copied key that is already
+in the table must be the same particle (same PDG) and is shared: injecting a table dumped from the same dts then gives
+back its own `SimParticle` keys. With a fast table use an offset above its largest key (a collision throws). All copied
+steps and their ancestors must come from one input `SimParticle` collection. The inject job must keep the input steps
+it reads (the usual `drop *_compressDetStepMCs_*_*` output command drops them only from the output file, after the
+injector has read them).
 
 ## StrawDigi table bridge (opt-in)
 
