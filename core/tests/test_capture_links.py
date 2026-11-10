@@ -293,9 +293,25 @@ def muon_decay(tables, links, loss=0.):
         for prefix in prefixes:
             table[prefix + "mass"][2] = ME
     s["pre_mass"][4] = s["post_mass"][4] = ME
+    set_muon_end(tables, energy=5., local_p=(0., 0., 0.))
     share = (5. - ME - loss) / 2.
     add_birth_exit(tables, links, index=2, track=BIG + 3, pdg=12, energy=share)
     add_birth_exit(tables, links, index=3, track=BIG + 4, pdg=-14, energy=share)
+
+
+def set_muon_end(tables, *, energy, local_p):
+    """The decaying muon's post-step state (step 3, track row 1): energy and local momentum, mass from both."""
+    s, t, e = tables["steps"], tables["tracks"], tables["events"]
+    local = np.asarray(local_p, float)
+    world = e["rotation"][1].reshape(3, 3) @ local
+    mass = np.sqrt(energy ** 2 - local @ local)
+    for table, prefix, row in ((s, "post_", 3), (t, "end_", 1)):
+        table[prefix + "energy"][row], table[prefix + "mass"][row] = energy, mass
+        table[prefix + "kinetic"][row] = energy - mass
+        for axis, value in zip("xyz", local):
+            table[prefix + "lp" + axis][row] = value
+        for axis, value in zip("xyz", world):
+            table[prefix + "p" + axis][row] = value
 
 
 def test_declared_muon_decay_term(tables):
@@ -316,6 +332,30 @@ def test_extra_loss_in_a_muon_decay_fails(tables):
     failure = result["decay_failures"][0]
     assert failure["parent_pdg"] == 13 and failure["children_pdg"] == [-14, 11, 12]
     assert failure["residual_MeV"] == pytest.approx(1e-6, abs=1e-12)
+
+
+@pytest.mark.parametrize("loss,passes", [(0., True), (1e-6, False)])
+def test_muon_decay_in_flight_loses_m_e_in_the_muon_rest_frame(tables, loss, passes):
+    links = make_links(tables)
+    muon_decay(tables, links)
+    set_muon_end(tables, energy=5., local_p=(0., 0., 4.))
+    s, t, c = tables["steps"], tables["tracks"], tables["classifications"]
+    kids = np.flatnonzero(t["parent"] != 0)
+    parent = np.array([s["post_p" + a][3] for a in "xyz"])
+    child_p = np.array([t["begin_p" + a][kids].sum() for a in "xyz"])
+    deficit = (ME * 3. + (parent - child_p) @ parent) / 5. + loss
+    row = len(t["pdg"]) - 1
+    other = t["begin_energy"][kids].sum() - t["begin_energy"][row]
+    energy = 10. - 2. - other - deficit
+    for table, prefixes in ((t, ("begin_", "end_")), (c, ("state_",))):
+        for prefix in prefixes:
+            table[prefix + "energy"][row] = table[prefix + "kinetic"][row] = energy
+    result = capture_accounting.report(tables, links, 2)
+    assert result["energy_accounting_passed"] is passes and result["declared_muon_decay_steps"] == 1
+    assert result["decay_steps_out_of_tolerance"] == (0 if passes else 1)
+    assert abs(deficit - ME) > 1e-3
+    if passes:
+        assert result["totals_MeV"]["declared_decay_q"] == pytest.approx(deficit, rel=1e-12)
 
 
 def test_undeclared_decay_channel_fails(tables):
@@ -343,16 +383,16 @@ def test_decay_without_products_is_declared_only_for_nuclei(tables, pdg, passes)
         assert result["decay_failures"][0]["children_pdg"] == [] and result["decay_failures"][0]["parent_pdg"] == 11
 
 
-def test_em_recoil_nucleus_takes_its_mass_from_the_material(tables):
+@pytest.mark.parametrize("pdg,mass", [(1000130270, 25126.5), (2212, 938.272)])
+def test_em_recoil_nucleus_takes_its_mass_from_the_material(tables, pdg, mass):
     balance(tables)
     set_processes(tables, "CoulombScat")
     t, c = tables["tracks"], tables["classifications"]
-    mass = 25126.5
     for table, prefixes in ((t, ("begin_", "end_", "entrance_")), (c, ("state_",))):
         for prefix in prefixes:
             table[prefix + "mass"][2] = mass
             table[prefix + "energy"][2] += mass
-    t["pdg"][2] = c["pdg"][2] = 1000130270
+    t["pdg"][2] = c["pdg"][2] = pdg
     for prefix in ("pre_", "post_"):
         tables["steps"][prefix + "energy"][4] += mass
         tables["steps"][prefix + "mass"][4] = mass

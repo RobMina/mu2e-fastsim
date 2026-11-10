@@ -7,14 +7,16 @@ Energies are total energies, so rest masses are explicit. For a step inside the 
 where E_post is dropped when the step destroys the particle (it is killed by a decay or an absorbing EM process),
 and L_medium is the net electron number the step takes from the material (Compton, photo-, ionisation electrons;
 the atomic electron of an annihilation; minus the positrons of pair production). A nucleus that an EM step sets in
-motion (the recoil of single Coulomb scattering) also comes from the material, so its rest mass is added to the
-medium term too, and the step balances in kinetic energy. Steps of electromagnetic,
+motion (the recoil of single Coulomb scattering, a proton for hydrogen) also comes from the material, so its rest
+mass is added to the medium term too, and the step balances in kinetic energy. Steps of electromagnetic,
 transport and decay processes must close (|R| within tolerance). Any other process is reported as an explicit
 nuclear term Q = E_pre - E_post(kept) - deposit - sum(E_birth), never forced to zero.
 
 Decay steps carry a declared term Q_decay = E_parent - sum(E_children), gated step by step against its expected
 value. Geant4's G4MuonDecayChannel (a muon decaying to one e+- and two neutrinos) gives daughters that total
-m_mu - m_e, so its expected Q_decay is m_e. This is Geant4's own behaviour, declared here, not a tuned value.
+m_mu - m_e in the muon rest frame. Its gate is Lorentz invariant: the rest-frame energy of the missing 4-momentum,
+(P_mu - sum p_children) . P_mu / m_mu, must be m_e (with P_mu the muon's post-step 4-momentum); at rest this is
+Q_decay = m_e, in flight Q_decay is larger. This is Geant4's own behaviour, declared here, not a tuned value.
 A nucleus (PDG >= 1e9) with no decay channel, such as a triton with radioactive decay off, is killed at rest by
 G4Decay with no products; that step is declared too: the nucleus is not destroyed, its rest mass ends in the
 material, and Q_decay = 0. Every other decay is expected to conserve energy (Q_decay = 0). A decay step off its
@@ -49,8 +51,10 @@ DESTROYING = {"annihil", "phot", "conv", "GammaGeneralProc", *DECAY}
 KILLED = 2
 ELECTRON, POSITRON = 11, -11
 MUONS, NEUTRINOS = (13, -13), (12, -12, 14, -14, 16, -16)
+PROTON = 2212
 PHOTON, MASS_ROUNDING = 22, 1e-6
-DECLARED = {"G4MuonDecayChannel": "muon -> e+- and two neutrinos: daughters total m_mu - m_e, so Q_decay = m_e; "
+DECLARED = {"G4MuonDecayChannel": "muon -> e+- and two neutrinos: daughters total m_mu - m_e in the muon rest frame, "
+                                  "so the missing 4-momentum has rest-frame energy m_e (Q_decay = m_e at rest); "
                                   "Geant4 behaviour, not tuned",
             "G4DecayWithoutProducts": "a nucleus with no decay channel (e.g. 3H, radioactive decay off) is killed at rest "
                                       "by Decay with no products; its rest mass ends in the material; Geant4 behaviour",
@@ -80,7 +84,8 @@ def report(tables, links, expected_events, *, rtol=1e-9, atol=1e-9):
     electrons = np.bincount(rows, weights=pdg == ELECTRON, minlength=n)
     positrons = np.bincount(rows, weights=pdg == POSITRON, minlength=n)
     neutrinos = np.bincount(rows, weights=np.isin(pdg, NEUTRINOS), minlength=n)
-    nucleus_child = np.abs(pdg) >= 1000000000
+    # Geant4 labels a hydrogen recoil as a proton; EM steps make no other protons.
+    nucleus_child = (np.abs(pdg) >= 1000000000) | (pdg == PROTON)
     recoil_mass = np.bincount(rows, weights=np.where(nucleus_child, t["begin_mass"][child], 0.), minlength=n)
     recoils = np.bincount(rows, weights=nucleus_child, minlength=n)
     children = np.bincount(rows, minlength=n)
@@ -117,11 +122,14 @@ def report(tables, links, expected_events, *, rtol=1e-9, atol=1e-9):
         nominal[decay & (parent_pdg == p)] = values[np.argmax(counts)] if len(values) else 0.
     near = decay & (nominal > 0) & (np.abs(pre_mass - nominal) <= MASS_ROUNDING * nominal)
     boost = np.where(near, s["pre_energy"] * (1. - pre_mass / np.where(near, nominal, 1.)), 0.)
-    base_decay = np.where(muon_channel, electron_mass, 0.)
-    boosted = (near & (boost != 0) & (np.abs(q - base_decay) > tolerance) &
-               (np.abs(q - base_decay - boost) <= tolerance))
-    expected_decay = base_decay + np.where(boosted, boost, 0.)
-    residual = np.where(decay, q - expected_decay, q + medium - photon_term)
+    child_p = np.stack([np.bincount(rows, weights=t["begin_p" + a][child], minlength=n) for a in "xyz"], axis=1)
+    parent_p = np.stack([s["post_p" + a] for a in "xyz"], axis=1)
+    rest_deficit = np.where(muon_channel, (q * s["post_energy"] - np.einsum("ij,ij->i", parent_p - child_p, parent_p))
+                            / np.where(muon_channel, s["post_mass"], 1.), 0.)
+    boosted = (near & ~muon_channel & (boost != 0) & (np.abs(q) > tolerance) & (np.abs(q - boost) <= tolerance))
+    decay_residual = np.where(muon_channel, rest_deficit - electron_mass, np.where(boosted, q - boost, q))
+    expected_decay = np.where(decay, q - decay_residual, 0.)
+    residual = np.where(decay, decay_residual, q + medium - photon_term)
     em_steps = inside & em_like
     decay_steps = inside & decay
     nuclear = inside & ~em_like & ~decay

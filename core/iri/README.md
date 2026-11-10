@@ -57,7 +57,7 @@ Literal paths only in the submitted JSON (the API does not expand `$HOME`/`$USER
 
 Project venv `$M2FS_EAGLE/venv`: ALCF conda `2026-10-01` Python 3.13.15, `jax[cuda12]`
 0.11.2, numpy 2.5.4, h5py 3.16, pyarrow 26. JAX's default fp32 matmul uses TF32 on A100 (measured 94-126 "TFLOP/s"
-against a 19.5 FP32 peak): physics kernels must set `jax_default_matmul_precision="highest"` or use float64.
+against a 19.5 FP32 peak): `mu2efastsim.precision` sets `jax_default_matmul_precision="highest"` in float32 mode.
 
 ```bash
 source site.env        # IRI, IRI_PY, M2FS_EAGLE, ALCF_PROJECT

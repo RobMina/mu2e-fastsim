@@ -13,6 +13,11 @@ in both modes.
 - Not affected: the NumPy chain, and JAX code in other stages (beam, tracker). Shared core kernels (`eloss_jax`)
   compute in float32 only inside these kernels.
 - At the hand-off to host code, device results are widened to float64 (`dprec.host`).
+- Matmuls: float32 mode sets JAX's `default_matmul_precision` to `highest` for the process, so float32 matmuls and
+  einsums (PE-weighted cluster positions among them) do not run on TF32 tensor cores, XLA's default on Ampere and
+  later (10-bit mantissa, relative error about 2.5e-4 on the cluster position). Products that TF32 computes exactly
+  (0/1 matrices: the coincidence reachability closure and attachment occupancy) ask for TF32 with
+  `precision=dprec.TF32_EXACT`.
 
 ## Validation
 

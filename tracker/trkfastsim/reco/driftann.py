@@ -50,7 +50,7 @@ def mlp(layers, x):
     """x [..., in] float32 -> [...] sigmoid output (float32, as SOFIE)."""
     h = x.astype(jnp.float32)
     for li, (k, b) in enumerate(layers):
-        h = h @ jnp.asarray(k) + jnp.asarray(b)
+        h = jnp.matmul(h, jnp.asarray(k), precision="highest") + jnp.asarray(b)   # float32 as SOFIE, no TF32
         h = jnp.maximum(h, 0.0) if li < len(layers) - 1 else 1.0 / (1.0 + jnp.exp(-h))
     return h[..., 0]
 
