@@ -31,7 +31,7 @@ from types import SimpleNamespace
 PATHS = ("frames_manifest", "expanded", "truth", "stock", "photon_csv", "tracker_conditions",
          "device_capacities", "occupancy_geometry", "out")
 DEFAULTS = {"device_kernel": "mixing.device_physics:model", "device_output": "occupancy", "device_platform": "gpu",
-            "device_pipeline": False,
+            "device_pipeline": False, "output_compression": None,
             "sampling_seed": 20261106, "seed": 20261106, "tracker_seed": 20261105, "chunk": 32, "synthetic": False}
 
 

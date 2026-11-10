@@ -272,3 +272,41 @@ def test_pipelined_output_equals_serial(template, cond, tmp_path, mode):
                         assert (ak.to_list(tree[branch].array(library="ak"))
                                 == ak.to_list(rb[name][branch].array(library="ak"))), f"{name}/{branch}"
         assert (a / "sampling.json").read_text() == (b / "sampling.json").read_text()
+
+
+@pytest.mark.parametrize("compression", ["zstd1", "none"])
+def test_output_compression_same_arrays(template, cond, tmp_path, compression):
+    """output_compression changes the file bytes, not the decoded trees and branches."""
+    from types import SimpleNamespace
+    from trkfastsim.digi.digicond import Conditions
+    from mixing.device_backend import Backend
+    from mixing.stream_benchmark import run
+
+    c = Conditions(cond.s, cond.a)
+    c.s["onspill"] = True
+    capacity = tmp_path / "capacities.json"
+    capacity.write_text(json.dumps(CAPACITY))
+    outs = {}
+    for mode in (None, compression):
+        outs[mode] = tmp_path / f"out_{mode}"
+        args = SimpleNamespace(out=outs[mode], frames_manifest=None, device_platform="cpu",
+                               device_kernel="mixing.device_integration:model", device_capacities=capacity,
+                               synthetic=False, backend="mixing.device_backend:Backend", events=5, batch_events=2,
+                               max_selected_rows=448, chunk=2, warmup_batches=1, seed=17, tracker_seed=19,
+                               sampling_seed=23, require_stage=[], template=template, output_compression=mode)
+        run(args, lambda manifest, **kwargs: source(c, **kwargs), Backend)
+    paths = sorted(outs[None].glob("*/fast.root"))
+    assert paths
+    for a in paths:
+        b = outs[compression] / a.parent.name / "fast.root"
+        with uproot.open(a) as ra, uproot.open(b) as rb:
+            assert sorted(ra.classnames(recursive=True).items()) == sorted(rb.classnames(recursive=True).items())
+            for name, kind in ra.classnames(recursive=True).items():
+                if kind != "TTree":
+                    continue
+                for branch in ra[name].keys():
+                    assert (ak.to_list(ra[name][branch].array(library="ak"))
+                            == ak.to_list(rb[name][branch].array(library="ak"))), f"{name}/{branch}"
+    with pytest.raises(ValueError, match="output compression"):
+        run(SimpleNamespace(**{**vars(args), "out": tmp_path / "bad", "output_compression": "gzip9"}),
+            lambda manifest, **kwargs: source(c, **kwargs), Backend)
