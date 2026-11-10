@@ -1,0 +1,23 @@
+{
+ "release": {"backing": "Musings/SimJob/MDC2025ay", "area": "muse area with the TrkFastSim modules", "area_sha256": "dcb2bd3bb0581fcf422ec081aee5ec603aa54602996042e751187fc829c09a19"},
+ "geometry": "Offline/Mu2eG4/geom/geom_run1_a.txt",
+ "db": {"purpose": "Sim_best", "version": "v1_1"},
+ "digi_seed": 20261105,
+ "digi": {"include": "Production/JobConfig/digitize/OffSpill.fcl", "lines": [
+  "physics.filters.TriggerableCHPrescale.prescaleFactor : 1",
+  "outputs.Output.SelectEvents : [ \"DigitizePath\" ]",
+  "outputs.Output.fileName : \"dig.art\""]},
+ "reco": {"include": "Production/JobConfig/recoMC/OffSpill.fcl", "lines": [
+  "outputs.LoopHelixOutput.fileName : \"mcs-LH.art\"",
+  "physics.EndPath : [ @sequence::Reconstruction.OffSpillEndSequence, LoopHelixOutput ]"]},
+ "ntuple": {"include": "EventNtuple/fcl/from_mcs-mockdata.fcl", "lines": [
+  "physics.EventNtuplePath : [ @sequence::EventNtuple.PathOff ]",
+  "physics.analyzers.EventNtuple.trk.fits : [ { @table::Off trkDtDtTag : \"\" } ]",
+  "physics.analyzers.EventNtuple.FitType : LoopHelix",
+  "physics.analyzers.EventNtuple.trk.fillTrkDtDt : false",
+  "physics.producers.MergeKKOff.KalSeedCollections : [ \"KKDe\" ]"]},
+ "sample": {"dataset": "dts.mu2e.CeEndpoint.MDC2025ba.art", "input": "the full dts events (every StrawGasStep)",
+  "development": ["001430_00000000", "001430_00000100", "001430_00000200", "001430_00000300", "001430_00000400", "001430_00000500", "001430_00000600"],
+  "held_out": ["001430_00000700", "001430_00000800", "001430_00000900", "001430_00001000", "001430_00001100", "001430_00001200", "001430_00001300"]},
+ "table": {"pools": "all", "min_count": 40}
+}

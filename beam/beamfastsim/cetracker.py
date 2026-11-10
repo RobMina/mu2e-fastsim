@@ -256,12 +256,16 @@ class DeviceChain:
     albedo.Library, or None (off: the transport before the albedo); albedo_species "all" (the electron and its shower
     electrons) or "ce" (the electron's own returns); albedo_max_chords: chord budget of the return transport (None:
     no budget). deltas: delta-ray straw steps (trkfastsim.sim.deltas): None (off, default), "default" (the shipped
-    Geant4 library) or a library .npz / deltas.Library."""
+    Geant4 library) or a library .npz / deltas.Library. response_config: a recoresp.config manifest (dict, JSON or
+    path) or its hash; the response table must carry the same hash (tables built with table.build(..., config=...)),
+    or DeviceChain raises. response_cuts: CE selection cuts applied at run time (table.with_cuts: tandip, d0, rmax as
+    (low, high), fitcon; fitcon needs all-track pools)."""
 
     def __init__(self, offline_root, maps, gdml, geom="Offline/Mu2eG4/geom/geom_2021_PhaseI_v03.txt",
                  response=None, digi_cond=None, dtype="float64", origin=ORIGIN, chord_mm=10.0, lanes=None,
                  ce_unroll=True, ce_shrink=2, digi_chunk=8000, resident_digis=True, complete_outer_wall=False,
-                 albedo="default", albedo_species="all", albedo_max_chords=8192, deltas=None):
+                 albedo="default", albedo_species="all", albedo_max_chords=8192, deltas=None, response_config=None,
+                 response_cuts=None):
         import jax  # noqa: F401  (device backend)
         from mu2efastsim import ehelix
         from trkfastsim.sim import fieldsteps_jax as FJ
@@ -283,7 +287,11 @@ class DeviceChain:
         self.resp = None
         if response is not None:
             from trkfastsim.recoresp import device as RD, table as RT
-            tab = RT.load(RT.NAMED.get(response, response) if isinstance(response, str) else response)
+            tab = RT.load(RT.resolve(response))       # a shipped name, a path or a registered stock-input hash
+            if response_config is not None:          # the table must come from the requested stock inputs
+                RT.check_config(tab, response_config)
+            if response_cuts:                        # run-time CE selection (table.with_cuts)
+                tab = RT.with_cuts(tab, **response_cuts)
             self.resp = RD.to_device(tab, self.dt)
         self.cond = None
         if digi_cond is not None:

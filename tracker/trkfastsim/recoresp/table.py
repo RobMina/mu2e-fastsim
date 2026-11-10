@@ -26,6 +26,12 @@ and holds per bin:
     empirical joint draw) instead of copula + inverse CDFs. It keeps the tail dependence the Gaussian copula does
     not: a large momentum outlier of the stock fit usually comes with an off-cut d0 / r_max / tan(dip) and fails the
     fiducial cuts.
+  * optionally (`build(..., pools="all")`, opt-in): pools of every fitted track instead of the quality-passing
+    ones, with `pool_dir` (electron hypothesis, downstream, a front segment). The quality selection (direction and
+    the fit-consistency cut) is then applied at run time to the drawn track, so the whole CE selection, including
+    the fit-consistency cut, can change without rebuilding the table;
+  * optionally (`build(..., config=manifest)`): the stock-input manifest (`recoresp.config`) and its hash, so a
+    table can be checked against the configuration it is used for.
 
 A fast track is then: fit with eff_fit, quality with eff_q, correlated uniforms from the copula, residuals by inverse
 CDF of those uniforms, added to its own entry
@@ -100,14 +106,19 @@ def _copula(rows):
 
 
 def build(df, nrow_edges=NROW_EDGES, tandip_edges=TANDIP_EDGES, min_count=40, min_eff=10, axis_xy=(-3904.0, 0.0),
-          bz=1.0, pools=False, pool_max=POOL_MAX, reference=""):
+          bz=1.0, pools=False, pool_max=POOL_MAX, reference="", config=None):
     """Response tables from the reference events df (one row per generated event): has_entry, nrow, p_true, tandip_t,
     d0_t, rmax_t (entry truth), fit (bool), and for fitted tracks p_reco, pz, tandip, d0, rmax, pdg, fitcon, chi2ndf,
     nactive. Returns a dict of NumPy arrays (save with np.savez). pools (opt-in): also store each bin's pool for the
     empirical joint draw (pool_res [M, 7] in the order RES + QUAL, pool_idx, pool_start/pool_count [ne, nt]); a pool
     wider than pool_max (a merged bin) keeps a fixed-seed subsample of pool_max tracks. reference: a provenance text
-    (the reference arm and events) stored as `reference` when given."""
+    (the reference arm and events) stored as `reference` when given. pools="all": pools of every fitted track,
+    with `pool_dir` [M] (the direction part of the quality selection), for the run-time CE selection. config: a
+    recoresp.config manifest, stored as `config` (canonical JSON) and `config_hash`."""
     keep_pools = bool(pools)       # (the helper below is also called pools)
+    all_tracks = isinstance(pools, str) and pools == "all"
+    if isinstance(pools, str) and not all_tracks:
+        raise ValueError(f"pools must be True, False or 'all', not {pools!r}")
     ne, nt = len(nrow_edges) - 1, len(tandip_edges) - 1
     d = df[df.has_entry.astype(bool)]
     teff = None
@@ -123,8 +134,8 @@ def build(df, nrow_edges=NROW_EDGES, tandip_edges=TANDIP_EDGES, min_count=40, mi
     bn = np.clip(np.digitize(d.nrow.to_numpy(float), nrow_edges) - 1, 0, ne - 1)
     bt = np.clip(np.digitize(d.tandip_t.to_numpy(float), tandip_edges) - 1, 0, nt - 1)
     fit = d.fit.to_numpy(bool)
-    qual = fit & np.isfinite(d.p_reco.to_numpy(float)) & (d.pdg.to_numpy(float) == 11) & \
-        (d.pz.to_numpy(float) > 0) & (d.fitcon.to_numpy(float) > CE_CUTS["fitcon"])
+    direc = fit & np.isfinite(d.p_reco.to_numpy(float)) & (d.pdg.to_numpy(float) == 11) & (d.pz.to_numpy(float) > 0)
+    qual = direc & (d.fitcon.to_numpy(float) > CE_CUTS["fitcon"])
     res = dict(dp=d.p_reco - d.p_true, dtandip=d.tandip - d.tandip_t, dd0=d.d0 - d.d0_t, drmax=d.rmax - d.rmax_t,
                fitcon=d.fitcon, chi2ndf=d.chi2ndf, nactive=d.nactive)
     if "t0" in d and "t_t" in d:
@@ -138,10 +149,12 @@ def build(df, nrow_edges=NROW_EDGES, tandip_edges=TANDIP_EDGES, min_count=40, mi
     level = np.zeros((ne, nt), np.int8)        # 0 own bin, 1/2 +-1/+-2 tan(dip) bins, 3 nrow row, 4 all
     count = np.zeros((ne, nt), np.int64)
     if keep_pools:
-        qrows = np.flatnonzero(qual)
+        prow = fit if all_tracks else qual         # the tracks a pool holds
+        qrows = np.flatnonzero(prow)
         pos = np.full(len(d), -1, np.int64)
         pos[qrows] = np.arange(len(qrows))
         pool_res = np.stack([res[k][qrows] for k in RES + QUAL], 1)
+        pool_dir = direc[qrows]                      # all-track pools: the direction part of the quality cut
         pool_idx, pool_start, pool_count = [], np.zeros((ne, nt), np.int64), np.zeros((ne, nt), np.int64)
         prng = np.random.default_rng(POOL_SEED)
     def pools(i, j):
@@ -165,7 +178,12 @@ def build(df, nrow_edges=NROW_EDGES, tandip_edges=TANDIP_EDGES, min_count=40, mi
                 icdf[k][i, j] = _icdf(res[k][sel_q[lq]])
             chol[i, j] = _copula(np.stack([res[k][sel_q[lq]] for k in RES + QUAL], 1))
             if keep_pools:
-                ix = pos[np.flatnonzero(sel_q[lq])]
+                if all_tracks:
+                    sel_p = [sq & fit for sq in sel_e]
+                    lp = next(k for k, s_ in enumerate(sel_p) if s_.sum() >= min_count or k == len(sel_p) - 1)
+                    ix = pos[np.flatnonzero(sel_p[lp])]
+                else:
+                    ix = pos[np.flatnonzero(sel_q[lq])]
                 if len(ix) > pool_max:
                     ix = np.sort(prng.choice(ix, pool_max, replace=False))
                 pool_start[i, j] = sum(len(a) for a in pool_idx)
@@ -181,10 +199,15 @@ def build(df, nrow_edges=NROW_EDGES, tandip_edges=TANDIP_EDGES, min_count=40, mi
         out["time_edges"], out["time_eff"] = np.asarray(TIME_EDGES, float), teff
     if reference:
         out["reference"] = np.array(str(reference))
+    if config is not None:
+        from . import config as RC
+        out["config"], out["config_hash"] = np.array(RC.canonical(config)), np.array(RC.digest(config))
     if keep_pools:
         out["pool_res"] = pool_res
         out["pool_idx"] = np.concatenate(pool_idx).astype(np.int32) if pool_idx else np.zeros(0, np.int32)
         out["pool_start"], out["pool_count"] = pool_start, pool_count
+        if all_tracks:
+            out["pool_dir"] = pool_dir
     return out
 
 
@@ -202,9 +225,166 @@ POOLS = Path(__file__).with_name("data") / "ce_loophelix_run1a_pools.npz"
 NAMED = {"default": DEFAULT, "fulldts": FULLDTS, "ceonly": CEONLY, "pools": POOLS, "ceonly_pools": POOLS}
 
 
+# Tables of other stock configurations are not in git: a registry (data/registry.json) maps a stock-input hash
+# (recoresp.config) to the table's file name, sha256 and download URL (release assets resp-<hash>), and a local
+# cache holds the downloaded tables.
+REGISTRY = Path(__file__).with_name("data") / "registry.json"
+CACHE_ENV = "TRKFASTSIM_RESP_CACHE"
+
+
+def cache_dir():
+    """Local cache of downloaded tables: $TRKFASTSIM_RESP_CACHE, else ~/.cache/trkfastsim/recoresp."""
+    import os
+    return Path(os.environ.get(CACHE_ENV) or Path.home() / ".cache" / "trkfastsim" / "recoresp")
+
+
+def registry(path=REGISTRY):
+    import json
+    p = Path(path)
+    return json.loads(p.read_text()) if p.exists() else {}
+
+
+def _sha256(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+def fetch(h, reg=None):
+    """Path of the registered table of stock-input hash h in the cache, downloaded from its URL if missing; the
+    sha256 is checked either way."""
+    import urllib.request
+    reg = registry() if reg is None else reg
+    if h not in reg:
+        raise KeyError(f"stock-input hash {h} is not in the response table registry")
+    e = reg[h]
+    p = cache_dir() / e["file"]
+    if not p.exists():
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".part")
+        with urllib.request.urlopen(e["url"]) as r, open(tmp, "wb") as f:
+            while True:
+                b = r.read(1 << 20)
+                if not b:
+                    break
+                f.write(b)
+        tmp.replace(p)
+    if _sha256(p) != e["sha256"]:
+        raise ValueError(f"{p}: sha256 differs from the registry entry of {h}")
+    return p
+
+
+def resolve(response, reg=None):
+    """Path of a response table: a shipped name (NAMED), an existing file, or a registered stock-input hash
+    (fetched into the cache)."""
+    from . import config as RC
+    if isinstance(response, str) and response in NAMED:
+        return NAMED[response]
+    if Path(response).exists():
+        return Path(response)
+    s = str(response)
+    if len(s) == RC.HASH_LEN and all(c in "0123456789abcdef" for c in s):
+        return fetch(s, reg)
+    raise FileNotFoundError(f"response table {response!r}: not a shipped name, a file or a registered hash")
+
+
 def load(path=DEFAULT):
     with np.load(Path(path)) as f:
         return {k: f[k] for k in f.files}
+
+
+def check_config(tab, c):
+    """Raise unless tab was built with the stock inputs c: a recoresp.config manifest (dict, JSON text or path) or its
+    hash. Tables without a stored hash (built without config) never match."""
+    from . import config as RC
+    want, have = RC.expected_hash(c), str(tab.get("config_hash", ""))
+    if have != want:
+        raise ValueError(f"response table built with stock-input hash {have or '(none)'}, requested {want}")
+
+
+def interpolate(lo, hi, w, seed=POOL_SEED):
+    """The response at a fraction w in [0, 1] between two tables built on the same events and bins with a continuous
+    stock knob at two grid values (e.g. a threshold scale): efficiencies, inverse CDFs and copula factors linear in w;
+    pools the mixture (1 - w) lo + w hi, as a fixed-seed resample of both pools of each bin (all-track pools stay
+    all-track). The result has no config hash (it is not a stock configuration)."""
+    w = float(w)
+    if not 0.0 <= w <= 1.0:
+        raise ValueError("w must be in [0, 1]")
+    for k in ("nrow_edges", "tandip_edges", "qnodes", "count", "cuts", "axis_xy"):
+        if not np.array_equal(lo[k], hi[k]):
+            raise ValueError(f"tables differ in {k}: not built on the same events and bins")
+    if ("pool_res" in lo) != ("pool_res" in hi) or ("pool_dir" in lo) != ("pool_dir" in hi):
+        raise ValueError("both tables need the same pool kind")
+    out = {k: v for k, v in lo.items() if k not in ("config", "config_hash", "reference")}
+    for k in ["eff_fit", "eff_q", "chol", "time_eff"] + [k for k in lo if k.startswith("icdf_")]:
+        if k in lo:
+            out[k] = (1.0 - w) * np.asarray(lo[k], float) + w * np.asarray(hi[k], float)
+    out["level"] = np.maximum(lo["level"], hi["level"])
+    out["reference"] = np.array(f"interpolated, w = {w:g} between [{lo.get('config_hash', '')}] "
+                                f"{lo.get('reference', '')} and [{hi.get('config_hash', '')}] {hi.get('reference', '')}")
+    if "pool_res" not in lo:
+        return out
+    rng = np.random.default_rng(seed)
+    na = len(lo["pool_res"])
+    out["pool_res"] = np.concatenate([lo["pool_res"], hi["pool_res"]])
+    if "pool_dir" in lo:
+        out["pool_dir"] = np.concatenate([lo["pool_dir"], hi["pool_dir"]])
+    idx, start, count = [], np.zeros_like(lo["pool_start"]), np.zeros_like(lo["pool_count"])
+    for i in range(lo["pool_start"].shape[0]):
+        for j in range(lo["pool_start"].shape[1]):
+            a = lo["pool_idx"][lo["pool_start"][i, j]:lo["pool_start"][i, j] + lo["pool_count"][i, j]]
+            b = hi["pool_idx"][hi["pool_start"][i, j]:hi["pool_start"][i, j] + hi["pool_count"][i, j]] + na
+            n = len(a) + len(b)
+            kb = int(round(w * n)) if len(b) else 0
+            ka = n - kb if len(a) else 0
+            kb = n - ka
+            pick = [x[rng.permutation(len(x))[np.arange(k) % len(x)]] for x, k in ((a, ka), (b, kb)) if k]
+            ix = np.sort(np.concatenate(pick)) if pick else np.zeros(0, np.int64)
+            start[i, j], count[i, j] = sum(len(x) for x in idx), len(ix)
+            idx.append(ix)
+    out["pool_idx"] = np.concatenate(idx).astype(np.int32)
+    out["pool_start"], out["pool_count"] = start, count
+    return out
+
+
+def at_knob(grid, value):
+    """The response at a knob value from tables on a grid {knob value: table}: the two neighbouring grid tables,
+    interpolated. Valid range: the grid's span; outside it, ValueError."""
+    xs = sorted(float(x) for x in grid)
+    v = float(value)
+    if not xs[0] <= v <= xs[-1]:
+        raise ValueError(f"knob value {v} outside the grid [{xs[0]}, {xs[-1]}]")
+    tab = {float(k): t for k, t in grid.items()}
+    if v in tab:
+        return tab[v]
+    k = int(np.searchsorted(xs, v))
+    lo, hi = xs[k - 1], xs[k]
+    return interpolate(tab[lo], tab[hi], (v - lo) / (hi - lo))
+
+
+def with_cuts(tab, tandip=None, d0=None, rmax=None, fitcon=None):
+    """A copy of tab with other CE selection cuts, applied at run time: tandip, d0, rmax as (low, high), fitcon as the
+    fit-consistency threshold. The fiducial cuts act on the drawn values with any table; the fit-consistency cut is
+    part of eff_q and of the pools unless the table has all-track pools (pools="all"), so changing it needs one.
+    Valid range of fitcon: [0, 1); a tighter cut leaves fewer pool tracks per bin (see `pool_count`)."""
+    c = np.array(tab["cuts"], float)
+    for k, (i, v) in dict(tandip=(0, tandip), d0=(2, d0), rmax=(4, rmax)).items():
+        if v is not None:
+            lo, hi = map(float, v)
+            if not lo < hi:
+                raise ValueError(f"{k} cut must be (low, high) with low < high")
+            c[i], c[i + 1] = lo, hi
+    if fitcon is not None and float(fitcon) != c[6]:
+        if "pool_dir" not in tab:
+            raise ValueError("the fit-consistency cut is built into this table (eff_q); use a table with all-track "
+                             "pools (table.build(..., pools='all')) to change it")
+        if not 0.0 <= float(fitcon) < 1.0:
+            raise ValueError("fitcon cut must be in [0, 1)")
+        c[6] = float(fitcon)
+    return {**tab, "cuts": c}
 
 
 def _node(u, nq):
@@ -238,8 +418,11 @@ def apply_numpy(tab, rng, has_entry, nrow, x, p, q=-1.0, t=None):
         up = np.random.Generator(rng.bit_generator.jumped()).random(len(nrow))   # does not advance rng (t0 unchanged)
         cnt = tab["pool_count"][bn, bt]
         j = tab["pool_start"][bn, bt] + np.minimum((up * cnt).astype(np.int64), np.maximum(cnt - 1, 0))
-        row = tab["pool_res"][tab["pool_idx"][np.minimum(j, len(tab["pool_idx"]) - 1)]]
+        pr = tab["pool_idx"][np.minimum(j, len(tab["pool_idx"]) - 1)]
+        row = tab["pool_res"][pr]
         draw = {k: row[:, i] for i, k in enumerate(RES + QUAL)}
+        if "pool_dir" in tab:  # all-track pools: the quality selection on the drawn track, at run time
+            qual = fit & tab["pool_dir"][pr] & (draw["fitcon"] > tab["cuts"][6])
     else:
         draw = {k: _sample(tab[f"icdf_{k}"], bn, bt, ndtr(z[i])) for i, k in enumerate(RES + QUAL)}
     c = tab["cuts"]
@@ -290,6 +473,7 @@ def main(argv=None):
     import argparse
     import glob
     import json
+    from . import config as RC
     ap = argparse.ArgumentParser(prog="python3 -m trkfastsim.recoresp.table", description="build CE reco response tables")
     ap.add_argument("--steps-dirs", nargs="+", required=True,
                     help="per-file dirs with states.root (gen), g4entries.root (truth) and g4prim_field.root (steps)")
@@ -299,13 +483,16 @@ def main(argv=None):
     ap.add_argument("--bz", type=float, default=1.0)
     ap.add_argument("--min-count", type=int, default=40)
     ap.add_argument("--reference", default="", help="provenance text stored in the table (reference arm and events)")
-    ap.add_argument("--pools", action="store_true",
-                    help="also store each bin's pool for the empirical joint draw (opt-in; default copula + inverse CDFs)")
+    ap.add_argument("--pools", nargs="?", const=True, default=False, choices=(True, "all"),
+                    help="also store each bin's pool for the empirical joint draw (opt-in; default copula + inverse CDFs); "
+                         "'--pools all': pools of every fitted track, for the run-time CE selection")
+    ap.add_argument("--config", help="recoresp.config manifest of the stock inputs (stored with its hash)")
     a = ap.parse_args(argv)
     dirs = sorted(sum((glob.glob(d) for d in a.steps_dirs), []))
     d = reference_events([f"{x}/states.root" for x in dirs], [f"{x}/g4entries.root" for x in dirs],
                          [f"{x}/g4prim_field.root" for x in dirs], a.nts, bz=a.bz)
-    tab = build(d, min_count=a.min_count, bz=a.bz, pools=a.pools, reference=a.reference)
+    tab = build(d, min_count=a.min_count, bz=a.bz, pools=a.pools, reference=a.reference,
+                config=None if a.config is None else RC.load(a.config))
     save(a.out, tab)
     if a.events_out:
         d.to_csv(a.events_out, index=False)

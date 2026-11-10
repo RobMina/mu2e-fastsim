@@ -240,6 +240,148 @@ def test_reference_text_is_stored_only_when_given():
     assert str(RT.build(d, reference="synthetic dev")["reference"]) == "synthetic dev"
 
 
+def test_all_track_pools_keep_every_fitted_track_and_leave_the_other_tables_unchanged():
+    d = _reference(20000, np.random.default_rng(40))
+    a, b = RT.build(d, pools=True), RT.build(d, pools="all")
+    for k in a:
+        if not k.startswith("pool_"):
+            assert np.array_equal(a[k], b[k]), k
+    assert len(b["pool_res"]) == int(d.fit.sum()) and b["pool_dir"].dtype == bool
+    assert len(b["pool_res"]) > len(a["pool_res"])
+    with pytest.raises(ValueError):
+        RT.build(d, pools="quality")
+
+
+def test_all_track_pools_reproduce_the_quality_selection_at_the_build_cut():
+    d = _reference(40000, np.random.default_rng(41))
+    v = _reference(20000, np.random.default_rng(42))
+    x, p = _xp(v)
+    o = {}
+    for pools in (True, "all"):
+        o[pools] = RT.apply_numpy(RT.build(d, pools=pools), np.random.default_rng(43), v.has_entry.to_numpy(),
+                                  v.nrow.to_numpy(), x, p)
+    assert abs(o[True]["qual"].mean() - o["all"]["qual"].mean()) < 0.01
+    assert abs(o[True]["ce"].mean() - o["all"]["ce"].mean()) < 0.01
+    assert (o["all"]["fitcon"][o["all"]["qual"]] > RT.CE_CUTS["fitcon"]).all()
+
+
+def test_the_fit_consistency_cut_changes_at_run_time_with_all_track_pools():
+    d = _reference(40000, np.random.default_rng(44))
+    v = _reference(20000, np.random.default_rng(45))
+    x, p = _xp(v)
+    tab = RT.build(d, pools="all")
+    cut = 0.3                                            # reference fitcon is uniform: 70 % of fitted tracks pass
+    o = RT.apply_numpy(RT.with_cuts(tab, fitcon=cut), np.random.default_rng(46), v.has_entry.to_numpy(),
+                       v.nrow.to_numpy(), x, p)
+    want = (v.fit & (v.fitcon > cut)).mean()
+    assert abs(o["qual"].mean() - want) < 0.01
+    assert (o["fitcon"][o["qual"]] > cut).all()
+    assert tab["cuts"][6] == RT.CE_CUTS["fitcon"]        # with_cuts copies
+    with pytest.raises(ValueError):                      # the cut is built into tables without all-track pools
+        RT.with_cuts(RT.build(d, pools=True), fitcon=cut)
+    with pytest.raises(ValueError):
+        RT.with_cuts(tab, fitcon=1.5)
+    assert RT.with_cuts(RT.build(d), d0=(-50, 90))["cuts"][2:4].tolist() == [-50.0, 90.0]   # fiducial: any table
+
+
+def test_device_all_track_pools_apply_the_run_time_cut():
+    jax = pytest.importorskip("jax")
+    from trkfastsim.recoresp import device as RD
+    d = _reference(40000, np.random.default_rng(47))
+    v = _reference(20000, np.random.default_rng(48))
+    x, p = _xp(v)
+    tab = RT.with_cuts(RT.build(d, pools="all"), fitcon=0.3)
+    o = RD.apply(RD.to_device(tab), jax.random.PRNGKey(5), jax.numpy.asarray(v.has_entry.to_numpy()),
+                 jax.numpy.asarray(v.nrow.to_numpy()), jax.numpy.asarray(x), jax.numpy.asarray(p))
+    q = np.asarray(o["qual"])
+    assert (np.asarray(o["fitcon"])[q] > 0.3).all()
+    assert abs(q.mean() - (v.fit & (v.fitcon > 0.3)).mean()) < 0.01
+    tq = RD.to_device(RT.build(d, pools=True))
+    assert tq.pool_dir is None
+
+
+def test_tables_carry_their_config_hash_and_check_it():
+    from trkfastsim.recoresp import config as RC
+    d = _reference(5000, np.random.default_rng(49))
+    m = RC.load(MANIFEST)
+    tab = RT.build(d, pools="all", config=m)
+    assert str(tab["config_hash"]) == RC.digest(m) and RC.load(str(tab["config"])) == m
+    RT.check_config(tab, m)
+    RT.check_config(tab, RC.digest(m))
+    m2 = RC.load(m)
+    m2["reco"]["lines"].append("physics.producers.KKDe.ExtensionSettings.MaxNIter : 5")
+    with pytest.raises(ValueError):
+        RT.check_config(tab, m2)
+    with pytest.raises(ValueError):                      # tables built without a config never match
+        RT.check_config(RT.build(d), m)
+
+
+MANIFEST = dict(
+    release="synthetic", geometry="Offline/Mu2eG4/geom/geom_run1_a.txt", db=dict(purpose="Sim_best", version="v1_1"),
+    digi_seed=20261105,
+    digi=dict(include="Production/JobConfig/digitize/OffSpill.fcl", lines=['outputs.Output.fileName : "dig.art"']),
+    reco=dict(include="Production/JobConfig/recoMC/OffSpill.fcl", lines=[]),
+    ntuple=dict(include="EventNtuple/fcl/from_mcs-mockdata.fcl"),
+    sample=dict(dataset="synthetic", development=[0], held_out=[1]), table=dict(pools="all"))
+
+
+def test_manifest_hash_is_canonical_and_covers_every_input(tmp_path):
+    from trkfastsim.recoresp import config as RC
+    h = RC.digest(MANIFEST)
+    assert len(h) == RC.HASH_LEN and RC.expected_hash(h) == h
+    reordered = dict(reversed(list(MANIFEST.items())))
+    assert RC.digest(reordered) == h                     # key order does not matter
+    for path, val in ((("db", "version"), "v1_2"), (("digi_seed",), 1), (("geometry",), "x.txt")):
+        m = RC.load(MANIFEST)
+        tgt = m
+        for k in path[:-1]:
+            tgt = tgt[k]
+        tgt[path[-1]] = val
+        assert RC.digest(m) != h, path
+    with pytest.raises(ValueError):
+        RC.load({k: v for k, v in MANIFEST.items() if k != "sample"})
+    f = tmp_path / "m.json"
+    f.write_text(__import__("json").dumps(MANIFEST))
+    assert RC.digest(str(f)) == h and RC.expected_hash(str(f)) == h
+    RC.main(["render", str(f), str(tmp_path / "fcl")])
+    digi = (tmp_path / "fcl" / "digi.fcl").read_text().splitlines()
+    assert digi[0] == '#include "Production/JobConfig/digitize/OffSpill.fcl"'
+    assert 'outputs.Output.fileName : "dig.art"' in digi and "services.SeedService.baseSeed : 20261105" in digi
+    assert "services.DbService.version : v1_1" in (tmp_path / "fcl" / "reco.fcl").read_text()
+    assert "baseSeed" not in (tmp_path / "fcl" / "ntuple.fcl").read_text()
+    assert RC.digest(str(tmp_path / "fcl" / "manifest.json")) == h
+
+
+def test_shipped_run1a_manifest_loads_and_renders_the_stock_chain():
+    from trkfastsim.recoresp import config as RC
+    m = RC.load(RT.DEFAULT.with_name("config_run1a_offspill.json"))
+    assert m["table"]["pools"] == "all" and len(m["sample"]["development"]) == len(m["sample"]["held_out"]) == 7
+    assert RC.render(m, "reco").startswith('#include "Production/JobConfig/recoMC/OffSpill.fcl"\n')
+
+
+def test_knob_interpolation_mixes_the_neighbouring_grid_tables():
+    d = _reference(40000, np.random.default_rng(50))
+    d2 = d.copy()
+    d2["p_reco"] = d2.p_reco + 0.5                       # the knob shifts the momentum residual
+    d2["fitcon"] = d2.fitcon ** 2                        # and lowers the fit consistency
+    lo, hi = RT.build(d, pools="all"), RT.build(d2, pools="all")
+    mid = RT.at_knob({0.8: lo, 1.2: hi}, 1.0)
+    assert "config_hash" not in mid and "interpolated" in str(mid["reference"])
+    np.testing.assert_allclose(mid["eff_fit"], 0.5 * (lo["eff_fit"] + hi["eff_fit"]))
+    assert (mid["pool_count"] == lo["pool_count"] + hi["pool_count"]).all()
+    v = _reference(20000, np.random.default_rng(51))
+    x, p = _xp(v)
+    o = {k: RT.apply_numpy(t, np.random.default_rng(52), v.has_entry.to_numpy(), v.nrow.to_numpy(), x, p)
+         for k, t in (("lo", lo), ("mid", mid), ("hi", hi))}
+    m = {k: np.nanmean((r["p_reco"] - r["p_true"])[r["qual"]]) for k, r in o.items()}
+    assert abs(m["mid"] - 0.5 * (m["lo"] + m["hi"])) < 0.03
+    q = {k: r["qual"].mean() for k, r in o.items()}
+    assert abs(q["mid"] - 0.5 * (q["lo"] + q["hi"])) < 0.01
+    assert RT.at_knob({0.8: lo, 1.2: hi}, 1.2) is hi
+    with pytest.raises(ValueError):                      # valid range: the grid span
+        RT.at_knob({0.8: lo, 1.2: hi}, 1.3)
+    with pytest.raises(ValueError):                      # not the same events and bins
+        RT.interpolate(lo, RT.build(d.iloc[:20000], pools="all"), 0.5)
 def test_shipped_fulldts_table_has_the_default_bins_and_pools():
     a, b = RT.load(RT.CEONLY), RT.load(RT.NAMED["fulldts"])
     assert set(b) == set(RT.load(RT.POOLS))
@@ -257,3 +399,59 @@ def test_named_tables_resolve_to_shipped_files():
     assert RT.NAMED["default"] == RT.DEFAULT == RT.FULLDTS and RT.NAMED["pools"] == RT.POOLS
     assert RT.NAMED["ceonly"] == RT.CEONLY and RT.load()["reference"] == RT.load(RT.FULLDTS)["reference"]
     assert all(p.exists() for p in RT.NAMED.values())
+
+
+def test_registered_tables_are_fetched_into_the_cache_and_checked(tmp_path, monkeypatch):
+    from trkfastsim.recoresp import config as RC
+    monkeypatch.setenv(RT.CACHE_ENV, str(tmp_path / "cache"))
+    tab = RT.build(_reference(5000, np.random.default_rng(60)), pools="all", config=MANIFEST)
+    src = tmp_path / "assets"
+    src.mkdir()
+    RT.save(src / "t.npz", tab)
+    reg = tmp_path / "registry.json"
+    e = RC.register(src / "t.npz", reg, url_base=src.as_uri() + "/")
+    h = RC.digest(MANIFEST)
+    assert e["file"] == f"ce_loophelix_{h}.npz" and RT.registry(reg)[h]["sha256"] == e["sha256"]
+    (src / e["file"]).write_bytes((src / "t.npz").read_bytes())          # the release asset
+    p = RT.resolve(h, RT.registry(reg))
+    assert p.parent == tmp_path / "cache" and str(RT.load(p)["config_hash"]) == h
+    RT.check_config(RT.load(p), MANIFEST)
+    assert RT.resolve("pools") == RT.POOLS and RT.resolve(str(src / "t.npz")) == src / "t.npz"
+    p.write_bytes(b"corrupt")                                             # a changed file fails the sha256
+    with pytest.raises(ValueError):
+        RT.fetch(h, RT.registry(reg))
+    with pytest.raises(KeyError):
+        RT.fetch("0" * RC.HASH_LEN, RT.registry(reg))
+    with pytest.raises(FileNotFoundError):
+        RT.resolve("no_such_table")
+
+
+def test_shipped_registry_entries_point_at_release_assets():
+    from trkfastsim.recoresp import config as RC
+    reg = RT.registry()
+    base = RC.digest(RC.load(RT.DEFAULT.with_name("config_run1a_offspill.json")))
+    assert base in reg                                 # the shipped manifest's own table is registered
+    for h, e in reg.items():
+        assert len(h) == RC.HASH_LEN and all(c in "0123456789abcdef" for c in h)
+        assert e["file"] == f"ce_loophelix_{h}.npz" and e["url"] == RC.URL_BASE.format(hash=h) + e["file"]
+        assert len(e["sha256"]) == 64 and isinstance(e["knobs"], dict)
+    thr = sorted(e["knobs"]["threshold_scale"] for e in reg.values() if "threshold_scale" in e["knobs"])
+    assert thr == [0.8, 0.9, 1.1, 1.2]                 # with the baseline at 1.0: a grid of step 0.1
+
+
+def test_manifest_input_files_enter_the_hash_by_content_and_are_staged(tmp_path):
+    import hashlib
+    from trkfastsim.recoresp import config as RC
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir(), b.mkdir()
+    for d in (a, b):
+        (d / "t.txt").write_text("TABLE TrkPreampStraw\n0,1,2\n")
+    h = hashlib.sha256((a / "t.txt").read_bytes()).hexdigest()
+    m1 = dict(MANIFEST, files={"t.txt": {"source": str(a / "t.txt"), "sha256": h}})
+    m2 = dict(MANIFEST, files={"t.txt": {"source": str(b / "t.txt"), "sha256": h}})
+    assert RC.digest(m1) == RC.digest(m2) != RC.digest(MANIFEST)       # the source path does not enter the hash
+    RC.main(["render", __import__("json").dumps(m1), str(tmp_path / "fcl")])
+    assert (tmp_path / "fcl" / "files" / "t.txt").read_text().startswith("TABLE TrkPreampStraw")
+    (a / "t.txt").write_text("changed\n")
+    with pytest.raises(ValueError):                                    # a changed input file is refused
+        RC.stage_files(m1, tmp_path / "x")
