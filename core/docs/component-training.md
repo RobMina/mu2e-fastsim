@@ -75,7 +75,8 @@ Energies are total energies, so rest masses are explicit. For each step inside t
     R = E_pre - E_post(kept) - deposit - sum(E_birth of the step's children) + medium
 
 where `E_post` is dropped when the step destroys the particle and the medium term is `m_e` times the net electron
-number the step takes from the material, plus the rest mass of any recoil nucleus an EM step sets in motion.
+number the step takes from the material, plus the rest mass of any recoil nucleus an EM step sets in motion
+(Geant4 labels a hydrogen recoil as a proton).
 Transport and EM steps must close within `rtol = 1e-9` (relative to the pre-step energy) plus `atol = 1e-9` MeV.
 Hadronic steps report an explicit nuclear term and are never forced to zero. Each event must close within `rtol`
 plus `atol` per step, counting deposits, first exits, exits at birth, energy left inside and every declared term.
@@ -83,7 +84,9 @@ plus `atol` per step, counting deposits, first exits, exits at birth, energy lef
 Decay steps and a few EM steps carry declared terms, each Geant4 behaviour rather than a tuned value, each gated step
 by step at the same tolerance and counted in the report:
 
-- `G4MuonDecayChannel`: daughters total `m_mu - m_e`, so the decay's `Q = m_e`.
+- `G4MuonDecayChannel`: daughters total `m_mu - m_e` in the muon rest frame. The gate is Lorentz invariant: the
+  missing 4-momentum `D = P_mu - sum p` has rest-frame energy `D . P_mu / m_mu = m_e` (`Q = m_e` at rest; larger in
+  flight).
 - A nucleus without a decay channel (e.g. a triton with radioactive decay off) is killed at rest by `Decay` with no
   products: `Q = 0`, its rest mass ends in the material.
 - A photon made in a boosted decay carries a rounding-level dynamic mass (`m <= 1e-6 E`); the EM process that absorbs
