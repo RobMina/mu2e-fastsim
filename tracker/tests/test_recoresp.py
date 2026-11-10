@@ -423,7 +423,19 @@ def test_registered_tables_are_fetched_into_the_cache_and_checked(tmp_path, monk
         RT.fetch("0" * RC.HASH_LEN, RT.registry(reg))
     with pytest.raises(FileNotFoundError):
         RT.resolve("no_such_table")
-    assert RT.registry() == {} or all(len(k) == RC.HASH_LEN for k in RT.registry())
+
+
+def test_shipped_registry_entries_point_at_release_assets():
+    from trkfastsim.recoresp import config as RC
+    reg = RT.registry()
+    base = RC.digest(RC.load(RT.DEFAULT.with_name("config_run1a_offspill.json")))
+    assert base in reg                                 # the shipped manifest's own table is registered
+    for h, e in reg.items():
+        assert len(h) == RC.HASH_LEN and all(c in "0123456789abcdef" for c in h)
+        assert e["file"] == f"ce_loophelix_{h}.npz" and e["url"] == RC.URL_BASE.format(hash=h) + e["file"]
+        assert len(e["sha256"]) == 64 and isinstance(e["knobs"], dict)
+    thr = sorted(e["knobs"]["threshold_scale"] for e in reg.values() if "threshold_scale" in e["knobs"])
+    assert thr == [0.8, 0.9, 1.1, 1.2]                 # with the baseline at 1.0: a grid of step 0.1
 
 
 def test_manifest_input_files_enter_the_hash_by_content_and_are_staged(tmp_path):

@@ -185,6 +185,70 @@ the same development events and bins, measured with every Geant4 StrawGasStep of
 secondaries, the calorimeter albedo) through stock reconstruction, with pools. The device transport supplies only the
 conversion electron and its albedo, so this table carries the effect of the other secondaries on the fit.
 
+### Stock reco inputs: per-configuration tables, run-time cuts, knobs
+
+The response is measured, not modelled, so a change of a stock reco input (conditions, straw status, fit settings)
+needs a table measured under that input. `recoresp.config` describes the stock chain of a build:
+- A JSON manifest holds the Offline area, geometry, DbService purpose and version, and the digitisation seed. For each
+  stage it holds an include plus FHiCL override lines. It also lists the Geant4 sample, the table options, and any
+  input files by name and sha256.
+- `recoresp/data/config_run1a_offspill.json` is today's chain.
+- Its hash is the first 16 hex digits of the SHA-256 of the canonical JSON.
+
+Building a table:
+1. `python3 -m trkfastsim.recoresp.config render MANIFEST OUTDIR` writes the three FCL files.
+2. `tracker/scripts/resp_build_slurm.sh OUTDIR LIST OUT_ROOT` runs them on the dts files of LIST. The job directory is
+   put first on `MU2E_SEARCH_PATH`, so DbService text-file overrides are found by name.
+3. `table.build(events, pools="all", config=manifest)` stores the manifest and its hash in the table.
+
+Using a table:
+- `DeviceChain(response=<hash>)` takes the table from `recoresp/data/registry.json`. Each registered table is a GitHub
+  release asset tagged `resp-<hash>`. It is downloaded into `$TRKFASTSIM_RESP_CACHE` (default
+  `~/.cache/trkfastsim/recoresp`) and checked against its sha256.
+- `DeviceChain(response_config=manifest or hash)` refuses any table built under other inputs.
+
+All-track pools (`pools="all"`) keep every fitted track with its direction flag, so the quality selection runs at run
+time. `DeviceChain(response_cuts={...})` (`table.with_cuts`) changes the CE cuts:
+- tan dip, d0 and r_max as (low, high), with any table;
+- the fit-consistency cut, only with all-track pools. Its valid range is [0, 1); a tighter cut leaves fewer pool
+  tracks per bin.
+
+A continuous knob is covered by a grid of tables: `table.at_knob({value: table}, x)`.
+- Between two neighbouring tables it interpolates the efficiencies and inverse CDFs linearly, and resamples the
+  pools as a mixture of the two.
+- Outside the grid it refuses.
+- The registered straw-threshold grid (TrkPreampStraw thresholds scaled at both ends) is 0.8, 0.9, 1.1 and 1.2, with
+  the shipped manifest's table at 1.0. Its valid range is [0.8, 1.2].
+
+Validation, held-out full Geant4 events (35k generated; ±0.30 pp on CE):
+- Each configuration was built from the 7 development files and compared per generated electron, f64 / f32, with
+  stock under that configuration.
+- In all of them the tables built under the change reproduce stock within the common offset of about −0.4 pp, and
+  the old tables fail.
+
+| Change | Stock CE | Tables built under it: CE, fast − stock | Old tables |
+|---|---|---|---|
+| none (shipped manifest) | 35.80 % | −0.39 / −0.21 pp | — |
+| 16 panels without HV | 35.62 % (fit −1.06 pp) | −0.56 / −0.40 pp, fit +0.29 / +0.37 | fit +1.19 / +1.33 pp, active-hit shape 285/35 |
+| KKDe drift extension, last four stages at maxdoca 2 mm | 38.79 % | −0.42 / −0.38 pp | −3.32 / −3.22 pp |
+| thresholds x0.8 | 34.15 % | −0.44 / −0.36 pp | +1.26 / +1.45 pp, fit chi2/ndf shape 1,199/18 |
+| thresholds x0.9 | 35.39 % | −0.45 / −0.38 pp | fit chi2/ndf shape 194/18 |
+| thresholds x1.1, interpolated 1.0-1.2 | 35.87 % | −0.59 / −0.46 pp, fit chi2/ndf shape 20/18 | fit chi2/ndf shape 72/18 |
+
+Notes:
+- Stock CE efficiency is curved in the threshold scale. Linear interpolation over a step of 0.2 misses it by about
+  0.4 pp at 0.9, which is why the grid uses a step of 0.1. With that step the curvature implies an interpolation
+  error of about 0.1 pp.
+- Run-time fit-consistency cut (baseline all-track table), shift from the build cut 1e-3:
+
+  | Cut | Stock shift | Fast shift f64 / f32 |
+  |---|---|---|
+  | 0.01 | −2.99 pp | −3.09 / −2.99 pp |
+  | 1e-4 | +1.52 pp | +1.51 / +1.46 pp |
+
+- The (step rows, tan dip) bins were enough for the dead panels; no spatial bin axis was needed.
+- A change of the simulation itself (geometry, material, field) needs a new Geant4 sample, not only a new table.
+
 ## Open
 
 - An unbiased reference for muons above 1 GeV/c and for side entries (the selection above).

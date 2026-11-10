@@ -1,1 +1,101 @@
-{}
+{
+ "3ef0dabd9a013ff1": {
+  "file": "ce_loophelix_3ef0dabd9a013ff1.npz",
+  "knobs": {
+   "threshold_scale": 1.1
+  },
+  "reference": "validation config thr1.1, full dts development",
+  "release": {
+   "area": "muse area with the TrkFastSim modules",
+   "area_sha256": "dcb2bd3bb0581fcf422ec081aee5ec603aa54602996042e751187fc829c09a19",
+   "backing": "Musings/SimJob/MDC2025ay"
+  },
+  "sample": "dts.mu2e.CeEndpoint.MDC2025ba.art",
+  "sha256": "7f35e73b4da84e16d15180251e1fc28a39bc8e628bf74bbff734725c2b2f6456",
+  "url": "https://github.com/RobMina/mu2e-fastsim/releases/download/resp-3ef0dabd9a013ff1/ce_loophelix_3ef0dabd9a013ff1.npz"
+ },
+ "6463ada0ec0c83e1": {
+  "file": "ce_loophelix_6463ada0ec0c83e1.npz",
+  "knobs": {},
+  "reference": "validation config deadpanel, full dts development",
+  "release": {
+   "area": "muse area with the TrkFastSim modules",
+   "area_sha256": "dcb2bd3bb0581fcf422ec081aee5ec603aa54602996042e751187fc829c09a19",
+   "backing": "Musings/SimJob/MDC2025ay"
+  },
+  "sample": "dts.mu2e.CeEndpoint.MDC2025ba.art",
+  "sha256": "8d0c45f3f08badaab2620d8a9ce0793760a3c78c43d0b619a4b12ec4120ddb68",
+  "url": "https://github.com/RobMina/mu2e-fastsim/releases/download/resp-6463ada0ec0c83e1/ce_loophelix_6463ada0ec0c83e1.npz"
+ },
+ "6b439e832407ce30": {
+  "file": "ce_loophelix_6b439e832407ce30.npz",
+  "knobs": {},
+  "reference": "validation config fitdoca2, full dts development",
+  "release": {
+   "area": "muse area with the TrkFastSim modules",
+   "area_sha256": "dcb2bd3bb0581fcf422ec081aee5ec603aa54602996042e751187fc829c09a19",
+   "backing": "Musings/SimJob/MDC2025ay"
+  },
+  "sample": "dts.mu2e.CeEndpoint.MDC2025ba.art",
+  "sha256": "2fe02d65d3a67f59e20b8c3440719ec2063edd30e0a315149b36e0a67f0208c4",
+  "url": "https://github.com/RobMina/mu2e-fastsim/releases/download/resp-6b439e832407ce30/ce_loophelix_6b439e832407ce30.npz"
+ },
+ "789101c263c4d272": {
+  "file": "ce_loophelix_789101c263c4d272.npz",
+  "knobs": {
+   "threshold_scale": 0.9
+  },
+  "reference": "validation config thr0.9, full dts development",
+  "release": {
+   "area": "muse area with the TrkFastSim modules",
+   "area_sha256": "dcb2bd3bb0581fcf422ec081aee5ec603aa54602996042e751187fc829c09a19",
+   "backing": "Musings/SimJob/MDC2025ay"
+  },
+  "sample": "dts.mu2e.CeEndpoint.MDC2025ba.art",
+  "sha256": "206e351e661f68e5446672c341387dd761d3d128c5898a8d76f3520d1676f1f8",
+  "url": "https://github.com/RobMina/mu2e-fastsim/releases/download/resp-789101c263c4d272/ce_loophelix_789101c263c4d272.npz"
+ },
+ "7acfd6d5f638a1d8": {
+  "file": "ce_loophelix_7acfd6d5f638a1d8.npz",
+  "knobs": {
+   "threshold_scale": 1.2
+  },
+  "reference": "validation config thr1.2, full dts development",
+  "release": {
+   "area": "muse area with the TrkFastSim modules",
+   "area_sha256": "dcb2bd3bb0581fcf422ec081aee5ec603aa54602996042e751187fc829c09a19",
+   "backing": "Musings/SimJob/MDC2025ay"
+  },
+  "sample": "dts.mu2e.CeEndpoint.MDC2025ba.art",
+  "sha256": "41f578cc03d025ccdba89c398251fe428210cb6c69e07d742f639d75485585f7",
+  "url": "https://github.com/RobMina/mu2e-fastsim/releases/download/resp-7acfd6d5f638a1d8/ce_loophelix_7acfd6d5f638a1d8.npz"
+ },
+ "80014a752d6237cf": {
+  "file": "ce_loophelix_80014a752d6237cf.npz",
+  "knobs": {},
+  "reference": "validation config baseline, full dts development",
+  "release": {
+   "area": "muse area with the TrkFastSim modules",
+   "area_sha256": "dcb2bd3bb0581fcf422ec081aee5ec603aa54602996042e751187fc829c09a19",
+   "backing": "Musings/SimJob/MDC2025ay"
+  },
+  "sample": "dts.mu2e.CeEndpoint.MDC2025ba.art",
+  "sha256": "f7c40a2d312a2753fdfd13cba3bf724a4ba2ee2af3406ab4b82c46373b6d980c",
+  "url": "https://github.com/RobMina/mu2e-fastsim/releases/download/resp-80014a752d6237cf/ce_loophelix_80014a752d6237cf.npz"
+ },
+ "a5807af3d6db4c53": {
+  "file": "ce_loophelix_a5807af3d6db4c53.npz",
+  "knobs": {
+   "threshold_scale": 0.8
+  },
+  "reference": "validation config thr0.8, full dts development",
+  "release": {
+   "area": "muse area with the TrkFastSim modules",
+   "area_sha256": "dcb2bd3bb0581fcf422ec081aee5ec603aa54602996042e751187fc829c09a19",
+   "backing": "Musings/SimJob/MDC2025ay"
+  },
+  "sample": "dts.mu2e.CeEndpoint.MDC2025ba.art",
+  "sha256": "85f8dd660a0858d7e1031c0efb076149a03b19d60f962be0f1288a202e6e4646",
+  "url": "https://github.com/RobMina/mu2e-fastsim/releases/download/resp-a5807af3d6db4c53/ce_loophelix_a5807af3d6db4c53.npz"
+ }
+}
