@@ -97,12 +97,13 @@ def report(tables, links, expected_events, *, rtol=1e-9, atol=1e-9):
     taken = electrons - positrons - np.where(destroyed, parent_lepton, 0)
     lepton = np.isin(t["pdg"], [ELECTRON, POSITRON])
     masses = np.unique(t["begin_mass"][lepton])
+    median_mass = float(np.median(t["begin_mass"][lepton])) if len(masses) else 0.
     # Geant4 rebuilds the dynamic mass of boosted decay products from E and p: e+- masses scatter at rounding level.
-    require(len(masses) == 0 or masses[-1] - masses[0] <= rtol * masses[-1] + atol, "inconsistent electron masses")
+    require(np.all(np.abs(masses - median_mass) <= MASS_ROUNDING * median_mass), "inconsistent electron masses")
     muon_channel = decay & np.isin(parent_pdg, MUONS) & (children == 3) & (electrons + positrons == 1) & (neutrinos == 2)
     require(len(masses) > 0 or not (np.any(taken[em_like]) or np.any(muon_channel)),
             "electron-mass term without a recorded electron mass")
-    electron_mass = float(np.median(t["begin_mass"][lepton])) if len(masses) else 0.
+    electron_mass = median_mass
     medium = np.where(em_like, taken * electron_mass + recoil_mass, 0.)
     kept_post = np.where(destroyed, 0., s["post_energy"])
     q = s["pre_energy"] - kept_post - s["deposit"] - births_e

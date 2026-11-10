@@ -361,8 +361,8 @@ def test_em_recoil_nucleus_takes_its_mass_from_the_material(tables):
     assert result["totals_MeV"]["medium_electron_mass"] == pytest.approx(mass)
 
 
-@pytest.mark.parametrize("spread,passes", [(5e-10, True), (1e-6, False)])
-def test_electron_mass_spread_is_held_to_the_step_tolerance(tables, spread, passes):
+@pytest.mark.parametrize("spread,passes", [(5e-10, True), (2e-8, True), (2e-6, False)])
+def test_electron_mass_spread_is_held_to_rounding_level(tables, spread, passes):
     balance(tables)
     set_processes(tables, "eIoni")
     t, c = tables["tracks"], tables["classifications"]

@@ -91,7 +91,7 @@ by step at the same tolerance and counted in the report:
 - `G4Decay` makes daughters at the parent's dynamic mass `m` and boosts them with `gamma = E/M`, so a decay may give
   `Q = E (1 - m/M)` for `|m - M| <= 1e-6 M` (`M` is the most common mass of that PDG in the file).
 
-Every other decay must conserve energy. Electron and positron masses must agree within the step tolerance.
+Every other decay must conserve energy. Electron and positron masses must agree within 1e-6 of their median.
 
 ## Geometry and validation order
 

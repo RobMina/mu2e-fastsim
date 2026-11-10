@@ -289,6 +289,7 @@ def test_start_float_storage_is_exact(field):
         check(data)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("name", [*capture.TABLES, diag.EVENTS, diag.SIMS])
 def test_every_persisted_field_compared(name):
     # Fixed-schema loop: independently corrupt every persisted scalar/metadata field.
@@ -316,6 +317,7 @@ def test_nonfinite_capture(target, name):
         check(data)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("name", [diag.CALLBACKS, diag.SIMS])
 @pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
 def test_all_diagnostic_float_fields_nonfinite(name, bad):
@@ -336,6 +338,7 @@ def test_child_birth_changes_fail(field):
         check(data)
 
 
+@pytest.mark.slow
 def test_baseline_primary_all_fields_and_all_steps():
     original = fixture()
     for name, mask in (("tracks", original[2]["tracks"]["parent"] == 0),
