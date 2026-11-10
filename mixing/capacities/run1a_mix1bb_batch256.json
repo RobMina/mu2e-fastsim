@@ -45,7 +45,8 @@
    "minion_unroll": 4,
    "digit_entries_per_straw": 1.182,
    "pack_sort": "packed",
-   "flat_saturation_rows": "auto"
+   "flat_saturation_rows": "auto",
+   "flat_saturation_pool": "auto"
   },
   "crv": {
    "substeps": 310525,

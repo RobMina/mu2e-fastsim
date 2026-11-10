@@ -40,6 +40,8 @@ NeutralsFlash pools at the stock intensity law.
   time, not the outputs.
 - **`flat_saturation_rows: "auto"`**: saturation chunks of one row per straw in float64 (exact there); float32 keeps
   two per straw.
+- **`flat_saturation_pool: "auto"`**: saturated ends of all launches of a kernel shape in shared chunks, in float32
+  (`"tier"`: in both dtypes; exact in both); it has no size.
 
 ## When a batch does not fit
 

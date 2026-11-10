@@ -155,6 +155,22 @@ def _electronics_kernel(c, cap, pair_cap, batch, entries=None, saturation_rows=N
     compacted into chunks of 2 * batch rows, the loop's lane count; saturation_rows="auto" uses batch rows in float64,
     where they were measured bit-identical over full passes (in float32 they drift by roundoff, so 2 * batch stays).
     An entry overflow is flagged in entry_overflow, never truncated."""
+    return _electronics_parts(c, cap, pair_cap, batch, entries, saturation_rows).run
+
+
+@lru_cache(maxsize=32)
+def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=None, saturation_pool=False):
+    """The electronics kernel `run` (as _electronics_kernel) and, with saturation_pool=True (flat digitisation only),
+    the kernels that saturate the ends of many launches together.
+
+    Pooled, `run` leaves saturation and the ADC to the caller: it returns "pool" (the saturated-end flags, their lane
+    data, ADC sample times, pre-saturation volts and ADC noise) instead of "adc" and "pmp". `pool_saturate` takes
+    the pools of every launch of one kernel shape, flattened, and saturates their saturated ends in chunks of the same
+    srows rows as per launch, so each chunk computes as a per-launch chunk does, but fewer chunks run (a launch's
+    padding is filled by the next launch's ends); `pool_finish(volts, noise, row, kk, straw_us)` is the per-launch
+    ADC and PMP. Exact: the same keys and arithmetic, the same chunk shapes."""
+    if saturation_pool and entries is None:
+        raise ValueError("saturation_pool needs the flat digitisation (entries)")
     srows = _saturation_rows(batch, saturation_rows)
     rb, sr, LB = c.responseBins, c.sampleRate, c.clusterLookbackTime
     R = batch * 2
@@ -170,6 +186,117 @@ def _electronics_kernel(c, cap, pair_cap, batch, entries=None, saturation_rows=N
     sat_steps = int(np.ceil((c.ttrunc + c.nADCSamples * c.ADCPeriod + 2 * LB) / dts)) + 2
     ticks = jnp.arange(1, c.maxTOT)
     adc_k = jnp.arange(c.nADCSamples)
+    padded_steps = ((sat_steps + SATURATION_TILE - 1) // SATURATION_TILE) * SATURATION_TILE
+
+    def count_lanes(L, tlim, inclusive=False):
+        cmp = L["t"] <= tlim[:, None] if inclusive else L["t"] < tlim[:, None]
+        return jnp.sum(L["valid"] & cmp, axis=1).astype(jnp.int32)
+
+    def volt_lanes(L, tq, path="thresh", cmin=None, lattice=None, lattice_origin=None, lattice_offset=0):
+        t, tr, dk, aa, bb, sc, valid = (L[k] for k in ("t", "tr", "dk", "aa", "bb", "sc", "valid"))
+        tq = tq.reshape(t.shape[0], -1)
+        T = tables[path]
+        if lattice is None:
+            u = ((tq[:, None, :] - t[:, :, None]) * sr + rb / 2.).astype(jnp.float32)
+            ix = jnp.clip(u, 0, rb - 1).astype(jnp.int32)
+            ir = jnp.clip(u - (tr * sr).astype(jnp.float32)[:, :, None], 0, rb - 1).astype(jnp.int32)
+        else:
+            origin = tq[:, 0] if lattice_origin is None else lattice_origin
+            u = (origin[:, None] - t) * sr + rb / 2.
+            stride = (jnp.arange(tq.shape[1]) + lattice_offset) * lattice
+            ix = jnp.clip(jnp.floor(u)[:, :, None] + stride, 0, rb - 1).astype(jnp.int32)
+            ir = jnp.clip(jnp.floor(u - tr * sr)[:, :, None] + stride, 0, rb - 1).astype(jnp.int32)
+        k = dk[:, :, None]
+        v = aa[:, :, None] * (T[k, ix] + sc[:, :, None] * T[k, ir]) + bb[:, :, None] * (T[k + 1, ix] + sc[:, :, None] * T[k + 1, ir])
+        ok = valid[:, :, None] & (t[:, :, None] - LB < tq[:, None, :])
+        if cmin is not None:
+            ok &= (ci >= cmin[:, None])[:, :, None]
+        v = jnp.sum(jnp.where(ok, v, 0).astype(df.FLOAT), axis=1)
+        v *= (L["dv_a"] if path == "adc" else L["dv_t"])[:, None]
+        return v
+
+    def saturation_lanes(S, times):
+        """Saturated ADC volts of the end rows S at ADC sample times `times`, and their step-capacity overflow."""
+        n_ = S["n"]
+        rws = jnp.arange(n_.shape[0])
+        i0 = jnp.minimum(count_lanes(S, times[:, 0] + LB - c.ttrunc, inclusive=True), jnp.maximum(n_ - 1, 0))
+        t0 = S["t"][rws, jnp.clip(i0, 0, cap - 1)] - LB
+        nstep = jnp.maximum(0, jnp.ceil((times[:, -1] - t0) / dts).astype(jnp.int32))
+        def tile(k, response):
+            offset = k * SATURATION_TILE
+            tick = offset + jnp.arange(SATURATION_TILE)
+            tq = t0[:, None] + dts * tick[None, :].astype(df.FLOAT)
+            values = volt_lanes(S, tq, "sat", cmin=i0, lattice=c.saturationSampleFactor,
+                                lattice_origin=t0, lattice_offset=offset)
+            values = jnp.where(tick[None, :] < nstep[:, None], values, 0)
+            return lax.dynamic_update_slice(response, values, (0, offset))
+        resp = lax.fori_loop(0, padded_steps // SATURATION_TILE, tile, jnp.zeros((n_.shape[0], padded_steps)))
+        resp = jnp.minimum(resp[:, :sat_steps], c.saturationVoltage)
+        tq = t0[:, None] + dts * jnp.arange(sat_steps)[None, :].astype(df.FLOAT)
+        scale = c.saturationSampleFactor * S["dv_a"] / S["dv_t"]
+        def sample(tm):
+            ii = jnp.clip(jnp.trunc((tm[:, None] - tq) * sr + rb / 2.), 0, rb - 1).astype(jnp.int32)
+            return jnp.sum(resp * cond["resp_imp"][ii], 1) * scale
+        return jax.vmap(sample, in_axes=1, out_axes=1)(times), nstep > sat_steps
+
+    def finish_adc(volts, noise, row, kk, us_e):
+        """ADC words of the flat entries from their two ends' (saturated) volts and the ADC noise (adcAnalogNoise x
+        the stage-5 normals, formed in the launch): [batch, pair_cap, samples]."""
+        n_e = noise.shape[0]
+        volts = volts.reshape(n_e, 2, c.nADCSamples).sum(1)
+        wsum = volts + noise
+        adc = jnp.clip(jnp.floor(wsum / c.ADCLSB).astype(jnp.int64) + cond["adc_ped"][us_e, None], 0, c.maxADC)
+        return jnp.zeros((batch, pair_cap, c.nADCSamples), jnp.int64).at[row, kk].set(adc, mode="drop")
+
+    def per_launch_saturation(L, times, sat, volts, noise, row, kk, us_e):
+        """Saturated ends of one launch compacted into chunks of srows rows, enough for every entry; the response
+        sums depend on the reduction shapes: 2 * batch (the loop's) is exact in both dtypes, batch rows in float64
+        only (float32 drifts by roundoff over full passes); empty chunks are skipped."""
+        n_rows = sat.shape[0]
+        nsat = sat.sum()
+        chunks = -(-n_rows // srows)
+        sidx = jnp.nonzero(sat, size=chunks * srows, fill_value=0)[0]
+        slive = jnp.arange(chunks * srows) < nsat
+        sat_overflow = jnp.bool_(False)
+        for chunk in range(chunks):
+            cidx = sidx[chunk * srows:(chunk + 1) * srows]
+            clive = slive[chunk * srows:(chunk + 1) * srows]
+
+            def saturate(volts, cidx=cidx, clive=clive):
+                result, of = saturation_lanes({name: value[cidx] for name, value in L.items()}, times[cidx])
+                return (volts.at[jnp.where(clive, cidx, n_rows)].set(result, mode="drop"),
+                        jnp.any(clive & of))
+            volts, of = lax.cond(jnp.any(clive), saturate, lambda v: (v, jnp.bool_(False)), volts)
+            sat_overflow |= of
+        return finish_adc(volts, noise, row, kk, us_e), sat_overflow
+
+    @df.jit
+    def pool_saturate(lanes, times, sat, volts):
+        """Saturated ends of many launches (pools flattened over launches) in chunks of srows rows: the chunk shape
+        of one launch, filled across launches; chunks past the last saturated end are not run."""
+        n_rows = sat.shape[0]
+        nsat = sat.sum()
+        chunks = -(-n_rows // srows)
+        sidx = jnp.nonzero(sat, size=chunks * srows, fill_value=0)[0]
+
+        def body(state):
+            k, volts, overflow = state
+            cidx = lax.dynamic_slice(sidx, (k * srows,), (srows,))
+            clive = k * srows + jnp.arange(srows) < nsat
+            result, of = saturation_lanes({name: value[cidx] for name, value in lanes.items()}, times[cidx])
+            return (k + 1, volts.at[jnp.where(clive, cidx, n_rows)].set(result, mode="drop"),
+                    overflow | jnp.any(clive & of))
+        _, volts, overflow = lax.while_loop(lambda x: x[0] * srows < nsat, body,
+                                            (jnp.int32(0), volts, jnp.bool_(False)))
+        return volts, overflow
+
+    @df.jit
+    def pool_finish(volts, noise, row, kk, us_e):
+        adc_out = finish_adc(volts, noise, row, kk, us_e)
+        return adc_out, pmp_of(adc_out)
+
+    def pmp_of(adc_out):
+        return (adc_out.max(2) - adc_out[:, :, :c.nADCPresamples].sum(2) // c.nADCPresamples) & 0xffff
 
     @df.jit
     def run(key, t, q, wd, step, n, straw_us, straw_ra, straw_key, live_straw, jitter, n_ref=None,
@@ -207,33 +334,10 @@ def _electronics_kernel(c, cap, pair_cap, batch, entries=None, saturation_rows=N
             return x[rows, jnp.clip(i, 0, cap - 1)]
 
         def count(tlim, inclusive=False, lanes=None):
-            L = lanes or base
-            cmp = L["t"] <= tlim[:, None] if inclusive else L["t"] < tlim[:, None]
-            return jnp.sum(L["valid"] & cmp, axis=1).astype(jnp.int32)
+            return count_lanes(lanes or base, tlim, inclusive)
 
         def volt(tq, path="thresh", cmin=None, lattice=None, lattice_origin=None, lattice_offset=0, lanes=None):
-            L = lanes or base
-            t, tr, dk, aa, bb, sc, valid = (L[k] for k in ("t", "tr", "dk", "aa", "bb", "sc", "valid"))
-            tq = tq.reshape(t.shape[0], -1)
-            T = tables[path]
-            if lattice is None:
-                u = ((tq[:, None, :] - t[:, :, None]) * sr + rb / 2.).astype(jnp.float32)
-                ix = jnp.clip(u, 0, rb - 1).astype(jnp.int32)
-                ir = jnp.clip(u - (tr * sr).astype(jnp.float32)[:, :, None], 0, rb - 1).astype(jnp.int32)
-            else:
-                origin = tq[:, 0] if lattice_origin is None else lattice_origin
-                u = (origin[:, None] - t) * sr + rb / 2.
-                stride = (jnp.arange(tq.shape[1]) + lattice_offset) * lattice
-                ix = jnp.clip(jnp.floor(u)[:, :, None] + stride, 0, rb - 1).astype(jnp.int32)
-                ir = jnp.clip(jnp.floor(u - tr * sr)[:, :, None] + stride, 0, rb - 1).astype(jnp.int32)
-            k = dk[:, :, None]
-            v = aa[:, :, None] * (T[k, ix] + sc[:, :, None] * T[k, ir]) + bb[:, :, None] * (T[k + 1, ix] + sc[:, :, None] * T[k + 1, ir])
-            ok = valid[:, :, None] & (t[:, :, None] - LB < tq[:, None, :])
-            if cmin is not None:
-                ok &= (ci >= cmin[:, None])[:, :, None]
-            v = jnp.sum(jnp.where(ok, v, 0).astype(df.FLOAT), axis=1)
-            v *= (L["dv_a"] if path == "adc" else L["dv_t"])[:, None]
-            return v
+            return volt_lanes(lanes or base, tq, path, cmin, lattice, lattice_origin, lattice_offset)
 
         def crosses(ic, time, thr, vcross, active):
             ic = jnp.where(active, jnp.maximum(ic, count(time + LB)), ic)
@@ -446,30 +550,6 @@ def _electronics_kernel(c, cap, pair_cap, batch, entries=None, saturation_rows=N
                     kk2 = jax.vmap(lambda k, i: random.fold_in(random.fold_in(k, stage), i))(ekeys, kk)
                     return jax.vmap(lambda k: df.draw(random.normal, k, shape))(kk2)
 
-                def saturation_lanes(S, times):
-                    n_ = S["n"]
-                    rws = jnp.arange(n_.shape[0])
-                    i0 = jnp.minimum(count(times[:, 0] + LB - c.ttrunc, inclusive=True, lanes=S), jnp.maximum(n_ - 1, 0))
-                    t0 = S["t"][rws, jnp.clip(i0, 0, cap - 1)] - LB
-                    nstep = jnp.maximum(0, jnp.ceil((times[:, -1] - t0) / dts).astype(jnp.int32))
-                    def tile(k, response):
-                        offset = k * SATURATION_TILE
-                        tick = offset + jnp.arange(SATURATION_TILE)
-                        tq = t0[:, None] + dts * tick[None, :].astype(df.FLOAT)
-                        values = volt(tq, "sat", cmin=i0, lattice=c.saturationSampleFactor,
-                                      lattice_origin=t0, lattice_offset=offset, lanes=S)
-                        values = jnp.where(tick[None, :] < nstep[:, None], values, 0)
-                        return lax.dynamic_update_slice(response, values, (0, offset))
-                    padded_steps = ((sat_steps + SATURATION_TILE - 1) // SATURATION_TILE) * SATURATION_TILE
-                    resp = lax.fori_loop(0, padded_steps // SATURATION_TILE, tile, jnp.zeros((n_.shape[0], padded_steps)))
-                    resp = jnp.minimum(resp[:, :sat_steps], c.saturationVoltage)
-                    tq = t0[:, None] + dts * jnp.arange(sat_steps)[None, :].astype(df.FLOAT)
-                    scale = c.saturationSampleFactor * S["dv_a"] / S["dv_t"]
-                    def sample(tm):
-                        ii = jnp.clip(jnp.trunc((tm[:, None] - tq) * sr + rb / 2.), 0, rb - 1).astype(jnp.int32)
-                        return jnp.sum(resp * cond["resp_imp"][ii], 1) * scale
-                    return jax.vmap(sample, in_axes=1, out_axes=1)(times), nstep > sat_steps
-
                 T, V = pt[sb, kk], pv[sb, kk]
                 ejit = jitter[sb]
                 xt = T + ejit[:, None] + c.TDCResolution * enormal(3, (2,))
@@ -487,29 +567,16 @@ def _electronics_kernel(c, cap, pair_cap, batch, entries=None, saturation_rows=N
                 times = jnp.repeat((phase[:, None] + adc_k).astype(df.FLOAT) * c.ADCPeriod + c.ADCOffset, 2, axis=0)
                 volts = volt(times, "adc", lattice=int(round(c.ADCPeriod * sr)), lanes=L)
                 sat = (maxposs[lane] > c.saturationVoltage) & jnp.repeat(present, 2)
-                nsat = sat.sum()
-                # saturated ends are compacted into chunks of srows rows, enough for every entry; the response sums
-                # depend on the reduction shapes: 2 * batch (the loop's) is exact in both dtypes, batch rows in
-                # float64 only (float32 drifts by roundoff over full passes); empty chunks are skipped
-                chunks = -(-(2 * entries) // srows)
-                sidx = jnp.nonzero(sat, size=chunks * srows, fill_value=0)[0]
-                slive = jnp.arange(chunks * srows) < nsat
-                sat_overflow = jnp.bool_(False)
-                for chunk in range(chunks):
-                    cidx = sidx[chunk * srows:(chunk + 1) * srows]
-                    clive = slive[chunk * srows:(chunk + 1) * srows]
-
-                    def saturate(volts, cidx=cidx, clive=clive):
-                        result, of = saturation_lanes({name: value[cidx] for name, value in L.items()}, times[cidx])
-                        return (volts.at[jnp.where(clive, cidx, 2 * entries)].set(result, mode="drop"),
-                                jnp.any(clive & of))
-                    volts, of = lax.cond(jnp.any(clive), saturate, lambda v: (v, jnp.bool_(False)), volts)
-                    sat_overflow |= of
-                volts = volts.reshape(entries, 2, c.nADCSamples).sum(1)
+                noise = c.adcAnalogNoise * enormal(5, (c.nADCSamples,))
+                row = jnp.where(present, sb, batch)
+                if saturation_pool:
+                    adc_part = {"sat": sat, "lanes": L, "times": times, "volts": volts, "noise": noise, "row": row,
+                                "kk": kk, "us": straw_us[sb]}
+                else:
+                    adc_part, sat_overflow = per_launch_saturation(L, times, sat, volts, noise, row, kk, straw_us[sb])
                 dtime = jnp.max(xt, 1)
                 if not c.overrideDbTimeOffsets:
                     xt -= cond["time_offsets"][straw_us[sb]]
-                wsum = volts + c.adcAnalogNoise * enormal(5, (c.nADCSamples,))
                 if rel:
                     tdc = jnp.clip(jnp.floor((xt + c.electronicsTimeDelay) / c.TDCLSB).astype(jnp.int64)
                                    + (nr * per_tdc)[:, None], 0, c.maxTDC)
@@ -521,9 +588,6 @@ def _electronics_kernel(c, cap, pair_cap, batch, entries=None, saturation_rows=N
                 upper = c.digitizationEndTDC if c.onspill else ewend
                 ok_norm = jnp.all((tdc > c.digitizationStartTDC) & (tdc < upper), 1)
                 ok = present & jnp.where(straw_ra[sb], ok_all, ok_norm)
-                adc = jnp.clip(jnp.floor(wsum / c.ADCLSB).astype(jnp.int64) + cond["adc_ped"][straw_us[sb], None], 0, c.maxADC)
-                row = jnp.where(present, sb, batch)
-                adc_out = jnp.zeros((batch, pair_cap, c.nADCSamples), jnp.int64).at[row, kk].set(adc, mode="drop")
                 tdc_out = jnp.zeros((batch, pair_cap, 2), jnp.int64).at[row, kk].set(tdc, mode="drop")
                 tot_out = jnp.zeros((batch, pair_cap, 2), jnp.int64).at[row, kk].set(tot, mode="drop")
                 okm = jnp.zeros((batch, pair_cap), bool).at[row, kk].set(ok, mode="drop")
@@ -535,22 +599,32 @@ def _electronics_kernel(c, cap, pair_cap, batch, entries=None, saturation_rows=N
                     return jnp.where(keep, dtm[:, k] + c.deadTimeDigital, ready), accepted.at[:, k].set(keep)
                 _, accepted = lax.fori_loop(0, jnp.minimum(pair_cap, jnp.max(number)), readybody,
                                             (jnp.full(batch, -9e9), jnp.zeros((batch, pair_cap), bool)))
-                return adc_out, tdc_out, tot_out, accepted, sat_overflow
+                return adc_part, tdc_out, tot_out, accepted, sat_overflow if not saturation_pool else jnp.bool_(False)
 
             # an empty block (no pairs) skips the entry pass, as the pair loop runs no pass for it
-            empty = (jnp.zeros((batch, pair_cap, c.nADCSamples), jnp.int64), jnp.zeros((batch, pair_cap, 2), jnp.int64),
+            if saturation_pool:   # nothing saturated, every entry row dropped (row = batch)
+                shapes = jax.eval_shape(flat_digits, None)[0]
+                adc_empty = jax.tree_util.tree_map(lambda x: jnp.zeros(x.shape, x.dtype), shapes)
+                adc_empty["row"] = jnp.full(shapes["row"].shape, batch, shapes["row"].dtype)
+            else:
+                adc_empty = jnp.zeros((batch, pair_cap, c.nADCSamples), jnp.int64)
+            empty = (adc_empty, jnp.zeros((batch, pair_cap, 2), jnp.int64),
                      jnp.zeros((batch, pair_cap, 2), jnp.int64), jnp.zeros((batch, pair_cap), bool), jnp.bool_(False))
             adc_out, tdc_out, tot_out, accepted, sat_overflow = lax.cond(total > 0, flat_digits, lambda _: empty, None)
             entry_fail = total > entries
-        pmp = (adc_out.max(2) - adc_out[:, :, :c.nADCPresamples].sum(2) // c.nADCPresamples) & 0xffff
+        if saturation_pool:
+            adc_fields = {"pool": adc_out}
+        else:
+            adc_fields = {"adc": adc_out, "pmp": pmp_of(adc_out)}
         step_out = jnp.stack([step[2 * jnp.arange(batch)[:, None], jnp.clip(pi[:, :, 0], 0, cap - 1)],
                               step[2 * jnp.arange(batch)[:, None] + 1, jnp.clip(pi[:, :, 1], 0, cap - 1)]], 2)
-        return {"adc": adc_out, "tdc": tdc_out, "tot": tot_out, "pmp": pmp, "step": step_out,
+        return {**adc_fields, "tdc": tdc_out, "tot": tot_out, "step": step_out,
                 "t_analog": pt, "keep": accepted, "failed": failed, "sat_overflow": sat_overflow,
                 "pairs": number.sum(), "nan_ends": jnp.sum(jnp.isnan(tt) & live),
                 "saturated_ends": jnp.sum((maxposs > c.saturationVoltage) & live),
                 **({"entry_overflow": entry_fail} if entries is not None else {})}
-    return run
+    from types import SimpleNamespace
+    return SimpleNamespace(run=run, pool_saturate=pool_saturate, pool_finish=pool_finish, srows=srows)
 
 
 def digitize(st, nev, c, key, stats=None, *, event_timing=None):
