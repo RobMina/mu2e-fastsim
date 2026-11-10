@@ -9,17 +9,18 @@ run as a subprocess:
 
   beam  python3 -m beamfastsim point     20,000 DS-entrance muons (MDC2025ac) -> target stop fraction (CPU)
   ce    python3 -m beamfastsim.cechain   --backend device: conversion electrons from that table's target stops ->
-                                         fraction that reaches the tracker entry plane; on the GPU 3 x 262,144
-                                         electrons when JAX sees one, and always on the CPU 3 x 1,024
+                                         fraction that reaches the tracker entry plane; on the GPU 2 x 1,048,576
+                                         electrons when JAX sees one (fewer on a GPU with fewer SMs than an A100,
+                                         e.g. a MIG slice), and always on the CPU 2 x 4,096
   crv   python3 -m crvfastsim runchain   1,000 generated cosmic events (default chain) -> coincidence clusters per
                                          generated event (CPU)
 
 The beam and CRV chains run on the CPU (JAX_PLATFORMS=cpu unless set): they are short and their time is mostly
-compilation and table loading. The CE chain runs in three equal batches in one process; the first batch pays the
-compilation, so setup = map loading + first batch - mean later batch, and the warm rate is electrons/s over the later
-batches. With both arms the CE line ends with the GPU/CPU ratio of the warm rates. --device auto (default) runs the GPU
-arm when `jax.default_backend()` is a GPU (not when JAX_PLATFORMS=cpu); gpu requires one; cpu skips it. --float32: the
-CE chain in float32 (default float64).
+compilation and table loading. The CE chain runs in two equal batches in one process; the first pays the compilation,
+so setup = map loading + first batch - second batch, and the warm rate is electrons/s of the second. With both arms
+the demo ends with the GPU/CPU ratio of the warm rates. --device auto (default) runs the GPU arm when
+`jax.default_backend()` is a GPU (not when JAX_PLATFORMS=cpu); gpu requires one; cpu skips it. --float32: the CE chain
+in float32 (default float64).
 
 --quick uses a quarter of each sample. A line passes when |value - reference| <= TOLERANCE_SIGMA * sqrt(stat^2 +
 ref^2), stat being the value's counting error. The field maps and the beam geometry come from CVMFS (or
@@ -67,16 +68,17 @@ REFERENCES = {
                       "the fast chain gives 0.35834"),
     "ce": Reference(0.72598, 0.00223, "host chain (NumPy with JAX slab layers) on 40,000 electrons from the same "
                     "stops, seed 2: 29,039 reach the plane; the device chain matches the host chain (yield per start "
-                    "0.9999 +- 0.0007 float64, 1.0010 +- 0.0007 float32) and the CE chain agrees with Geant4 CeEndpoint "
-                    "(docs/validation.md)"),
+                    "0.9999 +- 0.0007 float64, 1.0010 +- 0.0007 float32) and the CE chain agrees with Geant4 "
+                    "CeEndpoint (docs/validation.md)"),
     "crv": Reference(0.05822, 0.00108, "stock chain (Geant4 + digi + reco) on all 50,000 events of the same shard, "
                      "2,911 clusters (crv_fastsim/v2_fastC_v1/ref.001400_00000011.root); the fast chain gives 0.0576"),
 }
 CHAINS = ("beam", "ce", "crv")
 SAMPLES = {"beam": 20000, "crv": 1000}                    # muons, generated events
-CE_PASSES = 3
-CE_BATCH = {"gpu": 262144, "cpu": 1024}                  # electrons per batch of each arm
-CE_GPU_OPTIONS = ["--lanes", "131072", "--shrink", "32", "--unroll"]   # GPU recipe of beam/README.md
+CE_PASSES = 2                                            # batch 1 pays the compilation, batch 2 is warm
+CE_BATCH = {"gpu": 1048576, "cpu": 4096}                 # electrons per batch; gpu: on a 108-SM A100
+A100_SMS = 108
+CE_GPU_OPTIONS = ["--shrink", "32", "--unroll"]          # GPU recipe of beam/README.md; lanes = batch / 2
 
 
 class Missing(Exception):
@@ -94,17 +96,29 @@ def _cpu_only_platforms():
     return bool(p) and p <= {"cpu"}
 
 
-def gpu_visible() -> bool:
-    """True when JAX in this Python sees a GPU (a subprocess; never when JAX_PLATFORMS allows only the CPU)."""
+def gpu_cores():
+    """Streaming multiprocessors of the GPU JAX sees in this Python (0 if it does not say), None without a GPU (a
+    subprocess; never a GPU when JAX_PLATFORMS allows only the CPU)."""
     if _cpu_only_platforms():
-        return False
+        return None
+    code = "import jax; d = jax.devices()[0]; print(jax.default_backend(), int(getattr(d, 'core_count', 0) or 0))"
     try:
-        p = subprocess.run([sys.executable, "-c", "import jax; print(jax.default_backend())"], capture_output=True,
-                           text=True, timeout=300)
+        p = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
     except (OSError, subprocess.SubprocessError):
-        return False
-    last = p.stdout.strip().splitlines()[-1:] if p.returncode == 0 else []
-    return last in (["gpu"], ["cuda"], ["rocm"])
+        return None
+    last = (p.stdout.strip().splitlines() or [""])[-1].split() if p.returncode == 0 else []
+    if len(last) != 2 or last[0] not in ("gpu", "cuda", "rocm"):
+        return None
+    return int(last[1]) if last[1].isdigit() else 0
+
+
+def gpu_batch(cores) -> int:
+    """GPU batch for a GPU with `cores` SMs: CE_BATCH["gpu"] on an A100 (108 SMs) or larger, scaled down to a power of
+    two on smaller ones (MIG slices), at least 65,536; the full batch when the count is unknown (0)."""
+    full = CE_BATCH["gpu"]
+    if not cores or cores >= A100_SMS:
+        return full
+    return max(65536, 1 << int(math.log2(full * cores / A100_SMS)))
 
 
 def ce_command(inputs: str, out: Path, arm: str, batch: int, dtype: str) -> list:
@@ -113,7 +127,8 @@ def ce_command(inputs: str, out: Path, arm: str, batch: int, dtype: str) -> list
     return [sys.executable, "-m", "beamfastsim.cechain", "--offline-root", off, "--maps", f"{maps}/DSMap.header",
             f"{maps}/TSdMap.header", "--stops", f"{inputs}/{BEAM_TABLE}", "--n", str(CE_PASSES * batch),
             "--batch", str(batch), "--seed", "1", "--backend", "device", "--device-float", dtype,
-            *(CE_GPU_OPTIONS if arm == "gpu" else []), "--out", str(out / f"ce_{arm}.npz")]
+            *(["--lanes", str(max(1, batch // 2)), *CE_GPU_OPTIONS] if arm == "gpu" else []),
+            "--out", str(out / f"ce_{arm}.npz")]
 
 
 def commands(inputs: str, out: Path, n: dict, dtype: str = "float64") -> dict:
@@ -184,7 +199,7 @@ def headline(chain: str, out: Path, stdout: str) -> tuple:
 
 def ce_timing(stdout: str) -> dict:
     """Setup and warm rate of a batched device-chain run: setup = map loading + first batch - mean later batch, warm =
-    electrons/s over the later batches."""
+    electrons/s over the later batches (with CE_PASSES = 2: the second batch)."""
     s = last_json_object(stdout, "fates")
     b = s.get("batches") or []
     if len(b) < 2:
@@ -210,7 +225,7 @@ def run_chain(cmd: list, log: Path, arm: str | None = None) -> tuple:
     return p.returncode, p.stdout, time.time() - t0
 
 
-def main(argv=None, runner: Callable = run_chain, probe: Callable = gpu_visible, label: Callable = None) -> int:
+def main(argv=None, runner: Callable = run_chain, probe: Callable = gpu_cores, label: Callable = None) -> int:
     ap = argparse.ArgumentParser(prog="python3 -m mu2efastsim.demo", description=__doc__.split("\n")[0])
     ap.add_argument("--quick", action="store_true", help="a quarter of each sample")
     ap.add_argument("--out", help="output directory (default $M2FS_DATA/demo)")
@@ -238,7 +253,10 @@ def main(argv=None, runner: Callable = run_chain, probe: Callable = gpu_visible,
         out = Path(a.out or (os.environ.get("M2FS_DATA") or "") + "/demo")
         if not a.out and not os.environ.get("M2FS_DATA"):
             raise Missing("M2FS_DATA is not set and no --out given")
-        gpu = "ce" in chains and a.device != "cpu" and probe()
+        cores = probe() if "ce" in chains and a.device != "cpu" else None
+        gpu = cores is not None
+        if gpu:
+            n["ce_gpu"] = q(gpu_batch(cores))
         if a.device == "gpu" and "ce" in chains and not gpu:
             raise Missing("--device gpu, but JAX sees no GPU (JAX_PLATFORMS=cpu, or a JAX without CUDA; "
                           "QUICKSTART.md, 'The demo')")

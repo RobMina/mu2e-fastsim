@@ -2,6 +2,7 @@
 compares it with its reference and writes the summary; the CE device chain runs on the GPU and the CPU when a GPU is
 seen; without the release it skips with a message and exit 2."""
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -30,7 +31,7 @@ def release(tmp_path, monkeypatch):
 
 def fake(shift=0.0, fail=(), rates=None):
     """Runner writing synthetic outputs at the reference values (shifted by `shift` reference-sized units); the CE
-    device chain reports three batches at `rates` electrons/s per arm (the first batch 10 s slower)."""
+    device chain reports its batches at `rates` electrons/s per arm (the first batch 10 s slower)."""
     calls, arms = [], []
     rates = rates or {"gpu": 50000.0, "cpu": 100.0}
 
@@ -66,8 +67,8 @@ def label(arm):
     return f"synthetic {arm}"
 
 
-def main(argv, run, gpu=True):
-    return demo.main(argv, runner=run, probe=lambda: gpu, label=label)
+def main(argv, run, gpu=True, cores=108):
+    return demo.main(argv, runner=run, probe=lambda: cores if gpu else None, label=label)
 
 
 def test_references_are_filled():
@@ -85,7 +86,7 @@ def test_all_chains_pass_at_the_reference(release, capsys):
     assert s["passed"] and [(r["chain"], r.get("arm")) for r in s["chains"]] == [
         ("beam", None), ("ce", "gpu"), ("ce", "cpu"), ("crv", None)]
     assert run.arms == [None, "gpu", "cpu", None]
-    assert {int(c[c.index("--n") + 1]) for c in run.calls if "--n" in c} == {20000, 3 * 262144, 3 * 1024}
+    assert {int(c[c.index("--n") + 1]) for c in run.calls if "--n" in c} == {20000, 2 * 1048576, 2 * 4096}
     assert s["ce_gpu_over_cpu"] == 500.0 and "warm rate GPU / CPU: 500x" in out
     gpu = s["chains"][1]
     assert gpu["warm_rate"] == 50000.0 and gpu["setup_s"] == 11.0 and gpu["device"] == "synthetic gpu"
@@ -97,7 +98,7 @@ def test_no_gpu_runs_the_cpu_arm_only(release, capsys):
     out = capsys.readouterr().out
     assert run.arms == ["cpu"] and "no GPU visible to JAX" in out and "GPU / CPU" not in out
     s = json.loads((release / "data/demo/demo_summary.json").read_text())
-    assert s["ce_gpu_over_cpu"] is None and s["chains"][0]["sample"] == 3 * 1024
+    assert s["ce_gpu_over_cpu"] is None and s["chains"][0]["sample"] == 2 * 4096
 
 
 def test_device_cpu_skips_the_probe_and_gpu_requires_one(release, capsys):
@@ -114,15 +115,24 @@ def test_float32_and_gpu_options(release):
     assert main(["--only", "ce", "--float32"], run) == 0
     g, c = run.calls
     assert g[g.index("--device-float") + 1] == c[c.index("--device-float") + 1] == "float32"
-    assert "--unroll" in g and "--unroll" not in c
+    assert "--unroll" in g and "--unroll" not in c and g[g.index("--lanes") + 1] == "524288" and "--lanes" not in c
     assert g[g.index("--backend") + 1] == c[c.index("--backend") + 1] == "device"
 
 
 def test_quick_uses_a_quarter(release):
     run = fake()
     assert main(["--quick", "--only", "ce,crv"], run) == 0
-    assert [c[c.index("--batch") + 1] for c in run.calls[:2]] == ["65536", "256"]
-    assert run.calls[0][run.calls[0].index("--n") + 1] == str(3 * 65536)
+    assert [c[c.index("--batch") + 1] for c in run.calls[:2]] == ["262144", "1024"]
+    assert run.calls[0][run.calls[0].index("--n") + 1] == str(2 * 262144)
+
+
+def test_gpu_batch_follows_the_sm_count(release):
+    assert [demo.gpu_batch(c) for c in (0, 132, 108, 84, 56, 28, 14, 1)] == [
+        1048576, 1048576, 1048576, 524288, 524288, 262144, 131072, 65536]
+    run = fake()
+    assert main(["--only", "ce"], run, cores=14) == 0
+    g = run.calls[0]
+    assert g[g.index("--batch") + 1] == "131072" and g[g.index("--lanes") + 1] == "65536"
     assert run.calls[2][run.calls[2].index("--max-events") + 1] == "250"
 
 
@@ -139,14 +149,21 @@ def test_ce_timing_needs_batches():
                       "batches": [{"n": 10, "wall_s": 7.0}, {"n": 10, "wall_s": 2.0}, {"n": 10, "wall_s": 3.0}]})
     t = demo.ce_timing(out)
     assert t["warm_rate"] == 4.0 and t["setup_s"] == 6.5
+    two = json.dumps({"n": 20, "fates": {"plane": 14}, "maps_s": 1.0,
+                      "batches": [{"n": 10, "wall_s": 9.0}, {"n": 10, "wall_s": 4.0}]})
+    assert demo.ce_timing(two)["warm_rate"] == 2.5 and demo.ce_timing(two)["setup_s"] == 6.0
     with pytest.raises(ValueError):
         demo.ce_timing(json.dumps({"n": 10, "fates": {"plane": 7}, "batches": [{"n": 10, "wall_s": 1.0}]}))
 
 
-def test_gpu_probe_respects_cpu_only_platforms(monkeypatch):
+def test_gpu_probe(monkeypatch):
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     monkeypatch.setattr(demo.subprocess, "run", lambda *a, **k: 1 / 0)
-    assert demo.gpu_visible() is False
+    assert demo.gpu_cores() is None
+    monkeypatch.delenv("JAX_PLATFORMS")
+    for stdout, cores in (("warning\ngpu 108\n", 108), ("cuda 0\n", 0), ("cpu 0\n", None), ("", None)):
+        monkeypatch.setattr(demo.subprocess, "run", lambda *a, o=stdout, **k: subprocess.CompletedProcess(a, 0, o, ""))
+        assert demo.gpu_cores() == cores, stdout
 
 
 def test_ce_headline_ignores_other_output():
