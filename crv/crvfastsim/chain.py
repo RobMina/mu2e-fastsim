@@ -75,6 +75,9 @@ class ChainConfig:
     background_scale: float = 1.0       # multiplies the background model's net rate (knob background_scale)
     pulse_reco: object = None           # reco.pulsefit.RecoConfig (None: the stock defaults)
     feb_phase_width: float = PERIOD     # uniform FEB clock-phase width [ns]
+    feb_phase_key: str = "roc_feb"      # what shares one clock phase per event (FEB_PHASE_KEYS): "roc_feb" one draw per
+                                        # (ROC, FEB); "feb" one per FEB number, shared by that FEB of every ROC, as the
+                                        # stock CrvWaveformsGenerator (_digitizationPointShiftFEBs[FEB], all releases)
     device_refit: bool = False          # JAX reco: waveforms the 12-sample, 3-round pulse fit flags are refit on the
                                         # device at full length (reco.chain_jax._device_refit) before any numpy refit
     resident_response: bool = False     # JAX: photons stay on the device into the SiPM stage (response.resident;
@@ -208,12 +211,19 @@ def charges(steps, parts, geom, cond, cfg, rng, key=None, tabs=None, pmap=None, 
     return Q
 
 
-def tdc0_per_feb(labels, cond, rng, width=PERIOD):
-    """TDC0 [ns] per SiPM label: one uniform draw scaled by width per (event, ROC, FEB)."""
+FEB_PHASE_KEYS = ("roc_feb", "feb")
+
+
+def tdc0_per_feb(labels, cond, rng, width=PERIOD, key="roc_feb"):
+    """TDC0 [ns] per SiPM label: one uniform draw scaled by width per (event, ROC, FEB), or with key "feb" per (event,
+    FEB number) shared across ROCs, as the stock CrvWaveformsGenerator indexes its per-event FEB shifts by FEB only.
+    The draws come in sorted-key order either way."""
     if not np.isfinite(width) or not 0 <= width <= PERIOD:
         raise ValueError(f"FEB phase width must be finite and in [0, {PERIOD}] ns, got {width}")
+    if key not in FEB_PHASE_KEYS:
+        raise ValueError(f"FEB phase key must be one of {FEB_PHASE_KEYS}, got {key!r}")
     ev, ch = labels // CHAN_MULT, labels % CHAN_MULT
-    feb = cond.roc[ch] * 1000 + cond.feb[ch]
+    feb = cond.feb[ch] if key == "feb" else cond.roc[ch] * 1000 + cond.feb[ch]
     k = ev * 1_000_000 + feb
     u, inv = np.unique(k, return_inverse=True)
     return rng.random(len(u))[inv.ravel()] * width
@@ -224,7 +234,7 @@ def digis(Q, cond, cfg, rng, key=None, timers=None, *, stock_scan=False):
     from .reco import waveform as WF
     timers = timers if timers is not None else {}
     labels = np.unique(Q["chan"])
-    tdc0 = tdc0_per_feb(labels, cond, rng, width=cfg.feb_phase_width)
+    tdc0 = tdc0_per_feb(labels, cond, rng, width=cfg.feb_phase_width, key=cfg.feb_phase_key)
     lut = lambda lab: tdc0[np.searchsorted(labels, lab)]
     wcfg = cfg.waveform if cfg.waveform is not None else WF.WaveformConfig()
     t0 = _time.perf_counter()
