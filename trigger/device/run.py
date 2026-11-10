@@ -144,13 +144,33 @@ def cmd_response(args):
     print(json.dumps(out, indent=1))
 
 
+def _merge(cnt, edges, min_count):
+    """Merge bins with fewer than min_count device passes into their lower neighbour (the first into the next)."""
+    e, c = list(edges), np.array(cnt, float)
+    i = 1
+    while i < len(c):
+        if c[i, 1] < min_count:
+            c[i - 1] += c[i]; c = np.delete(c, i, 0); del e[i]
+        else:
+            i += 1
+    if len(c) > 1 and c[0, 1] < min_count:
+        c[1] += c[0]; c = np.delete(c, 0, 0); del e[1]
+    return e, c
+
+
+def _f(c):
+    return [float(min(1.0, s / d)) if d > 0 else 1.0 for s, d in c]
+
+
 def cmd_response_binned(args):
-    """Opt-in binned response: per path one pass probability f[b] = stock passes / device passes of the events whose
-    best time cluster of the path's producer has its straw hits in bin b (device run without a response, on the stock
-    digis of the same events), capped at 1; bins with fewer than --min-count device passes merge with their lower
-    neighbour."""
+    """Opt-in binned response: per path one pass probability f = stock passes / device passes of the events in a bin,
+    capped at 1 (device run without a response, on the stock digis of the same events). Bins: the straw hits of the
+    event's best time cluster of the path's producer, and for paths with a helix stage also the momentum of the event's
+    best device helix (--edges-p rows). Sparse hit bins merge with their lower neighbour; a momentum row with fewer than
+    --min-count device passes in all takes the path's one-dimensional (hits only) factors."""
     manifest = json.loads((Path(args.prepared) / "manifest.json").read_text())
-    edges = [float(e) for e in args.edges]
+    edges, edges_p = [float(e) for e in args.edges], [float(e) for e in args.edges_p]
+    nb, npb = len(edges) - 1, len(edges_p) - 1
     acc = {}
     for dev_path, logs in zip(args.device, args.logs_sets):
         dev = json.loads(Path(dev_path).read_text())
@@ -159,28 +179,37 @@ def cmd_response_binned(args):
             k = tuple(int(v) for v in key.split("|"))
             if k not in ref:
                 continue
-            for name, nsh in dev["path_vars"].get(key, {}).items():
+            for name, var in dev["path_vars"].get(key, {}).items():
                 if name not in ref[k]:
                     continue
-                b = min(max(np.searchsorted(edges, nsh, side="right") - 1, 0), len(edges) - 2)
-                a = acc.setdefault(name, np.zeros((len(edges) - 1, 2)))
-                a[b, 0] += bool(ref[k][name]); a[b, 1] += name in passed
+                nsh, hp = (var, -1.0) if not isinstance(var, list) else var
+                b = min(max(int(np.searchsorted(edges, nsh, side="right")) - 1, 0), nb - 1)
+                jp = min(max(int(np.searchsorted(edges_p, hp, side="right")) - 1, 0), npb - 1) if hp >= 0 else -1
+                a = acc.setdefault(name, {"1d": np.zeros((nb, 2)), "2d": np.zeros((npb, nb, 2)), "helix": hp >= 0})
+                st, dv = bool(ref[k][name]), name in passed
+                a["1d"][b] += (st, dv)
+                if jp >= 0:
+                    a["2d"][jp, b] += (st, dv)
     out = {}
     for name, a in sorted(acc.items()):
-        e, cnt = list(edges), a.copy()
-        i = 1
-        while i < len(cnt):                          # merge sparse bins into their lower neighbour
-            if cnt[i, 1] < args.min_count:
-                cnt[i - 1] += cnt[i]; cnt = np.delete(cnt, i, 0); del e[i]
-            else:
-                i += 1
-        if len(cnt) > 1 and cnt[0, 1] < args.min_count:
-            cnt[1] += cnt[0]; cnt = np.delete(cnt, 0, 0); del e[1]
-        f = [float(min(1.0, s / d)) if d > 0 else 1.0 for s, d in cnt]
-        out[name] = {"final": {"var": "tc_nsh", "edges": e, "f": f},
-                     "basis": {"stock_passes": cnt[:, 0].tolist(), "device_passes": cnt[:, 1].tolist()}}
+        e1, c1 = _merge(a["1d"], edges, args.min_count)
+        row = {"final": {"var": "tc_nsh", "edges": e1, "f": _f(c1)},
+               "basis": {"stock_passes": c1[:, 0].tolist(), "device_passes": c1[:, 1].tolist()}}
+        if a["helix"] and npb > 1:
+            f2 = []
+            for jp in range(npb):
+                if a["2d"][jp, :, 1].sum() < args.min_count:
+                    f2.append([float(np.interp(0, [0], [0])) * 0 + v for v in _f(c1)])     # fall back to hits only
+                    continue
+                # the row's own hit bins, then mapped onto the common (1D merged) edges
+                er, cr = _merge(a["2d"][jp], edges, args.min_count)
+                fr = _f(cr)
+                f2.append([fr[min(max(int(np.searchsorted(er, lo, side="right")) - 1, 0), len(fr) - 1)] for lo in e1[:-1]])
+            row["final"] = {"var": "tc_nsh x helix_p", "edges": e1, "edges_p": edges_p, "f": f2}
+            row["basis"]["rows_device_passes"] = a["2d"][:, :, 1].sum(1).tolist()
+        out[name] = row
     Path(args.output).write_text(json.dumps(out, indent=1))
-    print(json.dumps({n: [round(x, 3) for x in r["final"]["f"]] for n, r in out.items()}, indent=1))
+    print(json.dumps({n: r["final"]["f"] for n, r in out.items()}, indent=1)[:4000])
 
 
 def cmd_decide(args):
@@ -206,7 +235,9 @@ def cmd_decide(args):
         aux = {k: np.concatenate([a[k] for a in auxs]) for k in auxs[0]}
         dec = ch.finish(dec, aux, len(keys))
         for i, key in enumerate(keys):            # time-cluster straw hits per path (binned response variable)
-            path_vars["|".join(map(str, key))] = {n: int(aux[f"{n}:tcnsh"][i]) for n in ch.plan if f"{n}:tcnsh" in aux}
+            path_vars["|".join(map(str, key))] = {
+                n: [int(aux[f"{n}:tcnsh"][i]), round(float(aux[f"{n}:help"][i]), 3) if f"{n}:help" in aux else -1.0]
+                for n in ch.plan if f"{n}:tcnsh" in aux}
         for i, key in enumerate(keys):            # deterministic stage results (before response-layer draws)
             stage_flags["|".join(map(str, key))] = {
                 st: sorted(n for n in ch.plan if f"{n}:{st}" in aux and aux[f"{n}:{st}"][i])
@@ -264,6 +295,7 @@ def main(argv=None):
     rb.add_argument("--logs-sets", nargs="+", required=True, help="replay-log glob of each --device run, in order")
     rb.add_argument("--prepared", required=True)
     rb.add_argument("--edges", nargs="+", default=[0, 15, 20, 25, 30, 35, 40, 45, 50, 60, 80, 1000])
+    rb.add_argument("--edges-p", nargs="+", default=[0, 90, 98, 101, 1e6], help="helix-momentum rows [MeV/c]")
     rb.add_argument("--min-count", type=int, default=200)
     rb.add_argument("--output", required=True)
     d = sub.add_parser("decide")

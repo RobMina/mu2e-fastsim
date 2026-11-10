@@ -115,12 +115,22 @@ class Chain:
                     if f < 1.0:
                         ok = ok & (paths.draw(ev, self.salt + k) < f)
             aux[name + ":tcnsh"] = tc_nsh[p["tc"]]
+            fdt = jnp.float32 if self.precision == "float32" else jnp.float64
+            help = jnp.max(jnp.where(hx["ok"], hx["p"], 0.0), axis=1).astype(fdt) if hx is not None else None
+            if help is not None:
+                aux[name + ":help"] = help
             if binned:
                 aux[name + ":raw"] = ok
-                edges = jnp.asarray(binned["edges"], tc_nsh[p["tc"]].dtype)
-                fb = jnp.asarray(binned["f"], jnp.float32 if self.precision == "float32" else jnp.float64)
-                ib = jnp.clip(jnp.searchsorted(edges, tc_nsh[p["tc"]], side="right") - 1, 0, fb.shape[0] - 1)
-                ok = ok & (paths.draw(ev, self.salt + 2000 + k) < fb[ib])
+                fb = jnp.asarray(binned["f"], fdt)
+                edges = jnp.asarray(binned["edges"], fdt)
+                ib = jnp.clip(jnp.searchsorted(edges, tc_nsh[p["tc"]].astype(fdt), side="right") - 1, 0, fb.shape[-1] - 1)
+                if "edges_p" in binned and help is not None:   # 2D: helix momentum rows x time-cluster hits
+                    ep = jnp.asarray(binned["edges_p"], fdt)
+                    jp = jnp.clip(jnp.searchsorted(ep, help, side="right") - 1, 0, fb.shape[0] - 1)
+                    fe = fb[jp, ib]
+                else:
+                    fe = fb[ib]
+                ok = ok & (paths.draw(ev, self.salt + 2000 + k) < fe)
             out[name] = ok
             if hs_mask is not None:
                 aux[name + ":hsmask"] = hs_mask
