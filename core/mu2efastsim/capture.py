@@ -28,8 +28,12 @@ FIELDS = {
     "classifications": "index track parent pdg status killed",
     "volumes": "index id copy name logical motherLogical material solid density translation rotation",
 }
+# Written by newer dumps; captures without them are still read and audited.
+OPTIONAL_FIELDS = {"events": ("nNaturalBoundaryStops",)}
 INT64 = set(EVENT + "index track parent steps secondaries number id copy recordRun recordSubrun recordEvent "
-            "nTracks nSteps nClassifications nVolumes nErrors".split())
+            "nTracks nSteps nClassifications nVolumes nErrors nNaturalBoundaryStops".split())
+# Mu2eG4TrackingAction exempts only these from its field-propagator count when their range is below rangeToIgnore.
+FIELD_KILL_EXEMPT_PDG = (11, 2212)
 LINKS = ("links", "manifest")
 LINK_FIELDS = "index track parent creatorStep bornOnSurface exitAtBirth".split()
 MANIFEST_FIELDS = "linksPresent linksIDsMatch schema g4Version manifest manifestHash nLinks nBirthExits".split()
@@ -120,6 +124,27 @@ def check_links(tables, links):
     return birth, surface, rows
 
 
+def natural_boundary_stops(tables):
+    """Per-event count of tracks Mu2eG4 counts as field-propagator kills although they stopped naturally.
+
+    Such a track ends by Transportation at zero kinetic energy on a last step that stays in one placement, and is
+    neither an electron nor a proton (whose zero range is below rangeToIgnore).
+    """
+    e, t, s = tables["events"], tables["tracks"], tables["steps"]
+    events = unique(e, EVENT, "event").assign(_event=np.arange(len(e["event"])))
+    order = frame(s, [*TRACK, "number"]).assign(_row=np.arange(len(s["event"]))).sort_values([*TRACK, "number"])
+    last = order.groupby(TRACK, sort=False).tail(1)
+    rows = last["_row"].to_numpy()
+    same = s["pre_placement"].astype(str)[rows] == s["post_placement"].astype(str)[rows]
+    last = last.assign(_same=same)[[*TRACK, "_same"]]
+    tracks = frame(t, TRACK).assign(_row=np.arange(len(t["track"]))).merge(last, on=TRACK, how="left")
+    tracks = tracks.sort_values("_row")
+    stopped = (t["ended"].astype(bool) & (t["stopProcess"].astype(str) == "Transportation") & (t["end_kinetic"] == 0)
+               & ~np.isin(t["pdg"], FIELD_KILL_EXEMPT_PDG) & tracks["_same"].fillna(False).to_numpy(dtype=bool))
+    rows = match(frame(t, EVENT), events, EVENT, "tracks")["_event"].to_numpy()
+    return np.bincount(rows, weights=stopped, minlength=len(events)).astype(np.int64)
+
+
 def vectors(table, prefix, fields):
     return np.column_stack([table[prefix + field] for field in fields])
 
@@ -162,8 +187,14 @@ def audit(tables, expected_events, *, atol=1e-7, links=None):
     require(np.all(e["schema"] == 1), "unsupported capture schema")
     for field in "complete recordComplete capturePresent statusPresent eventIDsMatch statusClean".split():
         require(np.all(e[field] == True), f"event {field} is not true")
-    for field in "bankAdmissible recordBankAdmissible overflowSimParticles nErrors g4Status nKilledStepLimit nKilledByFieldPropagator".split():
+    for field in "bankAdmissible recordBankAdmissible overflowSimParticles nErrors nKilledStepLimit".split():
         require(np.all(e[field] == 0), f"invalid event {field}")
+    # Mu2eG4 sets status 1 for any field-propagator kill; each must be a natural stop recomputed from the tables.
+    natural = natural_boundary_stops(tables)
+    require(np.array_equal(e["nKilledByFieldPropagator"], natural), "invalid event nKilledByFieldPropagator")
+    require(np.array_equal(e["g4Status"], np.where(natural > 0, 1, 0)), "invalid event g4Status")
+    if "nNaturalBoundaryStops" in e:
+        require(np.array_equal(e["nNaturalBoundaryStops"], natural), "natural boundary stop census mismatch")
     for field in ("errors", "validationErrors"):
         require(np.all(e[field] == ""), f"event {field} present")
     for field in ("geometryTag", "physicsTag", "envelope"):
