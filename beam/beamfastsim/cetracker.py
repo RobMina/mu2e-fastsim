@@ -544,7 +544,20 @@ def main(argv=None):
                     help="device tracker: downstream albedo library ('default': the shipped one; 'none': off)")
     ap.add_argument("--tracker", choices=("numpy", "device"), default="numpy",
                     help="tracker transport: NumPy fieldsteps (default) or the device twin (needs --backend device)")
+    from mu2efastsim import approximations
+    from .approximations import W2
+    approximations.add_arguments(ap)
     a = ap.parse_args(argv)
+    try:
+        selection = approximations.from_args(a, W2)
+        selection.apply_namespace(a, ap)
+    except ValueError as e:
+        ap.error(str(e))
+    if a.tracker != "device" or a.albedo == "none":
+        selection.set_effective("calo_albedo", "none", "--albedo none" if a.tracker == "device" else
+                                "the NumPy tracker has no albedo")
+    if a.complete_outer_wall:
+        selection.set_effective("straw_wall", "complete", "--complete-outer-wall")
     if a.starts and (a.tables or a.stops):
         ap.error("--starts replaces the tables and --stops")
     if not a.starts and not a.tables:
@@ -609,6 +622,7 @@ def main(argv=None):
                   ce_transport_s=round(t_ce, 3), tracker_transport_s=round(t_trk, 3))
     if a.complete_outer_wall:
         report["complete_outer_wall"] = True
+    report["approximations"] = selection.record()
     (out / "handoff.json").write_text(json.dumps(report, indent=1) + "\n")
     print(json.dumps(report, indent=1))
 

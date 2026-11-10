@@ -99,6 +99,7 @@ def run(args, source_factory=None, backend_factory=None):
         "source": source.metadata, "backend": metadata,
         "sampling": "finite source pool replay; repeated primaries are not independent new physics events",
         "rng": "batch-domain RNG; warmup advances source state; batch size/warmup are part of reproducibility",
+        **({"approximations": args.approximations} if isinstance(getattr(args, "approximations", None), dict) else {}),
     })
     backend.sync()
     setup_s = time.perf_counter() - job_start
@@ -236,7 +237,15 @@ def main(argv=None):
     parser.add_argument("--occupancy-geometry", type=Path, help="bar_to_sector JSON (as counts --geometry) for occupancy output")
     parser.add_argument("--device-pipeline", action="store_true",
                         help="device backend only: dispatch the next batch before writing the previous one")
+    from mu2efastsim import approximations
+    from .approximations import WORKFLOW
+    approximations.add_arguments(parser)
     args = parser.parse_args(argv)
+    try:
+        args.approximations = approximations.from_args(args, WORKFLOW).record()
+    except ValueError as e:
+        parser.error(str(e))
+    del args.approx_preset, args.approx
     result = run(args)
     print(json.dumps({key: result[key] for key in ("events", "measured_s", "events_per_s")}))
 

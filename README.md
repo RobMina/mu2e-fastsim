@@ -43,7 +43,9 @@ Every stage is NumPy by default with JAX twins for CPU and GPU; stages exchange 
 | electrons | ESTAR and Geant4 slabs; Geant4 CeEndpoint | CE yield at the tracker entry 1.004 +- 0.003 of Geant4; sob stand-in Geant4 / fast 0.9920 +- 0.0006 on 65 design points | energy-loss tail; calorimeter proxy |
 
 Samples, thresholds, dates and commits: [`docs/validation.md`](docs/validation.md). Not implemented or not
-validated: [`docs/limitations.md`](docs/limitations.md).
+validated: [`docs/limitations.md`](docs/limitations.md). The approximations of each workflow, their switches
+(`--approx-preset default|fast|fidelity`, `--approx NAME=LEVEL`) and the stock alternatives:
+[`docs/approximations.md`](docs/approximations.md).
 
 ## Quickstart
 

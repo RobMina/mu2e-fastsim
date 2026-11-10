@@ -201,9 +201,27 @@ def _load_setup(rc, cfg, gdml_path, explicit_gdml, spec, calib, deviation, jax, 
                 conditions_metadata=conditions_metadata), timers
 
 
-def _save_reco(path, outs, n_events, run_config):
+def approximations_record(selection, jax):
+    """The approximations record of a run (mu2efastsim.approximations): ``selection`` is a Selection (the CLI), a
+    config section ({preset: ..., NAME: LEVEL}) or None (the default levels). Python callers pass the options the
+    levels set themselves (Selection.apply_kwargs); this only records them."""
+    from mu2efastsim import approximations as A
+    from .. import approximations as W5
+    if selection is None:
+        selection = W5.WORKFLOW.select()
+    elif not isinstance(selection, A.Selection):
+        preset, overrides = A.read_section(selection, W5.WORKFLOW.name)
+        selection = W5.WORKFLOW.select(preset, overrides)
+    if not jax:
+        selection.set_effective("pulse_fit", "full_length", "no --jax: the NumPy response fits every waveform at "
+                                                            "full length")
+    return selection.record()
+
+
+def _save_reco(path, outs, n_events, run_config, approximations=None):
     """Clusters (cl_*), their member pulses (mem_cl, mem_idx: pulse index in its event) and the pulses (p_ev, p_idx,
-    p_bar, p_sipm, p_pe, p_time) of one runchain input, as an .npz (the validation input of the reco comparison)."""
+    p_bar, p_sipm, p_pe, p_time) of one runchain input, as an .npz (the validation input of the reco comparison), with
+    the run's approximations record (JSON) when given."""
     cl = {k: [] for k in ("cl_event", "cl_type", "cl_pe", "cl_start", "cl_end", "cl_avgtime")}
     mem = {k: [] for k in ("mem_cl", "mem_idx")}
     pul = {k: [] for k in ("ev", "idx", "bar", "sipm", "pe", "time")}
@@ -227,7 +245,9 @@ def _save_reco(path, outs, n_events, run_config):
     np.savez_compressed(path, **{k: cat(v) for k, v in cl.items()},
                         **{k: cat(v, np.int64) for k, v in mem.items()},
                         **{f"p_{k}": cat(v) for k, v in pul.items()},
-                        n_events=np.int64(n_events), run_config=np.str_(run_config))
+                        n_events=np.int64(n_events), run_config=np.str_(run_config),
+                        **({} if approximations is None else
+                           {"approximations": np.str_(json.dumps(approximations, sort_keys=True))}))
 
 
 def resolve_generator(gen, inputs, jax):
@@ -281,11 +301,13 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         prepared=None,
         tier1b_set=None, tier1b_dir=None, steps_input=False, save_reco=None,
         transport_context=None, tier1b_context=None, tier1b_backend="numpy",
-        gen="table", gen_events=None, gen_seed=None, gen_subrun=1, gen_chunk=50000, gen_tables=None, **kw):
+        gen="table", gen_events=None, gen_seed=None, gen_subrun=1, gen_chunk=50000, gen_tables=None,
+        approximations=None, **kw):
     removed = sorted(set(kw) & {"msc_tail", "tail_k", "sliced_msc", "first_muon_only", "no_absorbers",
                                 "unbanded_world", "no_below_world"})
     if removed:
         raise ValueError(f"runchain: options {removed} were removed (the transport subcommand keeps them)")
+    approx = approximations_record(approximations, jax)
     gen, inputs = resolve_generator(gen, inputs, jax)
     native = gen in ("native", "device")
     generator_backend = gen
@@ -493,13 +515,14 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         prepared.audit()
         T["context_audit_s"] += time.perf_counter() - a
     if save_reco:
-        _save_reco(save_reco, out_cl, n_gen, rc.name)
+        _save_reco(save_reco, out_cl, n_gen, rc.name, approx)
     cl_type = np.concatenate([o["cl_type"] for o in out_cl]) if out_cl else np.zeros(0, int)
     res = {"generated_events": n_gen, "timers": T, "conditions": conditions_metadata,
            "tier1b": spec.describe(),
            "transport_backend": "jax" if device_transport is not None else "numpy", "range_out": bool(range_out),
            "tier1b_backend": "jax" if device_tier1b is not None else "numpy",
            "run_config": rc.name, "window": list(cfg.window), "time_window": time_window,
+           "approximations": approx,
            "events_basis": "events_with_steps" if steps_input else "generated",
            "clusters_per_generated": {stype_name.get(int(k), str(k)): float((cl_type == k).sum() / n_gen)
                                       for k in np.unique(cl_type)}}
@@ -535,6 +558,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
                        "tier1b": spec.describe(),
                        "cl_type_counts": {int(k): int((cl_type == k).sum()) for k in np.unique(cl_type)},
                        "run_config": rc.name, "window": list(cfg.window), "time_window": time_window,
+                       "approximations": approx,
                        "events_basis": "events_with_steps" if steps_input else "generated",
                        "type_names": {int(k): v for k, v in stype_name.items()},
                        "device": res.get("device"), "reco_device": res.get("reco_device"),
@@ -568,6 +592,10 @@ def merge(inputs, outdir, wall=None, **kw):
         raise ValueError("runchain merge: shards ran different tier-1b asset sets")
     if J[0].get("tier1b") is not None:
         time_metadata["tier1b"] = t1b(J[0])
+    if any(j.get("approximations") != J[0].get("approximations") for j in J[1:]):
+        raise ValueError("runchain merge: shards ran different approximation levels")
+    if J[0].get("approximations") is not None:
+        time_metadata["approximations"] = J[0]["approximations"]
     n_gen = sum(j["generated_events"] for j in J)
     acc = sum(j["timers"].get("events_with_steps", 0) for j in J)
     cl = {}

@@ -4,6 +4,7 @@
         [--run-config run1a_v01] [--window offspill] [--gdml G] [--tier1b SET --tier1b-dir DIR | --library L]
         [--seed 7] [--prefetch] [--resident-response] [--compile-cache DIR] [--passes 3] --out bench.json [--outdir DIR]
         [--fresh-inputs --files-per-pass K [--allow-file-reuse]]
+        [--approx-preset default|fast|fidelity] [--approx NAME=LEVEL ...] [--approximations FILE]
 
 The gen tables are read into host memory first (reported as prepare_s). Each pass is one runchain.run over all of
 them in this process (the multi-file stream: every file through transport, tier 1b, response and reco). The
@@ -54,7 +55,14 @@ def main(argv=None):
     p.add_argument("--files-per-pass", type=int, metavar="K", help="files per pass with --fresh-inputs")
     p.add_argument("--allow-file-reuse", action="store_true",
                    help="with --fresh-inputs: take files cyclically when there are fewer than passes x K")
+    from mu2efastsim import approximations
+    from .. import approximations as W5
+    approximations.add_arguments(p)
     a = p.parse_args(argv)
+    try:
+        selection = approximations.from_args(a, W5.WORKFLOW)
+    except ValueError as e:
+        p.error(str(e))
     if a.fresh_inputs:
         if not a.files_per_pass or a.files_per_pass < 1:
             p.error("--fresh-inputs needs --files-per-pass K >= 1")
@@ -83,6 +91,12 @@ def main(argv=None):
         setup["resident_response"] = a.resident_response
     if a.device_refit:
         setup["device_refit"] = True
+    try:   # the levels' runchain options (none at the default levels); the bench runs on JAX, so jax=False is refused
+        merged = selection.apply_kwargs(setup)
+    except ValueError as e:
+        p.error(str(e))
+    run_kw = {k: v for k, v in merged.items() if k not in setup}   # run-time options only (not the prepared context)
+    run_kw["approximations"] = selection
     outdir = a.outdir or str(Path(a.out).with_suffix("")) + "_runchain"
     state = {}
 
@@ -91,7 +105,8 @@ def main(argv=None):
             state["context"] = runchain.prepare(**setup)
         run_files, run_tables, seed = drawn if drawn is not None else (files, gen_tables, a.seed)
         state["result"] = runchain.run(run_files, outdir, seed=seed, prepared=state["context"], gen_tables=run_tables,
-                                       prefetch=a.prefetch, transport_backend="auto", tier1b_backend="auto", **setup)
+                                       prefetch=a.prefetch, transport_backend="auto", tier1b_backend="auto", **setup,
+                                       **run_kw)
         return None   # the chain hands host arrays between stages: the device is idle when run() returns
     if plan is None:
         report = bench.run(one_pass, events, passes=a.passes, workflow="W5", boundary=BOUNDARY, prepare_s=prepare_s,
@@ -118,6 +133,7 @@ def main(argv=None):
     report["command"] = "python3 -m crvfastsim.analyses.runchain_bench " + " ".join(
         argv if argv is not None else __import__("sys").argv[1:])
     res = state["result"]
+    report["approximations"] = res.get("approximations")
     report["runchain"] = {k: res[k] for k in ("generated_events", "clusters_per_generated", "timers", "run_config",
                                               "tier1b", "conditions", "precision") if k in res}
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
