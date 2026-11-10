@@ -965,7 +965,17 @@ def main(argv=None):
     ap.add_argument("--pool", type=int, help="TS lanes in flight (default: all inputs)")
     ap.add_argument("--dtype", choices=("float64", "float32"), default="float64")
     ap.add_argument("--out", required=True)
+    from mu2efastsim import approximations
+    from .approximations import W1
+    approximations.add_arguments(ap)
     a = ap.parse_args(argv)
+    try:
+        selection = approximations.from_args(a, W1)
+        selection.apply_namespace(a, ap)
+    except ValueError as e:
+        ap.error(str(e))
+    if a.arm == "stock-ds":
+        selection.set_effective("ts_transport", "stock_ds_entrance", "--arm stock-ds")
     t0 = time.perf_counter()
     chain = load_chain(a.gdml, a.field_config, a.offline_root, a.maps, a.ds_geom, a.ds_offline_root or a.offline_root,
                        a.ds_map, Settings(step_mm=a.step), pool=a.pool, dtype=a.dtype)
@@ -1000,7 +1010,7 @@ def main(argv=None):
     out["pdg_ds"] = np.asarray(pdg_ds)
     jax.block_until_ready(ds.fate)
     meta.update(arm=a.arm, seed=a.seed, step_mm=a.step, dtype=a.dtype, load_s=load_s, run_s=time.perf_counter() - t0,
-                device=str(jax.devices()[0]), ds_geom=a.ds_geom)
+                device=str(jax.devices()[0]), ds_geom=a.ds_geom, approximations=selection.record())
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(a.out, meta=json.dumps(meta), **out)
     print(json.dumps(meta, indent=1))

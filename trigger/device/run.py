@@ -242,6 +242,7 @@ def cmd_decide(args):
         result["discordant"] = exact
     result["stage_flags"] = stage_flags
     result["path_vars"] = path_vars
+    result["approximations"] = args.approximations_record
     result["decisions"] = {"|".join(map(str, k)): [p for p, v in sorted(d.items()) if v] for k, d in device.items()}
     Path(args.output).write_text(json.dumps(result, indent=1, default=float))
     if "paired" in result:
@@ -283,7 +284,15 @@ def main(argv=None):
     d.add_argument("--precision", choices=chainmod.PRECISIONS, default="float64")
     d.add_argument("--check-hits", action="store_true")
     d.add_argument("--output", required=True)
+    from mu2efastsim import approximations
+    from ..approximations import WORKFLOW
+    approximations.add_arguments(d)
     args = ap.parse_args(argv)
+    if args.cmd == "decide":
+        try:
+            args.approximations_record = approximations.from_args(args, WORKFLOW).record()
+        except ValueError as e:
+            d.error(str(e))
     {"response": cmd_response, "response-binned": cmd_response_binned, "decide": cmd_decide}[args.cmd](args)
 
 

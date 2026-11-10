@@ -3,6 +3,8 @@
     python3 -m mu2efastsim.bench MODULE:FUNC --events N [--prepare MODULE:FUNC] [--kwargs JSON] [--dtype float32]
                                  [--workflow W2] [--boundary "stops -> reco CE track"] [--output-included]
                                  [--fresh-inputs [--seed S]] [--passes 3] [--out bench.json]
+                                 [--approx-preset default|fast|fidelity] [--approx NAME=LEVEL ...]
+                                 [--approximations FILE]
 
 By default every pass calls the entry point on the same input (``FUNC(n_events, **kwargs)``, or
 ``FUNC(prepared, **kwargs)`` when ``--prepare`` loads the input into host memory first; the prepare time is reported
@@ -22,6 +24,9 @@ Reported (and written as JSON):
   dtype         as given, else the JAX default float (x64 flag), else float64 (NumPy)
   inputs        "fixed" (the default) or "fresh", with the seed of each pass
   compile_per_pass  JAX compiles per pass from jax.monitoring (count and seconds), when JAX is loaded
+  approximations    the levels of the workflow's approximations (mu2efastsim.approximations), when the entry
+                    point's package declares them (<package>.approximations, picked by --workflow); the selected
+                    levels' arguments are added to --kwargs (refused if the entry point does not take them)
 
 The multiplier against stock is warm_rate / (stock events/s per single-core grid slot at the same boundary); the
 stock rates and the scorecard live outside this package. Standard library only; JAX and CuPy are used if loaded.
@@ -39,6 +44,8 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+from . import approximations as approx_mod
 
 
 def resolve(spec):
@@ -344,6 +351,29 @@ def format_report(r):
     return text
 
 
+def accepted_keywords(func):
+    """Keyword names ``func`` takes, or None when it takes ``**kwargs`` (or has no signature)."""
+    try:
+        params = inspect.signature(func).parameters.values()
+    except (TypeError, ValueError):
+        return None
+    if any(p.kind is p.VAR_KEYWORD for p in params):
+        return None
+    return {p.name for p in params if p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)}
+
+
+def select_approximations(args, entry, func, kwargs):
+    """``(kwargs, record)``: the entry point's keyword arguments with the selected levels' arguments added, and the
+    approximations record (None when the entry's package declares no approximations and none were requested)."""
+    package = entry.partition(":")[0].split(".")[0]
+    asked = approx_mod.requested(args)
+    workflow = approx_mod.load(package, args.workflow, required=asked)
+    if workflow is None:
+        return kwargs, None
+    selection = approx_mod.from_args(args, workflow)
+    return selection.apply_kwargs(kwargs, accepted_keywords(func)), selection.record()
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="python3 -m mu2efastsim.bench",
                                 description=__doc__.split("\n\n")[0] if __doc__ else None)
@@ -362,6 +392,7 @@ def main(argv=None):
     p.add_argument("--output-included", action="store_true", help="the entry point writes its output")
     p.add_argument("--device-label", help="override the detected device label")
     p.add_argument("--out", type=Path, help="write the report JSON here")
+    approx_mod.add_arguments(p)
     a = p.parse_args(argv)
     kwargs = json.loads(a.kwargs)
     if not isinstance(kwargs, dict):
@@ -369,6 +400,11 @@ def main(argv=None):
     if a.fresh_inputs and not a.prepare:
         p.error("--fresh-inputs needs --prepare: the prepare hook draws the inputs of every pass")
     func = resolve(a.entry)
+    try:
+        kwargs, approx_record = select_approximations(a, a.entry, func, kwargs)
+    except ValueError as e:
+        print(f"bench: error: {e}", file=sys.stderr)
+        return 2
     prepare_s = None
     arg = a.events
     inputs = seeds = None
@@ -392,6 +428,7 @@ def main(argv=None):
     report["entry"] = a.entry
     report["prepare"] = a.prepare
     report["kwargs"] = kwargs
+    report["approximations"] = approx_record
     report["command"] = " ".join(sys.argv) if argv is None else " ".join(["python3 -m mu2efastsim.bench", *argv])
     print(format_report(report))
     if a.out:

@@ -12,6 +12,8 @@ from .analyses import census, crossingpos, runchain, g4cost, g4muon, pulsematch,
 from .validation import v0check, v1compare, v2compare, v4photons, v4sipm
 from . import tier1b_assets as T1B
 from .reco import cli as reco_cli
+from . import approximations as APPROX
+from mu2efastsim import approximations
 
 ANALYSES = {
     "g4cost":    (g4cost.run,    "baseline cost of the stock G4 chain from TimeTracker SQLite (sim + digi), per accepted event"),
@@ -42,9 +44,11 @@ def build_parser():
     p = argparse.ArgumentParser(prog="crvfastsim", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
+    p.subparser = {}
     for name, (fn, help_) in ANALYSES.items():
         sp = sub.add_parser(name, help=help_, description=sys.modules[fn.__module__].__doc__,
                             formatter_class=argparse.RawDescriptionHelpFormatter)
+        p.subparser[name] = sp
         sp.add_argument("inputs", nargs="*" if name == "runchain" else "+",
                         help="input files (globs allowed, quote them)" + ("; none with device CRY" if name == "runchain" else ""))
         sp.add_argument("--outdir", default=None, help="output dir (default plots/<cmd>)")
@@ -178,6 +182,7 @@ def build_parser():
             sp.add_argument("--compile-cache", default=None, metavar="DIR",
                             help="JAX persistent compilation cache directory (crvfastsim.compile_cache): later "
                                  "processes reuse the compiled kernels; default off")
+            approximations.add_arguments(sp)
         if name == "runchain-merge":
             sp.add_argument("--wall", type=float, default=None, help="node job wall time [s] (default: slowest shard)")
         if name == "v4sipm":
@@ -270,7 +275,10 @@ def main(argv=None):
     if argv and argv[0] == "transport-paths":
         from .analyses import transport_paths
         return transport_paths.main(argv[1:])
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.cmd == "runchain":
+        args = select_approximations(args, parser.subparser["runchain"])
     if args.cmd.startswith("reco-"):
         return reco_cli.run_reco(args.cmd[len("reco-"):], args)
     kw = vars(args)
@@ -287,6 +295,19 @@ def main(argv=None):
     result = ANALYSES[cmd][0](inputs, outdir, **kw)
     if cmd == "v1compare" and (kw.get("merge") or not kw.get("emit")) and not result["pass"]:
         raise SystemExit(1)
+
+
+def select_approximations(args, parser):
+    """runchain: apply the approximation options to the parsed options; the record goes to runchain.run."""
+    try:
+        sel = approximations.from_args(args, APPROX.WORKFLOW)
+        sel.apply_namespace(args, parser)
+    except ValueError as e:
+        parser.error(str(e))
+    for name in ("approx_preset", "approx", "approximations"):
+        delattr(args, name)
+    args.approximations = sel
+    return args
 
 
 if __name__ == "__main__":
