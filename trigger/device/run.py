@@ -199,7 +199,7 @@ def cmd_response_binned(args):
             f2 = []
             for jp in range(npb):
                 if a["2d"][jp, :, 1].sum() < args.min_count:
-                    f2.append([float(np.interp(0, [0], [0])) * 0 + v for v in _f(c1)])     # fall back to hits only
+                    f2.append(_f(c1))                     # fall back to the hits-only factors
                     continue
                 # the row's own hit bins, then mapped onto the common (1D merged) edges
                 er, cr = _merge(a["2d"][jp], edges, args.min_count)
