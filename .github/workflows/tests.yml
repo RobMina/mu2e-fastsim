@@ -9,6 +9,7 @@ name: tests
 # the @pytest.mark.weekly validations of the core suite (--runweekly -m weekly). Tiers: .github/ci_tier.sh.
 # JAX's persistent compilation cache is kept per suite and tier (pr, slow, weekly): restored from main's last run of
 # the same tier (else of any tier) and saved by runs on main, so the nightly keeps the programs of the slow tests.
+# After a save, older caches of the same suite and tier are deleted (.github/jax_cache_prune.sh) to stay in the budget.
 on:
   pull_request:
   push:
@@ -38,6 +39,9 @@ jobs:
     name: suite (${{ matrix.suite }})
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: write    # .github/jax_cache_prune.sh deletes this suite's older caches after a save on main
     strategy:
       fail-fast: false
       matrix:
@@ -135,6 +139,13 @@ jobs:
         with:
           path: .jax-cache
           key: jax-${{ matrix.suite }}-${{ steps.month.outputs.month }}-${{ hashFiles('core/ci/requirements.txt') }}-${{ steps.tier.outputs.tier }}-${{ github.sha }}
+      - name: Prune older JAX caches of this suite and tier (main only; elsewhere list them)
+        if: steps.tier.outputs.run == 'true'
+        continue-on-error: true    # a failed prune never fails the suite
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && 'delete' || 'list' }}
+        run: bash .github/jax_cache_prune.sh "${{ matrix.suite }}" "${{ steps.tier.outputs.tier }}" "jax-${{ matrix.suite }}-${{ steps.month.outputs.month }}-${{ hashFiles('core/ci/requirements.txt') }}-${{ steps.tier.outputs.tier }}-${{ github.sha }}" "$MODE"
   nojax:
     name: no JAX (${{ matrix.suite }})
     runs-on: ubuntu-24.04
