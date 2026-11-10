@@ -118,6 +118,14 @@ padding.
   batch, so this halves the padded saturation work. Over full development and held-out passes it is
   bit-identical in float64, but not in float32: the float32 response sums depend on the reduction shapes, and B
   rows changed a few ADC counts. So float32 keeps 2 x B. The default (`"lanes"`) keeps 2 x B in both dtypes.
+- `flat_saturation_pool: "tier"` saturates the ends of all launches of one kernel shape (the narrow launches, then
+  each end tier) together, in chunks of the same row count. Each chunk computes as a per-launch chunk does, so the
+  digis are the same in both dtypes; but a launch's partly filled chunk is filled by the next launch's ends, so
+  fewer chunks run. In a real batch of 256, the 34 narrow launches run 26 chunks one launch at a time and 7 pooled
+  (float32).
+  The launches' saturated-end data stay on the device between the two steps (a few hundred MB at batch 256).
+  `"auto"` pools in float32 only: in float64, `flat_saturation_rows: "auto"` already halves the chunks, and pooling
+  measured 2 % slower there.
 - Overflow flag: `digit_entries_per_straw`. The demand counter `digit_entries_per_straw_milli` is the largest
   per-launch entry count over B, in thousandths (batch metrics are integers).
 

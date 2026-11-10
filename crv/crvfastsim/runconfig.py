@@ -93,6 +93,8 @@ class RunConfig:
                                       # extracted_v04 default since 2026-10-30, --legacy-transport turns it off
     geom_text: str = ""               # Offline geometry file of the world the GDML was made from
     add_opposite_side_pulses: bool = True
+    feb_phase_key: str = "roc_feb"    # chain.FEB_PHASE_KEYS: "feb" shares each FEB number's clock phase across ROCs
+                                      # as the stock CrvWaveformsGenerator does (every release)
     conditions: str = ""              # Offline CRVConditions text set of the stock job ({calib,status,photonyield}_<set>.txt);
                                       # set: runchain refuses --calib nominal (it counts the status-ignored channels as live)
     sipm_pixel_id: str = "lrint"      # SiPM photon-map point -> pixel id of the stock reference release (sipm.PIXEL_IDS):
@@ -135,6 +137,7 @@ class RunConfig:
 
     def chain_config(self, **kw):
         from . import chain
+        kw.setdefault("feb_phase_key", self.feb_phase_key)
         return chain.ChainConfig(response=self.response(), finder=self.finder(), sipm=self.sipm(), window=self.window,
                                  **kw)
 
@@ -167,7 +170,8 @@ RUN1A_V01 = RunConfig(
     "run1a_v01", "Offline/Mu2eG4/geom/crv_counters_run1a_v01.txt", f"{GEOM_DIR}/mu2e_run1a_v01.gdml",
     RUN1A_SECTORS, 0.90, RUN1A_CUTS, False, ONSPILL_WINDOW, lib_group={"T1": "EX", "T2": "EX"}, showers=False,
     delta_cut_mev=0.361, below_world=True,
-    geom_text="Offline/Mu2eG4/geom/geom_run1_a.txt", conditions="run1a_v01", sipm_pixel_id="truncate")
+    geom_text="Offline/Mu2eG4/geom/geom_run1_a.txt", conditions="run1a_v01", sipm_pixel_id="truncate",
+    feb_phase_key="feb")
 # the Run 1A stock reference is Offline v13_41_00 (CRV1/W5 V-series): its SiPM pixel ids are truncated (7e72638); with
 # lrint the fast SiPM saturated less, +0.25 % cluster PE on the same Geant4 steps, rising to +1 % above 200 PE per SiPM
 # Run 1B: the CRV and everything above it (building, hatch blocks) are Run 1A's; the relocated tracker and DS2 are inside

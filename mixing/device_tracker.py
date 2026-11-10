@@ -28,6 +28,7 @@ class Capacities:
     minion_search: str = None
     digit_entries_per_straw: float = None
     flat_saturation_rows: str = None
+    flat_saturation_pool: str = None
     pack_sort: str = None
 
     def __post_init__(self):
@@ -39,6 +40,10 @@ class Capacities:
             if name == "minion_search":
                 if value not in ("scan", "compare_all"):
                     raise ValueError("tracker minion_search must be 'scan' or 'compare_all'")
+                continue
+            if name == "flat_saturation_pool":
+                if value is not None and value not in ("launch", "tier", "auto"):
+                    raise ValueError("tracker flat_saturation_pool must be 'launch', 'tier' or 'auto'")
                 continue
             if name == "flat_saturation_rows":
                 if value is not None and value not in ("lanes", "auto"):
@@ -54,6 +59,8 @@ class Capacities:
                 continue
             if type(value) is not int or value < 1:
                 raise ValueError(f"tracker {name} must be a positive integer")
+        if self.flat_saturation_pool in ("tier", "auto") and self.digit_entries_per_straw is None:
+            raise ValueError("tracker flat_saturation_pool needs the flat digitisation (digit_entries_per_straw)")
         if self.straws % self.electronics_batch:
             raise ValueError("tracker straws must be a multiple of electronics_batch")
         if (self.long_steps is None) != (self.clusters_per_long_step is None):
@@ -90,7 +97,15 @@ class Capacities:
         if entries is None:
             return {}
         rows = {} if self.flat_saturation_rows in (None, "lanes") else {"saturation_rows": "auto"}
-        return {"entries": entries, **rows}
+        return {"entries": entries, **rows, **({"saturation_pool": True} if self.saturation_pool() else {})}
+
+    def saturation_pool(self):
+        """Tier saturation pool on: 'tier', or 'auto' in float32 (in float64, where flat_saturation_rows 'auto' already
+        halves the chunks, pooling measured 2 % slower)."""
+        if self.flat_saturation_pool == "auto":
+            from trkfastsim import devfloat
+            return bool(devfloat.SINGLE)
+        return self.flat_saturation_pool == "tier"
 
 
 def prepare(c, capacities, batch_events):
@@ -142,30 +157,61 @@ def prepare(c, capacities, batch_events):
                          spec((dj.CHARGE_BLOCK, 3), np.float64), spec((dj.CHARGE_BLOCK,), np.int64),
                          spec((dj.CHARGE_BLOCK,), np.float64))
     batch = cap.electronics_batch
-    wave = (2 * batch, cap.clusters_per_end)
-    electronics_kernel = lift(dj._electronics_kernel(c, cap.clusters_per_end, cap.pairs_per_straw, batch,
-                                                     **cap.flat_kernel(batch)),
-        spec((2,), np.uint32), spec(wave, np.float64), spec(wave, np.float64), spec(wave, np.float64),
-        spec(wave, np.int64), spec((2 * batch,), np.int32), spec((batch,), np.int64),
-        spec((batch,), bool), spec((batch,), np.int64), spec((batch,), bool), spec((batch,), np.float64),
-        event_end_tdc=spec((batch,), np.int64), window_end=spec((batch,), np.float64),
-        **({"n_ref": spec((batch,), np.int64)} if rel else {}))
+    pooled = cap.digit_entries_per_straw is not None and cap.saturation_pool()
+
+    def electronics_kernels(width, lb, straws):
+        """Lifted electronics kernel of one shape; with the tier saturation pool also its pool kernels
+        (pool_saturate over the straws / lb launches of the tier, flattened; pool_finish per launch)."""
+        lw = (2 * lb, width)
+        parts = dj._electronics_parts(c, width, cap.pairs_per_straw, lb, **cap.flat_kernel(lb))
+        args = (spec((2,), np.uint32), spec(lw, np.float64), spec(lw, np.float64), spec(lw, np.float64),
+                spec(lw, np.int64), spec((2 * lb,), np.int32), spec((lb,), np.int64),
+                spec((lb,), bool), spec((lb,), np.int64), spec((lb,), bool), spec((lb,), np.float64))
+        kw = dict(event_end_tdc=spec((lb,), np.int64), window_end=spec((lb,), np.float64),
+                  **({"n_ref": spec((lb,), np.int64)} if rel else {}))
+        kernel = lift(parts.run, *args, **kw)
+        if not pooled:
+            return kernel, None
+        pool = jax.eval_shape(lambda *a, **k: kernel.apply(kernel.assets, *a, **k), *args, **kw)["pool"]
+        launches = straws // lb
+        flat = lambda x: spec((launches * x.shape[0],) + x.shape[1:], x.dtype)
+        saturate = lift(parts.pool_saturate, jax.tree_util.tree_map(flat, pool["lanes"]), flat(pool["times"]),
+                        flat(pool["sat"]), flat(pool["volts"]))
+        finish = lift(parts.pool_finish, *(spec(pool[k].shape, pool[k].dtype)
+                                           for k in ("volts", "noise", "row", "kk", "us")))
+        return kernel, (saturate, finish)
+
+    electronics_kernel, electronics_pool = electronics_kernels(cap.clusters_per_end, batch, cap.straws)
     assets = {"energies": energies, "probabilities": probabilities, "straw_dir": np.asarray(c.straw_dir),
               "all_planes": np.asarray(c.allPlanes, np.int64),
               "charge_kernel": charge_kernel.assets, "electronics_kernel": electronics_kernel.assets}
-    tier_kernels = []
+    if pooled:
+        assets["electronics_pool"] = tuple(k.assets for k in electronics_pool)
+    tier_kernels, tier_pools = [], []
     for straws, width in cap.end_tiers or ():
-        lb = cap.tier_batch(straws)
-        lw = (2 * lb, width)
-        tier_kernels.append(lift(dj._electronics_kernel(c, width, cap.pairs_per_straw, lb,
-                                                        **cap.flat_kernel(lb)),
-            spec((2,), np.uint32), spec(lw, np.float64), spec(lw, np.float64), spec(lw, np.float64),
-            spec(lw, np.int64), spec((2 * lb,), np.int32), spec((lb,), np.int64),
-            spec((lb,), bool), spec((lb,), np.int64), spec((lb,), bool), spec((lb,), np.float64),
-            event_end_tdc=spec((lb,), np.int64), window_end=spec((lb,), np.float64),
-            **({"n_ref": spec((lb,), np.int64)} if rel else {})))
+        kernel, pool = electronics_kernels(width, cap.tier_batch(straws), straws)
+        tier_kernels.append(kernel)
+        tier_pools.append(pool)
     if tier_kernels:
         assets["electronics_tier_kernels"] = tuple(kernel.assets for kernel in tier_kernels)
+        if pooled:
+            assets["electronics_tier_pools"] = tuple(tuple(k.assets for k in pool) for pool in tier_pools)
+
+    def saturate_pooled(result, pool, pool_assets):
+        """Tier saturation pool: the launches' saturated ends together, then each launch's ADC and PMP."""
+        if pool is None:
+            return result
+        result = dict(result)
+        p = result.pop("pool")
+        launches = p["sat"].shape[0]
+        flat = lambda x: x.reshape((-1,) + x.shape[2:])
+        volts, overflow = pool[0].apply(pool_assets[0], jax.tree_util.tree_map(flat, p["lanes"]), flat(p["times"]),
+                                        flat(p["sat"]), flat(p["volts"]))
+        volts = volts.reshape(p["volts"].shape)
+        adc, pmp = lax.map(lambda x: pool[1].apply(pool_assets[1], *x), (volts, p["noise"], p["row"], p["kk"], p["us"]))
+        result.update(adc=adc, pmp=pmp, sat_overflow=result["sat_overflow"] | overflow)
+        assert launches == adc.shape[0]
+        return result
     if rel:
         assets["straw_mid"] = np.asarray(c.straw_mid, np.float64)
 
@@ -513,6 +559,7 @@ def prepare(c, capacities, batch_events):
             return electronics_call(electronics_kernel, assets["electronics_kernel"], key, t, q, w, step, count,
                                     cap.clusters_per_end, batch, us, ra, skey, live, jitter, endtdc, lengths)
         result = lax.map(block, groups)
+        result = saturate_pooled(result, electronics_pool, assets.get("electronics_pool"))
         output = {name: result[name].reshape((-1,) + result[name].shape[3:])
                   for name in ("adc", "tdc", "tot", "pmp", "step", "t_analog")}
         output["mask"] = result["keep"].reshape(-1)
@@ -598,7 +645,7 @@ def prepare(c, capacities, batch_events):
     def electronics_tiered(packed, key, assets):
         flat_flags, flat_usage = [], []
 
-        def tier(values, kernel, kernel_assets, width, batch):
+        def tier(values, kernel, kernel_assets, width, batch, pool=None, pool_assets=None):
             groups = tuple(v.reshape((-1, batch) + v.shape[1:]) for v in values)
 
             def block(inputs):
@@ -606,6 +653,7 @@ def prepare(c, capacities, batch_events):
                 return electronics_call(kernel, kernel_assets, key, t, q, w, step, count, width, batch,
                                         us, ra, skey, live, jitter, endtdc, lengths)
             result = lax.map(block, groups)
+            result = saturate_pooled(result, pool, pool_assets)
             out = {name: result[name].reshape((-1,) + result[name].shape[3:])
                    for name in ("adc", "tdc", "tot", "pmp", "step", "t_analog")}
             out["mask"] = result["keep"].reshape(-1)
@@ -617,10 +665,11 @@ def prepare(c, capacities, batch_events):
             return out, jnp.any(result["failed"]), jnp.any(result["sat_overflow"])
 
         parts = [tier(packed[0], electronics_kernel, assets["electronics_kernel"], cap.clusters_per_end,
-                      cap.electronics_batch)]
-        for values, kernel, kernel_assets, (straws, width) in zip(packed[1:], tier_kernels,
-                                                                   assets["electronics_tier_kernels"], cap.end_tiers):
-            parts.append(tier(values, kernel, kernel_assets, width, cap.tier_batch(straws)))
+                      cap.electronics_batch, electronics_pool, assets.get("electronics_pool"))]
+        pool_assets = assets.get("electronics_tier_pools", (None,) * len(tier_kernels))
+        for values, kernel, kernel_assets, (straws, width), pool, passets in zip(
+                packed[1:], tier_kernels, assets["electronics_tier_kernels"], cap.end_tiers, tier_pools, pool_assets):
+            parts.append(tier(values, kernel, kernel_assets, width, cap.tier_batch(straws), pool, passets))
         output = {name: jnp.concatenate([part[0][name] for part in parts]) for name in parts[0][0]}
         fa = jnp.any(jnp.stack([part[1] for part in parts]))
         sa = jnp.any(jnp.stack([part[2] for part in parts]))

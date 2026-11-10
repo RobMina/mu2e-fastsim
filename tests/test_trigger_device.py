@@ -156,3 +156,23 @@ def test_digi_blocks_pack_flat_digis():
     assert b["event"].tolist() == [10, 11, 12] and out[1][2]["valid_event"].tolist() == [True, False, False]
     with pytest.raises(ValueError):
         list(digis.blocks({**dg, "sid": np.array([9, 5, 1, 1, 300])}, nev=4, size=3))
+
+
+def test_binned_rows_added_to_scalar_base():
+    import re
+    from trigger.device import response
+    edges, edges_p = [0.0, 20.0, 40.0, 1000.0], [0.0, 98.0, 1e6]
+    one = np.array([[50, 100], [10, 5], [180, 200]], float)          # middle bin sparse: merges into the first
+    two = np.stack([one, np.zeros((3, 2))])                          # second momentum row empty: hits-only fallback
+    acc = {"apr_TrkDe_80m70p": {"1d": one, "2d": two, "helix": True}}
+    base = {"apr_TrkDe_80m70p": {"hs": 0.9, "ks": 0.95}, "tpr_TrkDe_80m70p": {"ks": 0.97}}
+    out = response.binned_rows(acc, edges, edges_p, 50, base)
+    assert out["tpr_TrkDe_80m70p"] == {"ks": 0.97}                   # other paths keep their scalar factors
+    assert base["apr_TrkDe_80m70p"] == {"hs": 0.9, "ks": 0.95}      # base not modified
+    row = out["apr_TrkDe_80m70p"]
+    assert row["hs"] == 0.9 and row["final"]["edges"] == [0.0, 40.0, 1000.0]
+    assert row["final"]["edges_p"] == edges_p
+    np.testing.assert_allclose(row["final"]["f"], [[60 / 105, 0.9], [60 / 105, 0.9]])
+    sel = re.compile(response.APR_HELIX_PATHS)
+    assert [p for p in ("apr_TrkDe_70", "apr_Hlx_30", "apr_TrkUe_80m70p", "apr_TC", "tpr_TrkDe_80m70p")
+            if sel.search(p)] == ["apr_TrkDe_70", "apr_Hlx_30", "apr_TrkUe_80m70p"]
