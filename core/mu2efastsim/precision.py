@@ -16,6 +16,12 @@ lookup, no argument binding). Measured pass-through overhead per eager call: 0.2
 jnp.asarray 6.9 vs 6.4 us, jax.random.uniform 7.4 vs 6.9 us); calls inside compiled kernels cost nothing at run
 time. Nothing is replaced in float64 mode.
 
+Matmul precision: in float32 mode JAX's default_matmul_precision is set to "highest" process-wide, so float32 matmuls,
+einsums and dots run in full float32. At XLA's default precision they run on TF32 tensor cores on Ampere and later
+(10-bit mantissa: relative error up to about 7e-4 in plane clipping and PE-weighted positions). A product that TF32
+computes exactly (0/1 operands, integer sums below 2**24) may opt back in with precision=TF32_EXACT. A
+JAX_DEFAULT_MATMUL_PRECISION set in the environment is kept. Float64 mode leaves the setting alone.
+
 Reproducibility (GPU): with the determinism setting on (mu2efastsim.determinism, default), output repeats bit for bit
 from process to process on one GPU model at either precision. Without it, XLA's per-process autotuning can change the
 summation order of fused kernels between runs. Across GPU models float64 physics output (pulses, clusters) is
@@ -37,6 +43,8 @@ if NAME not in ("float64", "float32"):
 FLOAT = np.dtype(NAME)
 TINY = 1e-300 if FLOAT == np.float64 else float(np.finfo(FLOAT).tiny)   # guard / smallest draw: as shipped in float64
 SINGLE = FLOAT == np.float32
+TF32_EXACT = "default"          # matmul precision for products TF32 computes exactly (0/1 operands, integer sums)
+MATMUL = (os.environ.get("JAX_DEFAULT_MATMUL_PRECISION") or "highest") if SINGLE else None   # float32-mode default
 
 
 _SCOPE = threading.local()      # depth of precision-aware (dprec.jit) calls running in this thread
@@ -88,6 +96,8 @@ def provenance():
     (determinism.state()), JAX backend, device models."""
     from . import determinism
     out = {"device_float": NAME, "deterministic": determinism.state()}
+    if SINGLE:
+        out["matmul_precision"] = MATMUL
     try:
         import jax
         devices = jax.devices()
@@ -193,8 +203,15 @@ def _install_float_defaults():
                 setattr(mod, n, w)
 
 
+def _install_matmul_precision():
+    """float32 mode: full float32 matmuls (no TF32) unless JAX_DEFAULT_MATMUL_PRECISION says otherwise."""
+    import jax
+    jax.config.update("jax_default_matmul_precision", MATMUL)
+
+
 if SINGLE:
     _install_float_defaults()
+    _install_matmul_precision()
 
 if AUDIT:
     import atexit

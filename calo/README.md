@@ -106,7 +106,9 @@ steps_chain = dc.make_steps_chain(resp, caps)              # saved steps -> clus
 
 `pack_library(..., dtype=np.float32)` and `pack_response(..., dtype=np.float32)` run placement, the waveform, noise,
 template fit (`templatefit._compiled(..., dtype)`, opt-in; the default fit is unchanged) and cluster sums in single
-precision; time folding, photoelectron times and integer keys keep the source types.
+precision; time folding, photoelectron times and integer keys keep the source types. Their float32 matmuls and
+einsums (frames, the pulse-table product, cluster centroids) ask for `precision="highest"`, so they do not run on TF32
+tensor cores (XLA's default on Ampere and later); the 0/1 cluster-growth products keep the default, which is exact.
 
 `showers.handoff_device.disk_front(maps, disk_geometry(library), x, u, T, t, active)` steps device electron states
 (e.g. the tracker transport's exit states) to the first forward disk-front crossing inside the annulus, the device

@@ -25,6 +25,10 @@ determinism setting and device model, and the tracker's effective float and sett
 | line seeds | `reco/linefind_jax.py` | no | bitwise equal to stock `LineFinder` |
 | F2 line fit | `reco/linefit_jax.py` | no | normal equations on Mu2e-frame positions and absolute t0 would need centring; small share of the chain |
 
+Float32 matmuls and einsums (the plane-clipping products `o.n` and `d.n`) run in full float32: core's float32 mode
+sets JAX's `default_matmul_precision` to `highest`, instead of XLA's TF32 default on Ampere and later (relative error
+about 6e-4, 0.5 mm at 800 mm).
+
 ## Precision-aware forms (float32 only)
 
 Each form is chosen at trace time, so the float64 programs are unchanged.

@@ -44,6 +44,13 @@ __all__ = ["Caps", "pack_library", "pack_response", "make_chain", "make_steps_ch
 
 OVERFLOW_NAMES = ("steps", "photoelectrons", "rows", "outliers", "digis", "digi_length", "hits", "event_hits",
                   "main_rounds", "split_rounds")
+TF32_EXACT = "default"   # matmul precision for products TF32 computes exactly (0/1 operands, integer sums)
+
+
+def _physics(*xs):
+    """Matmul precision of a physics product: "highest" when an operand is float32 (XLA's default runs float32 on TF32
+    tensor cores on Ampere and later, a 10-bit mantissa), XLA's default otherwise (float64 is unaffected)."""
+    return "highest" if any(x.dtype == np.float32 for x in xs) else None
 
 
 @dataclass(frozen=True)
@@ -364,7 +371,8 @@ def gather_steps(lib: DeviceLibrary, q, donor, slot, n_steps):
     src = a["offsets"][d[row]] + i - (end[row] - length[row])
     src = jnp.where(valid, src, 0)
     rel = a["step_relative_position"][src]
-    delta = jnp.einsum("nij,nj->ni", a["donor_frame"][d[row]], rel)
+    dframe = a["donor_frame"][d[row]]
+    delta = jnp.einsum("nij,nj->ni", dframe, rel, precision=_physics(dframe, rel))
     s = slot[row]
     target_xy = q["position"][row, :2] - a["origin"][s, :2]
     angle = jnp.arctan2(target_xy[:, 1], target_xy[:, 0]) - a["donor_angle"][d[row]]
@@ -385,8 +393,8 @@ def _nearest_crystal(lib: DeviceLibrary, dslot, xy_local):
     extent = lib.n_pix * lib.pixel / 2
     ij = jnp.clip(jnp.floor((xy_local + extent) / lib.pixel).astype(jnp.int64), 0, lib.n_pix - 1)
     cand = a["pixel_candidates"][dslot, ij[:, 0] * lib.n_pix + ij[:, 1]]
-    cl = jnp.einsum("nkj,nji->nki", a["centers"][jnp.maximum(cand, 0)] - a["origin"][dslot][:, None, :],
-                    a["axes"][dslot])
+    rel, axes = a["centers"][jnp.maximum(cand, 0)] - a["origin"][dslot][:, None, :], a["axes"][dslot]
+    cl = jnp.einsum("nkj,nji->nki", rel, axes, precision=_physics(rel, axes))
     dist = jnp.linalg.norm(cl[:, :, :2] - xy_local[:, None, :], axis=2)
     dist = jnp.where(cand >= 0, dist, jnp.inf)
     k = jnp.argmin(dist, axis=1)
@@ -403,7 +411,7 @@ def place_steps(lib: DeviceLibrary, q, st):
     org = a["origin"][ds]
 
     def to_local(v):
-        return jnp.einsum("nj,nji->ni", v, r)
+        return jnp.einsum("nj,nji->ni", v, r, precision=_physics(v, r))
 
     if lib.placement == "geometric":
         # every pixel candidate is tested for containment; the closest containing centre wins, as place()
@@ -412,7 +420,8 @@ def place_steps(lib: DeviceLibrary, q, st):
         ij = jnp.clip(jnp.floor((xyz[:, :2] + extent) / lib.pixel).astype(jnp.int64), 0, lib.n_pix - 1)
         cand = a["pixel_candidates"][ds, ij[:, 0] * lib.n_pix + ij[:, 1]]
         cc = jnp.maximum(cand, 0)
-        local = jnp.einsum("nkj,nji->nki", st["position"][:, None, :] - a["centers"][cc], r)
+        rel = st["position"][:, None, :] - a["centers"][cc]
+        local = jnp.einsum("nkj,nji->nki", rel, r, precision=_physics(rel, r))
         size = a["sizes"][cc]
         inside = ((cand >= 0) & (jnp.abs(local[:, :, :2]) <= size[:, :, :2] / 2 + eps).all(axis=2) &
                   (local[:, :, 2] >= -eps) & (local[:, :, 2] <= size[:, :, 2] + eps))
@@ -441,7 +450,7 @@ def place_steps(lib: DeviceLibrary, q, st):
     close = dist <= jnp.linalg.norm(size[:, :2], axis=1) / 2 + eps
     contains = ((jnp.abs(local[:, :2]) <= size[:, :2] / 2 + eps).all(axis=1) &
                 (local[:, 2] >= -eps) & (local[:, 2] <= size[:, 2] + eps))
-    proposed = a["centers"][target] + jnp.einsum("ni,nji->nj", local, r)
+    proposed = a["centers"][target] + jnp.einsum("ni,nji->nj", local, r, precision=_physics(local, r))
     pr = jnp.linalg.norm(to_local(proposed - org)[:, :2], axis=1)
     envelope = envelope & (pr >= lo) & (pr <= hi)
     mapped = envelope & close & contains & st["valid"]
@@ -517,7 +526,7 @@ def _waveforms(resp: DeviceResponse, row, time32, weight, n_rows, window, outlie
     flat = (row * window + jnp.where(inwin, ds, 0)) * N_STEPS + jnp.where(inwin, first - 1, 0)
     H = jnp.zeros(n_rows * window * N_STEPS, fdt).at[flat].add(jnp.where(inwin, w, 0.0))
     V = vec[jnp.clip(jnp.arange(1, N_STEPS + 1)[:, None] + N_STEPS * jnp.arange(nshape)[None, :], 0, vec.size - 1)]
-    A = (H.reshape(n_rows * window, N_STEPS) @ V).reshape(n_rows, window, nshape)
+    A = jnp.matmul(H.reshape(n_rows * window, N_STEPS), V, precision=_physics(H, V)).reshape(n_rows, window, nshape)
     width = size + window + nshape
     wave = jnp.zeros((n_rows, width), fdt)
     base = jnp.where(s0 < big, s0, size)[:, None]
@@ -776,13 +785,13 @@ def clusters(resp: DeviceResponse, hits, n_events, caps: Caps):
 
         def body(st):
             visited, expanding, mem, _ = st
-            reach = jnp.einsum("ei,eij->ej", expanding.astype(jnp.float32), adjf) > 0
+            reach = jnp.einsum("ei,eij->ej", expanding.astype(jnp.float32), adjf, precision=TF32_EXACT) > 0
             newc = reach & ~visited
             visited = visited | newc
             new = newc & intime
             mem = mem | new
             grow_ = new & (e > cfg.expand_cut)
-            expanding = jnp.einsum("ei,eij->ej", grow_.astype(jnp.float32), samef) > 0
+            expanding = jnp.einsum("ei,eij->ej", grow_.astype(jnp.float32), samef, precision=TF32_EXACT) > 0
             return visited, expanding, mem, newc.any()
 
         _, _, mem, _ = lax.while_loop(cond, body, (visited, visited, mem, jnp.bool_(True)))
@@ -852,7 +861,7 @@ def clusters(resp: DeviceResponse, hits, n_events, caps: Caps):
     on_disk = f_mem & (hit_disk[:, :, None] == lead_disk[:, None, :])
     w = jnp.where(on_disk, e[:, :, None].astype(a["position"].dtype), 0.0)                     # (B, H, C)
     sw = w.sum(axis=1)
-    sxyz = jnp.einsum("bhc,bhk->bck", w, pos)
+    sxyz = jnp.einsum("bhc,bhk->bck", w, pos, precision=_physics(w, pos))
     cog = sxyz / jnp.where(sw > 0, sw, 1.0)[..., None] - a["front_face"][lead_disk]
     size = f_mem.sum(axis=1)
     order = jnp.argsort(jnp.where(exists, -esum, jnp.inf), axis=1, stable=True)
