@@ -13,3 +13,12 @@ the table.
 (`table --pools`: `pool_res`, `pool_idx`, `pool_start`, `pool_count`). A response table with pools draws the seven
 residual and quality quantities jointly from one reference track of the bin pool instead of the Gaussian copula and
 inverse CDFs. Every array the default file holds is identical in both files; the pool file also records its `reference` text.
+
+`ce_loophelix_run1a_fulldts_pools.npz` (opt-in, `DeviceChain(response="fulldts")`): the same development events and
+bins (`count` is identical), with the response measured on the full Geant4 events instead of the CE's own steps:
+every StrawGasStep of the event (delta rays and other secondaries, the electrons coming back from the calorimeter)
+through the same stock digitisation, reconstruction and EventNtuple, with pools. The bins still count the
+conversion electron's own Geant4 rows, which is what the device transport (with its albedo) provides. The extra hits
+lower the quality pass (direction and fit consistency: 85 % instead of 91 % of fitted tracks; the fit efficiency
+is unchanged), and
+the pools carry the full events' residual and quality shapes.

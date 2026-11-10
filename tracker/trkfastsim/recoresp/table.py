@@ -217,6 +217,76 @@ def save(path, tab):
 
 DEFAULT = Path(__file__).with_name("data") / "ce_loophelix_run1a.npz"
 POOLS = Path(__file__).with_name("data") / "ce_loophelix_run1a_pools.npz"   # the same tables plus the pools (opt-in)
+# opt-in: the response of the full Geant4 events (every StrawGasStep: delta rays, other secondaries, the calorimeter
+# albedo), on the same development events and bins as DEFAULT, with pools
+FULLDTS = Path(__file__).with_name("data") / "ce_loophelix_run1a_fulldts_pools.npz"
+NAMED = {"default": DEFAULT, "pools": POOLS, "fulldts": FULLDTS}   # the shipped tables by name
+
+
+# Tables of other stock configurations are not in git: a registry (data/registry.json) maps a stock-input hash
+# (recoresp.config) to the table's file name, sha256 and download URL (release assets resp-<hash>), and a local
+# cache holds the downloaded tables.
+REGISTRY = Path(__file__).with_name("data") / "registry.json"
+CACHE_ENV = "TRKFASTSIM_RESP_CACHE"
+
+
+def cache_dir():
+    """Local cache of downloaded tables: $TRKFASTSIM_RESP_CACHE, else ~/.cache/trkfastsim/recoresp."""
+    import os
+    return Path(os.environ.get(CACHE_ENV) or Path.home() / ".cache" / "trkfastsim" / "recoresp")
+
+
+def registry(path=REGISTRY):
+    import json
+    p = Path(path)
+    return json.loads(p.read_text()) if p.exists() else {}
+
+
+def _sha256(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+def fetch(h, reg=None):
+    """Path of the registered table of stock-input hash h in the cache, downloaded from its URL if missing; the
+    sha256 is checked either way."""
+    import urllib.request
+    reg = registry() if reg is None else reg
+    if h not in reg:
+        raise KeyError(f"stock-input hash {h} is not in the response table registry")
+    e = reg[h]
+    p = cache_dir() / e["file"]
+    if not p.exists():
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".part")
+        with urllib.request.urlopen(e["url"]) as r, open(tmp, "wb") as f:
+            while True:
+                b = r.read(1 << 20)
+                if not b:
+                    break
+                f.write(b)
+        tmp.replace(p)
+    if _sha256(p) != e["sha256"]:
+        raise ValueError(f"{p}: sha256 differs from the registry entry of {h}")
+    return p
+
+
+def resolve(response, reg=None):
+    """Path of a response table: a shipped name (NAMED), an existing file, or a registered stock-input hash
+    (fetched into the cache)."""
+    from . import config as RC
+    if isinstance(response, str) and response in NAMED:
+        return NAMED[response]
+    if Path(response).exists():
+        return Path(response)
+    s = str(response)
+    if len(s) == RC.HASH_LEN and all(c in "0123456789abcdef" for c in s):
+        return fetch(s, reg)
+    raise FileNotFoundError(f"response table {response!r}: not a shipped name, a file or a registered hash")
 
 
 def load(path=DEFAULT):

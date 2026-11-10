@@ -20,6 +20,8 @@ hash. `table.build(..., config=manifest)` stores the manifest and its hash in th
 CLI:
   python3 -m trkfastsim.recoresp.config hash MANIFEST
   python3 -m trkfastsim.recoresp.config render MANIFEST OUTDIR    (OUTDIR/{digi,reco,ntuple}.fcl and manifest.json)
+  python3 -m trkfastsim.recoresp.config register TABLE [--registry PATH] [--url-base URL]
+                 (a registry entry for a table built with config=: file name, sha256, URL of the release asset)
 """
 import argparse
 import copy
@@ -28,6 +30,7 @@ import json
 from pathlib import Path
 
 STAGES = ("digi", "reco", "ntuple")
+URL_BASE = "https://github.com/RobMina/mu2e-fastsim/releases/download/resp-{hash}/"   # release assets per hash
 FIELDS = ("release", "geometry", "db", "digi_seed", "digi", "reco", "ntuple", "sample", "table")
 HASH_LEN = 16
 
@@ -80,6 +83,26 @@ def render(m, stage):
     return "\n".join(out) + "\n"
 
 
+def register(table_path, registry_path=None, url_base=URL_BASE):
+    """Add the table at table_path (built with table.build(..., config=)) to the registry under its config hash:
+    file name ce_loophelix_<hash>.npz, sha256, URL (url_base with {hash}), reference text and knobs. Returns the entry."""
+    import numpy as np
+    from . import table as RT
+    with np.load(table_path) as f:
+        if "config_hash" not in f.files:
+            raise ValueError(f"{table_path}: built without a config (no config_hash)")
+        h, m = str(f["config_hash"]), load(str(f["config"]))
+        ref = str(f["reference"]) if "reference" in f.files else ""
+    name = f"ce_loophelix_{h}.npz"
+    e = dict(file=name, sha256=RT._sha256(table_path), url=url_base.format(hash=h) + name, reference=ref,
+             knobs=m.get("knobs", {}), release=m["release"], sample=m["sample"]["dataset"])
+    p = Path(registry_path) if registry_path else RT.REGISTRY
+    reg = json.loads(p.read_text()) if p.exists() else {}
+    reg[h] = e
+    p.write_text(json.dumps(reg, indent=1, sort_keys=True) + "\n")
+    return e
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python3 -m trkfastsim.recoresp.config", description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -87,7 +110,14 @@ def main(argv=None):
     r = sub.add_parser("render")
     r.add_argument("manifest")
     r.add_argument("outdir")
+    g = sub.add_parser("register")
+    g.add_argument("table")
+    g.add_argument("--registry", default=None, help="registry JSON (default: the shipped recoresp/data/registry.json)")
+    g.add_argument("--url-base", default=URL_BASE)
     a = ap.parse_args(argv)
+    if a.cmd == "register":
+        print(json.dumps(register(a.table, a.registry, a.url_base)))
+        return
     m = load(a.manifest)
     if a.cmd == "render":
         o = Path(a.outdir)

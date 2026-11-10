@@ -382,3 +382,44 @@ def test_knob_interpolation_mixes_the_neighbouring_grid_tables():
         RT.at_knob({0.8: lo, 1.2: hi}, 1.3)
     with pytest.raises(ValueError):                      # not the same events and bins
         RT.interpolate(lo, RT.build(d.iloc[:20000], pools="all"), 0.5)
+def test_shipped_fulldts_table_has_the_default_bins_and_pools():
+    a, b = RT.load(), RT.load(RT.NAMED["fulldts"])
+    assert set(b) == set(RT.load(RT.POOLS))
+    for k in ("nrow_edges", "tandip_edges", "qnodes", "time_edges", "cuts", "axis_xy", "count"):
+        assert np.array_equal(a[k], b[k]), k          # the same development events, binned in the CE's own rows
+    assert "full G4" in str(b["reference"])
+    assert b["pool_res"].shape[1] == len(RT.RES + RT.QUAL) and (b["pool_count"] > 0).all()
+    assert int(b["pool_idx"].max()) < len(b["pool_res"])
+    w = a["count"]                                     # the full events' extra hits lower the quality pass
+    assert (b["eff_q"] * w).sum() < (a["eff_q"] * w).sum() - 0.03 * w.sum()
+
+
+def test_named_tables_resolve_to_shipped_files():
+    assert RT.NAMED["default"] == RT.DEFAULT and RT.NAMED["pools"] == RT.POOLS
+    assert all(p.exists() for p in RT.NAMED.values())
+
+
+def test_registered_tables_are_fetched_into_the_cache_and_checked(tmp_path, monkeypatch):
+    from trkfastsim.recoresp import config as RC
+    monkeypatch.setenv(RT.CACHE_ENV, str(tmp_path / "cache"))
+    tab = RT.build(_reference(5000, np.random.default_rng(60)), pools="all", config=MANIFEST)
+    src = tmp_path / "assets"
+    src.mkdir()
+    RT.save(src / "t.npz", tab)
+    reg = tmp_path / "registry.json"
+    e = RC.register(src / "t.npz", reg, url_base=src.as_uri() + "/")
+    h = RC.digest(MANIFEST)
+    assert e["file"] == f"ce_loophelix_{h}.npz" and RT.registry(reg)[h]["sha256"] == e["sha256"]
+    (src / e["file"]).write_bytes((src / "t.npz").read_bytes())          # the release asset
+    p = RT.resolve(h, RT.registry(reg))
+    assert p.parent == tmp_path / "cache" and str(RT.load(p)["config_hash"]) == h
+    RT.check_config(RT.load(p), MANIFEST)
+    assert RT.resolve("pools") == RT.POOLS and RT.resolve(str(src / "t.npz")) == src / "t.npz"
+    p.write_bytes(b"corrupt")                                             # a changed file fails the sha256
+    with pytest.raises(ValueError):
+        RT.fetch(h, RT.registry(reg))
+    with pytest.raises(KeyError):
+        RT.fetch("0" * RC.HASH_LEN, RT.registry(reg))
+    with pytest.raises(FileNotFoundError):
+        RT.resolve("no_such_table")
+    assert RT.registry() == {} or all(len(k) == RC.HASH_LEN for k in RT.registry())

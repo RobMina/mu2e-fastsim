@@ -245,7 +245,8 @@ class DeviceChain:
 
     offline_root, maps (G4BL headers, DS map first), gdml: as the CLI. response: reco response tables (.npz,
     trkfastsim.recoresp.table), "default" (the tables shipped with trkfastsim.recoresp), "pools" (the same with the
-    pools: the opt-in empirical joint draw) or None (no track
+    pools: the opt-in empirical joint draw), "fulldts" (opt-in: the response of the full Geant4 events, every
+    StrawGasStep, with pools) or None (no track
     observables). digi_cond: device digitiser conditions (.npz,
     trkfastsim.digi.digicond) or None (no digis). ce_unroll, ce_shrink: cechain_jax's unroll and bucket shrink
     factor (a large shrink compacts less often and compiles fewer bucket shapes). digi_chunk: events per digitiser
@@ -285,7 +286,7 @@ class DeviceChain:
         self.resp = None
         if response is not None:
             from trkfastsim.recoresp import device as RD, table as RT
-            tab = RT.load() if response == "default" else RT.load(RT.POOLS) if response == "pools" else RT.load(response)
+            tab = RT.load(RT.resolve(response))       # a shipped name, a path or a registered stock-input hash
             if response_config is not None:          # the table must come from the requested stock inputs
                 RT.check_config(tab, response_config)
             if response_cuts:                        # run-time CE selection (table.with_cuts)
