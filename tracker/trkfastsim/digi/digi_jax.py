@@ -27,6 +27,9 @@ SATURATION_TILE = 64 if GPU else 16
 JITTER_BATCH = 128
 CHARGE_BLOCK = 4096
 CHARGE_BLOCKS = 16 if GPU else 1
+SATURATION_MATMUL_MODES = ("tensor", "bf16")
+SATURATION_MATMUL_MIN_CAP = 192   # narrower lanes keep the gather (their dense histograms are mostly empty)
+SATURATION_MATMUL_ROWS = 512      # rows per histogram block of the matmul form (bounds its memory)
 
 
 @df.jit
@@ -149,17 +152,20 @@ def _saturation_rows(batch, saturation_rows=None):
 
 
 @lru_cache(maxsize=32)
-def _electronics_kernel(c, cap, pair_cap, batch, entries=None, saturation_rows=None):
+def _electronics_kernel(c, cap, pair_cap, batch, entries=None, saturation_rows=None, saturation_matmul=None,
+                        saturation_matmul_min_cap=None):
     """entries: None digitises pair by pair over every lane (default); an int digitises the flat list of present
     (straw, pair) entries, at most `entries` per call, with the same keys and arithmetic. Saturated ends are
     compacted into chunks of 2 * batch rows, the loop's lane count; saturation_rows="auto" uses batch rows in float64,
     where they were measured bit-identical over full passes (in float32 they drift by roundoff, so 2 * batch stays).
-    An entry overflow is flagged in entry_overflow, never truncated."""
-    return _electronics_parts(c, cap, pair_cap, batch, entries, saturation_rows).run
+    An entry overflow is flagged in entry_overflow, never truncated. saturation_matmul: see _electronics_parts."""
+    return _electronics_parts(c, cap, pair_cap, batch, entries, saturation_rows, False, saturation_matmul,
+                              saturation_matmul_min_cap).run
 
 
 @lru_cache(maxsize=32)
-def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=None, saturation_pool=False):
+def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=None, saturation_pool=False,
+                       saturation_matmul=None, saturation_matmul_min_cap=None):
     """The electronics kernel `run` (as _electronics_kernel) and, with saturation_pool=True (flat digitisation only),
     the kernels that saturate the ends of many launches together.
 
@@ -168,7 +174,19 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
     the pools of every launch of one kernel shape, flattened, and saturates their saturated ends in chunks of the same
     srows rows as per launch, so each chunk computes as a per-launch chunk does, but fewer chunks run (a launch's
     padding is filled by the next launch's ends); `pool_finish(volts, noise, row, kk, straw_us)` is the per-launch
-    ADC and PMP. Exact: the same keys and arithmetic, the same chunk shapes."""
+    ADC and PMP. Exact: the same keys and arithmetic, the same chunk shapes.
+
+    saturation_matmul (opt-in, default None = the per-cluster gather): the saturation response on its lattice as a
+    dense matmul, for lanes of at least saturation_matmul_min_cap clusters (default SATURATION_MATMUL_MIN_CAP).
+    The lattice index of cluster c at tick j is m_c + F j (F = saturationSampleFactor, m_c = floor(u_c)); with
+    m_c = F q_c + r_c the table entry is P_{k,r_c}[q_c + j], so the response is H @ Toep: H a per-row histogram of
+    the cluster weights over (wire-point bin k, phase r, q) and Toep[(k, r, q), j] = T_k[F (q + j) + r]. The
+    look-back mask (direct index > rb/2 - LB sr) truncates the table; a small exact gather adds back the tie index
+    and the reflected ticks the truncation dropped. "tensor": float32 on TF32 x3 tensor cores (float32 accuracy;
+    HIGHEST off GPU), float64 as a float64 matmul (FP64 tensor cores where present); "bf16": bfloat16 inputs with
+    float32 accumulation (an approximation). Equal to the gather up to summation order (tensor)."""
+    if saturation_matmul not in (None,) + SATURATION_MATMUL_MODES:
+        raise ValueError(f"saturation_matmul must be None or one of {SATURATION_MATMUL_MODES}")
     if saturation_pool and entries is None:
         raise ValueError("saturation_pool needs the flat digitisation (entries)")
     srows = _saturation_rows(batch, saturation_rows)
@@ -187,6 +205,85 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
     ticks = jnp.arange(1, c.maxTOT)
     adc_k = jnp.arange(c.nADCSamples)
     padded_steps = ((sat_steps + SATURATION_TILE - 1) // SATURATION_TILE) * SATURATION_TILE
+    min_cap = SATURATION_MATMUL_MIN_CAP if saturation_matmul_min_cap is None else int(saturation_matmul_min_cap)
+    matmul = saturation_matmul is not None and cap >= min_cap
+    if matmul:
+        F, J = int(c.saturationSampleFactor), padded_steps
+        cut = rb / 2. - LB * sr
+        if cut != int(cut) or c.saturationSampleFactor != F:
+            raise ValueError("saturation_matmul needs an integer look-back cut index and saturation sample factor")
+        icut = int(cut)
+        K = int(np.asarray(c.a["resp_sat"]).shape[0])
+        tr_max = float(c.s["reflectionTimeShift"]) + 4 * float(np.max(c.a["wire_halflen"])) / float(c.s["reflectionVelocity"])
+        n_fix = int(np.ceil(tr_max * sr)) // F + 3        # ticks per cluster the exact gather may add back
+        m_lo, m_hi = icut + 1 - F * (J - 1), icut + F - 1  # direct/reflected indices that can reach the table
+        qmin, qmax = m_lo // F, m_hi // F
+        nq = qmax - qmin + 1
+        ncol = K * F * nq
+        if saturation_matmul == "bf16":
+            mdt = jnp.bfloat16
+        else:
+            mdt = jnp.float32 if df.SINGLE else jnp.float64
+        prec32 = (lax.DotAlgorithmPreset.TF32_TF32_F32_X3 if GPU else lax.Precision.HIGHEST)
+
+    def saturation_toeplitz():
+        """Toep[(k, r, q), j] = T_k[clip(F (q + j) + r)] of the table truncated to indices > icut (built in graph)."""
+        Tc = jnp.where(jnp.arange(rb)[None, :] > icut, tables["sat"], 0)
+        idx = (F * ((qmin + jnp.arange(nq))[None, :, None] + jnp.arange(J)[None, None, :])
+               + jnp.arange(F)[:, None, None])
+        return Tc[:, jnp.clip(idx, 0, rb - 1)].reshape(ncol, J).astype(mdt)
+
+    def saturation_matmul_lanes(S, t0, i0, toep):
+        """The lattice response [rows, J] (before dv_t) of the end rows S as H @ Toep plus the exact add-back."""
+        def block(B):
+            t, tr, dk, aa, bb, sc, valid, t0b, i0b = B
+            R_, cap_ = t.shape
+            u = (t0b[:, None] - t) * sr + rb / 2.
+            m = jnp.floor(u).astype(jnp.int32)
+            mr = jnp.floor(u - tr * sr).astype(jnp.int32)
+            live = valid & (ci >= i0b[:, None])
+            hdt = jnp.float32 if (saturation_matmul == "bf16" or df.SINGLE) else jnp.float64
+
+            def col(kk, mm):
+                inside = live & (mm >= m_lo) & (mm <= m_hi)
+                return jnp.where(inside, (kk * F + jnp.mod(mm, F)) * nq + (jnp.floor_divide(mm, F) - qmin), ncol)
+            cols = jnp.stack([col(dk, m), col(dk + 1, m), col(dk, mr), col(dk + 1, mr)], -1)
+            a64, b64, s64 = (x.astype(hdt) for x in (aa, bb, sc))
+            vals = jnp.stack([a64, b64, a64 * s64, b64 * s64], -1)
+            rid = jnp.broadcast_to(jnp.arange(R_)[:, None, None], cols.shape)
+            H = jnp.zeros((R_, ncol), hdt).at[rid, cols].add(vals, mode="drop")
+            if saturation_matmul == "bf16":
+                resp = jnp.matmul(H.astype(mdt), toep, preferred_element_type=jnp.float32)
+            elif df.SINGLE:
+                resp = jnp.matmul(H, toep, precision=prec32)
+            else:
+                resp = jnp.matmul(H, toep)
+            resp = resp.astype(df.FLOAT)
+            # exact add-back: the tie index icut of the direct term (kept unless the look-back comparison ties) and
+            # the reflected ticks with index <= icut whose direct index passes the look-back mask
+            j0 = -jnp.floor_divide(m - icut, F)                        # first tick with direct index >= icut
+            jt = j0[:, :, None] + jnp.arange(n_fix)
+            ix, ir = m[:, :, None] + F * jt, mr[:, :, None] + F * jt
+            tq = t0b[:, None, None] + dts * jt.astype(df.FLOAT)
+            ok = live[:, :, None] & (jt >= 0) & (jt < J) & (t[:, :, None] - LB < tq)
+            T = tables["sat"]
+            k = dk[:, :, None]
+            irc = jnp.clip(ir, 0, rb - 1)
+            fix_r = aa[:, :, None] * (sc[:, :, None] * T[k, irc]) + bb[:, :, None] * (sc[:, :, None] * T[k + 1, irc])
+            fix_d = aa[:, :, None] * T[k, icut] + bb[:, :, None] * T[k + 1, icut]
+            fix = (jnp.where(ok & (ir <= icut), fix_r, 0).astype(df.FLOAT)
+                   + jnp.where(ok & (ix == icut), fix_d, 0).astype(df.FLOAT))
+            rj = jnp.broadcast_to(jnp.arange(R_)[:, None, None], jt.shape)
+            return resp.at[rj, jnp.clip(jt, 0, J - 1)].add(fix)
+        n_rows = S["t"].shape[0]
+        rb_ = min(SATURATION_MATMUL_ROWS, n_rows)
+        nb = -(-n_rows // rb_)
+        pad = nb * rb_ - n_rows
+        fields = [S[k] for k in ("t", "tr", "dk", "aa", "bb", "sc", "valid")] + [t0, i0]
+        fields = [jnp.pad(x, [(0, pad)] + [(0, 0)] * (x.ndim - 1)) for x in fields]
+        fields = [x.reshape((nb, rb_) + x.shape[1:]) for x in fields]
+        out = lax.map(block, tuple(fields)) if nb > 1 else block(tuple(x[0] for x in fields))[None]
+        return out.reshape(nb * rb_, J)[:n_rows]
 
     def count_lanes(L, tlim, inclusive=False):
         cmp = L["t"] <= tlim[:, None] if inclusive else L["t"] < tlim[:, None]
@@ -215,13 +312,19 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
         v *= (L["dv_a"] if path == "adc" else L["dv_t"])[:, None]
         return v
 
-    def saturation_lanes(S, times):
-        """Saturated ADC volts of the end rows S at ADC sample times `times`, and their step-capacity overflow."""
+    def saturation_lanes(S, times, toep=None):
+        """Saturated ADC volts of the end rows S at ADC sample times `times`, and their step-capacity overflow.
+        toep (saturation_matmul only): the Toeplitz matrix from saturation_toeplitz()."""
         n_ = S["n"]
         rws = jnp.arange(n_.shape[0])
         i0 = jnp.minimum(count_lanes(S, times[:, 0] + LB - c.ttrunc, inclusive=True), jnp.maximum(n_ - 1, 0))
         t0 = S["t"][rws, jnp.clip(i0, 0, cap - 1)] - LB
         nstep = jnp.maximum(0, jnp.ceil((times[:, -1] - t0) / dts).astype(jnp.int32))
+        if matmul:
+            resp = saturation_matmul_lanes(S, t0, i0, saturation_toeplitz() if toep is None else toep)
+            resp = resp * S["dv_t"][:, None]
+            resp = jnp.where(jnp.arange(padded_steps)[None, :] < nstep[:, None], resp, 0)
+            return saturation_finish(S, times, t0, nstep, resp)
         def tile(k, response):
             offset = k * SATURATION_TILE
             tick = offset + jnp.arange(SATURATION_TILE)
@@ -231,6 +334,10 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
             values = jnp.where(tick[None, :] < nstep[:, None], values, 0)
             return lax.dynamic_update_slice(response, values, (0, offset))
         resp = lax.fori_loop(0, padded_steps // SATURATION_TILE, tile, jnp.zeros((n_.shape[0], padded_steps)))
+        return saturation_finish(S, times, t0, nstep, resp)
+
+    def saturation_finish(S, times, t0, nstep, resp):
+        """Clip of the lattice response at saturationVoltage and its ADC impulse sum at the sample times."""
         resp = jnp.minimum(resp[:, :sat_steps], c.saturationVoltage)
         tq = t0[:, None] + dts * jnp.arange(sat_steps)[None, :].astype(df.FLOAT)
         scale = c.saturationSampleFactor * S["dv_a"] / S["dv_t"]
@@ -258,12 +365,13 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
         sidx = jnp.nonzero(sat, size=chunks * srows, fill_value=0)[0]
         slive = jnp.arange(chunks * srows) < nsat
         sat_overflow = jnp.bool_(False)
+        toep = saturation_toeplitz() if matmul else None
         for chunk in range(chunks):
             cidx = sidx[chunk * srows:(chunk + 1) * srows]
             clive = slive[chunk * srows:(chunk + 1) * srows]
 
             def saturate(volts, cidx=cidx, clive=clive):
-                result, of = saturation_lanes({name: value[cidx] for name, value in L.items()}, times[cidx])
+                result, of = saturation_lanes({name: value[cidx] for name, value in L.items()}, times[cidx], toep)
                 return (volts.at[jnp.where(clive, cidx, n_rows)].set(result, mode="drop"),
                         jnp.any(clive & of))
             volts, of = lax.cond(jnp.any(clive), saturate, lambda v: (v, jnp.bool_(False)), volts)
@@ -278,12 +386,13 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
         nsat = sat.sum()
         chunks = -(-n_rows // srows)
         sidx = jnp.nonzero(sat, size=chunks * srows, fill_value=0)[0]
+        toep = saturation_toeplitz() if matmul else None
 
         def body(state):
             k, volts, overflow = state
             cidx = lax.dynamic_slice(sidx, (k * srows,), (srows,))
             clive = k * srows + jnp.arange(srows) < nsat
-            result, of = saturation_lanes({name: value[cidx] for name, value in lanes.items()}, times[cidx])
+            result, of = saturation_lanes({name: value[cidx] for name, value in lanes.items()}, times[cidx], toep)
             return (k + 1, volts.at[jnp.where(clive, cidx, n_rows)].set(result, mode="drop"),
                     overflow | jnp.any(clive & of))
         _, volts, overflow = lax.while_loop(lambda x: x[0] * srows < nsat, body,
@@ -484,6 +593,9 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
                 sat = (maxposs > c.saturationVoltage) & jnp.repeat(present, 2)
 
                 def saturation(v):
+                    if matmul:
+                        result, of = saturation_lanes(base, times)
+                        return jnp.where(sat[:, None], result, v), jnp.any(sat & of)
                     i0 = jnp.minimum(count(times[:, 0] + LB - c.ttrunc, inclusive=True), jnp.maximum(n - 1, 0))
                     t0 = at(t, i0) - LB
                     nstep = jnp.maximum(0, jnp.ceil((times[:, -1] - t0) / dts).astype(jnp.int32))

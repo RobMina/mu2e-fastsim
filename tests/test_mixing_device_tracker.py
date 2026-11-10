@@ -554,6 +554,19 @@ def test_packed_sort_keys_order_like_lexsort(cond):
                                   jnp.lexsort((jnp.asarray(t), jnp.asarray(sid), jnp.asarray(ev))))
 
 
+def test_flat_saturation_matmul_options():
+    base = dict(digit_entries_per_straw=2)
+    assert Capacities(64, 1024, 8, 512, 8, 2, **base).saturation_kernel() == {}
+    assert Capacities(64, 1024, 8, 512, 8, 2, flat_saturation_matmul="tensor", **base).saturation_kernel() == {
+        "saturation_matmul": "tensor"}
+    assert Capacities(64, 1024, 8, 512, 8, 2, flat_saturation_matmul="bf16", flat_saturation_matmul_min_width=64,
+                      **base).saturation_kernel() == {"saturation_matmul": "bf16", "saturation_matmul_min_cap": 64}
+    with pytest.raises(ValueError, match="flat_saturation_matmul"):
+        Capacities(64, 1024, 8, 512, 8, 2, flat_saturation_matmul="fp16", **base)
+    with pytest.raises(ValueError, match="flat_saturation_matmul_min_width needs"):
+        Capacities(64, 1024, 8, 512, 8, 2, flat_saturation_matmul_min_width=64, **base)
+
+
 def test_auto_saturation_rows_float64_only():
     """flat_saturation_rows 'auto': batch rows per saturation chunk in float64, the loop's 2 x batch otherwise."""
     from trkfastsim import devfloat as df

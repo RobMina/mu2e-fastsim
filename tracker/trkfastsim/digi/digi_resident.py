@@ -397,6 +397,13 @@ def _timing_values(c, lengths):
     return tdc(lengths), tdc(jnp.full(1, float(c.eventWindowLength)))[0], ewl
 
 
+SATURATION_MATMUL = None   # opt-in: "tensor" or "bf16" runs the saturation response as a matmul (digi_jax)
+
+
+def _saturation_kw():
+    return {} if SATURATION_MATMUL is None else {"saturation_matmul": SATURATION_MATMUL}
+
+
 def _waveforms_async(c, plan, key3, tabs, gt, charge, wd, cs, straw, straw_ev, straw_sid, timing, obuf):
     """Every waveform batch at pair_cap 4 as three device calls (pack, electronics, append) and no host read: the
     output offset, the failure and saturation flags and the counters stay on the device. Returns (buf, acc, nbatch);
@@ -418,7 +425,7 @@ def _waveforms_async(c, plan, key3, tabs, gt, charge, wd, cs, straw, straw_ev, s
         wh[:len(bucket_h)] = bucket_h
         nbs = np.minimum(batch, len(bucket_h) - batch * np.arange(nbt)).astype(np.int64)
         whichs, nbs_d = jnp.asarray(wh.reshape(nbt, batch)), jnp.asarray(nbs)
-        kern = DJ._electronics_kernel(c, cap, 4, batch)
+        kern = DJ._electronics_kernel(c, cap, 4, batch, **_saturation_kw())
         for i in range(nbt):
             args, targs, which, nref = _pack_at(whichs, nbs_d, i, cap, batch, onspill, timed, tabs, gt, charge, wd,
                                                 cs, straw, *tv)
@@ -456,7 +463,7 @@ def _waveforms_sync(c, plan, key3, tabs, gt, charge, wd, cs, straw, straw_ev, st
                                                          0, c.maxTDC).astype(jnp.int64)}
             pair_cap = 4
             while True:
-                result = DJ._electronics_kernel(c, cap, pair_cap, batch)(
+                result = DJ._electronics_kernel(c, cap, pair_cap, batch, **_saturation_kw())(
                     key3, t, q, w, stp, n, su, sr, sk, live, ji, *extra, **timing_args)
                 if bool(result["sat_overflow"]):
                     raise RuntimeError("JAX ADC saturation time bucket overflow; no output returned")

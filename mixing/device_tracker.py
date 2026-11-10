@@ -29,11 +29,13 @@ class Capacities:
     digit_entries_per_straw: float = None
     flat_saturation_rows: str = None
     flat_saturation_pool: str = None
+    flat_saturation_matmul: str = None
+    flat_saturation_matmul_min_width: int = None
     pack_sort: str = None
 
     def __post_init__(self):
         optional = ("long_steps", "clusters_per_long_step", "end_tiers", "charge_blocks_per_launch", "flat_clusters",
-                    "minion_steps", "minion_unroll", "minion_search", "pack_sort")
+                    "minion_steps", "minion_unroll", "minion_search", "pack_sort", "flat_saturation_matmul_min_width")
         for name, value in vars(self).items():
             if name == "end_tiers" or (name in optional and value is None):
                 continue
@@ -44,6 +46,10 @@ class Capacities:
             if name == "flat_saturation_pool":
                 if value is not None and value not in ("launch", "tier", "auto"):
                     raise ValueError("tracker flat_saturation_pool must be 'launch', 'tier' or 'auto'")
+                continue
+            if name == "flat_saturation_matmul":
+                if value is not None and value not in ("tensor", "bf16"):
+                    raise ValueError("tracker flat_saturation_matmul must be 'tensor' or 'bf16'")
                 continue
             if name == "flat_saturation_rows":
                 if value is not None and value not in ("lanes", "auto"):
@@ -59,6 +65,8 @@ class Capacities:
                 continue
             if type(value) is not int or value < 1:
                 raise ValueError(f"tracker {name} must be a positive integer")
+        if self.flat_saturation_matmul_min_width is not None and self.flat_saturation_matmul is None:
+            raise ValueError("tracker flat_saturation_matmul_min_width needs flat_saturation_matmul")
         if self.flat_saturation_pool in ("tier", "auto") and self.digit_entries_per_straw is None:
             raise ValueError("tracker flat_saturation_pool needs the flat digitisation (digit_entries_per_straw)")
         if self.straws % self.electronics_batch:
@@ -98,6 +106,15 @@ class Capacities:
             return {}
         rows = {} if self.flat_saturation_rows in (None, "lanes") else {"saturation_rows": "auto"}
         return {"entries": entries, **rows, **({"saturation_pool": True} if self.saturation_pool() else {})}
+
+    def saturation_kernel(self):
+        """Electronics-kernel keyword arguments of the opt-in saturation matmul (none when it is off)."""
+        if self.flat_saturation_matmul is None:
+            return {}
+        kw = {"saturation_matmul": self.flat_saturation_matmul}
+        if self.flat_saturation_matmul_min_width is not None:
+            kw["saturation_matmul_min_cap"] = self.flat_saturation_matmul_min_width
+        return kw
 
     def saturation_pool(self):
         """Tier saturation pool on: 'tier', or 'auto' in float32 (in float64, where flat_saturation_rows 'auto' already
@@ -163,7 +180,7 @@ def prepare(c, capacities, batch_events):
         """Lifted electronics kernel of one shape; with the tier saturation pool also its pool kernels
         (pool_saturate over the straws / lb launches of the tier, flattened; pool_finish per launch)."""
         lw = (2 * lb, width)
-        parts = dj._electronics_parts(c, width, cap.pairs_per_straw, lb, **cap.flat_kernel(lb))
+        parts = dj._electronics_parts(c, width, cap.pairs_per_straw, lb, **cap.flat_kernel(lb), **cap.saturation_kernel())
         args = (spec((2,), np.uint32), spec(lw, np.float64), spec(lw, np.float64), spec(lw, np.float64),
                 spec(lw, np.int64), spec((2 * lb,), np.int32), spec((lb,), np.int64),
                 spec((lb,), bool), spec((lb,), np.int64), spec((lb,), bool), spec((lb,), np.float64))
