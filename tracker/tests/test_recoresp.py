@@ -225,7 +225,7 @@ def test_pool_draw_leaves_the_t0_stream_unchanged():
 
 
 def test_shipped_pool_table_is_the_default_table_plus_pools():
-    a, b = RT.load(), RT.load(RT.POOLS)
+    a, b = RT.load(RT.CEONLY), RT.load(RT.POOLS)
     assert set(b) - set(a) == {"pool_res", "pool_idx", "pool_start", "pool_count", "reference"}
     assert "CE" in str(b["reference"])
     for k in a:
@@ -241,7 +241,7 @@ def test_reference_text_is_stored_only_when_given():
 
 
 def test_shipped_fulldts_table_has_the_default_bins_and_pools():
-    a, b = RT.load(), RT.load(RT.NAMED["fulldts"])
+    a, b = RT.load(RT.CEONLY), RT.load(RT.NAMED["fulldts"])
     assert set(b) == set(RT.load(RT.POOLS))
     for k in ("nrow_edges", "tandip_edges", "qnodes", "time_edges", "cuts", "axis_xy", "count"):
         assert np.array_equal(a[k], b[k]), k          # the same development events, binned in the CE's own rows
@@ -253,5 +253,6 @@ def test_shipped_fulldts_table_has_the_default_bins_and_pools():
 
 
 def test_named_tables_resolve_to_shipped_files():
-    assert RT.NAMED["default"] == RT.DEFAULT and RT.NAMED["pools"] == RT.POOLS
+    assert RT.NAMED["default"] == RT.DEFAULT == RT.FULLDTS and RT.NAMED["pools"] == RT.POOLS
+    assert RT.NAMED["ceonly"] == RT.CEONLY and RT.load()["reference"] == RT.load(RT.FULLDTS)["reference"]
     assert all(p.exists() for p in RT.NAMED.values())

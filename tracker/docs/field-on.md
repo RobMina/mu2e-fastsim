@@ -179,7 +179,8 @@ electrons (stock reconstruction of 200 dts files, response applied to the same e
 +2 to +6 % more CE-selected tracks above 100 MeV/c than stock; with pools the ratio is 0.99-1.00 on both halves, and
 above 95 MeV/c and overall it is unchanged.
 
-Opt-in full-event response (`recoresp/data/ce_loophelix_run1a_fulldts_pools.npz`, `DeviceChain(response="fulldts")`):
+Default response, full events (`recoresp/data/ce_loophelix_run1a_fulldts_pools.npz`, `DeviceChain(response="default")`
+or `"fulldts"`; the conversion electron's own steps only: `"ceonly"`, with pools `"pools"`):
 the same development events and bins, measured with every Geant4 StrawGasStep of the event (delta rays, other
 secondaries, the calorimeter albedo) through stock reconstruction, with pools. The device transport supplies only the
 conversion electron and its albedo, so this table carries the effect of the other secondaries on the fit.
