@@ -126,6 +126,17 @@ padding.
   The launches' saturated-end data stay on the device between the two steps (a few hundred MB at batch 256).
   `"auto"` pools in float32 only: in float64, `flat_saturation_rows: "auto"` already halves the chunks, and pooling
   measured 2 % slower there.
+- `flat_saturation_matmul: "tensor"` (opt-in) computes the saturation response of lanes at least
+  `flat_saturation_matmul_min_width` clusters wide (default 192; narrower lanes keep the gather) as a dense matmul.
+  - The response is sampled on a lattice of stride F = `saturationSampleFactor`, so cluster c reads table index
+    m_c + F j at tick j. With m_c = F q_c + r_c that is a polyphase Toeplitz product: a per-row histogram of the
+    cluster weights over (wire-point bin, phase r, q) times a matrix built once from the table.
+  - The look-back cut becomes a truncated table. A small exact gather adds back the tie index (every row's first
+    cluster sits on it) and the reflected ticks the truncation drops.
+  - It runs on TF32 x3 tensor cores in float32 (float32 accuracy; `HIGHEST` without a GPU) and as a float64 matmul
+    in float64 (FP64 tensor cores on the A100). Rows go in blocks of 512, so the histogram stays near 100 MB.
+  - Digis equal the gather up to summation order: TDC, TOT and the digi mask are unchanged; ADC and PMP can move
+    by a count. `"bf16"` (bfloat16 inputs, float32 accumulation) is an approximation.
 - Overflow flag: `digit_entries_per_straw`. The demand counter `digit_entries_per_straw_milli` is the largest
   per-launch entry count over B, in thousandths (batch metrics are integers).
 

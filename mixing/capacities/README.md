@@ -42,6 +42,9 @@ NeutralsFlash pools at the stock intensity law.
   two per straw.
 - **`flat_saturation_pool: "auto"`**: saturated ends of all launches of a kernel shape in shared chunks, in float32
   (`"tier"`: in both dtypes; exact in both); it has no size.
+- **`flat_saturation_matmul: "tensor"`** (opt-in, not in these files): the saturation response as a tensor-core
+  matmul for end tiers of at least `flat_saturation_matmul_min_width` clusters (default 192); equal to the gather up
+  to summation order. `"bf16"` is an approximation. See [../DEVICE_TRACKER.md](../DEVICE_TRACKER.md).
 
 ## When a batch does not fit
 

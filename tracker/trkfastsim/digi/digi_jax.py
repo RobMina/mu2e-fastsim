@@ -30,6 +30,7 @@ CHARGE_BLOCKS = 16 if GPU else 1
 SATURATION_MATMUL_MODES = ("tensor", "bf16")
 SATURATION_MATMUL_MIN_CAP = 192   # narrower lanes keep the gather (their dense histograms are mostly empty)
 SATURATION_MATMUL_ROWS = 512      # rows per histogram block of the matmul form (bounds its memory)
+SATURATION_MATMUL_SPLIT = 16      # split of the contraction into batched slices (occupancy of a narrow output)
 
 
 @df.jit
@@ -219,7 +220,8 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
         m_lo, m_hi = icut + 1 - F * (J - 1), icut + F - 1  # direct/reflected indices that can reach the table
         qmin, qmax = m_lo // F, m_hi // F
         nq = qmax - qmin + 1
-        ncol = K * F * nq
+        split = max(1, int(SATURATION_MATMUL_SPLIT))
+        ncol = -(-(K * F * nq) // split) * split          # padded to the split (extra columns stay empty)
         if saturation_matmul == "bf16":
             mdt = jnp.bfloat16
         else:
@@ -231,7 +233,8 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
         Tc = jnp.where(jnp.arange(rb)[None, :] > icut, tables["sat"], 0)
         idx = (F * ((qmin + jnp.arange(nq))[None, :, None] + jnp.arange(J)[None, None, :])
                + jnp.arange(F)[:, None, None])
-        return Tc[:, jnp.clip(idx, 0, rb - 1)].reshape(ncol, J).astype(mdt)
+        toep = Tc[:, jnp.clip(idx, 0, rb - 1)].reshape(K * F * nq, J)
+        return jnp.pad(toep, ((0, ncol - K * F * nq), (0, 0))).astype(mdt).reshape(split, ncol // split, J)
 
     def saturation_matmul_lanes(S, t0, i0, toep):
         """The lattice response [rows, J] (before dv_t) of the end rows S as H @ Toep plus the exact add-back."""
@@ -252,13 +255,15 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
             vals = jnp.stack([a64, b64, a64 * s64, b64 * s64], -1)
             rid = jnp.broadcast_to(jnp.arange(R_)[:, None, None], cols.shape)
             H = jnp.zeros((R_, ncol), hdt).at[rid, cols].add(vals, mode="drop")
+            H = H.reshape(R_, split, ncol // split)
+            dims = (((2,), (1,)), ((1,), (0,)))                         # contract the slice, batch over slices
             if saturation_matmul == "bf16":
-                resp = jnp.matmul(H.astype(mdt), toep, preferred_element_type=jnp.float32)
+                resp = lax.dot_general(H.astype(mdt), toep, dims, preferred_element_type=jnp.float32)
             elif df.SINGLE:
-                resp = jnp.matmul(H, toep, precision=prec32)
+                resp = lax.dot_general(H, toep, dims, precision=prec32)
             else:
-                resp = jnp.matmul(H, toep)
-            resp = resp.astype(df.FLOAT)
+                resp = lax.dot_general(H, toep, dims)
+            resp = resp.sum(0).astype(df.FLOAT)
             # exact add-back: the tie index icut of the direct term (kept unless the look-back comparison ties) and
             # the reflected ticks with index <= icut whose direct index passes the look-back mask
             j0 = -jnp.floor_divide(m - icut, F)                        # first tick with direct index >= icut
