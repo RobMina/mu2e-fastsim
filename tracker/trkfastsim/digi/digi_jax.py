@@ -6,6 +6,7 @@ capacity is checked and retried, never silently truncated. NumPy digi.py remains
 the independent default/reference. Same keys, inputs and bucket configuration
 reproduce a run; random streams need not match NumPy or another JAX version.
 """
+import os
 from functools import lru_cache
 
 import numpy as np
@@ -27,6 +28,26 @@ SATURATION_TILE = 64 if GPU else 16
 JITTER_BATCH = 128
 CHARGE_BLOCK = 4096
 CHARGE_BLOCKS = 16 if GPU else 1
+
+# Opt-in half-precision storage of the preamp response tables (default off: every table float32, as shipped).
+# TRKFASTSIM_TABLE_FLOAT=float16|bfloat16 stores the tables named in TRKFASTSIM_TABLE_PATHS (comma list of sat, adc,
+# thresh; default sat, where "sat" also covers the ADC impulse table resp_imp) in that dtype; gathered values are
+# promoted to float32 before any arithmetic, so only the table entries are rounded. float16 tables are scaled by an
+# exact power of two first: resp_sat peaks at 5.8e-5, below float16's smallest normal (6.1e-5).
+TABLE_FLOAT = os.environ.get("TRKFASTSIM_TABLE_FLOAT", "") or None
+TABLE_PATHS = tuple(p for p in os.environ.get("TRKFASTSIM_TABLE_PATHS", "sat").split(",") if p)
+if TABLE_FLOAT not in (None, "float16", "bfloat16"):
+    raise ValueError(f"TRKFASTSIM_TABLE_FLOAT must be float16 or bfloat16, not {TABLE_FLOAT!r}")
+if not set(TABLE_PATHS) <= {"sat", "adc", "thresh"}:
+    raise ValueError(f"TRKFASTSIM_TABLE_PATHS must name sat, adc or thresh, not {TABLE_PATHS!r}")
+
+
+def _half_table(values):
+    """(table in TABLE_FLOAT, inverse scale): float16 entries scaled by 2**k so the peak sits near 2**14."""
+    x = np.asarray(values, np.float64)
+    peak = float(np.max(np.abs(x)))
+    k = 14 - int(np.ceil(np.log2(peak))) if TABLE_FLOAT == "float16" and peak > 0 else 0
+    return jnp.asarray(x * 2.0 ** k, dtype=TABLE_FLOAT), 2.0 ** -k
 
 
 @df.jit
@@ -182,6 +203,19 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
         df.check_common_period(c)
         per_adc, per_tdc = int(round(df.COMMON_PERIOD / c.ADCPeriod)), int(round(df.COMMON_PERIOD / c.TDCLSB))
     tables = {k: cond["resp_" + k].astype(jnp.float32) for k in ("thresh", "adc", "sat")}
+    unscale = {}          # path -> exact power-of-two factor undoing the half-table scale (opt-in TABLE_FLOAT only)
+    imp_unscale = None
+    if TABLE_FLOAT:
+        for k in TABLE_PATHS:
+            tables[k], unscale[k] = _half_table(c.a["resp_" + k])
+        if "sat" in TABLE_PATHS:
+            imp_table, imp_unscale = _half_table(c.a["resp_imp"])
+
+    def impulse(resp, ii):
+        """sum over saturation steps of resp x the ADC impulse table at ii (half table: promoted, then unscaled)."""
+        if imp_unscale is None:
+            return jnp.sum(resp * cond["resp_imp"][ii], 1)
+        return jnp.sum(resp * imp_table[ii].astype(resp.dtype), 1) * imp_unscale
     dts = c.saturationSampleFactor / sr
     sat_steps = int(np.ceil((c.ttrunc + c.nADCSamples * c.ADCPeriod + 2 * LB) / dts)) + 2
     ticks = jnp.arange(1, c.maxTOT)
@@ -212,6 +246,8 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
         if cmin is not None:
             ok &= (ci >= cmin[:, None])[:, :, None]
         v = jnp.sum(jnp.where(ok, v, 0).astype(df.FLOAT), axis=1)
+        if path in unscale:
+            v = v * unscale[path]
         v *= (L["dv_a"] if path == "adc" else L["dv_t"])[:, None]
         return v
 
@@ -236,7 +272,7 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
         scale = c.saturationSampleFactor * S["dv_a"] / S["dv_t"]
         def sample(tm):
             ii = jnp.clip(jnp.trunc((tm[:, None] - tq) * sr + rb / 2.), 0, rb - 1).astype(jnp.int32)
-            return jnp.sum(resp * cond["resp_imp"][ii], 1) * scale
+            return impulse(resp, ii) * scale
         return jax.vmap(sample, in_axes=1, out_axes=1)(times), nstep > sat_steps
 
     def finish_adc(volts, noise, row, kk, us_e):
@@ -502,7 +538,7 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
                     scale = c.saturationSampleFactor * dv_a / dv_t
                     def sample(tm):
                         ii = jnp.clip(jnp.trunc((tm[:, None] - tq) * sr + rb / 2.), 0, rb - 1).astype(jnp.int32)
-                        return jnp.sum(resp * cond["resp_imp"][ii], 1) * scale
+                        return impulse(resp, ii) * scale
                     result = jax.vmap(sample, in_axes=1, out_axes=1)(times)
                     return jnp.where(sat[:, None], result, v), jnp.any(sat & (nstep > sat_steps))
                 volts, of = lax.cond(jnp.any(sat), saturation, lambda v: (v, jnp.bool_(False)), volts)
