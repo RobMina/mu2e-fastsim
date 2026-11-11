@@ -96,6 +96,7 @@ def trigger_dumps(monkeypatch, tmp_path):
     monkeypatch.setenv("TRIGGER_DEVICE_DUMPS", "a.root,b.root")
     monkeypatch.setenv("TRIGGER_DEVICE_MENU", str(tmp_path / "menu.fcl"))
     monkeypatch.setenv("TRIGGER_DEVICE_MVA", "mva.xml")
+    monkeypatch.setenv("TRIGGER_DEVICE_ORDER", "input")          # the stub batches carry no row indices
     monkeypatch.setattr(bench, "_CHAINS", {})
     monkeypatch.setattr(bench, "_DUMPS", {})
     return bench, reads, chains

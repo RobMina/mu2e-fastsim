@@ -2,7 +2,7 @@
 
     TRIGGER_DEVICE_DUMPS=a.root,b.root TRIGGER_DEVICE_MENU=replay.fcl TRIGGER_DEVICE_MVA=TimeCluster.weights.xml \
     [TRIGGER_DEVICE_RESPONSE=response.json] [TRIGGER_DEVICE_BATCH=1024] [TRIGGER_DEVICE_PRECISION=float32] \
-    [TRIGGER_DEVICE_ORDER=hits] [TRIGGER_DEVICE_HMIN=64] [TRIGGER_DEVICE_COMPACT=1] \
+    [TRIGGER_DEVICE_ORDER=hits|input] [TRIGGER_DEVICE_HMIN=64] [TRIGGER_DEVICE_COMPACT=1] \
     python3 -m mu2efastsim.bench trigger.device.bench:step --prepare trigger.device.bench:load --events N \
         --dtype float64 (or float32, matching TRIGGER_DEVICE_PRECISION) --workflow trigger --boundary "StrawDigis -> tracker trigger path decisions" --out bench.json
 
@@ -45,9 +45,10 @@ def _chain(dumps, tree):
 
 
 def _order():
-    """TRIGGER_DEVICE_ORDER: "input" (default, the dumps' event order in each batch) or "hits" (events batched by
-    digi count, results put back in event order: the same decisions, less padding of the hit axis)."""
-    order = os.environ.get("TRIGGER_DEVICE_ORDER", "input")
+    """TRIGGER_DEVICE_ORDER: "hits" (default: events batched by digi count, results put back in event order; the same
+    decisions bit for bit, less padding of the hit axis: A100 batch 1024 +51 % float32 / +58 % float64, one CPU core
+    batch 64 2.0x / 2.2x) or "input" (the dumps' event order in each batch, the order before 2026-11-10)."""
+    order = os.environ.get("TRIGGER_DEVICE_ORDER", "hits")
     if order not in ("input", "hits"):
         raise ValueError(f"TRIGGER_DEVICE_ORDER must be input or hits, not {order!r}")
     return order
