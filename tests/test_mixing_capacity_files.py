@@ -22,6 +22,13 @@ def test_capacity_file_contract(path):
     tracker = Capacities(**caps["response"]["tracker"])
     assert tracker.end_tiers and tracker.charge_blocks_per_launch
     assert tracker.straws % tracker.electronics_batch == 0
+    assert set(caps["response"]) - {"tracker_reuse"} == {"tracker", "crv"}
+    if "tracker_reuse" in caps["response"]:      # opt-in donor-frame reuse: both tracker capacity sets validate
+        from mixing.device_reuse import ReuseCapacities
+        reuse = ReuseCapacities(**caps["response"]["tracker_reuse"])
+        for part in (reuse.compute, reuse.precompute):
+            sized = Capacities(**part)
+            assert sized.straws % sized.electronics_batch == 0
     pytest.importorskip("jax")
     pytest.importorskip("crvfastsim")
     from mixing import device_crv

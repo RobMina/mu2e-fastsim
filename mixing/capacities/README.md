@@ -10,6 +10,7 @@ NeutralsFlash pools at the stock intensity law.
 | `run1a_mix1bb_batch128.json` | 128 events | a full 40-80 GB GPU (electronics groups of 8,192 straws) |
 | `run1a_mix1bb_batch64.json` | 64 events | a 24 GB GPU slice (groups of 4,096 straws) |
 | `run1a_mix1bb_batch256.json` | 256 events | a 32-80 GB GPU (groups of 8,192 straws); SiPM cross-talk candidate buffers `ct1`-`ct3` at 1/8 of the earlier generous sizes |
+| `run1a_mix1bb_batch256_reuse.json` | 256 events | as batch 256, with the opt-in donor-frame digi reuse (an approximation; see [../DEVICE_TRACKER.md](../DEVICE_TRACKER.md)) |
 
 ## How they were made
 
@@ -44,6 +45,12 @@ NeutralsFlash pools at the stock intensity law.
   float32 only); exact in both dtypes; it has no size.
 - **`flat_saturation_tiles: "bounded"`**: with the pool, each saturation chunk runs only the response tiles its ends
   need (exact); it has no size.
+
+- **`tracker_reuse`** (`run1a_mix1bb_batch256_reuse.json` only; opt-in approximation): `compute` is the tracker for
+  the straws still digitised per batch (primary, two or more sources, the streams not reused), 1.25 times their
+  demand over a full development pass; `precompute` sizes the setup batches of 8,192 donor frames (`long_steps`,
+  `minion_steps`, `flat_clusters` and `drift_clusters` raised; setup only); `straws` holds the reused straws per
+  batch; `streams` lists the reused donor streams.
 
 ## When a batch does not fit
 
