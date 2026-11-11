@@ -39,11 +39,18 @@ DEFAULT_COUNTERS = "Offline/Mu2eG4/geom/crv_counters_extracted_v04.txt"
 SECTOR_TYPES = {1: "EX", 2: "T1", 3: "T2", 4: "M"}
 
 
-def resident_default(resident_response, jax, fused_response=False):
+def resident_default(resident_response, jax, fused_response=False, backend=None):
     """Whether runchain keeps the photons on the device into the SiPM stage: None (the default) means on the JAX path
-    unless the fused response is chosen. Same draws and charges as the two-stage twins (byte-identical outputs)."""
+    on an accelerator unless the fused response is chosen, and off on the CPU backend, where nothing crosses a bus and
+    the two-stage twins run faster (W5 on one core: 90.7 against 79.3 ev/s, 11.3 against 13.8 GB). Same draws and
+    charges either way (byte-identical outputs). backend: the JAX default backend (looked up when None)."""
     if resident_response is None:
-        return bool(jax) and not fused_response
+        if not jax or fused_response:
+            return False
+        if backend is None:
+            import jax as _jax
+            backend = _jax.default_backend()
+        return backend != "cpu"
     return bool(resident_response)
 
 
@@ -62,7 +69,8 @@ def _resolve(library, calib, deviation, gdml, jax, counters, run_config, window,
              tier1b_set=None, tier1b_dir=None, resident_response=None, device_refit=False):
     """Resolve setup arguments without loading large assets or drawing random numbers.
 
-    resident_response: resident_default (None: on with jax unless fused_response; False: the two-stage path)."""
+    resident_response: resident_default (None: on with jax on an accelerator unless fused_response, off on the CPU
+    backend; False: the two-stage path)."""
     if not calib:
         raise SystemExit("runchain needs --calib (a CRVCalib CSV or nominal)")
     from .transport import default_gdml

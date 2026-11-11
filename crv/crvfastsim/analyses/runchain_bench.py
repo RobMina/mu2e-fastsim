@@ -45,7 +45,8 @@ def main(argv=None):
                    help="flagged waveforms refit on the device first (ChainConfig.device_refit)")
     p.add_argument("--resident-response", action=argparse.BooleanOptionalAction, default=None,
                    help="photons stay on the device into the SiPM stage (ChainConfig.resident_response); default "
-                        "on (runchain's default with --jax); --no-resident-response: the two-stage path")
+                        "on an accelerator and off on the CPU backend (runchain's default with --jax); "
+                        "--no-resident-response: the two-stage path")
     p.add_argument("--compile-cache", metavar="DIR")
     p.add_argument("--passes", type=int, default=3)
     p.add_argument("--out", required=True, help="timer report JSON")
