@@ -139,9 +139,11 @@ behaviour and any stock-art route outside the chain's levels:
 - **W1.** `ts_transport=stock_ds_entrance` runs the DS stage from the reference's stock DS-entrance states. This is
   `tsdevice --arm stock-ds`. `ts_vacuum_step=long` (opt-in, the `fast` preset) lets a lane take a step of up to
   20 mm where the chord crosses no material, stays inside the envelope and does not reach the DS plane, capped at
-  0.1 rad of turning and a 0.25 mm sagitta (Geant4's deltaChord); elsewhere the 2.5 mm step is unchanged. Its
-  validation against the fixed step and stock is in the PR that added it. The other step sizes and caps are
-  numeric settings (`tsdevice --step`, `Settings`), not approximation levels.
+  0.1 rad of turning and a 0.25 mm sagitta (Geant4's deltaChord); elsewhere the 2.5 mm step is unchanged. Against
+  the fixed step (12 seeds of each Run 1A cohort, about 25,000 inputs each): stops per input 1.005 +- 0.015 (float64)
+  and 1.002 +- 0.015 (float32), DS-entering muons 0.999 +- 0.009 in both, foil, stop time, stop radius and
+  DS-entrance momentum shapes consistent, with 2.7x fewer steps per lane. The other step sizes and caps are numeric
+  settings (`tsdevice --step`, `Settings`), not approximation levels.
 - **W2-W4.** One declaration serves the stops (W2), DIO (W3) and RPC (W4) electrons of `cetracker`.
   - The albedo levels act on the device tracker; the NumPy tracker has none.
   - `straw_wall=complete` is the existing opt-in complete outer wall.
