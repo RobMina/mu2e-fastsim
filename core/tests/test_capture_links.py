@@ -420,6 +420,28 @@ def test_electron_mass_spread_is_held_to_rounding_level(tables, spread, passes):
             capture_accounting.report(tables, make_links(tables), 2)
 
 
+def test_low_energy_decay_product_keeps_the_rounding_level_mass_bound(tables):
+    balance(tables)
+    set_processes(tables, "eIoni")
+    tables["steps"]["post_process"][3] = "Decay"
+    t = tables["tracks"]
+    t["pdg"][0] = tables["classifications"]["pdg"][0] = 11
+    set_track_mass(tables, 0, [0, 1], ME)
+    set_track_mass(tables, 2, [4], ME * (1. + 4e-6))
+    with pytest.raises(ValueError, match="inconsistent electron masses"):
+        capture_accounting.report(tables, make_links(tables), 2)
+
+
+# A 38 GeV positron from a boosted pi0 Dalitz decay in a 100 GeV pi- capture, and ten times its offset.
+@pytest.mark.parametrize("offset,from_decay,passes", [(8.9e-7, True, True), (8.9e-7, False, False),
+                                                      (8.9e-6, True, False)])
+def test_boosted_decay_product_mass_bound_grows_with_energy(offset, from_decay, passes):
+    bound = capture_accounting.electron_mass_bound(ME, np.array([38396.63]), np.array([from_decay]))
+    assert bool(offset <= bound[0]) == passes
+    assert capture_accounting.electron_mass_bound(ME, np.array([2.]), np.array([True]))[0] == pytest.approx(
+        capture_accounting.MASS_ROUNDING * ME, rel=1e-9)
+
+
 def set_track_mass(tables, row, steps, mass):
     """Give one track and its steps a dynamic mass, keeping state continuity."""
     t, c = tables["tracks"], tables["classifications"]
