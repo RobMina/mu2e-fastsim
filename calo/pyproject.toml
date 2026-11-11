@@ -17,3 +17,6 @@ test = ["pytest"]
 
 [tool.setuptools.packages.find]
 include = ["calofastsim*"]
+
+[tool.setuptools.package-data]
+"calofastsim" = ["data/*.npz", "data/*.md"]

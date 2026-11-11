@@ -716,6 +716,72 @@ def fit_and_hits(resp: DeviceResponse, t, dg, pbt_reco, caps: Caps):
     return hits, jnp.maximum(n_hits - H, 0), stats
 
 
+def param_hits(resp: DeviceResponse, table, ev, t, st, crystal, depth, mapped, key, pbt_reco, caps: Caps):
+    """Hits from the parametric digi response (:mod:`calofastsim.param_response`; approximation
+    ``digi_response=parametric``) instead of photoelectrons, digitisation and the template fit: per (event, crystal)
+    cell the visible energy and energy-weighted time of the accepted steps (the rules of :func:`photoelectrons`),
+    then one table draw. Returns (hits as :func:`fit_and_hits`, overflow dict, stats)."""
+    import jax.numpy as jnp
+    from . import param_response as PR
+    from . import response_jax as rj
+    a = resp.arrays
+    cfg = resp.ro_cfg
+    cr = jnp.maximum(crystal, 0)
+    hit_t, accepted = rj.fold_step_time(
+        st["time"], pbtime=t["pbtime"][ev], mbtime=t["mbtime"][ev], event_length=t["event_length"][ev],
+        onspill=t["onspill"][ev], digitization_start=cfg.digitization_start, digitization_end=cfg.digitization_end,
+        digitization_buffer=cfg.digitization_buffer, time_from_protons_to_dr_marker=t["marker"][ev])
+    keep = mapped & accepted
+    energy = rj.corrected_energy(st["energy_g4"], st["energy_birks"], depth, t["crystal_length"][ev], a["lru"][cr],
+                                 birks=cfg.birks, longitudinal=cfg.lru)
+    ok, cev, ccr, E, T, over_cells = PR.cells(ev, cr, energy, hit_t, keep, resp.n_crystals, caps.rows)
+    hit, e, th = PR.draw(table, key, ok, E, T, T - window_end(cfg, t)[cev])
+    # the table's times carry no reco bunch-time smear: subtract this event's (pbt_reco - pbtime)
+    shift = pbt_reco.astype(jnp.float64) - t["pbtime"].astype(jnp.float32).astype(jnp.float64)
+    th = (th.astype(jnp.float64) - shift[cev]).astype(jnp.float32)
+    # compact the hits (cell order: event, crystal) into the hit capacity, as fit_and_hits leaves them
+    n = hit.shape[0]
+    order = jnp.argsort(jnp.where(hit, jnp.arange(n), n))
+    H = caps.hits
+    sel = order[:H] if n >= H else jnp.concatenate([order, jnp.full(H - n, n - 1, order.dtype)])
+    n_hits = jnp.sum(hit)
+    h_ok = jnp.arange(H) < jnp.minimum(n_hits, H)
+    f32 = jnp.float32
+    hits = dict(ok=h_ok, event=jnp.where(h_ok, cev[sel], 0), crystal=jnp.where(h_ok, ccr[sel], 0),
+                nsipm=jnp.where(h_ok, 2, 0).astype(jnp.int64), t=jnp.where(h_ok, th[sel], f32(0)),
+                t_err=jnp.where(h_ok, f32(1), f32(0)), e=jnp.where(h_ok, e[sel], f32(0)),
+                e_err=jnp.where(h_ok, f32(1), f32(0)))
+    over = dict(photoelectrons=jnp.int64(0), rows=over_cells, outliers=jnp.int64(0), digis=jnp.int64(0),
+                digi_length=jnp.int64(0), hits=jnp.maximum(n_hits - H, 0))
+    stats = dict(n_reco=jnp.int64(0), n_nonfinite=jnp.int64(0), n_refit_skipped=jnp.int64(0), cells=jnp.sum(ok))
+    return hits, over, stats
+
+
+def window_end(cfg, t):
+    """Per event, the end of the digitisation window in folded step time (fold_step_time's corrected end)."""
+    import jax.numpy as jnp
+    f32 = jnp.float32
+    return ((f32(cfg.digitization_end) - t["pbtime"].astype(f32)) - t["marker"].astype(f32)).astype(jnp.float64)
+
+
+def _digi_table(digi_response):
+    """None for the waveform response; the device table for "parametric" (the shipped table) or a table path."""
+    if digi_response in (None, "waveform"):
+        return None
+    from . import param_response as PR
+    return PR.to_device(PR.load("default" if digi_response == "parametric" else digi_response))
+
+
+def _smeared_pbt(resp, t, k_pbt):
+    import jax
+    import jax.numpy as jnp
+    pbt = t["pbtime"].astype(jnp.float32)
+    if resp.pbt_reco_sigma > 0:
+        pbt = (pbt.astype(jnp.float64) + resp.pbt_reco_sigma *
+               jax.random.normal(k_pbt, pbt.shape, dtype=jnp.float64)).astype(jnp.float32)
+    return pbt
+
+
 def _cluster_props(label, n_cl, t, e):
     import jax.numpy as jnp
     member = label[:, :, None] == jnp.arange(n_cl)[None, None, :]            # (B, H, C)
@@ -874,13 +940,16 @@ def clusters(resp: DeviceResponse, hits, n_events, caps: Caps):
 
 # ----------------------------------------------------------------------------------------------- driver
 
-def make_chain(lib: DeviceLibrary, resp: DeviceResponse, caps: Caps = Caps()):
+def make_chain(lib: DeviceLibrary, resp: DeviceResponse, caps: Caps = Caps(), digi_response="waveform"):
     """Return ``chain(q, timing, key, uniform=None)``: one jitted call from entrance states to clusters.
 
     ``q``/``timing`` come from :func:`entries_batch` (``caps.events`` rows). The result stays on the device:
     ``clusters`` (per event, sorted by energy, ``caps.rounds`` slots with ``valid``), ``overflow`` (int64 per
     :data:`OVERFLOW_NAMES`) and ``stats`` (counts of draws, mapped steps, photoelectrons, digis, hits).
     ``uniform`` (per query, in [0,1)) replaces the library draw's random numbers, for tests.
+    ``digi_response``: "waveform" (default: photoelectrons, digis, template fit) or the opt-in approximation
+    "parametric" (or a table path): hits drawn per crystal from :mod:`calofastsim.param_response` (:func:`param_hits`);
+    no digis.
     """
     import jax
     import jax.numpy as jnp
@@ -888,6 +957,7 @@ def make_chain(lib: DeviceLibrary, resp: DeviceResponse, caps: Caps = Caps()):
         raise ValueError("the device chain requires caller-enabled JAX x64")
 
     pdt = lib.arrays["centers"].dtype
+    table = _digi_table(digi_response)
 
     def chain(q, t, key, uniform=None):
         q = dict(q, position=q["position"].astype(pdt), direction=q["direction"].astype(pdt))
@@ -897,6 +967,16 @@ def make_chain(lib: DeviceLibrary, resp: DeviceResponse, caps: Caps = Caps()):
         donor, fallback, slot = sample_donors(lib, q, uniform)
         st, over_steps = gather_steps(lib, q, donor, slot, caps.steps)
         crystal, depth, mapped = place_steps(lib, q, st)
+        if table is not None:
+            hits, over_resp, stats = param_hits(resp, table, q["event"][st["row"]], t, st, crystal, depth, mapped,
+                                                k_pe, _smeared_pbt(resp, t, k_pbt), caps)
+            cl, over_cl = clusters(resp, hits, caps.events, caps)
+            over = dict(steps=over_steps, **over_resp, **over_cl)
+            stats.update(draws=jnp.sum(donor >= 0), fallback=jnp.sum(fallback & q["valid"]),
+                         steps=jnp.sum(st["valid"]), mapped=jnp.sum(mapped), photoelectrons=jnp.float64(0),
+                         digis=jnp.int64(0), hits=jnp.sum(hits["ok"]))
+            return dict(clusters=cl, overflow=jnp.stack([jnp.asarray(over[k], jnp.int64) for k in OVERFLOW_NAMES]),
+                        stats=stats, donor=donor)
         ev, sipm, pe_t, weight, pe_ok, over_pe = photoelectrons(resp, q, t, st, crystal, depth, mapped, k_pe,
                                                                 caps.photoelectrons)
         dg, over_dg = digitise(resp, t, ev, sipm, pe_t, weight, pe_ok, k_digi, caps)
@@ -916,16 +996,18 @@ def make_chain(lib: DeviceLibrary, resp: DeviceResponse, caps: Caps = Caps()):
     return jax.jit(chain)
 
 
-def make_steps_chain(resp: DeviceResponse, caps: Caps = Caps()):
+def make_steps_chain(resp: DeviceResponse, caps: Caps = Caps(), digi_response="waveform"):
     """Return ``chain(steps, timing, key)``: saved CaloShowerSteps -> clusters (the stock calo digi + reco stage).
 
     ``steps`` from :func:`steps_batch`: batch-local ``event``, ``crystal`` (-1 = padding), ``energy_g4``,
-    ``energy_birks``, ``time``, ``z_local``; same result layout as :func:`make_chain`.
+    ``energy_birks``, ``time``, ``z_local``; same result layout as :func:`make_chain`. ``digi_response`` as
+    :func:`make_chain` (the opt-in "parametric" draws hits per crystal: steps -> hits + clusters, no digis).
     """
     import jax
     import jax.numpy as jnp
     if not jax.config.x64_enabled:
         raise ValueError("the device chain requires caller-enabled JAX x64")
+    table = _digi_table(digi_response)
 
     def chain(steps, t, key, uniform=None):
         k_pe, k_digi, k_pbt = jax.random.split(key, 3)
@@ -933,6 +1015,15 @@ def make_steps_chain(resp: DeviceResponse, caps: Caps = Caps()):
         ok = steps["crystal"] >= 0
         st = dict(row=jnp.arange(n), time=steps["time"], energy_g4=steps["energy_g4"],
                   energy_birks=steps["energy_birks"], valid=ok)
+        if table is not None:
+            hits, over_resp, stats = param_hits(resp, table, steps["event"], t, st, steps["crystal"],
+                                                steps["z_local"], ok, k_pe, _smeared_pbt(resp, t, k_pbt), caps)
+            cl, over_cl = clusters(resp, hits, caps.events, caps)
+            over = dict(steps=jnp.int64(0), **over_resp, **over_cl)
+            stats.update(steps=jnp.sum(ok), photoelectrons=jnp.float64(0), digis=jnp.int64(0),
+                         hits=jnp.sum(hits["ok"]))
+            return dict(clusters=cl, overflow=jnp.stack([jnp.asarray(over[k], jnp.int64) for k in OVERFLOW_NAMES]),
+                        stats=stats)
         ev, sipm, pe_t, weight, pe_ok, over_pe = photoelectrons(resp, {"event": steps["event"]}, t, st,
                                                                 steps["crystal"], steps["z_local"], ok, k_pe,
                                                                 caps.photoelectrons)

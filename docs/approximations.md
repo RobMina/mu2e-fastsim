@@ -123,6 +123,7 @@ behaviour and any stock-art route outside the chain's levels:
 | W6 | `finite_donor_pools` (no switch) | always on | - | no level | donor frames read in order and reused when the pool wraps; native art mixing (fcl/four_stream_response.fcl) | - |
 | W6 | `independent_sampler_draws` (no switch) | always on | - | no level | one shared intensity and four conditional Poissons from the JAX RNG, no event replay; stock seeded replay: fcl/four_stream_fast_inputs.fcl | - |
 | W6 | `tracker_crv_only` (no switch) | always on | - | no level | calorimeter and trigger not mixed; native art mixing (fcl/four_stream_response.fcl) | - |
+| W7 | `digi_response`: crystal hits: photoelectrons, waveforms, digis and the template fit (default), or drawn per (event, crystal) from a table of the full chain's outcome (hit, energy ratio, time offset) per bin of visible energy, without digis (calofastsim.param_response) | waveform, parametric | parametric | waveform | none: stock CaloDigiMaker and CaloRecoDigiMaker; the waveform response is the closer model (the table is built from it) | device_chain.make_chain / make_steps_chain(digi_response=) |
 | W7 | `shower_library` (no switch) | always on | - | no level | whole-shower library at the disk front, one of the K entries nearest in entry radius; stock CaloShowerSteps through device_chain.make_steps_chain / steps_batch (exact on stock steps) | - |
 | W7 | `crystal_placement` (no switch) | always on | - | no level | library shower moved onto the crystal grid at the query position; stock CaloShowerSteps through device_chain.make_steps_chain / steps_batch (exact on stock steps) | - |
 | W7 | `direct_front_entries_only` (no switch) | always on | - | no level | only direct disk-front entries get a response; stock CaloShowerSteps through device_chain.make_steps_chain / steps_batch (exact on stock steps) | - |
@@ -159,5 +160,13 @@ behaviour and any stock-art route outside the chain's levels:
     with `--jax`, and the runchain timer, which always runs on JAX, refuses it.
   - `below_msc` matters only for run configurations with a below-plane world.
   - The stock-art input for the transport and the secondaries is Geant4 CrvSteps through `--steps-input`.
-- **W6, W7, W8.** These have no switchable approximation yet. The stock alternatives are the native art mixers (W6),
-  stock steps through `make_steps_chain` (W7), and the stock trigger replay on the same digis (W8).
+- **W6, W8.** These have no switchable approximation yet. The stock alternatives are the native art mixers (W6) and
+  the stock trigger replay on the same digis (W8).
+- **W7.** `digi_response=parametric` (opt-in, the `fast` preset) draws each (event, crystal) hit from a table of the
+  full chain's outcome per bin of visible energy (`calofastsim.param_response`) instead of photoelectrons, waveforms,
+  digis and the template fit: steps -> hits + clusters, no digis. On the held-out CE files (14,218 events, the same
+  steps, timing and keys, against the waveform response): leading-cluster peak ratio 0.9988 +- 0.0018, width
+  +0.03 MeV, yield above 10 MeV 1.0018 +- 0.0006, energy chi2 28/41, x / y / radius chi2 3/52, 3/50, 2/11, leading
+  time paired difference 0.01 +- 0.01 ns. Clusters above 10 MeV per event come out 1.2 % high (0.728 against 0.719,
+  chi2 17/5): the table draws each crystal on its own, without the time structure of its deposits. The stock
+  alternative of the other approximations is stock steps through `make_steps_chain`.
