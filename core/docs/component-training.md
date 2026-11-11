@@ -94,6 +94,8 @@ by step at the same tolerance and counted in the report:
   products: `Q = 0`, its rest mass ends in the material.
 - A photon made in a boosted decay carries a rounding-level dynamic mass (`m <= 1e-6 E`); the EM process that absorbs
   it shares only its kinetic energy, so its pre-step mass is that step's declared term.
+- A positron made in a boosted decay keeps its rounding-level mass offset from `m_e` (within the e+- mass bound
+  below); annihilation makes its photons from `m_e`, so the offset `m - m_e` is that step's declared term.
 - `G4Decay` makes daughters at the parent's dynamic mass `m` and boosts them with `gamma = E/M`, so a decay may give
   `Q = E (1 - m/M)` for `|m - M| <= 1e-6 M` (`M` is the most common mass of that PDG in the file).
 

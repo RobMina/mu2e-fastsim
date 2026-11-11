@@ -472,6 +472,28 @@ def test_converting_photon_leaves_its_rounding_level_dynamic_mass(tables, mass, 
         assert result["worst_step"]["residual_MeV"] == pytest.approx(mass, rel=1e-9)
 
 
+# k240: a 3.5 GeV decay positron 3e-9 MeV above m_e annihilates at rest; 2e-7 here clears the step tolerance at 10 MeV.
+@pytest.mark.parametrize("extra,passes", [(0., True), (1e-6, False)])
+def test_annihilating_positron_leaves_its_rounding_level_mass_offset(tables, extra, passes):
+    links = make_links(tables)
+    balance(tables)
+    set_processes(tables, "eIoni")
+    tables["steps"]["post_process"][3] = "annihil"
+    t, c = tables["tracks"], tables["classifications"]
+    delta = 2e-7
+    for row, pdg, steps, mass in ((0, 11, [0, 1], ME), (1, -11, [2, 3], ME + delta), (2, 11, [4], ME)):
+        t["pdg"][row] = c["pdg"][row] = pdg
+        set_track_mass(tables, row, steps, mass)
+    add_birth_exit(tables, links, pdg=22, energy=5. + 2. * ME - delta - extra)
+    result = capture_accounting.report(tables, links, 2)
+    assert result["energy_accounting_passed"] is passes
+    assert result["declared_positron_mass_steps"] == 1
+    assert result["totals_MeV"]["declared_positron_mass"] == pytest.approx(delta, rel=1e-6)
+    assert "G4PositronDynamicMass" in result["declared_terms"]
+    if not passes:
+        assert result["worst_step"]["residual_MeV"] == pytest.approx(extra, rel=1e-6)
+
+
 @pytest.mark.parametrize("delta,extra,passes", [(5e-8, 0., True), (5e-8, 1e-6, False), (1e-5, 0., False)])
 def test_decay_boost_term_needs_a_rounding_level_mass_offset(tables, delta, extra, passes):
     links = make_links(tables)
