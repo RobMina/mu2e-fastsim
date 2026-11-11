@@ -1,0 +1,201 @@
+{
+ "arrays": {
+  "bin_exits": {
+   "dtype": "<i8",
+   "shape": [
+    48
+   ]
+  },
+  "cos_edges": {
+   "dtype": "<f8",
+   "shape": [
+    5
+   ]
+  },
+  "dphi": {
+   "dtype": "<f4",
+   "shape": [
+    1550
+   ]
+  },
+  "dt": {
+   "dtype": "<f8",
+   "shape": [
+    1550
+   ]
+  },
+  "g_bin": {
+   "dtype": "<i8",
+   "shape": [
+    1305
+   ]
+  },
+  "g_count": {
+   "dtype": "<i8",
+   "shape": [
+    1305
+   ]
+  },
+  "g_start": {
+   "dtype": "<i8",
+   "shape": [
+    1305
+   ]
+  },
+  "isce": {
+   "dtype": "|b1",
+   "shape": [
+    1550
+   ]
+  },
+  "pphi": {
+   "dtype": "<f4",
+   "shape": [
+    1550
+   ]
+  },
+  "pr": {
+   "dtype": "<f4",
+   "shape": [
+    1550
+   ]
+  },
+  "pz": {
+   "dtype": "<f4",
+   "shape": [
+    1550
+   ]
+  },
+  "r": {
+   "dtype": "<f4",
+   "shape": [
+    1550
+   ]
+  },
+  "r_edges": {
+   "dtype": "<f8",
+   "shape": [
+    7
+   ]
+  },
+  "source": {
+   "dtype": "<U89",
+   "shape": []
+  },
+  "species": {
+   "dtype": "<U3",
+   "shape": []
+  }
+ },
+ "axes": [
+  {
+   "array": "r_edges",
+   "description": "exit radius from the tracker axis",
+   "frame": "exit at VD 15 (Mu2e z = 11810.5 mm), polar about the tracker axis (-3904.0, 0.0)",
+   "hi": 1000000000.0,
+   "lo": 0.0,
+   "name": "r",
+   "nbins": 6,
+   "policy": "clip",
+   "scale": "irregular",
+   "unit": "mm"
+  },
+  {
+   "array": "cos_edges",
+   "description": "pz / p at the exit",
+   "frame": "exit at VD 15 (Mu2e z = 11810.5 mm), polar about the tracker axis (-3904.0, 0.0)",
+   "hi": 1.01,
+   "lo": -1.0,
+   "name": "cos",
+   "nbins": 4,
+   "policy": "clip",
+   "scale": "irregular",
+   "unit": "1"
+  }
+ ],
+ "config_hash": null,
+ "content_hash": "6ffc31899fcc0ebb15ee08118657c25a58d98da4132144608f039fdceb4970a5",
+ "description": "Downstream albedo of tracker electrons: per bin of the exit at the tracker's back virtual detector (radius, pz/p, sign of the radial momentum; NBIN cells, row-major in that order), the Geant4 exits and, for the exits with returns, their later upstream electron crossings in the exit's frame. A fast exit draws one Geant4 exit of its bin and takes its returns.",
+ "domain": {
+  "coverage": "every exit radius and direction (end bins open: r up to 1e9 mm, pz/p -1 to 1.01)",
+  "fallbacks": [
+   {
+    "description": "an exit in a bin with no Geant4 exit gets no return",
+    "levels": {
+     "0": "bin with Geant4 exits",
+     "1": "bin without Geant4 exits: no return"
+    },
+    "name": "empty_bin"
+   }
+  ]
+ },
+ "dtype": {
+  "compute": [
+   "float32",
+   "float64"
+  ],
+  "notes": "return kinematics in the compute dtype; the exit draw is a float64 uniform in both",
+  "storage": {
+   "indices": "int64",
+   "returns": "float64"
+  }
+ },
+ "generator": {
+  "configuration": "dumper tables at VD 15",
+  "name": "Geant4 (Mu2e Offline CeEndpoint dts production)",
+  "physics_list": null,
+  "release": "MDC2025ba production"
+ },
+ "geometry": {
+  "hash": null,
+  "tag": "Run 1A (geom_run1_a)"
+ },
+ "kind": "pool",
+ "legacy": {
+  "format": "npz without a manifest, version in the file name (_v1)",
+  "schema": 1
+ },
+ "name": "tracker.albedo.run1a",
+ "outputs": [
+  {
+   "description": "return starts at the plane (DeviceLibrary.returns); none when the drawn exit has no return or the bin has no Geant4 exit",
+   "dtype": "the compute dtype (positions, momenta, times); int64 group index",
+   "name": "returns",
+   "unit": "mm, MeV/c, ns"
+  }
+ ],
+ "release": null,
+ "rng": {
+  "device": "jax.random key: one float64 uniform per track (DeviceLibrary.pick)",
+  "draws_per_row": 1,
+  "host": "none (build is deterministic)"
+ },
+ "schema": 1,
+ "seeds": null,
+ "source": {
+  "description": "dumper tables of 13 Geant4 CeEndpoint files, Run 1A geometry",
+  "samples": [
+   {
+    "dataset": "dts.mu2e.CeEndpoint.MDC2025ba",
+    "events": null,
+    "selection": "sequencers 001430_00000000..00000600 and 001430_00001400..00001900"
+   }
+  ]
+ },
+ "split": {
+  "held_out": "sequencers 001430_00000700..00001300",
+  "rule": "disjoint sequencers",
+  "training": "sequencers 001430_00000000..00000600 and 001430_00001400..00001900"
+ },
+ "subsystem": "tracker",
+ "unrecorded": {
+  "config_hash": "no build configuration manifest",
+  "release": "built with trkfastsim.sim.albedo.build for PR #138; the commit of the build is not recorded",
+  "seeds": "the production seeds of the dts files are not recorded in the library"
+ },
+ "validation": {
+  "record": "PRs #138 and #142 (opt-in, then the DeviceChain default) on held-out CE events; no declared criterion recorded",
+  "status": "tested, not closed"
+ },
+ "version": 1
+}
