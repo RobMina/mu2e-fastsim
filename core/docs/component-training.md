@@ -40,6 +40,9 @@ process lists, declared Geant4 behaviours) and its FNV-1a 64-bit hash.
   with its own reason), or an error.
 - Natural terminal states, no-step tracks and artificial/resource kills are classified separately. A track stopped by
   its own energy loss on a boundary-limited step is a natural stop. At-rest physics remains enabled.
+- Mu2eG4 counts such a stop as a field-propagator kill (`StatusG4` status 1) unless the track is an electron or a
+  proton. The dump and `capture.audit` both recompute those natural stops (`nNaturalBoundaryStops`) and accept
+  status 1 only when every counted kill is one; any other field-propagator kill invalidates the event.
 - Any overflow, missing ancestry, unsupported classification or resource kill invalidates the trial; it is never
   silently truncated or turned into a physical no-response outcome. A rejection stops the sample; surviving trials
   are never selected.

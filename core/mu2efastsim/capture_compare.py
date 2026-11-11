@@ -79,10 +79,14 @@ def compare_exact(reference, candidate, expected_events):
     """
     audits = [capture.audit(tables, expected_events) for tables in (reference, candidate)]
     excluded = ["events.cpuTime", "events.realTime"]
-    equated = {}
+    equated, one_sided = {}, {}
     for name in capture.TABLES:
         a, b = reference[name], candidate[name]
-        require(set(a) == set(b), f"{name}: fieldset mismatch")
+        optional = set(capture.OPTIONAL_FIELDS.get(name, ()))
+        require(set(a) - optional == set(b) - optional, f"{name}: fieldset mismatch")
+        for field in sorted((set(a) ^ set(b)) & optional):
+            one_sided[f"{name}.{field}"] = "reference" if field in a else "candidate"
+        a = {field: value for field, value in a.items() if field in b}
         keys = capture.EVENT if name == "events" else [*capture.EVENT, "index"]
         left = unique(a, keys, name)
         right = unique(b, keys, name).assign(_candidate_row=np.arange(len(b["event"])))
@@ -114,7 +118,7 @@ def compare_exact(reference, candidate, expected_events):
     return {"diagnostic_only": True, "bank_admissible": False, "capture_fields_identical": not equated,
             "capture_fields_identical_by_process_class": True,
             "process_classes": dict(capture.PROCESS_CLASSES), "process_class_equated": equated,
-            "excluded_fields": excluded, "audits": audits,
+            "excluded_fields": excluded, "optional_fields_on_one_side": one_sided, "audits": audits,
             "geometry_equivalence_established": False, "statistical_equivalence_established": False,
             "note": "Exact stored capture-field diagnostic only; no geometry or statistical equivalence established. "
                     "Timing values are excluded from equality, not from the audits. Strings compare by value, "

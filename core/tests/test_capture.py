@@ -383,3 +383,48 @@ def test_root_highest_cycles_and_cli(tmp_path, tables, capsys):
     assert json.loads(capsys.readouterr().out)["events"] == 2
     with pytest.raises(SystemExit):
         capture.main([str(path), "--output", str(output)])
+
+
+def natural_stop(tables, pdg):
+    """Event 2's child stops at zero kinetic energy on a Transportation step that stays in one placement."""
+    t, c = tables["tracks"], tables["classifications"]
+    t["pdg"][2] = c["pdg"][2] = pdg
+    t["stopProcess"][2] = "Transportation"
+    t["end_kinetic"][2] = tables["steps"]["post_kinetic"][4] = 0.
+
+
+@pytest.mark.parametrize("pdg,killed,passes", [(1000010020, 1, True), (1000010020, 0, False), (1000010020, 2, False),
+                                               (11, 1, False), (2212, 1, False)])
+def test_field_propagator_kills_must_be_natural_boundary_stops(tables, pdg, killed, passes):
+    natural_stop(tables, pdg)
+    e = tables["events"]
+    e["nKilledByFieldPropagator"][1], e["g4Status"][1] = killed, 1 if killed else 0
+    assert capture.natural_boundary_stops(tables).tolist() == ([0, 1] if pdg > 2212 else [0, 0])
+    if passes:
+        capture.audit(tables, 2)
+    else:
+        with pytest.raises(ValueError, match="invalid event (nKilledByFieldPropagator|g4Status)"):
+            capture.audit(tables, 2)
+
+
+@pytest.mark.parametrize("recorded,passes", [([0, 1], True), ([0, 0], False)])
+def test_dump_natural_stop_count_must_match_the_tables(tables, recorded, passes):
+    natural_stop(tables, 1000010020)
+    e = tables["events"]
+    e["nKilledByFieldPropagator"][1], e["g4Status"][1] = 1, 1
+    e["nNaturalBoundaryStops"] = np.array(recorded, dtype=np.int64)
+    if passes:
+        capture.audit(tables, 2)
+    else:
+        with pytest.raises(ValueError, match="natural boundary stop census mismatch"):
+            capture.audit(tables, 2)
+
+
+def test_exact_compare_reports_an_optional_field_on_one_side(tables):
+    candidate = {name: {field: np.copy(value) for field, value in table.items()} for name, table in tables.items()}
+    candidate["events"]["nNaturalBoundaryStops"] = np.zeros(2, dtype=np.int64)
+    report = capture_compare.compare_exact(tables, candidate, 2)
+    assert report["optional_fields_on_one_side"] == {"events.nNaturalBoundaryStops": "candidate"}
+    candidate["events"]["extra"] = np.zeros(2)
+    with pytest.raises(ValueError, match="events: fieldset mismatch"):
+        capture_compare.compare_exact(tables, candidate, 2)
