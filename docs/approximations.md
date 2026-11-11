@@ -111,6 +111,7 @@ behaviour and any stock-art route outside the chain's levels:
 | W1 | `ds_layer_physics` (no switch) | always on | - | no level | thin-plane foils with per-layer Highland and restricted loss (stock: Geant4 in the foil geometry) | - |
 | W2-W4 | `calo_albedo`: tracker returns from the calorimeter (backscatter): sampled from a Geant4-built library, or none; the NumPy tracker has no albedo | library, none | none | library | none: Geant4 transport through the calorimeter; no stock path in the chain (the library is built from it) | cetracker --albedo (device tracker); DeviceChain(albedo=) |
 | W2-W4 | `straw_wall`: straw wall material: counted only on chords that cross the gas (default), or the complete outer-minus-gas wall with wall-only chords | gas_chords, complete | gas_chords | complete | none: Geant4 straw walls; the complete wall is the closer model | cetracker --complete-outer-wall; DeviceChain(complete_outer_wall=) |
+| W2-W4 | `tracker_rows`: the response layer's StrawGasStep rows per track (nrow): from the tracker and albedo transport (default), or drawn from a library of the default chain's rows per (|p|, tan dip, r_max) cell of the entry helix, without the tracker transport (track observables only: no steps, digis or delta rays) | transported, sampled | transported | transported | none: Geant4 tracker steps; the transported rows are the closer model (the library is built from them) | DeviceChain(nrow_library=); bench entry cetracker:bench_run (not the cetracker CLI, which writes steps) |
 | W2-W4 | `primary_only_steps` (no switch) | always on | - | no level | no delta rays, conversions or other secondaries in the tracker besides the albedo (DeviceChain(deltas=) takes a Geant4 delta-ray library .npz, opt-in; no level until the library ships); stock StrawGasSteps from the production reco are the stock-art path | - |
 | W2-W4 | `reco_response` (no switch) | always on | - | no level | no track fit: efficiency and residuals drawn from stock LoopHelix tables (default: measured on the full Geant4 events, with the empirical joint draw; CE-only tables by name, DeviceChain(response="ceonly")); stock art: the injector (fasttrk_field.root) through StrawGasStepsFromTable, stock digis and LoopHelix | - |
 | W2-W4 | `target_slab_physics` (no switch) | always on | - | no level | flat slabs, constant field per layer, shell curvature as an axial field, no secondaries (stock: Geant4 in the target geometry) | - |
@@ -148,6 +149,13 @@ behaviour and any stock-art route outside the chain's levels:
 - **W2-W4.** One declaration serves the stops (W2), DIO (W3) and RPC (W4) electrons of `cetracker`.
   - The albedo levels act on the device tracker; the NumPy tracker has none.
   - `straw_wall=complete` is the existing opt-in complete outer wall.
+  - `tracker_rows=sampled` (opt-in, by name only) draws each track's rows (`nrow`, read by the response layer only
+    through its bin) from a library of the default chain's rows per (|p|, tan dip, r_max) cell of the entry helix
+    (`trkfastsim.recoresp.nrow`), so the tracker and albedo are not transported. It serves the observables boundary
+    only: no steps, digis or delta rays (DeviceChain refuses deltas with it, and a call with digis). Against the
+    transported rows on the same births and keys (100,000 each of CE, DIO and RPC electrons, both dtypes), the fit,
+    quality and CE-selected efficiencies agree within their paired errors (CE selection: CE -0.2 / +0.2 +- 0.17 %,
+    DIO -0.1 / +0.1 +- 0.22 %, RPC -0.8 / -0.5 +- 0.5 %, float64 / float32), and so do the observable shapes.
   - The response layer is not a level. Its default tables are measured on the full Geant4 events and draw residuals
     and quality jointly from reference tracks (pools); the CE-only tables (`DeviceChain(response="ceonly")`) remain
     available by name.

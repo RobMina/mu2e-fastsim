@@ -259,13 +259,20 @@ class DeviceChain:
     Geant4 library) or a library .npz / deltas.Library. response_config: a recoresp.config manifest (dict, JSON or
     path) or its hash; the response table must carry the same hash (tables built with table.build(..., config=...)),
     or DeviceChain raises. response_cuts: CE selection cuts applied at run time (table.with_cuts: tandip, d0, rmax as
-    (low, high), fitcon; fitcon needs all-track pools)."""
+    (low, high), fitcon; fitcon needs all-track pools). nrow_library (opt-in approximation tracker_rows=sampled):
+    None (default: the tracker and albedo transport give nrow), or "default" / an .npz of trkfastsim.recoresp.nrow:
+    nrow is drawn from the library given the entry helix and the tracker is not transported (no steps, no digis,
+    no deltas; a call with digis and digi_cond is refused; the albedo option has no effect on nrow, the library
+    holds the default chain's rows)."""
 
     def __init__(self, offline_root, maps, gdml, geom="Offline/Mu2eG4/geom/geom_2021_PhaseI_v03.txt",
                  response=None, digi_cond=None, dtype="float64", origin=ORIGIN, chord_mm=10.0, lanes=None,
                  ce_unroll=True, ce_shrink=2, digi_chunk=8000, resident_digis=True, complete_outer_wall=False,
                  albedo="default", albedo_species="all", albedo_max_chords=8192, deltas=None, response_config=None,
-                 response_cuts=None):
+                 response_cuts=None, nrow_library=None):
+        if nrow_library is not None and (deltas is not None or response is None):
+            raise ValueError("nrow_library (sampled rows) has no tracker steps and feeds only the response: it takes "
+                             "no deltas, and needs a response")
         import jax  # noqa: F401  (device backend)
         from mu2efastsim import ehelix
         from trkfastsim.sim import fieldsteps_jax as FJ
@@ -305,6 +312,11 @@ class DeviceChain:
             self.alb = AL.DeviceLibrary(lib.select(albedo_species), self.dt)
             self.alb_max_chords = albedo_max_chords
             self.alb_bz = float(ehelix.field_at(field, np.array([[AL.AXIS_XY[0], AL.AXIS_XY[1], AL.VD_Z]]))[0][2])
+        self.nrow = None                           # trkfastsim.recoresp.nrow: sampled rows (None: transported)
+        if nrow_library is not None:
+            from trkfastsim.recoresp import nrow as NR
+            self.nrow = NR.to_device(NR.load(nrow_library), self.dt)
+            self._nrow_sample = jax.jit(NR.sample)
         self.dl = None                             # trkfastsim.sim.deltas: delta-ray straw steps (None: off)
         if deltas is not None:
             from trkfastsim.sim import deltas as DL
@@ -348,6 +360,10 @@ class DeviceChain:
         un = r.u / jnp.linalg.norm(r.u, axis=1, keepdims=True)
         pe = un * pm[:, None]
         tic = time.perf_counter()
+        if self.nrow is not None:                  # sampled rows: no tracker transport (tracker_rows=sampled)
+            nrow = self._nrow_sample(self.nrow, jax.random.fold_in(key, 6), has, r.x, pe)
+            return dict(cechain=r, has_entry=has, x=r.x, p=pe, t=r.t, tracker=None, nrow=nrow,
+                        timing=dict(cechain_s=round(t_ce, 3), tracker_s=round(time.perf_counter() - tic, 3)))
         trk = FJ.transport(self.trk, jax.random.fold_in(key, 1), r.x, pe, r.t, active=has)
         nrow = trk.steps["valid"].sum(axis=1)       # the conversion electron's rows (the response layer's input)
         out = {}
@@ -504,6 +520,8 @@ class DeviceChain:
                         res["x"], res["p"], res["t"])
 
     def __call__(self, births, seed, digis=True, event_timing=None):
+        if digis and self.cond is not None and self.nrow is not None:
+            raise ValueError("nrow_library (sampled rows) has no tracker steps to digitise: call with digis=False")
         res = self.transport(births, seed)
         if digis and self.cond is not None:
             res["digis"] = self.digitize(res, seed, event_timing)
@@ -550,7 +568,8 @@ def bench_run(prepared, seed=1, digis=True, **chain_kw):
     else:
         stops, n = prepared
         res = run(stops, seed, n=n, digis=digis, **chain_kw)
-    return dict(track=res.get("track"), nrow=res["nrow"], steps_len=res["tracker"].steps["len"],
+    return dict(track=res.get("track"), nrow=res["nrow"],
+                steps_len=None if res["tracker"] is None else res["tracker"].steps["len"],
                 digis=None if "digis" not in res else res["digis"]["adc"])
 
 
