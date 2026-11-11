@@ -13,27 +13,28 @@ export MANIFEST=<manifest path from the access reply>
 export M2FS_DATA=<your Mu2e data area>/fastsim        # writable and with quota; not the app area, not $HOME
 ```
 
-A clean-clone test took 7.7 minutes on a GPVM and 12 on a newly started EAF server, most of it the demo (timings at the
-end of this page).
+A clean-clone test took 7.6 minutes on a GPVM, most of it the demo, and about 10 on an A100 Slurm node, most of it the
+CE line on the GPU and the CPU (timings at the end of this page and under [The demo](#the-demo)).
 
 ## Path A: EAF notebook (Fermilab Elastic Analysis Facility)
 
-Start a server at <https://analytics-hub.fnal.gov> (any profile; a GPU slice runs JAX on the GPU), open a terminal
-(File > New > Terminal) and paste the three exports above, then:
+Start a server at <https://analytics-hub.fnal.gov> (any profile; on a GPU slice the demo's CE line also runs on the
+GPU), open a terminal (File > New > Terminal) and paste the three exports above, then:
 
 ```bash
 mkdir -p "$M2FS_DATA" && cd "$M2FS_DATA/.."
 git clone https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
 source site/eaf.env && python3 site/check.py eaf
 /cvmfs/mu2e.opensciencegrid.org/env/ana/current/bin/python -m venv --system-site-packages "$M2FS_VENV"
-"$M2FS_VENV/bin/pip" install -q "jax==0.11.2" -e core -e crv -e tracker -e beam
+"$M2FS_VENV/bin/pip" install -q "jax[cuda12]==0.11.2" -e core -e crv -e tracker -e beam   # CUDA wheels for a GPU slice
 source site/eaf.env                                   # again: puts the venv first on PATH
 python3 -m mu2efastsim.inputs check-inputs --manifest "$MANIFEST" --root "$M2FS_INPUTS" | grep -c '"ok"'
 python3 -m mu2efastsim.demo
 ```
 
 The clone and the venv live on Fermilab storage, so they outlive the server: in a new server only the three exports and
-`source site/eaf.env` are needed. The same steps as a notebook: [notebooks/quickstart_eaf.ipynb](notebooks/quickstart_eaf.ipynb).
+`source site/eaf.env` are needed. `jax[cuda12]` adds JAX's CUDA wheels (a few GB in the venv); on a CPU server, or a
+GPVM using the same venv, JAX falls back to the CPU. The same steps as a notebook: [notebooks/quickstart_eaf.ipynb](notebooks/quickstart_eaf.ipynb).
 Then [run your own job](#run-your-own-job).
 
 ## Path B: Mu2e GPVM
@@ -97,22 +98,49 @@ GPVM and 88 s for the transport of 20,000 muons including JAX compilation. It pr
 
 ## The demo
 
-`python3 -m mu2efastsim.demo` runs three short chains on the CPU and prints one line per chain, the headline number
-next to its reference value and tolerance (`--quick`: a quarter of each sample; `--only beam,ce,crv`). On a GPVM
-(4-core AMD EPYC VM, JAX on the CPU) the three take 5 to 6 minutes, wall time per chain including Python start-up,
-JAX compilation and input reads: 336 s in a first run of one chain at a time (beam 108 s, CE 140 s, CRV 88 s), 283 s
-in the clean-clone run below. Most of it is fixed cost (the beam transport compiles for about a minute, the CRV chain
-loads its library and tables for about a minute), so `--quick` saves less than its sample sizes suggest. A GPU does not
-help: with `JAX_PLATFORMS=cuda` on an A6000 the demo took 388 s against 393 s on a 4-core Xeon CPU node.
+`python3 -m mu2efastsim.demo` runs three chains and prints one line per chain run, the headline number next to its
+reference value and tolerance (`--quick`: a quarter of each sample; `--only beam,ce,crv`). The **CE line** runs the
+conversion-electron device chain (`beamfastsim.cechain --backend device`, the whole chain in one JAX loop) and shows
+what a GPU does:
+
+- when JAX sees a GPU, 2 x 1,048,576 electrons there (a power of two less on a GPU with fewer streaming
+  multiprocessors than an A100, such as a MIG slice), then 2 x 4,096 on the CPU; without one (a GPVM), the CPU part
+  only;
+- the first batch pays the compilation, so each part prints its setup (compilation and maps: first batch minus
+  second) and its warm rate (electrons per second of the second batch), and the demo ends with the GPU / CPU ratio
+  of the warm rates;
+- float64 by default, `--float32` for the CE chain; `--device cpu` skips the GPU part, `--device gpu` requires it.
+
+The beam and CRV lines are short and run on the CPU; most of their time is fixed cost (the beam transport compiles for
+about a minute, the CRV chain loads its library and tables for about a minute), so a GPU would not shorten them and
+`--quick` saves less than its sample sizes suggest.
+
+Clean clone, cold compilation cache, float64 unless noted; the CPU part runs on the same node, with 4 CPU threads:
+
+| Where | CE warm rate on the GPU (setup) | on the CPU (setup) | GPU / CPU | CE line | whole demo |
+|---|---:|---:|---:|---:|---:|
+| A100-SXM4-80GB | 18,540 electrons/s (120 s) | 97/s (74 s) | **190x** | 254 + 162 s | 592 s |
+| A100-SXM4-80GB, `--only ce --float32` | 27,980/s (95 s) | 143/s (73 s) | **196x** | 197 + 135 s | 340 s |
+| RTX A6000 (float64 at 1/32 of the float32 rate) | 4,520/s (143 s) | 64/s (96 s) | 70x | 393 + 229 s | 844 s |
+| GPVM (4-core AMD EPYC VM), no GPU | - | 96/s (58 s) | - | 146 s | 336 s |
+| CPU node (Xeon Gold 6248), no GPU | - | 68/s (88 s) | - | 215 s | 430 s |
+
+On an A100 the CE line carries 2.1 M electrons in about four minutes, compilation included; the CPU part would need
+about six hours for the same sample, and a stock CE production job (Geant4 CeEndpoint) runs about 24 electrons per
+second per grid slot ([docs/performance.md](docs/performance.md)). Peak memory per chain on a CPU node: beam 1.3 GB,
+CE 2.2 GB, CRV 5.1 GB. On a busy GPVM with less than about 5 GB free the CRV line is killed (`crv FAILED (exit -9)`);
+that happened to the first GPVM attempt, and the GPVM row is the rerun in the same clone. Use a quieter GPVM, or
+`--only beam,ce`.
 
 | Chain | Sample | Headline | Reference |
 |---|---|---|---|
 | beam | 20,000 DS-entrance muons (MDC2025ac table of the release) | target stop fraction, nominal target | Geant4 0.3604 +- 0.0015 on the full 105,350 muons, clean stock rerun ([docs/validation.md](docs/validation.md)) |
-| CE | 2,000 conversion electrons from that table's target stops | fraction reaching the tracker entry plane | fast chain on 40,000 electrons from the same stops, another seed: 0.7260 +- 0.0022 |
+| CE | conversion electrons from that table's target stops, device chain: 2,097,152 on an A100, 8,192 on the CPU | fraction reaching the tracker entry plane | host chain on 40,000 electrons from the same stops, another seed: 0.7260 +- 0.0022 (the device chain matches the host chain: yield ratio 0.9999 +- 0.0007) |
 | CRV | 1,000 generated cosmic events, default chain (shard 11 of `g4ref_v1`) | coincidence clusters per generated event | stock chain (Geant4 + digi + reco) on all 50,000 events of that shard: 0.0582 +- 0.0011 |
 
-A line passes within 3 sigma of the combined counting errors. It also writes `$M2FS_DATA/demo/demo_summary.json` and a
-log per chain. Exit 0: every line passes. It is a check of your setup, not a validation.
+A line passes within 3 sigma of the combined counting errors. It also writes `$M2FS_DATA/demo/demo_summary.json` (with
+the setup, warm rate and device of each CE part, and the ratio) and a log per run. Exit 0: every line passes. It is a
+check of your setup, not a validation.
 
 ## Run your own job
 
@@ -161,14 +189,17 @@ started server, default profile). Wall times:
 | Step | GPVM (4-core VM) | EAF (default server, 2 CPUs) |
 |---|---:|---:|
 | server start | - | 73 s |
-| clone | 8 s | 4 s |
+| clone | 2 s | 4 s |
 | `site/check.py` | 0 s | 0 s |
-| venv on the Mu2e ana Python | 10 s | 19 s |
-| `pip install` (JAX and the four packages) | 55 s | 39 s |
-| `check-inputs` (78 files) | 30 s | 7 s |
-| demo (all three lines ok; the run quoted under [The demo](#the-demo)) | 283 s | 434 s |
+| venv on the Mu2e ana Python | 4 s | 19 s |
+| `pip install` (JAX and the four packages) | 19 s | 39 s (CPU `jax`) |
+| `check-inputs` (78 files) | 17 s | 7 s |
+| demo (all lines ok; the GPVM run of the table under [The demo](#the-demo)) | 336 s | 434 s (the earlier demo, three CPU chains) |
 | your own job (`beam_point`, 49 foils: stop fraction 0.6669 +- 0.0033) | 76 s | 144 s |
-| **total** | **7.7 min** | **10.8 min** (12 min with the server start) |
+| **total** | **7.6 min** | **10.8 min** (12 min with the server start) |
 
 The demo is most of it, and most of the demo is fixed cost (JAX compilation, table loading); skip it, or use `--quick`,
-when you only need your own job. On the Slurm path the image build from a fresh clone took 87 s (CPU variant).
+when you only need your own job. The EAF column and the GPVM "your own job" row predate the GPU demo and the
+`jax[cuda12]` install; on a GPU slice the CE line runs with a batch scaled to the slice's share of an A100 (a 1g.10gb
+slice: 2 x 131,072 electrons). On the Slurm path the image build from a fresh clone took 87 s (CPU variant); there the
+demo runs in the image (GPU variant), 592 s on an A100 node.
