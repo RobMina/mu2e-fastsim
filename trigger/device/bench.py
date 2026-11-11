@@ -96,8 +96,29 @@ def load(n, seed=None):
     return ch, blocks
 
 
+_WARM = set()
+
+
+def _warmup(ch, blocks):
+    """TRIGGER_DEVICE_COMPACT: in the first pass (inside the timer: setup), compile the compact path's capacities for
+    every hit-axis size from the smallest block's up to 512 hits (larger blocks compile when they come)."""
+    if not getattr(ch, "compact", False) or not blocks or not blocks[0]:
+        return
+    _, b, _ = blocks[0][0]
+    E, h0 = b["valid"].shape
+    hmax = max(512, max(bb["valid"].shape[1] for fb in blocks for _, bb, _ in fb))
+    h = 1 << int(np.ceil(np.log2(max(h0, 1))))
+    while h <= hmax:
+        if (id(ch), E, h) not in _WARM:
+            ch.warmup({k: np.zeros((E, h) + v.shape[2:], v.dtype) if v.ndim >= 2 and v.shape[1] == h0 else v
+                       for k, v in b.items()})
+            _WARM.add((id(ch), E, h))
+        h *= 2
+
+
 def step(data):
     ch, blocks = data
+    _warmup(ch, blocks)
     out = []
     for file_blocks in blocks:                       # one file = one prescale-counter sequence
         decs, auxs, ns = [], [], 0

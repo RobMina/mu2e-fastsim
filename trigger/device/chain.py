@@ -136,6 +136,26 @@ class Chain:
                for key in self._helix_keys()}
         return self._fp(batch, sh, ph, tcs, hxs)
 
+    def warmup(self, batch):
+        """Compact path: compile every pair capacity of every stage for the shapes of `batch` (a packed block; its
+        contents are not used), so a job pays the compiles of a hit-axis size once, up front, instead of whenever a
+        batch first reaches a new capacity."""
+        if not self.compact:
+            return
+        b = {k: jnp.zeros_like(jnp.asarray(v)) for k, v in batch.items()}
+        sh, ph, cands, _ = self._fa(b)
+        slots = cands[self._tc_labels()[0]][2].size if self._tc_labels() else 0
+        ks = sorted({pair_bucket(n, slots) for n in (0, slots // 4 + 1, slots)})
+        tcs = {}
+        for lbl in self._tc_labels():
+            for k in ks:
+                tcs[lbl], _ = self._fr(cands[lbl], lbl=lbl, k=k)
+        hxs = {}
+        for key in self._helix_keys():
+            for k in ks:
+                hxs[key] = self._fh(ph, tcs[key[0]], key=key, k=k)
+        jax.block_until_ready(self._fp(b, sh, ph, tcs, hxs))
+
     def _paths(self, batch, sh, ph, tcs, hxs):
         out, aux = {}, {}
         ev = batch["event"]
