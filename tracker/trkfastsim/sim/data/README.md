@@ -11,3 +11,7 @@ Downstream-albedo library of `trkfastsim.sim.albedo` (the default of `beamfastsi
 
 Held-out sequencers 001430_00000700..1300 were not used. Per return: azimuth and radius relative to the exit,
 momentum (radial, azimuthal, axial), delay, and whether it is the conversion electron.
+
+Its manifest (`mu2efastsim.library`, `core/docs/libraries.md`) is the sidecar `albedo_run1a_v1.manifest.json`: the
+provenance above, the exit bins, the content hash of the arrays (checked on every load) and the gaps it does not
+record. The `.npz` itself is unchanged.

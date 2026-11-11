@@ -23,11 +23,20 @@ downstream again is not returned a second time (Geant4's later returns of the sa
 
 The shipped Run 1A library is data/albedo_run1a_v1.npz (DEFAULT; provenance in data/README.md), the default of
 beamfastsim.cetracker.DeviceChain (species "all", chord budget DEFAULT_MAX_CHORDS).
+
+The library follows the shared library core (:mod:`mu2efastsim.library`, core/docs/libraries.md): Library.save embeds
+a manifest, the frozen shipped file has the sidecar data/albedo_run1a_v1.manifest.json, Library.load checks the
+manifest, the arrays and their content hash, and :func:`domain_counts` counts the exits outside the bins and the exits
+of bins with no Geant4 exit (they get no return).
 """
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+
+from mu2efastsim.library import axes as LA
+from mu2efastsim.library import store as LS
+from mu2efastsim.library.domain import DomainCounter
 
 AXIS_XY = (-3904.0, 0.0)        # tracker axis (Mu2e frame) [mm]
 VD_BACK = 15                    # virtual detector at the tracker's downstream end (TT_Back)
@@ -39,6 +48,8 @@ COS_EDGES = np.array([-1.0, 0.55, 0.65, 0.75, 1.01])
 KB = 0.299792458                # MeV/c per (T mm)
 PDG_E = 11
 NBIN = (len(R_EDGES) - 1) * (len(COS_EDGES) - 1) * 2
+LIBRARY = "tracker.albedo.run1a"
+EMPTY_BIN = "empty_bin"          # 0: the bin has Geant4 exits; 1: it has none (the exit gets no return)
 
 
 def bin_of(r, cos, ur):
@@ -77,16 +88,24 @@ class Library:
 
     FIELDS = ("bin_exits", "g_bin", "g_start", "g_count", "dphi", "r", "pr", "pphi", "pz", "dt", "isce")
 
-    def save(self, path):
-        np.savez_compressed(path, **{k: getattr(self, k) for k in self.FIELDS}, species=np.array(self.species),
-                            source=np.array(self.source), r_edges=R_EDGES, cos_edges=COS_EDGES)
+    def arrays(self):
+        """The stored arrays (the file layout)."""
+        return dict(**{k: np.asarray(getattr(self, k)) for k in self.FIELDS}, species=np.array(self.species),
+                    source=np.array(self.source), r_edges=R_EDGES, cos_edges=COS_EDGES)
+
+    def save(self, path, **provenance):
+        """Write the library with its manifest (provenance: manifest fields, see :func:`manifest_fields`)."""
+        arrays = self.arrays()
+        return LS.save(Path(path), arrays, manifest_fields(arrays, **provenance))
 
     @classmethod
     def load(cls, path=DEFAULT):
-        with np.load(path, allow_pickle=False) as z:
-            if not (np.array_equal(z["r_edges"], R_EDGES) and np.array_equal(z["cos_edges"], COS_EDGES)):
-                raise ValueError(f"{path}: library built with other bins")
-            return cls(**{k: z[k] for k in cls.FIELDS}, species=str(z["species"]), source=str(z["source"]))
+        """The checked library (mu2efastsim.library.store.load: manifest, arrays, content hash, axis edges)."""
+        lib = LS.load(Path(path), expect={"name": LIBRARY})
+        z = lib.arrays
+        if not (np.array_equal(z["r_edges"], R_EDGES) and np.array_equal(z["cos_edges"], COS_EDGES)):
+            raise ValueError(f"{path}: library built with other bins")
+        return cls(**{k: z[k] for k in cls.FIELDS}, species=str(z["species"]), source=str(z["source"]))
 
     def select(self, species):
         """The library restricted to the conversion electron's own returns (species 'ce') or unchanged ('all')."""
@@ -107,6 +126,93 @@ class Library:
         """Per bin: exits with at least one return / exits."""
         n = np.bincount(self.g_bin, minlength=NBIN)
         return np.where(self.bin_exits > 0, n / np.maximum(self.bin_exits, 1), 0.0)
+
+
+# --------------------------------------------------------------------------- manifest and domain (mu2efastsim.library)
+
+def axes():
+    """The binned exit keys (the third, the sign of the radial momentum, is two bins with no stored edges)."""
+    frame = f"exit at VD {VD_BACK} (Mu2e z = {VD_Z} mm), polar about the tracker axis {AXIS_XY}"
+    return (LA.Axis("r", "mm", R_EDGES, frame=frame, array="r_edges", policy="clip",
+                    description="exit radius from the tracker axis"),
+            LA.Axis("cos", "1", COS_EDGES, frame=frame, array="cos_edges", policy="clip",
+                    description="pz / p at the exit"))
+
+
+# Provenance of the shipped library (data/README.md)
+SHIPPED = dict(
+    version=1,
+    source=dict(description="dumper tables of 13 Geant4 CeEndpoint files, Run 1A geometry",
+                samples=[dict(dataset="dts.mu2e.CeEndpoint.MDC2025ba",
+                              selection="sequencers 001430_00000000..00000600 and 001430_00001400..00001900",
+                              events=None)]),
+    generator=dict(name="Geant4 (Mu2e Offline CeEndpoint dts production)", release="MDC2025ba production",
+                   physics_list=None, configuration="dumper tables at VD 15"),
+    geometry=dict(tag="Run 1A (geom_run1_a)", hash=None),
+    split=dict(training="sequencers 001430_00000000..00000600 and 001430_00001400..00001900",
+               held_out="sequencers 001430_00000700..00001300", rule="disjoint sequencers"),
+    validation=dict(status="tested, not closed",
+                    record="PRs #138 and #142 (opt-in, then the DeviceChain default) on held-out CE events; no "
+                           "declared criterion recorded"),
+    unrecorded=dict(release="built with trkfastsim.sim.albedo.build for PR #138; the commit of the build is not "
+                            "recorded", seeds="the production seeds of the dts files are not recorded in the library"),
+    legacy=dict(schema=1, format="npz without a manifest, version in the file name (_v1)"),
+)
+
+
+def manifest_fields(arrays, **provenance):
+    """Manifest fields of a library (mu2efastsim.library.manifest); provenance fields not given are unrecorded."""
+    fields = dict(
+        name=LIBRARY, subsystem="tracker", version=1, kind="pool",
+        description="Downstream albedo of tracker electrons: per bin of the exit at the tracker's back virtual "
+                    "detector (radius, pz/p, sign of the radial momentum; NBIN cells, row-major in that order), the "
+                    "Geant4 exits and, for the exits with returns, their later upstream electron crossings in the "
+                    "exit's frame. A fast exit draws one Geant4 exit of its bin and takes its returns.",
+        axes=[a.describe() for a in axes()],
+        outputs=[dict(name="returns", unit="mm, MeV/c, ns",
+                      dtype="the compute dtype (positions, momenta, times); int64 group index",
+                      description="return starts at the plane (DeviceLibrary.returns); none when the drawn exit has "
+                                  "no return or the bin has no Geant4 exit")],
+        dtype=dict(storage={"returns": "float64", "indices": "int64"}, compute=["float32", "float64"],
+                   notes="return kinematics in the compute dtype; the exit draw is a float64 uniform in both"),
+        rng=dict(host="none (build is deterministic)",
+                 device="jax.random key: one float64 uniform per track (DeviceLibrary.pick)", draws_per_row=1),
+        domain=dict(coverage="every exit radius and direction (end bins open: r up to 1e9 mm, pz/p -1 to 1.01)",
+                    fallbacks=[dict(name=EMPTY_BIN, levels={"0": "bin with Geant4 exits",
+                                                            "1": "bin without Geant4 exits: no return"},
+                                    description="an exit in a bin with no Geant4 exit gets no return")]),
+        config_hash=None,
+    )
+    fields.update(provenance)
+    if "validation" not in provenance:
+        fields["validation"] = dict(status="not validated", record=None)
+    unrecorded = dict(provenance.get("unrecorded", {}))
+    for k in ("source", "generator", "release", "seeds", "geometry", "split"):
+        if fields.get(k) is None:
+            fields[k] = None
+            unrecorded.setdefault(k, "not given to save()")
+    unrecorded.setdefault("config_hash", "no build configuration manifest")
+    fields["unrecorded"] = unrecorded
+    return fields
+
+
+def write_shipped_manifest(path=DEFAULT):
+    """(Re)write the sidecar manifest of the frozen shipped library from SHIPPED; the .npz is not touched."""
+    return LS.write_sidecar(path, manifest_fields(LS.load_arrays(path), **SHIPPED))
+
+
+def domain_counts(lib, r, cos, ur, mask=None, counter=None):
+    """DomainCounter of a set of exits (host arrays at the plane): values outside the r and pz/p bins and exits in
+    bins without Geant4 exits."""
+    r, cos = np.asarray(r, float), np.asarray(cos, float)
+    m = np.ones(r.shape, bool) if mask is None else np.asarray(mask, bool)
+    counter = counter or DomainCounter(LIBRARY)
+    counter.add_lookups(int(m.sum()))
+    for a, v in zip(axes(), (r, cos)):
+        counter.add_values(a.name, a.edges, v, mask=m)
+    b = bin_of(r, cos, np.asarray(ur, float))
+    counter.add_levels(EMPTY_BIN, (lib.bin_exits[b] == 0).astype(np.int64), mask=m)
+    return counter
 
 
 # --------------------------------------------------------------------------- building (host, from dumper tables)
