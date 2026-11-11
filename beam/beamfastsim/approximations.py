@@ -43,6 +43,14 @@ _TRACKER = (
         levels=("gas_chords", "complete"), default="gas_chords", sets={"complete": {"complete_outer_wall": True}},
         fidelity="complete", alternative=NONE, stock="Geant4 straw walls; the complete wall is the closer model",
         switch="cetracker --complete-outer-wall; DeviceChain(complete_outer_wall=)"),
+    Approximation(
+        "tracker_rows", "the response layer's StrawGasStep rows per track (nrow): from the tracker and albedo "
+        "transport (default), or drawn from a library of the default chain's rows per (|p|, tan dip, r_max) cell of "
+        "the entry helix, without the tracker transport (track observables only: no steps, digis or delta rays)",
+        levels=("transported", "sampled"), default="transported", sets={"sampled": {"nrow_library": "default"}},
+        fidelity="transported", alternative=NONE,
+        stock="Geant4 tracker steps; the transported rows are the closer model (the library is built from them)",
+        switch="DeviceChain(nrow_library=); bench entry cetracker:bench_run (not the cetracker CLI, which writes steps)"),
 )
 _TRACKER_FIXED = {
     "primary_only_steps": "no delta rays, conversions or other secondaries in the tracker besides the albedo "

@@ -99,6 +99,32 @@ def test_bench_run_forwards_levels_to_the_device_chain(monkeypatch):
     assert seen == {"offline_root": "o", "response": "default", "complete_outer_wall": True}
 
 
+def test_tracker_rows_sampled_reaches_the_device_chain(monkeypatch):
+    seen = {}
+
+    def chain(**kw):
+        seen.update(kw)
+        raise Reached
+    monkeypatch.setattr(H, "DeviceChain", chain)
+    monkeypatch.setattr(H, "_CHAIN", {})
+    kw = BA.W2.select(overrides={"tracker_rows": "sampled"}).apply_kwargs({"offline_root": "o", "response": "default"})
+    with pytest.raises(Reached):
+        H.bench_run(({"x": np.zeros(1)}, 1), **kw)
+    assert seen == {"offline_root": "o", "response": "default", "nrow_library": "default"}
+    assert "nrow_library" not in BA.W2.select("fast").apply_kwargs({})
+    assert "nrow_library" not in BA.W2.select("fidelity").apply_kwargs({"response": "default"})
+
+
+def test_sampled_rows_refuse_digis_and_deltas():
+    for kw in ({"deltas": "default"}, {"response": None}):
+        with pytest.raises(ValueError, match="nrow_library"):
+            H.DeviceChain("o", ["m"], "g", **{"response": "default", "nrow_library": "default", **kw})
+    ch = object.__new__(H.DeviceChain)
+    ch.cond, ch.nrow = object(), object()
+    with pytest.raises(ValueError, match="digis=False"):
+        ch(None, 1, digis=True)
+
+
 def test_tsdevice_stock_ds_entrance_reaches_the_ds_only_arm(monkeypatch, tmp_path):
     pytest.importorskip("jax")
     from beamfastsim import tsdevice as dev
@@ -138,7 +164,7 @@ def test_records_are_json_and_list_the_fixed_approximations():
             r = w.select(preset).record()
             json.dumps(r)
             assert r["fixed"] == sorted(w.fixed)
-    assert BA.W2.select("fidelity").record()["no_stock_path"] == ["calo_albedo", "straw_wall"]
+    assert BA.W2.select("fidelity").record()["no_stock_path"] == ["calo_albedo", "straw_wall", "tracker_rows"]
 
 
 def test_fidelity_preset_without_a_response_sets_only_the_wall():
