@@ -62,6 +62,9 @@ DECLARED = {"G4MuonDecayChannel": "muon -> e+- and two neutrinos: daughters tota
             "G4PhotonDynamicMass": "a photon from a boosted decay has a rounding-level dynamic mass; an EM process "
                                    "that absorbs it shares its kinetic energy, so its pre-step mass is left; "
                                    "Geant4 behaviour",
+            "G4PositronDynamicMass": "a positron from a boosted decay keeps its rounding-level dynamic mass offset "
+                                     "from m_e; annihilation makes its photons from m_e, so the offset is left; "
+                                     "Geant4 behaviour",
             "G4DecayBoostMass": "G4Decay makes daughters at the parent's dynamic mass m and boosts with gamma = E/M, "
                                 "so Q_decay = E (1 - m/M) for a rounding-level |m - M|; Geant4 behaviour"}
 
@@ -113,8 +116,9 @@ def report(tables, links, expected_events, *, rtol=1e-9, atol=1e-9):
     median_mass = float(np.median(t["begin_mass"][lepton])) if len(masses) else 0.
     from_decay = np.zeros(len(t["pdg"]), bool)
     from_decay[np.flatnonzero(child)] = np.isin(process[rows], list(DECAY))
-    bound = electron_mass_bound(median_mass, t["begin_energy"][lepton], from_decay[lepton])
-    require(np.all(np.abs(t["begin_mass"][lepton] - median_mass) <= bound), "inconsistent electron masses")
+    track_bound = electron_mass_bound(median_mass, t["begin_energy"], from_decay)
+    require(np.all(np.abs(t["begin_mass"][lepton] - median_mass) <= track_bound[lepton]),
+            "inconsistent electron masses")
     muon_channel = decay & np.isin(parent_pdg, MUONS) & (children == 3) & (electrons + positrons == 1) & (neutrinos == 2)
     require(len(masses) > 0 or not (np.any(taken[em_like]) or np.any(muon_channel)),
             "electron-mass term without a recorded electron mass")
@@ -126,6 +130,9 @@ def report(tables, links, expected_events, *, rtol=1e-9, atol=1e-9):
     pre_mass = s["pre_mass"]
     photon_term = np.where(em_like & destroyed & (parent_pdg == PHOTON) & (pre_mass > 0) &
                            (pre_mass <= MASS_ROUNDING * np.abs(s["pre_energy"])), pre_mass, 0.)
+    offset = pre_mass - electron_mass
+    positron_term = np.where(em_like & destroyed & (parent_pdg == POSITRON) & (offset != 0) &
+                             (np.abs(offset) <= track_bound[sr]), offset, 0.)
     nominal = np.zeros(n)
     for p in np.unique(parent_pdg[decay]):
         values, counts = np.unique(t["begin_mass"][t["pdg"] == p], return_counts=True)
@@ -139,7 +146,7 @@ def report(tables, links, expected_events, *, rtol=1e-9, atol=1e-9):
     boosted = (near & ~muon_channel & (boost != 0) & (np.abs(q) > tolerance) & (np.abs(q - boost) <= tolerance))
     decay_residual = np.where(muon_channel, rest_deficit - electron_mass, np.where(boosted, q - boost, q))
     expected_decay = np.where(decay, q - decay_residual, 0.)
-    residual = np.where(decay, decay_residual, q + medium - photon_term)
+    residual = np.where(decay, decay_residual, q + medium - photon_term - positron_term)
     em_steps = inside & em_like
     decay_steps = inside & decay
     nuclear = inside & ~em_like & ~decay
@@ -172,10 +179,11 @@ def report(tables, links, expected_events, *, rtol=1e-9, atol=1e-9):
     q_nuclear = per_event(q, nuclear, se)
     q_decay = per_event(expected_decay, decay_steps, se)
     q_photon = per_event(photon_term, em_steps, se)
+    q_positron = per_event(positron_term, em_steps, se)
     r_sum = per_event(residual, em_steps | decay_steps, se)
     medium_sum = per_event(medium, inside, se)
     left = entrance + medium_sum
-    right = deposits + exits + birth_exits + stopped + q_nuclear + q_decay + q_photon + r_sum
+    right = deposits + exits + birth_exits + stopped + q_nuclear + q_decay + q_photon + q_positron + r_sum
     closure = left - right
     closure_tol = rtol * np.maximum(np.abs(left), 1.) + atol * np.maximum(1, np.bincount(se, minlength=nev))
     unprocessed = sorted(set(process[nuclear]))
@@ -193,6 +201,8 @@ def report(tables, links, expected_events, *, rtol=1e-9, atol=1e-9):
         "nucleus_kill_pdgs": sorted({int(x) for x in t["pdg"][sr][decay_steps & nucleus_kill]}),
         "declared_photon_mass_steps": int((em_steps & (photon_term > 0)).sum()),
         "max_declared_photon_mass_MeV": float(photon_term[em_steps].max()) if em_steps.any() else 0.,
+        "declared_positron_mass_steps": int((em_steps & (positron_term != 0)).sum()),
+        "max_abs_declared_positron_mass_MeV": float(np.abs(np.where(em_steps, positron_term, 0.)).max(initial=0.)),
         "declared_decay_boost_steps": int((decay_steps & boosted).sum()),
         "max_abs_declared_decay_boost_MeV": float(np.abs(np.where(decay_steps & boosted, boost, 0.)).max(initial=0.)),
         "decay_steps_out_of_tolerance": int(bad_decay.sum()),
@@ -211,6 +221,7 @@ def report(tables, links, expected_events, *, rtol=1e-9, atol=1e-9):
                        "exit_at_birth": float(birth_exits.sum()), "ended_inside": float(stopped.sum()),
                        "nuclear_q": float(q_nuclear.sum()), "declared_decay_q": float(q_decay.sum()),
                        "declared_photon_mass": float(q_photon.sum()),
+                       "declared_positron_mass": float(q_positron.sum()),
                        "conserving_residual": float(r_sum.sum())},
     }
     result["energy_accounting_passed"] = (result["conserving_steps_out_of_tolerance"] == 0 and
