@@ -322,7 +322,7 @@ def _wall_layer(rng, field, ax, mat, thick, x, u, T, outward, backend):
 
 def calo_accept(field, calo, x, u, T, h_far=50.0, h_near=10.0, sub=5, margin=60.0, r_wall=950.0, s_max=30000.0,
                 path_min=CSI_PATH_MIN, annulus=False, wall=None, rng=None, backend="numpy", wait_fraction=0.05,
-                info=None):
+                info=None, contact=None):
     """Calorimeter acceptance of e- helices from (x, u, kinetic energy T): True where the path inside crystals
     reaches path_min (CSI_PATH_MIN: 10 MeV at minimum ionisation); annulus=True: where the helix enters the crystal
     annulus at all (the coarser first form). Field-map helix steps (field at the step midpoint), h_far until margin
@@ -330,8 +330,12 @@ def calo_accept(field, calo, x, u, T, h_far=50.0, h_near=10.0, sub=5, margin=60.
     rings are crossed radially with the option-4 slab physics (cechain), so electrons entering a disk through its
     inner edge lose energy, scatter or are reflected back into the bore; crossings wait until at most wait_fraction
     of the live tracks are stepping. Not modelled: front and back plates, FEE, tracker material. info (dict): filled
-    with wall crossing counts."""
+    with wall crossing counts. contact (dict, opt-in, wall model only): filled with the state at the first helix sample
+    inside a crystal: found [n] bool, x [n, 3], u [n, 3], T [n] (kinetic energy there), s [n] (path to it); the flags
+    are the same with or without it."""
     if wall is None:
+        if contact is not None:
+            raise ValueError("calo_accept: contact needs the wall model")
         return _calo_accept_vacuum(field, calo, x, u, T, h_far, h_near, sub, margin, r_wall, s_max, path_min, annulus)
     from mu2efastsim import materials as Mt
     rng = rng if rng is not None else np.random.default_rng(0)
@@ -345,6 +349,9 @@ def calo_accept(field, calo, x, u, T, h_far=50.0, h_near=10.0, sub=5, margin=60.
     z_lo = x[:, 2].min() - 100.0 if n else 0.0
     goal = 1e-9 if annulus else path_min
     cnt = dict(al=0, cf=0, reflected=0, stopped=0)
+    if contact is not None:
+        contact.update(found=np.zeros(n, bool), x=np.full((n, 3), np.nan), u=np.full((n, 3), np.nan),
+                       T=np.full(n, np.nan), s=np.full(n, np.nan))
     while live.any():
         act = live & (pend == 0)
         waiting = live & (pend > 0)
@@ -395,12 +402,18 @@ def calo_accept(field, calo, x, u, T, h_far=50.0, h_near=10.0, sub=5, margin=60.
             s_ev[k[better]], kind[k[better]] = sv[ok][better], kd
         for k in range(1, sub + 1):
             hk = s_ev * k / sub
-            xk = ehelix.helix(xi, ui, pi, -1.0, Bm, hk)[0]
+            xk, uk = ehelix.helix(xi, ui, pi, -1.0, Bm, hk)
             dx, dy = xk[:, 0] - calo.axis_x, xk[:, 1]
             zin = ((xk[:, 2, None] >= zf) & (xk[:, 2, None] <= zb)).any(1)
             r = np.hypot(dx, dy)
             hit = zin & ((r >= calo.r_in) & (r <= calo.r_out) if annulus else in_crystal(calo, dx, dy))
             path[i] += np.where(hit, s_ev / sub, 0.0)
+            if contact is not None:            # first sample inside a crystal: the state there (no effect on flags)
+                first = hit & ~contact["found"][i]
+                j = i[first]
+                contact["found"][j] = True
+                contact["x"][j], contact["u"][j], contact["T"][j] = xk[first], uk[first], T[j]
+                contact["s"][j] = s[j] + hk[first]
         xn, un = ehelix.helix(xi, ui, pi, -1.0, Bm, s_ev)
         x[i], u[i] = xn, un
         s[i] += s_ev

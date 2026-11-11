@@ -103,8 +103,8 @@ def test_kit_task_renders():
         cores: int; mem_gb: int; gpus: int; gpu_type: str; minutes: int
 
     @dataclass(frozen=True)
-    class T:
-        params: tuple; metrics: tuple; resources: object; body: str
+    class T:                                   # mu2efastsim.endpoints.kit.Task's fields
+        params: tuple; metrics: tuple; resources: object; body: str; defaults: dict = None
 
     tasks, fnal = {}, set()
     kit_task.register(tasks, T, R, fnal)

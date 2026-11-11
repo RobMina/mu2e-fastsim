@@ -166,6 +166,7 @@ KIT_PARAMS = {
     "crv_response": {"seed": 1, "atten_T1": 0.58},
     "beam_point": {"geom": "move_extras12.txt", "muons": 105350.0, "seed": 1.0, "repeat": 0.0},
     "beam_sob": {"geom": "move_extras12.txt", "muons": 0, "electrons": 100000, "seed": 1},
+    "beam_edep": {"geom": "move_extras12.txt", "muons": 0, "electrons": 100000, "seed": 1, "dtype": "float32"},
 }
 
 
