@@ -7,8 +7,9 @@ the same tree from the fast chain, so the second analysis, and the tree and summ
 unchanged on fast output. The physics definitions stay in the analysis server.
 
 ```bash
-python3 -m beamfastsim.edepana ce --stops STOPS.npz --geom GEOM.txt --electrons 200000 --seed 1 --dtype float64 \
-    --library SHOWER_LIBRARY.npz --gdml RUN1A.gdml --procs 15 --out DIR
+python3 -m beamfastsim.edepana ce --stops STOPS.npz --geom GEOM.txt --electrons 100000 --seed 1 --dtype float64 \
+    --library SHOWER_LIBRARY.npz --edge-library EDGE_TABLE.npz --gdml RUN1A.gdml --out DIR
+# or in two stages: --stage device (GPU: columns npz), then --stage calo --columns DIR/edep_device_columns.npz (CPU)
 python3 -m beamfastsim.edepana point --g4 BEAM_TABLE.npz --z-up 3900 --geom GEOM.txt --muons 0 ... --out DIR
 ```
 
@@ -45,7 +46,7 @@ Frame: Mu2e (the analysis server's `primary_start_r` subtracts the detector orig
 | `primary_trk_front_p` | float[] | MeV/c | \|p\| of the primary's first-in-time StepPointMC at VD `TT_FrontHollow` / `TT_FrontPA`; 0 if none | `cechain_jax` state at the tracker entry plane (z 8539.9 mm; Geant4 VD13 8539.48 mm); 0 if the electron never reaches it | approximate |
 | `primary_trk_front_energy` | float[] | MeV | sqrt(p^2 + m_start^2) at that step | the same from the plane state | approximate |
 | `primary_calo_edep`, `primary_calo_edep_vis` | float[] | MeV | CaloShowerStep G4 / Birks energy of the primary and its descendants | = the event values (in a CeEndpoint event every calorimeter step descends from the electron) | approximate |
-| `event_calo_edep`, `event_calo_edep_vis` | float | MeV | sum of all CaloShowerSteps, G4 / Birks energy | whole-event Geant4 shower pattern of the calorimeter shower library drawn at the first disk-front crossing (both disks' steps); electrons without one: the `cesob` wall proxy, a pattern drawn at the first crystal contact when it accepts | approximate (gap below) |
+| `event_calo_edep`, `event_calo_edep_vis` | float | MeV | sum of all CaloShowerSteps, G4 / Birks energy | first calorimeter VD crossing from the tracker exit (vacuum): at a front plane, a whole-event Geant4 shower pattern of the shower library (both disks' steps); at the r = 335 mm inner-edge cylinder, the event energies of a Geant4 inner-edge entry of the same disk, depth and helix maximum radius; none when the helix maximum radius stays below 400 mm | approximate (gaps below) |
 | `event_trk_edep` | float | MeV | sum of StrawGasStep ionising energy | the electron's own fieldsteps rows plus the albedo returns | approximate, low (gap below) |
 | `run`, `subrun`, `event` | int32 | | art event id | run 1 (option), one subrun per batch, event = birth index + 1 | bookkeeping |
 | `weight` | float | | 1 | 1 | exact |
@@ -67,11 +68,24 @@ the mean `event_trk_edep` per stored and per generated event, printed as `std::c
   `event_trk_edep` is low (in Geant4 CE events the eIoni deltas carry about a third of the gas ionisation) and so are
   the `edep` tracker averages. The tracker-front branches are upstream of the tracker and do not depend on it; the
   storage filter counts the electron's own steps and is barely affected.
-- **Calorimeter entries through a disk's inner edge.** The shower library holds Geant4 patterns of disk-front
-  entries only; electrons that enter a disk from the bore go through the `cesob` wall proxy (the inner Al and
-  carbon-fibre rings, then at least 17.8 mm in a crystal) and draw a front-entry pattern at their first crystal
-  contact. This changes `event_calo_edep(_vis)`, `primary_calo_edep(_vis)`, the selection `event_calo_edep_vis > 10`
-  (the CE acceptance of `approx_ce_sensitivity`, so its signal and both backgrounds) and the calorimeter branch of the
-  storage filter. The front branches (the signal shape) do not depend on it.
+- **Calorimeter entries.** Front entries take a Geant4 front-entry pattern (the shower library, nominal target, EM
+  option 4). Inner-edge entries take the event energies of Geant4 inner-edge entries (the inner-edge table: CeEndpoint
+  electrons whose first calorimeter VD crossing is the r = 335 mm cylinder; about 28 % of the stored events of the
+  nominal target), binned by disk, depth behind the front plane (25 mm) and helix maximum radius in 1 T (below 450,
+  450-520, above 520 mm). A contact whose maximum radius stays below 400 mm gives no energy: such an electron reaches
+  at most the passive inner wall, and no stored Geant4 event has one. This approximation affects:
+  - `event_calo_edep(_vis)` and `primary_calo_edep(_vis)`;
+  - the selection `event_calo_edep_vis > 10`, i.e. the CE acceptance of `approx_ce_sensitivity`, so its signal and
+    both backgrounds;
+  - the calorimeter branch of the storage filter.
+
+  The front branches (the signal shape) do not depend on it. The tables do not follow the target design or the
+  physics list.
 - The shower library comes from Geant4 option-4 CeEndpoint events; the design-study boards ran FTFP_BERT (option 0),
   whose energy-loss tail before the tracker is about 1 % smaller (relative) at 1 MeV below the birth energy.
+
+## Validation
+
+Pending: M. MacKenzie's `approx_ce_sensitivity` (unchanged, at the commit the design studies pin) on fast and stock
+files of the 65 Geant4-evaluated design points, with predeclared pass marks. This section is filled in with the
+numbers.
