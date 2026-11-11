@@ -53,6 +53,7 @@ ELECTRON, POSITRON = 11, -11
 MUONS, NEUTRINOS = (13, -13), (12, -12, 14, -14, 16, -16)
 PROTON = 2212
 PHOTON, MASS_ROUNDING = 22, 1e-6
+BOOST_ULPS = 16
 DECLARED = {"G4MuonDecayChannel": "muon -> e+- and two neutrinos: daughters total m_mu - m_e in the muon rest frame, "
                                   "so the missing 4-momentum has rest-frame energy m_e (Q_decay = m_e at rest); "
                                   "Geant4 behaviour, not tuned",
@@ -63,6 +64,13 @@ DECLARED = {"G4MuonDecayChannel": "muon -> e+- and two neutrinos: daughters tota
                                    "Geant4 behaviour",
             "G4DecayBoostMass": "G4Decay makes daughters at the parent's dynamic mass m and boosts with gamma = E/M, "
                                 "so Q_decay = E (1 - m/M) for a rounding-level |m - M|; Geant4 behaviour"}
+
+
+def electron_mass_bound(median_mass, energy, from_decay):
+    """Largest |m - median| per e+-: rounding level, plus BOOST_ULPS ulps of E^2 in m^2 for a decay product."""
+    # Geant4 rebuilds a boosted decay product's dynamic mass from E and p, so its rounding grows as eps E^2 / m.
+    boost = BOOST_ULPS * np.finfo(float).eps * np.square(energy) / (2. * median_mass) if median_mass > 0 else 0.
+    return MASS_ROUNDING * median_mass + np.where(from_decay, boost, 0.)
 
 
 def report(tables, links, expected_events, *, rtol=1e-9, atol=1e-9):
@@ -103,8 +111,10 @@ def report(tables, links, expected_events, *, rtol=1e-9, atol=1e-9):
     lepton = np.isin(t["pdg"], [ELECTRON, POSITRON])
     masses = np.unique(t["begin_mass"][lepton])
     median_mass = float(np.median(t["begin_mass"][lepton])) if len(masses) else 0.
-    # Geant4 rebuilds the dynamic mass of boosted decay products from E and p: e+- masses scatter at rounding level.
-    require(np.all(np.abs(masses - median_mass) <= MASS_ROUNDING * median_mass), "inconsistent electron masses")
+    from_decay = np.zeros(len(t["pdg"]), bool)
+    from_decay[np.flatnonzero(child)] = np.isin(process[rows], list(DECAY))
+    bound = electron_mass_bound(median_mass, t["begin_energy"][lepton], from_decay[lepton])
+    require(np.all(np.abs(t["begin_mass"][lepton] - median_mass) <= bound), "inconsistent electron masses")
     muon_channel = decay & np.isin(parent_pdg, MUONS) & (children == 3) & (electrons + positrons == 1) & (neutrinos == 2)
     require(len(masses) > 0 or not (np.any(taken[em_like]) or np.any(muon_channel)),
             "electron-mass term without a recorded electron mass")

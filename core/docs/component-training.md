@@ -97,7 +97,9 @@ by step at the same tolerance and counted in the report:
 - `G4Decay` makes daughters at the parent's dynamic mass `m` and boosts them with `gamma = E/M`, so a decay may give
   `Q = E (1 - m/M)` for `|m - M| <= 1e-6 M` (`M` is the most common mass of that PDG in the file).
 
-Every other decay must conserve energy. Electron and positron masses must agree within 1e-6 of their median.
+Every other decay must conserve energy. Electron and positron masses must agree within 1e-6 of their median. A decay
+product's dynamic mass is rebuilt from `E` and `p`, so its rounding grows as `eps E^2 / m`: its bound adds 16 ulps of
+`E^2` in `m^2` (5e-6 MeV for a 38 GeV positron from a boosted pi0 Dalitz decay).
 
 ## Geometry and validation order
 
