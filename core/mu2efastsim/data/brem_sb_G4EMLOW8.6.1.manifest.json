@@ -1,0 +1,267 @@
+{
+ "arrays": {
+  "chi": {
+   "dtype": "<f8",
+   "shape": [
+    32,
+    57,
+    32
+   ]
+  },
+  "kappa": {
+   "dtype": "<f8",
+   "shape": [
+    32
+   ]
+  },
+  "lnT": {
+   "dtype": "<f8",
+   "shape": [
+    57
+   ]
+  },
+  "sha256": {
+   "dtype": "<U64",
+   "shape": [
+    32
+   ]
+  },
+  "source": {
+   "dtype": "<U20",
+   "shape": []
+  },
+  "z": {
+   "dtype": "<i8",
+   "shape": [
+    32
+   ]
+  }
+ },
+ "axes": [
+  {
+   "array": "kappa",
+   "description": "photon energy over kinetic energy (interpolation nodes)",
+   "frame": "k / T",
+   "hi": 1.0,
+   "lo": 1e-12,
+   "name": "kappa",
+   "nbins": 31,
+   "policy": "clip",
+   "scale": "irregular",
+   "unit": "1"
+  },
+  {
+   "array": "lnT",
+   "description": "interpolation nodes; T above T_MAX (1 GeV) is refused by the callers",
+   "frame": "ln of the kinetic energy",
+   "hi": 9.2103,
+   "lo": -6.9078,
+   "name": "lnT",
+   "nbins": 56,
+   "policy": "clip",
+   "scale": "irregular",
+   "unit": "ln(MeV)"
+  }
+ ],
+ "config_hash": null,
+ "content_hash": "3fd91f7f6f4d887c4baf87e7d26191609c074586c9bf186b461a914575da182e",
+ "description": "Seltzer-Berger scaled bremsstrahlung cross section chi(Z, kappa, ln T) [mb] of G4EMLOW 8.6.1 brem_SB, for the elements of materials.ELEMENTS (array z), interpolated bilinearly and clamped to the nodes as G4Physics2DVector::Value.",
+ "domain": {
+  "coverage": "T from T_MIN (1 keV) to T_MAX (1 GeV); kappa and ln T clamped to the nodes",
+  "fallbacks": []
+ },
+ "dtype": {
+  "compute": [
+   "float32",
+   "float64"
+  ],
+  "notes": "host interpolation in float64; device tables (eslab_jax) are built from it in the compute dtype",
+  "storage": {
+   "chi": "float64",
+   "nodes": "float64"
+  }
+ },
+ "generator": {
+  "configuration": "brem_SB/br<Z>",
+  "name": "Geant4 data set G4EMLOW",
+  "physics_list": null,
+  "release": "8.6.1 (Geant4 11.3.2)"
+ },
+ "geometry": {
+  "hash": null,
+  "tag": "none (element data)"
+ },
+ "kind": "interpolation",
+ "legacy": {
+  "format": "npz without a manifest",
+  "schema": 0
+ },
+ "name": "core.ebrem.g4emlow861",
+ "outputs": [
+  {
+   "description": "(beta^2 / Z^2) k dsigma/dk",
+   "dtype": "float64",
+   "name": "chi",
+   "unit": "mb"
+  }
+ ],
+ "release": {
+  "commit": "04ab0ca",
+  "entry_point": "python3 -m mu2efastsim.ebrem convert",
+  "repository": "RobMina/mu2e-fastsim"
+ },
+ "rng": {
+  "device": "none",
+  "host": "none"
+ },
+ "schema": 1,
+ "seeds": {},
+ "source": {
+  "description": "G4EMLOW 8.6.1 brem_SB data files, values unchanged",
+  "files": [
+   {
+    "file": "br1",
+    "sha256": "1dc036477ce492db81e013b9702d3838a885784ef3dc59616e172b91a30a40f4"
+   },
+   {
+    "file": "br5",
+    "sha256": "9a99c359582897b4bdfadcbb74dfa9d22e74eefa26b3b4e81aa3e0728aa10399"
+   },
+   {
+    "file": "br6",
+    "sha256": "1532275b3348a87f8e7f7563dd5434d2cee862709ea9eaaa9ef7741bd986b41b"
+   },
+   {
+    "file": "br7",
+    "sha256": "974faa38187393ca73a7b705476e08b017acf8ab4b044126fa9cdef5985e2747"
+   },
+   {
+    "file": "br8",
+    "sha256": "8aaf505be0be3ccc910a6e2ebcb3a8e6c9c36c6e8f8702396468be347511faac"
+   },
+   {
+    "file": "br9",
+    "sha256": "f55ef9e7db988b33efd291751c1d663c32f32b8a167da5f9586626118416c881"
+   },
+   {
+    "file": "br11",
+    "sha256": "e4f832b6c0dae2c50492c6daf627a91e1b112c20da703f0bf0527058dc1d1d38"
+   },
+   {
+    "file": "br12",
+    "sha256": "89152a662562ef3db152b06757f59179c868aacdeea3f11a79b52f46e70824be"
+   },
+   {
+    "file": "br13",
+    "sha256": "56b9177ba3c414166e84d435686a56fd5ead5421d63f7aa739180e19535500e2"
+   },
+   {
+    "file": "br14",
+    "sha256": "c54e5364d652aead75dd9d068510641cf3126c11c421a47294fde5331aed5c6b"
+   },
+   {
+    "file": "br17",
+    "sha256": "b95a2e3aebbadb52975eeb64a1972ee1259643343e2cefb83a19b5bb6ea88f8d"
+   },
+   {
+    "file": "br18",
+    "sha256": "772ebf9e29069bfc2a3101833f1580583e017d9ca150bcf972528b93bfd6ef64"
+   },
+   {
+    "file": "br19",
+    "sha256": "00f88dafc4aec6eab0599900dacf1e11f5f11686afcbd8733331254d63ac2014"
+   },
+   {
+    "file": "br20",
+    "sha256": "c30aebbe067062aa48f6054080ef5b2c821696bd5fd508bfda64926679787839"
+   },
+   {
+    "file": "br22",
+    "sha256": "bc325f1c93d8106ee999a5109c42bf681b18027f1b6493bcb986e6cfc2e322af"
+   },
+   {
+    "file": "br24",
+    "sha256": "bb7146fff2b8c126d74cea06f4f46359775c6f60a80986dd4276eed2203fa760"
+   },
+   {
+    "file": "br25",
+    "sha256": "41ce4e39b869c4afc27e5cb96e681583ac3a6b1c7a17760d252d1e6192314c5b"
+   },
+   {
+    "file": "br26",
+    "sha256": "0dd1bce153157f748a73eb248679a767de3f78fafb156070b82b7df0b0cb861a"
+   },
+   {
+    "file": "br28",
+    "sha256": "8840d9fb37c1bb041a7505d61f07098d39abee7021fbcff22810a4a5287ae1b7"
+   },
+   {
+    "file": "br29",
+    "sha256": "4031f1850cf0ec5aa22c1a7c584c2873872cddeeb582adf8348d72a0fb6ab5a3"
+   },
+   {
+    "file": "br30",
+    "sha256": "37ae10e8e4797811aa94a8cd647d8d6b4ef47a1b3c2c263751e73faf83753e9c"
+   },
+   {
+    "file": "br39",
+    "sha256": "6e6d0ba83abad43de936bd7a49567f7173d4496b660b31f8d566e5968984b69b"
+   },
+   {
+    "file": "br47",
+    "sha256": "8cbc5b36e09653cdb6b39a580d1354d513c5068ed4f14699b83867e07bd441a1"
+   },
+   {
+    "file": "br50",
+    "sha256": "699806205ba9697b5c6163ac6002489247e17ae84a1831d52de30cf2dd7a15df"
+   },
+   {
+    "file": "br51",
+    "sha256": "495c47c5f7dbacb6cca2a01f49682ead8210e60114fdef51f66355c76728b63c"
+   },
+   {
+    "file": "br53",
+    "sha256": "f54eb2d7357901e463c6a0fd07a399ff60923220b6aac40129c3177d36a14367"
+   },
+   {
+    "file": "br55",
+    "sha256": "551ce124caf26847fe3db6553c73e8d51fe264d710908c8c39e2929174451408"
+   },
+   {
+    "file": "br58",
+    "sha256": "6758f51399ee9596574c131cb886833a5e5cc944a91c6c9234f19df0e06a3858"
+   },
+   {
+    "file": "br71",
+    "sha256": "d9b66f96d7c47dd7351f46ec06201a0a337c9490f1066dffc87927614f638231"
+   },
+   {
+    "file": "br74",
+    "sha256": "400bb5e6270ac250a3e4e558d099466e263ce0dc2d0286c1c230bd601e958e77"
+   },
+   {
+    "file": "br79",
+    "sha256": "23d2508f1453db11a52d5a88cb17814718ab8fde7631b3b2af7360e9dd3338c8"
+   },
+   {
+    "file": "br82",
+    "sha256": "b678e72684433385ad90a4c3beac1892b3917f6052442ffa822542789875f347"
+   }
+  ],
+  "samples": []
+ },
+ "split": {
+  "held_out": null,
+  "rule": "not trained: Geant4 data converted unchanged",
+  "training": null
+ },
+ "subsystem": "core",
+ "unrecorded": {
+  "config_hash": "no build configuration beyond the data files"
+ },
+ "validation": {
+  "record": "core/docs/validation.md (electron slabs against Geant4 option 4)",
+  "status": "tested, not closed"
+ },
+ "version": 1
+}

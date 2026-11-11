@@ -31,6 +31,7 @@ import numpy as np
 
 from . import ebrem
 from .eloss import ME
+from .library import store as LS
 from .materials import ELEMENTS
 
 ALPHA = 1 / 137.035999
@@ -209,14 +210,49 @@ def convert_mott(header, out):
     vals = np.array([float(v) for v in re.findall(r"[-+]?\d+\.?\d*(?:[eE][-+]?\d+)?", block)])
     if vals.size != 93 * 5 * 6:
         raise ValueError(f"{header}: {vals.size} numbers in fMottCoef, expected {93 * 5 * 6}")
-    np.savez_compressed(out, coef=vals.reshape(93, 5, 6), sha256=np.array(hashlib.sha256(text.encode()).hexdigest()),
-                        source=np.array("Geant4 11.3.2 G4MottData.hh fMottCoef"))
+    arrays = dict(coef=vals.reshape(93, 5, 6), sha256=np.array(hashlib.sha256(text.encode()).hexdigest()),
+                  source=np.array("Geant4 11.3.2 G4MottData.hh fMottCoef"))
+    return LS.save(out, arrays, mott_manifest_fields(arrays))
+
+
+MOTT_LIBRARY = "core.mott.g4_11_3_2"
+
+
+def mott_manifest_fields(arrays):
+    """Manifest fields of the Mott coefficient table (mu2efastsim.library.manifest), from its arrays."""
+    return dict(
+        name=MOTT_LIBRARY, subsystem="core", version=1, kind="parametric",
+        description="Electron Mott/Rutherford ratio fit coefficients fMottCoef[Z][j][k] (Z = 0..92) of Geant4 "
+                    "11.3.2 G4MottData.hh, values unchanged (G4ScreeningMottCrossSection::RatioMottRutherfordCosT).",
+        axes=[],
+        outputs=[dict(name="coef", unit="1", dtype="float64", description="a[Z, j, k] of the ratio polynomial")],
+        source=dict(description="Geant4 11.3.2 G4MottData.hh, fMottCoef block", samples=[],
+                    files=[dict(file="G4MottData.hh", sha256=str(arrays["sha256"]))]),
+        generator=dict(name="Geant4", release="11.3.2", physics_list=None, configuration="G4MottData.hh"),
+        release=dict(repository="RobMina/mu2e-fastsim", commit="2dde6c6",
+                     entry_point="mu2efastsim.emsc.convert_mott"),
+        seeds={}, geometry=dict(tag="none (element data)", hash=None), config_hash=None,
+        split=dict(training=None, held_out=None, rule="not trained: Geant4 constants converted unchanged"),
+        dtype=dict(storage={"coef": "float64"}, compute=["float32", "float64"],
+                   notes="host in float64; device tables (eslab_jax) are built from it in the compute dtype"),
+        rng=dict(host="none", device="none"),
+        domain=dict(coverage="Z 0..92 (an index outside raises IndexError)", fallbacks=[]),
+        validation=dict(status="tested, not closed",
+                        record="core/docs/validation.md (electron slabs against Geant4 option 4)"),
+        unrecorded=dict(config_hash="no build configuration beyond the header"),
+        legacy=dict(schema=0, format="npz without a manifest"),
+    )
+
+
+def write_shipped_mott_manifest(path=MOTT_DATA):
+    """(Re)write the sidecar manifest of the frozen bundled table; the .npz is not touched."""
+    return LS.write_sidecar(path, mott_manifest_fields(LS.load_arrays(path)))
 
 
 @lru_cache(maxsize=None)
 def mott_coefficients(path=MOTT_DATA):
-    """fMottCoef[Z][j][k] (Z = 0..92) of the bundled npz."""
-    return np.load(path)["coef"]
+    """fMottCoef[Z][j][k] (Z = 0..92) of the bundled npz (checked load)."""
+    return LS.load(path, expect={"name": MOTT_LIBRARY}).arrays["coef"]
 
 
 def mott_ratio_table(z, u, beta):
