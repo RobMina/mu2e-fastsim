@@ -104,6 +104,7 @@ behaviour and any stock-art route outside the chain's levels:
 | workflow | approximation | levels (default first) | fast | fidelity | stock alternative | switch |
 |---|---|---|---|---|---|---|
 | W1 | `ts_transport`: TS stage: condensed device transport (RK4 in the field bank, ionisation with Urban fluctuations, cumulative Highland scattering, step caps), or the DS stage started from the reference's stock Geant4 DS-entrance states | condensed, stock_ds_entrance | condensed | stock_ds_entrance | stock art: stock DS-entrance states of the reference (art ReadVirtualDetector) feed the DS stage | tsdevice --arm (CLI only; the bench entry runs the condensed chain) |
+| W1 | `ts_vacuum_step`: TS stage step length in vacuum: the fixed step everywhere (default), or a long step (up to 20 mm, at most 0.1 rad of turning and a 0.25 mm sagitta) where its chord crosses no material, stays inside the envelope and does not reach the DS plane | fixed, long | long | fixed | none: Geant4 takes field-limited steps in vacuum (deltaChord 0.25 mm); the fixed 2.5 mm step is the closer, slower model | tsdevice --vacuum-step; bench_chain(vacuum_step=); Settings.vacuum_step_mm |
 | W1 | `pion_nuclear_interactions` (no switch) | always on | - | no level | not modelled: pions reaching the DS are counted, not transported | - |
 | W1 | `highland_gaussian_scattering` (no switch) | always on | - | no level | Gaussian Highland, no single-scattering tails (stock: Geant4 Urban MSC) | - |
 | W1 | `stopped_pion_and_capture_products` (no switch) | always on | - | no level | stopped-pion daughters, muon capture and decay electrons not produced | - |
@@ -136,8 +137,11 @@ behaviour and any stock-art route outside the chain's levels:
 ## Notes per workflow
 
 - **W1.** `ts_transport=stock_ds_entrance` runs the DS stage from the reference's stock DS-entrance states. This is
-  `tsdevice --arm stock-ds`, and it is the only level of the beam stage. The step sizes and caps are numeric settings
-  (`tsdevice --step`, `Settings`), not approximation levels.
+  `tsdevice --arm stock-ds`. `ts_vacuum_step=long` (opt-in, the `fast` preset) lets a lane take a step of up to
+  20 mm where the chord crosses no material, stays inside the envelope and does not reach the DS plane, capped at
+  0.1 rad of turning and a 0.25 mm sagitta (Geant4's deltaChord); elsewhere the 2.5 mm step is unchanged. Its
+  validation against the fixed step and stock is in the PR that added it. The other step sizes and caps are
+  numeric settings (`tsdevice --step`, `Settings`), not approximation levels.
 - **W2-W4.** One declaration serves the stops (W2), DIO (W3) and RPC (W4) electrons of `cetracker`.
   - The albedo levels act on the device tracker; the NumPy tracker has none.
   - `straw_wall=complete` is the existing opt-in complete outer wall.

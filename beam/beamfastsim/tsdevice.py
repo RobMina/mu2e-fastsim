@@ -15,6 +15,10 @@ Highland scattering, pion decay, fates) with these device simplifications, all i
     directions, not extra RK4 probes; a lane that leaves the envelopes ends as `wall`, or `upstream` when the
     first outside point is upstream of the TS1 entrance plane on the production-solenoid side;
   * random numbers come from jax.random, so a seed is not the NumPy route's seed: compare statistically.
+Opt-in approximation (W1 ts_vacuum_step, Settings.vacuum_step_mm / --vacuum-step, default off): where a long trial
+step's chord crosses no material, stays inside the envelope and does not reach the DS plane, the lane takes it
+instead of the step_mm step (capped at 0.1 rad of turning and a 0.25 mm sagitta), as Geant4 takes long
+field-limited steps in vacuum.
 The DS stage is `transport.make_stepper` unchanged; DS-entrance muons keep their remaining proper lifetime.
 Charged pions reaching the DS plane are counted, not transported (the DS stepper is muon-only).
 
@@ -345,6 +349,11 @@ class Settings(NamedTuple):
                                # held-out cohort DS-reaching lanes need at most 13,480 steps
     material_step_mm: float = 0.25
     loss_fraction: float = 0.05
+    # opt-in approximation (W1 ts_vacuum_step): a step of up to this length (0: off, the default) where its chord
+    # crosses no material, stays inside the envelope and does not reach the DS plane, else the step_mm step; the
+    # step is also capped so the arc's sagitta stays below vacuum_chord_mm (Geant4's deltaChord, 0.25 mm)
+    vacuum_step_mm: float = 0.0
+    vacuum_chord_mm: float = 0.25
 
 
 def _fdt():
@@ -467,6 +476,24 @@ def make_ts_step(field, geom, s):
         # as `unconverged` and are counted
         xn, un, ok = _rk4(field, st.x, u, kq, h, b0, rel)        # increment when rel (float32)
         cols = cols_of(st.x, xn)
+        if s.vacuum_step_mm > s.step_mm:
+            # opt-in vacuum step: the long trial replaces the step_mm step only when its chord crosses no material,
+            # every quarter point of its Hermite arc and its end are inside the envelope, its field is covered, and
+            # it does not reach the DS plane (crossings, material and walls keep the step_mm stepping)
+            radius = pm / jnp.maximum(ehelix.K * jnp.linalg.norm(b0, axis=1), 1e-30)
+            hv = jnp.minimum(jnp.minimum(s.vacuum_step_mm, s.max_path_mm - st.path), decay_path)
+            hv = jnp.minimum(jnp.minimum(hv, 0.1 * radius), jnp.sqrt(8 * radius * s.vacuum_chord_mm))
+            hv = jnp.where(live, hv, 0.0)
+            xv, uv, okv = _rk4(field, st.x, u, kq, hv, b0, rel)
+            colsv = cols_of(st.x, xv)
+            endv = st.x + xv if rel else xv
+            accept = live & okv & (hv > h) & (jnp.sum(colsv, axis=1) <= 0) & (endv[:, 2] < geom.z_end)
+            for f in (0.25, 0.5, 0.75):
+                accept = accept & geom.inside(_hermite(st.x, u, endv, uv, hv, f))
+            accept = accept & geom.inside(endv)
+            pick = accept[:, None]
+            h, xn, un, ok = jnp.where(accept, hv, h), jnp.where(pick, xv, xn), jnp.where(pick, uv, un), ok | accept
+            cols = jnp.where(pick, colsv, cols)
 
         def scale_on(cols, dedx_, kin_):
             mean = jnp.sum(dedx_ * cols, axis=1)
@@ -906,18 +933,20 @@ def _env(name):
 _BENCH_RESIDENT = {}
 
 
-def _bench_resident():
-    """References and chain for the bench hooks, loaded once per process and configuration."""
+def _bench_resident(vacuum_step=0.0):
+    """References and chain for the bench hooks, loaded once per process and configuration (vacuum_step: the
+    opt-in vacuum step length, 0 for the default stepping)."""
     names = ("TSDEV_REFERENCE", "TSDEV_GDML", "TSDEV_FIELD_CONFIG", "TSDEV_OFFLINE_ROOT", "TSDEV_MAPS", "TSDEV_DS_GEOM",
              "TSDEV_DS_OFFLINE_ROOT", "TSDEV_DS_MAP", "TSDEV_POOL", "TSDEV_DTYPE")
-    key = tuple(os.environ.get(name) for name in names)
+    key = tuple(os.environ.get(name) for name in names) + (float(vacuum_step),)
     if key not in _BENCH_RESIDENT:
         ref = load_references(_env("TSDEV_REFERENCE").split(":"))
+        kw = dict(settings=Settings(vacuum_step_mm=float(vacuum_step))) if vacuum_step else {}
         chain = load_chain(_env("TSDEV_GDML"), _env("TSDEV_FIELD_CONFIG"), _env("TSDEV_OFFLINE_ROOT"),
                            _env("TSDEV_MAPS"), _env("TSDEV_DS_GEOM"), _env("TSDEV_DS_OFFLINE_ROOT"),
                            _env("TSDEV_DS_MAP"),
                            pool=int(os.environ["TSDEV_POOL"]) if os.environ.get("TSDEV_POOL") else None,
-                           dtype=os.environ.get("TSDEV_DTYPE", "float64"))
+                           dtype=os.environ.get("TSDEV_DTYPE", "float64"), **kw)
         _BENCH_RESIDENT[key] = ref, chain
     return _BENCH_RESIDENT[key]
 
@@ -943,10 +972,13 @@ def bench_prepare(n, seed=None):
     return (chain, data) if seed is None else (chain, data, int(seed))
 
 
-def bench_chain(prepared, seed=20261107):
+def bench_chain(prepared, seed=20261107, vacuum_step=0.0):
     """Shared-timer entry point: one full pass TS entrance -> stops; returns the device stop arrays. A seeded
-    prepare (fresh inputs) carries the transport seed of its pass, which then replaces ``seed``."""
+    prepare (fresh inputs) carries the transport seed of its pass, which then replaces ``seed``. vacuum_step > 0
+    runs the opt-in vacuum step (approximation ts_vacuum_step) on a chain built once for it."""
     chain, (x, p, t, pdg) = prepared[:2]
+    if vacuum_step:
+        chain = _bench_resident(vacuum_step)[1]
     if len(prepared) == 3:
         seed = prepared[2]
     ts, ds = run_chain(chain, x, p, t, pdg, seed)
@@ -981,6 +1013,9 @@ def main(argv=None):
     ap.add_argument("--saved")
     ap.add_argument("--seed", type=int, default=20261107)
     ap.add_argument("--step", type=float, default=2.5)
+    ap.add_argument("--vacuum-step", type=float, default=0.0,
+                    help="opt-in approximation (ts_vacuum_step): steps of up to this length [mm] where the chord "
+                         "crosses no material (default 0: off)")
     ap.add_argument("--limit", type=int)
     ap.add_argument("--pool", type=int, help="TS lanes in flight (default: all inputs)")
     ap.add_argument("--dtype", choices=("float64", "float32"), default="float64")
@@ -998,7 +1033,8 @@ def main(argv=None):
         selection.set_effective("ts_transport", "stock_ds_entrance", "--arm stock-ds")
     t0 = time.perf_counter()
     chain = load_chain(a.gdml, a.field_config, a.offline_root, a.maps, a.ds_geom, a.ds_offline_root or a.offline_root,
-                       a.ds_map, Settings(step_mm=a.step), pool=a.pool, dtype=a.dtype)
+                       a.ds_map, Settings(step_mm=a.step, vacuum_step_mm=a.vacuum_step), pool=a.pool,
+                       dtype=a.dtype)
     ref = load_references(a.reference, a.limit)
     load_s = time.perf_counter() - t0
     t0 = time.perf_counter()
@@ -1029,7 +1065,8 @@ def main(argv=None):
     out.update({f"ds_{k}": np.asarray(v) for k, v in ds._asdict().items()})
     out["pdg_ds"] = np.asarray(pdg_ds)
     jax.block_until_ready(ds.fate)
-    meta.update(arm=a.arm, seed=a.seed, step_mm=a.step, dtype=a.dtype, load_s=load_s, run_s=time.perf_counter() - t0,
+    meta.update(arm=a.arm, seed=a.seed, step_mm=a.step, vacuum_step_mm=a.vacuum_step, dtype=a.dtype, load_s=load_s,
+                run_s=time.perf_counter() - t0,
                 device=str(jax.devices()[0]), ds_geom=a.ds_geom, approximations=selection.record())
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(a.out, meta=json.dumps(meta), **out)
