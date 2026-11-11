@@ -10,6 +10,8 @@ angle. Array functions: numpy in, numpy out; energies in MeV, lengths in mm.
 
 The tables are a compact copy of G4EMLOW 8.6.1 (data/brem_sb_G4EMLOW8.6.1.npz, the elements of materials.ELEMENTS);
 `python3 -m mu2efastsim.ebrem convert <G4EMLOW>/brem_SB OUT.npz` rebuilds it and records each file's SHA-256.
+The table is a library of the shared core (mu2efastsim.library, docs/libraries.md): convert() embeds its manifest,
+the frozen bundled file has the sidecar data/brem_sb_G4EMLOW8.6.1.manifest.json, and tables() checks it on load.
 """
 import argparse
 import hashlib
@@ -18,6 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .library import store as LS
 from .materials import ELEMENTS, N_A
 
 ME = 0.51099895                     # MeV
@@ -58,14 +61,57 @@ def convert(src_dir, out, zs=None):
             raise ValueError(f"{f}: grid differs from br{zs[0]}")
         chis.append(c)
         shas.append(hashlib.sha256(f.read_bytes()).hexdigest())
-    np.savez_compressed(out, z=np.array(zs), kappa=grids[0], lnT=grids[1], chi=np.array(chis),
-                        sha256=np.array(shas), source=np.array("G4EMLOW8.6.1/brem_SB"))
+    arrays = dict(z=np.array(zs), kappa=grids[0], lnT=grids[1], chi=np.array(chis), sha256=np.array(shas),
+                  source=np.array("G4EMLOW8.6.1/brem_SB"))
+    return LS.save(out, arrays, manifest_fields(arrays))
+
+
+LIBRARY = "core.ebrem.g4emlow861"
+
+
+def manifest_fields(arrays):
+    """Manifest fields of a Seltzer-Berger table (mu2efastsim.library.manifest), from its arrays."""
+    from .library.axes import Axis
+    files = [dict(file=f"br{int(z)}", sha256=str(h)) for z, h in zip(arrays["z"], arrays["sha256"])]
+    return dict(
+        name=LIBRARY, subsystem="core", version=1, kind="interpolation",
+        description="Seltzer-Berger scaled bremsstrahlung cross section chi(Z, kappa, ln T) [mb] of G4EMLOW 8.6.1 "
+                    "brem_SB, for the elements of materials.ELEMENTS (array z), interpolated bilinearly and clamped "
+                    "to the nodes as G4Physics2DVector::Value.",
+        axes=[Axis("kappa", "1", arrays["kappa"], frame="k / T", array="kappa", policy="clip",
+                   description="photon energy over kinetic energy (interpolation nodes)").describe(),
+              Axis("lnT", "ln(MeV)", arrays["lnT"], frame="ln of the kinetic energy", array="lnT", policy="clip",
+                   description="interpolation nodes; T above T_MAX (1 GeV) is refused by the callers").describe()],
+        outputs=[dict(name="chi", unit="mb", dtype="float64", description="(beta^2 / Z^2) k dsigma/dk")],
+        source=dict(description="G4EMLOW 8.6.1 brem_SB data files, values unchanged", samples=[], files=files),
+        generator=dict(name="Geant4 data set G4EMLOW", release="8.6.1 (Geant4 11.3.2)", physics_list=None,
+                       configuration="brem_SB/br<Z>"),
+        release=dict(repository="RobMina/mu2e-fastsim", commit="04ab0ca",
+                     entry_point="python3 -m mu2efastsim.ebrem convert"),
+        seeds={}, geometry=dict(tag="none (element data)", hash=None), config_hash=None,
+        split=dict(training=None, held_out=None, rule="not trained: Geant4 data converted unchanged"),
+        dtype=dict(storage={"chi": "float64", "nodes": "float64"}, compute=["float32", "float64"],
+                   notes="host interpolation in float64; device tables (eslab_jax) are built from it in the "
+                         "compute dtype"),
+        rng=dict(host="none", device="none"),
+        domain=dict(coverage="T from T_MIN (1 keV) to T_MAX (1 GeV); kappa and ln T clamped to the nodes",
+                    fallbacks=[]),
+        validation=dict(status="tested, not closed",
+                        record="core/docs/validation.md (electron slabs against Geant4 option 4)"),
+        unrecorded=dict(config_hash="no build configuration beyond the data files"),
+        legacy=dict(schema=0, format="npz without a manifest"),
+    )
+
+
+def write_shipped_manifest(path=DATA):
+    """(Re)write the sidecar manifest of the frozen bundled table; the .npz is not touched."""
+    return LS.write_sidecar(path, manifest_fields(LS.load_arrays(path)))
 
 
 @lru_cache(maxsize=None)
 def tables(path=DATA):
-    """(z -> row, kappa nodes, ln T nodes, chi[row, lnT, kappa]) from the bundled npz."""
-    d = np.load(path)
+    """(z -> row, kappa nodes, ln T nodes, chi[row, lnT, kappa]) from the bundled npz (checked load)."""
+    d = LS.load(path, expect={"name": LIBRARY}).arrays
     return {int(z): i for i, z in enumerate(d["z"])}, d["kappa"], d["lnT"], d["chi"]
 
 

@@ -1,0 +1,97 @@
+{
+ "arrays": {
+  "coef": {
+   "dtype": "<f8",
+   "shape": [
+    93,
+    5,
+    6
+   ]
+  },
+  "sha256": {
+   "dtype": "<U64",
+   "shape": []
+  },
+  "source": {
+   "dtype": "<U37",
+   "shape": []
+  }
+ },
+ "axes": [],
+ "config_hash": null,
+ "content_hash": "a7fa820cf29bbd31d319aee098f5c8a1304c61ff7383db621a0fbfc9eb0e2f75",
+ "description": "Electron Mott/Rutherford ratio fit coefficients fMottCoef[Z][j][k] (Z = 0..92) of Geant4 11.3.2 G4MottData.hh, values unchanged (G4ScreeningMottCrossSection::RatioMottRutherfordCosT).",
+ "domain": {
+  "coverage": "Z 0..92 (an index outside raises IndexError)",
+  "fallbacks": []
+ },
+ "dtype": {
+  "compute": [
+   "float32",
+   "float64"
+  ],
+  "notes": "host in float64; device tables (eslab_jax) are built from it in the compute dtype",
+  "storage": {
+   "coef": "float64"
+  }
+ },
+ "generator": {
+  "configuration": "G4MottData.hh",
+  "name": "Geant4",
+  "physics_list": null,
+  "release": "11.3.2"
+ },
+ "geometry": {
+  "hash": null,
+  "tag": "none (element data)"
+ },
+ "kind": "parametric",
+ "legacy": {
+  "format": "npz without a manifest",
+  "schema": 0
+ },
+ "name": "core.mott.g4_11_3_2",
+ "outputs": [
+  {
+   "description": "a[Z, j, k] of the ratio polynomial",
+   "dtype": "float64",
+   "name": "coef",
+   "unit": "1"
+  }
+ ],
+ "release": {
+  "commit": "2dde6c6",
+  "entry_point": "mu2efastsim.emsc.convert_mott",
+  "repository": "RobMina/mu2e-fastsim"
+ },
+ "rng": {
+  "device": "none",
+  "host": "none"
+ },
+ "schema": 1,
+ "seeds": {},
+ "source": {
+  "description": "Geant4 11.3.2 G4MottData.hh, fMottCoef block",
+  "files": [
+   {
+    "file": "G4MottData.hh",
+    "sha256": "8527b4d10648f3d16933cf994c421d15fc3ea29e548c8e823f3eeab6de77e308"
+   }
+  ],
+  "samples": []
+ },
+ "split": {
+  "held_out": null,
+  "rule": "not trained: Geant4 constants converted unchanged",
+  "training": null
+ },
+ "subsystem": "core",
+ "unrecorded": {
+  "config_hash": "no build configuration beyond the header"
+ },
+ "validation": {
+  "record": "core/docs/validation.md (electron slabs against Geant4 option 4)",
+  "status": "tested, not closed"
+ },
+ "version": 1
+}

@@ -22,4 +22,4 @@ test = ["pytest"]
 include = ["mu2efastsim*"]
 
 [tool.setuptools.package-data]
-mu2efastsim = ["data/*.npz"]
+mu2efastsim = ["data/*.npz", "data/*.json"]
