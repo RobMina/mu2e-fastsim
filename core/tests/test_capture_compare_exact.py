@@ -245,12 +245,20 @@ def widen(tables, extra):
 
 
 def transport(tables, name):
-    """Set every process-name field except creator to one transport process name."""
+    """Set every process-name field except creator to one transport process name.
+
+    Track ends get kinetic energy, so a Transportation stop is not a zero-energy natural boundary stop.
+    """
     out = clone(tables)
     for table in out.values():
         for field in table:
             if capture.is_process_field(field) and field != "creator":
                 table[field][:] = name
+    t, s = out["tracks"], out["steps"]
+    for row in range(len(t["track"])):
+        steps = np.flatnonzero((s["event"] == t["event"][row]) & (s["track"] == t["track"][row]))
+        last = steps[np.argmax(s["number"][steps])]
+        t["end_kinetic"][row] = s["post_kinetic"][last] = 1.
     return out
 
 
