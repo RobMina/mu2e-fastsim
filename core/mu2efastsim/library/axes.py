@@ -24,7 +24,7 @@ IN, BELOW, ABOVE, NONFINITE = 0, 1, 2, 3
 CODE_NAMES = {IN: "in", BELOW: "below", ABOVE: "above", NONFINITE: "nonfinite"}
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Axis:
     """One key of a library.
 
@@ -56,6 +56,13 @@ class Axis:
         e.flags.writeable = False
         object.__setattr__(self, "edges", e)
         object.__setattr__(self, "array", self.array or f"{self.name}_edges")
+
+    def __eq__(self, other):
+        if not isinstance(other, Axis):
+            return NotImplemented
+        return self.describe() == other.describe() and np.array_equal(self.edges, other.edges)
+
+    __hash__ = None
 
     @property
     def nbins(self):
