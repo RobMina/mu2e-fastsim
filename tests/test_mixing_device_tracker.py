@@ -449,6 +449,9 @@ SATURATION_POOL_CAPS = (
     dict(digit_entries_per_straw=2, flat_saturation_pool="tier"),
     dict(digit_entries_per_straw=2, flat_saturation_rows="auto", flat_saturation_pool="tier"),
     dict(end_tiers=[(8, 512)], digit_entries_per_straw=2.5, flat_saturation_pool="tier"),
+    dict(digit_entries_per_straw=2, flat_saturation_pool="tier", flat_saturation_tiles="bounded"),
+    dict(end_tiers=[(8, 512)], digit_entries_per_straw=2.5, flat_saturation_rows="auto", flat_saturation_pool="tier",
+         flat_saturation_tiles="bounded"),
 )
 
 
@@ -505,6 +508,14 @@ def test_flat_saturation_pool_equals_per_launch(wide, helpers, onspill):
 
 
 def test_flat_saturation_pool_options():
+    with pytest.raises(ValueError, match="flat_saturation_tiles"):
+        Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2, flat_saturation_tiles="half")
+    assert Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2, flat_saturation_pool="tier",
+                      flat_saturation_tiles="bounded").flat_kernel(2) == {"entries": 4, "saturation_pool": True,
+                                                                         "saturation_tiles": "bounded"}
+    # without the pool the tile bound has nothing to act on
+    assert Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2,
+                      flat_saturation_tiles="bounded").flat_kernel(2) == {"entries": 4}
     with pytest.raises(ValueError, match="flat_saturation_pool"):
         Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2, flat_saturation_pool="batch")
     with pytest.raises(ValueError, match="flat digitisation"):

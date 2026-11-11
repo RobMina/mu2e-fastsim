@@ -46,7 +46,8 @@
    "digit_entries_per_straw": 1.182,
    "pack_sort": "packed",
    "flat_saturation_rows": "auto",
-   "flat_saturation_pool": "auto"
+   "flat_saturation_pool": "tier",
+   "flat_saturation_tiles": "bounded"
   },
   "crv": {
    "substeps": 310525,

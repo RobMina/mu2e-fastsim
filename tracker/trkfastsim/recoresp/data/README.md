@@ -28,3 +28,19 @@ is unchanged), and
 the pools carry the full events' residual and quality shapes. A pool response inherits the statistical fluctuations
 of its development sample: with three times the held-out size they add about a third to a held-out shape chi2 (with
 equal sizes, about as much again).
+
+`nrow_run1a.npz` (`trkfastsim.recoresp.nrow`, the opt-in approximation W2-W4 `tracker_rows=sampled`): per cell of the
+tracker-entry helix (|p|, tan dip, r_max; edges in `p_edges`, `tandip_edges`, `rmax_edges`), a pool of the step rows
+the default device chain gives (tracker transport plus the calorimeter albedo, `DeviceChain` defaults, float64, Run 1A
+geometry and field). The pools come from 700,000 training electrons, 503,361 of them with a tracker entry:
+
+- conversion electrons drawn from the MuminusStopsCat stop table with seeds 1001+;
+- DIO starts, shards 0-49;
+- RPC starts, shards 0-1.
+
+The benchmark draws (seeds 1-3, DIO shards 50-249, RPC shards 2-3) are not among them. A cell with no training track
+draws from its (|p|, tan dip) cell, else from every track.
+
+Its manifest (`mu2efastsim.library`, `core/docs/libraries.md`) is the sidecar `nrow_run1a.manifest.json`: the
+provenance above, the cell axes, the content hash of the arrays (checked on every load) and the gaps it does not
+record. The `.npz` itself is unchanged.
