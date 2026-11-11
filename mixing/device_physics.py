@@ -83,15 +83,27 @@ def model(args, source, layout):
     from . import crv_inputs, device_tracker, device_crv
 
     capacity = json.loads(Path(args.device_capacities).read_text())["response"]
-    if set(capacity) != {"tracker", "crv"}:
-        raise ValueError("physical response capacities require tracker and crv")
+    if set(capacity) - {"tracker_reuse"} != {"tracker", "crv"}:
+        raise ValueError("physical response capacities require tracker and crv (and optionally tracker_reuse)")
     config = digicond.parse_fhicl_dump(Path(args.expanded).read_text())
     cfg = crv_inputs.build_config(config, jax=True)
     rc = runconfig.get("run1a_v01")
     geom, counters = rc.geometry(), rc.counters_cfg()
     cond = crv_inputs.load_conditions(args.truth, args.photon_csv, geom, counters)
     mc, reco, length = crv_inputs.read_timing(source.signal.event_ids, args.truth, args.stock)
-    tracker = device_tracker.prepare(digicond.Conditions.load(args.tracker_conditions), capacity["tracker"], layout.batch_events)
+    conditions = digicond.Conditions.load(args.tracker_conditions)
+    if "tracker_reuse" in capacity:   # opt-in approximation: donor-frame digi reuse (mixing.device_reuse)
+        from . import device_reuse
+        from .device_source import pack_source
+        data, _ = pack_source(source, layout)
+        table = device_reuse.precompute(conditions, capacity["tracker_reuse"], data, float(np.max(length)),
+                                        getattr(args, "tracker_seed", 0), rows_capacity=layout.rows["tracker"],
+                                        shift=float(np.mean(mc)),
+                                        margin=float(np.max(np.abs(np.asarray(mc) - np.mean(mc)))) + 5.0, log=print)
+        tracker = device_reuse.prepare(conditions, capacity["tracker_reuse"], layout.batch_events, table,
+                                       data["starts"])
+    else:
+        tracker = device_tracker.prepare(conditions, capacity["tracker"], layout.batch_events)
     crv = device_crv.prepare(geom, cond, cfg, counters, capacity["crv"], photons.load_tables(cfg.response), sipm.photon_map())
     return combine(tracker, crv, {"mc_pbtime": np.asarray(mc), "reco_pbtime": np.asarray(reco),
                                   "event_length": np.asarray(length)})

@@ -157,6 +157,30 @@ block per sequential step. Every block keeps its key (`fold_in(key, 1)` then its
 cluster offset), so outputs equal the one-block path; `drift_clusters` is padded to a
 multiple of `G x 4096`. Without the key the drift is unchanged.
 
+## Donor-frame digi reuse (opt-in approximation)
+
+`mixing.device_reuse`, enabled by a `tracker_reuse` block in the capacity file (`run1a_mix1bb_batch256_reuse.json`).
+About 92 % of the hit straws of a mixed event see steps of one donor frame only.
+- **Setup:** every donor frame of the reused streams (MuStopPileup and MuBeamFlash) is digitised once, as an event of
+  its own, at the signal events' mean `mc_pbtime`, with the digitisation window widened by the largest event shift
+  plus 5 ns. In the Run 1A pools: 250k frames, 1.36 M digis, 30-130 s on one GPU.
+- **Per batch:** a straw hit by a single donor frame of a reused stream takes that frame's setup digis. The TDC is
+  shifted by the event's `mc_pbtime` less the mean, and the real window is applied after the shift; TOT, ADC
+  waveform and PMP are kept. All other straws (the primary's, those with two or more sources, and every straw of
+  EleBeamFlash and NeutralsFlash) go through the resident tracker with a smaller capacity set (`compute`). They get
+  exactly the tracker's digis, with the same keys.
+- **What it freezes:** per donor frame, the cluster and noise draws and the ADC sampling phase. A frame drawn twice
+  gives the same digis, so the small EleBeamFlash pool (about 1,200 frames, drawn about 60 times per pass) and
+  NeutralsFlash (4 times) are not reused. With them, TDC, ADC and PMP shapes moved 2-8x past the stock floor.
+- **Validation** (held-out subrun 1194, three pileup realizations, float32 and float64, against the stock mixed
+  sample with two reseeded stock samples as the floor):
+  - Totals and per-plane shapes pass the declared criterion in all six arms. Reuse and exact digitisation give the
+    same totals per realization (0.995 / 1.008 / 0.986 vs stock); reuse keeps 99.96-99.99 % of the exact digis
+    (paired).
+  - TDC, ADC-sample, ADC-peak and PMP shapes are within the exact arms' spread. The ADC peak index
+    (chi2/ndf 1.6-2.7 vs 0.9-2.0 exact) shows the frozen phase.
+- **Rate** (A100-SXM4-80GB, batch 256, pipelined output, same node): float32 410 -> 544 ev/s, float64 393 -> 536 ev/s.
+
 ## float32
 
 With `TRKFASTSIM_DEVICE_FLOAT=core` and `MU2EFS_DEVICE_FLOAT=float32` the adapter follows the
