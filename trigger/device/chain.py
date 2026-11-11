@@ -17,9 +17,18 @@ KSF_TYPES = ("LoopHelixFit", "KinKalSeedFit", "LoopHelixDeFit")
 PRECISIONS = ("float64", "float32")
 
 
+def pair_bucket(n, total):
+    """Padded pair count of the compact path: the smallest of total / 4, total / 2 and total (total = the batch's
+    cluster slots) that holds n pairs, so each hit-axis size compiles at most three shapes per stage."""
+    for k in (total // 4, total // 2):
+        if n <= k:
+            return max(k, 1)
+    return total
+
+
 class Chain:
     def __init__(self, cfg, cond, tc_mva_path, response=None, path_names=None, salt=20261107, debug=False,
-                 precision="float64"):
+                 precision="float64", compact=False):
         if precision not in PRECISIONS:
             raise ValueError(f"precision must be one of {PRECISIONS}")
         # float32: every device array, including the stock double-precision intermediates of the hit ports, in
@@ -59,7 +68,15 @@ class Chain:
             ksf = next((lbl for lbl in labels if lbl.startswith("Trig") and "KSF" in lbl and "MC" not in lbl), None)
             self.plan[name] = {"tc": tcl, "helix": hcfg_label, "ksf": ksf, "filters": p["filters"],
                                "family": p["family"], "min_helices": p["min_helices"]}
+        # compact (opt-in, for CPUs): time-cluster refinement and helix fits run only on the (event, cluster) pairs
+        # that have a candidate / a valid cluster, in three device calls with one host read of the counts between
+        # them; the same computation per cluster as the one-call path, and the same decisions
+        self.compact = bool(compact)
         self._fn = jax.jit(self._decide)
+        self._fa = jax.jit(self._stage_candidates)
+        self._fr = jax.jit(self._refine_one, static_argnames=("lbl", "k"))
+        self._fh = jax.jit(self._helix_one, static_argnames=("key", "k"))
+        self._fp = jax.jit(self._paths)
 
     def _tc_label(self, p):
         """Device time-cluster settings: the path's TimeClusterFinder, or the matching-pitch one for TZClusterFinder."""
@@ -74,15 +91,52 @@ class Chain:
             return hel
         return "TrigHelixFinder"
 
+    def _tc_labels(self):
+        return sorted({p["tc"] for p in self.plan.values()})
+
+    def _helix_keys(self):
+        return sorted({(p["tc"], p["helix"]) for p in self.plan.values() if p["helix"]})
+
     def _decide(self, batch):
         sh = hits.straw_hits(batch, self.cond_dev, self.sh, self.tot_bins)
         ph = hits.panel_hits(sh, self.ph)
         tcs = {lbl: timecluster.time_clusters(ph, timecluster.settings(self.mods[lbl]), self.net)
-               for lbl in {p["tc"] for p in self.plan.values()}}
-        hxs = {}
-        for p in self.plan.values():
-            if p["helix"] and (p["tc"], p["helix"]) not in hxs:
-                hxs[(p["tc"], p["helix"])] = helix.helices(ph, tcs[p["tc"]], helix.settings(self.mods[p["helix"]]), self.fz)
+               for lbl in self._tc_labels()}
+        hxs = {key: helix.helices(ph, tcs[key[0]], helix.settings(self.mods[key[1]]), self.fz)
+               for key in self._helix_keys()}
+        return self._paths(batch, sh, ph, tcs, hxs)
+
+    # compact path: candidates -> (host: counts) -> refined clusters on candidate pairs -> (host: counts) -> helices on
+    # valid pairs and the path decisions
+    def _stage_candidates(self, batch):
+        sh = hits.straw_hits(batch, self.cond_dev, self.sh, self.tot_bins)
+        ph = hits.panel_hits(sh, self.ph)
+        cands = {lbl: timecluster.candidates(ph, timecluster.settings(self.mods[lbl])) for lbl in self._tc_labels()}
+        return sh, ph, cands, {lbl: jnp.sum(c[2]) for lbl, c in cands.items()}
+
+    def _refine_one(self, cand, lbl, k):
+        tc = timecluster.refine_pairs(*cand, timecluster.settings(self.mods[lbl]), self.net, k)
+        return tc, jnp.sum(tc["valid"])
+
+    def _helix_one(self, ph, tc, key, k):
+        return helix.helices_pairs(ph, tc, helix.settings(self.mods[key[1]]), self.fz, k)
+
+    def _decide_compact(self, batch):
+        """The compact path (one jitted call per stage and producer; compiles add up over producers instead of
+        multiplying): candidates, the counts to the host, refined clusters on the candidate pairs, the valid counts to
+        the host, helices on the valid pairs, then the path decisions."""
+        sh, ph, cands, n = self._fa(batch)
+        n = jax.device_get(n)
+        slots = cands[self._tc_labels()[0]][2].size if self._tc_labels() else 0
+        tcs, nv = {}, {}
+        for lbl in self._tc_labels():
+            tcs[lbl], nv[lbl] = self._fr(cands[lbl], lbl=lbl, k=pair_bucket(int(n[lbl]), slots))
+        nv = jax.device_get(nv)
+        hxs = {key: self._fh(ph, tcs[key[0]], key=key, k=pair_bucket(int(nv[key[0]]), slots))
+               for key in self._helix_keys()}
+        return self._fp(batch, sh, ph, tcs, hxs)
+
+    def _paths(self, batch, sh, ph, tcs, hxs):
         out, aux = {}, {}
         ev = batch["event"]
         tc_nsh = {lbl: jnp.max(jnp.where(tc["valid"], tc["nsh"], 0), axis=1) for lbl, tc in tcs.items()}
@@ -141,7 +195,8 @@ class Chain:
         return out, aux, diag
 
     def decide(self, batch):
-        return self._fn({k: jnp.asarray(v) for k, v in batch.items()})
+        b = {k: jnp.asarray(v) for k, v in batch.items()}
+        return self._decide_compact(b) if self.compact else self._fn(b)
 
     def finish(self, decisions, aux, n_events):
         """Host: the stateful D0-phi prescale of HelixFilter, counting invocations in event order."""

@@ -2,6 +2,7 @@
 
     TRIGGER_DEVICE_DUMPS=a.root,b.root TRIGGER_DEVICE_MENU=replay.fcl TRIGGER_DEVICE_MVA=TimeCluster.weights.xml \
     [TRIGGER_DEVICE_RESPONSE=response.json] [TRIGGER_DEVICE_BATCH=1024] [TRIGGER_DEVICE_PRECISION=float32] \
+    [TRIGGER_DEVICE_ORDER=hits] [TRIGGER_DEVICE_HMIN=64] [TRIGGER_DEVICE_COMPACT=1] \
     python3 -m mu2efastsim.bench trigger.device.bench:step --prepare trigger.device.bench:load --events N \
         --dtype float64 (or float32, matching TRIGGER_DEVICE_PRECISION) --workflow trigger --boundary "StrawDigis -> tracker trigger path decisions" --out bench.json
 
@@ -30,16 +31,26 @@ _DUMPS = {}
 
 
 def _chain(dumps, tree):
+    compact = os.environ.get("TRIGGER_DEVICE_COMPACT", "0") == "1"
     key = (dumps[0], tree, os.environ["TRIGGER_DEVICE_MENU"], os.environ["TRIGGER_DEVICE_MVA"],
-           os.environ.get("TRIGGER_DEVICE_RESPONSE"), os.environ.get("TRIGGER_DEVICE_PRECISION", "float64"))
+           os.environ.get("TRIGGER_DEVICE_RESPONSE"), os.environ.get("TRIGGER_DEVICE_PRECISION", "float64"), compact)
     if key not in _CHAINS:
         cfg = menu.parse_fcl(Path(os.environ["TRIGGER_DEVICE_MENU"]).read_text())
         cond = run.conditions(dumps[0], tree)
         resp_path = os.environ.get("TRIGGER_DEVICE_RESPONSE")
         resp = json.loads(Path(resp_path).read_text()) if resp_path else {}
         _CHAINS[key] = chainmod.Chain(cfg, cond, os.environ["TRIGGER_DEVICE_MVA"], response=resp,
-                                      precision=os.environ.get("TRIGGER_DEVICE_PRECISION", "float64"))
+                                      precision=os.environ.get("TRIGGER_DEVICE_PRECISION", "float64"), compact=compact)
     return _CHAINS[key]
+
+
+def _order():
+    """TRIGGER_DEVICE_ORDER: "input" (default, the dumps' event order in each batch) or "hits" (events batched by
+    digi count, results put back in event order: the same decisions, less padding of the hit axis)."""
+    order = os.environ.get("TRIGGER_DEVICE_ORDER", "input")
+    if order not in ("input", "hits"):
+        raise ValueError(f"TRIGGER_DEVICE_ORDER must be input or hits, not {order!r}")
+    return order
 
 
 def _dump(path, tree):
@@ -58,6 +69,7 @@ def load(n, seed=None):
     tree = os.environ.get("TRIGGER_DEVICE_TREE", "trigph")
     ch = _chain(dumps, tree)
     size = int(os.environ.get("TRIGGER_DEVICE_BATCH", "1024"))
+    hmin = int(os.environ.get("TRIGGER_DEVICE_HMIN", "64"))
     skip = 0 if seed is None else seed * n           # events of the dumps (in order) before this slice
     blocks, left = [], n
     for d in dumps:
@@ -71,7 +83,10 @@ def load(n, seed=None):
             continue
         ev = {k: v[lo:lo + len(keys)] for k, v in ev.items()}
         left -= len(keys)
-        blocks.append([(nb, b) for _, nb, b in run.batches(keys, ev, size)])
+        if _order() == "hits":
+            blocks.append([(nb, b, rows) for rows, nb, b in run.sorted_batches(keys, ev, size, hmin=hmin)])
+        else:
+            blocks.append([(nb, b, None) for _, nb, b in run.batches(keys, ev, size, hmin)])
     if left > 0:
         if seed is None:
             raise ValueError(f"only {n - left} events in the dumps")
@@ -86,13 +101,19 @@ def step(data):
     out = []
     for file_blocks in blocks:                       # one file = one prescale-counter sequence
         decs, auxs, ns = [], [], 0
-        for nb, b in file_blocks:
+        for nb, b, _ in file_blocks:
             d, a, _ = ch.decide(b)
             decs.append((nb, d))
             auxs.append((nb, a))
             ns += nb
         jax.block_until_ready([d for _, d in decs])
-        dec = {k: np.concatenate([np.asarray(d[k])[:nb] for nb, d in decs]) for k in decs[0][1]}
-        aux = {k: np.concatenate([np.asarray(a[k])[:nb] for nb, a in auxs]) for k in auxs[0][1]}
+        dec = [{k: np.asarray(v)[:nb] for k, v in d.items()} for nb, d in decs]
+        aux = [{k: np.asarray(v)[:nb] for k, v in a.items()} for nb, a in auxs]
+        if file_blocks[0][2] is not None:            # hit-sorted blocks: back to event order (prescale counter)
+            rows = [r for _, _, r in file_blocks]
+            dec, aux = run.unsort(rows, dec), run.unsort(rows, aux)
+        else:
+            dec = {k: np.concatenate([d[k] for d in dec]) for k in dec[0]}
+            aux = {k: np.concatenate([a[k] for a in aux]) for k in aux[0]}
         out.append(ch.finish(dec, aux, ns))
     return out

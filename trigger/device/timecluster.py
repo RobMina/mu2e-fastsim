@@ -49,9 +49,9 @@ def _wmedian(v, w, m):
     return vs[i]
 
 
-def _one_event(hit, s, net):
-    """hit: dict of [H] arrays for one event -> clusters [NTC] (valid, nsh, t0, t0err, members [NTC, H])."""
-    H = hit["valid"].shape[0]
+def _peaks(hit, s):
+    """hit: dict of [H] arrays for one event -> the per-event arrays the clusters use (`ev`) and the peak-assigned
+    candidate clusters: members [NTC, H], oks [NTC] (a peak was made for the slot)."""
     valid = hit["valid"]
     nsh_i = jnp.where(valid, hit["nsh"], 0).astype(F64)
     cht = (hit["time"].astype(F64) - hit["z"].astype(F64) / (s["pitch"] * C_LIGHT)).astype(F32)
@@ -95,6 +95,14 @@ def _one_event(hit, s, net):
     feats_static = jnp.stack([rho2, hit["nsh"].astype(F32), hit["plane"].astype(F32),
                               jnp.sqrt(hit["uvar"]).astype(F32), jnp.abs(hit["wdist"]).astype(F32)], axis=-1)
     pos = jnp.stack([hit["x"], hit["y"], hit["z"]], -1).astype(F32)
+    ev = {"valid": valid, "nsh_i": nsh_i, "cht": cht, "phi_h": phi_h, "feats": feats_static, "pos": pos}
+    return ev, members, oks
+
+
+def _cluster(ev, m0, ok0, s, net):
+    """One candidate cluster (members m0 [H], ok0) of an event (`ev` from _peaks) -> keep, nsh, t0, t0err, members."""
+    H = ev["valid"].shape[0]
+    valid, nsh_i, cht, phi_h, feats_static, pos = (ev[k] for k in ("valid", "nsh_i", "cht", "phi_h", "feats", "pos"))
 
     def mva_of(t0, pphi):
         d = jnp.abs(cht - t0)
@@ -192,12 +200,47 @@ def _one_event(hit, s, net):
         keep = ok0 & (c[1] >= s["minnhits"])
         return keep, c[1], c[2], c[3], c[0] & keep
 
-    keep, nsh, t0, t0err, mem = jax.vmap(cluster)(members, oks)
+    return cluster(m0, ok0)
+
+
+def _one_event(hit, s, net):
+    """hit: dict of [H] arrays for one event -> clusters [NTC] (valid, nsh, t0, t0err, members [NTC, H])."""
+    ev, members, oks = _peaks(hit, s)
+    keep, nsh, t0, t0err, mem = jax.vmap(lambda m, o: _cluster(ev, m, o, s, net))(members, oks)
     return {"valid": keep, "nsh": nsh, "t0": t0, "t0err": t0err, "members": mem}
+
+
+def _hits(ph):
+    hit = {k: ph[k] for k in ("valid", "time", "z", "x", "y", "uvar", "wdist", "plane")}
+    hit["nsh"] = ph["ncombo"]
+    return hit
 
 
 def time_clusters(ph, s, net):
     """Panel hits [E, H] (hits.panel_hits) -> clusters per event [E, NTC]."""
-    hit = {k: ph[k] for k in ("valid", "time", "z", "x", "y", "uvar", "wdist", "plane")}
-    hit["nsh"] = ph["ncombo"]
-    return jax.vmap(lambda h: _one_event(h, s, net))(hit)
+    return jax.vmap(lambda h: _one_event(h, s, net))(_hits(ph))
+
+
+def candidates(ph, s):
+    """Stage 1 of the compacted time clusters: per-event arrays and the candidate clusters [E, NTC] (members, oks)."""
+    return jax.vmap(lambda h: _peaks(h, s))(_hits(ph))
+
+
+def refine_pairs(ev, members, oks, s, net, K):
+    """Stage 2 of the compacted time clusters: _cluster on the first K candidate (event, slot) pairs of `oks` [E, NTC]
+    only (K >= their count: the caller reads it), scattered back to [E, NTC]. Each cluster is the same computation as
+    in time_clusters; slots without a candidate get valid False, nsh 0, t0 0, t0err 0 and no members (time_clusters
+    gives them valid False too, and every consumer reads clusters through `valid`)."""
+    E, C = oks.shape
+    flat = jnp.nonzero(oks.reshape(-1), size=K, fill_value=E * C)[0]
+    use = flat < E * C
+    e, c = jnp.minimum(flat // C, E - 1), flat % C
+    evp = {k: v[e] for k, v in ev.items()}
+    keep, nsh, t0, t0err, mem = jax.vmap(lambda ev_, m, o: _cluster(ev_, m, o, s, net))(evp, members[e, c], oks[e, c] & use)
+    dst = jnp.where(use, flat, E * C)
+
+    def put(v, fill):
+        out = jnp.full((E * C + 1,) + v.shape[1:], fill, v.dtype).at[dst].set(v)
+        return out[:E * C].reshape((E, C) + v.shape[1:])
+    return {"valid": put(keep & use, False), "nsh": put(nsh, 0), "t0": put(t0, 0), "t0err": put(t0err, 0),
+            "members": put(mem & use[:, None], False)}
