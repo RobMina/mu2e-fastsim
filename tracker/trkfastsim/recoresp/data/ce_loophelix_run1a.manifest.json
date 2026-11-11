@@ -1,0 +1,316 @@
+{
+ "arrays": {
+  "axis_xy": {
+   "dtype": "<f8",
+   "shape": [
+    2
+   ]
+  },
+  "bz": {
+   "dtype": "<f8",
+   "shape": []
+  },
+  "chol": {
+   "dtype": "<f8",
+   "shape": [
+    18,
+    11,
+    7,
+    7
+   ]
+  },
+  "count": {
+   "dtype": "<i8",
+   "shape": [
+    18,
+    11
+   ]
+  },
+  "cuts": {
+   "dtype": "<f8",
+   "shape": [
+    7
+   ]
+  },
+  "eff_fit": {
+   "dtype": "<f8",
+   "shape": [
+    18,
+    11
+   ]
+  },
+  "eff_q": {
+   "dtype": "<f8",
+   "shape": [
+    18,
+    11
+   ]
+  },
+  "icdf_chi2ndf": {
+   "dtype": "<f8",
+   "shape": [
+    18,
+    11,
+    129
+   ]
+  },
+  "icdf_dd0": {
+   "dtype": "<f8",
+   "shape": [
+    18,
+    11,
+    129
+   ]
+  },
+  "icdf_dp": {
+   "dtype": "<f8",
+   "shape": [
+    18,
+    11,
+    129
+   ]
+  },
+  "icdf_drmax": {
+   "dtype": "<f8",
+   "shape": [
+    18,
+    11,
+    129
+   ]
+  },
+  "icdf_dt0": {
+   "dtype": "<f8",
+   "shape": [
+    18,
+    11,
+    129
+   ]
+  },
+  "icdf_dtandip": {
+   "dtype": "<f8",
+   "shape": [
+    18,
+    11,
+    129
+   ]
+  },
+  "icdf_fitcon": {
+   "dtype": "<f8",
+   "shape": [
+    18,
+    11,
+    129
+   ]
+  },
+  "icdf_nactive": {
+   "dtype": "<f8",
+   "shape": [
+    18,
+    11,
+    129
+   ]
+  },
+  "level": {
+   "dtype": "|i1",
+   "shape": [
+    18,
+    11
+   ]
+  },
+  "nrow_edges": {
+   "dtype": "<f8",
+   "shape": [
+    19
+   ]
+  },
+  "qnodes": {
+   "dtype": "<f8",
+   "shape": [
+    129
+   ]
+  },
+  "tandip_edges": {
+   "dtype": "<f8",
+   "shape": [
+    12
+   ]
+  },
+  "time_edges": {
+   "dtype": "<f8",
+   "shape": [
+    12
+   ]
+  },
+  "time_eff": {
+   "dtype": "<f8",
+   "shape": [
+    11
+   ]
+  }
+ },
+ "axes": [
+  {
+   "array": "nrow_edges",
+   "description": "StrawGasStep rows of the electron",
+   "frame": "tracker entry (Mu2e frame; truth of the Geant4 conversion electron)",
+   "hi": 1000000.0,
+   "lo": 0.0,
+   "name": "nrow",
+   "nbins": 18,
+   "policy": "clip",
+   "scale": "irregular",
+   "unit": "1"
+  },
+  {
+   "array": "tandip_edges",
+   "description": "true tan(dip) at the entry",
+   "frame": "tracker entry (Mu2e frame; truth of the Geant4 conversion electron)",
+   "hi": 1000000000.0,
+   "lo": -1000000000.0,
+   "name": "tandip",
+   "nbins": 11,
+   "policy": "clip",
+   "scale": "irregular",
+   "unit": "1"
+  },
+  {
+   "array": "time_edges",
+   "description": "entry time (fit-efficiency turn-on)",
+   "frame": "tracker entry (Mu2e frame; truth of the Geant4 conversion electron)",
+   "hi": 1000000000.0,
+   "lo": 0.0,
+   "name": "t_entry",
+   "nbins": 11,
+   "policy": "clip",
+   "scale": "irregular",
+   "unit": "ns"
+  }
+ ],
+ "config_hash": null,
+ "content_hash": "1319ca7453fbcb645337a399ec6a548bd2534044ed5b2662b3e61be7e41f5c67",
+ "description": "CE reco response of stock LoopHelix reconstruction per (nrow, tan dip) bin of the tracker-entry truth: fit and quality efficiencies, inverse CDFs of the residuals and fit-quality outputs with a Gaussian copula, the t0 residual and the entry-time turn-on.",
+ "domain": {
+  "coverage": "every nrow and tan dip (open end bins); entry times from 0 ns",
+  "fallbacks": [
+   {
+    "description": "sparse bins widen at build time; level records how far",
+    "levels": {
+     "0": "the bin itself",
+     "1": "+-1 tan dip bins",
+     "2": "+-2 tan dip bins",
+     "3": "the whole nrow row",
+     "4": "every event"
+    },
+    "name": "level"
+   }
+  ]
+ },
+ "dtype": {
+  "compute": [
+   "float32",
+   "float64"
+  ],
+  "notes": "device tables in the dtype of the entry state (device.to_device)",
+  "storage": {
+   "pool_idx": "int32",
+   "tables": "float64"
+  }
+ },
+ "generator": {
+  "configuration": "Run 1A geometry; bz 1.0117 T at the tracker origin",
+  "name": "stock Mu2e Offline: OffSpill digitisation, LoopHelix KKDe reconstruction, EventNtuple, on Geant4 tracker steps of the conversion electron",
+  "physics_list": null,
+  "release": "SimJob MDC2025ay"
+ },
+ "geometry": {
+  "hash": null,
+  "tag": "Run 1A (geom_run1_a)"
+ },
+ "kind": "binned",
+ "legacy": {
+  "format": "npz without a manifest",
+  "schema": 0
+ },
+ "name": "tracker.response.ce_loophelix.ceonly.run1a",
+ "outputs": [
+  {
+   "description": "fitted track (bool)",
+   "dtype": "the compute dtype",
+   "name": "fit",
+   "unit": "1"
+  },
+  {
+   "description": "quality and direction pass (bool)",
+   "dtype": "the compute dtype",
+   "name": "qual",
+   "unit": "1"
+  },
+  {
+   "description": "momentum at the tracker front; NaN without quality",
+   "dtype": "the compute dtype",
+   "name": "p_front",
+   "unit": "MeV/c"
+  },
+  {
+   "description": "tan(dip); NaN without quality",
+   "dtype": "the compute dtype",
+   "name": "tandip",
+   "unit": "1"
+  },
+  {
+   "description": "NaN without quality",
+   "dtype": "the compute dtype",
+   "name": "d0",
+   "unit": "mm"
+  },
+  {
+   "description": "NaN without quality",
+   "dtype": "the compute dtype",
+   "name": "rmax",
+   "unit": "mm"
+  },
+  {
+   "description": "t0 at the front",
+   "dtype": "the compute dtype",
+   "name": "t0",
+   "unit": "ns"
+  }
+ ],
+ "release": null,
+ "rng": {
+  "device": "jax.random key (device.apply): split for the fit/quality uniforms and copula normals, fold_in 11 for the pool draw, fold_in 7 for t0; the chain passes fold_in(key, 2)",
+  "host": "numpy.random.Generator (apply_numpy; pools from a jumped generator)",
+  "streams": {
+   "pool": 11,
+   "t0": 7
+  }
+ },
+ "schema": 1,
+ "seeds": null,
+ "source": {
+  "description": "the conversion electron's own Geant4 StrawGasSteps from its tracker entry, injected into the same events",
+  "samples": [
+   {
+    "dataset": "dts.mu2e.CeEndpoint.MDC2025ba",
+    "events": 19630,
+    "selection": "sequencers 001430_00000000..00000600"
+   }
+  ]
+ },
+ "split": {
+  "held_out": "sequencers 001430_00000700..00001300",
+  "rule": "disjoint sequencers",
+  "training": "sequencers 001430_00000000..00000600"
+ },
+ "subsystem": "tracker",
+ "unrecorded": {
+  "config_hash": "built without a stock-input config (recoresp.config)",
+  "release": "built with python3 -m trkfastsim.recoresp.table before the manifests; the commit is not recorded",
+  "seeds": "the digitisation seed of the reference arm is not recorded in the table"
+ },
+ "validation": {
+  "record": "tracker/docs/field-on.md: CE fast - stock on 35k held-out events, float32 and float64; no declared criterion recorded",
+  "status": "tested, not closed"
+ },
+ "version": 1
+}
