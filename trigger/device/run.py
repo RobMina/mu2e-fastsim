@@ -72,12 +72,14 @@ def load_dump(path, tree="trigph"):
     return keys, ev, stock
 
 
-def batches(keys, ev, size):
+def batches(keys, ev, size, hmin=64):
+    """Blocks of `size` events in input order: yields (first event, n, block); the hit axis is padded to a power of
+    two >= hmin (hits.pack_events)."""
     for lo in range(0, len(keys), size):
         sl = slice(lo, lo + size)
         sub = {k: (v[sl] if isinstance(v, list) else v[sl]) for k, v in ev.items()}
         n = len(sub["sid"])
-        b = hits.pack_events(sub)
+        b = hits.pack_events(sub, hmin=hmin)
         E = size
         if n < E:                                   # pad events to the fixed batch size (one compiled shape)
             for k, v in b.items():
@@ -86,6 +88,35 @@ def batches(keys, ev, size):
         b["valid_event"] = np.arange(E) < n
         b["event"] = np.array([k[2] for k in keys[sl]] + [0] * (E - n), np.int64)
         yield lo, n, b
+
+
+def hit_order(ev):
+    """Event order by digi count (stable): batches of events of similar size pad the hit axis less."""
+    return np.argsort(np.array([len(s) for s in ev["sid"]], np.int64), kind="stable")
+
+
+def sorted_batches(keys, ev, size, order=None, hmin=64):
+    """As `batches`, over the events in `order` (default `hit_order`): yields (rows, n, block), rows = the input
+    index of each of the block's n events. Every event's result is the same as in `batches` (each event is computed
+    on its own hits; only the padding of the hit axis differs); put results back with `unsort`."""
+    order = hit_order(ev) if order is None else np.asarray(order)
+    ev_o = {k: ([v[i] for i in order] if isinstance(v, list) else np.asarray(v)[order]) for k, v in ev.items()}
+    keys_o = [keys[i] for i in order]
+    for lo, n, b in batches(keys_o, ev_o, size, hmin):
+        yield order[lo:lo + n], n, b
+
+
+def unsort(rows, parts):
+    """Per-event arrays computed in sorted order (parts, one dict per block, `rows` the blocks' input indices)
+    -> the same arrays in input order."""
+    rows = np.concatenate(rows)
+    out = {}
+    for k in parts[0]:
+        v = np.concatenate([p[k] for p in parts])
+        o = np.empty_like(v)
+        o[rows] = v
+        out[k] = o
+    return out
 
 
 def check_hits(diag, stock, lo, n, report):
@@ -186,7 +217,8 @@ def cmd_decide(args):
     cfg = menu.parse_fcl(Path(args.menu).read_text())
     cond = conditions(args.dump[0], args.tree)
     resp = json.loads(Path(args.response).read_text()) if args.response else {}
-    ch = chainmod.Chain(cfg, cond, args.tc_mva, response=resp, debug=args.check_hits, precision=args.precision)
+    ch = chainmod.Chain(cfg, cond, args.tc_mva, response=resp, debug=args.check_hits, precision=args.precision,
+                        compact=args.compact)
     report, device, stages, stage_flags, path_vars = {}, {}, {}, {}, {}
     t_dev = 0.0
     for dump in args.dump:
@@ -282,6 +314,9 @@ def main(argv=None):
     d.add_argument("--event-mode", default="OffSpill")
     d.add_argument("--batch", type=int, default=512)
     d.add_argument("--precision", choices=chainmod.PRECISIONS, default="float64")
+    d.add_argument("--compact", action="store_true",
+                   help="time-cluster refinement and helix fits on the occupied (event, cluster) pairs only (three "
+                        "device calls per batch; the same decisions; faster on CPUs)")
     d.add_argument("--check-hits", action="store_true")
     d.add_argument("--output", required=True)
     from mu2efastsim import approximations

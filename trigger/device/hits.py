@@ -66,11 +66,12 @@ def device_conditions(cond):
     return c, tuple(cond["tot_bins"])
 
 
-def pack_events(ev, nh=None):
-    """Per-event digi lists (dict of awkward-like lists of numpy arrays) -> dense [E, H] numpy block."""
+def pack_events(ev, nh=None, hmin=64):
+    """Per-event digi lists (dict of awkward-like lists of numpy arrays) -> dense [E, H] numpy block (H: nh, else the
+    next power of two >= the largest event and >= hmin)."""
     E = len(ev["sid"])
     n = np.array([len(s) for s in ev["sid"]], np.int64)
-    H = nh or bucket(int(n.max()) if E else 1, 64)
+    H = nh or bucket(int(n.max()) if E else 1, hmin)
     out = {"valid": np.zeros((E, H), bool)}
     for k, dt in (("sid", np.int64), ("tdc0", np.int64), ("tdc1", np.int64), ("tot0", np.int64), ("tot1", np.int64),
                   ("pmp", np.float64)):

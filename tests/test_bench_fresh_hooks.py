@@ -88,21 +88,22 @@ def trigger_dumps(monkeypatch, tmp_path):
 
     monkeypatch.setattr(run, "load_dump", load_dump)
     monkeypatch.setattr(run, "conditions", lambda path, tree: "cond")
-    monkeypatch.setattr(run, "batches", lambda keys, ev, size: [(None, len(keys), {"events": [k[2] for k in keys],
-                                                                                   "pbt": list(ev["pbt"])})])
+    monkeypatch.setattr(run, "batches", lambda keys, ev, size, *a, **kw: [(None, len(keys), {"events": [k[2] for k in keys],
+                                                                                             "pbt": list(ev["pbt"])})])
     monkeypatch.setattr(menu, "parse_fcl", lambda text: "cfg")
     monkeypatch.setattr(chainmod, "Chain", lambda *a, **kw: chains.append(a) or "chain")
     (tmp_path / "menu.fcl").write_text("")
     monkeypatch.setenv("TRIGGER_DEVICE_DUMPS", "a.root,b.root")
     monkeypatch.setenv("TRIGGER_DEVICE_MENU", str(tmp_path / "menu.fcl"))
     monkeypatch.setenv("TRIGGER_DEVICE_MVA", "mva.xml")
+    monkeypatch.setenv("TRIGGER_DEVICE_ORDER", "input")          # the stub batches carry no row indices
     monkeypatch.setattr(bench, "_CHAINS", {})
     monkeypatch.setattr(bench, "_DUMPS", {})
     return bench, reads, chains
 
 
 def events_of(blocks):
-    return [e for file_blocks in blocks for _, b in file_blocks for e in b["events"]]
+    return [e for file_blocks in blocks for _, b, _ in file_blocks for e in b["events"]]
 
 
 def test_trigger_fixed_load_takes_the_first_events(trigger_dumps):
@@ -118,7 +119,7 @@ def test_trigger_seeded_slices_are_disjoint_and_built_once(trigger_dumps):
     assert [b for s in slices for b in s] == sorted(set(b for s in slices for b in s))
     assert len(chains) == 1 and sorted(reads) == ["a.root", "b.root"]
     _, blocks = bench.load(4, seed=1)
-    assert [nb for file_blocks in blocks for nb, _ in file_blocks] == [1, 3]   # per-file blocks kept
+    assert [nb for file_blocks in blocks for nb, _, _ in file_blocks] == [1, 3]   # per-file blocks kept
 
 
 def test_trigger_seeded_load_errors_when_the_dumps_run_out(trigger_dumps):
@@ -129,6 +130,58 @@ def test_trigger_seeded_load_errors_when_the_dumps_run_out(trigger_dumps):
         bench.load(4, seed=3)                         # starts past the end
     with pytest.raises(ValueError):
         bench.load(4, seed=-1)
+
+
+def test_trigger_hit_order_gives_the_input_order_results(monkeypatch):
+    """TRIGGER_DEVICE_ORDER=hits: events batched by digi count, every per-event result back in event order (the
+    prescale counter of finish runs in event order), the same as the input-order blocks."""
+    from trigger.device import bench, run
+    rng = np.random.default_rng(3)
+    n = 23
+    sizes = rng.integers(1, 300, n)
+    keys = [(1, 0, 1000 + i) for i in range(n)]
+    ev = {k: [rng.integers(0, 50, m) for m in sizes] for k in run.DIG}
+    ev["pbt"], ev["spill"] = np.zeros(n), np.zeros(n, np.int64)
+
+    class Fake:
+        def decide(self, b):                                       # a per-event result: its digi count and event
+            nh = b["valid"].sum(axis=1)
+            return {"p": np.where(b["valid_event"], nh * 100000 + b["event"], -1)}, {"a:tc": b["event"] % 3 == 0}, {}
+
+        def finish(self, dec, aux, n_events):
+            return {"p": dec["p"][:n_events], "count": np.cumsum(aux["a:tc"][:n_events])}
+
+    out = {}
+    for order in ("input", "hits"):
+        monkeypatch.setenv("TRIGGER_DEVICE_ORDER", order)
+        blocks = [[(nb, b, rows if order == "hits" else None) for rows, nb, b in
+                   (run.sorted_batches(keys, ev, 8, hmin=16) if order == "hits" else run.batches(keys, ev, 8, 16))]]
+        out[order] = bench.step((Fake(), blocks))[0]
+        if order == "hits":   # sorted blocks pad the hit axis to their own largest event only
+            assert [b["valid"].shape[1] for _, b, _ in blocks[0]] == sorted(b["valid"].shape[1] for _, b, _ in blocks[0])
+    np.testing.assert_array_equal(out["input"]["p"], sizes * 100000 + 1000 + np.arange(n))
+    for k in out["input"]:
+        np.testing.assert_array_equal(out["hits"][k], out["input"][k])
+
+
+def test_trigger_sorted_batches_cover_every_event_once(monkeypatch):
+    from trigger.device import run
+    sizes = [5, 0, 70, 3, 3, 129, 1]
+    ev = {k: [np.arange(m) for m in sizes] for k in run.DIG}
+    ev["pbt"], ev["spill"] = np.zeros(len(sizes)), np.zeros(len(sizes), np.int64)
+    keys = [(1, 0, i) for i in range(len(sizes))]
+    got = list(run.sorted_batches(keys, ev, 3, hmin=4))
+    rows = np.concatenate([r for r, _, _ in got])
+    assert sorted(rows.tolist()) == list(range(len(sizes))) and [sizes[i] for i in rows] == sorted(sizes)
+    for r, nb, b in got:
+        assert nb == len(r) and b["event"][:nb].tolist() == r.tolist()
+        assert b["valid"].sum(axis=1)[:nb].tolist() == [sizes[i] for i in r]
+    parts = [{"x": np.asarray(r) * 10} for r, _, _ in got]
+    np.testing.assert_array_equal(run.unsort([r for r, _, _ in got], parts)["x"], np.arange(len(sizes)) * 10)
+    from trigger.device import bench
+    monkeypatch.setenv("TRIGGER_DEVICE_ORDER", "bogus")
+    with pytest.raises(ValueError):
+        bench._order()
 
 
 def test_hooks_take_a_seed_keyword():

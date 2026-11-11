@@ -178,3 +178,73 @@ def test_binned_rows_added_to_scalar_base():
     sel = re.compile(response.APR_HELIX_PATHS)
     assert [p for p in ("apr_TrkDe_70", "apr_Hlx_30", "apr_TrkUe_80m70p", "apr_TC", "tpr_TrkDe_80m70p")
             if sel.search(p)] == ["apr_TrkDe_70", "apr_Hlx_30", "apr_TrkUe_80m70p"]
+
+
+def _synthetic_panel_hits(E=6, H=48, seed=5):
+    """Events with 0-3 helix-like hit groups at different times, padded to H; per-event panel-hit columns."""
+    rng = np.random.default_rng(seed)
+    cols = {k: np.zeros((E, H), np.float32) for k in ("time", "x", "y", "z", "uvar", "vvar", "wdist", "udx", "udy")}
+    valid = np.zeros((E, H), bool)
+    plane, face = np.zeros((E, H), np.int64), np.zeros((E, H), np.int64)
+    for e in range(E):
+        i = 0
+        for g in range(e % 4):
+            n = int(rng.integers(12, 20))
+            R, lam, cx, cy, t0 = rng.uniform(200, 300), rng.uniform(150, 250), *rng.uniform(-100, 100, 2), 600 + 300 * g
+            z = np.sort(rng.uniform(-1500, 1500, n))
+            ph_ = rng.uniform(0, 6) + z / lam
+            sl = slice(i, i + n)
+            cols["x"][e, sl], cols["y"][e, sl], cols["z"][e, sl] = cx + R * np.cos(ph_), cy + R * np.sin(ph_), z
+            cols["time"][e, sl] = t0 + z / (0.6 * 299.792458) + rng.normal(0, 5, n)
+            plane[e, sl] = np.arange(n) % 36
+            face[e, sl] = np.arange(n) % 2
+            valid[e, sl] = True
+            i += n
+        noise = slice(i, min(H, i + 5))
+        cols["time"][e, noise] = rng.uniform(500, 1700, noise.stop - noise.start)
+        cols["x"][e, noise], cols["y"][e, noise] = rng.uniform(-600, 600, (2, noise.stop - noise.start))
+        valid[e, noise] = True
+    cols["uvar"][:] = 900.0
+    cols["vvar"][:] = 2.0
+    cols["udx"][:] = 1.0
+    cols["wdist"][:] = 3.0
+    return dict(cols, valid=valid, plane=plane, face=face, ncombo=valid.astype(np.int64),
+                flag=np.where(valid, 1 << 10, 0).astype(np.uint32))
+
+
+def test_compact_clusters_and_helices_match_the_one_call_path():
+    """chain compact path: time-cluster refinement and helices on the occupied (event, cluster) pairs only give the
+    same clusters and helices (bit for bit where a consumer reads them) as the vmapped one-call path."""
+    pytest.importorskip("jax")
+    import jax
+    import jax.numpy as jnp
+    from trigger.device import chain, helix, timecluster
+    rng = np.random.default_rng(2)
+    net = {"act": "sigmoid", "norm": False, "offset": np.zeros(7, np.float32), "scale": np.ones(7, np.float32),
+           "layers": [rng.normal(0, 0.3, (8, 4)).astype(np.float32), rng.normal(0, 0.3, (5, 1)).astype(np.float32)]}
+    s = {"tmin": 400.0, "tmax": 1800.0, "tbin": 10.0, "ymin": 3.0, "npeak": 1, "maxdt": 30.0, "minnhits": 5,
+         "maxdphi": 2.0, "minkeep": 0.1, "minadd": 0.9, "pitch": 0.6, "prefilter": True, "refine": True,
+         "recover": True}
+    hs = {"maxrpull": 5.0, "maxdr": 100.0, "maxchisq": 25.0, "cradres": 20.0, "cperpres": 12.0, "minnsh": 5,
+          "lmin": 30.0, "lmax": 1000.0, "lstep": 10.0, "minR": 100.0, "maxR": 600.0, "minCR": 0.0, "maxCR": 700.0,
+          "minabsl": 10.0, "maxabsl": 700.0, "helicities": (-1, 1)}
+    fz = np.linspace(-1500, 1500, 72)
+    ph = {k: jnp.asarray(v) for k, v in _synthetic_panel_hits().items()}
+    full = jax.jit(lambda p: timecluster.time_clusters(p, s, net))(ph)
+    cand = jax.jit(lambda p: timecluster.candidates(p, s))(ph)
+    k = chain.pair_bucket(int(jnp.sum(cand[2])), cand[2].size)
+    comp = jax.jit(lambda c: timecluster.refine_pairs(*c, s, net, k))(cand)
+    v = np.asarray(full["valid"])
+    assert v.any() and not v.all()
+    np.testing.assert_array_equal(np.asarray(comp["valid"]), v)
+    for key in ("nsh", "t0", "t0err"):
+        np.testing.assert_array_equal(np.asarray(comp[key])[v], np.asarray(full[key])[v])
+    np.testing.assert_array_equal(np.asarray(comp["members"]), np.asarray(full["members"]))
+    hf = jax.jit(lambda p, tc: helix.helices(p, tc, hs, fz))(ph, full)
+    kv = chain.pair_bucket(int(v.sum()), v.size)
+    hc = jax.jit(lambda p, tc: helix.helices_pairs(p, tc, hs, fz, kv))(ph, comp)
+    ok = np.asarray(hf["ok"])
+    np.testing.assert_array_equal(np.asarray(hc["ok"]), ok)
+    for key in hf:
+        np.testing.assert_array_equal(np.asarray(hc[key])[ok], np.asarray(hf[key])[ok])
+    assert [chain.pair_bucket(n, 64) for n in (0, 16, 17, 32, 33, 64)] == [16, 16, 32, 32, 64, 64]

@@ -167,13 +167,16 @@ def _fit(hit, m0, s, lam_sign, fz):
             "tandip": jnp.abs(lam) / R}
 
 
-def helices(ph, tc, s, fz, bkg_mask=0):
-    """Panel hits [E, H] + clusters [E, NTC] -> best-helicity helix per cluster [E, NTC]."""
+def _helix_hits(ph, bkg_mask):
     sel_bits = 1 << 10                                     # HitSelectionBits: TimeDivision
     usable = ph["valid"] & ((ph["flag"] & sel_bits) == sel_bits) & ((ph["flag"] & bkg_mask) == 0)
     hit = {k: ph[k] for k in ("x", "y", "z", "udx", "udy", "uvar", "vvar")}
     hit["uface"] = ph["plane"] * 2 + ph["face"]
     hit["nsh"] = ph["ncombo"]
+    return hit, usable
+
+
+def _per_cluster(s, fz):
     fzj = jnp.asarray(fz)
 
     def per_cluster(h, use, mem, valid):
@@ -186,6 +189,28 @@ def helices(ph, tc, s, fz, bkg_mask=0):
             best = {k: jnp.where(better, f[k], best[k]) for k in best}
         best["ok"] = best["ok"] & valid
         return best
+    return per_cluster
 
-    per_event = jax.vmap(per_cluster, in_axes=(None, None, 0, 0))
+
+def helices(ph, tc, s, fz, bkg_mask=0):
+    """Panel hits [E, H] + clusters [E, NTC] -> best-helicity helix per cluster [E, NTC]."""
+    hit, usable = _helix_hits(ph, bkg_mask)
+    per_event = jax.vmap(_per_cluster(s, fz), in_axes=(None, None, 0, 0))
     return jax.vmap(per_event)(hit, usable, tc["members"], tc["valid"])
+
+
+def helices_pairs(ph, tc, s, fz, K, bkg_mask=0):
+    """helices on the first K valid (event, cluster) pairs of tc only (K >= their count: the caller reads it), the
+    same fit per cluster, scattered back to [E, NTC]. Clusters that are not valid get ok False and zero quantities
+    (helices gives them ok False too; every consumer reads helices through `ok`)."""
+    hit, usable = _helix_hits(ph, bkg_mask)
+    E, C = tc["valid"].shape
+    flat = jnp.nonzero(tc["valid"].reshape(-1), size=K, fill_value=E * C)[0]
+    use = flat < E * C
+    e, c = jnp.minimum(flat // C, E - 1), flat % C
+    best = jax.vmap(_per_cluster(s, fz))({k: v[e] for k, v in hit.items()}, usable[e], tc["members"][e, c],
+                                        tc["valid"][e, c] & use)
+    dst = jnp.where(use, flat, E * C)
+    out = {k: jnp.zeros(E * C + 1, v.dtype).at[dst].set(v)[:E * C].reshape(E, C) for k, v in best.items()}
+    out["ok"] = out["ok"] & tc["valid"]
+    return out
