@@ -1,0 +1,110 @@
+{
+ "arrays": {
+  "energy_mev": {
+   "dtype": "<f8",
+   "shape": [
+    82
+   ]
+  },
+  "mu_rho_cm2_g": {
+   "dtype": "<f8",
+   "shape": [
+    82
+   ]
+  }
+ },
+ "axes": [
+  {
+   "array": "energy_mev",
+   "description": "XCOM grid with both K-edge endpoints; the open interval (0.0015595, 0.0015596) MeV is unsupported",
+   "frame": "photon energy",
+   "hi": 100000.0,
+   "lo": 0.001,
+   "name": "energy",
+   "nbins": 81,
+   "policy": "nan",
+   "scale": "irregular",
+   "unit": "MeV"
+  }
+ ],
+ "config_hash": null,
+ "content_hash": "3ca565465531d4d931b391ad58ba259b5092307be55b2603fd9b6b2347950088",
+ "description": "Total aluminium mass attenuation coefficient mu/rho (coherent scattering included) on the NIST XCOM energy grid, interpolated log-log; the uncollided survival weight of a photon is exp(-mu/rho * density * path).",
+ "domain": {
+  "coverage": "0.001 to 100000 MeV, except the open K-edge interval; nonfinite energies unsupported",
+  "fallbacks": []
+ },
+ "dtype": {
+  "compute": [
+   "float32",
+   "float64"
+  ],
+  "notes": "inputs are cast to float64 (float32 energies give the float64 result of their values)",
+  "storage": {
+   "energy_mev": "float64",
+   "mu_rho_cm2_g": "float64"
+  }
+ },
+ "generator": {
+  "configuration": "barns/atom to cm2/g: 0.60221367 / 26.981541",
+  "name": "NIST XCOM",
+  "physics_list": null,
+  "release": "v3.1, MDATX3.013"
+ },
+ "geometry": {
+  "hash": null,
+  "tag": "none (aluminium material data)"
+ },
+ "kind": "interpolation",
+ "legacy": {
+  "format": "CSV with a comment header, no manifest",
+  "schema": 0
+ },
+ "name": "beam.flash_attenuation.al_xcom",
+ "outputs": [
+  {
+   "description": "NaN outside the domain",
+   "dtype": "float64",
+   "name": "mu_rho",
+   "unit": "cm2/g"
+  },
+  {
+   "description": "uncollided survival; NaN with supported False when unsupported",
+   "dtype": "float64",
+   "name": "weight",
+   "unit": "1"
+  }
+ ],
+ "release": null,
+ "rng": {
+  "device": "none",
+  "host": "none"
+ },
+ "schema": 1,
+ "seeds": {},
+ "source": {
+  "description": "NIST XCOM v3.1 data file MDATX3.013 (Al): coherent, incoherent, photoelectric, nuclear and electron pair cross sections, summed",
+  "files": [
+   {
+    "file": "flash_al_xcom.csv",
+    "sha256": "a90e3ea461902d7702bd76782e212234aed11f91dcada2380c20dcdf5e92ba31"
+   }
+  ],
+  "samples": []
+ },
+ "split": {
+  "held_out": null,
+  "rule": "not trained: NIST data converted unchanged",
+  "training": null
+ },
+ "subsystem": "beam",
+ "unrecorded": {
+  "config_hash": "no build configuration beyond the data file",
+  "release": "written by write_xcom_csv before the manifest; the commit is not recorded"
+ },
+ "validation": {
+  "record": "beam/tests/test_flash_attenuation.py: NIST public values, every table node, log-log interpolation, the K edge",
+  "status": "exact"
+ },
+ "version": 1
+}

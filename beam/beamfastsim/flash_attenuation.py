@@ -2,6 +2,10 @@
 
 This is not scattered/secondary photon transport. See docs/flash-attenuation.md.
 Regenerate the bundled table with --xcom-data MDATX3.013 --out flash_al_xcom.csv.
+
+The table is a library of the shared core (mu2efastsim.library, core/docs/libraries.md): its sidecar manifest
+data/flash_al_xcom.manifest.json pins the content hash of the arrays read from the CSV, and _table() checks it
+(store.verify). Energies outside the table and inside the K-edge gap give NaN (axis policy "nan"), never a clamp.
 """
 from functools import lru_cache
 from pathlib import Path
@@ -9,15 +13,76 @@ import argparse
 
 import numpy as np
 
+from mu2efastsim.library import manifest as LM
+from mu2efastsim.library import store as LS
+from mu2efastsim.library.axes import Axis
+
+LIBRARY = "beam.flash_attenuation.al_xcom"
 _DATA = Path(__file__).resolve().parent / "data" / "flash_al_xcom.csv"
 _BARN_TO_CM2_G = 0.60221367 / 26.981541
 _EDGE_LOW, _EDGE_HIGH = 0.0015595, 0.0015596
 
 
+def _arrays(table):
+    return {"energy_mev": table[0], "mu_rho_cm2_g": table[1]}
+
+
+def manifest_fields(table, path=_DATA):
+    """Manifest fields of an XCOM table (mu2efastsim.library.manifest), from its arrays and the CSV bytes."""
+    from mu2efastsim.library.hashing import file_sha256
+    return dict(
+        name=LIBRARY, subsystem="beam", version=1, kind="interpolation",
+        description="Total aluminium mass attenuation coefficient mu/rho (coherent scattering included) on the NIST "
+                    "XCOM energy grid, interpolated log-log; the uncollided survival weight of a photon is "
+                    "exp(-mu/rho * density * path).",
+        axes=[Axis("energy", "MeV", table[0], frame="photon energy", array="energy_mev", scale="irregular",
+                   policy="nan", description="XCOM grid with both K-edge endpoints; the open interval "
+                                             "(0.0015595, 0.0015596) MeV is unsupported").describe()],
+        outputs=[dict(name="mu_rho", unit="cm2/g", dtype="float64", description="NaN outside the domain"),
+                 dict(name="weight", unit="1", dtype="float64",
+                      description="uncollided survival; NaN with supported False when unsupported")],
+        source=dict(description="NIST XCOM v3.1 data file MDATX3.013 (Al): coherent, incoherent, photoelectric, "
+                                "nuclear and electron pair cross sections, summed", samples=[],
+                    files=[dict(file=Path(path).name, sha256=file_sha256(path))]),
+        generator=dict(name="NIST XCOM", release="v3.1, MDATX3.013", physics_list=None,
+                       configuration="barns/atom to cm2/g: 0.60221367 / 26.981541"),
+        release=None, seeds={}, geometry=dict(tag="none (aluminium material data)", hash=None), config_hash=None,
+        split=dict(training=None, held_out=None, rule="not trained: NIST data converted unchanged"),
+        dtype=dict(storage={"energy_mev": "float64", "mu_rho_cm2_g": "float64"}, compute=["float32", "float64"],
+                   notes="inputs are cast to float64 (float32 energies give the float64 result of their values)"),
+        rng=dict(host="none", device="none"),
+        domain=dict(coverage="0.001 to 100000 MeV, except the open K-edge interval; nonfinite energies "
+                             "unsupported", fallbacks=[]),
+        validation=dict(status="exact", record="beam/tests/test_flash_attenuation.py: NIST public values, every "
+                                               "table node, log-log interpolation, the K edge"),
+        unrecorded=dict(release="written by write_xcom_csv before the manifest; the commit is not recorded",
+                        config_hash="no build configuration beyond the data file"),
+        legacy=dict(schema=0, format="CSV with a comment header, no manifest"),
+    )
+
+
+def write_manifest(path=_DATA):
+    """(Re)write the sidecar manifest of a CSV table; the CSV is not touched."""
+    table = np.loadtxt(path, delimiter=",", comments="#", unpack=True)
+    m = LS.finalize(_arrays(table), manifest_fields(table, path))
+    LM.write(LS.sidecar_path(path), m)
+    return m
+
+
+def load_table(path=_DATA):
+    """The (energy, mu/rho) table of a CSV, checked against its sidecar manifest (store.verify)."""
+    table = np.loadtxt(path, delimiter=",", comments="#", unpack=True)
+    side = LS.sidecar_path(path)
+    if not side.exists():
+        raise LS.LibraryError(path, [f"no sidecar manifest {side.name}; a library without a manifest is refused"])
+    LS.verify(LM.read(side), _arrays(table), str(path), expect={"name": LIBRARY})
+    return table
+
+
 @lru_cache(maxsize=1)
 def _table():
-    """Load the checked-in table directly from the module's filesystem path."""
-    return np.loadtxt(_DATA, delimiter=",", comments="#", unpack=True)
+    """Load the checked-in table directly from the module's filesystem path (checked against its manifest)."""
+    return load_table(_DATA)
 
 
 def al_mu_rho(energy):
