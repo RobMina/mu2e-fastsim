@@ -53,13 +53,27 @@ calo-seeded helices merged into the offline fits) has no input. To replace only 
 | `copyCaloShowerSteps` | empty (off) | input `CaloShowerStep`s to copy, e.g. `"compressDetStepMCs::<dts process>"` |
 | `copyCrvSteps` | empty (off) | input `CrvStep`s to copy; not together with `crvTableFile` |
 | `copyPrimaryKey` | -1 (= `primaryKey`) | input key of the primary that the copied steps share with the table's `primaryKey` |
+| `copyPrimaryParticle` | empty (off) | input `PrimaryParticle` whose one `SimParticle` is the table's `primaryKey`, per event; not with `copyPrimaryKey` |
 | `copyKeyOffset` | 0 | added to the keys of the copied `SimParticle`s other than the primary |
 
 Each copied step's `SimParticle` and its ancestors are copied into the injector's collection with their keys shifted by
 `copyKeyOffset`, the input primary becoming the table's `primaryKey`; parent and daughter `Ptr`s are remapped into the
 injector's collection and every other field is copied unchanged. With `copyKeyOffset : 0` a copied key that is already
 in the table must be the same particle (same PDG) and is shared: injecting a table dumped from the same dts then gives
-back its own `SimParticle` keys. With a fast table use an offset above its largest key (a collision throws). All copied
+back its own `SimParticle` keys. With a fast table use an offset above its largest key (a collision throws).
+When the input primary's key changes from event to event, as in a dts where the CE hangs below its proton, pion and
+muon ancestors, give it with `copyPrimaryParticle`: run `FindMCPrimary` on the input `SimParticle`s under another
+label before the injector, for example
+
+```
+inputPrimary : { module_type : FindMCPrimary SimParticles : "compressDetStepMCs::<dts process>" PrimaryProcess : "mu2ePrimary" }
+compressDetStepMCs : { module_type : StrawGasStepsFromTable ... copyCaloShowerSteps : "compressDetStepMCs::<dts process>"
+                       copyCrvSteps : "compressDetStepMCs::<dts process>" copyPrimaryParticle : "inputPrimary"
+                       copyKeyOffset : 100000000 }
+```
+
+with `inputPrimary` first in the trigger path. The input primary then becomes the table's `primaryKey` (same PDG, or
+it throws) and its copied descendants hang from it; its ancestors are copied only if another copied step needs them. All copied
 steps and their ancestors must come from one input `SimParticle` collection. The inject job must keep the input steps
 it reads (the usual `drop *_compressDetStepMCs_*_*` output command drops them only from the output file, after the
 injector has read them).
