@@ -159,7 +159,8 @@ def _electronics_kernel(c, cap, pair_cap, batch, entries=None, saturation_rows=N
 
 
 @lru_cache(maxsize=32)
-def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=None, saturation_pool=False):
+def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=None, saturation_pool=False,
+                       saturation_tiles=None):
     """The electronics kernel `run` (as _electronics_kernel) and, with saturation_pool=True (flat digitisation only),
     the kernels that saturate the ends of many launches together.
 
@@ -171,6 +172,8 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
     ADC and PMP. Exact: the same keys and arithmetic, the same chunk shapes."""
     if saturation_pool and entries is None:
         raise ValueError("saturation_pool needs the flat digitisation (entries)")
+    if saturation_tiles not in (None, "bounded"):
+        raise ValueError("saturation_tiles must be None or 'bounded'")
     srows = _saturation_rows(batch, saturation_rows)
     rb, sr, LB = c.responseBins, c.sampleRate, c.clusterLookbackTime
     R = batch * 2
@@ -215,13 +218,24 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
         v *= (L["dv_a"] if path == "adc" else L["dv_t"])[:, None]
         return v
 
-    def saturation_lanes(S, times):
-        """Saturated ADC volts of the end rows S at ADC sample times `times`, and their step-capacity overflow."""
+    ntiles = padded_steps // SATURATION_TILE
+
+    def saturation_steps(S, times):
+        """First contributing cluster i0, response origin t0 and live response steps nstep of the end rows S."""
         n_ = S["n"]
         rws = jnp.arange(n_.shape[0])
         i0 = jnp.minimum(count_lanes(S, times[:, 0] + LB - c.ttrunc, inclusive=True), jnp.maximum(n_ - 1, 0))
         t0 = S["t"][rws, jnp.clip(i0, 0, cap - 1)] - LB
         nstep = jnp.maximum(0, jnp.ceil((times[:, -1] - t0) / dts).astype(jnp.int32))
+        return i0, t0, nstep
+
+    def saturation_lanes(S, times, tiles=None):
+        """Saturated ADC volts of the end rows S at ADC sample times `times`, and their step-capacity overflow.
+
+        tiles: run only the first `tiles` response tiles (a traced bound); a tile past every row's nstep holds zeros,
+        which is what the masked tile computes."""
+        n_ = S["n"]
+        i0, t0, nstep = saturation_steps(S, times)
         def tile(k, response):
             offset = k * SATURATION_TILE
             tick = offset + jnp.arange(SATURATION_TILE)
@@ -230,7 +244,9 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
                                 lattice_origin=t0, lattice_offset=offset)
             values = jnp.where(tick[None, :] < nstep[:, None], values, 0)
             return lax.dynamic_update_slice(response, values, (0, offset))
-        resp = lax.fori_loop(0, padded_steps // SATURATION_TILE, tile, jnp.zeros((n_.shape[0], padded_steps)))
+        # a traced bound takes the static loop's index dtype, so the tile body is the same program
+        upper = ntiles if tiles is None else tiles.astype(jnp.asarray(ntiles).dtype)
+        resp = lax.fori_loop(0, upper, tile, jnp.zeros((n_.shape[0], padded_steps)))
         resp = jnp.minimum(resp[:, :sat_steps], c.saturationVoltage)
         tq = t0[:, None] + dts * jnp.arange(sat_steps)[None, :].astype(df.FLOAT)
         scale = c.saturationSampleFactor * S["dv_a"] / S["dv_t"]
@@ -273,17 +289,28 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
     @df.jit
     def pool_saturate(lanes, times, sat, volts):
         """Saturated ends of many launches (pools flattened over launches) in chunks of srows rows: the chunk shape
-        of one launch, filled across launches; chunks past the last saturated end are not run."""
+        of one launch, filled across launches; chunks past the last saturated end are not run. saturation_tiles
+        "bounded" orders the ends by live response tiles and runs each chunk's tile loop only as far as its ends
+        need (tiles past every end's last step are zero either way)."""
         n_rows = sat.shape[0]
         nsat = sat.sum()
         chunks = -(-n_rows // srows)
-        sidx = jnp.nonzero(sat, size=chunks * srows, fill_value=0)[0]
+        if saturation_tiles == "bounded":
+            # saturated ends by live response tiles, most first: each chunk runs up to its first row's tiles
+            need = jnp.minimum(-(-saturation_steps(lanes, times)[2] // SATURATION_TILE), ntiles)
+            order = jnp.argsort(jnp.where(sat, ntiles - need, ntiles + 1), stable=True)
+            sidx = jnp.zeros(chunks * srows, order.dtype).at[:n_rows].set(order)
+            bound = lambda k: need[sidx[k * srows]]
+        else:
+            sidx = jnp.nonzero(sat, size=chunks * srows, fill_value=0)[0]
+            bound = lambda k: None
 
         def body(state):
             k, volts, overflow = state
             cidx = lax.dynamic_slice(sidx, (k * srows,), (srows,))
             clive = k * srows + jnp.arange(srows) < nsat
-            result, of = saturation_lanes({name: value[cidx] for name, value in lanes.items()}, times[cidx])
+            result, of = saturation_lanes({name: value[cidx] for name, value in lanes.items()}, times[cidx],
+                                          bound(k))
             return (k + 1, volts.at[jnp.where(clive, cidx, n_rows)].set(result, mode="drop"),
                     overflow | jnp.any(clive & of))
         _, volts, overflow = lax.while_loop(lambda x: x[0] * srows < nsat, body,

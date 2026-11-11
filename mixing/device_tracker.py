@@ -29,6 +29,7 @@ class Capacities:
     digit_entries_per_straw: float = None
     flat_saturation_rows: str = None
     flat_saturation_pool: str = None
+    flat_saturation_tiles: str = None
     pack_sort: str = None
 
     def __post_init__(self):
@@ -40,6 +41,10 @@ class Capacities:
             if name == "minion_search":
                 if value not in ("scan", "compare_all"):
                     raise ValueError("tracker minion_search must be 'scan' or 'compare_all'")
+                continue
+            if name == "flat_saturation_tiles":
+                if value is not None and value not in ("all", "bounded"):
+                    raise ValueError("tracker flat_saturation_tiles must be 'all' or 'bounded'")
                 continue
             if name == "flat_saturation_pool":
                 if value is not None and value not in ("launch", "tier", "auto"):
@@ -97,7 +102,10 @@ class Capacities:
         if entries is None:
             return {}
         rows = {} if self.flat_saturation_rows in (None, "lanes") else {"saturation_rows": "auto"}
-        return {"entries": entries, **rows, **({"saturation_pool": True} if self.saturation_pool() else {})}
+        pool = {"saturation_pool": True} if self.saturation_pool() else {}
+        if pool and self.flat_saturation_tiles == "bounded":
+            pool["saturation_tiles"] = "bounded"
+        return {"entries": entries, **rows, **pool}
 
     def saturation_pool(self):
         """Tier saturation pool on: 'tier', or 'auto' in float32 (in float64, where flat_saturation_rows 'auto' already

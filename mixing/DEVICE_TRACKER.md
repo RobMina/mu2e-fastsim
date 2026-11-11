@@ -126,6 +126,11 @@ padding.
   The launches' saturated-end data stay on the device between the two steps (a few hundred MB at batch 256).
   `"auto"` pools in float32 only: in float64, `flat_saturation_rows: "auto"` already halves the chunks, and pooling
   measured 2 % slower there.
+- `flat_saturation_tiles: "bounded"` (with the pool) orders the pooled saturated ends by their live response tiles
+  and runs each chunk's tile loop only as far as its ends need. A tile past every end's last response step holds
+  zeros either way, so the digis are the same. Real saturated ends need about 80 of the 326 response steps (90 %
+  need at most 2 of the 6 tiles), so the tile work falls to x0.65 (float32) and x0.51 (float64). With it, pooling
+  pays in float64 too; the Run 1A capacity files set `flat_saturation_pool: "tier"` and `"bounded"`.
 - Overflow flag: `digit_entries_per_straw`. The demand counter `digit_entries_per_straw_milli` is the largest
   per-launch entry count over B, in thousandths (batch metrics are integers).
 
