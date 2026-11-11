@@ -108,6 +108,31 @@ def test_rangeout_in_slab_and_material_cap():
     np.testing.assert_array_equal(np.asarray(out.p)[rangeout], 0)
 
 
+def test_vacuum_step_is_opt_in_and_keeps_the_straight_flight():
+    """ts_vacuum_step: long steps through the field-free vacuum reach the plane exactly, in fewer steps."""
+    fixed = _run(Tube(), 13, 1000.0, n=50)
+    long = _run(Tube(), 13, 1000.0, n=50, settings=dev.Settings(step_mm=7.0, vacuum_step_mm=30.0))
+    for out in (fixed, long):
+        ds = np.asarray(out.fate) == dev.DS
+        assert ds.sum() >= 49
+        np.testing.assert_allclose(np.asarray(out.x)[ds], np.tile([-100, 0, 100], (ds.sum(), 1)), atol=1e-9)
+        np.testing.assert_allclose(np.asarray(out.t)[ds], 100 * np.hypot(1000, phys.MMU) / (1000 * phys.C_MM_NS))
+    assert np.max(np.asarray(long.steps)) <= 5 < np.min(np.asarray(fixed.steps))
+    assert dev.Settings().vacuum_step_mm == 0
+
+
+def test_vacuum_step_keeps_the_material_steps():
+    """A trial chord that crosses material is not taken: the slab is still crossed in capped steps."""
+    settings = dev.Settings(step_mm=7.0, material_step_mm=0.1, vacuum_step_mm=30.0)
+    out = _run(Tube(slab=20.0), 13, 20.0, settings=settings)
+    fate = np.asarray(out.fate)
+    rangeout = fate == dev.RANGEOUT
+    assert rangeout.sum() >= 195
+    assert np.all(np.asarray(out.mpath) < 3)
+    assert np.all(np.asarray(out.steps)[rangeout] > 10)
+    assert np.all(np.asarray(out.path)[rangeout] >= 40)       # every lane reached the slab
+
+
 def test_full_gather_bucket_defers_lanes(monkeypatch):
     """With a small shrink bucket, over-cap lanes beyond it wait a step; every lane still ranges out."""
     monkeypatch.setattr(dev, "SHRINK_LEVELS", (0.05,))

@@ -19,6 +19,15 @@ W1 = Workflow(
             sets={"stock_ds_entrance": {"arm": "stock-ds"}}, fidelity="stock_ds_entrance", alternative=STOCK_ART,
             stock="stock DS-entrance states of the reference (art ReadVirtualDetector) feed the DS stage",
             switch="tsdevice --arm (CLI only; the bench entry runs the condensed chain)"),
+        Approximation(
+            "ts_vacuum_step", "TS stage step length in vacuum: the fixed step everywhere (default), or a long step "
+            "(up to 20 mm, at most 0.1 rad of turning and a 0.25 mm sagitta) where its chord crosses no material, "
+            "stays inside the envelope and does not reach the DS plane",
+            levels=("fixed", "long"), default="fixed", sets={"long": {"vacuum_step": 20.0}}, fast="long",
+            fidelity="fixed", alternative=NONE,
+            stock="Geant4 takes field-limited steps in vacuum (deltaChord 0.25 mm); the fixed 2.5 mm step is the "
+                  "closer, slower model",
+            switch="tsdevice --vacuum-step; bench_chain(vacuum_step=); Settings.vacuum_step_mm"),
     ),
     fixed={
         "pion_nuclear_interactions": "not modelled: pions reaching the DS are counted, not transported",

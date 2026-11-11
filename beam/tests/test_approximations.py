@@ -132,6 +132,30 @@ def test_tsdevice_stock_ds_entrance_reaches_the_ds_only_arm(monkeypatch, tmp_pat
         dev.main(base + ["--approx", "pion_nuclear_interactions=on"])
 
 
+def test_tsdevice_vacuum_step_level_reaches_the_settings(monkeypatch, tmp_path):
+    pytest.importorskip("jax")
+    from beamfastsim import tsdevice as dev
+    n = 2
+    ref = dict(id=np.arange(n), shard=np.zeros(n), pdg=np.full(n, 13), batch=np.zeros(n), x=np.zeros((n, 3)),
+               p=np.ones((n, 3)), t=np.zeros(n))
+    seen = []
+
+    def load_chain(*a, **k):
+        seen.append((a[7] if len(a) > 7 else k["settings"]).vacuum_step_mm)
+        raise Reached
+    monkeypatch.setattr(dev, "load_chain", load_chain)
+    monkeypatch.setattr(dev, "load_references", lambda refs, limit: ref)
+    base = ["--reference", "r", "--gdml", "g", "--field-config", "f", "--offline-root", "o", "--maps", "m",
+            "--ds-geom", "d", "--ds-map", "dm", "--out", str(tmp_path / "o.npz")]
+    for extra in ([], ["--approx", "ts_vacuum_step=long"], ["--approx-preset", "fast"],
+                  ["--approx-preset", "fidelity"]):
+        with pytest.raises(Reached):
+            dev.main(base + extra)
+    assert seen == [0.0, 20.0, 20.0, 0.0]
+    assert BA.W1.select("fast").apply_kwargs({}) == {"vacuum_step": 20.0}
+    assert BA.W1.select("default").apply_kwargs({}) == {}
+
+
 def test_records_are_json_and_list_the_fixed_approximations():
     for w in (BA.W1, BA.W2):
         for preset in A.PRESETS:
