@@ -147,6 +147,27 @@ carries its gaps openly and never invents provenance.
   package's own variable), else `~/.cache/mu2efastsim/libraries`. Release assets of new libraries go under the tag
   `lib-<name>-v<version>` (`registry.release_url`); the tracker response tables keep their `resp-<hash>` tags.
 
+### Pinning in run configurations
+
+Some libraries have test doubles or development copies with the production name: a synthetic `LookupTable_6000_0`, or
+a copy of a table staged on a node. For these, the pin belongs to the **run configuration**, not to the library's name.
+
+- **Pinned loads.** A production run configuration lists every library it uses with its content hash, in an asset set
+  in the repository (for the CRV, `crvfastsim/configs/assets_<set>.json`, named by `RunConfig.asset_pins`; reco-r3 and
+  the kit task use the same set). A chain that loads through the run configuration checks the content hash of what
+  it decoded against that list and refuses a mismatch, or a library missing from the set.
+- **Ad hoc loads.** A load by path or name, as in development work or with a test double, is allowed. Its content hash
+  is still computed and recorded, with the status `unpinned`.
+- **Provenance.** Every load is entered in `library.provenance` (`record`, `loaded`, `summary`, `all_pinned`) and
+  carried on the loaded object. An output's provenance takes that record, so an output can never claim it ran on a
+  pinned library when it did not.
+- **Domain.** Out-of-domain and fallback counting is the same as for any other library.
+
+This is the general rule for libraries in external containers, such as Offline binary tables or ROOT files on
+CVMFS, and for anything else a test double with a production name can stand in for. Libraries in the repository's
+own `.npz` format keep the stricter rule above: the manifest is checked on every load, and a file without one is
+refused.
+
 ## 5. Domain
 
 Every library declares its domain, and nothing out of it is answered silently:
@@ -240,16 +261,16 @@ reports, a policy that should refuse) come in later pull requests and are valida
 | Library (manifest name) | Package, file | Keys and binning | Format before | Provenance, hash before | Out of domain before | Migration |
 |---|---|---|---|---|---|---|
 | `tracker.nrow.run1a` | `trkfastsim.recoresp.nrow`, `data/nrow_run1a.npz` | \|p\| × tan dip × r_max of the entry helix (38 × 24 × 36), pools of rows | npz, schema 1 | `reference` text; none | clip; fallback levels in `cell_level` | **done**: sidecar manifest (bytes unchanged), checked `load`, `Axis`/`locate`, `domain_counts`; bit-identical host and device, float32 and float64 |
-| `calo.digi_response.run1a` | `calofastsim.param_response`, `data/digi_response_run1a.npz` | visible E (60 log bins) × T − window end (2 ns), pools per (event, crystal) | npz, schema 2 | `reference` text; none | clip; `empty_bins` borrow; survival 1 below | next: sidecar, checked `load`, `domain_counts`; `to_device` keeps its fixed dtypes and gains the declared compute dtype (data README says schema 1: fix) |
-| `tracker.albedo.run1a` | `trkfastsim.sim.albedo`, `data/albedo_run1a_v1.npz` | exit radius × cos × sign(u_r), 48 bins | npz, version in file name | none; edges checked against constants | clip | sidecar; the edge check becomes `Axis.from_description` |
-| `tracker.response.*` | `trkfastsim.recoresp.table`, `data/ce_loophelix_run1a*.npz`, `registry.json` | nrow (18) × tan dip (11), 129-node inverse CDFs, pools | npz, no schema | `config_hash` (16 hex) for registered tables; file sha256 in the registry; shipped tables none | clip; build-time widening `level` | sidecar manifests for the three shipped tables; `load` checks (none today); `registry.json` read by `library.Registry` (layout already compatible); `resp-<hash>` tags kept |
-| `calo.showers.*` | `calofastsim.showers.library` | entry E × cos × disk radius | npz with JSON `metadata` | metadata | clip + `outside` flag, nearest-bin fallback | `metadata` → manifest; `outside`/`fallback` → `DomainCounter` |
-| `core.ebrem.g4emlow861`, `core.mott.g4_11_3_2` | `mu2efastsim.ebrem`, `emsc`, `data/*.npz` | Z × ln T × κ; Mott coefficients | npz | source-file sha256 inside | clamp; T > 1 GeV raises | sidecar; checked load |
+| `calo.digi_response.run1a` | `calofastsim.param_response`, `data/digi_response_run1a.npz` | visible E (60 log bins) × T − window end (2 ns), pools per (event, crystal) | npz, schema 2 | `reference` text; none | clip; `empty_bins` borrow; survival 1 below | **done** (#177): sidecar, checked `load`, `domain_counts`; data README schema fixed |
+| `tracker.albedo.run1a` | `trkfastsim.sim.albedo`, `data/albedo_run1a_v1.npz` | exit radius × cos × sign(u_r), 48 bins | npz, version in file name | none; edges checked against constants | clip | **done** (#174): sidecar, checked `Library.load`, `domain_counts` |
+| `tracker.response.*` | `trkfastsim.recoresp.table`, `data/ce_loophelix_run1a*.npz`, `registry.json` | nrow (18) × tan dip (11), 129-node inverse CDFs, pools | npz, no schema | `config_hash` (16 hex) for registered tables; file sha256 in the registry; shipped tables none | clip; build-time widening `level` | **done** (#176): sidecars for the three shipped tables, checked `load`; registered release assets without a manifest load by their registry sha256 |
+| `calo.showers.*` | `calofastsim.showers.library` | entry E × cos × disk radius | npz with JSON `metadata` | metadata | clip + `outside` flag, nearest-bin fallback | **in review**: manifest embedded by `save`; the registered pre-manifest CAL2 library (`showers/registered.json`) loads as before; `domain_counts` |
+| `core.ebrem.g4emlow861`, `core.mott.g4_11_3_2` | `mu2efastsim.ebrem`, `emsc`, `data/*.npz` | Z × ln T × κ; Mott coefficients | npz | source-file sha256 inside | clamp; T > 1 GeV raises | **done** (#175): sidecars, checked loads, `convert` embeds the manifest |
 | `core.cry.sea_level` | `mu2efastsim.cry_tables` | CRY tables | text | file sha256 pinned | range-checked | manifest via `verify` |
-| `beam.flash_attenuation.al_xcom` | `beamfastsim.flash_attenuation`, `data/flash_al_xcom.csv` | photon energy (XCOM grid) | CSV | source URL in header | NaN outside, never clamps | manifest via `verify` on the arrays read from the CSV; policy `nan` declared |
+| `beam.flash_attenuation.al_xcom` | `beamfastsim.flash_attenuation`, `data/flash_al_xcom.csv` | photon energy (XCOM grid) | CSV | source URL in header | NaN outside, never clamps | **done** (#178): sidecar over the CSV arrays via `verify`; policy `nan` declared |
 | `beam.flash_param.*` | `beamfastsim.flash_param` (branch `flash-param`) | none: 4 constants (c0, c1, σ, λ) | JSON | none | domain in docs | `kind: parametric` npz once a constants file ships |
-| `crv.lookup.v6_*` | `crvfastsim.response.lookup` (Offline v6 tables on CVMFS) | scint x,y,z; Cerenkov β, θ, φ, r, z | Offline binary | sha256 in the run's asset manifest | bin −1: no photons, not counted | sidecar manifests in the repository pinning each table's content hash; `verify` after decoding; the −1 bins counted |
-| `crv.sipm.photon_map` | `crvfastsim.response.sipm` | 40 × 40 pixels | ROOT TH2 | as above | n/a | as above |
+| `crv.lookup.v6_*` | `crvfastsim.response.lookup` (Offline v6 tables on CVMFS) | scint x,y,z; Cerenkov β, θ, φ, r, z | Offline binary | sha256 in the run's asset manifest | bin −1: no photons, not counted | **done** (this change): pinned by the run configurations (`configs/assets_crvconditions_v6_0.json`, section 4 "Pinning in run configurations"); ad hoc loads recorded unpinned; `domain_counts` counts the stock −1 bins |
+| `crv.sipm.photon_map` | `crvfastsim.response.sipm` | 40 × 40 pixels | ROOT TH2 | as above | n/a | **done** (this change): pinned with the lookup tables |
 | `crv.tier1b.*` | `crvfastsim.tier1b`, `tier1b_assets` | group × momentum quantile × path-length quantile, context and sub-cells | ROOT trees + npz/JSON sidecars | pinned library sha256, sidecar sha256, code sha256 | fallbacks, `fit_inside`, counters in `info` | manifest per asset set (sidecar), `verify` on the decoded arrays; `info` counters → `DomainCounter` |
 | `tracker.deltas.run1a` | `trkfastsim.sim.deltas` | step length bins | (not shipped yet) | — | — | native when it ships |
 | `secondaries.component.*` | `mu2efastsim.component_response` (LIB2) | exact entrance states; trials | in memory only | labels only | `UnsupportedEntrance` raises | native: see section 8 |

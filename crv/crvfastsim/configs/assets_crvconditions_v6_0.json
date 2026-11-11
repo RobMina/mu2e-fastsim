@@ -1,0 +1,28 @@
+{
+ "assets": {
+  "LookupTable_2370_1": {
+   "content_hash": "3f7f997c0ac57c0b94f0cb70f2ee331d79a314ed5cc83e4dbd6fd13041371888",
+   "file_sha256": "6bca3428eface7025aea1c56b9bd15b5905851a96672c0ac8661e6af6f681637",
+   "size": 20625322
+  },
+  "LookupTable_3200_0": {
+   "content_hash": "5e8243dd33f44c48f930babf21153d8ceba7cd354c049dbf4ba2c53728e5b470",
+   "file_sha256": "5f6841619b8712b69292f599caf2c1d46e80bd78ed34f2ae8864a49bd1ebe163",
+   "size": 21347129
+  },
+  "LookupTable_6000_0": {
+   "content_hash": "ed3b0560e6e4008b39459b62229ca614258f35dbfd3688d9877923146881482a",
+   "file_sha256": "1c39bfdafc617d6edc6b703bc7f320729a1c30c5d4a990765a924ab5f50b6077",
+   "size": 35806732
+  },
+  "photonMap.root": {
+   "content_hash": "a218afdcac144409418c5e6d612550bdb82ac3d5079900c9e6b9d6342cecee2f",
+   "file_sha256": "b8cd7588eac90f72df56cfb95fbaa102671647a46e7df403af267ad76200f236",
+   "size": 7713
+  }
+ },
+ "description": "CRV optical assets (Offline CRVConditions v6_0): photon lookup tables and the SiPM photon map. content_hash: mu2efastsim.library.hashing.content_hash of the decoded arrays (lookup.arrays, the photon map as 'photon_map'), checked by every pinned load.",
+ "schema": 1,
+ "set": "crvconditions_v6_0",
+ "source": "/cvmfs/mu2e.opensciencegrid.org/DataFiles/CRVConditions/v6_0"
+}

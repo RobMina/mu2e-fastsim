@@ -46,14 +46,35 @@ class SiPMConfig:
         return self.p1 * (1.0 - np.exp(-v / self.p2))
 
 
-def photon_map(path=None):
-    """The fibre photon map as a [40, 40] array indexed [x, y] (bin contents of photonMap.root)."""
+def load_photon_map(path=None, pin=None):
+    """(photon map [40, 40] indexed [x, y], provenance): the bin contents of photonMap.root. pin ({content_hash}, the
+    run configuration's asset pin): refuse a map whose content differs; without one the load is recorded unpinned."""
     import os
     import uproot
+    from mu2efastsim.library import provenance as LP
+    from mu2efastsim.library.hashing import content_hash
+    from mu2efastsim.library.store import LibraryError
     from . import lookup
     path = path or os.path.join(lookup.lookup_dir(), "photonMap.root")
+    if pin is None:
+        pin = lookup.active_pin("photonMap.root")
     with uproot.open(path) as f:
-        return f["photonMap"].to_numpy()[0].astype(float)
+        pmap = f["photonMap"].to_numpy()[0].astype(float)
+    h = content_hash({"photon_map": pmap})
+    rec = dict(name="crv.sipm.photon_map", file=os.path.basename(path), size=os.path.getsize(path), content_hash=h,
+               status="unpinned", pin_set=None)
+    if pin is not None:
+        if pin.get("content_hash") != h:
+            raise LibraryError(path, [f"content hash {h[:16]}... differs from the pinned "
+                                      f"{str(pin.get('content_hash'))[:16]}... of {pin.get('set', lookup.PIN_SET)}"])
+        rec.update(status="pinned", pin_set=pin.get("set", lookup.PIN_SET))
+    LP.record(rec)
+    return pmap, rec
+
+
+def photon_map(path=None, pin=None):
+    """The fibre photon map as a [40, 40] array indexed [x, y] (bin contents of photonMap.root); see load_photon_map."""
+    return load_photon_map(path, pin)[0]
 
 
 def draw_pixels(pmap, n, rng, pixel_id="lrint"):

@@ -99,6 +99,9 @@ class RunConfig:
                                       # set: runchain refuses --calib nominal (it counts the status-ignored channels as live)
     sipm_pixel_id: str = "lrint"      # SiPM photon-map point -> pixel id of the stock reference release (sipm.PIXEL_IDS):
                                       # "truncate" from Offline v13_40_00 (7e72638), "lrint" up to v13_39_00
+    asset_pins: str = ""              # pinned optical asset set (response.lookup.PIN_SET: lookup tables and photon map by
+                                      # content hash, configs/assets_<set>.json); "" = not pinned (loads are recorded
+                                      # as unpinned)
 
     def counters_path(self):
         from . import geometry
@@ -131,6 +134,28 @@ class RunConfig:
                                    ignore_secondary_pulses=self.ignore_secondary_pulses,
                                    add_opposite_side_pulses=self.add_opposite_side_pulses)
 
+    def asset_pin_map(self):
+        """{asset name: pin} of the configuration's pinned asset set, or None when it has none."""
+        if not self.asset_pins:
+            return None
+        from .response import lookup
+        return {k: dict(v, set=self.asset_pins) for k, v in lookup.pins(self.asset_pins).items()}
+
+    def lookup_tables(self, response=None, directory=None):
+        """{table: LookupTable} of the response's sectors (default: this configuration's), checked against the pinned
+        asset set (a mismatch or a table outside the set is refused) when the configuration has one."""
+        from .response import lookup
+        with lookup.pinned(self.asset_pin_map()):
+            response = response or self.response()
+            return PH.load_tables(response) if directory is None else PH.load_tables(response, directory)
+
+    def photon_map(self, path=None):
+        """The SiPM photon map, checked against the pinned asset set when the configuration has one."""
+        from .response import lookup
+        from .response import sipm as SI
+        with lookup.pinned(self.asset_pin_map()):
+            return SI.photon_map() if path is None else SI.photon_map(path)
+
     def sipm(self):
         from .response import sipm as SI
         return dataclasses.replace(SI.SiPMConfig(), pixel_id=self.sipm_pixel_id)
@@ -162,7 +187,7 @@ EXTRACTED_V04 = RunConfig(
     "extracted_v04", "Offline/Mu2eG4/geom/crv_counters_extracted_v04.txt", f"{GEOM_DIR}/mu2e_extracted_v04.gdml",
     dict(PH.EXTRACTED_V05), 0.94, dict(C.EXTRACTED_V04), True, OFFSPILL_WINDOW,
     tagger_sectors=tuple(f"M{i}" for i in range(1, 9)), range_out=True,
-    geom_text="Offline/Mu2eG4/geom/geom_common_extracted_v04.txt")
+    geom_text="Offline/Mu2eG4/geom/geom_common_extracted_v04.txt", asset_pins="crvconditions_v6_0")
 
 # every non-tagger sector of Run 1A / Run 2 is a CRV module with 0.1 mm-cut-like descendants: library group EX (6 m
 # CRV-T bars); the library cut (87.2 keV) is the transport cut, so restricted loss + library deltas add up
@@ -171,7 +196,7 @@ RUN1A_V01 = RunConfig(
     RUN1A_SECTORS, 0.90, RUN1A_CUTS, False, ONSPILL_WINDOW, lib_group={"T1": "EX", "T2": "EX"}, showers=False,
     delta_cut_mev=0.361, below_world=True,
     geom_text="Offline/Mu2eG4/geom/geom_run1_a.txt", conditions="run1a_v01", sipm_pixel_id="truncate",
-    feb_phase_key="feb")
+    feb_phase_key="feb", asset_pins="crvconditions_v6_0")
 # the Run 1A stock reference is Offline v13_41_00 (CRV1/W5 V-series): its SiPM pixel ids are truncated (7e72638); with
 # lrint the fast SiPM saturated less, +0.25 % cluster PE on the same Geant4 steps, rising to +1 % above 200 PE per SiPM
 # Run 1B: the CRV and everything above it (building, hatch blocks) are Run 1A's; the relocated tracker and DS2 are inside
@@ -182,7 +207,7 @@ RUN2_V10 = RunConfig(
     "run2_v10", "Offline/Mu2eG4/geom/crv_counters_v10.txt", f"{GEOM_DIR}/mu2e_run2_v10.gdml",
     RUN2_SECTORS, 0.84, RUN2_CUTS, False, ONSPILL_WINDOW, lib_group={n: "EX" for n in RUN2_SECTORS}, showers=False,
     delta_cut_mev=0.361, below_world=True, below_margin=20000.0,
-    geom_text="Offline/Mu2eG4/geom/geom_run2.txt")
+    geom_text="Offline/Mu2eG4/geom/geom_run2.txt")   # asset_pins: the Run 2 per-sector tables are not in the pinned set yet
 
 REGISTRY = {rc.name: rc for rc in (EXTRACTED_V04, RUN1A_V01, RUN1B_V01, RUN2_V10)}
 DEFAULT = "extracted_v04"

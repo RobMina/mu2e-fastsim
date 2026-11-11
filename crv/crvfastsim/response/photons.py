@@ -372,4 +372,43 @@ def make_photons(steps, pdg, geom, cfg, tables, deviation, rng):
 
 
 def load_tables(cfg, directory=None):
+    """{table name: LookupTable} of the configuration's sectors; inside lookup.pinned(...) every table is checked
+    against the pinned asset set (RunConfig.lookup_tables), otherwise the loads are recorded unpinned."""
     return {t: lookup.load(t, directory) for t in sorted({s.table for s in cfg.sectors.values()})}
+
+
+def _domain_codes(edges, v):
+    from mu2efastsim.library.axes import ABOVE, BELOW, IN, NONFINITE
+    b = find_bin(edges, v)
+    return np.where(b >= 0, IN, np.where(~np.isfinite(v), NONFINITE, np.where(v < edges[0], BELOW, ABOVE)))
+
+
+def domain_counts_rows(L, rows, counter):
+    """Add the lookups of one table's substep rows (iter_rows) to a DomainCounter: substeps whose scintillator
+    (x, y, z), beta or fiber (theta, phi, r) bin is outside the table (stock findBin -1: no photons from that table)."""
+    nsub = rows["nsub"]
+    ri = np.repeat(np.arange(len(nsub)), nsub)
+    k = np.arange(len(ri)) - np.repeat(np.r_[0, np.cumsum(nsub)][:-1], nsub)
+    p = rows["s"][ri] + rows["d"][ri] * ((k + 0.5) / nsub[ri])[:, None]
+    x, y, z = p[:, 0], p[:, 1], p[:, 2]
+    E = L.edges
+    insc = _inside_scint(L, x, y, z)
+    infb, r, phi = _inside_fiber(L, x, y, z, rows["d"][ri, 0], rows["d"][ri, 1])
+    infb &= ~insc
+    counter.add_lookups(int((insc | infb).sum()))
+    for name, v, m in (("x", np.abs(x), insc), ("y", y, insc), ("z", z, insc | infb),
+                       ("beta", rows["beta"][ri], insc | infb), ("theta", rows["theta"][ri], infb),
+                       ("phi", phi, infb), ("r", r, infb)):
+        counter.add_codes(name, _domain_codes(E[name], v), mask=m)
+    return counter
+
+
+def domain_counts(steps, pdg, geom, cfg, tables, deviation, rng=None, counter=None):
+    """DomainCounter of the lookups a set of steps makes (host), per domain_counts_rows. rng: the generator of the
+    substep photon numbers (a separate one: the numbers do not change where the substeps are)."""
+    from mu2efastsim.library.domain import DomainCounter
+    counter = counter or DomainCounter("crv.lookup.v6")
+    rng = rng if rng is not None else np.random.default_rng(0)
+    for L, rows in iter_rows(steps, pdg, geom, cfg, tables, deviation, rng):
+        domain_counts_rows(L, rows, counter)
+    return counter

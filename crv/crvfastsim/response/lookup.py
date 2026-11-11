@@ -10,14 +10,56 @@ Binary layout (native little-endian, as written by the C++ structs):
 
 The tables are Mu2e-internal (see package doc). Arrays are kept compact: weights as uint8 padded to the longest
 vector of each table, plus their per-bin sums (the stock code samples index i with probability w_i / sum w).
+
+Library pinning (mu2efastsim.library, core/docs/libraries.md "Pinning in run configurations"): the tables are pinned
+by the run configurations, not by their names. A load with a pin (``load(name, pin=...)``, or any load inside
+``with pinned(pin_map):``, as RunConfig.lookup_tables / photon_map and reco-r3 do with PIN_SET) checks the content
+hash of the decoded arrays and refuses a mismatch or an asset missing from the set; any other load is
+allowed (development tables, test doubles with production names) and records the content hash with the status
+"unpinned". Either way the table's ``provenance`` says which, and the load is entered in
+mu2efastsim.library.provenance.
 """
+import json
 import os
-from dataclasses import dataclass
+import threading
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
+from mu2efastsim.library import provenance as LP
+from mu2efastsim.library.hashing import content_hash
+from mu2efastsim.library.store import LibraryError
+
 DEFAULT_DIR = "/cvmfs/mu2e.opensciencegrid.org/DataFiles/CRVConditions/v6_0"
 TABLES = ("scint", "ckscint", "ckfiber")
+PIN_FILE = Path(__file__).resolve().parent.parent / "configs" / "assets_crvconditions_v6_0.json"
+PIN_SET = "crvconditions_v6_0"
+_ACTIVE = threading.local()
+
+
+@contextmanager
+def pinned(pin_map):
+    """Inside the block, every lookup-table and photon-map load is checked against pin_map ({asset: pin}, e.g.
+    RunConfig.asset_pin_map()); None leaves the loads unpinned."""
+    prev = getattr(_ACTIVE, "pins", None)
+    _ACTIVE.pins = pin_map
+    try:
+        yield
+    finally:
+        _ACTIVE.pins = prev
+
+
+def active_pin(asset):
+    """The pin of asset ('LookupTable_6000_0', 'photonMap.root') in the active pin map; None outside pinned().
+    An asset the active set does not list is refused."""
+    pins = getattr(_ACTIVE, "pins", None)
+    if pins is None:
+        return None
+    if asset not in pins:
+        raise LibraryError(asset, [f"{asset} is not in the pinned asset set"])
+    return pins[asset]
 
 
 def lookup_dir():
@@ -52,6 +94,7 @@ class LookupTable:
     ck_fiber: np.ndarray
     edges: dict             # x, y, z, beta, theta, phi, r -> float64 arrays
     tables: dict            # scint, ckscint, ckfiber -> Table
+    provenance: dict = field(default=None, compare=False)   # library identity of the load (pinned or unpinned)
 
 
 class _Reader:
@@ -103,9 +146,12 @@ def _read_bins(r, n):
     return Table(prob, delays, delays.sum(1, dtype=np.int32), emis, emis.sum(1, dtype=np.int32))
 
 
-def load(name, directory=None):
-    """Read LookupTable_<name> (e.g. '6000_0') from the lookup directory."""
+def load(name, directory=None, pin=None):
+    """Read LookupTable_<name> (e.g. '6000_0') from the lookup directory. pin ({content_hash}, e.g. from pins()):
+    refuse a table whose decoded content differs (LibraryError); without one the load is recorded as unpinned."""
     path = os.path.join(directory or lookup_dir(), f"LookupTable_{name}" if not name.startswith("LookupTable") else name)
+    if pin is None:
+        pin = active_pin(os.path.basename(path))
     with open(path, "rb") as fh:
         buf = fh.read()
     r = _Reader(buf)
@@ -128,4 +174,63 @@ def load(name, directory=None):
     tables = {"scint": _read_bins(r, n_scint), "ckscint": _read_bins(r, n_cks), "ckfiber": _read_bins(r, n_ckf)}
     if r.o != len(buf):
         raise ValueError(f"{path}: {len(buf) - r.o} trailing bytes")
-    return LookupTable(os.path.basename(path), (v1, v2), refl, *(float(x) for x in c), ck_s, ck_f, edges, tables)
+    L = LookupTable(os.path.basename(path), (v1, v2), refl, *(float(x) for x in c), ck_s, ck_f, edges, tables)
+    L.provenance = _provenance(L, path, len(buf), pin)
+    return L
+
+
+def arrays(L):
+    """The decoded content of a table as named arrays (what its content hash covers)."""
+    out = {"version": np.array(L.version, np.int64), "reflector": np.int64(L.reflector),
+           "constants": np.array([L.half_thickness, L.half_width, L.half_length, L.fiber_separation, L.hole_radius_x,
+                                  L.hole_radius_y, L.fiber_radius, L.corner_radius, L.birks, L.fiber_decay_time]),
+           "ck_scint": L.ck_scint, "ck_fiber": L.ck_fiber}
+    out.update({f"edges_{k}": v for k, v in L.edges.items()})
+    for t, T in L.tables.items():
+        out.update({f"{t}_prob": T.prob, f"{t}_delays": T.delays, f"{t}_delay_sum": T.delay_sum,
+                    f"{t}_emis": T.emis, f"{t}_emis_sum": T.emis_sum})
+    return out
+
+
+def pins(set_name=PIN_SET, path=PIN_FILE):
+    """{asset name: {content_hash, size}} of a pinned asset set (configs/assets_<set>.json)."""
+    d = json.loads(Path(path).read_text())
+    if d.get("schema") != 1 or d.get("set") != set_name:
+        raise LibraryError(path, [f"expected asset set {set_name!r} (schema 1)"])
+    return d["assets"]
+
+
+def write_pins(directory=None, tables=("2370_1", "3200_0", "6000_0"), set_name=PIN_SET, path=PIN_FILE,
+               source=DEFAULT_DIR):
+    """Write the pinned asset set of the tables and photonMap.root in ``directory`` (a copy of ``source``): per asset
+    the content hash of the decoded arrays, the file size and the file sha256. Returns the set."""
+    from mu2efastsim.library.hashing import file_sha256
+    from . import sipm
+    directory = directory or lookup_dir()
+    assets = {}
+    for t in tables:
+        f = os.path.join(directory, f"LookupTable_{t}")
+        assets[f"LookupTable_{t}"] = dict(content_hash=load(t, directory).provenance["content_hash"],
+                                          size=os.path.getsize(f), file_sha256=file_sha256(f))
+    f = os.path.join(directory, "photonMap.root")
+    assets["photonMap.root"] = dict(content_hash=sipm.load_photon_map(f)[1]["content_hash"], size=os.path.getsize(f),
+                                    file_sha256=file_sha256(f))
+    d = dict(schema=1, set=set_name, source=source, assets=assets,
+             description="CRV optical assets (Offline CRVConditions v6_0): photon lookup tables and the SiPM photon "
+                         "map. content_hash: mu2efastsim.library.hashing.content_hash of the decoded arrays "
+                         "(lookup.arrays, the photon map as 'photon_map'), checked by every pinned load.")
+    Path(path).write_text(json.dumps(d, indent=1, sort_keys=True) + "\n")
+    return d
+
+
+def _provenance(L, path, size, pin):
+    h = content_hash(arrays(L))
+    rec = dict(name=f"crv.lookup.{L.name.replace('LookupTable_', '')}", file=os.path.basename(path), size=size,
+               content_hash=h, status="unpinned", pin_set=None)
+    if pin is not None:
+        if pin.get("content_hash") != h:
+            raise LibraryError(path, [f"content hash {h[:16]}... differs from the pinned {str(pin.get('content_hash'))[:16]}... "
+                                      f"of {pin.get('set', PIN_SET)}"])
+        rec.update(status="pinned", pin_set=pin.get("set", PIN_SET))
+    LP.record(rec)
+    return rec
