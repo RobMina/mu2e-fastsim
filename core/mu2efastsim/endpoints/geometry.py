@@ -25,7 +25,7 @@ DECLARATION = re.compile(r"\s*(double|bool|vector<\s*double\s*>)\s+([A-Za-z][A-Z
 HEX = re.compile(r"[0-9a-f]{64}")
 
 
-GEOMETRY_TASKS = ("beam_point", "beam_sob")   # tasks that take one target-geometry FileRef
+GEOMETRY_TASKS = ("beam_point", "beam_sob", "beam_edep")   # tasks that take one target-geometry FileRef
 
 
 def reference(files, inputs, params):

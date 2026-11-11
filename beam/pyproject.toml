@@ -15,6 +15,7 @@ plots = ["matplotlib"]
 test = ["pytest"]
 tracker = ["trkfastsim", "pandas"]   # cetracker: hand-off to the field-on tracker
 reco = ["pandas", "awkward"]   # dioreco: EventNtuple readers
+edepana = ["calofastsim", "trkfastsim", "pandas"]   # edepana: calorimeter showers and the tracker device chain
 
 [project.scripts]
 beamfastsim = "beamfastsim.__main__:main"

@@ -77,6 +77,7 @@ endpoint versions byte for byte. Tasks:
 | `tracker_point` | stage-C steps, fast digis, hits, seeds and the F2 fit of one shard ([tracker-point.md](tracker-point.md)) | EAF, Slurm | T-V0, T-V1 pass; fast digis vs stock on the same steps 0 of 19 flagged; open: T-V3 track yield -1.42 +- 0.37 % |
 | `beam_point` | stop fraction and stop profile of a target geometry (umbrella `beam/` on `PYTHONPATH`) | EAF, Slurm | 65 Geant4-evaluated design points: Geant4 / fast 1.0045 +- 0.0005 (+- 0.0077 from the predicted scale), rank correlation 0.998; paired stop fraction 0.5-0.7 % low |
 | `beam_sob` | sob stand-in of a target geometry: stops, conversion electrons, calorimeter proxy, the studies' approximate sensitivity (umbrella `beam/`; CPU) | EAF, Slurm | 65 design points: Geant4 / fast 0.9920 +- 0.0006 (+- 0.0077 from the stops normalisation), rms 0.46 %, rank correlation 0.993; the calorimeter proxy keeps 1.7 % too many electrons |
+| `beam_edep` | the EdepAna file (`EDepAna/tree`) of a target geometry for the analysis server's `approx_ce_sensitivity` and `edep` readers: stops, conversion electrons through the device chain, calorimeter shower library and wall proxy, the CeEndpoint storage filter; float64 or float32 (umbrella `beam/`, `calo/`, `tracker/`; one GPU) | EAF, Slurm | see `beam/docs/edepana.md` |
 
 ## Endpoint job scripts
 

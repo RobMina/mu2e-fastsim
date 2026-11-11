@@ -506,3 +506,39 @@ def test_beam_sob_streams_the_boards_table_into_one_cpu_job(tmp_path):
     site.files[f"{site.dirs[j]}/inbox"] = "udc-a1 /dev/shm/beamfs_kit_j7001_9\n"
     kit.status("bs1")
     assert streamed == [(kit_task.SOB_TABLE, "/dev/shm/beamfs_kit_j7001_9/g4ref.npz")]
+
+
+PE = {"task": "beam_edep", "geom": "move_extras12.txt", "muons": 0, "electrons": 100000, "seed": 1, "dtype": "float32"}
+
+
+def test_beam_edep_streams_table_library_and_gdml_into_one_gpu_job(tmp_path):
+    site, ep, kit, streamed = make(tmp_path)
+    kit._delegates["beam_edep"] = kit_uva.BeamEdepStream(kit, source=Source(), code="/path/to/slurm/beam",
+                                                         background=False)
+    assert kit_task._UVAEdepDelegate.applies(ep)
+    assert kit_uva.validate({k: v for k, v in PE.items() if k != "dtype"}, "beam_edep")["dtype"] == "float64"
+    for bad in ({**PE, "dtype": "float16"}, {**PE, "electrons": 10}):
+        with pytest.raises(ValueError):
+            kit_uva.validate(bad, "beam_edep")
+    assert kit.submit("be1", PE, [], []) == {"handle": "be1"}
+    j = ep.state.get("be1").job_id
+    body = site.body
+    assert "-m beamfastsim.edepana point" in body and "--electrons 100000 " in body and "--dtype float32 " in body
+    assert "--z-up 3900.0" in body and "--extra-map TSdMap" in body and "apptainer exec --nv" in body
+    assert '--library "$L/shower_library.npz" --edge-library "$L/edge_library.npz" --gdml "$L/tracker.gdml"' in body
+    r = subprocess.run(["bash", "-n"], input=body.encode(), capture_output=True)
+    assert r.returncode == 0, r.stderr.decode()
+    site.state[j] = "RUNNING"
+    site.files[f"{site.dirs[j]}/inbox"] = "udc-a1 /dev/shm/beamfs_kit_j7001_9\n"
+    kit.status("be1")
+    assert sorted(streamed) == sorted([(kit_task.SOB_TABLE, "/dev/shm/beamfs_kit_j7001_9/g4ref.npz"),
+                                       (kit_task.EDEP_LIBRARY, "/dev/shm/beamfs_kit_j7001_9/shower_library.npz"),
+                                       (kit_task.EDEP_GDML, "/dev/shm/beamfs_kit_j7001_9/tracker.gdml"),
+                                       (kit_task.EDEP_EDGE, "/dev/shm/beamfs_kit_j7001_9/edge_library.npz")])
+
+
+def test_beam_edep_mounted_body_runs_the_writer_on_the_gpu():
+    t = kitmod.TASKS["beam_edep"]
+    assert t.resources.gpus == 1 and t.defaults == {"dtype": "float64"} and "beam_edep" in kitmod.FNAL_TASKS
+    assert "-m beamfastsim.edepana point" in t.body and kit_task.EDEP_LIBRARY in t.body and "@p_dtype@" in t.body
+    assert kit_task.EDEP_EDGE in t.body and '--edge-library "$EE"' in t.body

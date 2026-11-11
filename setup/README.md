@@ -45,7 +45,8 @@ Paths are relative to `$M2FS_INPUTS`. `site.env.example` derives `CRVFS_DATA`, `
 | `trk_fastreco/cond_mc_au.json`, `trk_fastreco/trk_sa2/tracks_ref_mc_saveall.001400_00000000.root` (conditions tree only) | `tracker_point` hit reco and drift calibration | stock `StrawHitTableDumper` (tracker `art/`, `dump_tracks_mc_saveall.fcl`, conditions `Sim_best` v1_5, extracted v04 geometry) on the MDC2025au CRY-extracted dig file of subrun 1400_0, then `python3 -m trkfastsim reco-conditions` (new in v1.1) |
 | `trk_fastsim/lib/trklib_mdc2025as_20f_v2.{root,json,meta.json}` | optional tracker secondaries | buildlib format 2, 20 Geant4 donor files |
 | `beam_fastsim/g4ref_full/g4ref.npz` | kit `beam_point` | DS-entrance muons from MuBeamCat MDC2025ac |
-| `beam_fastsim/g4ref_run1baa/g4ref_run1baa_vd8.npz` | kit `beam_sob` | Coll5_Out-plane beam sample from MuBeamCat Run1Baa |
+| `beam_fastsim/g4ref_run1baa/g4ref_run1baa_vd8.npz` | kits `beam_sob`, `beam_edep` | Coll5_Out-plane beam sample from MuBeamCat Run1Baa |
+| `beam_fastsim/edepana/shower_library_cal2.npz`, `beam_fastsim/edepana/edge_library_mdc2025ac.npz`, `beam_fastsim/edepana/mu2e_run1a_v01.gdml` | kit `beam_edep` | calorimeter whole-event shower library (Geant4 CeEndpoint disk-front entries, `calofastsim.showers`); Geant4 inner-edge calorimeter energies (MDC2025ac CeEndpoint, first VD crossing on the r = 335 mm edge cylinder, with the EdepAna event energies); the Run 1A GDML for the tracker transport |
 | `offline/Offline/Mu2eG4/geom/crv_counters_{extracted_v04,run1a_v01,v10}.txt`, `offline/Offline/CRVResponse/data/singlePEWaveform_v3.txt` | CRV geometry and waveform (`MU2E_SEARCH_PATH`) | public Mu2e/Offline v13_39_00 |
 
 **Not in v1.2:**

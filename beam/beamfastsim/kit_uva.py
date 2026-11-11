@@ -1,6 +1,8 @@
-"""beam_point (and beam_sob) on an endpoint without FNAL storage (UVA, Slurm over SSH): one job, inputs streamed in.
+"""beam_point (and beam_sob, beam_edep) on an endpoint without FNAL storage (UVA, Slurm over SSH): one job, inputs streamed in.
 
-beam_point is one one-GPU job; beam_sob (BeamSobStream) one CPU job on the same route with the design studies' beam table.
+beam_point is one one-GPU job; beam_sob (BeamSobStream) one CPU job on the same route with the design studies' beam table;
+beam_edep (BeamEdepStream) one GPU job with that table, the calorimeter shower library and the Run 1A GDML, returning
+the EdepAna file.
 
 The Mu2e-internal input (the DS-entrance muon table g4ref.npz, made from MuBeamCat) is never stored on the endpoint:
 when the job starts it writes ``<job dir>/inbox`` (node, tmpfs dir) and the kit pipes the file from the FNAL host
@@ -72,6 +74,8 @@ class _Source(FnalSource):
 
 def validate(params: Dict[str, Any], task: str = "beam_point") -> Dict[str, Any]:
     from mu2efastsim.endpoints.parameters import validate as validate_parameters
+    if task == "beam_edep":
+        return validate_parameters(task, params, kit_task.EDEP_PARAMS, {"dtype": "float64"})
     return validate_parameters(task, params, kit_task.SOB_PARAMS if task == "beam_sob" else kit_task.PARAMS)
 
 
@@ -353,3 +357,57 @@ class BeamSobStream(BeamPointStream):
         super().__init__(kit, **kw)
         self.BODY = SOB_BODY.replace("@zup@", str(kit_task.SOB_Z_UP)).replace(
             "@cores@", str(SOB_RESOURCES.cores)).replace("@dio@", cesob.DIO_TABLE)
+
+
+EDEP_RESOURCES = Resources(cores=kit_task.EDEP_CORES, mem_gb=96, gpus=1, gpu_type="a100", minutes=60)
+EDEP_BODY = """@common@CODE=@code@
+L=${TMPDIR:-/tmp}/beamfs_kit_j${SLURM_JOB_ID:-0}_$$; mkdir -p "$L"; chmod 700 "$L"
+trap 'rm -rf "$L"; echo "$(date -Is) $(hostname) deleted $L" >> "$M2FS_OUT/cleanup.txt"' EXIT
+trap 'exit 143' TERM INT
+B() { apptainer exec --nv --cleanenv --env "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0},OPENBLAS_NUM_THREADS=1,PYTHONDONTWRITEBYTECODE=1,PYTHONPATH=$CODE/core:$CODE/beam:$CODE/calo:$CODE/tracker,XLA_PYTHON_CLIENT_PREALLOCATE=false,BEAMFS_OFFLINE_ROOT=$L/pub/offline,BEAMFS_MAPS=$L/pub/maps" -B "$L" -B "$M2FS_OUT" -B "$CODE" --pwd "$CODE" @sif@ "$@"; }
+B python -c "import beamfastsim.stage, beamfastsim.edepana" || { echo "beamfastsim.edepana missing in $CODE"; exit 5; }
+echo "$(hostname) $L" > "$(dirname "$M2FS_OUT")/inbox"      # read by the kit, which then streams the inputs in
+tw=$SECONDS; while [ $((SECONDS-tw)) -lt @waits@ ]; do [ -f "$L/ready" ] && break; sleep 3; done
+[ -f "$L/ready" ] || { echo "no input arrived within @waits@ s"; exit 3; }
+echo "{\\"input_wait_s\\": $((SECONDS-tw))}" > "$M2FS_OUT/wait.json"
+B python -m beamfastsim.stage "$L/pub" @stagegeom@ --extra-map TSdMap > "$M2FS_OUT/stage.txt" 2>&1 || { tail -5 "$M2FS_OUT/stage.txt"; exit 4; }
+tail -1 "$M2FS_OUT/stage.txt"
+B python -m beamfastsim.edepana point --g4 "$L/g4ref.npz" --z-up @zup@ @geomarg@ --muons @muons@ --electrons @electrons@ \\
+  --seed @seed@ --dtype @dtype@ --library "$L/shower_library.npz" --edge-library "$L/edge_library.npz" --gdml "$L/tracker.gdml" \\
+  --procs $(( ${SLURM_CPUS_PER_TASK:-@cores@} - 1 )) --out "$M2FS_OUT" > "$M2FS_OUT/point.txt" 2>&1 || { tail -20 "$M2FS_OUT/point.txt"; exit 6; }
+tail -c 300 "$M2FS_OUT/point.txt"
+"""
+
+
+class BeamEdepStream(BeamPointStream):
+    """beam_edep (beamfastsim.edepana point) on the streaming route: the design studies' beam table, the calorimeter
+    shower library, its inner-edge energy table and the Run 1A GDML streamed in, one GPU job. Its EdepAna file comes back with the results (kind
+    "root"), with the edep run record and summary beside it."""
+    TASK = "beam_edep"
+    TABLE = kit_task.SOB_TABLE
+    RESOURCES = EDEP_RESOURCES
+
+    def __init__(self, kit, **kw):
+        super().__init__(kit, **kw)
+        self.BODY = EDEP_BODY.replace("@zup@", str(kit_task.SOB_Z_UP)).replace("@cores@", str(EDEP_RESOURCES.cores))
+
+    @classmethod
+    def inputs(cls, p) -> Dict[str, str]:
+        out = super().inputs(p)
+        out.update({kit_task.EDEP_LIBRARY: "shower_library.npz", kit_task.EDEP_GDML: "tracker.gdml",
+                    kit_task.EDEP_EDGE: "edge_library.npz"})
+        return out
+
+    def results(self, name) -> Dict[str, Any]:
+        """The EdepAna file as the only FileRef (kind "root"): a chained analysis step takes its upstream files as
+        inputs and approx_ce_sensitivity takes one ROOT file. Its run record and summary stay beside it in the
+        fetched out/ and are named in metadata."""
+        r = super().results(name)
+        out = Path(self.kit.out_root) / name / "out"
+        nts = out / kit_task.EDEP_FILE
+        if not nts.exists():
+            raise ValueError(f"fastsimkit: {name!r} wrote no {kit_task.EDEP_FILE}")
+        r["metadata"]["text_files"] = [f["name"] for f in r["files"]]
+        r["metadata"]["edep_run_record"] = (nts.parent / (nts.name + ".edep.json")).name
+        r["files"] = [{"name": nts.name, "uri": nts.resolve().as_uri(), "kind": "root"}]
+        return r

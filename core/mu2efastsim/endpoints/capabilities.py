@@ -49,6 +49,14 @@ _UNITS = {
     "signal_rate": "events", "dio_background": "events", "cosmic_background": "events",
     "total_background": "events", "total_background_err": "events", "electrons_per_s": "electrons/s",
     "stops_per_gen_event": "stops/event", "stops_per_pot": "stops/POT", "muons_per_event": "muons/event",
+    # beam_edep: the EdepAna summary block and the chain's counters
+    "n_events": "events", "n_gen_events": "events", "event_rate": "events/event", "n_events_vis_gt10": "events",
+    "n_events_calo_edep_above_50mev": "events", "avg_calo_edep_per_event_mev": "MeV",
+    "avg_calo_edep_per_gen_event_mev": "MeV", "avg_trk_edep_per_event_mev": "MeV",
+    "avg_trk_edep_per_gen_event_mev": "MeV", "births": "count",
+    "tracker_entry": "count", "tracker_exit": "count", "disk_front": "count", "side_candidates": "count",
+    "side_accepted": "count", "wall_front": "count", "edge_entry": "count", "below_rmax": "count",
+    "library_fallback": "count", "stored": "count",
 }
 
 
@@ -95,7 +103,7 @@ def _rule(when, *, unavailable=(), conditional=(), reason):
 def _routes(task):
     if task == "chain_point":
         return [{"name": "streaming", "requires": ["stream_in"]}]
-    if task in ("beam_point", "beam_sob", "crv_response", "tracker_point"):
+    if task in ("beam_point", "beam_sob", "beam_edep", "crv_response", "tracker_point"):
         rows = [{"name": "mounted", "requires": ["fnal_data"]},
                 {"name": "streaming", "requires": ["stream_in", "no_fnal_data"]}]
         if task == "crv_response":
@@ -238,6 +246,8 @@ def describe_tasks(tasks, chainpoint_module):
                         "of": of, "kind": "jackknife_standard_error", "formula": "over the electron chunks",
                         "scope": "Finite conversion-electron sampling only, stops fixed; not model/systematic.",
                         "gp_observation_noise": False}
+        elif task == "beam_edep":
+            metrics.setdefault("input_wait_s", _metric("input_wait_s", "conditional", "Streaming route only."))
         elif task == "v4_response":
             _set(metrics, [n for n in metrics if not n.endswith("_pass")], "conditional",
                  "Only returned when the corresponding V4 diagnostic JSON exists; pass=0 alone is still returned.")
@@ -245,7 +255,7 @@ def describe_tasks(tasks, chainpoint_module):
             _set(metrics, metrics, "conditional", "Metric must be present in the producer's benchmark JSON.")
         result[task] = {"metrics": metrics, "metric_rules": rules, "metric_patterns": patterns,
                         "configurations": configs, "route_requirements": _routes(task),
-                        "file_kinds": ["geom"] if task in ("beam_point", "beam_sob") else [],
+                        "file_kinds": ["geom"] if task in ("beam_point", "beam_sob", "beam_edep") else [],
                         "validation_scope": deepcopy(_SCOPE)}
     return result
 
@@ -333,7 +343,7 @@ def resolve(task, params, endpoint, tasks, chainpoint_module):
     patterns = [dict(p, availability=p["status"]) for p in descriptor["metric_patterns"] if _matches(p["when"], params)]
     route = _route(task, endpoint, params)
     stream_only = ("input_wait_s", "inputs_reused") if task == "crv_response" else ("input_wait_s",)
-    if task in ("beam_point", "beam_sob", "crv_response"):
+    if task in ("beam_point", "beam_sob", "beam_edep", "crv_response"):
         _set(metrics, stream_only, "available" if route["name"] == "streaming" else "unavailable",
              "Emitted by the streaming delegate only." if route["name"] == "streaming" else
              "Mounted/plain routes do not produce streaming wait or cache-reuse metrics.")
