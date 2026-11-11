@@ -1,0 +1,211 @@
+{
+ "arrays": {
+  "count": {
+   "dtype": "<i8",
+   "shape": [
+    60
+   ]
+  },
+  "dt": {
+   "dtype": "<f4",
+   "shape": [
+    161307
+   ]
+  },
+  "e_edges": {
+   "dtype": "<f8",
+   "shape": [
+    61
+   ]
+  },
+  "empty_bins": {
+   "dtype": "|b1",
+   "shape": [
+    60
+   ]
+  },
+  "has_hit": {
+   "dtype": "|b1",
+   "shape": [
+    161307
+   ]
+  },
+  "n_inside": {
+   "dtype": "<i8",
+   "shape": []
+  },
+  "n_training": {
+   "dtype": "<i8",
+   "shape": []
+  },
+  "ratio": {
+   "dtype": "<f4",
+   "shape": [
+    161307
+   ]
+  },
+  "reference": {
+   "dtype": "<U207",
+   "shape": []
+  },
+  "schema": {
+   "dtype": "<i8",
+   "shape": []
+  },
+  "start": {
+   "dtype": "<i8",
+   "shape": [
+    60
+   ]
+  },
+  "survival": {
+   "dtype": "<f8",
+   "shape": [
+    120
+   ]
+  },
+  "survival_count": {
+   "dtype": "<i8",
+   "shape": [
+    120
+   ]
+  },
+  "v_edges": {
+   "dtype": "<f8",
+   "shape": [
+    121
+   ]
+  }
+ },
+ "axes": [
+  {
+   "array": "e_edges",
+   "description": "visible energy of the cell (Birks and longitudinal-response corrected)",
+   "frame": "(event, crystal) cell of the calorimeter",
+   "hi": 300.0,
+   "lo": 0.01,
+   "name": "E",
+   "nbins": 60,
+   "policy": "clip",
+   "scale": "log",
+   "unit": "MeV"
+  },
+  {
+   "array": "v_edges",
+   "description": "energy-weighted folded step time minus the event's window end; below the first edge: inside the window (survival 1), above the last: the last bin",
+   "frame": "(event, crystal) cell of the calorimeter",
+   "hi": 40.0,
+   "lo": -200.0,
+   "name": "v",
+   "nbins": 120,
+   "policy": "clip",
+   "scale": "linear",
+   "unit": "ns"
+  }
+ ],
+ "config_hash": null,
+ "content_hash": "568c08a6e5de32509e376e8c5fbae4349dc6551b9719e03f416195bea8a72965",
+ "description": "Parametric digi response: per log bin of the visible cell energy, a pool of the full chain's outcomes (hit, hit energy / E, hit time - T) on training cells inside the digitisation window, and a survival curve in v = T - window end that multiplies the hit probability.",
+ "domain": {
+  "coverage": "E 0.01-300 MeV (clipped to the end bins); v -200 to 40 ns (below: inside the window, survival 1; above: the last bin)",
+  "fallbacks": [
+   {
+    "description": "an empty energy bin borrows the nearest filled bin's pool (empty_bins)",
+    "levels": {
+     "0": "the energy bin's own pool",
+     "1": "the nearest filled bin's pool"
+    },
+    "name": "empty_bin"
+   }
+  ]
+ },
+ "dtype": {
+  "compute": [
+   "float32",
+   "float64"
+  ],
+  "notes": "to_device keeps fixed dtypes in both modes: float64 edges, survival and draws, float32 ratio and dt; the outputs are float32",
+  "storage": {
+   "dt": "float32",
+   "edges": "float64",
+   "ratio": "float32",
+   "survival": "float64"
+  }
+ },
+ "generator": {
+  "configuration": "Sim_crystal.txt, CsI-waveform-2020-02-12, ReadoutNoise, CsI-propag-2020-07-29, calo_geometry_run1430; adc2mev stockio.adc_to_mev; PE statistics, travel time and noise on; reco bunch-time smear off; caps per event: steps 80, photoelectrons 9000, rows 48, digis 48, hits 32; digi_length 96, event_hits 64, rounds 8; batches of 1,024 events, no overflow",
+  "name": "calofastsim device chain (make_steps_chain stages) with the production response",
+  "physics_list": null,
+  "release": "calofastsim at #168"
+ },
+ "geometry": {
+  "hash": null,
+  "tag": "Run 1A calorimeter (calo_geometry_run1430)"
+ },
+ "kind": "pool",
+ "legacy": {
+  "format": "npz without a manifest (PR #168)",
+  "schema": 2
+ },
+ "name": "calo.digi_response.run1a",
+ "outputs": [
+  {
+   "description": "the cell gives a hit",
+   "dtype": "bool",
+   "name": "hit",
+   "unit": "1"
+  },
+  {
+   "description": "hit energy E * ratio",
+   "dtype": "float32",
+   "name": "e",
+   "unit": "MeV"
+  },
+  {
+   "description": "hit time T + dt (before the reco bunch-time smear)",
+   "dtype": "float32",
+   "name": "t",
+   "unit": "ns"
+  }
+ ],
+ "release": {
+  "commit": "856aa3b (branch approx-w7param, merged as #168)",
+  "entry_point": "calofastsim.param_response.build (defaults: E_EDGES, V_EDGES, SURVIVAL_E_MIN 3 MeV, POOL_MAX 4000, seed 1), from a copy of that working tree",
+  "repository": "RobMina/mu2e-fastsim"
+ },
+ "rng": {
+  "device": "jax.random key (draw): split into the pool draw and the survival draw, one float64 uniform each per cell",
+  "draws_per_row": 2,
+  "host": "none (build: numpy default_rng(seed) for the pool subsample)"
+ },
+ "schema": 1,
+ "seeds": {
+  "build": "numpy default_rng(1) (pool subsampling)",
+  "chain": "jax.random.PRNGKey(4000 + batch), split into (k_pe, k_digi, unused)",
+  "timing": "numpy default_rng(77000 + batch): pbtime = -200 - 5 * integers(0, 5) ns, mbtime 1695 ns, event length 1700 ns, marker 200, crystal length 200, on-spill"
+ },
+ "source": {
+  "description": "CaloShowerSteps of ten CeEndpoint training files through the full device chain (photoelectrons, digitisation, template fit, hits), float64, production response; 28,265 events, 312,265 cells (281,080 inside the window), read in sorted file order",
+  "samples": [
+   {
+    "dataset": "dts.mu2e.CeEndpoint.MDC2025ba (CaloLibraryDumper tables)",
+    "events": 28265,
+    "selection": "001430_00000001, 101, ..., 901"
+   }
+  ]
+ },
+ "split": {
+  "held_out": "001430_00001000-1400",
+  "rule": "disjoint files",
+  "training": "CeEndpoint MDC2025ba 001430_00000001, 101, ..., 901"
+ },
+ "subsystem": "calo",
+ "unrecorded": {
+  "config_hash": "no build configuration manifest"
+ },
+ "validation": {
+  "record": "docs/approximations.md (W7 digi_response=parametric): leading-cluster peak, width, yield and shapes on held-out CE events, float32 and float64; the cluster count above 10 MeV misses (chi2 17/5); no declared criterion recorded",
+  "status": "tested, not closed"
+ },
+ "version": 1
+}

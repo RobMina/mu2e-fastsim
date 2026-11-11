@@ -19,4 +19,4 @@ test = ["pytest"]
 include = ["calofastsim*"]
 
 [tool.setuptools.package-data]
-"calofastsim" = ["data/*.npz", "data/*.md"]
+"calofastsim" = ["data/*.npz", "data/*.md", "data/*.json"]
