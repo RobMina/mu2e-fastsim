@@ -42,10 +42,20 @@ then +-2 neighbouring tan(dip) bins, then the whole nrow row, then everything.
 Truth helix at the entry: uniform field bz along the tracker axis; circle radius R = pt / (K |bz|), centre on the side
 the charge bends to; r_centre from the tracker axis; d0 = |r_centre - R|, r_max = r_centre + R (the EventNtuple
 LoopHelix d0, which is unsigned, and maxr).
+
+The tables are libraries of the shared core (mu2efastsim.library, core/docs/libraries.md): save() embeds a manifest,
+the three frozen shipped tables have sidecar manifests (data/<stem>.manifest.json), and load() checks the manifest,
+the arrays and their content hash. A registered table published before the manifests (a release asset of the
+registry) carries none: load() accepts it only when its sha256 is the registry entry's, which pins its bytes.
+domain_counts() counts the entries outside the bins and the entries served by a widened bin (level > 0).
 """
 from pathlib import Path
 
 import numpy as np
+
+from mu2efastsim.library import axes as LA
+from mu2efastsim.library import store as LS
+from mu2efastsim.library.domain import DomainCounter
 
 KB = 0.299792458
 NROW_EDGES = (0, 10, 14, 16, 18, 20, 22, 24, 26, 28, 30, 35, 40, 45, 50, 60, 80, 120, 1_000_000)
@@ -211,8 +221,73 @@ def build(df, nrow_edges=NROW_EDGES, tandip_edges=TANDIP_EDGES, min_count=40, mi
     return out
 
 
-def save(path, tab):
-    np.savez_compressed(Path(path), **tab)
+def _library_name(tab):
+    pools = "pools_all" if "pool_dir" in tab else "pools" if "pool_res" in tab else "copula"
+    h = str(tab["config_hash"]) if "config_hash" in tab else "run1a"
+    return f"tracker.response.ce_loophelix.{pools}.{h}"
+
+
+def axes(tab):
+    """The bin axes of a table (mu2efastsim.library.axes.Axis)."""
+    frame = "tracker entry (Mu2e frame; truth of the Geant4 conversion electron)"
+    out = [LA.Axis("nrow", "1", tab["nrow_edges"], frame=frame, array="nrow_edges", policy="clip",
+                   description="StrawGasStep rows of the electron"),
+           LA.Axis("tandip", "1", tab["tandip_edges"], frame=frame, array="tandip_edges", policy="clip",
+                   description="true tan(dip) at the entry")]
+    if "time_edges" in tab:
+        out.append(LA.Axis("t_entry", "ns", tab["time_edges"], frame=frame, array="time_edges", policy="clip",
+                           description="entry time (fit-efficiency turn-on)"))
+    return out
+
+
+def manifest_fields(tab, **provenance):
+    """Manifest fields of a response table (mu2efastsim.library.manifest); provenance fields not given are
+    unrecorded, with the reason. A table built with a stock-input config carries its config hash."""
+    pools = "pool_res" in tab
+    fields = dict(
+        name=_library_name(tab), subsystem="tracker", version=1, kind="pool" if pools else "binned",
+        description="CE reco response of stock LoopHelix reconstruction per (nrow, tan dip) bin of the tracker-entry "
+                    "truth: fit and quality efficiencies, inverse CDFs of the residuals and fit-quality outputs with "
+                    "a Gaussian copula" + (", and each bin's pool of reference tracks" if pools else "") +
+                    ", the t0 residual and the entry-time turn-on.",
+        axes=[a.describe() for a in axes(tab)],
+        outputs=[dict(name=k, unit=u, dtype="the compute dtype", description=d) for k, u, d in (
+            ("fit", "1", "fitted track (bool)"), ("qual", "1", "quality and direction pass (bool)"),
+            ("p_front", "MeV/c", "momentum at the tracker front; NaN without quality"),
+            ("tandip", "1", "tan(dip); NaN without quality"), ("d0", "mm", "NaN without quality"),
+            ("rmax", "mm", "NaN without quality"), ("t0", "ns", "t0 at the front"))],
+        dtype=dict(storage={"tables": "float64", "pool_idx": "int32"}, compute=["float32", "float64"],
+                   notes="device tables in the dtype of the entry state (device.to_device)"),
+        rng=dict(host="numpy.random.Generator (apply_numpy; pools from a jumped generator)",
+                 device="jax.random key (device.apply): split for the fit/quality uniforms and copula normals, "
+                        "fold_in 11 for the pool draw, fold_in 7 for t0; the chain passes fold_in(key, 2)",
+                 streams={"pool": 11, "t0": 7}),
+        domain=dict(coverage="every nrow and tan dip (open end bins); entry times from 0 ns",
+                    fallbacks=[dict(name="level", levels={"0": "the bin itself", "1": "+-1 tan dip bins",
+                                                          "2": "+-2 tan dip bins", "3": "the whole nrow row",
+                                                          "4": "every event"},
+                                    description="sparse bins widen at build time; level records how far")]),
+        config_hash=str(tab["config_hash"]) if "config_hash" in tab else None,
+    )
+    if "reference" in tab:
+        fields["source"] = dict(description=str(tab["reference"]), samples=[])
+    fields.update(provenance)
+    if "validation" not in provenance:
+        fields["validation"] = dict(status="not validated", record=None)
+    unrecorded = dict(provenance.get("unrecorded", {}))
+    for k in ("source", "generator", "release", "seeds", "geometry", "split"):
+        if fields.get(k) is None:
+            fields[k] = None
+            unrecorded.setdefault(k, "not given to save()")
+    if fields.get("config_hash") is None:
+        unrecorded.setdefault("config_hash", "built without a stock-input config (recoresp.config)")
+    fields["unrecorded"] = unrecorded
+    return fields
+
+
+def save(path, tab, **provenance):
+    """Write a table with its manifest (provenance: manifest fields, see :func:`manifest_fields`)."""
+    return LS.save(Path(path), tab, manifest_fields(tab, **provenance))
 
 
 # the response of the full Geant4 events (every StrawGasStep: delta rays, other secondaries, the calorimeter albedo),
@@ -291,9 +366,103 @@ def resolve(response, reg=None):
     raise FileNotFoundError(f"response table {response!r}: not a shipped name, a file or a registered hash")
 
 
-def load(path=DEFAULT):
-    with np.load(Path(path)) as f:
-        return {k: f[k] for k in f.files}
+def _registered(path, reg=None):
+    """The registry id whose sha256 is this file's, or None."""
+    sha = _sha256(path)
+    reg = registry() if reg is None else reg
+    return next((h for h, e in reg.items() if e.get("sha256") == sha), None)
+
+
+def load(path=DEFAULT, reg=None):
+    """The table's arrays (read-only) after the library checks: a manifest (embedded or sidecar) with the arrays and
+    content hash it declares; or, for a table published before the manifests, the registry entry with its sha256.
+    Anything else is refused (LibraryError); write_manifest() adds a sidecar to a table built before."""
+    path = Path(path)
+    try:
+        return LS.load(path).as_dict()
+    except LS.LibraryError as exc:
+        if not any("no manifest" in p for p in exc.problems) or _registered(path, reg) is None:
+            raise
+    with np.load(path, allow_pickle=False) as f:
+        out = {k: f[k] for k in f.files}
+    for a in out.values():
+        a.flags.writeable = False
+    return out
+
+
+def write_manifest(path, **provenance):
+    """Sidecar manifest for a table file built before the manifests; the .npz is not touched."""
+    return LS.write_sidecar(path, manifest_fields(LS.load_arrays(path), **provenance))
+
+
+# Provenance of the three shipped tables (data/README.md)
+_DTS = "dts.mu2e.CeEndpoint.MDC2025ba"
+_COMMON = dict(
+    generator=dict(name="stock Mu2e Offline: OffSpill digitisation, LoopHelix KKDe reconstruction, EventNtuple, on "
+                        "Geant4 tracker steps of the conversion electron", release="SimJob MDC2025ay",
+                   physics_list=None, configuration="Run 1A geometry; bz 1.0117 T at the tracker origin"),
+    geometry=dict(tag="Run 1A (geom_run1_a)", hash=None),
+    validation=dict(status="tested, not closed",
+                    record="tracker/docs/field-on.md: CE fast - stock on 35k held-out events, float32 and float64; no "
+                           "declared criterion recorded"),
+    legacy=dict(schema=0, format="npz without a manifest"),
+)
+SHIPPED = {
+    "ce_loophelix_run1a.npz": dict(
+        name="tracker.response.ce_loophelix.ceonly.run1a",
+        source=dict(description="the conversion electron's own Geant4 StrawGasSteps from its tracker entry, injected "
+                                "into the same events", samples=[dict(dataset=_DTS, selection="sequencers "
+                                "001430_00000000..00000600", events=19630)]),
+        split=dict(training="sequencers 001430_00000000..00000600", held_out="sequencers 001430_00000700..00001300",
+                   rule="disjoint sequencers"),
+        **_COMMON),
+    "ce_loophelix_run1a_pools.npz": dict(
+        name="tracker.response.ce_loophelix.ceonly_pools.run1a",
+        source=dict(description="as ce_loophelix_run1a.npz, plus each bin's pool", samples=[dict(dataset=_DTS,
+                    selection="sequencers 001430_00000000..00000600", events=19630)]),
+        split=dict(training="sequencers 001430_00000000..00000600", held_out="sequencers 001430_00000700..00001300",
+                   rule="disjoint sequencers"),
+        **_COMMON),
+    "ce_loophelix_run1a_fulldts_pools.npz": dict(
+        name="tracker.response.ce_loophelix.fulldts_pools.run1a",
+        source=dict(description="every StrawGasStep of the full Geant4 events (delta rays, secondaries, the "
+                                "calorimeter albedo), with pools", samples=[dict(dataset=_DTS, selection="sequencers "
+                                "001430_00000000..00000600, 00000050..00000750 and 00001400..00001900 (21 files)",
+                                events=59189)]),
+        split=dict(training="sequencers 001430_00000000..00000600, 00000050..00000750 and 00001400..00001900",
+                   held_out="the held-out sequencers of the validation (tracker/docs/field-on.md)",
+                   rule="disjoint sequencers"),
+        **_COMMON),
+}
+_SHIPPED_GAPS = dict(release="built with python3 -m trkfastsim.recoresp.table before the manifests; the commit is "
+                             "not recorded", seeds="the digitisation seed of the reference arm is not recorded in "
+                                               "the table")
+
+
+def write_shipped_manifests():
+    """(Re)write the sidecar manifests of the three frozen shipped tables from SHIPPED; the .npz files are untouched."""
+    out = {}
+    for name, prov in SHIPPED.items():
+        path = Path(__file__).with_name("data") / name
+        out[name] = write_manifest(path, **prov, unrecorded=dict(_SHIPPED_GAPS))
+    return out
+
+
+def domain_counts(tab, has_entry, nrow, x, p, t=None, counter=None):
+    """DomainCounter of a set of entries (host): values outside the nrow, tan dip (and entry-time) bins and the
+    widening level of the bins they use. Rows without a tracker entry are not lookups."""
+    has = np.asarray(has_entry, bool)
+    _, td, _, _ = entry_truth(np.asarray(x, float), np.asarray(p, float), tab["axis_xy"], float(tab["bz"]))
+    counter = counter or DomainCounter(_library_name(tab))
+    counter.add_lookups(int(has.sum()))
+    nr = np.asarray(nrow, float)
+    for a, v in zip(axes(tab), (nr, td, None if t is None else np.asarray(t, float))):
+        if v is not None:
+            counter.add_values(a.name, a.edges, v, mask=has)
+    bn = np.clip(np.searchsorted(tab["nrow_edges"], nr, side="right") - 1, 0, len(tab["nrow_edges"]) - 2)
+    bt = np.clip(np.searchsorted(tab["tandip_edges"], td, side="right") - 1, 0, len(tab["tandip_edges"]) - 2)
+    counter.add_levels("level", tab["level"][bn, bt], mask=has)
+    return counter
 
 
 def check_config(tab, c):

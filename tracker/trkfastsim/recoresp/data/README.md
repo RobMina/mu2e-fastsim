@@ -29,6 +29,11 @@ the pools carry the full events' residual and quality shapes. A pool response in
 of its development sample: with three times the held-out size they add about a third to a held-out shape chi2 (with
 equal sizes, about as much again).
 
+The three tables' manifests (`mu2efastsim.library`, `core/docs/libraries.md`) are the sidecars
+`<stem>.manifest.json`: the provenance above, the bins, the content hash of the arrays (checked on every load) and
+the gaps they do not record. The `.npz` files are unchanged. Registered tables published before the manifests load by
+their registry sha256; tables built from now on embed their manifest (`table.save`).
+
 `nrow_run1a.npz` (`trkfastsim.recoresp.nrow`, the opt-in approximation W2-W4 `tracker_rows=sampled`): per cell of the
 tracker-entry helix (|p|, tan dip, r_max; edges in `p_edges`, `tandip_edges`, `rmax_edges`), a pool of the step rows
 the default device chain gives (tracker transport plus the calorimeter albedo, `DeviceChain` defaults, float64, Run 1A
