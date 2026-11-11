@@ -15,12 +15,21 @@ low-momentum cells: with 20 instead of 1, the RPC fit efficiency came out 3 % lo
 
 The shipped library (``DEFAULT``) was built from the default chain on Run 1A geometry and field (conversion, DIO and
 RPC electrons, training draws disjoint from the benchmark inputs); its README records the inputs.
+
+The library follows the shared library core (:mod:`mu2efastsim.library`, core/docs/libraries.md): its manifest is
+embedded by :func:`save` (``provenance`` fields) or, for the frozen shipped file, the sidecar
+``data/nrow_run1a.manifest.json``; :func:`load` checks the manifest, the arrays and their content hash; the cell axes
+are ``Axis`` objects with the ``clip`` policy, and :func:`domain_counts` counts the clipped values and the fallback
+levels a set of entries uses.
 """
 from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
 
+from mu2efastsim.library import axes as LA
+from mu2efastsim.library import store as LS
+from mu2efastsim.library.domain import DomainCounter
 from trkfastsim.recoresp import table as RT
 
 SCHEMA = 1
@@ -40,8 +49,9 @@ def resolve(library):
     return Path(library)
 
 
-def _bins(edges, v):
-    return np.clip(np.searchsorted(edges, v, side="right") - 1, 0, len(edges) - 2)
+LIBRARY = "tracker.nrow.run1a"
+FALLBACK = "cell_level"          # 0 fine cell, 1 its (|p|, tan dip) cell, 2 every track
+_bins = LA.locate                # bin k: edges[k] <= v < edges[k + 1]; outside: the end bins (policy clip)
 
 
 def build(has_entry, nrow, x, p, axis_xy, bz, *, p_edges=P_EDGES, tandip_edges=TANDIP_EDGES, rmax_edges=RMAX_EDGES,
@@ -99,16 +109,121 @@ def build(has_entry, nrow, x, p, axis_xy, bz, *, p_edges=P_EDGES, tandip_edges=T
                 training_level_fraction=np.array([np.mean(used == k) for k in range(3)]), reference=np.str_(reference))
 
 
-def save(path, tab):
-    np.savez_compressed(Path(path), **tab)
+def axes(tab):
+    """The cell axes of a library (mu2efastsim.library.axes.Axis), in cell order."""
+    frame = "tracker entry helix (Mu2e frame; axis_xy, bz of the library)"
+    return (LA.Axis("p", "MeV/c", tab["p_edges"], frame=frame, array="p_edges", policy="clip",
+                    description="|p| at the tracker entry"),
+            LA.Axis("tandip", "1", tab["tandip_edges"], frame=frame, array="tandip_edges", policy="clip",
+                    description="tan(dip) = p_z / p_T at the tracker entry"),
+            LA.Axis("rmax", "mm", tab["rmax_edges"], frame=frame, array="rmax_edges", policy="clip",
+                    description="maximum radius of the entry helix from the tracker axis"))
+
+
+# Provenance of the shipped library (data/README.md; built by trkfastsim.recoresp.nrow.build from a training run)
+SHIPPED = dict(
+    version=1,
+    source=dict(description="training electrons of the default device chain, Run 1A geometry and field: 700,000 "
+                            "electrons, 503,361 with a tracker entry",
+                samples=[dict(dataset="conversion electrons from the MuminusStopsCat stop table", selection="births "
+                              "with seeds 1001+ (one seed per 20,000 births)", events=None),
+                         dict(dataset="DIO starts", selection="shards 0-49", events=None),
+                         dict(dataset="RPC starts", selection="shards 0-1", events=None)]),
+    generator=dict(name="trkfastsim device chain (beamfastsim.cetracker.DeviceChain defaults: tracker transport "
+                        "and calorimeter albedo, response 'default')", release="mu2e-fastsim", physics_list=None,
+                   configuration="float64, Run 1A geometry and field"),
+    seeds=dict(ce_births="1001 + chunk", ce_transport="5001 + chunk", dio_transport="7001 + chunk",
+               rpc_transport="8001 + chunk", chunk="20,000 electrons"),
+    geometry=dict(tag="Run 1A (geom_run1_a)", hash=None),
+    split=dict(training="CE births seeds 1001+, DIO shards 0-49, RPC shards 0-1",
+               held_out="benchmark draws: CE seeds 1-3, DIO shards 50-249, RPC shards 2-3",
+               rule="disjoint seeds and shards"),
+    validation=dict(status="tested, not closed", record="docs/approximations.md (W2-W4 tracker_rows=sampled): CE, DIO "
+                    "and RPC fit, quality and CE-selection efficiencies within their paired errors against the "
+                    "transported rows (100,000 each, float32 and float64); no declared criterion recorded"),
+    unrecorded=dict(release="built from a working tree of the PR #169 branch on main 0cac5df; the commit of the "
+                            "build is not recorded"),
+    legacy=dict(schema=SCHEMA, format="npz without a manifest (PR #169)"),
+)
+
+
+def manifest_fields(tab, **provenance):
+    """Manifest fields of a library (mu2efastsim.library.manifest): the description from the arrays, the provenance
+    from ``provenance`` (fields not given are recorded as unrecorded, with the reason)."""
+    fields = dict(
+        name=LIBRARY, subsystem="tracker", version=1, kind="pool",
+        description="Per cell of the tracker-entry helix (|p|, tan dip, r_max), the StrawGasStep row counts (nrow) "
+                    "of the default device chain on training electrons; a lookup draws one row count from the "
+                    "event's cell (opt-in approximation tracker_rows=sampled).",
+        axes=[a.describe() for a in axes(tab)],
+        outputs=[dict(name="nrow", unit="1", dtype="int32 (device) / int64 (host)",
+                      description="StrawGasStep rows of the track; 0 without a tracker entry")],
+        dtype=dict(storage={"pool": "int16", "cell_start": "int64", "cell_count": "int64", "edges": "float64"},
+                   compute=["float32", "float64"],
+                   notes="edges and the entry helix are cast to the compute dtype; indices int32 on the device"),
+        rng=dict(host="numpy.random.Generator: one uniform per row (sample_numpy)",
+                 device="jax.random key: one uniform per row (sample); the chain passes fold_in(key, 6)",
+                 draws_per_row=1),
+        domain=dict(coverage="|p| 0-200 MeV/c, tan dip 0.30-1.50, r_max 400-760 mm; values outside go to the end "
+                             "cells (policy clip)",
+                    fallbacks=[dict(name=FALLBACK, levels={"0": "fine cell", "1": "(|p|, tan dip) cell",
+                                                           "2": "every training track"},
+                                    description="a fine cell with fewer than min_count training tracks draws from "
+                                                "its coarser cell; cell_level records which")]),
+        config_hash=None,
+    )
+    reasons = dict(source="not given to save()", generator="not given to save()", release="not given to save()",
+                   seeds="not given to save()", geometry="not given to save()", split="not given to save()",
+                   config_hash="no build configuration manifest")
+    fields.update(provenance)
+    if "validation" not in provenance:
+        fields["validation"] = dict(status="not validated", record=None)
+    unrecorded = dict(provenance.get("unrecorded", {}))
+    for k, why in reasons.items():
+        if fields.get(k) is None:
+            fields[k] = None
+            unrecorded.setdefault(k, why)
+    fields["unrecorded"] = unrecorded
+    return fields
+
+
+def save(path, tab, **provenance):
+    """Write a library with its manifest (provenance: manifest fields, see :func:`manifest_fields`)."""
+    return LS.save(Path(path), tab, manifest_fields(tab, **provenance))
+
+
+def write_shipped_manifest(path=DEFAULT):
+    """(Re)write the sidecar manifest of the frozen shipped library from SHIPPED; the .npz is not touched."""
+    tab = LS.load_arrays(path)
+    return LS.write_sidecar(path, manifest_fields(tab, **SHIPPED))
+
+
+def load_library(library):
+    """The checked library (mu2efastsim.library.store.Library: manifest, read-only arrays, provenance)."""
+    lib = LS.load(resolve(library), expect={"name": LIBRARY})
+    if int(lib.arrays["schema"]) != SCHEMA:
+        raise ValueError(f"nrow library schema {int(lib.arrays['schema'])}, expected {SCHEMA}")
+    return lib
 
 
 def load(library):
-    with np.load(resolve(library), allow_pickle=False) as f:
-        tab = {k: f[k] for k in f.files}
-    if int(tab["schema"]) != SCHEMA:
-        raise ValueError(f"nrow library schema {int(tab['schema'])}, expected {SCHEMA}")
-    return tab
+    """The library's arrays (read-only) after the checks of :func:`load_library`."""
+    return load_library(library).as_dict()
+
+
+def domain_counts(tab, has_entry, x, p, counter=None):
+    """DomainCounter of a set of entries (host): values outside each cell axis (clipped) and the fallback level of
+    the cells they use. Rows without a tracker entry are not lookups."""
+    has = np.asarray(has_entry, bool)
+    pm, td, _, rmax = RT.entry_truth(np.asarray(x, float), np.asarray(p, float), tab["axis_xy"], float(tab["bz"]))
+    counter = counter or DomainCounter(LIBRARY)
+    counter.add_lookups(int(has.sum()))
+    for a, v in zip(axes(tab), (pm, td, rmax)):
+        counter.add_values(a.name, a.edges, v, mask=has)
+    ntb, nrb = len(tab["tandip_edges"]) - 1, len(tab["rmax_edges"]) - 1
+    c = (_bins(tab["p_edges"], pm) * ntb + _bins(tab["tandip_edges"], td)) * nrb + _bins(tab["rmax_edges"], rmax)
+    counter.add_levels(FALLBACK, tab["cell_level"][c], mask=has)
+    return counter
 
 
 def sample_numpy(tab, rng, has_entry, x, p):
@@ -150,8 +265,8 @@ def sample(dn, key, has_entry, x, p):
     dt = x.dtype
     pm, td, _, rmax = RD.entry_truth(x, p, dn.axis_xy.astype(dt), dn.bz)
     ntb, nrb = dn.tandip_edges.shape[0] - 1, dn.rmax_edges.shape[0] - 1
-    c = (RD._bin(dn.p_edges.astype(dt), pm) * ntb + RD._bin(dn.tandip_edges.astype(dt), td)) * nrb \
-        + RD._bin(dn.rmax_edges.astype(dt), rmax)
+    c = (LA.locate_jax(dn.p_edges.astype(dt), pm) * ntb + LA.locate_jax(dn.tandip_edges.astype(dt), td)) * nrb \
+        + LA.locate_jax(dn.rmax_edges.astype(dt), rmax)
     cnt = dn.cell_count[c]
     u = jax.random.uniform(key, (x.shape[0],), dt)
     j = dn.cell_start[c] + jnp.minimum((u * cnt).astype(jnp.int32), cnt - 1)

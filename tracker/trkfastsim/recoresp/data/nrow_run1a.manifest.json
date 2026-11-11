@@ -1,0 +1,219 @@
+{
+ "arrays": {
+  "axis_xy": {
+   "dtype": "<f8",
+   "shape": [
+    2
+   ]
+  },
+  "bz": {
+   "dtype": "<f8",
+   "shape": []
+  },
+  "cell_count": {
+   "dtype": "<i8",
+   "shape": [
+    32832
+   ]
+  },
+  "cell_level": {
+   "dtype": "|i1",
+   "shape": [
+    32832
+   ]
+  },
+  "cell_start": {
+   "dtype": "<i8",
+   "shape": [
+    32832
+   ]
+  },
+  "min_count": {
+   "dtype": "<i8",
+   "shape": []
+  },
+  "n_training": {
+   "dtype": "<i8",
+   "shape": []
+  },
+  "p_edges": {
+   "dtype": "<f8",
+   "shape": [
+    39
+   ]
+  },
+  "pool": {
+   "dtype": "<i2",
+   "shape": [
+    1510083
+   ]
+  },
+  "reference": {
+   "dtype": "<U176",
+   "shape": []
+  },
+  "rmax_edges": {
+   "dtype": "<f8",
+   "shape": [
+    37
+   ]
+  },
+  "schema": {
+   "dtype": "<i8",
+   "shape": []
+  },
+  "tandip_edges": {
+   "dtype": "<f8",
+   "shape": [
+    25
+   ]
+  },
+  "training_level_fraction": {
+   "dtype": "<f8",
+   "shape": [
+    3
+   ]
+  }
+ },
+ "axes": [
+  {
+   "array": "p_edges",
+   "description": "|p| at the tracker entry",
+   "frame": "tracker entry helix (Mu2e frame; axis_xy, bz of the library)",
+   "hi": 200.0,
+   "lo": 0.0,
+   "name": "p",
+   "nbins": 38,
+   "policy": "clip",
+   "scale": "irregular",
+   "unit": "MeV/c"
+  },
+  {
+   "array": "tandip_edges",
+   "description": "tan(dip) = p_z / p_T at the tracker entry",
+   "frame": "tracker entry helix (Mu2e frame; axis_xy, bz of the library)",
+   "hi": 1.5,
+   "lo": 0.3,
+   "name": "tandip",
+   "nbins": 24,
+   "policy": "clip",
+   "scale": "irregular",
+   "unit": "1"
+  },
+  {
+   "array": "rmax_edges",
+   "description": "maximum radius of the entry helix from the tracker axis",
+   "frame": "tracker entry helix (Mu2e frame; axis_xy, bz of the library)",
+   "hi": 760.0,
+   "lo": 400.0,
+   "name": "rmax",
+   "nbins": 36,
+   "policy": "clip",
+   "scale": "irregular",
+   "unit": "mm"
+  }
+ ],
+ "config_hash": null,
+ "content_hash": "4f47a868e2394d11f848989cf0e353bf9758cf11743f4a8d5c8914703d660e4d",
+ "description": "Per cell of the tracker-entry helix (|p|, tan dip, r_max), the StrawGasStep row counts (nrow) of the default device chain on training electrons; a lookup draws one row count from the event's cell (opt-in approximation tracker_rows=sampled).",
+ "domain": {
+  "coverage": "|p| 0-200 MeV/c, tan dip 0.30-1.50, r_max 400-760 mm; values outside go to the end cells (policy clip)",
+  "fallbacks": [
+   {
+    "description": "a fine cell with fewer than min_count training tracks draws from its coarser cell; cell_level records which",
+    "levels": {
+     "0": "fine cell",
+     "1": "(|p|, tan dip) cell",
+     "2": "every training track"
+    },
+    "name": "cell_level"
+   }
+  ]
+ },
+ "dtype": {
+  "compute": [
+   "float32",
+   "float64"
+  ],
+  "notes": "edges and the entry helix are cast to the compute dtype; indices int32 on the device",
+  "storage": {
+   "cell_count": "int64",
+   "cell_start": "int64",
+   "edges": "float64",
+   "pool": "int16"
+  }
+ },
+ "generator": {
+  "configuration": "float64, Run 1A geometry and field",
+  "name": "trkfastsim device chain (beamfastsim.cetracker.DeviceChain defaults: tracker transport and calorimeter albedo, response 'default')",
+  "physics_list": null,
+  "release": "mu2e-fastsim"
+ },
+ "geometry": {
+  "hash": null,
+  "tag": "Run 1A (geom_run1_a)"
+ },
+ "kind": "pool",
+ "legacy": {
+  "format": "npz without a manifest (PR #169)",
+  "schema": 1
+ },
+ "name": "tracker.nrow.run1a",
+ "outputs": [
+  {
+   "description": "StrawGasStep rows of the track; 0 without a tracker entry",
+   "dtype": "int32 (device) / int64 (host)",
+   "name": "nrow",
+   "unit": "1"
+  }
+ ],
+ "release": null,
+ "rng": {
+  "device": "jax.random key: one uniform per row (sample); the chain passes fold_in(key, 6)",
+  "draws_per_row": 1,
+  "host": "numpy.random.Generator: one uniform per row (sample_numpy)"
+ },
+ "schema": 1,
+ "seeds": {
+  "ce_births": "1001 + chunk",
+  "ce_transport": "5001 + chunk",
+  "chunk": "20,000 electrons",
+  "dio_transport": "7001 + chunk",
+  "rpc_transport": "8001 + chunk"
+ },
+ "source": {
+  "description": "training electrons of the default device chain, Run 1A geometry and field: 700,000 electrons, 503,361 with a tracker entry",
+  "samples": [
+   {
+    "dataset": "conversion electrons from the MuminusStopsCat stop table",
+    "events": null,
+    "selection": "births with seeds 1001+ (one seed per 20,000 births)"
+   },
+   {
+    "dataset": "DIO starts",
+    "events": null,
+    "selection": "shards 0-49"
+   },
+   {
+    "dataset": "RPC starts",
+    "events": null,
+    "selection": "shards 0-1"
+   }
+  ]
+ },
+ "split": {
+  "held_out": "benchmark draws: CE seeds 1-3, DIO shards 50-249, RPC shards 2-3",
+  "rule": "disjoint seeds and shards",
+  "training": "CE births seeds 1001+, DIO shards 0-49, RPC shards 0-1"
+ },
+ "subsystem": "tracker",
+ "unrecorded": {
+  "config_hash": "no build configuration manifest",
+  "release": "built from a working tree of the PR #169 branch on main 0cac5df; the commit of the build is not recorded"
+ },
+ "validation": {
+  "record": "docs/approximations.md (W2-W4 tracker_rows=sampled): CE, DIO and RPC fit, quality and CE-selection efficiencies within their paired errors against the transported rows (100,000 each, float32 and float64); no declared criterion recorded",
+  "status": "tested, not closed"
+ },
+ "version": 1
+}
