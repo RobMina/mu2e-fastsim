@@ -8,6 +8,10 @@
 truth, stock, photon_csv, tracker_conditions, batch_events, max_selected_rows, device_capacities,
 occupancy_geometry, out, and optionally seeds, device_kernel, device_output, device_platform, device_pipeline).
 
+Output is pipelined by default (`device_pipeline`, as `stream_benchmark --device-pipeline`): batch k is downloaded and
+written on one worker thread while batch k + 1 runs on the device. The outputs are those of the serial loop;
+`"device_pipeline": false` measures the serial loop.
+
 - `prepare(N)` reads and validates the five frame pools into host memory once (timer `prepare_s`).
 - `prepare(N, seed=S)` (the timer's `--fresh-inputs`, called before every pass) reads the pools on its first call
   and shares them, and the resident backend, with later calls in the process. Each call gets its own output
@@ -31,7 +35,7 @@ from types import SimpleNamespace
 PATHS = ("frames_manifest", "expanded", "truth", "stock", "photon_csv", "tracker_conditions",
          "device_capacities", "occupancy_geometry", "out")
 DEFAULTS = {"device_kernel": "mixing.device_physics:model", "device_output": "occupancy", "device_platform": "gpu",
-            "device_pipeline": False, "output_compression": None,
+            "device_pipeline": True, "output_compression": None,
             "sampling_seed": 20261106, "seed": 20261106, "tracker_seed": 20261105, "chunk": 32, "synthetic": False}
 
 
