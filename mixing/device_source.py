@@ -140,6 +140,8 @@ def sample_overlay(pools, state, key, ordinal, size, *, layout, law):
         else:
             columns["sp"] = columns["sp"] + poffset[owner]
         mixed[name] = {"columns": columns, "mask": row_mask, "event": owner // (1 + 4 * d)}
+        if name == "tracker":   # source frame of each step (global pool index; -1 for the primary): donor reuse
+            mixed[name]["occurrence"] = jnp.where(row_mask & (owner % (1 + 4 * d) != 0), occurrence[owner], -1)
         totals[name] = total
         row_errors.append(total > capacity)
     selected_rows = sum(totals.values())
