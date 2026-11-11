@@ -45,6 +45,14 @@ def mixing_config(tmp_path, monkeypatch):
     return device_bench, path, FakeSource, FakeBackend
 
 
+def test_mixing_bench_pipelines_by_default(mixing_config):
+    bench, path, _, _ = mixing_config
+    assert bench.configuration(path).device_pipeline is True
+    values = json.loads(path.read_text())
+    path.write_text(json.dumps({**values, "device_pipeline": False}))
+    assert bench.configuration(path).device_pipeline is False
+
+
 def test_mixing_fixed_prepare_unchanged(mixing_config):
     bench, path, source, backend = mixing_config
     prepared = bench.prepare(20, path)
