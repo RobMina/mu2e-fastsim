@@ -1,0 +1,12 @@
+{
+ "entries": {
+  "calo.showers.cal2_production_candidate": {
+   "candidate": "production-only-all-training-front",
+   "file": "shower_library_cal2.npz",
+   "note": "CAL2 production candidate written before the library manifests; streamed by the fastsimkit task beam_edep",
+   "sha256": "cb411f7c7eaf3364071413ca4d871c7781950a52de63c90c0482936d891d3922",
+   "size": 37506703
+  }
+ },
+ "schema": 1
+}
