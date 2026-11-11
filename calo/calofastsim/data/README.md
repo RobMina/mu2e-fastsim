@@ -3,7 +3,7 @@
 ## digi_response_run1a.npz
 
 Table of the opt-in parametric digi response (`calofastsim.param_response`, approximation W7
-`digi_response=parametric`; schema 1).
+`digi_response=parametric`; schema 2).
 
 - **What it holds.** Per bin of visible crystal energy (60 log bins, 0.01-300 MeV), a pool of at most 4,000 outcomes
   of the full device chain per (event, crystal) cell well inside the digitisation window: hit or not, hit energy /
@@ -17,3 +17,6 @@ Table of the opt-in parametric digi response (`calofastsim.param_response`, appr
   ten CeEndpoint MDC2025ba training files (001430_00000001, 101, ..., 901): 28,265 events, 312,265 cells (281,080
   inside the window), 112,898 with a hit. Of those cells, 60 had a second hit, and no hit came from noise alone.
 - **Disjoint from the evaluation.** The held-out evaluation files (001430_00001000-1400) were not used.
+- **Manifest.** The sidecar `digi_response_run1a.manifest.json` (`mu2efastsim.library`, `core/docs/libraries.md`)
+  records this provenance, the seeds of the build, the bins and the content hash of the arrays, checked on every load.
+  The `.npz` itself is unchanged.
