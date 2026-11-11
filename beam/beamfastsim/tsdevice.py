@@ -54,7 +54,27 @@ MATERIAL_SLOTS = int(os.environ.get("TSDEV_MATERIAL_SLOTS", 2))  # materials sam
 # sampling loops, smallest lane bucket after the inputs are exhausted (= pool: one compiled shape).
 STEPS_PER_ITERATION = int(os.environ.get("TSDEV_STEPS_PER_ITERATION", 1))
 UNROLL_LOSS = os.environ.get("TSDEV_UNROLL_LOSS", "1") == "1"
-MIN_BUCKET = int(os.environ.get("TSDEV_MIN_BUCKET", 1024))
+MIN_BUCKET = int(os.environ["TSDEV_MIN_BUCKET"]) if os.environ.get("TSDEV_MIN_BUCKET") else None
+# smallest gathered sub-batch of the step's shortening cascade and DS-plane re-measure (below it every lane runs the
+# round); "" picks it per backend, as the bucket floor
+GATHER_FLOOR = int(os.environ["TSDEV_GATHER_FLOOR"]) if os.environ.get("TSDEV_GATHER_FLOOR") else None
+CPU_MIN_BUCKET, GPU_MIN_BUCKET, CPU_GATHER_FLOOR, GPU_GATHER_FLOOR = 16, 1024, 16, 256
+
+
+def _on_cpu():
+    return jax.default_backend() == "cpu"
+
+
+def default_min_bucket():
+    """TS lane-bucket floor once the inputs are exhausted: TSDEV_MIN_BUCKET, else 1024 on a GPU (an iteration costs
+    about the same at any lane count, so fewer compiled shapes win) and 16 on a CPU (the cost is per lane, so the
+    slow-lane tail should run in small buckets). Only the lane layout changes, not the per-lane physics."""
+    return MIN_BUCKET if MIN_BUCKET is not None else (CPU_MIN_BUCKET if _on_cpu() else GPU_MIN_BUCKET)
+
+
+def gather_floor():
+    """Gathered sub-batch floor of the step (TSDEV_GATHER_FLOOR, else 256 on a GPU and 16 on a CPU)."""
+    return GATHER_FLOOR if GATHER_FLOOR is not None else (CPU_GATHER_FLOOR if _on_cpu() else GPU_GATHER_FLOOR)
 # Material-cap shortening cascade: per level, the lanes still over a cap gathered into at most this fraction of the
 # batch (every lane as the fallback); the last level runs the remaining rounds. "" runs every round on every lane.
 SHRINK_MARGIN_F32 = 1e-2
@@ -482,7 +502,7 @@ def make_ts_step(field, geom, s):
         def gathered(args, pending, frac, it0, rounds):
             """Run the round(s) on the pending lanes, gathered into a bucket of at most frac of the batch (no
             branch: a lane beyond the bucket is not processed and is reported in the returned mask)."""
-            k2 = min(n_lanes, max(256, int(np.ceil(n_lanes * frac))))
+            k2 = min(n_lanes, max(gather_floor(), int(np.ceil(n_lanes * frac))))
 
             def run(x0, u_, kq_, b0_, live_, dedx_, kin_, h_, xn_, un_, ok_, cols_):
                 if rounds == 1:
@@ -532,7 +552,7 @@ def make_ts_step(field, geom, s):
         un = jnp.where(pick, uc, un)
         ok = jnp.where(cross, okc, ok)
         h = hc
-        kc = min(n_lanes, max(256, int(np.ceil(n_lanes * CROSS_FRACTION))))
+        kc = min(n_lanes, max(gather_floor(), int(np.ceil(n_lanes * CROSS_FRACTION))))
         if kc >= n_lanes:
             cols = jnp.where(pick, cols_of(st.x, e if rel else xn), cols)
         else:                         # DS-plane lanes beyond the bucket wait a step (deferred)
@@ -760,7 +780,7 @@ def transport_ts(ts_chunk, geom, x, p, t, pdg, key, min_bucket=None, pool=None):
     st = ts_initial(x, p, t, pdg, len(geom.names), k0)
     return run_resident(ts_chunk, st, lambda s: s.fate == LIVE,
                         lambda s, pad: s._replace(fate=jnp.where(pad, jnp.int8(PATH_LIMIT), s.fate)),
-                        k1, min_bucket=MIN_BUCKET if min_bucket is None else min_bucket, pool=pool)[0]
+                        k1, min_bucket=default_min_bucket() if min_bucket is None else min_bucket, pool=pool)[0]
 
 
 # ---------------------------------------------------------------- DS stage and the joined chain
