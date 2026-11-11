@@ -40,3 +40,7 @@ geometry and field). The pools come from 700,000 training electrons, 503,361 of 
 
 The benchmark draws (seeds 1-3, DIO shards 50-249, RPC shards 2-3) are not among them. A cell with no training track
 draws from its (|p|, tan dip) cell, else from every track.
+
+Its manifest (`mu2efastsim.library`, `core/docs/libraries.md`) is the sidecar `nrow_run1a.manifest.json`: the
+provenance above, the cell axes, the content hash of the arrays (checked on every load) and the gaps it does not
+record. The `.npz` itself is unchanged.
