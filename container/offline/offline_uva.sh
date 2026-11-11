@@ -36,6 +36,11 @@ if [[ ${1:-} == --inside ]]; then
   export SQLITE_TMPDIR="$TMPDIR"
   mkdir -p "$TMPDIR"
   printf 'TMPDIR=%s SQLITE_TMPDIR=%s\n' "$TMPDIR" "$SQLITE_TMPDIR"
+  if [[ -n ${OFFLINE_CHAIN:-} ]]; then      # opt-in: a bash script of several steps in the one mount, instead of FCL
+    bash "$OFFLINE_CHAIN"
+    du -sh "${OFFLINE_CACHE_PATH:?}" | tee "${OFFLINE_LOG_PREFIX}.cache.txt"
+    exit 0
+  fi
   mu2e --version
   fhicl-dump -c "$FCL" > "${OFFLINE_LOG_PREFIX}.expanded.fcl"
   args=(-c "$FCL")
@@ -101,7 +106,7 @@ done
 [[ -z ${OFFLINE_BINDS:-} ]] || binds+=(-B "$OFFLINE_BINDS")
 envs=(--env "OFFLINE_WORK_DIR=$WORK" --env "OFFLINE_LOG_PREFIX=$PREFIX" --env "OFFLINE_TIME=$LOCAL/time" --env "OFFLINE_CACHE_PATH=$LOCAL/cache")
 [[ -z ${OFFLINE_OUTPUT_FILE:-} ]] || OFFLINE_OUTPUT_FILE=$(readlink -m "$OFFLINE_OUTPUT_FILE")
-for key in OFFLINE_SEARCH_PATH OFFLINE_OUTPUT_FILE OFFLINE_EVENTS OFFLINE_FCL_PATH OFFLINE_WARM_REPEAT; do
+for key in OFFLINE_SEARCH_PATH OFFLINE_OUTPUT_FILE OFFLINE_EVENTS OFFLINE_FCL_PATH OFFLINE_WARM_REPEAT OFFLINE_CHAIN; do
   [[ -z ${!key:-} ]] || envs+=(--env "$key=${!key}")
 done
 printf 'start=%s host=%s job=%s image=%s\n' "$(date -u +%FT%TZ)" "$(hostname)" "${SLURM_JOB_ID:-none}" "$IMAGE"
