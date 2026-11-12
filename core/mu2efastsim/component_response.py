@@ -1,6 +1,15 @@
-"""Opt-in local interaction replay and vacuum boundary handoff; docs/component-response.md."""
+"""Opt-in local interaction replay and vacuum boundary handoff; docs/component-response.md.
+
+A bank is a library of the shared core (mu2efastsim.library, docs/libraries.md, kind "replay"): save_library writes
+it with its manifest (one writer for every bank, including future converters from capture products), load_library
+checks the manifest and the content hash and rebuilds the Library, whose constructor re-runs every structural check.
+An unsupported entrance stays UnsupportedEntrance, raised before any draw; domain_counts reports the refused rows of
+a batch as a DomainCounter without drawing. A complete manifest is necessary, not sufficient, for a bank to be
+admissible (docs/component-training.md): the manifest's validation records bank_admissible false.
+"""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from types import MappingProxyType
 
@@ -205,7 +214,8 @@ class UnsupportedEntrance(ValueError):
         super().__init__(f"unsupported local entrance rows: {self.rows.tolist()}")
 
 
-def _choose(library, local, rng):
+def _matches(library, local):
+    """(query row, donor trial) pairs whose recorded entrance state equals the query's within the state tolerances."""
     n, donors = len(local["pdg"]), library.entrances
     left, right = [], []
     chunk = max(1, 2_000_000 // len(donors["pdg"]))
@@ -222,6 +232,12 @@ def _choose(library, local, rng):
         right.append(jj)
     left = np.concatenate(left) if left else np.empty(0, dtype=np.int64)
     right = np.concatenate(right) if right else np.empty(0, dtype=np.int64)
+    return left, right
+
+
+def _choose(library, local, rng):
+    n = len(local["pdg"])
+    left, right = _matches(library, local)
     counts = np.bincount(left, minlength=n)
     if np.any(counts == 0):
         raise UnsupportedEntrance(np.flatnonzero(counts == 0))
@@ -350,3 +366,111 @@ def next_in_vacuum(particles, placements):
     out["position"] += particles["momentum"][rows] / pmag[rows, None] * best[rows, None]
     out["time"] += best[rows] * particles["energy"][rows] / (pmag[rows] * C_MM_NS)
     return rows, which[rows], out
+
+
+# ------------------------------------------------------------------ the bank as a library (mu2efastsim.library)
+BANK_TABLES = (("entrances", ENTRANCE), ("particles", PARTICLES), ("steps", STEPS), ("exits", EXITS))
+OFFSETS = ("particle_offsets", "step_offsets", "exit_offsets")
+BANK_PREFIX = "secondaries.component."
+
+
+def bank_arrays(library):
+    """The stored arrays of a bank: the tables under their prefixes, the offsets and the component description."""
+    c = library.component
+    out = {f"{t}_{k}": np.asarray(getattr(library, t)[k]) for t, schema in BANK_TABLES for k in schema}
+    out.update({k: np.asarray(getattr(library, k)) for k in OFFSETS})
+    out.update(component_geometry=np.str_(c.geometry), component_physics=np.str_(c.physics),
+               component_half_size=np.asarray(c.half_size, dtype=np.float64), component_volumes=np.int64(c.volumes))
+    return out
+
+
+def bank_name(component):
+    return BANK_PREFIX + re.sub(r"[^A-Za-z0-9_-]", "_", component.geometry)
+
+
+def bank_manifest_fields(library, **provenance):
+    """Manifest fields of a bank (mu2efastsim.library.manifest); provenance fields not given are unrecorded."""
+    c = library.component
+    fields = dict(
+        name=bank_name(c), subsystem="secondaries", version=1, kind="replay",
+        description="Complete equal-weight local interaction trials of one component type at recorded local entrance "
+                    "states (null outcomes included): the particle tree, deposit steps and first-boundary exits, "
+                    "replayed whole in a rigid placement (replay).",
+        axes=[],
+        outputs=[dict(name="particles", unit="1", dtype="int64/bool", description="placed particle tree"),
+                 dict(name="steps", unit="mm, MeV/c, ns, MeV", dtype="float64",
+                      description="deposit rows in global coordinates and receiving volume IDs"),
+                 dict(name="exits", unit="mm, MeV/c, MeV, ns", dtype="float64",
+                      description="first-boundary exits in global coordinates")],
+        dtype=dict(storage={"states": "float64", "ids": "int64"}, compute=["float64"],
+                   notes="host replay in float64; there is no device or float32 path"),
+        rng=dict(host="numpy.random.Generator: one uniform per incoming row (rng.random(n)) to pick among the "
+                      "matching trials; unsupported rows are refused before the draw", device="none",
+                 draws_per_row=1),
+        domain=dict(coverage="exact recorded local entrance states (species, position, momentum, energy within the "
+                             "state tolerances) on the component boundary; anything else is refused "
+                             "(UnsupportedEntrance), never interpolated, rescaled or answered with zero",
+                    fallbacks=[]),
+        geometry=dict(tag=c.geometry, hash=None, physics=c.physics, half_size=list(c.half_size), volumes=c.volumes),
+        config_hash=None,
+        validation=dict(status="not validated", record=None, bank_admissible=False,
+                        reason="a complete manifest is necessary, not sufficient (docs/component-training.md); the "
+                               "energy accounting stays unrecorded until the bank carries a capture_accounting report "
+                               "hash"),
+    )
+    fields.update(provenance)
+    unrecorded = dict(provenance.get("unrecorded", {}))
+    reasons = dict(source="the capture products the bank was built from are not given",
+                   generator="physics-list, material and cut hashes are not recorded yet (capture P2b)",
+                   release="not given to save_library()", seeds="not given to save_library()",
+                   split="not given to save_library()", config_hash="no build configuration manifest")
+    for k, why in reasons.items():
+        if fields.get(k) is None:
+            fields[k] = None
+            unrecorded.setdefault(k, why)
+    fields["unrecorded"] = unrecorded
+    return fields
+
+
+def save_library(path, library, **provenance):
+    """Write a bank with its manifest (mu2efastsim.library.store); returns the manifest."""
+    from .library import store
+    return store.save(path, bank_arrays(library), bank_manifest_fields(library, **provenance))
+
+
+def load_library(path):
+    """The checked bank: manifest, arrays and content hash (mu2efastsim.library.store.load), then the Library
+    constructor's structural checks."""
+    from .library import store
+    lib = store.load(path)
+    if lib.manifest["kind"] != "replay" or not lib.name.startswith(BANK_PREFIX):
+        raise store.LibraryError(path, [f"{lib.name}: not a component bank (kind {lib.manifest['kind']!r})"])
+    a = lib.arrays
+    component = ComponentType(str(a["component_geometry"]), str(a["component_physics"]),
+                              tuple(float(x) for x in a["component_half_size"]), int(a["component_volumes"]))
+    tables = {t: {k: a[f"{t}_{k}"] for k in schema} for t, schema in BANK_TABLES}
+    return Library(component, tables["entrances"], tables["particles"], a["particle_offsets"], tables["steps"],
+                   a["step_offsets"], tables["exits"], a["exit_offsets"])
+
+
+def domain_counts(library, placement, incoming, counter=None):
+    """DomainCounter of a batch of incoming states (no draw, nothing raised): rows off the component boundary
+    (axis "boundary") and on it without a recorded entrance state (axis "state") are counted as refused."""
+    from .library.axes import ABOVE
+    from .library.domain import DomainCounter
+    incoming = _incoming(incoming)
+    n = len(incoming["track"])
+    counter = counter or DomainCounter(bank_name(library.component))
+    counter.add_lookups(n)
+    local = {**incoming, "position": placement.local_points(incoming["position"]),
+             "momentum": placement.local_vectors(incoming["momentum"])}
+    on = library.component.on_boundary(local["position"], local["momentum"], entering=True)
+    matched = np.zeros(n, bool)
+    if on.any():
+        sub = {k: v[on] for k, v in local.items()}
+        left, _ = _matches(library, sub)
+        matched[np.flatnonzero(on)[np.unique(left)]] = True
+    counter.add_codes("boundary", np.where(on, 0, ABOVE).astype(np.int8))
+    counter.add_codes("state", np.where(on & ~matched, ABOVE, 0).astype(np.int8))
+    counter.add_refused(int((~(on & matched)).sum()))
+    return counter
