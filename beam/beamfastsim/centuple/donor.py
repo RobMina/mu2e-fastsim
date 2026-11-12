@@ -33,8 +33,11 @@ CLASS_N, CLASS_F, CLASS_Q = 0, 1, 2
 NAME = "beam.centuple_donor"
 K_NEAREST = 8                # a donor is drawn uniformly among this many nearest of its class and trigger bit
 # matching scales (distance = sum of ((key - key_donor) / scale)^2 over the class keys)
-SCALES = dict(tandip=0.05, nactive=1.0, fitcon=0.15, calo=0.25, eop=0.05, ecl=5.0)
-USE = {CLASS_Q: ("tandip", "nactive", "fitcon", "calo", "eop"), CLASS_F: ("tandip",), CLASS_N: ("ecl",)}
+SCALES = dict(tandip=0.05, nactive=1.0, fitcon=0.15, calo=0.25, eop=0.05, ecl=5.0, tbirth=25.0)
+# birth time (the generated electron's time) carries the digitization-window effects of every subsystem (tracker,
+# calorimeter and trigger windows in the microbunch); it is a key wherever the index has it (donor births given)
+USE = {CLASS_Q: ("tandip", "nactive", "fitcon", "calo", "eop", "tbirth"), CLASS_F: ("tandip", "tbirth"),
+       CLASS_N: ("tbirth", "ecl")}
 
 
 def _sha256(path):
@@ -134,7 +137,16 @@ def index_file(path, covered_paths):
                 cov=covered_any(trig, covered_paths).astype(bool))
 
 
-def build(paths, covered_paths, out, *, source=None, generator=None, release=None, split=None):
+def births_time(states, run, subrun, event):
+    """Birth time of each (run, subrun, event) from cetracker states.root gen trees (NaN where absent)."""
+    from mu2efastsim import tables
+    g = tables.read_many(states, "gen")
+    key = lambda r, s, e: (np.asarray(r, np.int64) << 40) | (np.asarray(s, np.int64) << 24) | np.asarray(e, np.int64)  # noqa
+    idx = dict(zip(key(g.run, g.subrun, g.event).tolist(), g.t.to_numpy(float).tolist()))
+    return np.array([idx.get(k, np.nan) for k in key(run, subrun, event).tolist()])
+
+
+def build(paths, covered_paths, out, *, source=None, generator=None, release=None, split=None, births=None):
     """Index every event of the stock files `paths` into the donor library `out` (.npz with manifest)."""
     from mu2efastsim.library import store
     from mu2efastsim.library.axes import Axis
@@ -145,6 +157,8 @@ def build(paths, covered_paths, out, *, source=None, generator=None, release=Non
         parts.append(d)
         files.append(dict(name=Path(p).name, sha256=_sha256(p), entries=int(d["entry"].size)))
     arr = {k: np.concatenate([d[k] for d in parts]) for k in parts[0]}
+    arr["tbirth"] = (births_time(births, arr["run"], arr["subrun"], arr["event"]) if births
+                     else np.full(arr["run"].size, np.nan))
     arr["covered_paths"] = np.array(covered_paths)
     arr["file_names"] = np.array([f["name"] for f in files])
     arr["file_sha256"] = np.array([f["sha256"] for f in files])
@@ -201,9 +215,11 @@ def match(lib, cls, cov, keys, seed, run, subrun, event, k=K_NEAREST, use=None, 
     dcls, dcov = np.asarray(lib["cls"]), np.asarray(lib["cov"])
     use = use or USE
     dkey = dict(tandip=lib["tandip_t"], nactive=lib["nactive"].astype(float), fitcon=lib["fitcon"],
-                calo=lib["calo"].astype(float), eop=lib["eop"], ecl=lib["ecl"])
+                calo=lib["calo"].astype(float), eop=lib["eop"], ecl=lib["ecl"],
+                tbirth=lib["tbirth"] if "tbirth" in lib else np.full(len(dcls), np.nan))
     fkey = dict(tandip=keys["tandip_t"], nactive=np.asarray(keys["nactive"], float), fitcon=keys["fitcon"],
-                calo=np.asarray(keys["calo"], float), eop=keys["eop"], ecl=keys["ecl"])
+                calo=np.asarray(keys["calo"], float), eop=keys["eop"], ecl=keys["ecl"],
+                tbirth=keys.get("tbirth", np.full(n, np.nan)))
     for c in (CLASS_N, CLASS_F, CLASS_Q):
         for b in (False, True):
             ev = np.flatnonzero((cls == c) & (cov == b))
@@ -218,6 +234,8 @@ def match(lib, cls, cov, keys, seed, run, subrun, event, k=K_NEAREST, use=None, 
                 e = ev[c0:c0 + 2048]
                 d2 = np.zeros((e.size, pool.size))
                 for name in use[c]:
+                    if name == "tbirth" and not np.isfinite(np.asarray(dkey[name], float)[pool]).any():
+                        continue                   # an index without birth times: the key is skipped
                     a = np.asarray(fkey[name], float)[e][:, None]
                     bb = np.asarray(dkey[name], float)[pool][None, :]
                     diff = (a - bb) / SCALES[name]

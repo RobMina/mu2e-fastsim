@@ -60,24 +60,24 @@ inline double wrap(double p) { return std::remainder(p, 2 * M_PI); }
 template <class V> inline void rot(V& v, double c, double s) {
   double x = v.x(), y = v.y(); v.SetXYZ(c * x - s * y, s * x + c * y, v.z());
 }
-// rotate about the tracker axis by dphi and shift times by dt: every track-level kinematic quantity of the event
+// rotate about the tracker axis by dphi and shift times: reco quantities by dtr (microbunch folds included), MC by dt
 void transform(std::vector<std::vector<mu2e::TrkSegInfo>>& segs,
                std::vector<std::vector<mu2e::LoopHelixInfo>>& lh,
                std::vector<std::vector<mu2e::SurfaceStepInfo>>& smc,
                std::vector<std::vector<mu2e::SimInfo>>& sims,
                std::vector<std::vector<mu2e::MCStepInfo>>& vd,
                std::vector<mu2e::TrkCaloHitInfo>& ch,
-               std::vector<mu2e::TrkInfoMC>& tmc, double dphi, double dt) {
+               std::vector<mu2e::TrkInfoMC>& tmc, double dphi, double dt, double dtr) {
   double c = std::cos(dphi), s = std::sin(dphi);
-  for (auto& v : segs) for (auto& x : v) { rot(x.pos, c, s); rot(x.mom, c, s); x.time += dt; }
+  for (auto& v : segs) for (auto& x : v) { rot(x.pos, c, s); rot(x.mom, c, s); x.time += dtr; }
   for (auto& v : lh) for (auto& x : v) {
     double cx = x.cx, cy = x.cy; x.cx = c * cx - s * cy; x.cy = s * cx + c * cy;
-    x.phi0 = wrap(x.phi0 + dphi); x.t0 += dt; }
+    x.phi0 = wrap(x.phi0 + dphi); x.t0 += dtr; }
   for (auto& v : smc) for (auto& x : v) { rot(x.pos, c, s); rot(x.mom, c, s); x.time += dt; }
   for (auto& v : vd) for (auto& x : v) { rot(x.pos, c, s); rot(x.mom, c, s); x.time += dt; }
   for (auto& v : sims) if (!v.empty()) {   // the track's own particle only; its ancestors keep their histories
     auto& x = v[0]; rot(x.pos, c, s); rot(x.mom, c, s); rot(x.endpos, c, s); rot(x.endmom, c, s); x.time += dt; }
-  for (auto& x : ch) { rot(x.poca, c, s); rot(x.mom, c, s); x.ptoca += dt; x.ctime += dt; }
+  for (auto& x : ch) { rot(x.poca, c, s); rot(x.mom, c, s); x.ptoca += dtr; x.ctime += dtr; }
   for (auto& x : tmc) { double cx = x.cx, cy = x.cy; x.cx = c * cx - s * cy; x.cy = s * cx + c * cy;
                         x.phi0 = wrap(x.phi0 + dphi); x.t0 += dt; }
 }
@@ -208,7 +208,8 @@ def write(plan_path, donor_files, out, *, n_generated=None, extra_provenance=Non
         trk, segs, lh = chain.trk, chain.trksegs, chain.trksegpars_lh
         smc, sims = chain.trksegsmc, chain.trkmcsim
         ROOT.cent.transform(segs, lh, smc, sims, chain.trkmcvd, chain.trkcalohit, chain.trkmc,
-                            float(plan["dphi"][k]), float(plan["dt"][k]))
+                            float(plan["dphi"][k]), float(plan["dt"][k]),
+                            float(plan["dt_reco"][k]) if "dt_reco" in plan else float(plan["dt"][k]))
         p = int(plan["donor_prim"][k])
         cls = int(plan["cls"][k])
         if p >= 0 and bool(plan["has_entry"][k]):

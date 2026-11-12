@@ -59,7 +59,7 @@ def cmd_donor(a):
     gen = dict(name="Mu2e OnSpill digitization, recoMC OnSpill, EventNtuple from_mcs-mockdata (all digitized events)",
                release=a.stock_release, physics_list="from the dts files", configuration=a.stock_config)
     rel = dict(repository="mu2e-fastsim", commit=a.commit, entry_point="beamfastsim.centuple donor")
-    print(json.dumps(donor.build(a.files, covered, a.out, generator=gen, release=rel)))
+    print(json.dumps(donor.build(a.files, covered, a.out, generator=gen, release=rel, births=a.births)))
 
 
 def cmd_assemble(a):
@@ -211,6 +211,8 @@ def main(argv=None):
     d.add_argument("--stock-release", default="AnalysisMDC2025 v02_02_02 (SimJob MDC2025ax)")
     d.add_argument("--stock-config", default="Mu2eBO ce_chain dig/mcs/nts FCLs, outputs.Output.SelectEvents: []")
     d.add_argument("--commit", default=None, help="code commit recorded in the manifest")
+    d.add_argument("--births", nargs="*", help="cetracker states.root files of the donor events (gen trees): the birth "
+                                              "time becomes a matching key")
     d.set_defaults(fn=cmd_donor)
     s = sp.add_parser("assemble")
     s.add_argument("--record", required=True)

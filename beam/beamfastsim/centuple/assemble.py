@@ -26,6 +26,7 @@ from . import donor as D
 KB = 0.299792458
 ME = 0.51099895
 C_MM_NS = 299.792458
+MBTIME = 1695.0             # ns: the microbunch; stock reco times of a later microbunch fold back by it (MC times do not)
 E_MATCH = 10.0               # MeV: a fast cluster on the contact disk above this is matched to the track
 PLAN = "centuple_plan.npz"
 
@@ -104,7 +105,7 @@ def build(record, donor_lib, out, *, trigger=None, seed=20261111):
     tan_true = pf_true[:, 2] / np.where(pt_true > 0, pt_true, np.nan)
     has_cl, jcl = calo_match(rec)
     e_m = np.where(has_cl, rec["cl_energy"][np.arange(n), jcl], np.nan)
-    keys = dict(tandip_t=tan_true, nactive=rec["trk_nactive"], fitcon=rec["trk_fitcon"], calo=has_cl,
+    keys = dict(tbirth=rec["birth_t"], tandip_t=tan_true, nactive=rec["trk_nactive"], fitcon=rec["trk_fitcon"], calo=has_cl,
                 eop=e_m / rec["trk_p_reco"],
                 ecl=np.where(rec["cl_valid"].any(axis=1), np.max(np.where(rec["cl_valid"], rec["cl_energy"], 0), 1), 0))
     dfile, drow = D.match(lib, cls, cov, keys, seed, run, sub, evn)
@@ -118,22 +119,27 @@ def build(record, donor_lib, out, *, trigger=None, seed=20261111):
     rng = np.random.default_rng(np.random.SeedSequence([seed, 99]))
     dphi = np.where(np.isfinite(phi_f) & np.isfinite(lib["phi_t"][drow]), dphi, rng.uniform(-np.pi, np.pi, n))
     dt = np.where(np.isfinite(rec["front_t"]) & np.isfinite(lib["t_t"][drow]), rec["front_t"] - lib["t_t"][drow], 0.0)
+    # microbunch folds of the reco times (truth entry time of the electron, fast and donor)
+    k_f = np.where(np.isfinite(rec["front_t"]), np.floor(np.nan_to_num(rec["front_t"]) / MBTIME), 0.0)
+    k_d = np.where(np.isfinite(lib["t_t"][drow]), np.floor(np.nan_to_num(lib["t_t"][drow]) / MBTIME), 0.0)
+    dt_reco = np.where(dt != 0.0, dt - MBTIME * (k_f - k_d), 0.0)
     plan = dict(run=run, subrun=sub, event=evn, cls=cls, donor_file=dfile, donor_entry=lib["entry"][drow],
-                donor_row=drow, donor_cls=lib["cls"][drow], donor_prim=lib["prim"][drow], dphi=dphi, dt=dt, pid=pid,
+                donor_row=drow, donor_cls=lib["cls"][drow], donor_prim=lib["prim"][drow], dphi=dphi, dt=dt,
+                dt_reco=dt_reco, fold=k_f, pid=pid,
                 nactive=rec["trk_nactive"], fitcon=rec["trk_fitcon"], chi2ndf=rec["trk_chi2ndf"],
                 has_entry=rec["has_entry"], birth_x=rec["birth_x"], birth_p=rec["birth_p"], birth_t=rec["birth_t"])
     # reco surfaces of class-Q electrons
     p_true_f = np.linalg.norm(pf_true, axis=1)
     scale = rec["trk_p_reco"] / p_true_f
     dtan = rec["trk_tandip"] - tan_true
-    dt0 = rec["trk_t0"] - rec["front_t"]
+    dt0 = rec["trk_t0"] - rec["front_t"] - MBTIME * k_f        # reco times fold by the microbunch
     for name in ("front", "mid", "back"):
         found = rec["has_entry"] if name == "front" else rec[name + "_found"]
         x, p, t = reco_state(rec[name + "_x"], rec[name + "_p"], rec[name + "_t"], scale, dtan, dt0)
         ok = found & (cls == D.CLASS_Q) & np.all(np.isfinite(p), axis=1)
         plan[f"seg_{name}_ok"] = ok
         plan[f"seg_{name}_pos"], plan[f"seg_{name}_mom"], plan[f"seg_{name}_time"] = x, p, t
-        lh = loophelix(x, p, t, rec[name + "_bz"])
+        lh = loophelix(x, p, t, rec[name + "_bz"])   # t already folded (dt0), so lh t0 is too
         if name == "front":                 # the response layer's drawn helix quantities at the front
             lh["d0"], lh["maxr"], lh["tanDip"] = rec["trk_d0"], rec["trk_rmax"], rec["trk_tandip"]
         for k, v in lh.items():
