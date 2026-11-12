@@ -103,6 +103,30 @@ def gather(mask, size):
     return idx, jnp.minimum(idx, n - 1), ok, chosen
 
 
+def geometry_params(geom, dtype, foil_lengths, nf_pad=None):
+    """The numbers the kernels read, from a geometry: foil arrays in dtype (NumPy) and Python scalars.
+
+    nf_pad: foil count of the arrays (default: the geometry's). Padding foils have faces at +inf (the sorted face
+    searches never select them) and zero radii; the kernels only read foils below ``nf``. Differences of geometry
+    numbers are taken in float64 here, as the kernels took them before, so a traced copy of these values (cast to
+    dtype) gives the same arithmetic as the constants.
+    """
+    b = geom.beam
+    nf = int(b.foil_z.size)
+    m = nf if nf_pad is None else int(nf_pad)
+    if m < nf:
+        raise ValueError(f"geometry_params: nf_pad {m} below the foil count {nf}")
+
+    def pad(a, fill, kind=dtype):
+        a = np.asarray(a)
+        return np.concatenate([a, np.full(m - nf, fill, a.dtype)]).astype(kind)
+    return dict(ftype=pad(np.searchsorted(foil_lengths, 2 * b.foil_ht), 0, np.int32),
+                face_up=pad(b.foil_z - b.foil_ht, np.inf), face_dn=pad(b.foil_z + b.foil_ht, np.inf),
+                frin=pad(b.foil_rin, 0.0), frout=pad(b.foil_rout, 0.0), nf=nf, ax=float(b.axis_x),
+                opa_z0=float(b.opa_z0), opa_dz=float(b.opa_z1 - b.opa_z0), opa_rin0=float(geom.opa_rin0),
+                opa_drin=float(geom.opa_rin1 - geom.opa_rin0))
+
+
 def build(geom, dtype, foil_lengths, *, charge, const_field, layer_field=True, shell_curvature=True, unroll=False):
     """Close over geometry and static policy without adding device dispatch or RNG.
 
@@ -111,12 +135,19 @@ def build(geom, dtype, foil_lengths, *, charge, const_field, layer_field=True, s
     is not a general earliest-root solver. Candidate selection and unsupported
     geometry handling remain responsibilities of the calling navigator.
     """
-    b, dt, q = geom.beam, dtype, charge
-    ftype = jnp.asarray(np.searchsorted(foil_lengths, 2 * b.foil_ht).astype(np.int32))
-    face_up = jnp.asarray(b.foil_z - b.foil_ht, dt)
-    face_dn = jnp.asarray(b.foil_z + b.foil_ht, dt)
-    frin, frout = jnp.asarray(b.foil_rin, dt), jnp.asarray(b.foil_rout, dt)
-    nf, ax = int(b.foil_z.size), float(b.axis_x)
+    g = geometry_params(geom, dtype, foil_lengths)
+    g.update({k: jnp.asarray(g[k]) for k in ("ftype", "face_up", "face_dn", "frin", "frout")})
+    return kernels(g, dtype, len(foil_lengths), charge=charge, const_field=const_field, layer_field=layer_field,
+                   shell_curvature=shell_curvature, unroll=unroll)
+
+
+def kernels(g, dtype, n_foil_types, *, charge, const_field, layer_field=True, shell_curvature=True, unroll=False):
+    """The kernels of build() over the numbers g of geometry_params: device constants and Python scalars (build),
+    or traced arrays of the same values, so one compiled navigator serves every geometry of the same array sizes.
+    n_foil_types: layer types below it are foils."""
+    dt, q = dtype, charge
+    ftype, face_up, face_dn, frin, frout = (g[k] for k in ("ftype", "face_up", "face_dn", "frin", "frout"))
+    nf, ax = g["nf"], g["ax"]
 
     def W(c, a, b_):
         return jnp.where(c, a, b_).astype(dt)
@@ -125,8 +156,8 @@ def build(geom, dtype, foil_lengths, *, charge, const_field, layer_field=True, s
         return jnp.hypot(x[:, 0] - ax, x[:, 1])
 
     def opa_rin(z):
-        f = jnp.clip((z - b.opa_z0) / (b.opa_z1 - b.opa_z0), 0.0, 1.0)
-        return (geom.opa_rin0 + f * (geom.opa_rin1 - geom.opa_rin0)).astype(dt)
+        f = jnp.clip((z - g["opa_z0"]) / g["opa_dz"], 0.0, 1.0)
+        return (g["opa_rin0"] + f * g["opa_drin"]).astype(dt)
 
     def bisect(x, u, p, B, s_hi, target):
         def f(s):
@@ -145,7 +176,7 @@ def build(geom, dtype, foil_lengths, *, charge, const_field, layer_field=True, s
     def frames(maps, x, u, T, ty, kf):
         """Local basis, face origin, direction and frozen field for a layer entry."""
         n = x.shape[0]
-        foil = ty < len(foil_lengths)
+        foil = ty < n_foil_types
         sg = W(u[:, 2] >= 0, 1.0, -1.0)
         zero, one = jnp.zeros(n, dt), jnp.ones(n, dt)
         fe1 = jnp.stack([one, zero, zero], axis=1)

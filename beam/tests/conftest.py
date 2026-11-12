@@ -18,3 +18,4 @@ def _release_navigator_builds():
         module = sys.modules.get(name)
         if module is not None:
             module._BUILT.clear()
+            getattr(module, "_PARAMS", {}).clear()
