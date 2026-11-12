@@ -78,9 +78,11 @@ def test_other_foil_path():
     d = np.array([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]])
     L = FF.other_foil_path_mm(p, d, np.array([0, 0, 0]), BEAM)
     np.testing.assert_allclose(L, [0.2 + 0.4, 0.0, 0.0])    # foils 1 and 2; the hole; backward: nothing
-    c = np.cos(0.3)
-    L2 = FF.other_foil_path_mm(p[:1], np.array([[np.sin(0.3), 0.0, c]]), np.array([0]), BEAM)
-    np.testing.assert_allclose(L2, [(0.2 + 0.4) / c])
+    a = 0.1                                                  # r = 60 mm at foil 1 and 70 mm at foil 2
+    L2 = FF.other_foil_path_mm(p[:1], np.array([[np.sin(a), 0.0, np.cos(a)]]), np.array([0]), BEAM)
+    np.testing.assert_allclose(L2, [(0.2 + 0.4) / np.cos(a)])
+    L3 = FF.other_foil_path_mm(p[:1], np.array([[np.sin(0.3), 0.0, np.cos(0.3)]]), np.array([0]), BEAM)
+    np.testing.assert_allclose(L3, [0.0])                    # r = 81 mm at foil 1: outside both annuli
 
 
 def _exits(energies, events=3):
