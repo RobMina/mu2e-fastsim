@@ -229,9 +229,10 @@ def test_capacity_usage_matches_tables_and_overflow_names_demand(template, cond,
         run(args, lambda manifest, **kwargs: source(c, **kwargs), Backend)
 
 
-@pytest.mark.parametrize("mode", ["root", "occupancy"])
-def test_pipelined_output_equals_serial(template, cond, tmp_path, mode):
-    """--device-pipeline dispatches batch k + 1 before writing batch k: the same files, byte for byte per array."""
+@pytest.mark.parametrize("mode,writers", [("root", 1), ("occupancy", 1), ("root", 3)])
+def test_pipelined_output_equals_serial(template, cond, tmp_path, mode, writers):
+    """--device-pipeline dispatches batch k + 1 before writing batch k (with W writers, up to W batches are written
+    at once): the same files, byte for byte per array, and the ledger in dispatch order."""
     from types import SimpleNamespace
     from trkfastsim.digi.digicond import Conditions
     from mixing.device_backend import Backend
@@ -251,7 +252,8 @@ def test_pipelined_output_equals_serial(template, cond, tmp_path, mode):
                                synthetic=False, backend="mixing.device_backend:Backend", events=5, batch_events=2,
                                max_selected_rows=448, chunk=2, warmup_batches=1, seed=17, tracker_seed=19,
                                sampling_seed=23, require_stage=[], template=template, device_output=mode,
-                               occupancy_geometry=geometry, device_pipeline=pipelined)
+                               occupancy_geometry=geometry, device_pipeline=pipelined,
+                               device_pipeline_writers=writers if pipelined else 1)
         report = run(args, lambda manifest, **kwargs: source(c, **kwargs), Backend)
         assert report["events"] == 5
     rows = {p: [json.loads(line) for line in (outs[p] / "batches.jsonl").read_text().splitlines()] for p in outs}
