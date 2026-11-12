@@ -155,8 +155,63 @@ def test_keys_from_momentum():
 def test_cli_build_prints_summary(tmp_path, monkeypatch, capsys):
     rng = np.random.default_rng(4)
     cfg, data = _cfg(tmp_path, rng)
-    monkeypatch.setattr(F, "read_edepana", lambda p: data[p])
+    monkeypatch.setattr(F, "iter_edepana", lambda p: iter([data[p]]))
     (tmp_path / "c.json").write_text(json.dumps(cfg))
     F.main(["build", "--config", str(tmp_path / "c.json"), "--out", str(tmp_path / "cli.npz")])
     out = json.loads(capsys.readouterr().out)
     assert out["complete"] and out["photons"] == 35000
+
+
+def _write_edepana(path, rows, pdg=22):
+    uproot = pytest.importorskip("uproot")
+    ak = pytest.importorskip("awkward")
+    n = len(rows["energy"])
+    one = np.ones(n, dtype=np.int64)
+    p = rows["energy"]
+    st = np.sqrt(np.clip(1 - rows["cos_theta"] ** 2, 0, None))
+    phi = np.zeros(n)
+    x, y = F.DS_X + rows["r"], np.zeros(n)
+    px, py, pz = p * st * rows["u_r"], p * st * np.sqrt(np.clip(1 - rows["u_r"] ** 2, 0, None)), p * rows["cos_theta"]
+    jag = lambda v, dt=np.float32: ak.unflatten(np.asarray(v, dtype=dt), one)
+    with uproot.recreate(path) as f:
+        f.mkdir("edep")
+        f["edep/tree"] = {"nprimaries": np.ones(n, np.int32), "primary_start_x": jag(x), "primary_start_y": jag(y),
+                          "primary_start_z": jag(rows["z"]), "primary_start_px": jag(px), "primary_start_py": jag(py),
+                          "primary_start_pz": jag(pz), "primary_start_e": jag(p),
+                          "primary_start_pdg": jag(np.full(n, pdg), np.int32), "event_trk_edep": rows["edep"]}
+    return dict(x=x, y=y, z=rows["z"], px=px, py=py, pz=pz)
+
+
+def test_chunked_edepana_reader_round_trip(tmp_path):
+    rng = np.random.default_rng(5)
+    rows = _rows(rng, 1000, (-1.0, 0.8))
+    path = str(tmp_path / "e.root")
+    raw = _write_edepana(path, rows)
+    whole = F.read_edepana(path)
+    chunks = list(F.iter_edepana(path, step_size=137))
+    assert len(chunks) > 5
+    for k, v in whole.items():
+        np.testing.assert_array_equal(np.concatenate([c[k] for c in chunks]), v)
+    want = F.keys_from_momentum(*(np.asarray(raw[k], np.float32).astype(np.float64)
+                                  for k in ("x", "y", "z", "px", "py", "pz")))
+    for k in ("z", "r", "cos_theta", "u_r"):
+        np.testing.assert_allclose(whole[k], want[k], rtol=1e-12, atol=1e-12)
+    np.testing.assert_array_equal(whole["edep"], rows["edep"])
+
+
+def test_chunked_reader_rejects_non_photons(tmp_path):
+    rng = np.random.default_rng(6)
+    path = str(tmp_path / "e.root")
+    _write_edepana(path, _rows(rng, 50, (-1.0, 0.8)), pdg=11)
+    with pytest.raises(ValueError, match="non-photon"):
+        F.read_edepana(path)
+
+
+def test_build_streams_real_files(tmp_path):
+    rng = np.random.default_rng(8)
+    cfg, data = _cfg(tmp_path, rng)
+    for p, rows in data.items():
+        _write_edepana(p, rows)
+    m = F.build(cfg, tmp_path / "s.npz")
+    lib = F.load(tmp_path / "s.npz")
+    assert manifest.complete(m) and int(np.asarray(lib.arrays["n"]).sum()) == 35000

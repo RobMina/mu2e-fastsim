@@ -29,6 +29,7 @@ AXES = ("species", "energy", "z", "r", "cos_theta", "u_r")
 OUTPUTS = ("mean", "variance", "n", "n_nonzero")
 FALLBACK = "energy_below_lowest_edge"
 _EPS = 1e-12
+_COS_TOL = 1e-6   # float32 momentum rounding in the EdepAna tree
 
 
 def make_axes(edges):
@@ -61,23 +62,40 @@ def keys_from_momentum(x, y, z, px, py, pz, x0=DS_X):
     return dict(z=z, r=r, cos_theta=pz / p, u_r=u_r)
 
 
-def read_edepana(path):
-    """One row per event of an EdepAna tree with exactly one photon primary: keys, energy and deposit (float64)."""
-    import uproot
-    t = uproot.open(path)["edep/tree"]
-    names = ["nprimaries", "primary_start_x", "primary_start_y", "primary_start_z", "primary_start_px",
-             "primary_start_py", "primary_start_pz", "primary_start_e", "primary_start_pdg", "event_trk_edep"]
-    a = t.arrays(names, library="np")
-    if not np.all(a["nprimaries"] == 1):
+_EDEPANA = ("nprimaries", "primary_start_x", "primary_start_y", "primary_start_z", "primary_start_px",
+            "primary_start_py", "primary_start_pz", "primary_start_e", "primary_start_pdg", "event_trk_edep")
+
+
+def _rows_from_chunk(a, path):
+    import awkward as ak
+    if not np.all(ak.to_numpy(a["nprimaries"]) == 1):
         raise ValueError(f"{path}: every event must have exactly one primary")
-    first = {k: np.array([v[0] for v in a[k]]) for k in names[1:-1]}
+    first = {k: ak.to_numpy(ak.fill_none(ak.firsts(a[k]), 0)) for k in _EDEPANA[1:-1]}
     if not np.all(first["primary_start_pdg"] == PHOTON):
         raise ValueError(f"{path}: non-photon primaries")
     rows = keys_from_momentum(first["primary_start_x"], first["primary_start_y"], first["primary_start_z"],
                               first["primary_start_px"], first["primary_start_py"], first["primary_start_pz"])
     rows["energy"] = first["primary_start_e"].astype(np.float64)
-    rows["edep"] = np.asarray(a["event_trk_edep"], dtype=np.float64)
+    rows["edep"] = ak.to_numpy(a["event_trk_edep"]).astype(np.float64)
     return rows
+
+
+def iter_edepana(path, step_size=250_000):
+    """Rows of an EdepAna tree (exactly one photon primary per event) in chunks of ``step_size`` events.
+
+    Memory stays bounded by the chunk: the jagged primary branches are read as awkward arrays and reduced to their
+    single entry, never expanded into Python objects.
+    """
+    import uproot
+    with uproot.open(path) as f:
+        for a in f["edep/tree"].iterate(list(_EDEPANA), step_size=step_size, library="ak"):
+            yield _rows_from_chunk(a, path)
+
+
+def read_edepana(path):
+    """All rows of an EdepAna tree with exactly one photon primary: keys, energy and deposit (float64)."""
+    chunks = list(iter_edepana(path))
+    return {k: np.concatenate([c[k] for c in chunks]) for k in chunks[0]} if chunks else {}
 
 
 class Accumulator:
@@ -94,8 +112,12 @@ class Accumulator:
         """Add rows {energy, z, r, cos_theta, u_r, edep}; every row must be inside the table and ``cos_range``."""
         k = _clip_directions(rows)
         lo, hi = cos_range
-        if np.any((k["cos_theta"] < lo - 1e-9) | (k["cos_theta"] > hi + 1e-9)):
+        # EdepAna stores momenta in float32: allow that rounding, then keep each row inside its own class range so a
+        # photon generated at cos(theta) <= hi is binned with its class, not in the neighbouring class's first bin
+        if np.any((k["cos_theta"] < lo - _COS_TOL) | (k["cos_theta"] > hi + _COS_TOL)):
             raise ValueError(f"rows outside the sampled direction class [{lo}, {hi}]")
+        top = hi if hi >= 1.0 else np.nextafter(hi, -np.inf)
+        k["cos_theta"] = np.clip(k["cos_theta"], lo, min(top, np.nextafter(1.0, 0.0)))
         k["species"] = np.zeros(len(k["energy"]))
         for a in self.axes:
             if a.policy == "refuse" and np.any(domain_codes(a.edges, k[a.name]) != IN):
@@ -169,16 +191,19 @@ def build(cfg, out, reader=None):
 
     ``cfg``: name, version, edges, classes {class: {cos_theta: [lo, hi], ...}}, files [{path, class, job, seed,
     events}], source_description, generator, release, geometry {tag, hash}, config_hashes, coverage.
-    Each file must hold exactly its declared number of events.
+    Each file must hold exactly its declared number of events. ``reader`` (path -> rows) replaces the default
+    chunked EdepAna reader (iter_edepana), e.g. for tests.
     """
-    reader = reader or read_edepana
     axes = make_axes(cfg["edges"])
     acc = Accumulator(axes)
     for f in cfg["files"]:
-        rows = reader(f["path"])
-        if len(rows["edep"]) != int(f["events"]):
-            raise ValueError(f"{f['path']}: {len(rows['edep'])} rows, {f['events']} declared")
-        acc.add(rows, tuple(cfg["classes"][f["class"]]["cos_theta"]))
+        chunks = [reader(f["path"])] if reader is not None else iter_edepana(f["path"])
+        rows_seen = 0
+        for rows in chunks:
+            rows_seen += len(rows["edep"])
+            acc.add(rows, tuple(cfg["classes"][f["class"]]["cos_theta"]))
+        if rows_seen != int(f["events"]):
+            raise ValueError(f"{f['path']}: {rows_seen} rows, {f['events']} declared")
     arrays = acc.arrays()
     return store.save(out, arrays, manifest_fields(cfg, arrays, axes))
 
