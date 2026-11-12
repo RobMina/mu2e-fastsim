@@ -575,6 +575,27 @@ def test_live_launches_equal_all_launches(wide, helpers, onspill):
         Capacities(64, 1024, 8, 512, 8, 2, narrow_tier="compact")
 
 
+@pytest.mark.pr_params("True")   # onspill is the mixing mode
+@pytest.mark.parametrize("onspill", [False, True])
+def test_bounded_electronics_loops(wide, helpers, onspill):
+    """electronics_loops 'bounded' (fine crossing search stopped once converged, saturated ADC samples summed over the
+    response tiles that ran): the wide model's digis, per launch and with the tier saturation pool."""
+    c, model = wide(onspill)
+    st = _saturated_steps(c, helpers)
+    times = timing([1700., 1675., 1695.] if onspill else [100000.] * 3, [10., -5., 20.])
+    a, ae = evaluate(model, collection(st, 16), times)
+    assert not any(ae.values()) and len(a["sid"]) > 0 and np.any(a["pmp"] > 0), ae
+    for kw in SATURATION_POOL_CAPS + (dict(digit_entries_per_straw=2),):
+        b, be = evaluate(prepare(c, _pool_caps({**kw, "electronics_loops": "bounded"}), 3), collection(st, 16), times)
+        assert not any(be.values()), (kw, be)
+        for name in a:
+            np.testing.assert_array_equal(a[name], b[name], err_msg=f"{name} {kw}")
+    with pytest.raises(ValueError, match="electronics_loops"):
+        Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2, electronics_loops="early")
+    with pytest.raises(ValueError, match="needs the flat digitisation"):
+        Capacities(64, 1024, 8, 512, 8, 2, electronics_loops="bounded")
+
+
 def test_packed_sort_keys_order_like_lexsort(cond):
     """The packed keys order -0.0/+0.0 (equal), negatives, infinities, NaNs (last), ties and sentinels as lexsort."""
     import jax.numpy as jnp

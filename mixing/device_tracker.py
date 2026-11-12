@@ -33,11 +33,12 @@ class Capacities:
     pack_sort: str = None
     electronics_launches: str = None
     narrow_tier: str = None
+    electronics_loops: str = None
 
     def __post_init__(self):
         optional = ("long_steps", "clusters_per_long_step", "end_tiers", "charge_blocks_per_launch", "flat_clusters",
                     "minion_steps", "minion_unroll", "minion_search", "pack_sort", "electronics_launches",
-                    "narrow_tier")
+                    "narrow_tier", "electronics_loops")
         for name, value in vars(self).items():
             if name == "end_tiers" or (name in optional and value is None):
                 continue
@@ -65,6 +66,10 @@ class Capacities:
                 if value not in ("all", "live"):
                     raise ValueError("tracker electronics_launches must be 'all' or 'live'")
                 continue
+            if name == "electronics_loops":
+                if value not in ("fixed", "bounded"):
+                    raise ValueError("tracker electronics_loops must be 'fixed' or 'bounded'")
+                continue
             if name == "narrow_tier":
                 if value not in ("positions", "compact"):
                     raise ValueError("tracker narrow_tier must be 'positions' or 'compact'")
@@ -79,6 +84,8 @@ class Capacities:
             raise ValueError("tracker flat_saturation_pool needs the flat digitisation (digit_entries_per_straw)")
         if self.narrow_tier == "compact" and self.end_tiers is None:
             raise ValueError("tracker narrow_tier 'compact' needs end_tiers")
+        if self.electronics_loops == "bounded" and self.digit_entries_per_straw is None:
+            raise ValueError("tracker electronics_loops 'bounded' needs the flat digitisation (digit_entries_per_straw)")
         if self.straws % self.electronics_batch:
             raise ValueError("tracker straws must be a multiple of electronics_batch")
         if (self.long_steps is None) != (self.clusters_per_long_step is None):
@@ -118,7 +125,8 @@ class Capacities:
         pool = {"saturation_pool": True} if self.saturation_pool() else {}
         if pool and self.flat_saturation_tiles == "bounded":
             pool["saturation_tiles"] = "bounded"
-        return {"entries": entries, **rows, **pool}
+        loops = {"bounded_loops": True} if self.electronics_loops == "bounded" else {}
+        return {"entries": entries, **rows, **pool, **loops}
 
     def saturation_pool(self):
         """Tier saturation pool on: 'tier', or 'auto' in float32 (in float64, where flat_saturation_rows 'auto' already
