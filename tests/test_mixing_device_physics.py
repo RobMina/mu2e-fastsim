@@ -374,5 +374,5 @@ def test_tracker_output_rows_same_files(template, cond, tmp_path):
                     assert (ak.to_list(tree[branch].array(library="ak"))
                             == ak.to_list(rb[name][branch].array(library="ak"))), f"{name}/{branch}"
         assert (a.parent / "sampling.json").read_text() == (b.parent / "sampling.json").read_text()
-    with pytest.raises(OverflowError, match=rf"response/output/tracker_rows \(demand = {need}, capacity {need - 1}\)"):
+    with pytest.raises(OverflowError, match=rf"response/output/tracker_rows \(demand >= {need}, capacity {need - 1}\)"):
         stream("short", need - 1)
