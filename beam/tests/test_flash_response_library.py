@@ -235,6 +235,10 @@ def test_manifest_dataset_names_and_split(tmp_path):
     assert m2["split"] == dict(training="t", held_out="h", rule="r")
     assert m2["source"]["realization_files"] == cfg2["realization_files"]
     assert m2["content_hash"] == m["content_hash"]        # manifest wording does not change the tables
+    assert m["domain"]["fallbacks"][0]["description"] == "energy below the lowest edge answers 0, counted"
+    m3 = F.build(dict(cfg, fallback_description="below 5 keV: no measurable deposit"), tmp_path / "fb.npz",
+                 reader=lambda p: data[p])
+    assert m3["domain"]["fallbacks"][0]["description"] == "below 5 keV: no measurable deposit"
 
 
 def test_loads_are_recorded_pinned_or_unpinned(built):

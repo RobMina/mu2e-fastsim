@@ -193,7 +193,8 @@ def manifest_fields(cfg, arrays, axes):
         rng=dict(host="none", device="none", streams={}, draws_per_row=0),
         domain=dict(coverage=cfg["coverage"],
                     fallbacks=[dict(name=FALLBACK, levels=["cell", "zero"],
-                                    description="energy below the lowest edge answers 0, counted")]),
+                                    description=cfg.get("fallback_description",
+                                                        "energy below the lowest edge answers 0, counted"))]),
         validation=dict(status="not validated", record=cfg.get("validation_record")),
         interpolation=dict(method="nearest", axes=list(AXES)),
         assumptions=[dict(name="azimuthal_symmetry", description="response independent of azimuth about the DS axis",
@@ -212,8 +213,8 @@ def build(cfg, out, reader=None):
 
     ``cfg``: name, version, edges, classes {class: {cos_theta: [lo, hi], gun_config_sha256, ...}}, files [{path,
     dataset, class, job, seed, events}], source_description, generator, release, geometry {tag, hash},
-    config_hashes, coverage; optional split {training, held_out, rule} (default DEFAULT_SPLIT) and
-    realization_files. ``dataset`` (default: the path) is the name written in the manifest: give a name with no
+    config_hashes, coverage; optional split {training, held_out, rule} (default DEFAULT_SPLIT),
+    realization_files and fallback_description (why the below-edge fallback 0 is acceptable). ``dataset`` (default: the path) is the name written in the manifest: give a name with no
     user or site path for a file that is published.
     Each file must hold exactly its declared number of events. ``reader`` (path -> rows) replaces the default
     chunked EdepAna reader (iter_edepana), e.g. for tests.
