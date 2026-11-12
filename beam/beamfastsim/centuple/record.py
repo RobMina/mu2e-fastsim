@@ -97,7 +97,7 @@ def births_frame(stops, n, seed, run_number=1, subrun=0):
 class FastRecord:
     """The record stage, built once (DeviceChain, shower library, calorimeter response, inner-edge table)."""
 
-    def __init__(self, offline_root, maps, gdml, *, library, cal1, digi_cond, geom=None, dtype="float64",
+    def __init__(self, offline_root, maps, gdml, *, library, calo_response, digi_cond, geom=None, dtype="float64",
                  response="onspill", edge_library=None, albedo="default", deltas=None, calo_batch=4096,
                  calo_caps=CALO_CAPS, pbtime_seed=20261107, pbtime="stock"):
         import jax
@@ -124,7 +124,7 @@ class FastRecord:
         self.geo = HD.disk_geometry(lib, self.dtype)
         self.front_z = np.asarray(self.geo["front"], float)
         self.calo_origin = np.asarray(self.geo["origin"], float)
-        ci = Path(cal1)
+        ci = Path(calo_response)
         resp = dc.pack_response(stockio.load_sim_crystal(ci / CALO_FILES[0]), stockio.load_pulse(ci / CALO_FILES[1]),
                                 stockio.load_noise(ci / CALO_FILES[2]), stockio.load_propagation(ci / CALO_FILES[3]),
                                 Geometry.load(ci / CALO_FILES[4]), adc2mev=stockio.adc_to_mev, dtype=self.dtype)

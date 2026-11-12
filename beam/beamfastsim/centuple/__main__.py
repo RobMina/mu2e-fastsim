@@ -36,7 +36,7 @@ def cmd_record(a):
     from . import record
     b = _births(a)
     paths, cnt = record.run(b, a.out, a.seed, batch=a.batch, offline_root=a.offline_root, maps=a.maps, gdml=a.gdml,
-                            library=a.library, cal1=a.cal1, digi_cond=a.digi_cond, geom=a.geom, dtype=a.dtype,
+                            library=a.library, calo_response=a.calo_response, digi_cond=a.digi_cond, geom=a.geom, dtype=a.dtype,
                             response=a.response, edge_library=a.edge_library)
     print(json.dumps(dict(paths={k: str(v) for k, v in paths.items()}, **cnt)))
 
@@ -77,7 +77,7 @@ def cmd_write(a):
 
 
 # fixed names of the point's inputs under --data (the kit task's data directory)
-DATA = dict(library="shower_library.npz", edge="edge_library.npz", gdml="tracker.gdml", cal1="calo_response",
+DATA = dict(library="shower_library.npz", edge="edge_library.npz", gdml="tracker.gdml", calo_response="calo_response",
             digi_cond="digicond_onspill.npz", menu="trigger/replay.fcl", conditions="trigger/trgdump.root",
             tc_mva="trigger/TimeCluster.weights.xml", trig_response="trigger/response.json", donor="donor/donor.npz")
 FILE = "nts.mu2efastsim.centuple.root"
@@ -139,7 +139,7 @@ def cmd_point(a):
     births = record.births_frame(_mu_minus_stops(stops), a.electrons, a.seed, run_number=a.run)
     maps = a.maps or [f"{MAPS}/DSMap.header", f"{MAPS}/TSdMap.header"]
     _, cnt = record.run(births, out, a.seed, batch=a.batch, offline_root=a.offline_root or OFFLINE_ROOT, maps=maps,
-                        gdml=d["gdml"], library=d["library"], cal1=d["cal1"], digi_cond=d["digi_cond"], geom=a.geom,
+                        gdml=d["gdml"], library=d["library"], calo_response=d["calo_response"], digi_cond=d["digi_cond"], geom=a.geom,
                         dtype=a.dtype, edge_library=d["edge"], response="onspill")
     py = [sys.executable, "-m", "beamfastsim.centuple"]
     subprocess.run(py + ["trigger", "--digis", str(out / record.DIGIS), "--out", str(out), "--menu", d["menu"],
@@ -183,7 +183,7 @@ def main(argv=None):
     r.add_argument("--maps", nargs=2, required=True)
     r.add_argument("--gdml", required=True)
     r.add_argument("--library", required=True, help="calorimeter shower library (.npz)")
-    r.add_argument("--cal1", required=True, help="directory of the calorimeter response inputs (record.CALO_FILES)")
+    r.add_argument("--calo-response", required=True, help="directory of the calorimeter response inputs (record.CALO_FILES)")
     r.add_argument("--digi-cond", required=True, help="tracker digitiser conditions (.npz), on-spill")
     r.add_argument("--edge-library", help="Geant4 inner-edge calorimeter table (edepana EdgeEnergies); omitted: no edge clusters")
     r.add_argument("--response", default="onspill",

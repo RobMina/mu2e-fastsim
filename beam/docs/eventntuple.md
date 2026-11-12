@@ -11,7 +11,7 @@ analyses run unchanged on fast output. Mu2eBO's `ce_chain` plot step is `trigger
 # GPU, the fast-simulation image
 python3 -m beamfastsim.centuple record  --out DIR --states states.root ... (or --stops STOPS.npz --electrons N) \
     --offline-root OFF --maps DSMap.header TSdMap.header --gdml RUN1A.gdml --library SHOWERS.npz \
-    --cal1 CALO_RESPONSE_DIR --digi-cond ONSPILL_CONDITIONS.npz --edge-library EDGE_TABLE.npz --dtype float64
+    --calo-response CALO_RESPONSE_DIR --digi-cond ONSPILL_CONDITIONS.npz --edge-library EDGE_TABLE.npz --dtype float64
 python3 -m beamfastsim.centuple trigger --digis DIR/centuple_digis.npz --menu replay.fcl --conditions trgdump.root \
     --tc-mva TimeCluster.weights.xml --response response.json --precision float64 --out DIR
 # CPU, NumPy + uproot

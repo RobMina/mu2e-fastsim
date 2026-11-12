@@ -99,7 +99,7 @@ tail -c 300 "$M2FS_OUT/point.txt"
 
 # Task beam_centuple: the fast EventNtuple file of one target geometry (beamfastsim.centuple point): beam stops on the
 # design studies' table, conversion electrons through the device chain with digis and the reco response, the
-# calorimeter (W7 device chain at the disk fronts, the Geant4 inner-edge table at the edge), the device trigger, donor
+# calorimeter (device chain at the disk fronts, the Geant4 inner-edge table at the edge), the device trigger, donor
 # events from stock development files, and the PyROOT writer in the Mu2e environment of the stock release (mounted
 # /cvmfs). The file out/nts.mu2efastsim.centuple.root (EventNtuple/ntuple, stock split layout) is the input of the
 # analysis server's EventNtuple analyses (e.g. Mu2eBO ce_chain's trigger_efficiency_ntuple); metrics are the ce_chain
