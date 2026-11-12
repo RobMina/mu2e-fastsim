@@ -169,6 +169,21 @@ float64 with the float64 tracker, and for the float32 tracker. Measured on one b
 0.351 -> 0.340 s (float64), 0.366 -> 0.360 s (float32). Launches of 4,096, 16,384, 32,768 or 65,536 straws were
 slower, and above 8,192 they change float32 ADC counts (the saturation chunks follow the launch size).
 
+## Bounded electronics loops (opt-in)
+
+`electronics_loops: "bounded"` (with the flat digitisation) changes two fixed-length loops of the electronics kernel:
+
+- the fine threshold-crossing search (regula falsi, at most 10 passes) stops once no lane is still refining; a later
+  pass leaves every lane unchanged;
+- the saturated ADC samples are summed tile by tile over the response tiles that ran (with
+  `flat_saturation_tiles: "bounded"`, about 80 of the 326 response steps) instead of over every step; the steps past
+  them are zero.
+
+The sums are in a different order, so equality is up to rounding; on one real batch of 256 the digis were identical
+in float32 and float64. Tracker apply on that batch (A100): 0.276 -> 0.262 s (float64 tracker), 0.295 -> 0.282 s
+(float32 tracker). Saturated-sample tile widths of 16, 32 and 128 steps and 4, 16 or 32 peak candidates per pass
+were also tried: at most 1 % faster, and widths 16 and 128 change float32 ADC counts.
+
 ## Batched charge blocks (opt-in)
 
 `charge_blocks_per_launch: G` runs the drift/charge kernel on G blocks of 4,096 clusters
