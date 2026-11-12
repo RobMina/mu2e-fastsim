@@ -104,6 +104,9 @@ def model(args, source, layout):
                                        data["starts"])
     else:
         tracker = device_tracker.prepare(conditions, capacity["tracker"], layout.batch_events)
-    crv = device_crv.prepare(geom, cond, cfg, counters, capacity["crv"], photons.load_tables(cfg.response), sipm.photon_map())
+    from crvfastsim.response import lookup     # the optical assets pinned by the run configuration
+    with lookup.pinned(rc.asset_pin_map() if hasattr(rc, "asset_pin_map") else None):
+        tabs, pmap = photons.load_tables(cfg.response), sipm.photon_map()
+    crv = device_crv.prepare(geom, cond, cfg, counters, capacity["crv"], tabs, pmap)
     return combine(tracker, crv, {"mc_pbtime": np.asarray(mc), "reco_pbtime": np.asarray(reco),
                                   "event_length": np.asarray(length)})
