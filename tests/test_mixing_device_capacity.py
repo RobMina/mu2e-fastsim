@@ -38,6 +38,10 @@ def test_derive_scales_measured_demand_and_keeps_layout():
     assert c["photons"] == 1250 and c["digis"] == 50 and c["ct1"] == 7 and c["waveform"] == "scatter"
     assert c["charges_per_cluster"] == 256 and c["reco_samples"] == 625  # floors never shrink
     assert TEMPLATE["rows"]["tracker"] == 100                  # template untouched
+    with_output = {**TEMPLATE, "response": {**TEMPLATE["response"], "output": {"tracker_rows": 10}}}
+    assert dcap.derive(with_output, {"response/output/tracker_rows": 400}, 1.25)["response"]["output"] == \
+        {"tracker_rows": 500}
+    assert "output" not in dcap.derive(TEMPLATE, {"response/output/tracker_rows": 400}, 1.25)["response"]
     with pytest.raises(ValueError, match="margin"):
         dcap.derive(TEMPLATE, usage, 0.9)
 

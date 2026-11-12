@@ -22,7 +22,11 @@ def test_capacity_file_contract(path):
     tracker = Capacities(**caps["response"]["tracker"])
     assert tracker.end_tiers and tracker.charge_blocks_per_launch
     assert tracker.straws % tracker.electronics_batch == 0
-    assert set(caps["response"]) - {"tracker_reuse"} == {"tracker", "crv"}
+    assert set(caps["response"]) - {"tracker_reuse", "output"} == {"tracker", "crv"}
+    if "output" in caps["response"]:             # terminal output sizes (device_physics.output_capacities)
+        from mixing.device_physics import output_capacities
+        output = output_capacities(caps["response"]["output"])
+        assert output["tracker_rows"] < tracker.straws * tracker.pairs_per_straw
     if "tracker_reuse" in caps["response"]:      # opt-in donor-frame reuse: both tracker capacity sets validate
         from mixing.device_reuse import ReuseCapacities
         reuse = ReuseCapacities(**caps["response"]["tracker_reuse"])

@@ -46,6 +46,9 @@ NeutralsFlash pools at the stock intensity law.
 - **`flat_saturation_tiles: "bounded"`**: with the pool, each saturation chunk runs only the response tiles its ends
   need (exact); it has no size.
 
+- **`output.tracker_rows`** (batch-256 files): the tracker digi rows downloaded per batch, 229,376: 1.4 times the
+  mean demand of about 160,000 digis per batch and 1.25 times the largest batch over full development and held-out
+  passes. The other rows of the padded table are empty; it changes the time, not the outputs.
 - **`tracker_reuse`** (`run1a_mix1bb_batch256_reuse.json` only; opt-in approximation): `compute` is the tracker for
   the straws still digitised per batch (primary, two or more sources, the streams not reused), 1.25 times their
   demand over a full development pass; `precompute` sizes the setup batches of 8,192 donor frames (`long_steps`,

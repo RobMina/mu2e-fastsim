@@ -120,7 +120,7 @@ def model(args, source, layout):
     crv = crv_prepare(geom, cond, cfg, counters, capacities["crv"], tables, pmap)
     timing = {"mc_pbtime": np.zeros(source.population), "reco_pbtime": np.full(source.population, 10.),
               "event_length": np.resize(np.array([1675., 1700.]), source.population)}
-    out = combine(tracker, crv, timing, synthetic_inputs=True)
+    out = combine(tracker, crv, timing, synthetic_inputs=True, output=capacities.get("output"))
     out.metadata["crv_calibration"] = "synthetic lookup, geometry and conditions; actual stock pulse template"
     return out
 

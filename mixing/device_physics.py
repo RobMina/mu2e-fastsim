@@ -46,8 +46,39 @@ def _crv_pdg(collections):
     return {**crv, "columns": {**crv["columns"], "pdg": pdg}}, error
 
 
-def combine(tracker, crv, timing, *, synthetic_inputs=False):
-    """Join prepared physical adapters; suitable for real or explicitly synthetic inputs."""
+OUTPUT_KEYS = ("tracker_rows",)
+
+
+def output_capacities(capacity):
+    """The optional terminal-output sizes (`response.output`): `tracker_rows` bounds the tracker digi rows handed to
+    the host. None or {} keeps the full padded table."""
+    output = dict(capacity or {})
+    unknown = set(output) - set(OUTPUT_KEYS)
+    if unknown:
+        raise ValueError(f"unknown response output capacities {sorted(unknown)}")
+    rows = output.get("tracker_rows")
+    if rows is not None and (type(rows) is not int or rows < 1):
+        raise ValueError("response output tracker_rows must be a positive integer")
+    return output
+
+
+def compact_rows(table, rows):
+    """The first `rows` rows of a terminal table (`mask` plus columns, one row per leading index), and a flag set
+    when a valid row lies past them. The tracker sorts its valid digis first, so within capacity the host sees the
+    same rows in the same order (the dropped rows are all masked); the flag rejects the batch otherwise."""
+    import jax.numpy as jnp
+    mask = table["mask"]
+    if rows is None or rows >= mask.shape[0]:
+        return table, jnp.array(False), mask.sum()
+    return ({name: value[:rows] for name, value in table.items()}, jnp.any(mask[rows:]), mask.sum())
+
+
+def combine(tracker, crv, timing, *, synthetic_inputs=False, output=None):
+    """Join prepared physical adapters; suitable for real or explicitly synthetic inputs.
+
+    output: optional terminal-output sizes (see output_capacities)."""
+    output = output_capacities(output)
+
     def apply(batch, assets, crv_key, tracker_key):
         import jax.numpy as jnp
         times = {name: value[batch["signal_indices"]] for name, value in assets["timing"].items()}
@@ -55,6 +86,12 @@ def combine(tracker, crv, timing, *, synthetic_inputs=False):
         detector, reference_error = _crv_pdg(batch["collections"])
         td, te, tu = tracker.apply_with_usage(batch["collections"]["tracker"], times, assets["tracker"], tracker_key)
         cd, ce, cu = crv.apply_with_usage(detector, times, assets["crv"], crv_key)
+        output_errors, output_usage = {}, {}
+        if output.get("tracker_rows") is not None:
+            names = ("ev", "mask", "sid", "pmp", "adc", "tdc", "tot")
+            rows, over, used = compact_rows({name: td[name] for name in names}, output["tracker_rows"])
+            td = {**td, **rows}
+            output_errors["output/tracker_rows"], output_usage["output/tracker_rows"] = over, used
         trk_columns = {"ev": td["ev"], "mask": td["mask"], "sid": td["sid"].astype(jnp.uint32),
                        "pmp": td["pmp"].astype(jnp.uint32), "adc": td["adc"].astype(jnp.uint32),
                        "nadc": jnp.full(td["sid"].shape, td["adc"].shape[1], jnp.uint32),
@@ -63,9 +100,9 @@ def combine(tracker, crv, timing, *, synthetic_inputs=False):
             for end in (0, 1):
                 trk_columns[name + str(end)] = td[name][:, end].astype(jnp.uint32)
         errors = {"truth_pdg": reference_error, **{"tracker/" + name: value for name, value in te.items()},
-                  **{"crv/" + name: value for name, value in ce.items()}}
+                  **{"crv/" + name: value for name, value in ce.items()}, **output_errors}
         usage = {**{"tracker/" + name: value for name, value in tu.items()},
-                 **{"crv/" + name: value for name, value in cu.items()}}
+                 **{"crv/" + name: value for name, value in cu.items()}, **output_usage}
         return {"tracker": trk_columns, **cd, "timing": times, "usage": usage}, errors
     return SimpleNamespace(kind="physics", support=["tracker_digis", "crv_reco"], apply=apply,
                            assets={"tracker": tracker.assets, "crv": crv.assets, "timing": timing},
@@ -83,8 +120,8 @@ def model(args, source, layout):
     from . import crv_inputs, device_tracker, device_crv
 
     capacity = json.loads(Path(args.device_capacities).read_text())["response"]
-    if set(capacity) - {"tracker_reuse"} != {"tracker", "crv"}:
-        raise ValueError("physical response capacities require tracker and crv (and optionally tracker_reuse)")
+    if set(capacity) - {"tracker_reuse", "output"} != {"tracker", "crv"}:
+        raise ValueError("physical response capacities require tracker and crv (and optionally tracker_reuse, output)")
     config = digicond.parse_fhicl_dump(Path(args.expanded).read_text())
     cfg = crv_inputs.build_config(config, jax=True)
     rc = runconfig.get("run1a_v01")
@@ -106,4 +143,4 @@ def model(args, source, layout):
         tracker = device_tracker.prepare(conditions, capacity["tracker"], layout.batch_events)
     crv = device_crv.prepare(geom, cond, cfg, counters, capacity["crv"], photons.load_tables(cfg.response), sipm.photon_map())
     return combine(tracker, crv, {"mc_pbtime": np.asarray(mc), "reco_pbtime": np.asarray(reco),
-                                  "event_length": np.asarray(length)})
+                                  "event_length": np.asarray(length)}, output=capacity.get("output"))
