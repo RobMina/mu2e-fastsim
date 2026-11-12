@@ -250,11 +250,12 @@ def test_loaded_bank_replays_bit_for_bit_in_each_dtype(tmp_path, tables, dtype):
         return cr.replay(lib, placement, incoming, np.zeros(n, int), np.random.default_rng(11), next_track=2, dtype=dt)
 
     a, b = run(library, dtype), run(loaded, dtype)
-    assert np.array_equal(a.trials, b.trials) and a.next_track == b.next_track
+    assert np.array_equal(a.trials, b.trials) and a.next_track == b.next_track and len(set(b.trials)) == 2
     for name in ("particles", "steps", "exits"):
         x, y = getattr(a, name), getattr(b, name)
         assert set(x) == set(y) and all(x[k].tobytes() == y[k].tobytes() and x[k].dtype == y[k].dtype for k in x)
-    reference = run(loaded, np.float64)
+    # The reference is the default-dtype replay, so the float64 case also checks the explicit path against it.
+    reference = cr.replay(loaded, placement, incoming, np.zeros(n, int), np.random.default_rng(11), next_track=2)
     assert np.array_equal(b.trials, reference.trials)
     for name in ("particles", "steps", "exits"):
         x, y = getattr(b, name), getattr(reference, name)
