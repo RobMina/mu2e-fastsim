@@ -42,11 +42,17 @@ All tables are dictionaries of NumPy arrays with a shared first dimension. Three
 - Bank steps: `particle`, `volume`, `x0`, `x1`, `p0`, `p1`, `t0`, `t1`, `length`, `edep`. Particle and volume IDs are
   local, positions are inside the envelope, times are relative to entrance and energy is raw, not quenched/visible.
   The exporter must include relevant passive deposits if these rows are used for a complete energy ledger.
-- Bank exits: `particle`, `position`, `momentum`, `energy`, `time`; positions lie on the boundary, momentum points
-  outward and time is relative to entrance. Emission positions inside the component are not exits.
+- Bank exits: `particle`, `position`, `momentum`, `energy`, `time`; positions lie on the boundary and time is
+  relative to entrance. Emission positions inside the component are not exits. The momentum is the recorded
+  post-step momentum. It usually points outward, but multiple scattering over the last, boundary-limited step can
+  turn it back in (low-energy e±). Such an exit is a Geant4 exit followed by an immediate re-entry:
+  `next_in_vacuum` hands it back to the same placement at distance 0. Replay then needs that entrance state in the
+  bank and otherwise refuses it as `UnsupportedEntrance`.
+- Step lengths are Geant4's true path lengths, and the endpoints include the multiple-scattering lateral
+  displacement, so `|x1 - x0|` can exceed `length`. Both are kept as recorded; no chord rule is applied.
 
 `Library` validates array shape, finite values, offsets, local ancestry, root species, envelope containment and
-entry/exit directions. It checks geometry/physics compatibility before sampling. These checks do not establish
+entry directions and exits on the boundary. It checks geometry/physics compatibility before sampling. These checks do not establish
 export completeness or Geant4 validity. The exporter must record stopped energy, material rest-mass exchange and
 other terminal terms separately before an energy-closure claim is possible. Total incoming energy is **not** simply
 sum(deposits)+sum(outgoing total energy) for all species/interactions without those terms.

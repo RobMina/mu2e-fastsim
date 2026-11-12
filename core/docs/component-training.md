@@ -34,7 +34,8 @@ process lists, declared Geant4 behaviours) and its FNV-1a 64-bit hash.
   raw/nonionizing energy deposit, length, material/placement identity, defining process and step status, including
   zero-deposit steps.
 - Full integer source/event/track/parent identities.
-- First outward boundary crossing: exact post-point state, distinct exit reason, then stop only that branch.
+- First boundary crossing: exact post-point state (its direction may point back in after multiple scattering), distinct
+  exit reason, then stop only that branch.
   Legitimate already-produced children are not killed because their parent exits.
 - Boundary-born secondaries follow one ownership rule: owned by the component, an exit at birth (killed at stacking
   with its own reason), or an error.

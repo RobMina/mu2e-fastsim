@@ -73,7 +73,7 @@ def test_manifest_is_complete_and_round_trips(built, tmp_path):
     assert lib.manifest["kind"] == "binned" and lib.manifest["subsystem"] == "flash"
     assert [a["name"] for a in m["axes"]] == list(F.AXES)
     assert m["seeds"]["rest_0003"] == 1003 and len(m["source"]["samples"]) == 7
-    assert m["split"]["held_out"] == "odd job indices" and m["interpolation"]["method"] == "nearest"
+    assert m["split"] == F.DEFAULT_SPLIT and m["interpolation"]["method"] == "nearest"
     with pytest.raises(Exception):
         F.load(tmp_path / "lib.npz", expect={"name": "flash.response.other"})
 
@@ -155,8 +155,137 @@ def test_keys_from_momentum():
 def test_cli_build_prints_summary(tmp_path, monkeypatch, capsys):
     rng = np.random.default_rng(4)
     cfg, data = _cfg(tmp_path, rng)
-    monkeypatch.setattr(F, "read_edepana", lambda p: data[p])
+    monkeypatch.setattr(F, "iter_edepana", lambda p: iter([data[p]]))
     (tmp_path / "c.json").write_text(json.dumps(cfg))
     F.main(["build", "--config", str(tmp_path / "c.json"), "--out", str(tmp_path / "cli.npz")])
     out = json.loads(capsys.readouterr().out)
     assert out["complete"] and out["photons"] == 35000
+
+
+def _write_edepana(path, rows, pdg=22):
+    uproot = pytest.importorskip("uproot")
+    ak = pytest.importorskip("awkward")
+    n = len(rows["energy"])
+    one = np.ones(n, dtype=np.int64)
+    p = rows["energy"]
+    st = np.sqrt(np.clip(1 - rows["cos_theta"] ** 2, 0, None))
+    phi = np.zeros(n)
+    x, y = F.DS_X + rows["r"], np.zeros(n)
+    px, py, pz = p * st * rows["u_r"], p * st * np.sqrt(np.clip(1 - rows["u_r"] ** 2, 0, None)), p * rows["cos_theta"]
+    jag = lambda v, dt=np.float32: ak.unflatten(np.asarray(v, dtype=dt), one)
+    with uproot.recreate(path) as f:
+        f.mkdir("edep")
+        f["edep/tree"] = {"nprimaries": np.ones(n, np.int32), "primary_start_x": jag(x), "primary_start_y": jag(y),
+                          "primary_start_z": jag(rows["z"]), "primary_start_px": jag(px), "primary_start_py": jag(py),
+                          "primary_start_pz": jag(pz), "primary_start_e": jag(p),
+                          "primary_start_pdg": jag(np.full(n, pdg), np.int32), "event_trk_edep": rows["edep"]}
+    return dict(x=x, y=y, z=rows["z"], px=px, py=py, pz=pz)
+
+
+def test_chunked_edepana_reader_round_trip(tmp_path):
+    rng = np.random.default_rng(5)
+    rows = _rows(rng, 1000, (-1.0, 0.8))
+    path = str(tmp_path / "e.root")
+    raw = _write_edepana(path, rows)
+    whole = F.read_edepana(path)
+    chunks = list(F.iter_edepana(path, step_size=137))
+    assert len(chunks) > 5
+    for k, v in whole.items():
+        np.testing.assert_array_equal(np.concatenate([c[k] for c in chunks]), v)
+    want = F.keys_from_momentum(*(np.asarray(raw[k], np.float32).astype(np.float64)
+                                  for k in ("x", "y", "z", "px", "py", "pz")))
+    for k in ("z", "r", "cos_theta", "u_r"):
+        np.testing.assert_allclose(whole[k], want[k], rtol=1e-12, atol=1e-12)
+    np.testing.assert_array_equal(whole["edep"], rows["edep"])
+
+
+def test_chunked_reader_rejects_non_photons(tmp_path):
+    rng = np.random.default_rng(6)
+    path = str(tmp_path / "e.root")
+    _write_edepana(path, _rows(rng, 50, (-1.0, 0.8)), pdg=11)
+    with pytest.raises(ValueError, match="non-photon"):
+        F.read_edepana(path)
+
+
+def test_build_streams_real_files(tmp_path):
+    rng = np.random.default_rng(8)
+    cfg, data = _cfg(tmp_path, rng)
+    for p, rows in data.items():
+        _write_edepana(p, rows)
+    m = F.build(cfg, tmp_path / "s.npz")
+    lib = F.load(tmp_path / "s.npz")
+    assert manifest.complete(m) and int(np.asarray(lib.arrays["n"]).sum()) == 35000
+
+
+def test_manifest_dataset_names_and_split(tmp_path):
+    rng = np.random.default_rng(11)
+    cfg, data = _cfg(tmp_path, rng)
+    cfg["classes"] = {k: dict(v, gun_config_sha256="ab" * 32) for k, v in cfg["classes"].items()}
+    for f in cfg["files"]:
+        f["dataset"] = f"flashresp.{f['class']}.{f['job']:04d}"
+    m = F.build(cfg, tmp_path / "named.npz", reader=lambda p: data[p])
+    samples = m["source"]["samples"]
+    assert [s["dataset"] for s in samples] == [f["dataset"] for f in cfg["files"]]
+    assert not any(str(tmp_path) in s["dataset"] for s in samples)
+    assert all(s["selection"].endswith("gun configuration sha256 " + "ab" * 32) for s in samples)
+    assert m["split"] == F.DEFAULT_SPLIT and "every job" in m["split"]["training"]
+    cfg2 = dict(cfg, split=dict(training="t", held_out="h", rule="r"),
+                realization_files=[dict(name="even.npz", content_hash="0" * 64)])
+    m2 = F.build(cfg2, tmp_path / "split.npz", reader=lambda p: data[p])
+    assert m2["split"] == dict(training="t", held_out="h", rule="r")
+    assert m2["source"]["realization_files"] == cfg2["realization_files"]
+    assert m2["content_hash"] == m["content_hash"]        # manifest wording does not change the tables
+    assert m["domain"]["fallbacks"][0]["description"] == "energy below the lowest edge answers 0, counted"
+    m3 = F.build(dict(cfg, fallback_description="below 5 keV: no measurable deposit"), tmp_path / "fb.npz",
+                 reader=lambda p: data[p])
+    assert m3["domain"]["fallbacks"][0]["description"] == "below 5 keV: no measurable deposit"
+
+
+def test_loads_are_recorded_pinned_or_unpinned(built):
+    from mu2efastsim.library import provenance as LP
+    lib, _, _, _ = built
+    LP.clear()
+    F.load(lib.path)
+    F.load(lib.path, expect={"content_hash": lib.content_hash})
+    rec = LP.loaded()
+    assert [r["status"] for r in rec] == ["unpinned", "pinned"]
+    assert rec[1]["pin_set"] == "expect" and rec[0]["pin_set"] is None
+    assert all(r["content_hash"] == lib.content_hash for r in rec)
+    assert not LP.all_pinned()
+    with pytest.raises(Exception):
+        F.load(lib.path, expect={"content_hash": "f" * 64})
+    LP.clear()
+
+
+def test_load_registered_pins_sha_and_content_hash(built, tmp_path):
+    import shutil
+    from mu2efastsim.library import provenance as LP
+    from mu2efastsim.library.registry import Registry, RegistryError
+    lib, _, _, _ = built
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    shutil.copy(lib.path, cache / "lib.npz")
+    reg = Registry(cache=cache, path=tmp_path / "reg.json")
+    e = reg.entry(cache / "lib.npz")
+    assert e["url"].endswith("/lib-flash.response.synthetic-v1/lib.npz")
+    reg.add("flash.response.synthetic-v1", e)
+    reg.write()
+    LP.clear()
+    got = F.load_registered("flash.response.synthetic@1", reg=F.registry(tmp_path / "reg.json", cache=cache),
+                            download=False)
+    assert got.content_hash == lib.content_hash
+    assert LP.loaded()[-1]["status"] == "pinned"
+    assert LP.loaded()[-1]["pin_set"] == "registry:flash.response.synthetic-v1"
+    (cache / "lib.npz").write_bytes(b"not the registered file")
+    with pytest.raises(RegistryError):
+        F.load_registered(lib.content_hash[:12], reg=F.registry(tmp_path / "reg.json", cache=cache), download=False)
+    LP.clear()
+
+
+def test_shipped_registry_entries_are_well_formed():
+    reg = F.registry()
+    for key, e in reg.entries.items():
+        assert e["name"].startswith("flash.response.") and len(e["sha256"]) == 64 and len(e["content_hash"]) == 64
+        assert key == f"{e['name']}-v{e['version']}"
+        assert e["url"].endswith(f"/lib-{e['name']}-v{e['version']}/{e['file']}")
+        assert "/" not in e["file"]

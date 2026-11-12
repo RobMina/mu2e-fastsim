@@ -38,3 +38,16 @@ library from a campaign configuration with `store.save`. The configuration names
 each, its direction class, job index, seed and event count. It also holds the bin edges, the sampling density per
 direction class, and the generator, geometry and configuration hashes. Each file must hold exactly its declared
 number of events. The even/odd job split is recorded for the realization spread.
+
+## Pinning, registry and provenance
+
+`F.load(path, expect={"content_hash": ...})` is a pinned load. `F.load_registered("flash.response.nominal_run1a@1")`
+resolves an entry of `beamfastsim/data/flash_response_registry.json` (file, sha256, content hash and the release asset
+URL under the tag `lib-<name>-v<version>`), downloads the file into the cache (`$MU2EFS_FLASH_CACHE`, else
+`$MU2EFS_LIBRARY_CACHE`, else `~/.cache/mu2efastsim/libraries/flash`), checks its sha256 and pins its content hash.
+Every load, pinned or not, is entered in `mu2efastsim.library.provenance`, so an output can state which libraries it
+ran on and whether each was pinned.
+
+The manifest names each campaign sample by its `dataset` (no user or site path in a published file). Its `split` says
+that the file tabulates every listed job; the held-out samples are separate campaigns, and the even and odd job halves
+are separate files (`source.realization_files`) for the realization spread.
