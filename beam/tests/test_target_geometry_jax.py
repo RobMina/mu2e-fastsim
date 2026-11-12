@@ -124,14 +124,16 @@ def test_bracketed_shell_solver_and_opa_radius(geom):
 
 def test_ce_capped_gather_keeps_chunked_state_and_rng_iteration(geom):
     n = 6
-    init, run = CE._build(geom, np.float64, 1., 100., False, True, True, None, False, (0., 0., 0.))
+    layout, arrays = CE.geometry_inputs(geom, np.float64, False)
+    init, run = CE._build(layout, np.float64, 1., 100., False, True, True, None, False, (0., 0., 0.))
+    env = ((), arrays)
     x = jnp.tile(jnp.array([-3864., 0., 5799.5]), (n, 1))
     u = jnp.tile(jnp.array([0., 0., 1.]), (n, 1))
-    state = init((), x, u, jnp.full(n, 100.), jnp.zeros(n), jnp.full(n, -1, jnp.int32), jnp.zeros(n))
+    state = init(env, x, u, jnp.full(n, 100.), jnp.zeros(n), jnp.full(n, -1, jnp.int32), jnp.zeros(n))
     key = jax.random.PRNGKey(33)
-    total, full = run((), key, state, jnp.int32(8), 2, 2)
-    first, mid = run((), key, state, jnp.int32(2), 2, 2)
-    last, chunked = run((), key, mid, jnp.int32(6), 2, 2)
+    total, full = run(env, key, state, jnp.int32(8), 2, 2)
+    first, mid = run(env, key, state, jnp.int32(2), 2, 2)
+    last, chunked = run(env, key, mid, jnp.int32(6), 2, 2)
     assert int(total) == int(first + last) == 8
     assert int(full['slab']['it']) == 8
     assert np.sum(full['nstall']) > 0
@@ -150,3 +152,16 @@ def test_conical_opa_interpolation_and_clipping(geom, dtype):
     got = k.opa_rin(z)
     assert got.dtype == dtype
     np.testing.assert_allclose(got, [400., 400., 550., 700., 700.], rtol=1e-7)
+
+
+def test_geometry_params_pad_foils_without_changing_the_face_searches(geom):
+    lengths = TG.layer_types(geom)[1]
+    a = TG.geometry_params(geom, np.float64, lengths)
+    b = TG.geometry_params(geom, np.float64, lengths, nf_pad=a["nf"] + 5)
+    assert b["nf"] == a["nf"] and b["face_up"].size == a["nf"] + 5
+    assert np.isinf(b["face_up"][a["nf"]:]).all() and np.isinf(b["face_dn"][a["nf"]:]).all()
+    z = np.linspace(b["face_up"][0] - 5, b["face_dn"][a["nf"] - 1] + 5, 97)
+    for side, key in (("left", "face_up"), ("right", "face_dn")):
+        np.testing.assert_array_equal(np.searchsorted(a[key], z, side=side), np.searchsorted(b[key], z, side=side))
+    with pytest.raises(ValueError, match="below the foil count"):
+        TG.geometry_params(geom, np.float64, lengths, nf_pad=a["nf"] - 1)

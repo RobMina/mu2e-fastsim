@@ -48,25 +48,119 @@ gather = TG.gather
 
 
 _BUILT = {}
+_PARAMS = {}
+PAD = 64            # foil and foil-type arrays are padded to multiples of this: one compile serves those geometries
+_SCALARS = ("ipa_r", "ipa_ro", "ipa_z0", "ipa_z1", "opa_z1", "opa_t", "ring_ri", "ztsda", "tsda_rin", "tsda_rout",
+            "z_plane", "z_up", "r_wall", "z_ds", "r_ts", "coll5_z0", "coll5_z1", "coll5_rin", "ax", "opa_z0",
+            "opa_dz", "opa_rin0", "opa_drin")
 
 
-def _build(geom, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unroll, const_field):
-    key = (id(geom), np.dtype(dt).name, h, s_max, msc, layer_field, shell_curvature, z_record, unroll,
+def _pad_types(lt, n_foil, m):
+    """LaneTables with the foil-type block (the first n_foil types) padded to m types by copies of its last type
+    (never selected), so the shell types sit at m, m + 1, ... for every geometry."""
+    def p(a):
+        if isinstance(a, float):
+            return a
+        a = np.asarray(a)
+        return np.concatenate([a[:n_foil], np.repeat(a[n_foil - 1:n_foil], m - n_foil, axis=0), a[n_foil:]])
+    return SJ.LaneTables(SJ.Tables(*(p(v) for v in lt.tab)), type(lt.mc)(*(p(v) for v in lt.mc)),
+                         *(p(v) for v in (lt.length, lt.tcut, lt.kcut, lt.dsmax)))
+
+
+def geometry_inputs(geom, dt, msc):
+    """The per-geometry inputs of the compiled chain: (static layout, device arrays). The layout (array sizes, shell
+    type indices, ring presence, table grid) keys the compile; the arrays (foils, layer tables, surfaces) are
+    arguments, cast to dt as the constants were."""
+    key = (id(geom), np.dtype(dt).name, msc)
+    if key in _PARAMS and _PARAMS[key][0] is geom:
+        return _PARAMS[key][1:]
+    b = geom.beam
+    specs, Lf, t_ipa, t_opa, t_ring, counter = layer_types(geom)
+    nlf = len(Lf)
+    m = PAD * int(np.ceil(nlf / PAD))
+    lt = _pad_types(SJ.lane_tables(specs, msc=msc), nlf, m)
+    counter = np.concatenate([counter[:nlf], np.zeros(m - nlf, np.int32), counter[nlf:]]).astype(np.int32)
+    shift = m - nlf
+    nfp = PAD * int(np.ceil(b.foil_z.size / PAD))
+    g = TG.geometry_params(geom, dt, Lf, nf_pad=nfp)
+    g.update(ipa_r=b.ipa_r, ipa_ro=b.ipa_r + b.ipa_t, ipa_z0=b.ipa_z0, ipa_z1=b.ipa_z1, opa_z1=b.opa_z1,
+             opa_t=geom.opa_t, ring_ri=b.ipa_r - geom.ring_t, ztsda=float(b.tsda_z + b.tsda_hl), tsda_rin=b.tsda_rin,
+             tsda_rout=b.tsda_rout, z_plane=geom.z_plane, z_up=geom.z_up, r_wall=geom.r_wall, z_ds=geom.z_ds,
+             r_ts=geom.r_ts, coll5_z0=geom.coll5_z0, coll5_z1=geom.coll5_z1, coll5_rin=geom.coll5_rin)
+    # a Python float acted as a weakly typed constant (cast to dt); a NumPy scalar (ipa_z0, ipa_z1: from the foil
+    # arrays) as a float64 one, which promotes float32 operands: each keeps its kind, so the arithmetic is unchanged
+    arrays = {k: jnp.asarray(g[k], np.float64 if isinstance(g[k], np.generic) else dt) for k in _SCALARS}
+    arrays.update({k: jnp.asarray(g[k]) for k in ("ftype", "face_up", "face_dn", "frin", "frout")})
+    arrays["opa_inv"] = jnp.asarray(np.asarray(1.0, dt) / np.asarray(g["opa_dz"], dt))   # as XLA folds 1 / constant
+    arrays["nf"] = jnp.int32(g["nf"])
+    arrays["zr"] = jnp.asarray([[float(z), float(z + 2 * geom.ring_hl)] for z in (b.ipa_z0, b.ipa_z1)], dt)
+    arrays["counter"] = jnp.asarray(counter)
+    arrays["lt_tab"] = tuple(None if isinstance(v, float) else jnp.asarray(v, dt) for v in lt.tab)
+    arrays["lt_mc"] = tuple(jnp.asarray(v, dt) for v in lt.mc)
+    arrays["lt_rows"] = tuple(jnp.asarray(v, dt) for v in (lt.length, lt.tcut, lt.kcut, lt.dsmax))
+    floats = tuple(v if isinstance(v, float) else None for v in lt.tab)
+    shapes = tuple((jax.tree_util.keystr(k), v.shape, str(v.dtype)) for k, v in
+                   jax.tree_util.tree_leaves_with_path(arrays))
+    layout = (m, t_ipa + shift, t_opa + shift, t_ring + shift if t_ring >= 0 else -1, floats, type(lt.mc), shapes)
+    _PARAMS[key] = (geom, layout, arrays)
+    return layout, arrays
+
+
+def _lane_tables(layout, g):
+    """LaneTables from the traced arrays of geometry_inputs and the static floats of the layout."""
+    floats, mc_type = layout[4], layout[5]
+    tab = SJ.Tables(*(f if f is not None else a for f, a in zip(floats, g["lt_tab"])))
+    return SJ.LaneTables(tab, mc_type(*g["lt_mc"]), *g["lt_rows"])
+
+
+def _build(layout, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unroll, const_field):
+    """init and run of the chain for one layout (geometry_inputs) and policy; the geometry is an argument, so every
+    geometry of the same layout shares the compiled functions. Both take env = (field maps, geometry arrays)."""
+    key = (layout, np.dtype(dt).name, h, s_max, msc, layer_field, shell_curvature, z_record, unroll,
            None if const_field is None else tuple(np.asarray(const_field, float)))
     if key in _BUILT:
         return _BUILT[key]
-    b = geom.beam
-    specs, Lf, t_ipa, t_opa, t_ring, counter = layer_types(geom)
-    lt = SJ.lane_tables(specs, msc=msc)
+    n_types, t_ipa, t_opa, t_ring = layout[:4]
+
+    def make(g):
+        return _kernels(g, _lane_tables(layout, g), n_types, t_ipa, t_opa, t_ring, dt, h, s_max, msc, layer_field,
+                        shell_curvature, z_record, unroll, const_field)
+
+    def init(env, x, u, T, t, k0, zl):
+        maps, g = env
+        return make(g)[0](maps, x, u, T, t, k0, zl)
+
+    @partial(jax.jit, static_argnames=("m_cand", "m_slab"))
+    def run(env, key, st, n_it, m_cand, m_slab):
+        maps, g = env
+        step = make(g)[1]
+
+        def cond(c):
+            i, s = c
+            return (i < n_it) & jnp.any(s["fate"] == C.LIVE)
+
+        def body(c):
+            i, s = c
+            return i + 1, step(maps, key, s, m_cand, m_slab)
+        return lax.while_loop(cond, body, (jnp.int32(0), st))
+
+    out = (jax.jit(init), run)
+    _BUILT[key] = out
+    return out
+
+
+def _kernels(gp, lt, n_types, t_ipa, t_opa, t_ring, dt, h, s_max, msc, layer_field, shell_curvature, z_record,
+             unroll, const_field):
+    """(init, step) over the geometry numbers gp (traced) and layer tables lt."""
     Ltype = jnp.asarray(lt.length, dt)
-    counter_d = jnp.asarray(counter)
-    geometry = TG.build(geom, dt, Lf, charge=-1.0, const_field=const_field,
-                        layer_field=layer_field, shell_curvature=shell_curvature, unroll=unroll)
+    counter_d = gp["counter"]
+    geometry = TG.kernels(gp, dt, n_types, charge=-1.0, const_field=const_field,
+                          layer_field=layer_field, shell_curvature=shell_curvature, unroll=unroll)
     ftype, face_up, face_dn = geometry.ftype, geometry.face_up, geometry.face_dn
     frin, frout, nf = geometry.frin, geometry.frout, geometry.nf
     eps = 1e-7 if np.dtype(dt) == np.float64 else 2e-3       # foil-face search offset (a few ulp of z in float32)
-    ztsda = float(b.tsda_z + b.tsda_hl)
-    zr = [(float(z), float(z + 2 * geom.ring_hl)) for z in (b.ipa_z0, b.ipa_z1)]
+    ztsda = gp["ztsda"]
+    zr = [(gp["zr"][i, 0], gp["zr"][i, 1]) for i in range(2)]
     q = -1.0
     cms = C.C_MM_NS
 
@@ -102,7 +196,7 @@ def _build(geom, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unro
                   sel_r, out_r):
         """First surface crossing in the step for candidate lanes: (path to it, kind) with kind 0 for none."""
         m = x.shape[0]
-        zp = jnp.where(sel_p, geom.z_plane, jnp.where(sel_f, face, ztsda)).astype(dt)
+        zp = jnp.where(sel_p, gp["z_plane"], jnp.where(sel_f, face, ztsda)).astype(dt)
         anyz = sel_p | sel_f | sel_t
         sz = SJ.to_plane(x, u, p, q, Bm, zp, jnp.where(anyz, h_, 0.0), unroll)
         sz = jnp.where(anyz, sz, jnp.inf)
@@ -114,23 +208,23 @@ def _build(geom, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unro
             return jnp.where(better, sv, s_ev), jnp.where(better, kd, kind)
         s_ev, kind = take(sel_p, sz, 1, s_ev, kind)
         s_ev, kind = take(sel_f & ~sel_p & (rz >= frin[kc]) & (rz <= frout[kc]), sz, 2, s_ev, kind)
-        ri, ro = b.ipa_r, b.ipa_r + b.ipa_t
+        ri, ro = gp["ipa_r"], gp["ipa_ro"]
         anys = sel_i | sel_o
         r_ipa = W(out_i, ri, ro)
-        off_o = W(out_o, 0.0, geom.opa_t)
+        off_o = W(out_o, 0.0, gp["opa_t"])
         ss = bisect(x, u, p, Bm, jnp.where(anys, h_, 0.0), lambda z: W(sel_i, r_ipa, opa_rin(z) + off_o))
         zs = SJ.helix(x, u, p, q, Bm, ss)[0][:, 2]
-        s_ev, kind = take(sel_i & (zs >= b.ipa_z0) & (zs <= b.ipa_z1), ss, 3, s_ev, kind)
+        s_ev, kind = take(sel_i & (zs >= gp["ipa_z0"]) & (zs <= gp["ipa_z1"]), ss, 3, s_ev, kind)
         if t_ring >= 0:
-            rri, rro = b.ipa_r - geom.ring_t, b.ipa_r
+            rri, rro = gp["ring_ri"], gp["ipa_r"]
             sr = bisect(x, u, p, Bm, jnp.where(sel_r, h_, 0.0), lambda z: W(out_r, rri, rro))
             zrr = SJ.helix(x, u, p, q, Bm, sr)[0][:, 2]
             okr = jnp.zeros(m, bool)
             for za, zb in zr:
                 okr = okr | ((zrr >= za) & (zrr <= zb))
             s_ev, kind = take(sel_r & okr, sr, 8, s_ev, kind)
-        s_ev, kind = take(sel_o & (zs >= b.opa_z0) & (zs <= b.opa_z1), ss, 4, s_ev, kind)
-        s_ev, kind = take(sel_t & ~sel_p & ~sel_f & (rz >= b.tsda_rin) & (rz <= b.tsda_rout), sz, 5, s_ev, kind)
+        s_ev, kind = take(sel_o & (zs >= gp["opa_z0"]) & (zs <= gp["opa_z1"]), ss, 4, s_ev, kind)
+        s_ev, kind = take(sel_t & ~sel_p & ~sel_f & (rz >= gp["tsda_rin"]) & (rz <= gp["tsda_rout"]), sz, 5, s_ev, kind)
         return s_ev, kind
 
     def vacuum(maps, st, m_cand):
@@ -148,7 +242,7 @@ def _build(geom, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unro
         z0, z1 = x[:, 2], xe[:, 2]
         zlo, zhi = jnp.minimum(z0, z1), jnp.maximum(z0, z1)
         r0, r1 = radial(x), radial(xe)
-        sel_p = (z0 < geom.z_plane) & (z1 >= geom.z_plane)
+        sel_p = (z0 < gp["z_plane"]) & (z1 >= gp["z_plane"])
         up = z1 > z0
         k = jnp.where(up, jnp.searchsorted(face_up, z0 + eps, side="left", method="compare_all"),
                       jnp.searchsorted(face_dn, z0 - eps, side="right", method="compare_all") - 1)
@@ -156,15 +250,15 @@ def _build(geom, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unro
         face = jnp.where(up, face_up[kc], face_dn[kc])
         sel_f = (k >= 0) & (k < nf) & jnp.where(up, face <= z1, face >= z1)
         sel_t = (z0 > ztsda) & (z1 <= ztsda)
-        ri, ro = b.ipa_r, b.ipa_r + b.ipa_t
+        ri, ro = gp["ipa_r"], gp["ipa_ro"]
         out_i, inn_i = (r0 < ri) & (r1 >= ri), (r0 > ro) & (r1 <= ro)
-        sel_i = (out_i | inn_i) & (zhi >= b.ipa_z0) & (zlo <= b.ipa_z1)
+        sel_i = (out_i | inn_i) & (zhi >= gp["ipa_z0"]) & (zlo <= gp["ipa_z1"])
         rc0, rc1 = opa_rin(z0), opa_rin(z1)
         out_o = (r0 < rc0) & (r1 >= rc1)
-        sel_o = (out_o | ((r0 > rc0 + geom.opa_t) & (r1 <= rc1 + geom.opa_t))) & (zhi >= b.opa_z0) & \
-            (zlo <= b.opa_z1) & ~sel_i
+        sel_o = (out_o | ((r0 > rc0 + gp["opa_t"]) & (r1 <= rc1 + gp["opa_t"]))) & (zhi >= gp["opa_z0"]) & \
+            (zlo <= gp["opa_z1"]) & ~sel_i
         if t_ring >= 0:
-            rri, rro = b.ipa_r - geom.ring_t, b.ipa_r
+            rri, rro = gp["ring_ri"], gp["ipa_r"]
             out_r = (r0 < rri) & (r1 >= rri)
             near = jnp.zeros(n, bool)
             for za, zb in zr:
@@ -182,10 +276,10 @@ def _build(geom, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unro
         s_ev = hh.at[idx].set(s_c, mode="drop")
         kind = jnp.zeros(n, jnp.int32).at[idx].set(k_c, mode="drop")
         free = (kind == 0) & ~stall
-        kind = jnp.where(free & (z1 < geom.z_up), 6, kind)
-        kind = jnp.where(free & (kind == 0) & ((r1 > geom.r_wall) | ((z1 < geom.z_ds) & (r1 > geom.r_ts))), 7, kind)
-        kind = jnp.where(free & (kind == 0) & (z1 >= geom.coll5_z0) & (z1 <= geom.coll5_z1) &
-                         (r1 > geom.coll5_rin), 5, kind)
+        kind = jnp.where(free & (z1 < gp["z_up"]), 6, kind)
+        kind = jnp.where(free & (kind == 0) & ((r1 > gp["r_wall"]) | ((z1 < gp["z_ds"]) & (r1 > gp["r_ts"]))), 7, kind)
+        kind = jnp.where(free & (kind == 0) & (z1 >= gp["coll5_z0"]) & (z1 <= gp["coll5_z1"]) &
+                         (r1 > gp["coll5_rin"]), 5, kind)
         moved = vac & ~stall
         s_ev = jnp.where(moved, s_ev, 0.0)
         kind = jnp.where(vac, kind, 0)
@@ -259,21 +353,7 @@ def _build(geom, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unro
         sl["exited"] = jnp.where(enter, new["exited"], sl["exited"] | ~st["inl"])
         return dict(st, slab=sl, inl=st["inl"] | enter)
 
-    @partial(jax.jit, static_argnames=("m_cand", "m_slab"))
-    def run(maps, key, st, n_it, m_cand, m_slab):
-        def cond(c):
-            i, s = c
-            return (i < n_it) & jnp.any(s["fate"] == C.LIVE)
-
-        def body(c):
-            i, s = c
-            return i + 1, step(maps, key, s, m_cand, m_slab)
-        return lax.while_loop(cond, body, (jnp.int32(0), st))
-
-    out = (jax.jit(init), run)
-    _BUILT[key] = out
-    return out
-
+    return init, step
 
 
 OUT_FIELDS = ("fate", "x", "u", "T", "t", "s", "cnt", "nvac", "nslab", "nstall")
@@ -312,8 +392,10 @@ def transport(key, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
     dt = np.dtype(dtype)
     maps, const = (tuple(field), None) if isinstance(field, (tuple, list)) and field and \
         isinstance(field[0], FM.FieldMap) else ((), np.asarray(field, float))
-    init, run = _build(geom, dt, float(h), float(s_max), bool(msc), bool(layer_field), bool(shell_curvature),
+    layout, garr = geometry_inputs(geom, dt, bool(msc))
+    init, run = _build(layout, dt, float(h), float(s_max), bool(msc), bool(layer_field), bool(shell_curvature),
                        None if z_record is None else float(z_record), unroll, const)
+    env = (maps, garr)
     b = geom.beam
     x = np.array(x0, float)
     u = np.array(u0, float)
@@ -333,7 +415,7 @@ def transport(key, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
         """init state of m lanes: start ids in slots, copies of the first start elsewhere (inert after merging)."""
         j = np.full(m, ids[0])
         j[slots] = ids
-        return init(maps, jnp.asarray(x[j], dt), jnp.asarray(u[j], dt), jnp.asarray(T[j], dt), jnp.zeros(m, dt),
+        return init(env, jnp.asarray(x[j], dt), jnp.asarray(u[j], dt), jnp.asarray(T[j], dt), jnp.zeros(m, dt),
                     jnp.asarray(k0[j]), jnp.asarray(zl[j], dt))
     first = np.arange(min(n, m))
     st = block(first, first)
@@ -352,7 +434,7 @@ def transport(key, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
     while True:
         nb = idx.size
         tr = time.time()
-        i, st = run(maps, jax.random.fold_in(key, rounds), st, jnp.int32(chunk),
+        i, st = run(env, jax.random.fold_in(key, rounds), st, jnp.int32(chunk),
                     max(1, min(nb, int(np.ceil(cand_frac * nb)))), max(1, min(nb, int(np.ceil(slab_frac * nb)))))
         i = int(i)
         timeline.append((nb, i, round(time.time() - tr, 3)))

@@ -131,3 +131,34 @@ def test_device_out_returns_the_same_result_as_device_arrays():
             assert vb is None
             continue
         assert np.array_equal(np.asarray(vb), va), f
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_geometries_share_one_compile_and_padding_changes_nothing(dtype, monkeypatch):
+    # two target designs (foil count, thicknesses, IPA position) run through one compiled chain; each result is
+    # bit-identical to the same design run alone with other padded array sizes (PAD), i.e. its own compile
+    rng = np.random.default_rng(11)
+    designs = [_geom(foil_z=tuple(5800.0 + 22.0 * np.arange(5)), ipa=(300.0, 0.5, 6000.0, 7000.0), ring=9.525),
+               _geom(foil_z=tuple(5790.0 + 20.0 * np.arange(7)), ipa=(300.0, 0.5, 6100.0, 7100.0), ring=9.525)]
+    designs[1].beam.foil_ht[:] = np.linspace(0.04, 0.09, 7)
+    n = 600
+    starts = []
+    for g in designs:
+        k = rng.integers(0, g.beam.foil_z.size, n)
+        r = np.sqrt(rng.uniform(21.5 ** 2, 75.0 ** 2, n))
+        ph = rng.uniform(0, 2 * np.pi, n)
+        x = np.stack([AXIS + r * np.cos(ph), r * np.sin(ph), g.beam.foil_z[k]], axis=1)
+        starts.append((x, C.isotropic(rng, n)))
+    kw = dict(min_bucket=256, dtype=dtype)
+    CJ._BUILT.clear()
+    shared = [CJ.transport(jax.random.PRNGKey(3), g, [0.0, 0.0, 1.0], x, u, C.P_CE_AL, 0.0, **kw)
+              for g, (x, u) in zip(designs, starts)]
+    assert len(CJ._BUILT) == 1
+    for g, (x, u), a in zip(designs, starts, shared):
+        monkeypatch.setattr(CJ, "PAD", 8)
+        CJ._BUILT.clear()
+        CJ._PARAMS.clear()
+        b = CJ.transport(jax.random.PRNGKey(3), g, [0.0, 0.0, 1.0], x, u, C.P_CE_AL, 0.0, **kw)
+        for f, va in a._asdict().items():
+            if va is not None:
+                assert np.asarray(va).tobytes() == np.asarray(getattr(b, f)).tobytes(), f
