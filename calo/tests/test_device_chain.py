@@ -255,6 +255,32 @@ def test_full_chain_runs_and_conserves_scale(library):
     np.testing.assert_array_equal(again["clusters"]["energy"], out["clusters"]["energy"])
 
 
+def test_cluster_truth_opt_in(library):
+    """truth=True adds per-cluster etrue (visible energy of the steps in the cluster's crystals) and ttrue (earliest
+    step time) and leaves every other output bit-identical."""
+    pos, disk = _grid()
+    geom = _geom(pos, disk)
+    table = PropagationTable(np.array([[0.5, 1.0]], np.float32), np.array([0.5, 1.5], np.float32), np.float32(400.0))
+    noise = np.random.default_rng(2).normal(12.0, 1.0, 20000)
+    resp = dc.pack_response(_sim(len(disk)), _pulse(), noise, table, geom)
+    lib = dc.pack_library(library, radius_neighbors=0, placement="crystal")
+    query = _queries(40, seed=5)
+    caps = dc.Caps(events=48, steps=2048, photoelectrons=1 << 19, rows=1024, digis=1024, digi_length=96,
+                   hits=1024, event_hits=48, rounds=6)
+    q, t = dc.entries_batch(query, _timing(40), np.arange(40), caps.events)
+    base = dc.run(dc.make_chain(lib, resp, caps), q, t, jax.random.PRNGKey(3))
+    tru = dc.run(dc.make_chain(lib, resp, caps, truth=True), q, t, jax.random.PRNGKey(3))
+    for k, v in base["clusters"].items():
+        np.testing.assert_array_equal(tru["clusters"][k], v)
+    cl = tru["clusters"]
+    ok = cl["valid"]
+    assert ok.sum() > 0
+    assert np.all(cl["etrue"][ok] >= 0) and np.all(cl["etrue"][~ok] == 0)
+    # truth is the deposited visible energy, close to the reconstructed energy in scale
+    assert 0.5 < cl["energy"][ok].sum() / cl["etrue"][ok].sum() < 1.5
+    assert np.all(np.isfinite(cl["ttrue"][ok])) and np.all(np.isinf(cl["ttrue"][~ok]))
+
+
 def test_float32_draw_and_placement_close_to_host(library):
     """Single-precision geometry: same donors; crystals and depths agree except at float32 boundary roundoff."""
     query = _queries()

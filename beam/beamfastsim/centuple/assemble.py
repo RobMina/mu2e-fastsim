@@ -122,7 +122,8 @@ def build(record, donor_lib, out, *, trigger=None, seed=20261111, trigger_cal=No
     # trkpid of the electron track: its own draw among class-Q donors with the same match status, nearest in E/p
     _, prow = D.match(lib, np.full(n, D.CLASS_Q, np.int8), np.ones(n, bool), keys, seed, run, sub, evn,
                       use={D.CLASS_Q: ("calo", "eop")}, stream=1)
-    pid = np.where(cls == D.CLASS_Q, lib["pid"][prow], np.nan)
+    track = (cls == D.CLASS_Q) | (cls == D.CLASS_F)     # a fitted e- track (the response layer's observables)
+    pid = np.where(track, lib["pid"][prow], np.nan)
     # rotation and time shift donor -> fast (truth at TT_Front)
     phi_f = np.arctan2(pf_true[:, 1], pf_true[:, 0])
     dphi = np.where(np.isfinite(phi_f) & np.isfinite(lib["phi_t"][drow]), _wrap(phi_f - lib["phi_t"][drow]), 0.0)
@@ -138,7 +139,7 @@ def build(record, donor_lib, out, *, trigger=None, seed=20261111, trigger_cal=No
                 dt_reco=dt_reco, fold=k_f, pid=pid,
                 nactive=rec["trk_nactive"], fitcon=rec["trk_fitcon"], chi2ndf=rec["trk_chi2ndf"],
                 has_entry=rec["has_entry"], birth_x=rec["birth_x"], birth_p=rec["birth_p"], birth_t=rec["birth_t"])
-    # reco surfaces of class-Q electrons
+    # reco surfaces of the fitted electrons (class Q and F)
     p_true_f = np.linalg.norm(pf_true, axis=1)
     scale = rec["trk_p_reco"] / p_true_f
     dtan = rec["trk_tandip"] - tan_true
@@ -146,7 +147,7 @@ def build(record, donor_lib, out, *, trigger=None, seed=20261111, trigger_cal=No
     for name in ("front", "mid", "back"):
         found = rec["has_entry"] if name == "front" else rec[name + "_found"]
         x, p, t = reco_state(rec[name + "_x"], rec[name + "_p"], rec[name + "_t"], scale, dtan, dt0)
-        ok = found & (cls == D.CLASS_Q) & np.all(np.isfinite(p), axis=1)
+        ok = found & track & np.all(np.isfinite(p), axis=1)
         plan[f"seg_{name}_ok"] = ok
         plan[f"seg_{name}_pos"], plan[f"seg_{name}_mom"], plan[f"seg_{name}_time"] = x, p, t
         lh = loophelix(x, p, t, rec[name + "_bz"])   # t already folded (dt0), so lh t0 is too
@@ -172,7 +173,7 @@ def build(record, donor_lib, out, *, trigger=None, seed=20261111, trigger_cal=No
         tot = ev_cl.sum(axis=1, keepdims=True)
         plan["cl_etot"] = np.where(tot > 0, rec["calo_etrue"][:, None] * ev_cl / np.where(tot > 0, tot, 1.0), 0.0)
         plan["cl_tprim"] = np.where(rec["cl_valid"], rec["calo_contact_t"][:, None], 0.0)
-    plan["calo_match"] = has_cl & (cls == D.CLASS_Q)
+    plan["calo_match"] = has_cl & track
     plan["calo_match_cluster"] = jcl
     plan["calo_contact_x"], plan["calo_contact_t"] = rec["calo_contact_x"], rec["calo_contact_t"]
     plan["calo_disk"] = rec["calo_disk"]

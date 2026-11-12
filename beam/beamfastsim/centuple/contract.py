@@ -56,7 +56,8 @@ COVERAGE = [
     ("primary[0] (SimInfo)", "vector<SimInfo>", "fast", "birth position, momentum, time of the CE; rest donor"),
     ("trig_<20 device paths>", "bool per event", "fast",
      "trigger.device on device digis (tpr, apr incl. apr_TrkDe_80m70p): ports + KalSeedFilter / AgnosticHelix "
-     "response layer from off-spill CE replays; on-spill digis"),
+     "response layer from off-spill CE replays; on-spill digis; opt-in (assemble --trigger-cal) the decisions "
+     "without a response layer and the on-spill table per class and birth time (trigcal)"),
     ("trig_cpr_*, calo_*, Triggerable*, mpr_*, cst_*, minBias_*, apr_TwoTrk*, apr_proton", "bool per event", "donor",
      "the matched stock event's decision (class, covered-trigger bit, track and calorimeter keys): the calorimeter-"
      "seeded and MC paths are not on the device"),
@@ -89,8 +90,9 @@ COVERAGE = [
      "front-face contacts: calorimeter device chain clusters; inner-edge contacts: one cluster, the edepana "
      "inner-edge table's visible energy (known disagreement at the inner edge)"),
     ("caloclustersmc", "vector<CaloClusterInfoMC>", "fast",
-     "nsim 1 (the CE only, no secondary sims); etot = eprimary = the drawn library shower's visible (Birks) energy "
-     "(edge contacts: the table's), shared by energy; tprimary = the contact time"),
+     "nsim 1 (the CE only, no secondary sims); etot = eprimary = the visible (Birks) energy of the sampled shower "
+     "steps in the cluster's hit crystals, tprimary = the earliest of their times (edge contacts: the table's "
+     "visible energy and the contact time)"),
     ("calohits", "vector<CaloHitInfo>", "fast", "approximate: one hit per crystal of each cluster, energy split evenly"),
     ("calohitsmc, calomcsim", "", "donor", "not consistent with the fast clusters"),
     ("hitcount.nsd", "int per event", "fast", "device StrawDigis of the CE (no secondaries: no delta rays)"),
@@ -110,7 +112,8 @@ KNOWN_GAPS = [
     "response layer: active hits drawn from tables (chi2/ndf 49-53 / 34-35 on the deck binning: a miss)",
     "calorimeter: inner-edge contacts from a Geant4 table, cluster-radius disagreement near 380-460 mm",
     "DIO tail above 100 MeV/c: held-out excess (not exercised by CE)",
-    "device trigger: response layer calibrated on off-spill CE replays; calorimeter and MC paths from donors",
+    "device trigger: response layer calibrated on off-spill CE replays (opt-in on-spill table per class and birth "
+    "time); calorimeter and MC paths from donors",
 ]
 
 

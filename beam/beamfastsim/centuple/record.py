@@ -111,7 +111,8 @@ class FastRecord:
         from ..cetracker import DeviceChain
         from ..edepana import EdgeEnergies
         self.dtype = np.dtype(dtype)
-        kw = dict(response=response, digi_cond=digi_cond, dtype=dtype, albedo=albedo, deltas=deltas)
+        kw = dict(response=response, digi_cond=digi_cond, dtype=dtype, albedo=albedo, deltas=deltas,
+                  track_observables="fit")        # the fast track of class-F events too (fits failing the quality)
         if geom:
             kw["geom"] = geom
         self.chain = DeviceChain(offline_root, maps, gdml, **kw)

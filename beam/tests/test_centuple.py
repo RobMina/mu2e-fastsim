@@ -159,3 +159,36 @@ def test_writer_stream_patterns():
              "apr_TrkUe_80m70p", "apr_TwoTrkDe_80m70p_D0200"]
     sel = [n for n in names if any(fnmatch.fnmatch(n, p) for p in W.STREAM_PATTERNS)]
     assert sel == ["apr_TrkDe_80m70p", "cpr_TrkDe_80m70p_D0200", "TriggerableLHPath", "apr_TrkUe_80m70p"]
+
+
+def test_trigcal_factors_reach_the_target():
+    from beamfastsim.centuple import trigcal
+    T = np.array([0.2, 0.9, 0.5, 1.0])
+    Dv = np.array([0.5, 0.6, 0.5, 0.0])
+    f, g = trigcal.factors(T, Dv)
+    np.testing.assert_allclose(Dv * f + (1 - Dv) * g, T)
+    assert np.all((f >= 0) & (f <= 1) & (g >= 0) & (g <= 1))
+
+
+def test_trigcal_apply_shares_one_uniform_and_keeps_unlisted_paths():
+    from beamfastsim.centuple import trigcal
+    from beamfastsim.centuple import donor as D
+    n = 20000
+    rng = np.random.default_rng(1)
+    edges = np.array(trigcal.EDGES)
+    nb = len(edges) - 1
+    keep = np.full((2, 3, nb), 0.5)
+    rescue = np.full((2, 3, nb), 0.0)
+    rescue[1] = 0.25
+    lib = dict(paths=np.array(["a", "b"]), classes=np.array(trigcal.CLASSES, np.int8), keep=keep, rescue=rescue,
+               tbirth_edges=edges)
+    raw = np.stack([np.ones(n, bool), np.zeros(n, bool), rng.random(n) < 0.5], 1)
+    cls = rng.choice([D.CLASS_N, D.CLASS_F, D.CLASS_Q], n)
+    run, sub, ev = np.full(n, 1430), np.zeros(n, int), np.arange(n)
+    out = trigcal.apply(lib, ["a", "b", "c"], raw, cls, rng.uniform(400, 1700, n), run, sub, ev, 7)
+    assert abs(out[:, 0].mean() - 0.5) < 0.02 and abs(out[:, 1].mean() - 0.25) < 0.02
+    np.testing.assert_array_equal(out[:, 2], raw[:, 2])
+    # one uniform per event: every rescued "b" is a kept "a" (u < 0.25 implies u < 0.5)
+    assert np.all(out[out[:, 1], 0])
+    again = trigcal.apply(lib, ["a", "b", "c"], raw, cls, rng.uniform(400, 1700, n), run, sub, ev, 7)
+    np.testing.assert_array_equal(again, out)

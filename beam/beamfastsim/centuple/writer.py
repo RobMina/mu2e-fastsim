@@ -214,11 +214,11 @@ def write(plan_path, donor_files, out, *, n_generated=None, extra_provenance=Non
         cls = int(plan["cls"][k])
         if p >= 0 and bool(plan["has_entry"][k]):
             _truth(ROOT, plan, k, smc, sims, p)
-        if cls == 2 and p >= 0:
-            stats["q"] += 1
+        if cls in (1, 2) and p >= 0 and np.isfinite(plan["fitcon"][k]):
+            stats["q" if cls == 2 else "f"] += 1
             _electron(ROOT, plan, k, chain, p)
-        elif cls == 1:
-            stats["f"] += 1
+        elif cls in (1, 2):
+            stats["q" if cls == 2 else "f"] += 1
         else:
             stats["nclass"] += 1
         m = int(cl_n[k])

@@ -17,7 +17,10 @@ python3 -m beamfastsim.centuple trigger --digis DIR/centuple_digis.npz --menu re
 # CPU, NumPy + uproot
 python3 -m beamfastsim.centuple donor    --files nts.dev.*.root --covered DIR/centuple_trigger.npz --out donor.npz
 python3 -m beamfastsim.centuple assemble --record DIR/centuple_record.npz --trigger DIR/centuple_trigger.npz \
-    --donor donor.npz --out DIR
+    --donor donor.npz --out DIR [--trigger-cal TRIGCAL.npz]
+# the on-spill trigger table, once, from development events with both arms (trigger run without --response)
+python3 -m beamfastsim.centuple trigcal --stock nts.dev.*.root --records DEV/centuple_record.npz \
+    --triggers DEV/centuple_trigger.npz --out trigcal.npz
 # CPU, the Mu2e environment of the stock release (PyROOT, libeventntuple_dict)
 beam/beamfastsim/centuple/mu2e_env.sh python3 -m beamfastsim.centuple write --plan DIR/centuple_plan.npz \
     --donor-files nts.dev.*.root --out nts.fast.root --n-generated N
@@ -57,7 +60,7 @@ simulates. Everything else is the donor's.
 | Branch | Class | How |
 |---|---|---|
 | `evtinfo.run/subrun/event` | exact | identity of the birth (the stock generator event when births come from its files) |
-| `trig_<path>` of the 20 device paths (tpr, apr incl. `apr_TrkDe_80m70p`) | fast | `trigger.device` on the device digis (ports and the KalSeedFilter / AgnosticHelix response layer) |
+| `trig_<path>` of the 20 device paths (tpr, apr incl. `apr_TrkDe_80m70p`) | fast | `trigger.device` on the device digis (ports and the KalSeedFilter / AgnosticHelix response layer); with `--trigger-cal`, the device decisions without a response layer and the on-spill table (below) |
 | `trig_cpr_*`, `calo_*`, `Triggerable*`, `mpr_*`, `cst_*`, `minBias_*`, two-track, proton | donor | not on the device (calorimeter-seeded, MC-truth and multi-helix paths) |
 | stored events | fast + donor | the stock stream rule on the combined decisions: `cpr_Trk*_80*`, `apr_Trk*_80*`, `Triggerable{LH,TwoTrack,Calo}Path` |
 | `trk.nactive`, `trk.fitcon`, `trk.chisq` (e- fit) | fast | response-layer draws (table `onspill`: the OnSpill production chain, including its digitization-window turn-on in entry time); chisq = chi2/ndf x ndof |
@@ -72,7 +75,7 @@ simulates. Everything else is the donor's.
 | `trkmcsim[*][0]` | fast | the CE's birth (every fit of the same particle); ancestors donor |
 | `trksegsmc` TT surfaces | fast | entry state; TT_Mid from the last forward straw step carried on a helix; TT_Back from the tracker exit |
 | `caloclusters` | fast | front-face contacts: the calorimeter device chain (shower library, crystal response, digis, template fit, clusters); inner-edge contacts: one cluster with the Geant4 inner-edge table's visible energy |
-| `caloclustersmc` | fast | nsim 1, etot = eprimary = the drawn shower's visible energy (shared by energy), tprimary = contact time |
+| `caloclustersmc` | fast | nsim 1, etot = eprimary = the visible (Birks) energy of the sampled shower steps in the cluster's hit crystals, tprimary = the earliest of their times (calorimeter device chain `truth=True`); inner-edge clusters: the table's visible energy and the contact time |
 | `calohits` | fast | approximate: one hit per crystal of each cluster, energy split evenly |
 | `hitcount.nsd` | fast | device StrawDigis (no delta rays: low); nesel / nrsel / ntsel / nbkg scaled from the donor |
 | `evtinfo.pbtime`, `evtinfomc`, `crv*`, `tcnt`, `trkhits`, `trkmats`, `trkmc`, `trkmcvd`, `calohitsmc`, ... | donor | not simulated |
@@ -84,17 +87,29 @@ The full contract (every leaf the analyses and pyutils read, types, units, frame
 `beamfastsim/centuple/contract.py`. Units and frames are the stock ones: mm, ns, MeV, MeV/c, the detector frame for
 positions, times from the MC proton time.
 
+## On-spill trigger table (`trigcal`, opt-in)
+
+The device paths see the fast device digis; the fast track comes from the response layer, which does not. In stock
+both come from the same hits, so an event with a good offline track nearly always fires the track paths; the fast
+chain loses that correlation, and the device response layer is the off-spill CE calibration. `trigcal` restores
+both from development events with both arms (the same births): per path, event class (Q / F / N: stock from its
+fit, fast from the response layer) and birth time, the target is stock's pass fraction and the device's is its pass
+fraction without a response layer. A fast event keeps a device pass with probability f = min(1, T / D) and turns a
+device fail into a pass with probability g = max(0, (T - D) / (1 - D)); one uniform per event is shared by every
+path, so the paths stay correlated and the device decision still orders the events. Cells with fewer than 50 events
+on a side use the class's time-integrated factors.
+
 ## Known limits
 
 * Tracker: no delta rays or conversions in the fast transport; active hits drawn from the response tables.
 * Calorimeter: the inner edge from a Geant4 table; a known radius disagreement near the inner edge.
-* Trigger: the device response layer is calibrated on off-spill CE replays; calorimeter and MC paths are the
-  donor's. On-spill device digis count TDC from the DR marker, so the trigger stage subtracts pbt = -200 ns
-  (`--pbt`; 0 for off-spill digis).
+* Trigger: without `--trigger-cal` the device response layer is the off-spill CE calibration; with it, the paths
+  follow stock per class and birth time, but not in variables the table does not bin (momentum, hits). Calorimeter
+  and MC paths are the donor's. The trigger stage subtracts the per-event proton bunch time estimate of the record.
 * Response: the tables count the electron's own Geant4 rows and draw the fit from stock reco of the same digitization
   mode; `record` uses `onspill` (ce_chain's OnSpill chain), built from 19,630 development events.
-* Calorimeter cluster truth (`caloclustersmc.etot`) is the whole drawn shower's visible energy shared among the
-  clusters, so it includes energy outside the clusters (a few MeV high against stock).
+* Calorimeter cluster truth counts every sampled step in the cluster's crystals (no per-hit time window); records
+  made before the per-crystal truth share the whole shower's visible energy among the clusters (a few MeV high).
 * Donor quantities follow the fast event only through the matching keys: a quantity that depends on something the
   keys do not carry (e.g. the hit lists) is the donor's.
 * No pileup: `fullsim_sensitivity` runs on unmixed CE only (its inputs are mixed in production).
