@@ -56,7 +56,7 @@ files are never overwritten by the backend.
 `response.output.tracker_rows` (optional) bounds the tracker digi rows downloaded per batch. The tracker table is
 padded to `straws x pairs_per_straw` rows (2.2 M at batch 256, about 7 % of them digis) and sorts its digis first,
 so the device hands the host only the leading `tracker_rows` rows: the same files, and for a batch of 256 a terminal
-transfer of about 55 MB instead of 350 MB. A batch with a digi past them is rejected
+transfer of about 60 MB instead of 350 MB. A batch with a digi past them is rejected
 (`response/output/tracker_rows`, demand and capacity named); the demand is in the batch usage for
 `mixing.device_capacity`. Without the key the full padded table is downloaded, as before.
 
