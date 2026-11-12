@@ -4,6 +4,7 @@
 #   - where /cvmfs/mu2e.opensciencegrid.org is mounted (GPVM, EAF): setupmu2e-art + muse setup of the musing;
 #   - elsewhere: container/offline/offline_uva.sh (cvmfsexec + the FNAL worker image; needs CVMFSEXEC_DIST, a Slurm
 #     allocation and /dev/fuse), with the command as its OFFLINE_CHAIN script.
+# CENTUPLE_PYTHONPATH is prepended to the environment's PYTHONPATH (the release's own holds ROOT).
 # CENTUPLE_MUSING overrides the musing (default AnalysisMDC2025 v02_02_02, the release of Mu2eBO ce_chain's nts step).
 set -eo pipefail
 MUSING=${CENTUPLE_MUSING:-/cvmfs/mu2e.opensciencegrid.org/Musings/AnalysisMDC2025/v02_02_02}
@@ -14,6 +15,7 @@ if [[ -d /cvmfs/mu2e.opensciencegrid.org/Musings ]]; then
   setup muse >/dev/null 2>&1 || true
   source "$MUSING/setup.sh"
   set -e
+  export PYTHONPATH=${CENTUPLE_PYTHONPATH:+$CENTUPLE_PYTHONPATH:}$PYTHONPATH
   exec "$@"
 fi
 RUNNER=${CENTUPLE_OFFLINE_RUNNER:-$HERE/../../../container/offline/offline_uva.sh}
@@ -23,7 +25,9 @@ REPO=$(cd "$HERE/../../.." && pwd -P)
 export OFFLINE_BINDS=${OFFLINE_BINDS:+$OFFLINE_BINDS,}$REPO
 SCRIPT=$(mktemp "$WORK/.centuple_chain.XXXXXX.sh")
 trap 'rm -f "$SCRIPT"' EXIT
-{ echo 'set -eo pipefail'; printf 'cd %q\n' "$WORK"; printf '%q ' "$@"; echo; } > "$SCRIPT"
+{ echo 'set -eo pipefail'; printf 'cd %q\n' "$WORK"
+  [[ -z ${CENTUPLE_PYTHONPATH:-} ]] || printf 'export PYTHONPATH=%q:$PYTHONPATH\n' "$CENTUPLE_PYTHONPATH"
+  printf '%q ' "$@"; echo; } > "$SCRIPT"
 FCL=$(mktemp "$WORK/.centuple_fcl.XXXXXX.fcl")
 trap 'rm -f "$SCRIPT" "$FCL"' EXIT
 echo '# placeholder: the runner checks an FCL path; OFFLINE_CHAIN runs instead of mu2e' > "$FCL"

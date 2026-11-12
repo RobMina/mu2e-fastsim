@@ -44,7 +44,7 @@ def cmd_record(a):
 def cmd_trigger(a):
     from . import trigger
     path, meta = trigger.run(a.digis, a.out, menu=a.menu, conditions=a.conditions, tc_mva=a.tc_mva,
-                             response=a.response, precision=a.precision, block=a.block, spill=a.spill)
+                             response=a.response, precision=a.precision, block=a.block, spill=a.spill, pbt=a.pbt)
     print(json.dumps(dict(path=str(path), **{k: meta[k] for k in ("events", "wall_s", "precision")},
                           paths=len(meta["paths"]))))
 
@@ -56,7 +56,10 @@ def cmd_donor(a):
         covered = sorted(k[5:] for k in np.load(a.covered).files if k.startswith("trig_"))
     else:
         covered = [p for p in a.covered.split(",") if p]
-    print(json.dumps(donor.build(a.files, covered, a.out)))
+    gen = dict(name="Mu2e OnSpill digitization, recoMC OnSpill, EventNtuple from_mcs-mockdata (all digitized events)",
+               release=a.stock_release, physics_list="from the dts files", configuration=a.stock_config)
+    rel = dict(repository="mu2e-fastsim", commit=a.commit, entry_point="beamfastsim.centuple donor")
+    print(json.dumps(donor.build(a.files, covered, a.out, generator=gen, release=rel)))
 
 
 def cmd_assemble(a):
@@ -144,7 +147,7 @@ def cmd_point(a):
     plan, pmeta = assemble.build(out / record.RECORD, d["donor"], out, trigger=out / "centuple_trigger.npz",
                                  seed=a.seed)
     files = [os.path.join(a.data, "donor", f) for f in pmeta["donor_files"]]
-    env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[2]))
+    env = dict(os.environ, CENTUPLE_PYTHONPATH=str(Path(__file__).resolve().parents[2]))
     here = Path(__file__).resolve().parent
     subprocess.run(["bash", str(here / "mu2e_env.sh"), "python3", "-m", "beamfastsim.centuple", "write", "--plan",
                     str(plan), "--donor-files", *files, "--out", str(out / FILE), "--n-generated",
@@ -195,11 +198,17 @@ def main(argv=None):
     t.add_argument("--precision", default="float64", choices=("float32", "float64"))
     t.add_argument("--block", type=int, default=1024)
     t.add_argument("--spill", type=int, default=1, help="EventWindowMarker spill type (1 on-spill)")
+    t.add_argument("--pbt", type=float, default=-200.0,
+                   help="proton bunch time subtracted from the hit times [ns] (on-spill device digis: -200, the DR "
+                        "marker offset; off-spill: 0)")
     t.set_defaults(fn=cmd_trigger)
     d = sp.add_parser("donor")
     d.add_argument("--files", nargs="+", required=True)
     d.add_argument("--covered", required=True, help="a centuple_trigger.npz (its paths) or a comma list of paths")
     d.add_argument("--out", required=True)
+    d.add_argument("--stock-release", default="AnalysisMDC2025 v02_02_02 (SimJob MDC2025ax)")
+    d.add_argument("--stock-config", default="Mu2eBO ce_chain dig/mcs/nts FCLs, outputs.Output.SelectEvents: []")
+    d.add_argument("--commit", default=None, help="code commit recorded in the manifest")
     d.set_defaults(fn=cmd_donor)
     s = sp.add_parser("assemble")
     s.add_argument("--record", required=True)

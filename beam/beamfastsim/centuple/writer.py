@@ -98,24 +98,26 @@ void set_calohit(mu2e::TrkCaloHitInfo& x, bool on, int did, double e, double t, 
   x.mom.SetXYZ(qx, qy, qz); x.ptoca = tt; x.dt = tt - t; x.tresid = tt - t; }
 // fast clusters: replace caloclusters / caloclustersmc / calohits (one hit per crystal of the cluster)
 void set_clusters(std::vector<mu2e::CaloClusterInfo>& cl, std::vector<mu2e::CaloClusterInfoMC>& clmc,
-                  std::vector<mu2e::CaloHitInfo>& hits, int n, const double* e, const double* t, const double* x,
-                  const double* y, const double* z, const long* size, const long* disk, const bool* split,
-                  const double* etot, const double* tprim) {
+                  std::vector<mu2e::CaloHitInfo>& hits, int n, const double* buf) {
+  // buf: 10 columns of n values (energy, time, x, y, z, size, disk, split, etot, tprimary), never empty
+  const double *e = buf, *t = buf + n, *x = buf + 2 * n, *y = buf + 3 * n, *z = buf + 4 * n, *sizef = buf + 5 * n,
+               *diskf = buf + 6 * n, *splitf = buf + 7 * n, *etot = buf + 8 * n, *tprim = buf + 9 * n;
   mu2e::CaloClusterInfoMC proto = clmc.empty() ? mu2e::CaloClusterInfoMC() : clmc[0];
   mu2e::CaloClusterInfo cproto = cl.empty() ? mu2e::CaloClusterInfo() : cl[0];
   cl.clear(); clmc.clear(); hits.clear();
   for (int i = 0; i < n; ++i) {
+    long size_i = std::lround(sizef[i]);
     mu2e::CaloClusterInfo c = cproto;
-    c.diskID_ = disk[i]; c.time_ = t[i]; c.energyDep_ = e[i]; c.cog_.SetXYZ(x[i], y[i], z[i]);
-    c.size_ = size[i]; c.isSplit_ = split[i]; c.hits_.clear();
-    for (long k = 0; k < size[i]; ++k) {
-      mu2e::CaloHitInfo h; h.time_ = t[i]; h.eDep_ = e[i] / size[i]; h.nSiPMs_ = 2; h.clusterIdx_ = i;
+    c.diskID_ = std::lround(diskf[i]); c.time_ = t[i]; c.energyDep_ = e[i]; c.cog_.SetXYZ(x[i], y[i], z[i]);
+    c.size_ = size_i; c.isSplit_ = splitf[i] != 0; c.hits_.clear();
+    for (long k = 0; k < size_i; ++k) {
+      mu2e::CaloHitInfo h; h.time_ = t[i]; h.eDep_ = e[i] / size_i; h.nSiPMs_ = 2; h.clusterIdx_ = i;
       c.hits_.push_back(hits.size()); hits.push_back(h); }
     cl.push_back(c);
     mu2e::CaloClusterInfoMC m = proto;
     m.nsim = etot[i] > 0 ? 1 : 0; m.etot = etot[i]; m.eprimary = etot[i]; m.tprimary = tprim[i];
     m.tavg = tprim[i];
-    m.nhits = size[i]; m.hits_.clear();
+    m.nhits = size_i; m.hits_.clear();
     clmc.push_back(m);
   }
 }
@@ -216,13 +218,13 @@ def write(plan_path, donor_files, out, *, n_generated=None, extra_provenance=Non
             stats["nclass"] += 1
         m = int(cl_n[k])
         sel = np.flatnonzero(plan["cl_valid"][k])[:m]
-        f64 = lambda a: np.ascontiguousarray(plan[a][k][sel], np.float64)  # noqa: E731
-        e, t, x, y, z = f64("cl_energy"), f64("cl_time"), f64("cl_x"), f64("cl_y"), f64("cl_z")
-        size = np.ascontiguousarray(np.maximum(plan["cl_size"][k][sel], 1), np.int64)
-        disk = np.ascontiguousarray(plan["cl_disk"][k][sel], np.int64)
-        split = np.ascontiguousarray(plan["cl_split"][k][sel], np.bool_)
-        ROOT.cent.set_clusters(chain.caloclusters, chain.caloclustersmc, chain.calohits, m, e, t, x, y, z, size,
-                               disk, split, f64("cl_etot"), f64("cl_tprim"))
+        cols = [plan[c][k][sel] for c in ("cl_energy", "cl_time", "cl_x", "cl_y", "cl_z")]
+        cols += [np.maximum(plan["cl_size"][k][sel], 1), plan["cl_disk"][k][sel], plan["cl_split"][k][sel],
+                 plan["cl_etot"][k][sel], plan["cl_tprim"][k][sel]]
+        buf = np.zeros(max(10 * m, 1), np.float64)
+        if m:
+            buf[:10 * m] = np.concatenate([np.asarray(c, np.float64) for c in cols])
+        ROOT.cent.set_clusters(chain.caloclusters, chain.caloclustersmc, chain.calohits, m, buf)
         hc = chain.hitcount
         nsd = int(plan["nsd"][k])
         if nsd >= 0:
@@ -254,7 +256,8 @@ def write(plan_path, donor_files, out, *, n_generated=None, extra_provenance=Non
     st = src.Get("EventNtuple/subrunNtuple")
     if st:
         st.GetEntry(0)
-        pec = np.zeros(1, np.int64)
+        from array import array
+        pec = array("q", [0])                 # Long64_t buffer (cppyy does not take a NumPy int64 array here)
         st.SetBranchAddress("procEventCount", pec)
         d.cd()
         so = st.CloneTree(0)

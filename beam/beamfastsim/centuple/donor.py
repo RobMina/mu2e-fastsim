@@ -141,7 +141,7 @@ def build(paths, covered_paths, out, *, source=None, generator=None, release=Non
     parts, files = [], []
     for fi, p in enumerate(paths):
         d = index_file(p, covered_paths)
-        d["file"] = np.full(d["entry"].size, fi, np.int64)
+        d["file_index"] = np.full(d["entry"].size, fi, np.int64)
         parts.append(d)
         files.append(dict(name=Path(p).name, sha256=_sha256(p), entries=int(d["entry"].size)))
     arr = {k: np.concatenate([d[k] for d in parts]) for k in parts[0]}
@@ -159,7 +159,7 @@ def build(paths, covered_paths, out, *, source=None, generator=None, release=Non
                      "consistency, calorimeter match and E/p, leading-cluster energy). The pool is the stock files "
                      "themselves, pinned by sha256; a draw returns (file, entry)."),
         axes=[tan_axis.describe()],
-        outputs=[dict(name="file", unit="1", dtype="int64", description="index into file_names (-1: none)"),
+        outputs=[dict(name="file_index", unit="1", dtype="int64", description="index into file_names (-1: none)"),
                  dict(name="entry", unit="1", dtype="int64", description="tree entry of the donor event")],
         source=source or dict(samples=files, description="stock EventNtuple files of the training sample"),
         generator=generator or dict(name="stock Mu2e chain", release=None, physics_list=None, configuration=None),
@@ -177,14 +177,12 @@ def build(paths, covered_paths, out, *, source=None, generator=None, release=Non
                                                 "if none, the same class")]),
         validation=dict(status="not validated", record="beam/docs/eventntuple.md (validation)"),
         unrecorded={})
-    for k in ("config_hash",):
-        fields["unrecorded"][k] = "no build configuration beyond the listed files and paths"
-    if fields["geometry"]["hash"] is None:
-        fields["geometry"] = dict(tag="run1a", hash="geom_run1_a.txt")
-    if fields["generator"].get("release") is None:
-        fields["unrecorded"]["generator"] = "stock release recorded in the files' provenance"
-    if fields["release"].get("commit") is None:
-        fields["unrecorded"]["release"] = "commit not passed to build()"
+    fields["unrecorded"]["config_hash"] = "no build configuration beyond the listed files and covered paths"
+    for k in ("generator", "release"):
+        if any(v is None for v in fields[k].values()):
+            fields[k] = None
+            fields["unrecorded"][k] = "not passed to build()"
+    fields["geometry"] = dict(tag="run1a", hash="Offline/Mu2eG4/geom/geom_run1_a.txt")
     store.save(out, arr, fields)
     return dict(events=int(arr["entry"].size), **counts)
 
@@ -230,7 +228,7 @@ def match(lib, cls, cov, keys, seed, run, subrun, event, k=K_NEAREST, use=None, 
                     g = np.random.default_rng(np.random.SeedSequence([int(seed), int(stream), int(run[i]),
                                                                       int(subrun[i]), int(event[i])]))
                     j = pool[row[g.integers(row.size)]]
-                    out_f[i], out_e[i] = lib["file"][j], j
+                    out_f[i], out_e[i] = lib["file_index"][j], j
     return out_f, out_e
 
 
