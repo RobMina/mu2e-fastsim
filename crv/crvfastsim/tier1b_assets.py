@@ -19,6 +19,11 @@ Other option combinations run with a custom library and explicit placement flags
     spec = resolve("strict_v5", directory="/dev/shm/x")   # the default set, files staged elsewhere
     spec = resolve(library="lib.root")                     # a custom library, no placement options
     lib = load(spec, geom); tier1b.sample(..., lib, geom, rng, **spec.options)
+
+Library pinning (mu2efastsim.library, core/docs/libraries.md "Pinning in run configurations"): a named set is pinned
+by the sha256 of its library file (library_sha256), checked on every load (cached or not); a custom --library is
+allowed and recorded as unpinned. Every load is entered in mu2efastsim.library.provenance. domain_counts(info) turns
+a tier1b.sample info record (dropped, clamped and other-bar descendant placements) into a DomainCounter.
 """
 from __future__ import annotations
 
@@ -121,13 +126,44 @@ def sha256(path):
     return h.hexdigest()
 
 
+def _record(spec, digest):
+    """Enter the load in mu2efastsim.library.provenance: pinned (a named set, its library sha256) or unpinned."""
+    from mu2efastsim.library import provenance
+    pinned = bool(spec.name and spec.library_sha256)
+    return provenance.record(dict(name=f"crv.tier1b.{spec.name or 'custom'}", file=os.path.basename(spec.library),
+                                  content_hash=digest, hash="file_sha256", status="pinned" if pinned else "unpinned",
+                                  pin_set=spec.name if pinned else None, options=dict(spec.options)))
+
+
 def load(spec, geom):
-    """Load checked sidecars normally, or opt into a content-bound attached-library cache."""
+    """Load checked sidecars normally, or opt into a content-bound attached-library cache. A named set's library must
+    have its pinned sha256 (refused otherwise); the load is recorded pinned or unpinned (custom library)."""
+    digest = sha256(spec.library)
+    if spec.library_sha256 and digest != spec.library_sha256:
+        raise ValueError(f"tier-1b set {spec.name!r}: {spec.library} is not the pinned library")
     directory = os.environ.get("CRVFS_PREPARED_LIBRARY_CACHE")
     if directory:
         from .analyses.library_cache import load as cached_load
-        return cached_load(spec, geom, directory, _load_uncached)
-    return _load_uncached(spec, geom)
+        lib = cached_load(spec, geom, directory, _load_uncached)
+    else:
+        lib = _load_uncached(spec, geom)
+    _record(spec, digest)
+    return lib
+
+
+def domain_counts(info, counter=None, library="crv.tier1b"):
+    """DomainCounter from a tier1b.sample info record: descendant steps placed (lookups), served by a fallback
+    placement (clamped back inside a bar: level 1; moved to another bar: level 2) and dropped (refused)."""
+    from mu2efastsim.library.domain import DomainCounter
+    counter = counter or DomainCounter(library)
+    placed, dropped, clamped = int(info["desc_steps"]), int(info["desc_dropped"]), int(info["desc_clamped"])
+    other = int(info.get("other_bar", {}).get("other", 0))
+    counter.add_lookups(placed + dropped)
+    counter.add_refused(dropped)
+    d = counter.levels.setdefault("placement", {})
+    for level, n in (("0", placed - clamped - other), ("1", clamped), ("2", other)):
+        d[level] = d.get(level, 0) + n
+    return counter
 
 
 def _load_uncached(spec, geom):

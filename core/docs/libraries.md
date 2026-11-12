@@ -155,7 +155,8 @@ a copy of a table staged on a node. For these, the pin belongs to the **run conf
 - **Pinned loads.** A production run configuration lists every library it uses with its content hash, in an asset set
   in the repository (for the CRV, `crvfastsim/configs/assets_<set>.json`, named by `RunConfig.asset_pins`; reco-r3 and
   the kit task use the same set). A chain that loads through the run configuration checks the content hash of what
-  it decoded against that list and refuses a mismatch, or a library missing from the set.
+  it decoded against that list and refuses a mismatch, or a library missing from the set. A container that is
+  pinned byte for byte may use its file sha256 as the pin instead, as the CRV tier-1b asset sets do (`tier1b_assets.SETS`).
 - **Ad hoc loads.** A load by path or name, as in development work or with a test double, is allowed. Its content hash
   is still computed and recorded, with the status `unpinned`.
 - **Provenance.** Every load is entered in `library.provenance` (`record`, `loaded`, `summary`, `all_pinned`) and
