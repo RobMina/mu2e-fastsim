@@ -198,3 +198,52 @@ def test_hooks_take_a_seed_keyword():
     from trigger.device import bench
     if hasattr(timer, "accepts_seed"):
         assert timer.accepts_seed(device_bench.prepare) and timer.accepts_seed(bench.load)
+
+
+@pytest.mark.parametrize("writers", [1, 3])
+def test_mixing_bench_pipeline_writers(tmp_path, writers):
+    """device_pipeline_writers W: up to W batches collected at once, every batch collected once in its own directory,
+    the summed metrics unchanged."""
+    import threading
+    import time
+    from mixing import device_bench
+
+    class Source:
+        def __init__(self):
+            self.index = 0
+
+        def next_batch(self, size):
+            self.index += 1
+            return SimpleNamespace(count=size, batch_index=self.index)
+
+    class Backend:
+        def __init__(self):
+            self.active = self.peak = 0
+            self.lock, self.collected = threading.Lock(), []
+
+        def dispatch(self, request):
+            return request
+
+        def collect(self, request, directory):
+            with self.lock:
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+            time.sleep(0.05)
+            with self.lock:
+                self.active -= 1
+                self.collected.append((request.batch_index, directory.name))
+            return {"events": request.count, "wait_transfer_and_write_s": 0.05, "capacity_usage": {"x": request.batch_index}}
+
+        def sync(self):
+            pass
+
+    args = SimpleNamespace(batch_events=10, device_pipeline=True, device_pipeline_writers=writers, out=tmp_path)
+    prepared = SimpleNamespace(args=args, source=Source(), events=55, passes=0)
+    backend = Backend()
+    summary = device_bench._run_pipelined(prepared, backend, tmp_path)
+    assert summary["events"] == 55 and summary["batches"] == 6 and summary["capacity_usage_max"] == {"x": 6}
+    assert sorted(backend.collected) == [(i, f"batch_{i:08d}") for i in range(1, 7)]
+    assert backend.peak == writers
+    with pytest.raises(ValueError, match="positive integer"):
+        device_bench._run_pipelined(SimpleNamespace(**{**vars(prepared), "args": SimpleNamespace(**{**vars(args), "device_pipeline_writers": 0})}),
+                                    backend, tmp_path / "x")
