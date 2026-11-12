@@ -546,6 +546,35 @@ def test_packed_sort_equals_lexsort(wide, helpers, onspill):
         Capacities(64, 1024, 8, 512, 8, 2, pack_sort="radix")
 
 
+@pytest.mark.pr_params("True")   # onspill is the mixing mode
+@pytest.mark.parametrize("onspill", [False, True])
+def test_live_launches_equal_all_launches(wide, helpers, onspill):
+    """electronics_launches 'live' (empty launches skipped) and narrow_tier 'compact' give the wide model's digis,
+    with the pair loop, the flat digitisation and the tier saturation pool; launches of 2 straws, so some are empty."""
+    c, model = wide(onspill)
+    st = _flat_cluster_steps(c, helpers)
+    times = timing([1700., 1675., 1695.] if onspill else [100000.] * 3, [10., -5., 20.])
+    a, ae = evaluate(model, collection(st, 8), times)
+    assert not any(ae.values()) and len(a["sid"]) > 0, ae
+    tiers = dict(end_tiers=[(8, 16), (4, 512)])
+    flat = dict(digit_entries_per_straw=2.5, flat_saturation_pool="tier", flat_saturation_tiles="bounded")
+    for kw in (dict(electronics_launches="live"), dict(tiers, electronics_launches="live"),
+               dict(tiers, electronics_launches="live", narrow_tier="compact"),
+               dict(tiers, electronics_launches="live", narrow_tier="compact", **flat),
+               dict(tiers, narrow_tier="compact")):
+        caps = Capacities(64, 1024, 8, 4 if "end_tiers" in kw else 512, 8, 2, **kw)
+        b, be = evaluate(prepare(c, caps, 3), collection(st, 8), times)
+        assert not any(be.values()), (kw, be)
+        for name in a:
+            np.testing.assert_array_equal(a[name], b[name], err_msg=f"{name} {kw}")
+    with pytest.raises(ValueError, match="electronics_launches"):
+        Capacities(64, 1024, 8, 512, 8, 2, electronics_launches="some")
+    with pytest.raises(ValueError, match="narrow_tier"):
+        Capacities(64, 1024, 8, 4, 8, 2, end_tiers=[(8, 16)], narrow_tier="dense")
+    with pytest.raises(ValueError, match="needs end_tiers"):
+        Capacities(64, 1024, 8, 512, 8, 2, narrow_tier="compact")
+
+
 def test_packed_sort_keys_order_like_lexsort(cond):
     """The packed keys order -0.0/+0.0 (equal), negatives, infinities, NaNs (last), ties and sentinels as lexsort."""
     import jax.numpy as jnp

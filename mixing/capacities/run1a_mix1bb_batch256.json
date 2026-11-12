@@ -38,7 +38,7 @@
    ],
    "pairs_per_straw": 8,
    "electronics_batch": 8192,
-   "charge_blocks_per_launch": 16,
+   "charge_blocks_per_launch": 128,
    "flat_clusters": 4047617,
    "minion_steps": 39567,
    "minion_search": "compare_all",
@@ -47,7 +47,9 @@
    "pack_sort": "packed",
    "flat_saturation_rows": "auto",
    "flat_saturation_pool": "tier",
-   "flat_saturation_tiles": "bounded"
+   "flat_saturation_tiles": "bounded",
+   "electronics_launches": "live",
+   "narrow_tier": "compact"
   },
   "crv": {
    "substeps": 310525,
