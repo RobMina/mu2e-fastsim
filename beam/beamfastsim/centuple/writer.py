@@ -12,7 +12,8 @@ exactly the stock branches, classes, split levels and trigger-path branches, sha
 chain. For every fast event the donor entry is loaded into the buffers, the fast values of the plan are written over
 them (C++ helpers compiled by cling: rotation about the tracker axis, time shift, the electron's reco surfaces,
 truth, clusters), and the output tree is filled. ``EventNtuple/n_proc_events`` (one bin, the stored events, as
-the stock ntuple job of the stored stream counts them), ``EventNtuple/version`` and the other stock objects of the first donor file are copied; the provenance
+the stock ntuple job of the stored stream counts them), ``EventNtuple/version`` and ``trkqual_metadata`` are copied from the first donor file and
+``EventNtuple/subrunNtuple`` gets one entry per subrun with its stored count; the provenance
 JSON goes to ``EventNtuple/fastsim_provenance`` (TNamed).
 
 Numbers only: this module imports nothing from JAX and needs NumPy and ROOT.
@@ -30,6 +31,7 @@ import numpy as np
 TREE = "EventNtuple/ntuple"
 SID = {"front": 0, "mid": 1, "back": 2}
 PROV = "fastsim_provenance"
+COPIED = ("version", "trkqual_metadata")        # TH1I bookkeeping of the stock release, copied from a donor file
 # the stored stream of the stock OnSpill digitization (Production digitize/OnSpill.fcl, MDC2025ax): outputs.Output
 # SelectEvents = Digitize.SignalTriggers + physics.TriggerablePaths
 STREAM_PATTERNS = ("cpr_Trk*_80*", "apr_Trk*_80*", "TriggerableLHPath", "TriggerableTwoTrackPath",
@@ -163,6 +165,7 @@ def write(plan_path, donor_files, out, *, n_generated=None, extra_provenance=Non
         offsets.append(offsets[-1] + int(f.Get(TREE).GetEntries()))
         f.Close()
     chain.LoadTree(0)
+    chain.GetEntry(0)        # allocate the object buffers, so that the clone shares them (CloneTree copies addresses)
     trig_all = [b.GetName() for b in chain.GetTree().GetListOfBranches() if b.GetName().startswith("trig_")]
     tbuf = np.zeros(len(trig_all), dtype=np.bool_)
     for i, name in enumerate(trig_all):
@@ -186,6 +189,7 @@ def write(plan_path, donor_files, out, *, n_generated=None, extra_provenance=Non
     tic = time.perf_counter()
     cl_n = plan["cl_valid"].sum(axis=1)
     stats = dict(events=int(n), written=0, untriggered=0, q=0, f=0, nclass=0)
+    kept = []
     for k in order:
         chain.GetEntry(int(gentry[k]))
         ev = chain.evtinfo
@@ -227,6 +231,7 @@ def write(plan_path, donor_files, out, *, n_generated=None, extra_provenance=Non
                                                      for v in (hc.nesel, hc.nrsel, hc.ntsel, hc.nbkg))
             hc.nsd = nsd
         tout.Fill()
+        kept.append(k)
         nwritten += 1
         if progress and nwritten % progress == 0:
             print(f"centuple writer: {nwritten} written, {time.perf_counter() - tic:.1f} s", flush=True)
@@ -236,17 +241,32 @@ def write(plan_path, donor_files, out, *, n_generated=None, extra_provenance=Non
     gen = int(n_generated if n_generated is not None else n)
     # n_proc_events: the events the stock ntuple job processed = the stored stream it read (its tree entries); the
     # generated count goes to the provenance (in production it is the files' SAM dh.gencount)
-    h = ROOT.TH1D("n_proc_events", "processed events", 1, 0, 1)
+    h = ROOT.TH1I("n_proc_events", "processed events", 1, 0, 1)
     h.SetBinContent(1, nwritten)
     h.Write()
     src = ROOT.TFile.Open(donor_files[0])
-    for key in src.Get("EventNtuple").GetListOfKeys():
-        name = key.GetName()
-        if name in ("ntuple", "n_proc_events", "subrunNtuple"):
-            continue
-        obj = key.ReadObj()
+    for name in COPIED:
+        obj = src.Get("EventNtuple/" + name)
+        if obj:
+            d.cd()
+            obj.Write(name)
+    # subrunNtuple: one entry per (run, subrun) of the written events with its processed (stored) count
+    st = src.Get("EventNtuple/subrunNtuple")
+    if st:
+        st.GetEntry(0)
+        pec = np.zeros(1, np.int64)
+        st.SetBranchAddress("procEventCount", pec)
         d.cd()
-        obj.Write(name)
+        so = st.CloneTree(0)
+        so.SetBranchAddress("procEventCount", pec)
+        keys, counts = np.unique(np.stack([plan["run"][kept], plan["subrun"][kept]], 1), axis=0, return_counts=True) \
+            if len(kept) else (np.zeros((0, 2), np.int64), np.zeros(0, np.int64))
+        for (r, sr), c in zip(keys, counts):
+            st.srinfo.run, st.srinfo.subrun = int(r), int(sr)
+            pec[0] = int(c)
+            so.Fill()
+        d.cd()
+        so.Write()
     src.Close()
     prov = dict(writer="beamfastsim.centuple.writer", plan=meta, donor_files=[Path(p).name for p in donor_files],
                 uncovered_trigger_paths=uncovered, stream_paths=[trig_all[i][5:] for i in sidx], covered_trigger_paths=names, n_generated=gen,

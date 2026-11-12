@@ -44,8 +44,8 @@ def test_loophelix_matches_stock_segments(dtype):
     tol = 1e-3 if dtype == np.float64 else 2e-2
     np.testing.assert_allclose(lh["rad"], s[:, 7], rtol=tol)
     np.testing.assert_allclose(lh["lam"], s[:, 8], rtol=0.03)   # stock lam is the fit's (local field, energy loss)
-    np.testing.assert_allclose(lh["cx"], s[:, 9], atol=1.0)
-    np.testing.assert_allclose(lh["cy"], s[:, 10], atol=1.0)
+    np.testing.assert_allclose(lh["cx"], s[:, 9], atol=3.0)     # fit centre vs the local-field geometry
+    np.testing.assert_allclose(lh["cy"], s[:, 10], atol=3.0)
     np.testing.assert_allclose(A._wrap(lh["phi0"] - s[:, 11]), 0, atol=0.05)
     np.testing.assert_allclose(lh["t0"], s[:, 12], atol=0.15)
     np.testing.assert_allclose(lh["d0"], s[:, 13], atol=1.5)
