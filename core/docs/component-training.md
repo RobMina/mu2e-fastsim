@@ -135,8 +135,8 @@ product's dynamic mass is rebuilt from `E` and `p`, so its rounding grows as `ep
 - `--configuration` names the bank `secondaries.component.<geometry>.<configuration>`, so banks of one component type
   get distinct names. One bank can hold every entrance state of a campaign.
 - The generator stays unrecorded until the capture records its physics-list, material and cut hashes. The energy
-  accounting stays unrecorded too, and `bank_admissible` is false. Replay is float64 host code; there is no float32
-  or device path.
+  accounting stays unrecorded too, and `bank_admissible` is false. Replay dtypes: see
+  [component response](component-response.md) (float64 is the reference).
 
 ## Geometry and validation order
 
