@@ -18,7 +18,8 @@ CAPACITIES = ("substeps", "photons", "thermal", "ct1", "ct2", "ct3", "pixel_shor
               "pixel_long_streams", "pixel_long_hits", "charge_clusters", "charges_per_cluster",
               "waveform_samples", "digis", "reco_waveforms", "reco_samples", "pulse_rounds",
               "coinc_hits", "coinc_combinations")
-OPTIONS = {"waveform": ("dense", "scatter"), "digi_starts": ("dense", "rows"), "pulse_scan": ("dense", "bounded")}
+OPTIONS = {"waveform": ("dense", "scatter"), "digi_starts": ("dense", "rows"), "pulse_scan": ("dense", "bounded"),
+           "sorts": SJ.SORTS}
 STEP_FLOATS = ("edep", "x0", "y0", "z0", "x1", "y1", "z1", "px0", "py0", "pz0", "p1", "len")
 PERIOD = 1695.0
 
@@ -124,6 +125,7 @@ class Adapter:
     waveform: str = "dense"
     digi_mode: str = "dense"
     pulse_mode: str = "dense"
+    sorts: str = "lexsort"
     kind: str = "physics"
     support: tuple = ("crv_digis", "crv_reco")
 
@@ -136,6 +138,7 @@ class Adapter:
                     waveform=self.waveform,
                     **({"digi_starts": self.digi_mode} if self.digi_mode != "dense" else {}),
                     **({"pulse_scan": self.pulse_mode} if self.pulse_mode != "dense" else {}),
+                    **({"sorts": self.sorts} if self.sorts != "lexsort" else {}),
                     unsupported=["traps", "NZS", "background", "fused response"],
                     validation="local kernel/packing tests; no production closure or memory qualification")
 
@@ -255,10 +258,10 @@ class Adapter:
                                assets["q_ct"], s.overvoltage, s.time_constant, s.p1, s.p2, s.capacitance,
                                slot.size, cap["ct1"], cap["ct2"], cap["ct3"], total, cap["pixel_short"],
                                cap["pixel_long_streams"], cap["pixel_long_hits"], s.n_pixels_x, s.n_pixels_y,
-                               pixel_override=pixels)
+                               pixel_override=pixels, **({"sort": self.sorts} if self.sorts != "lexsort" else {}))
         out = dict(chan=result["slot"], time=result["time"], charge=result["charge"], pe=result["pe"],
                    photon=root[jnp.minimum(result["root"], root.size - 1)], mask=result["fired"])
-        order = jnp.lexsort((out["time"], out["chan"], ~out["mask"]))
+        order = SJ.lexsort((out["time"], out["chan"], ~out["mask"]), self.sorts)
         out = {name: values[order] for name, values in out.items()}
         errors = dict(crv_input=jnp.any(bad_index | bad_payload),
                       crv_timing=jnp.any(bad_timing & timing["event_mask"]),
@@ -289,7 +292,7 @@ class Adapter:
         """Device stock charge clustering, waveform synthesis, gated ZS and digi packing."""
         cap, w = self.capacities, self.wcfg
         C, Q, L, D = (cap[n] for n in ("charge_clusters", "charges_per_cluster", "waveform_samples", "digis"))
-        order = jnp.lexsort((q["time"], q["chan"], ~q["mask"]))
+        order = SJ.lexsort((q["time"], q["chan"], ~q["mask"]), self.sorts)
         q = {k: v[order] for k, v in q.items()}
         mask = q["mask"]
         new = mask & jnp.concatenate([jnp.array([True]), (q["chan"][1:] != q["chan"][:-1]) |
@@ -468,7 +471,8 @@ def prepare(geom, cond, cfg, counters, capacities, tabs, pmap):
     `synth_dense` kernel) or "scatter" (`_synth_scatter`; `charges_per_cluster` is then unused).
     Exact restructures, same results: `digi_starts` "rows" (digi starts listed from the rows that hold one, and the
     scatter synthesis' gated scan stops at the longest waveform) and `pulse_scan` "bounded" (pulse-fit peak scans stop
-    at the longest reco waveform, rounds stop once no waveform found a pulse).
+    at the longest reco waveform, rounds stop once no waveform found a pulse), and `sorts` "radix" (the photon/charge
+    and SiPM pixel-stream lexsorts as one stable single-key sort per key: the same order).
     """
     if not jax.config.jax_enable_x64:
         raise ValueError("JAX_ENABLE_X64=1 is required")
@@ -592,4 +596,4 @@ def prepare(geom, cond, cfg, counters, capacities, tabs, pmap):
     return Adapter(assets, cap, tuple(blocks), tuple(statics),
                    tuple((int(t), p.ld, p.ns, p.uniform) for t, p in params.items()),
                    cfg, w, pcfg, fcfg, geom.nbars, len(ufeb), pmap.shape[1], options["waveform"],
-                   options["digi_starts"], options["pulse_scan"])
+                   options["digi_starts"], options["pulse_scan"], options["sorts"])

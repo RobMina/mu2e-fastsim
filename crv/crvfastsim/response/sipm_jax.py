@@ -31,6 +31,43 @@ GENERATIONS = 3
 NP2 = NPIX * NPIX
 
 
+SORTS = ("lexsort", "radix")
+
+
+def _order_bits(x):
+    """Unsigned keys in jnp.lexsort's order of x: floats as lax.sort orders them (-0 equal to +0, NaNs last), signed
+    integers with the sign bit flipped, booleans as 0/1."""
+    x = jnp.asarray(x)
+    if x.dtype == jnp.bool_:
+        return x.astype(jnp.uint8)
+    if jnp.issubdtype(x.dtype, jnp.unsignedinteger):
+        return x
+    bits = x.dtype.itemsize * 8
+    utype = {8: jnp.uint8, 16: jnp.uint16, 32: jnp.uint32, 64: jnp.uint64}[bits]
+    sign = utype(1) << utype(bits - 1)
+    if jnp.issubdtype(x.dtype, jnp.floating):
+        x = jnp.where(x == 0, x.dtype.type(0), jnp.where(jnp.isnan(x), x.dtype.type(np.nan), x))
+        u = lax.bitcast_convert_type(x, utype)
+        return jnp.where((u & sign) != 0, ~u, u | sign)
+    return lax.bitcast_convert_type(x, utype) ^ sign
+
+
+def lexsort(keys, sort="lexsort"):
+    """jnp.lexsort(keys) (the last key is the primary one); sort "radix": one stable single-key sort per key, the last
+    key last, the same permutation (stable LSD order) through single-key device sorts instead of one multi-key
+    comparison sort."""
+    if sort not in SORTS:
+        raise ValueError(f"sort must be one of {SORTS}")
+    if sort == "lexsort":
+        return jnp.lexsort(keys)
+    order = None
+    for key in keys:
+        bits = _order_bits(key)
+        step = jnp.argsort(bits if order is None else bits[order], stable=True)
+        order = step if order is None else order[step]
+    return order
+
+
 def _bucket(n, lo=1 << 12):
     return max(lo, 1 << int(np.ceil(np.log2(max(n, 1)))))
 
@@ -53,8 +90,8 @@ def _gather(arr_sorted, fill, di):
     return jnp.concatenate([arr_sorted, jnp.array([fill], arr_sorted.dtype)])[di]
 
 
-@partial(dprec.jit, static_argnames=("L", "SL", "LL", "rounds"))
-def _solve(key_sort, t, u, parent, valid, dead, vov, tau, p1, p2, L, SL, LL, rounds):
+@partial(dprec.jit, static_argnames=("L", "SL", "LL", "rounds", "sort"))
+def _solve(key_sort, t, u, parent, valid, dead, vov, tau, p1, p2, L, SL, LL, rounds, sort="lexsort"):
     """Sort hits into pixel streams, then the fixed point over the active set.
 
     Streams of at most L hits go to a short table [N, L]; longer streams (rare) go to a long table [SL, LL], so a few
@@ -62,7 +99,7 @@ def _solve(key_sort, t, u, parent, valid, dead, vov, tau, p1, p2, L, SL, LL, rou
     longest stream; the long table overflowed if count > SL or longest > LL (caller retries with exact buckets)."""
     N = t.shape[0]
     pad_key = jnp.iinfo(jnp.int64).max
-    o = jnp.lexsort((t, key_sort))
+    o = lexsort((t, key_sort), sort)
     ks, ts, us = key_sort[o], t[o], u[o]
     real = ks != pad_key
     new = jnp.concatenate([jnp.array([True]), ks[1:] != ks[:-1]])
@@ -121,15 +158,18 @@ LONG_LL = 64      # ... and their length; on overflow the caller retries once wi
 LONG_CELLS_MAX = 1 << 26  # long-table cells beyond which the chunk goes to the host path instead (memory guard)
 
 
-@partial(dprec.jit, static_argnames=("NB", "M1", "M2", "M3", "Ntot", "L", "SL", "LL", "nx", "ny", "gens", "truncate"))
+@partial(dprec.jit, static_argnames=("NB", "M1", "M2", "M3", "Ntot", "L", "SL", "LL", "nx", "ny", "gens", "truncate",
+                                     "sort"))
 def device_sipm(slot, t, valid, key, cum, ncol, dead, q_ct, vov, tau, p1, p2, cap,
-                NB, M1, M2, M3, Ntot, L, SL, LL, nx, ny, gens=GENERATIONS, *, pixel_override=None, truncate=False):
+                NB, M1, M2, M3, Ntot, L, SL, LL, nx, ny, gens=GENERATIONS, *, pixel_override=None, truncate=False,
+                sort="lexsort"):
     """All of the SiPM stage in one jitted call, fixed shapes, no host round trip.
 
     slot [NB] SiPM slot per photon, t [NB], valid [NB]; cum: normalised cumulative photon map; ncol: its row length.
     pixel_override: optional [NB] flat pixel ids (x * NPIX + y); -1 retains the optical draw.
     truncate: pixel id of the GetRandom2 point by truncation (SiPMConfig.pixel_id "truncate", the map bin) instead of
     lrint (bin or bin + 1); the same random numbers are drawn either way.
+    sort: "lexsort" or "radix" for the pixel-stream sort (see lexsort): the same order, the same results.
     Returns per hit (photons first, then cross-talk candidates): slot, time, root photon index, fired, charge, pe, and
     an overflow flag (a candidate buffer filled up, or the long-stream table [SL, LL] was too small: retry with
     long_buckets(r), else rerun those inputs on the host path).
@@ -157,7 +197,8 @@ def device_sipm(slot, t, valid, key, cum, ncol, dead, q_ct, vov, tau, p1, p2, ca
     PAR, V_ = jnp.pad(PAR, (0, pad), constant_values=-1), jnp.pad(V_, (0, pad))
     U = jax.random.uniform(ku, (Ntot,))
     ksort = jnp.where(V_, S_ * NP2 + P_, jnp.iinfo(jnp.int64).max)
-    fired, v, n_long, max_long, max_len = _solve(ksort, T_, U, PAR, V_, dead, vov, tau, p1, p2, L, SL, LL, gens + 1)
+    fired, v, n_long, max_long, max_len = _solve(ksort, T_, U, PAR, V_, dead, vov, tau, p1, p2, L, SL, LL, gens + 1,
+                                                 sort=sort)
     stream_over = (n_long > SL) | (max_long > LL)
     root = jnp.arange(Ntot)
     for _ in range(gens):

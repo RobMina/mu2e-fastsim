@@ -478,3 +478,23 @@ def test_exact_restructure_options_match_default(setup):
             np.testing.assert_array_equal(outs["exact"][table][col][mask], value[mask], err_msg=f"{table}/{col}")
     with pytest.raises(ValueError, match="digi_starts"):
         adapter(setup, capacity(digi_starts="sparse"))
+
+
+def test_radix_sorts_match_lexsort(setup):
+    """sorts="radix" (the charge and SiPM pixel-stream lexsorts as stable single-key sorts) gives the same tables,
+    every row and column, as the default lexsorts."""
+    collection, timing = inputs()
+    timing["event_mask"][1] = False
+    outs = {}
+    for name in ("lexsort", "radix"):
+        model = adapter(setup, capacity(waveform="scatter", photons=256, sorts=name))
+        out, errors = run(model.apply, collection, timing, model.assets, jax.random.key(23))
+        assert not any(errors.values()), [k for k, v in errors.items() if v]
+        outs[name] = out
+    assert outs["lexsort"]["pulses"]["mask"].sum() > 0
+    for table, cols in outs["lexsort"].items():
+        for col, value in cols.items():
+            np.testing.assert_array_equal(outs["radix"][table][col], value, err_msg=f"{table}/{col}")
+    assert adapter(setup, capacity(sorts="radix")).metadata["sorts"] == "radix"
+    with pytest.raises(ValueError, match="sorts"):
+        adapter(setup, capacity(sorts="bitonic"))

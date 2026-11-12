@@ -123,6 +123,16 @@ Two CRV capacity options restructure padded scans without changing results:
 On an A100 at batch 256 the CRV stage goes 0.183 -> 0.102 s (float32) and 0.227 -> 0.133 s (float64). Full-pass
 outputs are identical to the defaults (dev and held-out, both dtypes). The Run 1A capacity files set both.
 
+## Radix sorts (opt-in)
+
+`"sorts": "radix"` replaces the multi-key `jnp.lexsort` of the photon/charge table (time, channel, mask; in `charges`
+and again in `digis`) and of the SiPM pixel streams (`sipm_jax.device_sipm`: time, slot x pixel) with one stable
+single-key sort per key, the least significant first (`sipm_jax.lexsort`). Each key goes to unsigned integers in
+lexsort's order (floats as `lax.sort` orders them: -0 equal to +0, NaNs last; signed integers with the sign bit
+flipped), so the permutation, ties included, is that of `jnp.lexsort` and the outputs are the same. On the GPU a
+multi-key sort is a comparison sort; single-key sorts are radix sorts (at 1-2 M rows, 3-7 ms -> 1-2 ms per sort).
+Default `"lexsort"` is unchanged; the Run 1A capacity files set `"radix"`.
+
 ## Scope and validation
 
 Supported: staged stock onspill ZS response through reduced coincidence outputs.
