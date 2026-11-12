@@ -144,7 +144,8 @@ def build(geom, dtype, foil_lengths, *, charge, const_field, layer_field=True, s
 def kernels(g, dtype, n_foil_types, *, charge, const_field, layer_field=True, shell_curvature=True, unroll=False):
     """The kernels of build() over the numbers g of geometry_params: device constants and Python scalars (build),
     or traced arrays of the same values, so one compiled navigator serves every geometry of the same array sizes.
-    n_foil_types: layer types below it are foils."""
+    n_foil_types: layer types below it are foils. A traced g also carries opa_inv = 1 / opa_dz in dtype (see
+    opa_rin)."""
     dt, q = dtype, charge
     ftype, face_up, face_dn, frin, frout = (g[k] for k in ("ftype", "face_up", "face_dn", "frin", "frout"))
     nf, ax = g["nf"], g["ax"]
@@ -156,7 +157,10 @@ def kernels(g, dtype, n_foil_types, *, charge, const_field, layer_field=True, sh
         return jnp.hypot(x[:, 0] - ax, x[:, 1])
 
     def opa_rin(z):
-        f = jnp.clip((z - g["opa_z0"]) / g["opa_dz"], 0.0, 1.0)
+        # with constants XLA turns the division into a product with the folded reciprocal; a traced g carries that
+        # reciprocal (opa_inv, in dtype) so both forms give the same bits
+        dz = (z - g["opa_z0"]) / g["opa_dz"] if "opa_inv" not in g else (z - g["opa_z0"]) * g["opa_inv"]
+        f = jnp.clip(dz, 0.0, 1.0)
         return (g["opa_rin0"] + f * g["opa_drin"]).astype(dt)
 
     def bisect(x, u, p, B, s_hi, target):

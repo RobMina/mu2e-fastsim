@@ -91,6 +91,7 @@ def geometry_inputs(geom, dt, msc):
     # arrays) as a float64 one, which promotes float32 operands: each keeps its kind, so the arithmetic is unchanged
     arrays = {k: jnp.asarray(g[k], np.float64 if isinstance(g[k], np.generic) else dt) for k in _SCALARS}
     arrays.update({k: jnp.asarray(g[k]) for k in ("ftype", "face_up", "face_dn", "frin", "frout")})
+    arrays["opa_inv"] = jnp.asarray(np.asarray(1.0, dt) / np.asarray(g["opa_dz"], dt))   # as XLA folds 1 / constant
     arrays["nf"] = jnp.int32(g["nf"])
     arrays["zr"] = jnp.asarray([[float(z), float(z + 2 * geom.ring_hl)] for z in (b.ipa_z0, b.ipa_z1)], dt)
     arrays["counter"] = jnp.asarray(counter)
@@ -151,7 +152,7 @@ def _build(layout, dt, h, s_max, msc, layer_field, shell_curvature, z_record, un
 def _kernels(gp, lt, n_types, t_ipa, t_opa, t_ring, dt, h, s_max, msc, layer_field, shell_curvature, z_record,
              unroll, const_field):
     """(init, step) over the geometry numbers gp (traced) and layer tables lt."""
-    Ltype = lt.length
+    Ltype = jnp.asarray(lt.length, dt)
     counter_d = gp["counter"]
     geometry = TG.kernels(gp, dt, n_types, charge=-1.0, const_field=const_field,
                           layer_field=layer_field, shell_curvature=shell_curvature, unroll=unroll)
