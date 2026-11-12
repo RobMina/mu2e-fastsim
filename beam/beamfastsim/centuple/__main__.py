@@ -71,7 +71,8 @@ def cmd_assemble(a):
 
 def cmd_write(a):
     from . import writer
-    st = writer.write(a.plan, a.donor_files, a.out, n_generated=a.n_generated, check_sha256=not a.no_check)
+    st = writer.write(a.plan, a.donor_files, a.out, n_generated=a.n_generated, check_sha256=not a.no_check,
+                      subruns=a.subrun)
     print(json.dumps(st))
 
 
@@ -139,7 +140,7 @@ def cmd_point(a):
     maps = a.maps or [f"{MAPS}/DSMap.header", f"{MAPS}/TSdMap.header"]
     _, cnt = record.run(births, out, a.seed, batch=a.batch, offline_root=a.offline_root or OFFLINE_ROOT, maps=maps,
                         gdml=d["gdml"], library=d["library"], cal1=d["cal1"], digi_cond=d["digi_cond"], geom=a.geom,
-                        dtype=a.dtype, edge_library=d["edge"])
+                        dtype=a.dtype, edge_library=d["edge"], response="onspill")
     py = [sys.executable, "-m", "beamfastsim.centuple"]
     subprocess.run(py + ["trigger", "--digis", str(out / record.DIGIS), "--out", str(out), "--menu", d["menu"],
                          "--conditions", d["conditions"], "--tc-mva", d["tc_mva"], "--response", d["trig_response"],
@@ -185,7 +186,8 @@ def main(argv=None):
     r.add_argument("--cal1", required=True, help="directory of the calorimeter response inputs (record.CALO_FILES)")
     r.add_argument("--digi-cond", required=True, help="tracker digitiser conditions (.npz), on-spill")
     r.add_argument("--edge-library", help="Geant4 inner-edge calorimeter table (edepana EdgeEnergies); omitted: no edge clusters")
-    r.add_argument("--response", default="default")
+    r.add_argument("--response", default="onspill",
+                   help="reco response table (default 'onspill': the OnSpill production chain, recoresp NAMED)")
     r.add_argument("--geom")
     r.set_defaults(fn=cmd_record)
     t = sp.add_parser("trigger")
@@ -198,9 +200,9 @@ def main(argv=None):
     t.add_argument("--precision", default="float64", choices=("float32", "float64"))
     t.add_argument("--block", type=int, default=1024)
     t.add_argument("--spill", type=int, default=1, help="EventWindowMarker spill type (1 on-spill)")
-    t.add_argument("--pbt", type=float, default=-200.0,
-                   help="proton bunch time subtracted from the hit times [ns] (on-spill device digis: -200, the DR "
-                        "marker offset; off-spill: 0)")
+    t.add_argument("--pbt", type=float, default=None,
+                   help="proton bunch time subtracted from the hit times [ns] for every event (default: the digis' "
+                        "per-event reco estimate pbtime_reco, else 0)")
     t.set_defaults(fn=cmd_trigger)
     d = sp.add_parser("donor")
     d.add_argument("--files", nargs="+", required=True)
@@ -223,6 +225,7 @@ def main(argv=None):
     w.add_argument("--out", required=True)
     w.add_argument("--n-generated", type=int)
     w.add_argument("--no-check", action="store_true", help="skip the donor files' sha256 check")
+    w.add_argument("--subrun", type=int, nargs="+", help="write only these subruns of the plan")
     w.set_defaults(fn=cmd_write)
     q = sp.add_parser("point", help="one design point: beam stops -> CE births -> record, trigger, assemble, write")
     q.add_argument("--g4", required=True, help="beam start table with its generated events (g4table --events)")

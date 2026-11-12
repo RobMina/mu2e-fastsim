@@ -145,11 +145,12 @@ def _sha256(path):
 
 
 def write(plan_path, donor_files, out, *, n_generated=None, extra_provenance=None, check_sha256=True,
-          progress=5000, stream=STREAM_PATTERNS):
+          progress=5000, stream=STREAM_PATTERNS, subruns=None):
     """Write the EventNtuple file `out` from a write plan and the donor files (paths, in the donor library's file
     order). Events are written in plan order; an event is kept when one of the stream paths (`stream`, fnmatch
     patterns of path names; None keeps every event) accepted it, as the stock ntuple of the triggered stream holds
-    only the events its digitization output selected."""
+    only the events its digitization output selected. subruns (opt-in): write only the plan's events of these
+    subruns (one file per input sequencer)."""
     import fnmatch
     ROOT = setup_root()
     plan = dict(np.load(plan_path))
@@ -186,16 +187,19 @@ def write(plan_path, donor_files, out, *, n_generated=None, extra_provenance=Non
                      if stream is None or any(fnmatch.fnmatch(name[5:], pat) for pat in stream)], np.int64)
     n = plan["event"].size
     gentry = np.asarray(offsets)[plan["donor_file"]] + plan["donor_entry"]
-    order = np.arange(n)
+    order = np.arange(n) if subruns is None else np.flatnonzero(np.isin(plan["subrun"], list(subruns)))
     nwritten = 0
     tic = time.perf_counter()
     cl_n = plan["cl_valid"].sum(axis=1)
-    stats = dict(events=int(n), written=0, untriggered=0, q=0, f=0, nclass=0)
+    stats = dict(events=int(len(order)), written=0, untriggered=0, q=0, f=0, nclass=0)
     kept = []
     for k in order:
         chain.GetEntry(int(gentry[k]))
         ev = chain.evtinfo
         ev.run, ev.subrun, ev.event = int(plan["run"][k]), int(plan["subrun"][k]), int(plan["event"][k])
+        if "pbtime_mc" in plan and np.isfinite(plan["pbtime_mc"][k]):
+            ev.pbtime = float(plan["pbtime_reco"][k])
+            chain.evtinfomc.pbtime = float(plan["pbtime_mc"][k])
         for i, j in tidx:
             tbuf[i] = bool(plan["trig"][k, j])
         if stream is not None and not tbuf[sidx].any():     # not in the stored stream

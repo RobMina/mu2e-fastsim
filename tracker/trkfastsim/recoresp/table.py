@@ -306,7 +306,10 @@ DEFAULT = FULLDTS
 # the conversion electron's own Geant4 steps only (the earlier default), on the same events and bins; and with pools
 CEONLY = Path(__file__).with_name("data") / "ce_loophelix_run1a.npz"
 POOLS = Path(__file__).with_name("data") / "ce_loophelix_run1a_pools.npz"
-NAMED = {"default": DEFAULT, "fulldts": FULLDTS, "ceonly": CEONLY, "pools": POOLS, "ceonly_pools": POOLS}
+# OnSpill digitization and reco (the production CE chain, e.g. Mu2eBO ce_chain), e- fits, with pools (opt-in)
+ONSPILL = Path(__file__).with_name("data") / "ce_loophelix_run1a_onspill_pools.npz"
+NAMED = {"default": DEFAULT, "fulldts": FULLDTS, "ceonly": CEONLY, "pools": POOLS, "ceonly_pools": POOLS,
+         "onspill": ONSPILL}
 
 
 # Tables of other stock configurations are not in git: a registry (data/registry.json) maps a stock-input hash

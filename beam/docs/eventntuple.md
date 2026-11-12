@@ -60,7 +60,7 @@ simulates. Everything else is the donor's.
 | `trig_<path>` of the 20 device paths (tpr, apr incl. `apr_TrkDe_80m70p`) | fast | `trigger.device` on the device digis (ports and the KalSeedFilter / AgnosticHelix response layer) |
 | `trig_cpr_*`, `calo_*`, `Triggerable*`, `mpr_*`, `cst_*`, `minBias_*`, two-track, proton | donor | not on the device (calorimeter-seeded, MC-truth and multi-helix paths) |
 | stored events | fast + donor | the stock stream rule on the combined decisions: `cpr_Trk*_80*`, `apr_Trk*_80*`, `Triggerable{LH,TwoTrack,Calo}Path` |
-| `trk.nactive`, `trk.fitcon`, `trk.chisq` (e- fit) | fast | response-layer draws; chisq = chi2/ndf x ndof |
+| `trk.nactive`, `trk.fitcon`, `trk.chisq` (e- fit) | fast | response-layer draws (table `onspill`: the OnSpill production chain, including its digitization-window turn-on in entry time); chisq = chi2/ndf x ndof |
 | other `trk` leaves of the e- fit | donor | nhits, ndof and the selection counts shifted by the active-hit difference |
 | `trk` e+, mu-, mu+ hypotheses | donor | rotated and shifted |
 | `trksegs` TT_Front / TT_Mid / TT_Back (e- fit) | fast | TT_Front: true entry position, response \|p\| and tan(dip), true azimuth, response t0; TT_Mid / TT_Back: the fast truth there with the front residuals |
@@ -89,7 +89,12 @@ positions, times from the MC proton time.
 * Tracker: no delta rays or conversions in the fast transport; active hits drawn from the response tables.
 * Calorimeter: the inner edge from a Geant4 table; a known radius disagreement near the inner edge.
 * Trigger: the device response layer is calibrated on off-spill CE replays; calorimeter and MC paths are the
-  donor's.
+  donor's. On-spill device digis count TDC from the DR marker, so the trigger stage subtracts pbt = -200 ns
+  (`--pbt`; 0 for off-spill digis).
+* Response: the tables count the electron's own Geant4 rows and draw the fit from stock reco of the same digitization
+  mode; `record` uses `onspill` (ce_chain's OnSpill chain), built from 19,630 development events.
+* Calorimeter cluster truth (`caloclustersmc.etot`) is the whole drawn shower's visible energy shared among the
+  clusters, so it includes energy outside the clusters (a few MeV high against stock).
 * Donor quantities follow the fast event only through the matching keys: a quantity that depends on something the
   keys do not carry (e.g. the hit lists) is the donor's.
 * No pileup: `fullsim_sensitivity` runs on unmixed CE only (its inputs are mixed in production).

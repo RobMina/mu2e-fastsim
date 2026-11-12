@@ -19,13 +19,13 @@ import numpy as np
 TRIGGER = "centuple_trigger.npz"
 
 
-PBT_ONSPILL = -200.0   # [ns] on-spill device digis count TDC from the DR marker, 200 ns after the protons
-                       # (timeFromProtonsToDRMarker): the hit times subtract this proton bunch time, as stock subtracts
-                       # its estimate (evtinfo.pbtime ~ -200 to -220 ns)
+# The hit times subtract the proton bunch time, as stock subtracts its reco estimate (evtinfo.pbtime). Digis from the
+# record stage carry the per-event estimate (pbtime_reco, the stock MC proton bunch time plus its reco spread); pbt
+# overrides it with one value for every event.
 
 
 def decide(digis_path, menu, conditions, tc_mva, response, precision="float64", block=1024, spill=1,
-           conditions_tree="w8ph", pbt=PBT_ONSPILL):
+           conditions_tree="w8ph", pbt=None):
     """Decisions {path: bool[n]} for every event of a record's digis file, and the meta record."""
     from trigger.device import chain as C, digis as D, menu as M, run as R
     f = np.load(digis_path)
@@ -37,7 +37,13 @@ def decide(digis_path, menu, conditions, tc_mva, response, precision="float64", 
     tc = C.Chain(cfg, R.conditions(conditions, conditions_tree), tc_mva, response=resp, precision=precision)
     tic = time.perf_counter()
     decs, auxs = [], []
-    for lo, m, b in D.blocks(dg, n, block, events=evn, spill=spill, pbt=np.full(n, float(pbt))):
+    if pbt is not None:
+        pbts = np.full(n, float(pbt))
+    elif "pbtime_reco" in f.files:
+        pbts = np.asarray(f["pbtime_reco"], float)
+    else:
+        pbts = np.zeros(n)
+    for lo, m, b in D.blocks(dg, n, block, events=evn, spill=spill, pbt=pbts):
         d, a, _ = tc.decide(b)
         decs.append((m, d))
         auxs.append((m, a))
@@ -49,7 +55,7 @@ def decide(digis_path, menu, conditions, tc_mva, response, precision="float64", 
         fin = tc.finish({k: v[msk] for k, v in dec.items()}, {k: v[msk] for k, v in aux.items()}, int(msk.sum()))
         for k in out:
             out[k][msk] = fin[k]
-    meta = dict(stage="trigger", precision=precision, menu=str(menu), response=str(response), spill=int(spill), pbt=float(pbt),
+    meta = dict(stage="trigger", precision=precision, menu=str(menu), response=str(response), spill=int(spill), pbt=("per event" if pbt is None else float(pbt)),
                 paths=sorted(out), skipped=sorted(tc.skipped), wall_s=round(time.perf_counter() - tic, 2),
                 events=int(n))
     return dict(run=run, subrun=sub, event=evn), out, meta

@@ -49,3 +49,12 @@ draws from its (|p|, tan dip) cell, else from every track.
 Its manifest (`mu2efastsim.library`, `core/docs/libraries.md`) is the sidecar `nrow_run1a.manifest.json`: the
 provenance above, the cell axes, the content hash of the arrays (checked on every load) and the gaps it does not
 record. The `.npz` itself is unchanged.
+
+`ce_loophelix_run1a_onspill_pools.npz` (`"onspill"`, opt-in): the response of the production OnSpill chain (OnSpill
+digitization with the trigger, recoMC OnSpill, EventNtuple `from_mcs-mockdata`; AnalysisMDC2025 v02_02_02 on SimJob
+MDC2025ax, DbService Sim_best v1_5), built with `table --pools --fit-pdg 11 --time-edges ... --plateau 500 1400` from
+the development events (sequencers 001430_00000000..00000600, 19,630 events, every digitized event kept). The fit
+counts e- fits only (the ntuple merges the e+-, mu+- hypotheses). The entry-time turn-on spans the on-spill
+digitization window: no tracks below about 406 ns, the loss of the late electrons (1500-2000 ns) and the partial
+recovery after the microbunch, relative to the 500-1400 ns plateau that feeds the bin tables. With 19,630 events
+(about half on the plateau) 135 of the 198 bins borrow from neighbours. The manifest is embedded (`table.save`).

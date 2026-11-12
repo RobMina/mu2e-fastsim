@@ -157,6 +157,8 @@ def build(record, donor_lib, out, *, trigger=None, seed=20261111):
     plan["trig_names"] = np.array(cov_paths)
     plan["trig"] = np.stack([trig[p] for p in cov_paths], axis=1) if cov_paths else np.zeros((n, 0), bool)
     plan["nsd"] = rec.get("nsd", np.full(n, -1, np.int64))
+    plan["pbtime_mc"] = rec.get("pbtime_mc", np.full(n, np.nan))
+    plan["pbtime_reco"] = rec.get("pbtime_reco", np.full(n, np.nan))
     pmeta = dict(stage="assemble", seed=int(seed), record=meta, trigger=trig_meta, donor=str(donor_lib),
                  donor_name=str(lib.get("__name__", D.NAME)), covered_paths=cov_paths, covered_missing=missing,
                  e_match_mev=E_MATCH, donor_files=[str(f) for f in lib["file_names"]],

@@ -36,6 +36,9 @@ RECORD = "centuple_record.npz"
 DIGIS = "centuple_digis.npz"
 CALO_FILES = ("Sim_crystal.txt", "CsI-waveform-2020-02-12.root", "ReadoutNoise.root", "CsI-propag-2020-07-29.root",
               "calo_geometry_run1430.npz")
+# stock OnSpill MC proton bunch time (ProtonBunchTimeMC, MDC2025ax digitization): -212.296 ns + 5 ns x {-2..2}, and
+# the reco estimate of it (evtinfo.pbtime) within ~0.5 ns; the digitization window and the TDC zero follow it
+PBTIME_BASE, PBTIME_STEP, PBTIME_K, PBT_RECO_SIGMA = -212.296, 5.0, (-2, 2), 0.5
 CALO_CAPS = "steps=56,photoelectrons=5000,rows=26,digis=16,digi_length=96,hits=8,event_hits=32,rounds=8"
 
 
@@ -95,8 +98,8 @@ class FastRecord:
     """The record stage, built once (DeviceChain, shower library, calorimeter response, inner-edge table)."""
 
     def __init__(self, offline_root, maps, gdml, *, library, cal1, digi_cond, geom=None, dtype="float64",
-                 response="default", edge_library=None, albedo="default", deltas=None, calo_batch=4096,
-                 calo_caps=CALO_CAPS, pbtime_seed=20261107):
+                 response="onspill", edge_library=None, albedo="default", deltas=None, calo_batch=4096,
+                 calo_caps=CALO_CAPS, pbtime_seed=20261107, pbtime="stock"):
         import jax
         jax.config.update("jax_enable_x64", True)
         from calofastsim import device_chain as dc
@@ -134,9 +137,12 @@ class FastRecord:
         self.field = cechain.field_maps(maps)
         self.edge = EdgeEnergies(edge_library) if edge_library is not None else None
         self.pbtime_seed = pbtime_seed
+        if pbtime not in ("stock", "zero"):
+            raise ValueError("pbtime must be 'stock' (the stock MC proton bunch time per event) or 'zero'")
+        self.pbtime = pbtime
         self.config = dict(dtype=str(self.dtype), response=str(response), digi_cond=str(digi_cond), albedo=str(albedo),
                            deltas=str(deltas), library=str(library), edge_library=str(edge_library),
-                           calo_caps=calo_caps, calo_batch=calo_batch, geom=geom, bz_tracker=BZ_TRACKER,
+                           calo_caps=calo_caps, calo_batch=calo_batch, geom=geom, bz_tracker=BZ_TRACKER, pbtime=pbtime,
                            z_planes=[Z_FRONT, Z_MID, Z_BACK])
 
     # -- device part -------------------------------------------------------------------------------------------------
@@ -145,7 +151,17 @@ class FastRecord:
         import jax
         from trkfastsim.sim import fieldsteps_jax as FJ
         tic = time.perf_counter()
-        res = self.chain(births, seed, digis=self.chain.cond is not None)
+        n = len(births)
+        rng = np.random.default_rng(np.random.SeedSequence([seed, self.pbtime_seed, 1]))
+        if self.pbtime == "stock":
+            pb_mc = PBTIME_BASE + PBTIME_STEP * rng.integers(PBTIME_K[0], PBTIME_K[1] + 1, n)
+        else:
+            pb_mc = np.zeros(n)
+        pb_reco = pb_mc + PBT_RECO_SIGMA * rng.standard_normal(n) if self.pbtime == "stock" else pb_mc.copy()
+        timing = None
+        if self.chain.cond is not None and self.chain.cond.onspill:
+            timing = dict(pbtime=pb_mc, event_length=np.full(n, float(self.chain.cond.eventWindowLength)))
+        res = self.chain(births, seed, digis=self.chain.cond is not None, event_timing=timing)
         trk = res["track"]
         fin = res["tracker"].final
         steps = res["tracker"].steps
@@ -154,8 +170,8 @@ class FastRecord:
                                 steps={k: steps[k] for k in ("valid", "x1", "y1", "z1", "px", "py", "pz", "t")},
                                 trk=trk))
         t_dev = time.perf_counter() - tic
-        n = len(births)
         cols = {k: births[k].to_numpy() for k in ("run", "subrun", "event")}
+        cols["pbtime_mc"], cols["pbtime_reco"] = pb_mc, pb_reco
         b = births
         cols["birth_x"] = np.stack([b.x, b.y, b.z], 1) - ORIGIN
         cols["birth_p"] = np.stack([b.px, b.py, b.pz], 1).astype(float)
@@ -186,7 +202,7 @@ class FastRecord:
                 from mu2efastsim import ehelix
                 bz[ok_] = ehelix.field_at(self.field, xm[ok_])[:, 2]
             cols[name + "_bz"] = bz
-        cols.update(self._calo(left, xe + ORIGIN, pe, np.asarray(f["t"], float), seed, n))
+        cols.update(self._calo(left, xe + ORIGIN, pe, np.asarray(f["t"], float), seed, n, pb_mc))
         digis = res.get("digis")
         cols["nsd"] = (np.bincount(np.asarray(digis["ev"]), minlength=n)[:n].astype(np.int64) if digis is not None
                        else np.full(n, -1, np.int64))
@@ -197,7 +213,7 @@ class FastRecord:
         return cols, digis, cnt
 
     # -- calorimeter -------------------------------------------------------------------------------------------------
-    def _calo(self, left, xe, pe, te, seed, n):
+    def _calo(self, left, xe, pe, te, seed, n, pb_mc):
         """First calorimeter contact after the tracker exit, clusters per event (sorted by energy)."""
         import jax
         from calofastsim import device_chain as dc
@@ -234,7 +250,7 @@ class FastRecord:
             rad = np.hypot(pos[:, 0] - self.calo_origin[disk, 0], pos[:, 1] - self.calo_origin[disk, 1])
             ent = dict(energy=T[sel] + ME, cosine=u[:, 2], radius=rad, disk=disk, position=pos, direction=u,
                        time=tcon[sel])
-            timing = {"pbtime": (-200.0 - 5.0 * rng.integers(0, 5, m)).astype(np.float32),
+            timing = {"pbtime": pb_mc[rows[b0:b0 + B]].astype(np.float32),
                       "mbtime": np.full(m, 1695.0, np.float32), "event_length": np.full(m, 1700.0),
                       "onspill": np.ones(m, bool), "marker": np.full(m, 200.0, np.float32),
                       "crystal_length": np.full(m, 200.0, np.float32)}
@@ -303,6 +319,7 @@ def run(births, out, seed, *, batch=20000, **kw):
     paths = dict(record=out / RECORD)
     if digis:
         d = {k: np.concatenate([x[k] for x in digis]) for k in digis[0] if np.ndim(digis[0][k]) > 0}
-        np.savez_compressed(out / DIGIS, run=cols["run"], subrun=cols["subrun"], event=cols["event"], **d)
+        np.savez_compressed(out / DIGIS, run=cols["run"], subrun=cols["subrun"], event=cols["event"],
+                            pbtime_mc=cols["pbtime_mc"], pbtime_reco=cols["pbtime_reco"], **d)
         paths["digis"] = out / DIGIS
     return paths, dict(events=int(n0), wall_s=round(wall, 2), events_per_s=round(n0 / wall, 2) if wall else 0.0)
