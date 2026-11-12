@@ -14,13 +14,21 @@ the top edge refused; start positions outside the volume refused; direction cosi
 Contract: ``load``, ``lookup_numpy`` (host, float64), ``to_device`` / ``lookup`` (device, float32 or float64,
 jit-able: refused rows answer NaN, the below-energy fallback 0), ``domain_counts``. ``build`` and the CLI make a
 library from a campaign configuration (JSON) with ``mu2efastsim.library.store.save``.
+
+Pinning: ``load(path, expect={"content_hash": ...})`` is a pinned load; ``load_registered(ident)`` resolves a
+registry entry (``data/flash_response_registry.json``) and pins its content hash. Every load is entered in
+``mu2efastsim.library.provenance`` as "pinned" or "unpinned".
 """
 import argparse
 import json
+import os
+from pathlib import Path
 
 import numpy as np
 
 from mu2efastsim.library import Axis, DomainCounter, Grid, OutOfDomain, hashing, manifest, store
+from mu2efastsim.library import provenance as LP
+from mu2efastsim.library.registry import Registry, default_cache
 from mu2efastsim.library.axes import BELOW, IN, domain_codes, domain_codes_jax, locate_jax
 
 DS_X = -3904.0
@@ -30,6 +38,14 @@ OUTPUTS = ("mean", "variance", "n", "n_nonzero")
 FALLBACK = "energy_below_lowest_edge"
 _EPS = 1e-12
 _COS_TOL = 1e-6   # float32 momentum rounding in the EdepAna tree
+REGISTRY = Path(__file__).resolve().parent / "data" / "flash_response_registry.json"
+CACHE_ENV = "MU2EFS_FLASH_CACHE"
+DEFAULT_SPLIT = dict(
+    training="this file: every job listed in source.samples",
+    held_out="campaigns disjoint from this one (independent photon sources and stock design points); none of "
+             "their events is in this file",
+    rule="separate Geant4 campaigns with their own seeds; the even and odd job halves of this campaign, built as "
+         "separate files, give the realization spread")
 
 
 def make_axes(edges):
@@ -165,13 +181,13 @@ def manifest_fields(cfg, arrays, axes):
                  dict(name="n", unit="1", dtype="int64", description="photons in the cell"),
                  dict(name="n_nonzero", unit="1", dtype="int64", description="photons with a nonzero deposit")],
         source=dict(description=cfg["source_description"], classes=cfg["classes"],
-                    samples=[dict(dataset=f["path"], selection=f"direction class {f['class']}", events=int(f["events"]))
-                             for f in files]),
+                    samples=[dict(dataset=f.get("dataset", f["path"]), selection=_selection(cfg, f),
+                                  events=int(f["events"])) for f in files],
+                    **({"realization_files": cfg["realization_files"]} if cfg.get("realization_files") else {})),
         generator=cfg["generator"], release=cfg["release"],
         seeds={f"{f['class']}_{int(f['job']):04d}": int(f["seed"]) for f in files},
         geometry=cfg["geometry"], config_hash=hashing.digest(cfg["config_hashes"]),
-        split=dict(training="even job indices", held_out="odd job indices",
-                   rule="job index parity within each direction class (realization spread)"),
+        split=dict(cfg.get("split") or DEFAULT_SPLIT),
         dtype=dict(storage={k: str(v.dtype) for k, v in arrays.items()}, compute=["float32", "float64"],
                    notes="host lookup float64; device lookup in the caller's dtype"),
         rng=dict(host="none", device="none", streams={}, draws_per_row=0),
@@ -186,11 +202,19 @@ def manifest_fields(cfg, arrays, axes):
         unrecorded={})
 
 
+def _selection(cfg, f):
+    sha = cfg["classes"][f["class"]].get("gun_config_sha256")
+    return f"direction class {f['class']}" + (f", gun configuration sha256 {sha}" if sha else "")
+
+
 def build(cfg, out, reader=None):
     """Tabulate the campaign ``cfg`` and save it to ``out``; returns the manifest.
 
-    ``cfg``: name, version, edges, classes {class: {cos_theta: [lo, hi], ...}}, files [{path, class, job, seed,
-    events}], source_description, generator, release, geometry {tag, hash}, config_hashes, coverage.
+    ``cfg``: name, version, edges, classes {class: {cos_theta: [lo, hi], gun_config_sha256, ...}}, files [{path,
+    dataset, class, job, seed, events}], source_description, generator, release, geometry {tag, hash},
+    config_hashes, coverage; optional split {training, held_out, rule} (default DEFAULT_SPLIT) and
+    realization_files. ``dataset`` (default: the path) is the name written in the manifest: give a name with no
+    user or site path for a file that is published.
     Each file must hold exactly its declared number of events. ``reader`` (path -> rows) replaces the default
     chunked EdepAna reader (iter_edepana), e.g. for tests.
     """
@@ -208,11 +232,29 @@ def build(cfg, out, reader=None):
     return store.save(out, arrays, manifest_fields(cfg, arrays, axes))
 
 
-def load(path, expect=None):
+def load(path, expect=None, pin_set=None):
+    """Load and check a flash response library. A load whose ``expect`` holds a ``content_hash`` is recorded as
+    pinned (``pin_set``: what the pin came from), any other load as unpinned (mu2efastsim.library.provenance)."""
     lib = store.load(path, expect=dict({"subsystem": "flash", "kind": "binned"}, **(expect or {})))
     if [a["name"] for a in lib.manifest["axes"]] != list(AXES):
         raise store.LibraryError(path, [f"axes must be {AXES}"])
+    pinned = bool(expect and expect.get("content_hash"))
+    LP.record(dict(lib.provenance(), file=os.path.basename(str(path)), status="pinned" if pinned else "unpinned",
+                   pin_set=(pin_set or "expect") if pinned else None))
     return lib
+
+
+def registry(path=REGISTRY, cache=None):
+    """The flash response registry (file, sha256, content hash and release asset URL per library)."""
+    return Registry.read(path, cache=cache or default_cache(CACHE_ENV, "flash"))
+
+
+def load_registered(ident, reg=None, download=True):
+    """Load a registered library by id, ``name@version``, name or hash prefix; sha256 and content hash pinned."""
+    reg = reg or registry()
+    key = reg.find(ident)
+    path = reg.fetch(key, download=download)
+    return load(path, expect={"content_hash": reg.entries[key]["content_hash"]}, pin_set=f"registry:{key}")
 
 
 def _axes_of(lib):

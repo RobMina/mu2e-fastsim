@@ -215,3 +215,73 @@ def test_build_streams_real_files(tmp_path):
     m = F.build(cfg, tmp_path / "s.npz")
     lib = F.load(tmp_path / "s.npz")
     assert manifest.complete(m) and int(np.asarray(lib.arrays["n"]).sum()) == 35000
+
+
+def test_manifest_dataset_names_and_split(tmp_path):
+    rng = np.random.default_rng(11)
+    cfg, data = _cfg(tmp_path, rng)
+    cfg["classes"] = {k: dict(v, gun_config_sha256="ab" * 32) for k, v in cfg["classes"].items()}
+    for f in cfg["files"]:
+        f["dataset"] = f"flashresp.{f['class']}.{f['job']:04d}"
+    m = F.build(cfg, tmp_path / "named.npz", reader=lambda p: data[p])
+    samples = m["source"]["samples"]
+    assert [s["dataset"] for s in samples] == [f["dataset"] for f in cfg["files"]]
+    assert not any(str(tmp_path) in s["dataset"] for s in samples)
+    assert all(s["selection"].endswith("gun configuration sha256 " + "ab" * 32) for s in samples)
+    assert m["split"] == F.DEFAULT_SPLIT and "every job" in m["split"]["training"]
+    cfg2 = dict(cfg, split=dict(training="t", held_out="h", rule="r"),
+                realization_files=[dict(name="even.npz", content_hash="0" * 64)])
+    m2 = F.build(cfg2, tmp_path / "split.npz", reader=lambda p: data[p])
+    assert m2["split"] == dict(training="t", held_out="h", rule="r")
+    assert m2["source"]["realization_files"] == cfg2["realization_files"]
+    assert m2["content_hash"] == m["content_hash"]        # manifest wording does not change the tables
+
+
+def test_loads_are_recorded_pinned_or_unpinned(built):
+    from mu2efastsim.library import provenance as LP
+    lib, _, _, _ = built
+    LP.clear()
+    F.load(lib.path)
+    F.load(lib.path, expect={"content_hash": lib.content_hash})
+    rec = LP.loaded()
+    assert [r["status"] for r in rec] == ["unpinned", "pinned"]
+    assert rec[1]["pin_set"] == "expect" and rec[0]["pin_set"] is None
+    assert all(r["content_hash"] == lib.content_hash for r in rec)
+    assert not LP.all_pinned()
+    with pytest.raises(Exception):
+        F.load(lib.path, expect={"content_hash": "f" * 64})
+    LP.clear()
+
+
+def test_load_registered_pins_sha_and_content_hash(built, tmp_path):
+    import shutil
+    from mu2efastsim.library import provenance as LP
+    from mu2efastsim.library.registry import Registry, RegistryError
+    lib, _, _, _ = built
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    shutil.copy(lib.path, cache / "lib.npz")
+    reg = Registry(cache=cache, path=tmp_path / "reg.json")
+    e = reg.entry(cache / "lib.npz")
+    assert e["url"].endswith("/lib-flash.response.synthetic-v1/lib.npz")
+    reg.add("flash.response.synthetic-v1", e)
+    reg.write()
+    LP.clear()
+    got = F.load_registered("flash.response.synthetic@1", reg=F.registry(tmp_path / "reg.json", cache=cache),
+                            download=False)
+    assert got.content_hash == lib.content_hash
+    assert LP.loaded()[-1]["status"] == "pinned"
+    assert LP.loaded()[-1]["pin_set"] == "registry:flash.response.synthetic-v1"
+    (cache / "lib.npz").write_bytes(b"not the registered file")
+    with pytest.raises(RegistryError):
+        F.load_registered(lib.content_hash[:12], reg=F.registry(tmp_path / "reg.json", cache=cache), download=False)
+    LP.clear()
+
+
+def test_shipped_registry_entries_are_well_formed():
+    reg = F.registry()
+    for key, e in reg.entries.items():
+        assert e["name"].startswith("flash.response.") and len(e["sha256"]) == 64 and len(e["content_hash"]) == 64
+        assert key == f"{e['name']}-v{e['version']}"
+        assert e["url"].endswith(f"/lib-{e['name']}-v{e['version']}/{e['file']}")
+        assert "/" not in e["file"]
