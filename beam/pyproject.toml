@@ -16,6 +16,9 @@ test = ["pytest"]
 tracker = ["trkfastsim", "pandas"]   # cetracker: hand-off to the field-on tracker
 reco = ["pandas", "awkward"]   # dioreco: EventNtuple readers
 edepana = ["calofastsim", "trkfastsim", "pandas"]   # edepana: calorimeter showers and the tracker device chain
+# centuple: the calorimeter and tracker device chains, the umbrella's trigger package, and ROOT (PyROOT with the
+# EventNtuple dictionaries of the stock Mu2e release, for the writer; not installable from PyPI)
+centuple = ["calofastsim", "trkfastsim", "trigger", "ROOT", "pandas"]
 
 [project.scripts]
 beamfastsim = "beamfastsim.__main__:main"
