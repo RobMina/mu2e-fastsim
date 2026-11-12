@@ -70,8 +70,10 @@ class Backend:
         self.cond = crv_inputs.load_conditions(args.truth, args.photon_csv, self.geom, self.counters)
         expanded = digicond.parse_fhicl_dump(Path(args.expanded).read_text())
         self.cfg = crv_inputs.build_config(expanded, jax=True)
-        self.tabs = photons_jax.load_device_tables(self.cfg.response)
-        self.pmap = sipm.photon_map()
+        from crvfastsim.response import lookup   # the optical assets pinned by the run configuration
+        with lookup.pinned(rc.asset_pin_map() if hasattr(rc, "asset_pin_map") else None):
+            self.tabs = photons_jax.load_device_tables(self.cfg.response)
+            self.pmap = sipm.photon_map()
         self.tracker_cond = digicond.Conditions.load(args.tracker_conditions)
         self.metadata = {
             "name": "mixing.stream_backend:Backend",

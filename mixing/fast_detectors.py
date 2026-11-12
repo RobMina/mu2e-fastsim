@@ -203,7 +203,9 @@ def main(argv=None):
     expanded_path = args.expanded or args.input.parent / "expanded.fcl"
     expanded = digicond.parse_fhicl_dump(expanded_path.read_text())
     cfg = crv_inputs.build_config(expanded, jax=True)
-    tabs, pmap = photons_jax.load_device_tables(cfg.response), sipm.photon_map()
+    from crvfastsim.response import lookup     # the optical assets pinned by the run configuration
+    with lookup.pinned(rc.asset_pin_map() if hasattr(rc, "asset_pin_map") else None):
+        tabs, pmap = photons_jax.load_device_tables(cfg.response), sipm.photon_map()
     tracker_cond = None
     if args.tracker_conditions:
         if tracker_steps is None:
