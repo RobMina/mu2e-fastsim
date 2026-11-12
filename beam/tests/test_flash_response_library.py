@@ -73,7 +73,7 @@ def test_manifest_is_complete_and_round_trips(built, tmp_path):
     assert lib.manifest["kind"] == "binned" and lib.manifest["subsystem"] == "flash"
     assert [a["name"] for a in m["axes"]] == list(F.AXES)
     assert m["seeds"]["rest_0003"] == 1003 and len(m["source"]["samples"]) == 7
-    assert m["split"]["held_out"] == "odd job indices" and m["interpolation"]["method"] == "nearest"
+    assert m["split"] == F.DEFAULT_SPLIT and m["interpolation"]["method"] == "nearest"
     with pytest.raises(Exception):
         F.load(tmp_path / "lib.npz", expect={"name": "flash.response.other"})
 
