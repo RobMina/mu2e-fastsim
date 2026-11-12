@@ -5,9 +5,10 @@ import numpy as np
 import pytest
 
 from mu2efastsim import component_response as CR
-from test_component_response import bank, component, incoming
+from test_component_response import FixedRandom, bank, component, data, incoming
 
 EPS32 = float(np.finfo(np.float32).eps)
+TINY32 = float(np.finfo(np.float32).tiny)     # underflow: a float64 value below it may become 0 in float32
 POINTS, VECTORS, TIMES, VALUES = ("x0", "x1", "position"), ("p0", "p1", "momentum"), ("t0", "t1", "time"), \
     ("length", "edep", "energy")
 
@@ -116,7 +117,8 @@ def test_float64_default_is_bit_identical_to_the_previous_replay(angles, transla
 def agreement(r64, r32, placement, incoming_time, library):
     """float32 against float64 per real column: the largest |f32 - f64| over its float32 rounding bound, and the
     number of elements over the bound. Bounds: transform 8 eps32 (|R| |x_local| + |t|); time shift 2 eps32 (|t_local|
-    + |t_in|); recorded values: the float32 cast of the float64 value, exactly."""
+    + |t_in|); each plus 4 tiny32 for underflow (a coordinate of 1e-40 mm becomes 0); recorded values: the float32
+    cast of the float64 value, exactly."""
     out = {}
     absr, t = np.abs(placement.rotation), np.abs(placement.translation)
     for tname, table, offsets in (("steps", library.steps, library.step_offsets),
@@ -130,13 +132,14 @@ def agreement(r64, r32, placement, incoming_time, library):
             assert x32.dtype == np.float32, (tname, k)
             d = np.abs(x32.astype(np.float64) - x64)
             if k in POINTS:
-                bound = 8 * EPS32 * (np.abs(table[k][idx]) @ absr.T + t)
+                bound = 8 * EPS32 * (np.abs(table[k][idx]) @ absr.T + t) + 4 * TINY32
             elif k in VECTORS:
-                bound = 8 * EPS32 * (np.abs(table[k][idx]) @ absr.T)
+                bound = 8 * EPS32 * (np.abs(table[k][idx]) @ absr.T) + 4 * TINY32
             elif k in TIMES:
-                bound = 2 * EPS32 * (np.abs(table[k][idx]) + np.abs(incoming_time[ii]))
+                bound = 2 * EPS32 * (np.abs(table[k][idx]) + np.abs(incoming_time[ii])) + 4 * TINY32
             else:
                 bound = None
+            under = int(np.count_nonzero((x32 == 0) & (x64 != 0)))
             if bound is None:
                 over = int(np.count_nonzero(x32 != x64.astype(np.float32)))
                 ratio = 0.0 if over == 0 else float("inf")
@@ -146,7 +149,7 @@ def agreement(r64, r32, placement, incoming_time, library):
                 ratio = float((d / safe).max()) if d.size else 0.0
             rel = float((d / np.maximum(np.abs(x64), 1e-300)).max()) if d.size else 0.0
             out[f"{tname}.{k}"] = dict(n=int(d.size), max_abs=float(d.max()) if d.size else 0.0, max_rel=rel,
-                                       max_over_bound=ratio, over_bound=over)
+                                       max_over_bound=ratio, over_bound=over, underflow_to_zero=under)
     return out
 
 
@@ -197,3 +200,18 @@ def test_empty_batch_and_bad_dtype():
 def test_bank_manifest_declares_both_dtypes():
     m = CR.bank_manifest_fields(bank())
     assert m["dtype"]["compute"] == ["float32", "float64"]
+
+
+def test_float32_underflow_of_a_tiny_coordinate_is_within_the_bound():
+    """A recorded coordinate below the float32 range (here 1e-50 mm) becomes 0 in float32 (identity placement):
+    within the bound's underflow term, and counted."""
+    args = data()
+    args["steps"]["x1"][0, 0] = 1e-50                  # below the float32 subnormals
+    lib = CR.Library(**args)
+    p = CR.Placement(component(), 7, np.eye(3), np.zeros(3), np.asarray((100, 101)))
+    inc = incoming(p)
+    r64 = CR.replay(lib, p, inc, [0], FixedRandom(.1), next_track=10)
+    r32 = CR.replay(lib, p, inc, [0], FixedRandom(.1), next_track=10, dtype=np.float32)
+    rep = agreement(r64, r32, p, inc["time"], lib)
+    assert rep["steps.x1"]["underflow_to_zero"] >= 1
+    assert all(r["over_bound"] == 0 for r in rep.values()), rep
