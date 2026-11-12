@@ -110,7 +110,7 @@ product's dynamic mass is rebuilt from `E` and `p`, so its rounding grows as `ep
 `save_library` (kind `replay`, [libraries](libraries.md) section 8):
 
     python -m mu2efastsim.capture_library <capture.root>... --expected-events 100 --output bank.npz \
-        [--relative-to <tree>] [--provenance fields.json] [--sample-info samples.json]
+        [--relative-to <tree>] [--provenance fields.json] [--sample-info samples.json] [--configuration <name>]
 
 - Every file must pass the strict linked audit first; nothing is repaired, clamped or dropped, and the `Library`
   constructor re-runs its own structural checks.
@@ -120,14 +120,19 @@ product's dynamic mass is rebuilt from `E` and `p`, so its rounding grows as `ep
   state) and the exits at birth (their birth state).
 - The component is the envelope and its descendants, with local volume indices in the capture's volume order. All
   files must agree on the geometry and physics labels, half sizes, the volume inventory below the envelope
-  (placements to 1e-7 mm) and the Geant4 process manifest.
+  (placements to 1e-7 mm and the same inventory hash, so the hash does not depend on file order) and the Geant4
+  process manifest.
 - The manifest records each file's sha256, event identities, process-manifest hash and Geant4 version. Datasets are
   named by their path below `--relative-to` (default: the working directory); a file outside it is refused. The
   geometry hash is a digest of the volume inventory below the envelope.
-- `--provenance` gives further manifest fields (seeds, release, split, config hash, notes), and `--sample-info` one
-  object per capture (e.g. its campaign state). Both add to what the captures record and cannot replace it; `source`
-  and `geometry` list which keys were read from the captures (`recorded`) and which the caller supplied (`supplied`),
-  and each sample lists its supplied keys. A construction-file hash, for example, can only be supplied.
+- `--provenance` gives only seeds, release, split, config hash, notes, version, name and unrecorded reasons, plus
+  extra source and geometry keys; a supplied generator is refused, and supplied seeds must name every sample's
+  dataset. `--sample-info` gives one object per capture (e.g. its campaign state). Both add to what the captures
+  record and cannot replace it: `source` and `geometry` list which keys were read from the captures (`recorded`) and
+  which the caller supplied (`supplied`), and each sample lists its supplied keys. A construction-file hash, for
+  example, can only be supplied.
+- `--configuration` names the bank `secondaries.component.<geometry>.<configuration>`, so banks of one component type
+  get distinct names. One bank can hold every entrance state of a campaign.
 - The generator stays unrecorded until the capture records its physics-list, material and cut hashes. The energy
   accounting stays unrecorded too, and `bank_admissible` is false. Replay is float64 host code; there is no float32
   or device path.

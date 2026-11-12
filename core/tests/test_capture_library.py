@@ -96,15 +96,16 @@ def test_cli_records_given_provenance(tmp_path, tables, capsys):
     tables, links = bankable(tables)
     path = write(tmp_path / "capture.root", tables, links)
     provenance, info = tmp_path / "provenance.json", tmp_path / "info.json"
-    provenance.write_text(json.dumps({"seeds": {"k001.baseSeed": 401000}, "source": {"campaign": "u6"}}))
+    provenance.write_text(json.dumps({"seeds": {"capture.root": {"baseSeed": 401000}}, "source": {"campaign": "u6"}}))
     info.write_text(json.dumps([{"placement": "nominal"}]))
     capture_library.main([str(path), "--expected-events", "2", "--output", str(tmp_path / "bank.npz"),
                           "--relative-to", str(tmp_path), "--provenance", str(provenance),
-                          "--sample-info", str(info)])
+                          "--sample-info", str(info), "--configuration", "u6.k001"])
     printed = json.loads(capsys.readouterr().out)
     assert "seeds" not in printed["unrecorded"] and "generator" in printed["unrecorded"]
     manifest = store.load(tmp_path / "bank.npz").manifest
-    assert manifest["seeds"] == {"k001.baseSeed": 401000} and manifest["source"]["campaign"] == "u6"
+    assert manifest["seeds"] == {"capture.root": {"baseSeed": 401000}} and manifest["source"]["campaign"] == "u6"
+    assert manifest["name"] == "secondaries.component.synthetic-box.u6.k001"
     assert manifest["source"]["samples"][0]["placement"] == "nominal"
     assert manifest["source"]["supplied"] == ["campaign"] and "samples" in manifest["source"]["recorded"]
     assert manifest["source"]["samples"][0]["supplied"] == ["placement"]
@@ -204,3 +205,47 @@ def test_inventory_hash_ignores_the_envelope_placement(tables):
     tables["volumes"] = moved
     assert capture_library.inventory_hash(capture_library._inventory(tables, rows, envelope)) == \
         capture_library.inventory_hash(inventory)
+
+
+@pytest.mark.parametrize("provenance, message", [
+    (dict(generator={"name": "Mu2eG4"}), "generator stays unrecorded"),
+    (dict(validation={"status": "exact"}), "provenance may give only"),
+    (dict(kind="binned"), "provenance may give only"),
+    (dict(name="secondaries.component.other"), "bank name must be"),
+    (dict(name="secondaries.component.synthetic-box."), "bank name must be"),
+    (dict(seeds={"other.root": 1}), "seeds must name every sample"),
+    (dict(seeds=[1]), "seeds must name every sample"),
+])
+def test_convert_refuses_fields_a_caller_cannot_supply(tmp_path, tables, provenance, message):
+    tables, links = bankable(tables)
+    path = write(tmp_path / "capture.root", tables, links)
+    with pytest.raises(ValueError, match=message):
+        capture_library.convert([path], tmp_path / "bank.npz", 2, relative_to=tmp_path, **provenance)
+    assert not (tmp_path / "bank.npz").exists()
+
+
+def test_configuration_and_name_are_exclusive(tmp_path, tables):
+    tables, links = bankable(tables)
+    path = write(tmp_path / "capture.root", tables, links)
+    with pytest.raises(ValueError, match="not both"):
+        capture_library.convert([path], tmp_path / "bank.npz", 2, relative_to=tmp_path, configuration="a",
+                                name="secondaries.component.synthetic-box.b")
+    manifest = capture_library.convert([path], tmp_path / "bank.npz", 2, relative_to=tmp_path, version=3,
+                                       name="secondaries.component.synthetic-box.b")
+    assert manifest["name"] == "secondaries.component.synthetic-box.b" and manifest["version"] == 3
+
+
+def test_volume_placements_within_tolerance_but_different_hash_are_refused(tmp_path, tables):
+    tables, links = bankable(tables)
+    v = tables["volumes"]
+    # Make the world rows a daughter of the box, so the box has one placed daughter.
+    v["name"][:] = ["box", "inner", "box", "inner"]
+    v["logical"][:] = ["box", "inner", "box", "inner"]
+    v["motherLogical"][:] = ["world", "box", "world", "box"]
+    v["translation"][v["name"] == "inner"] = [0.25, 0., 0.]
+    v["rotation"][v["name"] == "inner"] = np.eye(3).ravel()
+    first = write(tmp_path / "a.root", tables, links)
+    v["translation"][v["name"] == "inner"] = [0.25 + 4e-8, 0., 0.]
+    second = write(tmp_path / "b.root", tables, links)
+    with pytest.raises(ValueError, match="different volume inventory"):
+        capture_library.library_from_captures([first, second], 2, relative_to=tmp_path)

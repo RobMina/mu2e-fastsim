@@ -24,6 +24,8 @@ EVENT = capture.EVENT
 VOLUME_LABELS = ("name", "copy", "logical", "motherLogical", "material", "solid")
 PLACEMENT_ATOL = 1e-7
 EXIT_REASONS = (2, 4)
+# Manifest fields a caller may supply; everything else is the bank's own or recorded from the captures.
+SUPPLIED_FIELDS = ("seeds", "release", "split", "config_hash", "notes", "version", "name", "unrecorded")
 
 
 def _xyz(table, prefix):
@@ -182,7 +184,8 @@ def library_from_captures(paths, expected_events, *, relative_to=None, sample_in
         component, inventory, *rest, info = trials(tables, links, expected_events)
         if pieces:
             require(component == pieces[0][0], f"{path}: different component type")
-            require(_same_inventory(inventory, pieces[0][1]), f"{path}: different volume inventory")
+            require(_same_inventory(inventory, pieces[0][1]) and inventory_hash(inventory) == inventory_hash(pieces[0][1]),
+                    f"{path}: different volume inventory")
             require(info["process_manifest_hash"] == samples[0]["process_manifest_hash"] and
                     info["g4Version"] == samples[0]["g4Version"], f"{path}: different Geant4 process manifest")
         pieces.append((component, inventory, *rest))
@@ -209,14 +212,30 @@ def library_from_captures(paths, expected_events, *, relative_to=None, sample_in
     return library, provenance
 
 
-def convert(paths, output, expected_events, *, relative_to=None, sample_info=None, **provenance):
+def convert(paths, output, expected_events, *, relative_to=None, sample_info=None, configuration=None, **provenance):
     """Write the bank of the given captures with component_response.save_library; returns its manifest.
 
-    provenance gives further manifest fields (seeds, release, split, config_hash, notes); its source and geometry
-    entries add keys beside the recorded ones and cannot replace them. Each of source and geometry lists its keys
-    read from the captures ("recorded") and those the caller supplied ("supplied"); a sample lists its supplied keys.
+    provenance gives only SUPPLIED_FIELDS, plus source and geometry entries that add keys beside the recorded ones and
+    cannot replace them. Each of source and geometry lists its keys read from the captures ("recorded") and those the
+    caller supplied ("supplied"); a sample lists its supplied keys. configuration names the bank
+    <bank_name>.<configuration>, so banks of one component type get distinct names. Supplied seeds must name every
+    sample's dataset.
     """
+    require("generator" not in provenance, "generator stays unrecorded until the capture records its physics-list, "
+                                           "material and cut hashes; it cannot be supplied")
+    unknown = set(provenance) - {*SUPPLIED_FIELDS, "source", "geometry"}
+    require(not unknown, f"provenance may give only {SUPPLIED_FIELDS} plus source/geometry keys, not {sorted(unknown)}")
     library, recorded = library_from_captures(paths, expected_events, relative_to=relative_to, sample_info=sample_info)
+    base = cr.bank_name(library.component)
+    require(configuration is None or "name" not in provenance, "give a configuration or a name, not both")
+    if configuration is not None:
+        provenance["name"] = f"{base}.{configuration}"
+    name = provenance.get("name", base)
+    require(name == base or (name.startswith(base + ".") and len(name) > len(base) + 1),
+            f"bank name must be {base} or {base}.<configuration>, not {name!r}")
+    if "seeds" in provenance:
+        missing = [x["dataset"] for x in recorded["source"]["samples"] if x["dataset"] not in (provenance["seeds"] or {})]
+        require(isinstance(provenance["seeds"], dict) and not missing, f"seeds must name every sample; missing {missing}")
     for field in ("source", "geometry"):
         extra = dict(provenance.pop(field, None) or {})
         own = {**recorded[field], "recorded": sorted(recorded[field])}
@@ -234,13 +253,14 @@ def main(argv=None):
     parser.add_argument("--relative-to", type=Path, help="name datasets relative to this directory (default: cwd)")
     parser.add_argument("--provenance", type=Path, help="JSON object of further manifest fields (seeds, release, ...)")
     parser.add_argument("--sample-info", type=Path, help="JSON list, one object per capture, added to its sample")
+    parser.add_argument("--configuration", help="bank name suffix: <bank_name>.<configuration>")
     args = parser.parse_args(argv)
     require(args.output.suffix == ".npz" and all(args.output.resolve() != p.resolve() for p in args.captures),
             "output must be a new .npz, not a capture")
     provenance = json.loads(args.provenance.read_text()) if args.provenance else {}
     info = json.loads(args.sample_info.read_text()) if args.sample_info else None
     manifest = convert(args.captures, args.output, args.expected_events, relative_to=args.relative_to,
-                       sample_info=info, **provenance)
+                       sample_info=info, configuration=args.configuration, **provenance)
     print(json.dumps({k: manifest[k] for k in ("name", "kind", "content_hash", "unrecorded", "validation")}, indent=2))
 
 
