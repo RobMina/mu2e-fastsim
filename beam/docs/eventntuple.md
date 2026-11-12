@@ -75,7 +75,7 @@ simulates. Everything else is the donor's.
 | `trkmcsim[*][0]` | fast | the CE's birth (every fit of the same particle); ancestors donor |
 | `trksegsmc` TT surfaces | fast | entry state; TT_Mid from the last forward straw step carried on a helix; TT_Back from the tracker exit |
 | `caloclusters` | fast | front-face contacts: the calorimeter device chain (shower library, crystal response, digis, template fit, clusters); inner-edge contacts: one cluster with the Geant4 inner-edge table's visible energy |
-| `caloclustersmc` | fast | nsim 1, etot = eprimary = the visible (Birks) energy of the sampled shower steps in the cluster's hit crystals, tprimary = the earliest of their times (calorimeter device chain `truth=True`); inner-edge clusters: the table's visible energy and the contact time |
+| `caloclustersmc` | fast | nsim 1, etot = eprimary = the visible (Birks) energy of the sampled shower steps in the cluster's hit crystals, tprimary = the earliest of their times, folded by the microbunch like the cluster's reco time (calorimeter device chain `truth=True`); inner-edge clusters: the table's visible energy and the contact time |
 | `calohits` | fast | approximate: one hit per crystal of each cluster, energy split evenly |
 | `hitcount.nsd` | fast | device StrawDigis (no delta rays: low); nesel / nrsel / ntsel / nbkg scaled from the donor |
 | `evtinfo.pbtime`, `evtinfomc`, `crv*`, `tcnt`, `trkhits`, `trkmats`, `trkmc`, `trkmcvd`, `calohitsmc`, ... | donor | not simulated |
