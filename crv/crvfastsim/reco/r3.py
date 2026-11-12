@@ -199,9 +199,11 @@ def run(steps, calib=None, deviation=None, target=1_000_000, jax=False, seed=1, 
         tshift = np.asarray(_json.load(open(time_shift))["mc_channel_shift"], float)
     from ..response import photons as PH
     from ..response import sipm as SI
-    tabs = PH.load_tables(cfg.response, directory=assets['lookup_dir'])
-    pmap = SI.photon_map(assets['photon_map'] or
-                          (os.path.join(assets['lookup_dir'], 'photonMap.root') if assets['lookup_dir'] else None))
+    from ..response import lookup as LK                 # the kit's run configuration: pinned optical assets
+    with LK.pinned({k: dict(v, set=LK.PIN_SET) for k, v in LK.pins().items()}):
+        tabs = PH.load_tables(cfg.response, directory=assets['lookup_dir'])
+        pmap = SI.photon_map(assets['photon_map'] or
+                              (os.path.join(assets['lookup_dir'], 'photonMap.root') if assets['lookup_dir'] else None))
     RC.validate_loaded_assets(effective, tabs, pmap)
     key = None
     if jax:

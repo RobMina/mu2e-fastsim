@@ -197,11 +197,11 @@ def _load_setup(rc, cfg, gdml_path, explicit_gdml, spec, calib, deviation, jax, 
         below, ab = tr.load_below(explicit_gdml or rc.gdml_path(), geom,
                                   **_below_kw(rc, {"below_margin": below_margin})), None
     lib = tier1b_assets.load(spec, geom)   # inside setup_s (no own timer: every *_s key counts as a stage)
-    tabs = PH.load_tables(cfg.response)
+    tabs = rc.lookup_tables(cfg.response)        # pinned by the run configuration's asset set
     if jax:
         from ..response import photons_jax
         tabs = {k: photons_jax.DeviceTable(v) for k, v in tabs.items()}
-    pmap = SI.photon_map()
+    pmap = rc.photon_map()
     timers["setup_s"] = time.perf_counter() - a
     stype_name = runconfig.sector_type_names(geom, ccfg) if rc.name != runconfig.DEFAULT else SECTOR_TYPES
     return dict(rc=rc, cfg=cfg, geom=geom, ccfg=ccfg, cond=cond, tagger=tagger, bar_cut=bar_cut,

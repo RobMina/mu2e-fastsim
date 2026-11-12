@@ -132,8 +132,10 @@ def load_setup(gdml, calib, deviation, library_dir=None, device_refit=False):
     world, _ = transport.load_world(gdml, banded=True, y_plane=transport.msc_plane(geom))
     below = transport.load_below(gdml, geom, margin=rc.below_margin)
     from ..response.photons_jax import DeviceTable
-    tabs = {k: DeviceTable(v) for k, v in photons.load_tables(cfg.response).items()}
-    pmap = sipm.photon_map()
+    from ..response import lookup                 # pinned by the run configuration's asset set
+    with lookup.pinned(rc.asset_pin_map() if hasattr(rc, "asset_pin_map") else None):
+        tabs = {k: DeviceTable(v) for k, v in photons.load_tables(cfg.response).items()}
+        pmap = sipm.photon_map()
     lib = spec = None
     if library_dir:
         from .. import tier1b_assets
