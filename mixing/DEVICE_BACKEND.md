@@ -133,6 +133,17 @@ the device step once that is under about 0.35 s per batch of 256. W + 1 batches'
 
 Per-batch metrics then report `wait_transfer_and_write_s` instead of separate device and transfer times.
 
+## Device-side loops (opt-in, core `MU2EFS_DEVICE_LOOPS=1`)
+
+The batch step runs many short device loops (tracker electronics crossings and saturation, CRV SiPM and pulse
+fits). By default XLA runs each `lax.while_loop` and `lax.cond` from the host, one predicate read-back per
+iteration. With `MU2EFS_DEVICE_LOOPS=1` in the environment of the process (core `devloops.py`; it must be set before
+JAX starts, so it is an environment setting, not a configuration key) XLA runs them inside its GPU command buffers.
+It changes the launches, not the computation: over full development and held-out passes at batch 256 the output
+files are identical with and without it (CRV float32 and float64, float32 tracker; exact and reuse capacity files).
+On one batch of 256 (A100) the device step falls from 0.45 to 0.42 s (CRV float32) and from 0.49 to 0.46 s (CRV
+float64). The precision provenance records the setting.
+
 ## Output compression (opt-in)
 
 ROOT output uses uproot's default compression (ZLIB level 1), and the benchmark tree is added in a second open of the
