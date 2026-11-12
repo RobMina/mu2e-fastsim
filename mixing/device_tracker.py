@@ -33,11 +33,12 @@ class Capacities:
     pack_sort: str = None
     electronics_launches: str = None
     narrow_tier: str = None
+    charge_launches: str = None
 
     def __post_init__(self):
         optional = ("long_steps", "clusters_per_long_step", "end_tiers", "charge_blocks_per_launch", "flat_clusters",
                     "minion_steps", "minion_unroll", "minion_search", "pack_sort", "electronics_launches",
-                    "narrow_tier")
+                    "narrow_tier", "charge_launches")
         for name, value in vars(self).items():
             if name == "end_tiers" or (name in optional and value is None):
                 continue
@@ -61,9 +62,9 @@ class Capacities:
                 if value is not None and (type(value) not in (int, float) or not 0 < value <= self.pairs_per_straw):
                     raise ValueError("tracker digit_entries_per_straw must be in (0, pairs_per_straw]")
                 continue
-            if name == "electronics_launches":
+            if name in ("electronics_launches", "charge_launches"):
                 if value not in ("all", "live"):
-                    raise ValueError("tracker electronics_launches must be 'all' or 'live'")
+                    raise ValueError(f"tracker {name} must be 'all' or 'live'")
                 continue
             if name == "narrow_tier":
                 if value not in ("positions", "compact"):
@@ -77,6 +78,8 @@ class Capacities:
                 raise ValueError(f"tracker {name} must be a positive integer")
         if self.flat_saturation_pool in ("tier", "auto") and self.digit_entries_per_straw is None:
             raise ValueError("tracker flat_saturation_pool needs the flat digitisation (digit_entries_per_straw)")
+        if self.charge_launches == "live" and self.charge_blocks_per_launch is None:
+            raise ValueError("tracker charge_launches 'live' needs charge_blocks_per_launch")
         if self.narrow_tier == "compact" and self.end_tiers is None:
             raise ValueError("tracker narrow_tier 'compact' needs end_tiers")
         if self.straws % self.electronics_batch:
@@ -511,7 +514,16 @@ def prepare(c, capacities, batch_events):
         else:   # groups of blocks per launch (as digi_jax CHARGE_BLOCKS); each block keeps its own key
             g = cap.charge_blocks_per_launch
             grouped = tuple(a.reshape((-1, g) + a.shape[1:]) for a in arrays)
-            result = lax.map(lambda group: jax.vmap(block)(group), grouped)
+            launch = lambda group: jax.vmap(block)(group)
+            if cap.charge_launches == "live":
+                # a launch with no live cluster is skipped: every block keeps its own key, and the rows of dead
+                # clusters are never read (pack masks them)
+                live = jnp.pad(cluster["mask"], (0, pad)).reshape(-1, g * dj.CHARGE_BLOCK).any(axis=1)
+                shapes = jax.eval_shape(launch, tuple(a[0] for a in grouped))
+                empty = lambda _: jax.tree_util.tree_map(lambda x: jnp.zeros(x.shape, x.dtype), shapes)
+                result = lax.map(lambda x: lax.cond(x[0], lambda y: launch(y), empty, x[1]), (live, grouped))
+            else:
+                result = lax.map(launch, grouped)
             result = tuple(r.reshape((-1,) + r.shape[2:]) for r in result)
         gt, charge, wd = tuple(value.reshape((-1,) + value.shape[2:])[:cap.drift_clusters] for value in result)
         if rel:
