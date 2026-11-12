@@ -197,6 +197,13 @@ the library identity (`Library.provenance()`), the criteria, the held-out sample
 reference comparisons, the performance entries and the status. The words below have one meaning across the
 project, and they are the words used when a library is discussed.
 
+The manifest's `validation.status` is the status **when the file was written**. It is not updated afterwards,
+because rewriting the manifest changes the file sha256 that registries and release assets pin. A validation run
+after the build writes its own record, identified by the library's content hash. That record holds the
+**current** status, and it is the one to quote. For example, a library built `not validated` whose first
+held-out comparison fails is **tested, not closed** in its record, while its file still says `not validated`. The
+next version of the library names its record in the manifest.
+
 ### Status levels
 
 One per library and dtype, strongest first; a library's status is the weaker of its two dtypes.
