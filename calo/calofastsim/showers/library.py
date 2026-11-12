@@ -1,10 +1,25 @@
-"""Binned whole-event shower draws; no energy rescaling or leakage correction."""
+"""Binned whole-event shower draws; no energy rescaling or leakage correction.
+
+The libraries follow the shared library core (mu2efastsim.library, core/docs/libraries.md): save() writes the arrays,
+the JSON metadata and an embedded manifest; load() checks the manifest, the arrays and their content hash. A library
+written before the manifests loads only when its file sha256 is registered (showers/registered.json: the libraries
+in use that predate them, e.g. the CAL2 production candidate); any other file without a manifest is refused, and
+write_manifest() adds a sidecar to it. load() returns (library, metadata) as before.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+from pathlib import Path
 
 import numpy as np
+
+from mu2efastsim.library import axes as LA
+from mu2efastsim.library import store as LS
+from mu2efastsim.library.domain import DomainCounter
+from mu2efastsim.library.hashing import file_sha256
+
+REGISTERED = Path(__file__).with_name("registered.json")
 
 
 @dataclass(frozen=True)
@@ -242,13 +257,104 @@ def sample(library, entries, rng, *, orientation="incident", radius_neighbors=0)
     return result
 
 
-def save(path, library, metadata):
-    """Write numeric arrays and small JSON metadata without pickle."""
-    np.savez_compressed(path, **library, metadata=np.array(json.dumps(metadata, sort_keys=True)))
+def _name(metadata):
+    tag = str(metadata.get("candidate") or metadata.get("name") or "unnamed")
+    return "calo.showers." + "".join(c if c.isalnum() or c in "_-" else "_" for c in tag)
 
 
-def load(path):
-    with np.load(path, allow_pickle=False) as source:
-        library = {k: source[k] for k in source.files if k != "metadata"}
-        metadata = json.loads(str(source["metadata"]))
-    return library, metadata
+def axes(library):
+    """The cell keys (mu2efastsim.library.axes.Axis) of a library's binning."""
+    frame = "conversion-electron entry at the disk front (incident frame)"
+    return (LA.Axis("energy", "MeV", library["bins_energy"], frame=frame, array="bins_energy", policy="clip",
+                    description="total entry energy"),
+            LA.Axis("cosine", "1", library["bins_cosine"], frame=frame, array="bins_cosine", policy="clip",
+                    description="forward cosine of the entry direction (only forward entries are supported)"),
+            LA.Axis("radius", "mm", library["bins_radius"], frame=frame, array="bins_radius", policy="clip",
+                    description="entry radius from the disk axis"))
+
+
+def manifest_fields(library, metadata, **provenance):
+    """Manifest fields of a library (mu2efastsim.library.manifest); provenance fields not given are unrecorded."""
+    fields = dict(
+        name=_name(metadata), subsystem="calo", version=1, kind="pool",
+        description="Whole-event Geant4 calorimeter shower patterns per entry cell (energy, cosine, radius), drawn "
+                    "whole for a query entry and placed in its frame (sample); empty cells use the closest occupied "
+                    "cell of the same disk.",
+        axes=[a.describe() for a in axes(library)],
+        outputs=[dict(name="steps", unit="mm, ns, MeV", dtype="float64",
+                      description="the donor's steps placed at the query entry; donor -1 and no steps without "
+                                  "support in the disk"),
+                 dict(name="donor", unit="1", dtype="int64", description="library row drawn, -1 when unsupported"),
+                 dict(name="fallback", unit="1", dtype="bool", description="drawn from another cell")],
+        dtype=dict(storage={"steps": "as built (float64)"}, compute=["float32", "float64"],
+                   notes="host draws in float64; the device hand-off casts to the compute dtype"),
+        rng=dict(host="numpy.random.Generator (sample): uniform draws per query, the same with or without the "
+                      "radius_neighbors option", device="none (host draw)"),
+        domain=dict(coverage="forward entries; cells clipped to the end bins (entry_outside_bins flags it)",
+                    fallbacks=[dict(name="fallback", levels={"0": "the entry's own cell",
+                                                             "1": "the closest occupied cell of the disk"},
+                                    description="sample() returns fallback per query")]),
+        config_hash=None,
+        source=dict(description="metadata: " + json.dumps(metadata, sort_keys=True)[:2000], samples=[]),
+    )
+    fields.update(provenance)
+    if "validation" not in provenance:
+        fields["validation"] = dict(status="not validated", record=None)
+    unrecorded = dict(provenance.get("unrecorded", {}))
+    for k in ("generator", "release", "seeds", "geometry", "split"):
+        if fields.get(k) is None:
+            fields[k] = None
+            unrecorded.setdefault(k, "not given to save()")
+    unrecorded.setdefault("config_hash", "no build configuration manifest")
+    fields["unrecorded"] = unrecorded
+    return fields
+
+
+def save(path, library, metadata, **provenance):
+    """Write numeric arrays, small JSON metadata and the library manifest without pickle. Returns the manifest."""
+    arrays = dict(library, metadata=np.array(json.dumps(metadata, sort_keys=True)))
+    return LS.save(Path(path), arrays, manifest_fields(library, metadata, **provenance))
+
+
+def write_manifest(path, **provenance):
+    """Sidecar manifest for a library written before the manifests; the .npz is not touched."""
+    arrays = LS.load_arrays(path)
+    metadata = json.loads(str(arrays["metadata"]))
+    library = {k: v for k, v in arrays.items() if k != "metadata"}
+    return LS.write_sidecar(path, manifest_fields(library, metadata, **provenance))
+
+
+def registered(path=REGISTERED):
+    """{sha256: entry} of the registered libraries that predate the manifests."""
+    p = Path(path)
+    if not p.exists():
+        return {}
+    d = json.loads(p.read_text())
+    return {e["sha256"]: dict(e, id=k) for k, e in d["entries"].items()}
+
+
+def load(path, *, registry=REGISTERED):
+    """(library, metadata) after the library checks: a manifest (embedded or sidecar) with the arrays and content hash
+    it declares; or, for a library written before the manifests, a registered file sha256. Anything else is refused
+    (mu2efastsim.library.store.LibraryError)."""
+    try:
+        arrays = dict(LS.load(Path(path)).arrays)
+    except LS.LibraryError as exc:
+        if not any("no manifest" in p for p in exc.problems) or file_sha256(path) not in registered(registry):
+            raise
+        with np.load(path, allow_pickle=False) as source:          # registered legacy file: read as before
+            library = {k: source[k] for k in source.files if k != "metadata"}
+            metadata = json.loads(str(source["metadata"]))
+        return library, metadata
+    metadata = json.loads(str(arrays.pop("metadata")))
+    return arrays, metadata
+
+
+def domain_counts(library, energy, cosine, radius, counter=None):
+    """DomainCounter of a set of queries (host): entry values outside the cell bins (clipped). The fallback to another
+    cell is per draw: count it from sample()'s 'fallback' with counter.add_levels('fallback', ...)."""
+    counter = counter or DomainCounter("calo.showers")
+    counter.add_lookups(len(np.asarray(energy)))
+    for a, v in zip(axes(library), (energy, cosine, radius)):
+        counter.add_values(a.name, a.edges, np.asarray(v, float))
+    return counter
