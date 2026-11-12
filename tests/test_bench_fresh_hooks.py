@@ -48,6 +48,7 @@ def mixing_config(tmp_path, monkeypatch):
 def test_mixing_bench_pipelines_by_default(mixing_config):
     bench, path, _, _ = mixing_config
     assert bench.configuration(path).device_pipeline is True
+    assert bench.configuration(path).device_pipeline_writers == 2
     values = json.loads(path.read_text())
     path.write_text(json.dumps({**values, "device_pipeline": False}))
     assert bench.configuration(path).device_pipeline is False

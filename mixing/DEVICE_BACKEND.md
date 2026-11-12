@@ -117,7 +117,8 @@ default there) or `"device_pipeline"` (bench configuration; **on by default**, `
 - a rejected batch still raises, in `collect`, and stops the run;
 - two batches' outputs are on the device at once.
 
-`--device-pipeline-writers W` (stream benchmark) or `"device_pipeline_writers": W` (bench configuration; default 1)
+`--device-pipeline-writers W` (stream benchmark; default 1) or `"device_pipeline_writers": W` (bench configuration;
+**default 2**)
 collects up to W batches at once, each on its own worker thread: batch k + W is dispatched once batch k is written.
 Each batch writes its own files, so the files are those of one writer; ledger rows stay in dispatch order. The ROOT
 compression (zlib) runs outside the Python lock, so writers overlap the write, which with full digis takes longer than

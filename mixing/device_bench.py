@@ -11,8 +11,8 @@ device_pipeline_writers).
 
 Output is pipelined by default (`device_pipeline`, as `stream_benchmark --device-pipeline`): batch k is downloaded and
 written on one worker thread while batch k + 1 runs on the device. The outputs are those of the serial loop;
-`"device_pipeline": false` measures the serial loop. `"device_pipeline_writers": W` (default 1) collects up to W
-batches at once, each on its own thread: the same files.
+`"device_pipeline": false` measures the serial loop. `"device_pipeline_writers": W` (default 2 here, 1 in
+`stream_benchmark`) collects up to W batches at once, each on its own thread: the same files.
 
 - `prepare(N)` reads and validates the five frame pools into host memory once (timer `prepare_s`).
 - `prepare(N, seed=S)` (the timer's `--fresh-inputs`, called before every pass) reads the pools on its first call
@@ -37,7 +37,7 @@ from types import SimpleNamespace
 PATHS = ("frames_manifest", "expanded", "truth", "stock", "photon_csv", "tracker_conditions",
          "device_capacities", "occupancy_geometry", "out")
 DEFAULTS = {"device_kernel": "mixing.device_physics:model", "device_output": "occupancy", "device_platform": "gpu",
-            "device_pipeline": True, "device_pipeline_writers": 1, "output_compression": None,
+            "device_pipeline": True, "device_pipeline_writers": 2, "output_compression": None,
             "sampling_seed": 20261106, "seed": 20261106, "tracker_seed": 20261105, "chunk": 32, "synthetic": False}
 
 
