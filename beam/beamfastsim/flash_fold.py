@@ -173,8 +173,11 @@ def event_index(births, parent):
     return row[inv[len(ledger):]][parent], len(ledger)
 
 
-def fold(births, exits, beam, hard, soft, *, n_dirs=128, seed=0):
-    """Fold one design: per-event expected deposit by component, for host and device dtypes."""
+def fold(births, exits, beam, hard, soft, *, n_dirs=128, seed=0, keep_per_event=False):
+    """Fold one design: per-event expected deposit by component, for host and device dtypes.
+
+    ``keep_per_event`` keeps the per-source-event arrays (``out[component][dtype]["per_event"]``) for resampling
+    over source events (e.g. a bootstrap shared by several designs on the same source)."""
     ok = np.asarray(exits["foil_exit"], bool) & np.asarray(exits["attenuation_supported"], bool)
     brems = dict(parent=np.asarray(exits["parent"])[ok], energy=np.asarray(exits["energy"], float)[ok],
                  exit_position=np.asarray(exits["exit_position"], float)[ok],
@@ -217,9 +220,10 @@ def fold(births, exits, beam, hard, soft, *, n_dirs=128, seed=0):
     out["omitted"] = dict(inflight_annihilation_photons_per_event=census["inflight_photons"] / n_events,
                           inflight_annihilation_energy_per_event_mev=census["inflight_energy_mev"] / n_events,
                           note="in-flight annihilation photons have no recorded positions; not folded")
-    for name in ("brems", "annihilation"):
-        for dt in ("float32", "float64"):
-            out[name][dt].pop("per_event")
+    if not keep_per_event:
+        for name in ("brems", "annihilation"):
+            for dt in ("float32", "float64"):
+                out[name][dt].pop("per_event")
     return out
 
 
@@ -232,7 +236,12 @@ def run(args):
     with np.load(s1 / "births.npz") as b, np.load(s1 / "foil_exit.npz") as e:
         births = {k: b[k] for k in b.files}
         exits = {k: e[k] for k in e.files}
-    res = fold(births, exits, geom.beam, hard, soft, n_dirs=args.n_dirs, seed=args.seed)
+    res = fold(births, exits, geom.beam, hard, soft, n_dirs=args.n_dirs, seed=args.seed,
+               keep_per_event=bool(args.per_event_out))
+    if args.per_event_out:
+        np.savez(args.per_event_out, event=np.asarray(births["source_event_ledger"]),
+                 **{f"{c}_{dt}": res[c][dt].pop("per_event") for c in ("brems", "annihilation")
+                    for dt in ("float32", "float64")})
     from mu2efastsim.library import provenance as LP
     res.update(design=args.name or s1.name, geometry=str(args.geom), libraries=LP.summary(),
                n_dirs=args.n_dirs, seed=args.seed)
@@ -257,6 +266,7 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--name")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--per-event-out", help="also write the per-source-event deposits (npz) for resampling")
     run(ap.parse_args(argv))
     return 0
 

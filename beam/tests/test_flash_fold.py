@@ -122,3 +122,16 @@ def test_event_index_rejects_unknown_events():
     b["source_event"] = np.array([7])
     with pytest.raises(ValueError):
         FF.event_index(b, np.array([0]))
+
+
+def test_fold_keeps_per_event_arrays(libs):
+    hard, soft = libs
+    b = _births([[X0 + 50.0, 0.0, 5900.0]] * 3, [STOPPED, LIVE, LIVE], [-11, 11, 11], [2, 0, 0], [2 * FF.ME, 0, 0])
+    e = _exits([10.0, 0.02])
+    res = FF.fold(b, e, BEAM, hard, soft, n_dirs=16, keep_per_event=True)
+    for c in ("brems", "annihilation"):
+        for dt in ("float32", "float64"):
+            pe = res[c][dt]["per_event"]
+            assert pe.shape == (3,)
+            np.testing.assert_allclose(pe.mean(), res[c][dt]["mean"], rtol=1e-12)
+    assert "per_event" not in FF.fold(b, e, BEAM, hard, soft, n_dirs=16)["brems"]["float64"]
