@@ -87,6 +87,11 @@ class ComponentType:
     def inside(self, points):
         return np.all(np.abs(points) <= np.asarray(self.half_size) + POSITION_ATOL, axis=-1)
 
+    def on_face(self, points):
+        """Inside the envelope and on at least one face (within POSITION_ATOL), whatever the direction."""
+        on = np.abs(np.abs(points) - np.asarray(self.half_size)) <= POSITION_ATOL
+        return self.inside(points) & np.any(on, axis=-1)
+
     def on_boundary(self, points, momentum, *, entering):
         h = np.asarray(self.half_size)
         on = np.abs(np.abs(points) - h) <= POSITION_ATOL
@@ -170,8 +175,11 @@ class Library:
         _kinematics(self.exits)
         if not component.on_boundary(self.entrances["position"], self.entrances["momentum"], entering=True).all():
             raise ValueError("entrances must be inward on the component boundary")
-        if not component.on_boundary(self.exits["position"], self.exits["momentum"], entering=False).all():
-            raise ValueError("exits must be outward on the component boundary")
+        # an exit is the first boundary crossing as Geant4 records it: on a face, with the post-step direction as
+        # recorded. Multiple scattering over the last, boundary-limited step can turn that direction back inward
+        # (the particle re-enters at once); next_in_vacuum then hands it back to the same placement at distance 0
+        if not component.on_face(self.exits["position"]).all():
+            raise ValueError("exits must lie on the component boundary")
         npart = np.diff(self.particle_offsets)
         if np.any(npart == 0):
             raise ValueError("every trial needs its incident root particle")
@@ -193,8 +201,8 @@ class Library:
             raise ValueError("step endpoint outside component; no clamping is allowed")
         if np.any(sx["edep"] < 0) or np.any(sx["length"] < 0) or np.any(sx["t0"] < 0) or np.any(sx["t1"] < sx["t0"]) or np.any(self.exits["time"] < 0):
             raise ValueError("negative deposits/lengths or invalid relative times")
-        if np.any(sx["length"] + POSITION_ATOL < np.linalg.norm(sx["x1"] - sx["x0"], axis=1)):
-            raise ValueError("step length is shorter than its endpoint separation")
+        # no chord rule: a Geant4 step length is the true path length, while the post-step point carries the
+        # multiple-scattering lateral displacement, so |x1 - x0| can exceed the length; both are kept as recorded
         ep = self.particle_offsets[_trial_rows(self.exit_offsets)] + self.exits["particle"]
         exited = np.bincount(ep, minlength=len(pt))
         if np.any(exited != self.particles["exited"].astype(int)):
@@ -265,9 +273,31 @@ class Replay:
     next_track: int
 
 
-def replay(library, placement, incoming, interaction, rng, *, next_track):
-    """Replay exact supported local entrance states in a rigid placement; no energy/shape interpolation."""
+REPLAY_DTYPES = (np.dtype(np.float64), np.dtype(np.float32))
+
+
+def _output_arithmetic(placement, incoming, dtype):
+    """(points, vectors, values, shift, incoming time) of the output arithmetic: float64 is the reference path; float32
+    casts the recorded values, the placement and the incoming times to float32 and transforms them in float32."""
+    dt = np.dtype(dtype)
+    if dt not in REPLAY_DTYPES:
+        raise ValueError("dtype must be float64 or float32")
+    if dt == np.float64:
+        return placement.global_points, placement.global_vectors, (lambda a: a.copy()), (lambda a: a), incoming["time"]
+    rt, tr = placement.rotation.T.astype(dt), placement.translation.astype(dt)
+    return ((lambda a: a.astype(dt) @ rt + tr), (lambda a: a.astype(dt) @ rt), (lambda a: a.astype(dt)),
+            (lambda a: a.astype(dt)), incoming["time"].astype(dt))
+
+
+def replay(library, placement, incoming, interaction, rng, *, next_track, dtype=np.float64):
+    """Replay exact supported local entrance states in a rigid placement; no energy/shape interpolation.
+
+    ``dtype`` is the dtype of the real outputs (positions, momenta, times, lengths, deposits, exit energies). The
+    validation, the entrance match and the trial draw are float64 in both dtypes, so the same inputs give the same
+    trials, particle tree and refusals; float32 differs from float64 only by float32 rounding of the transform and the
+    time shift. float64 is the default and the reference."""
     incoming = _incoming(incoming)
+    points, vectors, values, shift, time_in = _output_arithmetic(placement, incoming, dtype)   # dtype checked first
     n = len(incoming["track"])
     interaction = _integer(interaction, "interaction", (n,))
     cursor = int(_integer(next_track, "next_track", ()))
@@ -312,18 +342,18 @@ def replay(library, placement, incoming, interaction, rng, *, next_track):
         if isstep:
             out["volume"] = placement.volume_ids[table["volume"][idx]]
             for name in ("x0", "x1"):
-                out[name] = placement.global_points(table[name][idx])
+                out[name] = points(table[name][idx])
             for name in ("p0", "p1"):
-                out[name] = placement.global_vectors(table[name][idx])
+                out[name] = vectors(table[name][idx])
             for name in ("t0", "t1"):
-                out[name] = table[name][idx] + incoming["time"][ii]
+                out[name] = shift(table[name][idx]) + time_in[ii]
             for name in ("length", "edep"):
-                out[name] = table[name][idx].copy()
+                out[name] = values(table[name][idx])
         else:
-            out["position"] = placement.global_points(table["position"][idx])
-            out["momentum"] = placement.global_vectors(table["momentum"][idx])
-            out["time"] = table["time"][idx] + incoming["time"][ii]
-            out["energy"] = table["energy"][idx].copy()
+            out["position"] = points(table["position"][idx])
+            out["momentum"] = vectors(table["momentum"][idx])
+            out["time"] = shift(table["time"][idx]) + time_in[ii]
+            out["energy"] = values(table["energy"][idx])
         outputs.append(out)
     return Replay(particles, *outputs, trial, cursor + children)
 
@@ -388,22 +418,45 @@ def bank_name(component):
     return BANK_PREFIX + re.sub(r"[^A-Za-z0-9_-]", "_", component.geometry)
 
 
+FIXED_FIELDS = frozenset({"schema", "subsystem", "kind", "axes", "outputs", "arrays", "content_hash", "dtype", "rng",
+                          "domain"})
+VALIDATION_FIELDS = frozenset({"status", "record"})
+
+
 def bank_manifest_fields(library, **provenance):
-    """Manifest fields of a bank (mu2efastsim.library.manifest); provenance fields not given are unrecorded."""
+    """Manifest fields of a bank (mu2efastsim.library.manifest); provenance fields not given are unrecorded.
+
+    The caller gives provenance (source, generator, release, seeds, geometry, config_hash, split, notes, ...), a
+    ``version`` and a ``name`` that extends the component's bank name (``<bank_name>.<configuration>``, so banks of
+    one component built from different states or campaigns do not share ``name@version``). It cannot replace what
+    the replay code defines (kind, axes, outputs, dtype, rng, domain), and of ``validation`` only the status and the
+    record: ``bank_admissible`` stays false and its reason stays (docs/component-training.md)."""
     c = library.component
+    base = bank_name(c)
+    fixed = sorted(set(provenance) & FIXED_FIELDS)
+    if fixed:
+        raise ValueError(f"bank manifest fields {fixed} are defined by component_response, not by the caller")
+    name = provenance.pop("name", base)
+    if name != base and not (name.startswith(base + ".") and len(name) > len(base) + 1):
+        raise ValueError(f"bank name {name!r} must be {base!r} or {base!r}.<configuration>")
+    validation = dict(provenance.pop("validation", None) or {})
+    if set(validation) - VALIDATION_FIELDS:
+        raise ValueError(f"validation accepts only {sorted(VALIDATION_FIELDS)}; bank_admissible stays false")
     fields = dict(
-        name=bank_name(c), subsystem="secondaries", version=1, kind="replay",
+        name=name, subsystem="secondaries", version=1, kind="replay",
         description="Complete equal-weight local interaction trials of one component type at recorded local entrance "
                     "states (null outcomes included): the particle tree, deposit steps and first-boundary exits, "
                     "replayed whole in a rigid placement (replay).",
         axes=[],
         outputs=[dict(name="particles", unit="1", dtype="int64/bool", description="placed particle tree"),
-                 dict(name="steps", unit="mm, MeV/c, ns, MeV", dtype="float64",
+                 dict(name="steps", unit="mm, MeV/c, ns, MeV", dtype="float64 or float32 (replay dtype)",
                       description="deposit rows in global coordinates and receiving volume IDs"),
-                 dict(name="exits", unit="mm, MeV/c, MeV, ns", dtype="float64",
+                 dict(name="exits", unit="mm, MeV/c, MeV, ns", dtype="float64 or float32 (replay dtype)",
                       description="first-boundary exits in global coordinates")],
-        dtype=dict(storage={"states": "float64", "ids": "int64"}, compute=["float64"],
-                   notes="host replay in float64; there is no device or float32 path"),
+        dtype=dict(storage={"states": "float64", "ids": "int64"}, compute=["float32", "float64"],
+                   notes="host replay; float64 is the default and the reference. The entrance match and the trial "
+                         "draw are float64 in both dtypes (same trials); float32 rounds only the output transform "
+                         "and time shift. There is no device path"),
         rng=dict(host="numpy.random.Generator: one uniform per incoming row (rng.random(n)) to pick among the "
                       "matching trials; unsupported rows are refused before the draw", device="none",
                  draws_per_row=1),
@@ -418,6 +471,7 @@ def bank_manifest_fields(library, **provenance):
                                "energy accounting stays unrecorded until the bank carries a capture_accounting report "
                                "hash"),
     )
+    fields["validation"].update(validation)
     fields.update(provenance)
     unrecorded = dict(provenance.get("unrecorded", {}))
     reasons = dict(source="the capture products the bank was built from are not given",

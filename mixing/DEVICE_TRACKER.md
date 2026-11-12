@@ -149,6 +149,26 @@ Times follow `lax.sort`'s float order (-0 equal to +0, NaNs last), so the orders
 the lexsorts. Labels must fit in 32 bits (batch_events x 131,072 < 2**32). Measured on one batch of 256 mixed events
 (A100): tracker 0.36 s -> 0.24 s at an occupancy-only output, 0.91 s -> 0.80 s for full digis.
 
+## Electronics launches (opt-in)
+
+Each end tier runs its electronics kernel over the tier's padded straws in launches of `electronics_batch` straws
+(a tier smaller than that is one launch). In the narrow tier the live straws sit at their positions among all the
+batch's straws, so a real batch of 256 fills 26 of its 34 launches to about 77 % and leaves 8 empty.
+
+- `electronics_launches: "live"` skips a launch with no live straw; its rows are empty (mask False). The
+  electronics draws are keyed per straw, so the other launches do not change.
+- `narrow_tier: "compact"` (with `end_tiers`) puts the narrow tier's live straws first, as the end tiers already
+  are, so its launches are full and the rest are skipped: 20 launches instead of 26 in that batch. The largest
+  per-launch digitisation demand stays at 0.93-0.95 entries per straw, so `digit_entries_per_straw` 1.182 is
+  unchanged.
+
+Both change the time, not the digis. Over full development and held-out passes at batch 256, with the device-loop
+setting on (core `MU2EFS_DEVICE_LOOPS`, the default), the output files are identical to those without the two keys and
+without device loops for CRV float32 and
+float64 with the float64 tracker, and for the float32 tracker. Measured on one batch of 256 (A100): tracker apply
+0.351 -> 0.340 s (float64), 0.366 -> 0.360 s (float32). Launches of 4,096, 16,384, 32,768 or 65,536 straws were
+slower, and above 8,192 they change float32 ADC counts (the saturation chunks follow the launch size).
+
 ## Batched charge blocks (opt-in)
 
 `charge_blocks_per_launch: G` runs the drift/charge kernel on G blocks of 4,096 clusters
@@ -156,6 +176,12 @@ per launch (vmapped, as the staged `digi_jax` runs `CHARGE_BLOCKS` per call) ins
 block per sequential step. Every block keeps its key (`fold_in(key, 1)` then its first
 cluster offset), so outputs equal the one-block path; `drift_clusters` is padded to a
 multiple of `G x 4096`. Without the key the drift is unchanged.
+
+The launches run in sequence, and each one's Polya-gain draws (`random.gamma`) loop until every lane is accepted, so
+fewer, wider launches pay: on one batch of 256 (A100), tracker apply 0.336 / 0.363 s at G = 16, 0.304 / 0.326 at 32,
+0.296 / 0.314 at 64 and 0.292 / 0.310 at 128 (float64 / float32 tracker), digis identical. The batch-256 capacity
+files use 128. Skipping launches without a live cluster (a `lax.cond` per launch) was tried and dropped: it changes
+how XLA fuses the float64 kernel, which moved 150k cluster times by 1-2 float32 ulps and then some digis.
 
 ## Donor-frame digi reuse (opt-in approximation)
 

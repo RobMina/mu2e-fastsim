@@ -34,7 +34,8 @@ process lists, declared Geant4 behaviours) and its FNV-1a 64-bit hash.
   raw/nonionizing energy deposit, length, material/placement identity, defining process and step status, including
   zero-deposit steps.
 - Full integer source/event/track/parent identities.
-- First outward boundary crossing: exact post-point state, distinct exit reason, then stop only that branch.
+- First boundary crossing: exact post-point state (its direction may point back in after multiple scattering), distinct
+  exit reason, then stop only that branch.
   Legitimate already-produced children are not killed because their parent exits.
 - Boundary-born secondaries follow one ownership rule: owned by the component, an exit at birth (killed at stacking
   with its own reason), or an error.
@@ -63,6 +64,7 @@ All are vectorized NumPy/pandas readers of the dumped ROOT tables; none imports 
 | `capture_accounting` | per-step and per-event energy accounting (below) |
 | `capture_partition` | one recorded component beside an unrecorded touching neighbour: one transport owner per region |
 | `capture_compare` | small-sample response distributions; `--exact` compares two captures field by field |
+| `capture_library` | audited captures to a `component_response` bank (below) |
 | `capture_inventory` | geometry inventory and primary traversal |
 | `capture_lifecycle`, `capture_callbacks` | negative lifecycle fixtures and constructed callback sequences |
 | `capture_zero_step`, `capture_secondary_zero_step`, `capture_end_kinematics` | zero-step and endpoint fixtures |
@@ -102,6 +104,39 @@ by step at the same tolerance and counted in the report:
 Every other decay must conserve energy. Electron and positron masses must agree within 1e-6 of their median. A decay
 product's dynamic mass is rebuilt from `E` and `p`, so its rounding grows as `eps E^2 / m`: its bound adds 16 ulps of
 `E^2` in `m^2` (5e-6 MeV for a 38 GeV positron from a boosted pi0 Dalitz decay).
+
+### Captures to a bank
+
+`capture_library` turns capture files of one component type into a `component_response.Library` and writes it with
+`save_library` (kind `replay`, [libraries](libraries.md) section 8):
+
+    python -m mu2efastsim.capture_library <capture.root>... --expected-events 100 --output bank.npz \
+        [--relative-to <tree>] [--provenance fields.json] [--sample-info samples.json] [--configuration <name>]
+
+- Every file must pass the strict linked audit first; nothing is repaired, clamped or dropped, and the `Library`
+  constructor re-runs its own structural checks.
+- One trial per capture event, in file then event order. The entrance is the primary's local entrance state. The
+  particle tree is every recorded track, root first, parents before children. Steps are the in-component steps (`edep`
+  is the raw deposit) with times relative to the primary's entrance. Exits are the first exits (the exit step's post
+  state) and the exits at birth (their birth state).
+- The component is the envelope and its descendants, with local volume indices in the capture's volume order. All
+  files must agree on the geometry and physics labels, half sizes, the volume inventory below the envelope
+  (placements to 1e-7 mm and the same inventory hash, so the hash does not depend on file order) and the Geant4
+  process manifest.
+- The manifest records each file's sha256, event identities, process-manifest hash and Geant4 version. Datasets are
+  named by their path below `--relative-to` (default: the working directory); a file outside it is refused. The
+  geometry hash is a digest of the volume inventory below the envelope.
+- `--provenance` gives only seeds, release, split, config hash, notes, version, name and unrecorded reasons, plus
+  extra source and geometry keys; a supplied generator is refused, and supplied seeds must name every sample's
+  dataset. `--sample-info` gives one object per capture (e.g. its campaign state). Both add to what the captures
+  record and cannot replace it: `source` and `geometry` list which keys were read from the captures (`recorded`) and
+  which the caller supplied (`supplied`), and each sample lists its supplied keys. A construction-file hash, for
+  example, can only be supplied.
+- `--configuration` names the bank `secondaries.component.<geometry>.<configuration>`, so banks of one component type
+  get distinct names. One bank can hold every entrance state of a campaign.
+- The generator stays unrecorded until the capture records its physics-list, material and cut hashes. The energy
+  accounting stays unrecorded too, and `bank_admissible` is false. Replay dtypes: see
+  [component response](component-response.md) (float64 is the reference).
 
 ## Geometry and validation order
 

@@ -1,0 +1,14 @@
+{
+ "entries": {
+  "flash.response.nominal_run1a-v1": {
+   "config_hash": "2cb00206ed1bfc6b",
+   "content_hash": "776450c5932db022458532a60e6708f0b39d2a62feefd036155eba6a88ac3cd1",
+   "file": "flash_response_nominal_run1a_v1.npz",
+   "name": "flash.response.nominal_run1a",
+   "sha256": "da1c01dda809a83f4bcf7510717826bbc29aeb00220398f130eb421d17bdd0f5",
+   "url": "https://github.com/RobMina/mu2e-fastsim/releases/download/lib-flash.response.nominal_run1a-v1/flash_response_nominal_run1a_v1.npz",
+   "version": 1
+  }
+ },
+ "schema": 1
+}

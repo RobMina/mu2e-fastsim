@@ -197,6 +197,13 @@ the library identity (`Library.provenance()`), the criteria, the held-out sample
 reference comparisons, the performance entries and the status. The words below have one meaning across the
 project, and they are the words used when a library is discussed.
 
+The manifest's `validation.status` is the status **when the file was written**. It is not updated afterwards,
+because rewriting the manifest changes the file sha256 that registries and release assets pin. A validation run
+after the build writes its own record, identified by the library's content hash. That record holds the
+**current** status, and it is the one to quote. For example, a library built `not validated` whose first
+held-out comparison fails is **tested, not closed** in its record, while its file still says `not validated`. The
+next version of the library names its record in the manifest.
+
 ### Status levels
 
 One per library and dtype, strongest first; a library's status is the weaker of its two dtypes.
@@ -262,7 +269,8 @@ reports, a policy that should refuse) come in later pull requests and are valida
 State of the migration (2026-11-11): every library that existed when this specification was written is on the core,
 except the CRY tables, which keep their own pinned loader. The library files themselves are unchanged, the frozen
 ones carry sidecar manifests, and every migration was bit-identical in float32 and float64 (or float64 only where a
-library has no float32 path: the component banks, the core element tables on the host). New libraries are written
+library has no float32 path: the core element tables on the host). The component banks gained a float32 replay
+path afterwards, with float64 bit-identical. New libraries are written
 through `library.store.save` with a complete manifest.
 
 | Library (manifest name) | Package, file | Keys and binning | Format before | Provenance, hash before | Out of domain before | Migration |
@@ -280,7 +288,7 @@ through `library.store.save` with a complete manifest.
 | `crv.sipm.photon_map` | `crvfastsim.response.sipm` | 40 × 40 pixels | ROOT TH2 | as above | n/a | **done** (#180, #186): pinned with the lookup tables |
 | `crv.tier1b.*` | `crvfastsim.tier1b`, `tier1b_assets` | group × momentum quantile × path-length quantile, context and sub-cells | ROOT trees + npz/JSON sidecars | pinned library sha256, sidecar sha256, code sha256 | fallbacks, `fit_inside`, counters in `info` | **done** (#184): the set's file sha256 checked on every load path, loads recorded pinned or unpinned (custom library), `domain_counts(info)` from the sample's placement counters |
 | `tracker.deltas.run1a` | `trkfastsim.sim.deltas` | step length bins | (not shipped yet) | — | — | native when it ships (`save` through `library.store`) |
-| `secondaries.component.*` | `mu2efastsim.component_response` (LIB2) | exact entrance states; trials | in memory only | labels only | `UnsupportedEntrance` raises | **done** (#185): `save_library` / `load_library` (kind `replay`, `bank_admissible` false), `domain_counts` of refused rows; the capture converter writes through `save_library` |
+| `secondaries.component.*` | `mu2efastsim.component_response` (LIB2) | exact entrance states; trials | in memory only | labels only | `UnsupportedEntrance` raises | **done** (#185): `save_library` / `load_library` (kind `replay`, `bank_admissible` false), `domain_counts` of refused rows; the capture converter writes through `save_library`. Replay in float32 or float64 (`dtype`, float64 the reference): same trials, outputs rounded to float32 |
 | `flash.response.*` | (being designed) | species × E × start z, r in the source volume × cos θ × u_r | — | — | — | first native user (agreed, section 8): written with `store.save` once the response campaign is tabulated |
 
 ## 8. Native users
@@ -351,3 +359,10 @@ the energy), it rises with photon energy and is nearly flat in z. Under this cor
 - **manifest completeness**: the bank is admissible only when its manifest is complete. The capture's open items
   (physics-list, material and cut hashes, energy accounting) are exactly its `unrecorded` fields until they close;
 - **validation**: nominal and moved or rotated reference modules, with the vocabulary above.
+- **name**: `secondaries.component.<geometry>`, extended by a configuration (`.<pattern>.<state>` or a campaign
+  label) whenever banks of one component differ in content, so that no two banks share `name@version`;
+- **writer**: `save_library` takes provenance, `version`, the name's configuration and the validation `status` and
+  `record` from the caller. What the replay code defines (kind, axes, outputs, dtype, rng, domain) and
+  `bank_admissible` cannot be replaced;
+- **dtypes**: replay in float64 (the reference) or float32. The match and the draw are float64 in both, so the trials
+  are the same.

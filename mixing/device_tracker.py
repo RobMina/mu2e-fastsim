@@ -31,10 +31,13 @@ class Capacities:
     flat_saturation_pool: str = None
     flat_saturation_tiles: str = None
     pack_sort: str = None
+    electronics_launches: str = None
+    narrow_tier: str = None
 
     def __post_init__(self):
         optional = ("long_steps", "clusters_per_long_step", "end_tiers", "charge_blocks_per_launch", "flat_clusters",
-                    "minion_steps", "minion_unroll", "minion_search", "pack_sort")
+                    "minion_steps", "minion_unroll", "minion_search", "pack_sort", "electronics_launches",
+                    "narrow_tier")
         for name, value in vars(self).items():
             if name == "end_tiers" or (name in optional and value is None):
                 continue
@@ -58,6 +61,14 @@ class Capacities:
                 if value is not None and (type(value) not in (int, float) or not 0 < value <= self.pairs_per_straw):
                     raise ValueError("tracker digit_entries_per_straw must be in (0, pairs_per_straw]")
                 continue
+            if name == "electronics_launches":
+                if value not in ("all", "live"):
+                    raise ValueError("tracker electronics_launches must be 'all' or 'live'")
+                continue
+            if name == "narrow_tier":
+                if value not in ("positions", "compact"):
+                    raise ValueError("tracker narrow_tier must be 'positions' or 'compact'")
+                continue
             if name == "pack_sort":
                 if value not in ("lexsort", "packed"):
                     raise ValueError("tracker pack_sort must be 'lexsort' or 'packed'")
@@ -66,6 +77,8 @@ class Capacities:
                 raise ValueError(f"tracker {name} must be a positive integer")
         if self.flat_saturation_pool in ("tier", "auto") and self.digit_entries_per_straw is None:
             raise ValueError("tracker flat_saturation_pool needs the flat digitisation (digit_entries_per_straw)")
+        if self.narrow_tier == "compact" and self.end_tiers is None:
+            raise ValueError("tracker narrow_tier 'compact' needs end_tiers")
         if self.straws % self.electronics_batch:
             raise ValueError("tracker straws must be a multiple of electronics_batch")
         if (self.long_steps is None) != (self.clusters_per_long_step is None):
@@ -559,6 +572,15 @@ def prepare(c, capacities, batch_events):
         return packed, {"straws": nstraw > cap.straws,
                         "clusters_per_end": jnp.any(counts > cap.clusters_per_end)}
 
+    def launches(block, groups):
+        """The electronics launches of one kernel shape in sequence. electronics_launches "live" skips a launch with no
+        live straw (the straw-keyed draws of the others do not depend on it); its rows are empty (mask False)."""
+        if cap.electronics_launches != "live":
+            return lax.map(block, groups)
+        shapes = jax.eval_shape(block, tuple(g[0] for g in groups))
+        empty = lambda _: jax.tree_util.tree_map(lambda x: jnp.zeros(x.shape, x.dtype), shapes)
+        return lax.map(lambda inputs: lax.cond(jnp.any(inputs[8]), block, empty, inputs), groups)
+
     def electronics(packed, key, assets):
         batch = cap.electronics_batch
         groups = tuple(value.reshape((-1, batch) + value.shape[1:]) for value in packed)
@@ -566,7 +588,7 @@ def prepare(c, capacities, batch_events):
             t, q, w, step, count, us, ra, skey, live, jitter, endtdc, lengths = inputs
             return electronics_call(electronics_kernel, assets["electronics_kernel"], key, t, q, w, step, count,
                                     cap.clusters_per_end, batch, us, ra, skey, live, jitter, endtdc, lengths)
-        result = lax.map(block, groups)
+        result = launches(block, groups)
         result = saturate_pooled(result, electronics_pool, assets.get("electronics_pool"))
         output = {name: result[name].reshape((-1,) + result[name].shape[3:])
                   for name in ("adc", "tdc", "tot", "pmp", "step", "t_analog")}
@@ -641,7 +663,12 @@ def prepare(c, capacities, batch_events):
 
         edges = [cap.clusters_per_end] + [width for _, width in cap.end_tiers]
         tier = jnp.searchsorted(jnp.array(edges), busiest, side="left")   # 0 = narrow, k = end_tiers[k-1]
-        packed = [gather(jnp.arange(cap.straws), live & (tier == 0), cap.clusters_per_end)]
+        narrow = live & (tier == 0)
+        if cap.narrow_tier == "compact":   # the narrow straws first, so their launches are full and the rest empty
+            packed = [gather(jnp.nonzero(narrow, size=cap.straws, fill_value=0)[0],
+                             jnp.arange(cap.straws) < narrow.sum(), cap.clusters_per_end)]
+        else:
+            packed = [gather(jnp.arange(cap.straws), narrow, cap.clusters_per_end)]
         errors = {"straws": nstraw > cap.straws, "clusters_per_end": jnp.any(live & (busiest > edges[-1]))}
         for k, (straws, width) in enumerate(cap.end_tiers, start=1):
             member = live & (tier == k)
@@ -660,7 +687,7 @@ def prepare(c, capacities, batch_events):
                 t, q, w, step, count, us, ra, skey, live, jitter, endtdc, lengths = inputs
                 return electronics_call(kernel, kernel_assets, key, t, q, w, step, count, width, batch,
                                         us, ra, skey, live, jitter, endtdc, lengths)
-            result = lax.map(block, groups)
+            result = launches(block, groups)
             result = saturate_pooled(result, pool, pool_assets)
             out = {name: result[name].reshape((-1,) + result[name].shape[3:])
                    for name in ("adc", "tdc", "tot", "pmp", "step", "t_analog")}

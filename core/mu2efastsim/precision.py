@@ -93,9 +93,9 @@ def host(tree):
 
 def provenance():
     """Precision and accelerator of this process, for output metadata: device float, GPU determinism setting
-    (determinism.state()), JAX backend, device models."""
-    from . import determinism
-    out = {"device_float": NAME, "deterministic": determinism.state()}
+    (determinism.state()), device-loop setting (devloops.state()), JAX backend, device models."""
+    from . import determinism, devloops
+    out = {"device_float": NAME, "deterministic": determinism.state(), "device_loops": devloops.state()}
     if SINGLE:
         out["matmul_precision"] = MATMUL
     try:

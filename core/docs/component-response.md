@@ -42,18 +42,24 @@ All tables are dictionaries of NumPy arrays with a shared first dimension. Three
 - Bank steps: `particle`, `volume`, `x0`, `x1`, `p0`, `p1`, `t0`, `t1`, `length`, `edep`. Particle and volume IDs are
   local, positions are inside the envelope, times are relative to entrance and energy is raw, not quenched/visible.
   The exporter must include relevant passive deposits if these rows are used for a complete energy ledger.
-- Bank exits: `particle`, `position`, `momentum`, `energy`, `time`; positions lie on the boundary, momentum points
-  outward and time is relative to entrance. Emission positions inside the component are not exits.
+- Bank exits: `particle`, `position`, `momentum`, `energy`, `time`; positions lie on the boundary and time is
+  relative to entrance. Emission positions inside the component are not exits. The momentum is the recorded
+  post-step momentum. It usually points outward, but multiple scattering over the last, boundary-limited step can
+  turn it back in (low-energy e±). Such an exit is a Geant4 exit followed by an immediate re-entry:
+  `next_in_vacuum` hands it back to the same placement at distance 0. Replay then needs that entrance state in the
+  bank and otherwise refuses it as `UnsupportedEntrance`.
+- Step lengths are Geant4's true path lengths, and the endpoints include the multiple-scattering lateral
+  displacement, so `|x1 - x0|` can exceed `length`. Both are kept as recorded; no chord rule is applied.
 
 `Library` validates array shape, finite values, offsets, local ancestry, root species, envelope containment and
-entry/exit directions. It checks geometry/physics compatibility before sampling. These checks do not establish
+entry directions and exits on the boundary. It checks geometry/physics compatibility before sampling. These checks do not establish
 export completeness or Geant4 validity. The exporter must record stopped energy, material rest-mass exchange and
 other terminal terms separately before an energy-closure claim is possible. Total incoming energy is **not** simply
 sum(deposits)+sum(outgoing total energy) for all species/interactions without those terms.
 
 ## Replay and selection
 
-`replay(library, placement, incoming, interaction, rng, next_track=...)`:
+`replay(library, placement, incoming, interaction, rng, next_track=..., dtype=float64)`:
 
 1. Transforms incident positions/momenta to local coordinates.
 2. Matches the local entrance state to recorded trials, allowing only fixed floating-point roundoff tolerances.
@@ -72,6 +78,12 @@ The result contains `particles`, `steps`, `exits`, selected trial indices and `n
 fields accompany all rows. A surviving primary keeps its track ID. New tracks keep their actual sampled parents,
 including stopped/interacted ancestors. Null steps/exits are typed empty arrays, not omitted incoming trials.
 Input arrays are copied on library/placement construction; replay does not modify the bank or incoming states.
+
+`dtype` (float64 by default, or float32) is the dtype of the real outputs: positions, momenta, times, lengths, deposits
+and exit energies. The validation, the entrance match and the trial draw run in float64 in both dtypes. The same inputs
+therefore give the same trials, particle tree, track IDs and refusals. float32 differs from float64 only by float32
+rounding of the placement transform and the time shift; lengths, deposits and exit energies are the float32 casts of
+the recorded values. float64 is the reference; the float32 path is the same host code, and there is no device path.
 
 `next_in_vacuum(particles, placements)` is a small **field-free vacuum-only handoff** for outside-to-box entries,
 not a replacement for GDML material or field transport. It returns nearest forward entries and their source indices;

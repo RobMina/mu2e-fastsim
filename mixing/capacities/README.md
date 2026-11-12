@@ -19,7 +19,7 @@ NeutralsFlash pools at the stock intensity law.
 - **Layout choices** were picked by timing sweeps:
   - `clusters_per_step` 64 with long steps gathered to 1,109;
   - `clusters_per_end` 24 with end tiers at 64, 192, 768, 1,536 and 6,144 clusters;
-  - 16 charge blocks per launch;
+  - 16 charge blocks per launch (128 in the batch-256 files: 12 launches instead of 92 per batch);
   - scatter CRV waveforms.
 - The two widest end tiers keep at least 256 and 16 straws, above their measured demand.
 - `run1a_mix1bb_batch256.json` comes from its own census: 42 batches of 256 events, margin 1.25. Its SiPM cross-talk
@@ -45,6 +45,11 @@ NeutralsFlash pools at the stock intensity law.
   float32 only); exact in both dtypes; it has no size.
 - **`flat_saturation_tiles: "bounded"`**: with the pool, each saturation chunk runs only the response tiles its ends
   need (exact); it has no size.
+
+- **`electronics_launches: "live"` and `narrow_tier: "compact"`** (batch-256 files; see
+  [../DEVICE_TRACKER.md](../DEVICE_TRACKER.md)): the narrow tier's live straws first and launches without a live
+  straw skipped. They have no size and change the time, not the digis; with them the largest per-launch
+  digitisation demand is 0.93-0.95 entries per straw, inside `digit_entries_per_straw`.
 
 - **`output.tracker_rows`** (batch-256 files): the tracker digi rows downloaded per batch, 229,376: 1.39 times the
   largest demand (164,716 digis in one batch of 256) over full development and held-out passes in float32 and
