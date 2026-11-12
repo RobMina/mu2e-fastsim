@@ -1,5 +1,5 @@
-"""Device-loop setting (mu2efastsim.devloops): off by default; on, importing the package appends the XLA
-command-buffer flag unless the user set it; each case runs in a subprocess because the setting acts at import."""
+"""Device-loop setting (mu2efastsim.devloops): on by default, importing the package appends the XLA command-buffer
+flag unless the user set it or the setting is off; each case runs in a subprocess because the setting acts at import."""
 import json
 import os
 import subprocess
@@ -26,16 +26,17 @@ def probe(**env):
     return json.loads(r.stdout.strip().splitlines()[-1])
 
 
-def test_default_leaves_flags():
-    out = probe(XLA_FLAGS="--a=1")
+@pytest.mark.parametrize("off", ["0", "false", "off"])
+def test_setting_off_leaves_flags(off):
+    out = probe(MU2EFS_DEVICE_LOOPS=off, XLA_FLAGS="--a=1")
     assert out["flags"] == "--a=1"
     assert out["state"] == {"requested": False, "flag_source": "none", "late": False,
                             "xla_gpu_enable_command_buffer": None}
 
 
-@pytest.mark.parametrize("on", ["1", "true", "on"])
-def test_setting_on_appends_flag(on):
-    out = probe(MU2EFS_DEVICE_LOOPS=on, XLA_FLAGS="--a=1")
+@pytest.mark.parametrize("on", [None, "1", "true", "on"])
+def test_default_and_on_append_flag(on):
+    out = probe(XLA_FLAGS="--a=1", **({} if on is None else {"MU2EFS_DEVICE_LOOPS": on}))
     assert out["flags"] == "--a=1 --xla_gpu_enable_command_buffer=+CONDITIONAL,+WHILE"
     assert out["state"] == {"requested": True, "flag_source": "setting", "late": False,
                             "xla_gpu_enable_command_buffer": "+CONDITIONAL,+WHILE"}

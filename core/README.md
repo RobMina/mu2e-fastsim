@@ -21,7 +21,7 @@ from a clone of that repository. Code only: no Mu2e-internal conditions, tables,
 | device precision (`precision`) | float32 by default in the CRV device kernels (`MU2EFS_DEVICE_FLOAT`; float64 one variable away); beam, tracker and host code stay float64 |
 | response and interaction libraries (`library`) | shared core of every subsystem library: manifest, hashing, checked loader, registry and release assets, axes and binning, out-of-domain accounting, validation records and the common fidelity/performance vocabulary ([`docs/libraries.md`](docs/libraries.md)); the tracker row pools (`tracker.nrow.run1a`) are on it |
 | GPU determinism (`determinism`) | XLA autotuning off by default (`MU2EFS_DEVICE_DETERMINISTIC`), so device output repeats run to run on one GPU kind; recorded in the precision provenance |
-| Device-side loops (`devloops`) | off by default; `MU2EFS_DEVICE_LOOPS=1` runs XLA loops and conditionals inside GPU command buffers instead of from the host; recorded in the precision provenance |
+| Device-side loops (`devloops`) | on by default (`MU2EFS_DEVICE_LOOPS`): XLA runs loops and conditionals inside GPU command buffers instead of from the host; recorded in the precision provenance |
 
 Details: [`docs/validation.md`](docs/validation.md), [`docs/limitations.md`](docs/limitations.md).
 
@@ -65,7 +65,7 @@ More: [`docs/running.md`](docs/running.md) (install, input verification, the kit
 | `mu2efastsim/endpoints/` | Mu2e configuration of the [hep-endpoints](https://github.com/RobMina/hep-endpoints) adapters (Slurm over ssh with automatic GPU type: MIG slice for one-GPU jobs up to 32 GB; EAF; kit host only) and the Mu2eBO kit |
 | `mu2efastsim/precision.py` | device float of the JAX kernels (`MU2EFS_DEVICE_FLOAT`), scoped to registered modules and `precision.jit` kernels |
 | `mu2efastsim/determinism.py` | GPU run-to-run determinism: appends `--xla_gpu_autotune_level=0` to `XLA_FLAGS` when the package is imported (`MU2EFS_DEVICE_DETERMINISTIC=0` turns it off) |
-| `mu2efastsim/devloops.py` | device-side loops: with `MU2EFS_DEVICE_LOOPS=1`, appends `--xla_gpu_enable_command_buffer=+CONDITIONAL,+WHILE` to `XLA_FLAGS` when the package is imported |
+| `mu2efastsim/devloops.py` | device-side loops: appends `--xla_gpu_enable_command_buffer=+CONDITIONAL,+WHILE` to `XLA_FLAGS` when the package is imported (`MU2EFS_DEVICE_LOOPS=0` turns it off) |
 | `mu2efastsim/site.py`, `inputs.py` | site configuration from the environment; input manifest check and fetch |
 | `mu2efastsim/testing.py`, `testselect.py`, `ci/` | shared pytest hooks, the site-path checker, test selection, CI pins and helpers |
 | `uva/`, `aurora/`, `iri/`, `eaf/` | endpoint job scripts (UVA Slurm, ALCF Aurora, ALCF Polaris IRI, Fermilab EAF) |

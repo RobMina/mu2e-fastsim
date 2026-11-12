@@ -163,7 +163,8 @@ batch's straws, so a real batch of 256 fills 26 of its 34 launches to about 77 %
   unchanged.
 
 Both change the time, not the digis. Over full development and held-out passes at batch 256, with the device-loop
-setting on (core `MU2EFS_DEVICE_LOOPS`), the output files are identical to the default path for CRV float32 and
+setting on (core `MU2EFS_DEVICE_LOOPS`, the default), the output files are identical to those without the two keys and
+without device loops for CRV float32 and
 float64 with the float64 tracker, and for the float32 tracker. Measured on one batch of 256 (A100): tracker apply
 0.351 -> 0.340 s (float64), 0.366 -> 0.360 s (float32). Launches of 4,096, 16,384, 32,768 or 65,536 straws were
 slower, and above 8,192 they change float32 ADC counts (the saturation chunks follow the launch size).
