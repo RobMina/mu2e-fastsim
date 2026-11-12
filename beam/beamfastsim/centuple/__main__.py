@@ -128,7 +128,7 @@ def cmd_point(a):
     from .. import cesob
     from ..__main__ import main as beam_main, MAPS, OFFLINE_ROOT
     from ..edepana import _mu_minus_stops
-    from . import assemble, record
+    from . import assemble, record, trigcal
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     d = {k: os.path.join(a.data, v) for k, v in DATA.items()}
@@ -149,11 +149,14 @@ def cmd_point(a):
                         gdml=d["gdml"], library=d["library"], calo_response=d["calo_response"], digi_cond=d["digi_cond"], geom=a.geom,
                         dtype=a.dtype, edge_library=d["edge"], response="onspill")
     py = [sys.executable, "-m", "beamfastsim.centuple"]
+    # the on-spill trigger table (trigcal) replaces the off-spill response layer: device decisions without it
+    tcal = None if a.trigger_cal == "none" else (a.trigger_cal or str(trigcal.SHIPPED))
+    resp = [] if tcal else ["--response", d["trig_response"]]
     subprocess.run(py + ["trigger", "--digis", str(out / record.DIGIS), "--out", str(out), "--menu", d["menu"],
-                         "--conditions", d["conditions"], "--tc-mva", d["tc_mva"], "--response", d["trig_response"],
+                         "--conditions", d["conditions"], "--tc-mva", d["tc_mva"], *resp,
                          "--precision", a.dtype], check=True)
     plan, pmeta = assemble.build(out / record.RECORD, d["donor"], out, trigger=out / "centuple_trigger.npz",
-                                 seed=a.seed)
+                                 seed=a.seed, trigger_cal=tcal)
     files = [os.path.join(a.data, "donor", f) for f in pmeta["donor_files"]]
     env = dict(os.environ, CENTUPLE_PYTHONPATH=str(Path(__file__).resolve().parents[2]))
     here = Path(__file__).resolve().parent
@@ -260,6 +263,8 @@ def main(argv=None):
     q.add_argument("--offline-root")
     q.add_argument("--maps", nargs=2)
     q.add_argument("--keep", action="store_true")
+    q.add_argument("--trigger-cal", help="on-spill trigger table (default: the shipped trigcal table; 'none': the "
+                                         "off-spill response layer of the data directory)")
     q.set_defaults(fn=cmd_point)
     a = p.parse_args(argv)
     a.fn(a)

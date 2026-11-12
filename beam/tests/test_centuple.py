@@ -192,3 +192,13 @@ def test_trigcal_apply_shares_one_uniform_and_keeps_unlisted_paths():
     assert np.all(out[out[:, 1], 0])
     again = trigcal.apply(lib, ["a", "b", "c"], raw, cls, rng.uniform(400, 1700, n), run, sub, ev, 7)
     np.testing.assert_array_equal(again, out)
+
+
+def test_shipped_trigcal_table_loads_and_is_bounded():
+    from beamfastsim.centuple import trigcal
+    lib = trigcal.load(trigcal.SHIPPED)
+    paths = [str(p) for p in lib["paths"]]
+    assert "apr_TrkDe_80m70p" in paths and "tpr_TrkDe_80m70p" in paths
+    assert lib["keep"].shape == lib["rescue"].shape == (len(paths), 3, len(lib["tbirth_edges"]) - 1)
+    for k in ("keep", "rescue"):
+        assert np.all((lib[k] >= 0) & (lib[k] <= 1))

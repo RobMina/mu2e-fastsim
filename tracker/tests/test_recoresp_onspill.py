@@ -10,8 +10,9 @@ def test_onspill_table_loads_with_its_own_manifest():
     tab = RT.load(RT.resolve("onspill"))
     from mu2efastsim.library import store as LS
     lib = LS.load(RT.resolve("onspill"))
-    assert lib.name == "tracker.response.ce_loophelix.onspill_pools.run1a"
+    assert lib.name == "tracker.response.ce_loophelix.onspill_pools_all.run1a"
     assert "pool_res" in tab and "time_eff" in tab and list(tab["time_plateau"]) == [500.0, 1400.0]
+    assert "pool_dir" in tab                                  # pools of every fitted track (quality on the draw)
     e, eff = np.asarray(tab["time_edges"]), np.asarray(tab["time_eff"])
     lo = e[:-1]
     assert eff[lo < 350].max() < 0.01                       # no tracks before the on-spill digitization window

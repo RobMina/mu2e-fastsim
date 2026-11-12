@@ -28,6 +28,7 @@ import numpy as np
 from . import donor as D
 
 NAME = "trigger.centuple_onspill"
+SHIPPED = Path(__file__).with_name("data") / "trigcal_run1a_onspill.npz"
 CLASSES = (D.CLASS_N, D.CLASS_F, D.CLASS_Q)
 EDGES = (-1e9, 300, 400, 450, 500, 550, 600, 700, 800, 900, 1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800,
          2000, 2200, 2500, 1e9)
