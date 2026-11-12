@@ -86,6 +86,43 @@ the mean `event_trk_edep` per stored and per generated event, printed as `std::c
 
 ## Validation
 
-Pending: M. MacKenzie's `approx_ce_sensitivity` (unchanged, at the commit the design studies pin) on fast and stock
-files of the 65 Geant4-evaluated design points, with predeclared pass marks. This section is filled in with the
-numbers.
+**Method.** M. MacKenzie's `approx_ce_sensitivity`, unchanged at the commit the design studies pin, was run on:
+- the stock `ce_edep` file of each Geant4-evaluated design point (1.125 M generated CE each);
+- a fast file of the same design: 100,000 CE resampled from the point's fast stops, calorimeter model
+  `library+edge`.
+
+Both sides use the design's Geant4 `stops_per_pot`, so only the EdepAna file differs. The stock side reproduces the
+design studies' sensitivity values exactly.
+
+**Points.** Two points were used for development and are excluded.
+- float64: the held-out points whose fast run finished in the allotted GPU time, 55 of 63.
+- float32: a fixed subset of 18 held-out points.
+
+**Pass marks**, fixed before any held-out result was read:
+
+| Fast / stock, held-out points | Pass mark | float64 (55) | float32 (18) |
+|---|---|---|---|
+| S/sqrt(B), mean | 1 ± 0.020 | 0.9826 ± 0.0004 | 0.9825 ± 0.0007 |
+| S/sqrt(B), point-to-point rms | ≤ 0.010 | 0.0032 | 0.0032 |
+| S/sqrt(B), Spearman rank correlation | ≥ 0.98 | 0.997 | 0.998 |
+| CE acceptance (`event_calo_edep_vis > 10` per generated) | 1 ± 0.020 | 0.9861 ± 0.0003 | 0.9862 ± 0.0006 |
+| signal shape (`primary_trk_front_energy`, 0.2 MeV bins), median χ²/ndf | < 3 | 1.29 | 1.23 |
+| `edep` event rate (stored per generated) | 1 ± 0.030 | 0.9823 ± 0.0003 | 0.9823 ± 0.0005 |
+
+All marks pass in both dtypes, and float32 and float64 agree within their errors.
+
+Also measured, without a pass mark (float64):
+- **Where the offset comes from.** Fast is low by 1.7 %. That follows the stored fraction (0.982) and the acceptance
+  (0.986), i.e. CE electrons the fast chain loses at the tracker or at the calorimeter inner edge.
+- **Signal window.** Equal to stock at 87 % of the points; the low edge is lower by 0.03 MeV on average. The MPV and
+  FWHM agree within one 0.2 MeV bin, and the total background is 1.015 of stock.
+- **`edep` averages.** Calorimeter energy per event 1.012; tracker energy per event 0.725, low as expected without
+  delta rays.
+- **Shapes.** `event_calo_edep_vis` per stored event agrees within 0.9-1.05 up to 100 MeV.
+  - The `primary_start_z` / `primary_start_r` shapes differ by a few percent per bin. They follow the finite set of
+    fast stops behind each file (about 6,000 per point).
+  - The selection efficiency conditional on z or r agrees with stock within 1 % in every bin.
+- **Fast stops too.** With the fast `stops_per_pot` (0.996 of Geant4) as well, the sensitivity ratio is
+  0.978 ± 0.001 and the Spearman correlation 0.995.
+- **Compared with `beam_sob`.** `beam_sob` was 0.8 % high in this ratio; the two use different calorimeter acceptance
+  models, so the offsets differ.
