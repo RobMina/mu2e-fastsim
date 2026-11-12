@@ -9,6 +9,7 @@ from mu2efastsim import capture, capture_library, component_response as cr
 from mu2efastsim.library import store
 from test_capture import BIG, tables  # noqa: F401 -- reuse the shared synthetic capture fixture
 from test_capture_links import add_birth_exit, make_links
+from test_component_replay_dtype import agreement
 
 ENERGY = 10.
 
@@ -111,30 +112,6 @@ def test_cli_records_given_provenance(tmp_path, tables, capsys):
     assert manifest["source"]["samples"][0]["supplied"] == ["placement"]
     assert "supplied" not in manifest["geometry"] and "hash" in manifest["geometry"]["recorded"]
     assert cr.load_library(tmp_path / "bank.npz").entrances["pdg"].tolist() == [13, 13]
-
-
-def test_loaded_bank_replays_bit_for_bit(tmp_path, tables):
-    tables, links = bankable(tables)
-    path = write(tmp_path / "capture.root", tables, links)
-    library, provenance = capture_library.library_from_captures([path], 2, relative_to=tmp_path)
-    cr.save_library(tmp_path / "bank.npz", library, **provenance)
-    loaded = cr.load_library(tmp_path / "bank.npz")
-    e, t = tables["events"], tables["tracks"]
-    p = np.flatnonzero(t["parent"] == 0)[1]
-    placement = cr.Placement(library.component, 3, e["rotation"][1].reshape(3, 3), e["translation"][1],
-                             np.array([7], dtype=np.int64))
-    n = 16
-    incoming = dict(event=np.column_stack([np.zeros(n, int), np.zeros(n, int), np.arange(n)]), track=np.ones(n, int),
-                    parent=np.full(n, -1), pdg=np.full(n, 13, dtype=np.int64),
-                    position=np.repeat(capture.vectors(t, "entrance_", "xyz")[[p]], n, 0),
-                    momentum=np.repeat(capture.vectors(t, "entrance_p", "xyz")[[p]], n, 0),
-                    energy=np.full(n, ENERGY), time=np.full(n, 5.))
-    a, b = (cr.replay(lib, placement, incoming, np.zeros(n, int), np.random.default_rng(11), next_track=2)
-            for lib in (library, loaded))
-    assert np.array_equal(a.trials, b.trials) and a.next_track == b.next_track and len(set(a.trials)) == 2
-    for name in ("particles", "steps", "exits"):
-        x, y = getattr(a, name), getattr(b, name)
-        assert set(x) == set(y) and all(np.array_equal(x[k], y[k]) and x[k].dtype == y[k].dtype for k in x)
 
 
 def test_dataset_outside_the_named_tree_is_refused(tmp_path, tables):
@@ -249,3 +226,47 @@ def test_volume_placements_within_tolerance_but_different_hash_are_refused(tmp_p
     second = write(tmp_path / "b.root", tables, links)
     with pytest.raises(ValueError, match="different volume inventory"):
         capture_library.library_from_captures([first, second], 2, relative_to=tmp_path)
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_loaded_bank_replays_bit_for_bit_in_each_dtype(tmp_path, tables, dtype):
+    tables, links = bankable(tables)
+    path = write(tmp_path / "capture.root", tables, links)
+    library, provenance = capture_library.library_from_captures([path], 2, relative_to=tmp_path)
+    cr.save_library(tmp_path / "bank.npz", library, **provenance)
+    loaded = cr.load_library(tmp_path / "bank.npz")
+    e, t = tables["events"], tables["tracks"]
+    p = np.flatnonzero(t["parent"] == 0)[1]
+    placement = cr.Placement(library.component, 3, e["rotation"][1].reshape(3, 3), e["translation"][1],
+                             np.array([7], dtype=np.int64))
+    n = 16
+    incoming = dict(event=np.column_stack([np.zeros(n, int), np.zeros(n, int), np.arange(n)]), track=np.ones(n, int),
+                    parent=np.full(n, -1), pdg=np.full(n, 13, dtype=np.int64),
+                    position=np.repeat(capture.vectors(t, "entrance_", "xyz")[[p]], n, 0),
+                    momentum=np.repeat(capture.vectors(t, "entrance_p", "xyz")[[p]], n, 0),
+                    energy=np.full(n, ENERGY), time=np.full(n, 5.))
+
+    def run(lib, dt):
+        return cr.replay(lib, placement, incoming, np.zeros(n, int), np.random.default_rng(11), next_track=2, dtype=dt)
+
+    a, b = run(library, dtype), run(loaded, dtype)
+    assert np.array_equal(a.trials, b.trials) and a.next_track == b.next_track and len(set(b.trials)) == 2
+    for name in ("particles", "steps", "exits"):
+        x, y = getattr(a, name), getattr(b, name)
+        assert set(x) == set(y) and all(x[k].tobytes() == y[k].tobytes() and x[k].dtype == y[k].dtype for k in x)
+    # The reference is the default-dtype replay, so the float64 case also checks the explicit path against it.
+    reference = cr.replay(loaded, placement, incoming, np.zeros(n, int), np.random.default_rng(11), next_track=2)
+    assert np.array_equal(b.trials, reference.trials)
+    for name in ("particles", "steps", "exits"):
+        x, y = getattr(b, name), getattr(reference, name)
+        for k in y:
+            if np.asarray(y[k]).dtype.kind == "f":
+                assert np.asarray(x[k]).dtype == np.dtype(dtype), (name, k)
+            else:
+                assert np.asarray(x[k]).tobytes() == np.asarray(y[k]).tobytes(), (name, k)
+    if np.dtype(dtype) == np.float64:
+        for name in ("steps", "exits"):
+            assert all(getattr(b, name)[k].tobytes() == getattr(reference, name)[k].tobytes() for k in getattr(reference, name))
+    else:
+        report = agreement(reference, b, placement, incoming["time"], loaded)
+        assert report and all(r["over_bound"] == 0 for r in report.values()), report
