@@ -57,6 +57,9 @@ _UNITS = {
     "tracker_entry": "count", "tracker_exit": "count", "disk_front": "count", "side_candidates": "count",
     "side_accepted": "count", "wall_front": "count", "edge_entry": "count", "below_rmax": "count",
     "library_fallback": "count", "stored": "count",
+    # beam_centuple: ce_chain counts of the written EventNtuple and the chain's counters
+    "n_selected": "events", "n_triggered": "events", "efficiency": "fraction", "n_generated": "events",
+    "class_Q": "count", "class_F": "count", "class_N": "count",
 }
 
 
@@ -110,7 +113,7 @@ def _routes(task):
             rows[1]["when"] = {"tables": ["vr5"]}
             rows[0]["reason"] = "tables=all requires the mounted FNAL/EAF route."
         return rows
-    if task in ("chain", "regression", "veto_c4"):
+    if task in ("chain", "regression", "veto_c4", "beam_centuple"):
         return [{"name": "mounted", "requires": ["fnal_data"]}]
     return [{"name": "plain", "requires": []}]
 
@@ -255,7 +258,7 @@ def describe_tasks(tasks, chainpoint_module):
             _set(metrics, metrics, "conditional", "Metric must be present in the producer's benchmark JSON.")
         result[task] = {"metrics": metrics, "metric_rules": rules, "metric_patterns": patterns,
                         "configurations": configs, "route_requirements": _routes(task),
-                        "file_kinds": ["geom"] if task in ("beam_point", "beam_sob", "beam_edep") else [],
+                        "file_kinds": ["geom"] if task in ("beam_point", "beam_sob", "beam_edep", "beam_centuple") else [],
                         "validation_scope": deepcopy(_SCOPE)}
     return result
 

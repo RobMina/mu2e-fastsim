@@ -542,3 +542,10 @@ def test_beam_edep_mounted_body_runs_the_writer_on_the_gpu():
     assert t.resources.gpus == 1 and t.defaults == {"dtype": "float64"} and "beam_edep" in kitmod.FNAL_TASKS
     assert "-m beamfastsim.edepana point" in t.body and kit_task.EDEP_LIBRARY in t.body and "@p_dtype@" in t.body
     assert kit_task.EDEP_EDGE in t.body and '--edge-library "$EE"' in t.body
+
+
+def test_beam_centuple_mounted_body_runs_the_point_on_the_gpu():
+    t = kitmod.TASKS["beam_centuple"]
+    assert t.resources.gpus == 1 and t.defaults == {"dtype": "float64"} and "beam_centuple" in kitmod.FNAL_TASKS
+    assert "-m beamfastsim.centuple point" in t.body and "@p_dtype@" in t.body and "/cvmfs" in t.body
+    assert kit_task.CENT_DIR in t.body and set(t.params) == set(kit_task.CENT_PARAMS)

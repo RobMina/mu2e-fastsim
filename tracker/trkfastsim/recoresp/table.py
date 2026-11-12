@@ -116,7 +116,8 @@ def _copula(rows):
 
 
 def build(df, nrow_edges=NROW_EDGES, tandip_edges=TANDIP_EDGES, min_count=40, min_eff=10, axis_xy=(-3904.0, 0.0),
-          bz=1.0, pools=False, pool_max=POOL_MAX, reference="", config=None):
+          bz=1.0, pools=False, pool_max=POOL_MAX, reference="", config=None, time_edges=TIME_EDGES,
+          plateau=(T_PLATEAU, np.inf)):
     """Response tables from the reference events df (one row per generated event): has_entry, nrow, p_true, tandip_t,
     d0_t, rmax_t (entry truth), fit (bool), and for fitted tracks p_reco, pz, tandip, d0, rmax, pdg, fitcon, chi2ndf,
     nactive. Returns a dict of NumPy arrays (save with np.savez). pools (opt-in): also store each bin's pool for the
@@ -124,7 +125,10 @@ def build(df, nrow_edges=NROW_EDGES, tandip_edges=TANDIP_EDGES, min_count=40, mi
     wider than pool_max (a merged bin) keeps a fixed-seed subsample of pool_max tracks. reference: a provenance text
     (the reference arm and events) stored as `reference` when given. pools="all": pools of every fitted track,
     with `pool_dir` [M] (the direction part of the quality selection), for the run-time CE selection. config: a
-    recoresp.config manifest, stored as `config` (canonical JSON) and `config_hash`."""
+    recoresp.config manifest, stored as `config` (canonical JSON) and `config_hash`. time_edges, plateau (opt-in, e.g.
+    an on-spill digitisation window): the entry-time bins of the fit-efficiency turn-on and the window [lo, hi) of
+    entry times that sets its plateau and feeds the bin tables (default: TIME_EDGES and [T_PLATEAU, inf), as before;
+    with another window no bin is forced to 1)."""
     keep_pools = bool(pools)       # (the helper below is also called pools)
     all_tracks = isinstance(pools, str) and pools == "all"
     if isinstance(pools, str) and not all_tracks:
@@ -135,12 +139,15 @@ def build(df, nrow_edges=NROW_EDGES, tandip_edges=TANDIP_EDGES, min_count=40, mi
     if "t_t" in d:      # fit-efficiency turn-on in entry time (digitisation window), relative to the plateau
         tt = d.t_t.to_numpy(float)
         fit_all = d.fit.to_numpy(bool)
-        plat = fit_all[tt >= T_PLATEAU].mean()
-        it = np.clip(np.digitize(tt, TIME_EDGES) - 1, 0, len(TIME_EDGES) - 2)
+        default_window = tuple(time_edges) == tuple(TIME_EDGES) and tuple(plateau) == (T_PLATEAU, np.inf)
+        inwin = (tt >= plateau[0]) & (tt < plateau[1])
+        plat = fit_all[inwin].mean()
+        it = np.clip(np.digitize(tt, time_edges) - 1, 0, len(time_edges) - 2)
         teff = np.array([min(fit_all[it == k].mean() / plat, 1.0) if (it == k).any() else 1.0
-                         for k in range(len(TIME_EDGES) - 1)])
-        teff[-1] = 1.0
-        d = d[tt >= T_PLATEAU]                       # the bin tables: past the turn-on
+                         for k in range(len(time_edges) - 1)])
+        if default_window:
+            teff[-1] = 1.0
+        d = d[inwin]                                 # the bin tables: inside the plateau window
     bn = np.clip(np.digitize(d.nrow.to_numpy(float), nrow_edges) - 1, 0, ne - 1)
     bt = np.clip(np.digitize(d.tandip_t.to_numpy(float), tandip_edges) - 1, 0, nt - 1)
     fit = d.fit.to_numpy(bool)
@@ -206,7 +213,9 @@ def build(df, nrow_edges=NROW_EDGES, tandip_edges=TANDIP_EDGES, min_count=40, mi
     for k in icdf:
         out[f"icdf_{k}"] = icdf[k]
     if teff is not None:
-        out["time_edges"], out["time_eff"] = np.asarray(TIME_EDGES, float), teff
+        out["time_edges"], out["time_eff"] = np.asarray(time_edges, float), teff
+        if tuple(plateau) != (T_PLATEAU, np.inf):
+            out["time_plateau"] = np.asarray(plateau, float)
     if reference:
         out["reference"] = np.array(str(reference))
     if config is not None:
@@ -297,7 +306,10 @@ DEFAULT = FULLDTS
 # the conversion electron's own Geant4 steps only (the earlier default), on the same events and bins; and with pools
 CEONLY = Path(__file__).with_name("data") / "ce_loophelix_run1a.npz"
 POOLS = Path(__file__).with_name("data") / "ce_loophelix_run1a_pools.npz"
-NAMED = {"default": DEFAULT, "fulldts": FULLDTS, "ceonly": CEONLY, "pools": POOLS, "ceonly_pools": POOLS}
+# OnSpill digitization and reco (the production CE chain, e.g. Mu2eBO ce_chain), e- fits, with pools (opt-in)
+ONSPILL = Path(__file__).with_name("data") / "ce_loophelix_run1a_onspill_pools.npz"
+NAMED = {"default": DEFAULT, "fulldts": FULLDTS, "ceonly": CEONLY, "pools": POOLS, "ceonly_pools": POOLS,
+         "onspill": ONSPILL}
 
 
 # Tables of other stock configurations are not in git: a registry (data/registry.json) maps a stock-input hash
@@ -608,7 +620,7 @@ def apply_numpy(tab, rng, has_entry, nrow, x, p, q=-1.0, t=None):
     return obs
 
 
-def reference_events(gen_paths, truth_paths, steps_paths, nts_dir, axis_xy=(-3904.0, 0.0), bz=1.0):
+def reference_events(gen_paths, truth_paths, steps_paths, nts_dir, axis_xy=(-3904.0, 0.0), bz=1.0, fit_pdg=None):
     """Per generated event of the reference arm: entry truth (dumper tree `entries` of truth_paths), step rows
     (`sgsteps` of steps_paths) and the first fitted LoopHelix track of the EventNtuples under nts_dir
     (validation.cemom.read_arm). Denominator: the events of the `gen` trees of gen_paths."""
@@ -629,7 +641,7 @@ def reference_events(gen_paths, truth_paths, steps_paths, nts_dir, axis_xy=(-390
     tr = tr.rename(columns={"t": "t_t"}).assign(has_entry=True, p_true=pt, tandip_t=td, d0_t=d0, rmax_t=rm)
     st = keyed(tables.read_many(steps_paths, "sgsteps", KEY))
     nrow = st.groupby(KEY).size().rename("nrow").reset_index()
-    arm, _ = cemom.read_arm(nts_dir)
+    arm, _ = cemom.read_arm(nts_dir, fit_pdg)
     d = den.merge(tr, on=KEY, how="left").merge(nrow, on=KEY, how="left").merge(arm, on=KEY, how="left")
     d["has_entry"] = d.has_entry.fillna(False).astype(bool)
     d["nrow"] = d.nrow.fillna(0).astype(np.int64)
@@ -656,12 +668,20 @@ def main(argv=None):
                     help="also store each bin's pool for the empirical joint draw (opt-in; default copula + inverse CDFs); "
                          "'--pools all': pools of every fitted track, for the run-time CE selection")
     ap.add_argument("--config", help="recoresp.config manifest of the stock inputs (stored with its hash)")
+    ap.add_argument("--fit-pdg", type=int, help="count only fits of this hypothesis (an ntuple merging e+-/mu+- fits)")
+    ap.add_argument("--time-edges", type=float, nargs="+", help="entry-time bins of the turn-on [ns] (default TIME_EDGES)")
+    ap.add_argument("--plateau", type=float, nargs=2, help="entry-time window [lo, hi) of the plateau and bin tables")
     a = ap.parse_args(argv)
     dirs = sorted(sum((glob.glob(d) for d in a.steps_dirs), []))
     d = reference_events([f"{x}/states.root" for x in dirs], [f"{x}/g4entries.root" for x in dirs],
-                         [f"{x}/g4prim_field.root" for x in dirs], a.nts, bz=a.bz)
+                         [f"{x}/g4prim_field.root" for x in dirs], a.nts, bz=a.bz, fit_pdg=a.fit_pdg)
+    win = {}
+    if a.time_edges:
+        win["time_edges"] = tuple(a.time_edges)
+    if a.plateau:
+        win["plateau"] = tuple(a.plateau)
     tab = build(d, min_count=a.min_count, bz=a.bz, pools=a.pools, reference=a.reference,
-                config=None if a.config is None else RC.load(a.config))
+                config=None if a.config is None else RC.load(a.config), **win)
     save(a.out, tab)
     if a.events_out:
         d.to_csv(a.events_out, index=False)
