@@ -78,6 +78,14 @@ def calo_match(rec):
     return has, j
 
 
+def cluster_truth_time(ttrue, ctime, contact_t, valid):
+    """caloclustersmc.tprimary per cluster: the earliest true deposit (the contact time where none), folded by the
+    microbunch as the cluster's reco time is (stock folds the calorimeter MC times like the reco times)."""
+    tt = np.where(np.isfinite(ttrue), ttrue, np.asarray(contact_t, float)[:, None])
+    kc = np.round(np.nan_to_num(tt - ctime) / MBTIME)
+    return np.where(valid, tt - MBTIME * kc, 0.0)
+
+
 def build(record, donor_lib, out, *, trigger=None, seed=20261111, trigger_cal=None):
     """Write plan (npz) for every event of the record. Returns the path and counters."""
     rec = dict(np.load(record))
@@ -165,8 +173,7 @@ def build(record, donor_lib, out, *, trigger=None, seed=20261111, trigger_cal=No
         # cluster truth per crystal: the visible energy of the sampled shower steps in the cluster's hit crystals and
         # the earliest of their times (inner-edge clusters: the table's visible energy and the contact time)
         plan["cl_etot"] = np.where(rec["cl_valid"], rec["cl_etrue"], 0.0)
-        tt = rec["cl_ttrue"]
-        plan["cl_tprim"] = np.where(rec["cl_valid"], np.where(np.isfinite(tt), tt, rec["calo_contact_t"][:, None]), 0.0)
+        plan["cl_tprim"] = cluster_truth_time(rec["cl_ttrue"], rec["cl_time"], rec["calo_contact_t"], rec["cl_valid"])
     else:
         # records without it: the drawn shower's visible energy, shared by the clusters in proportion to their energy
         ev_cl = np.where(rec["cl_valid"], rec["cl_energy"], 0.0)

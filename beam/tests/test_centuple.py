@@ -202,3 +202,15 @@ def test_shipped_trigcal_table_loads_and_is_bounded():
     assert lib["keep"].shape == lib["rescue"].shape == (len(paths), 3, len(lib["tbirth_edges"]) - 1)
     for k in ("keep", "rescue"):
         assert np.all((lib[k] >= 0) & (lib[k] <= 1))
+
+
+def test_cluster_truth_time_folds_like_the_reco_time():
+    n, m = 3, R.MAX_CLUSTERS
+    valid = np.zeros((n, m), bool)
+    valid[:, 0] = True
+    reco = np.array([862.0, 819.6, 1131.2])
+    truth = np.array([860.4, 818.6 + A.MBTIME, np.inf])          # no true deposit: the contact time
+    tp = A.cluster_truth_time(np.where(valid, truth[:, None], np.inf), np.where(valid, reco[:, None], 0.0),
+                              np.array([0.0, 0.0, 1129.4 + A.MBTIME]), valid)
+    np.testing.assert_allclose(reco - tp[:, 0], [1.6, 1.0, 1.8], atol=1e-9)
+    assert np.all(tp[:, 1:] == 0.0)
