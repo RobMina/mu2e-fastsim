@@ -133,7 +133,7 @@ class FastRecord:
                for k, v in caps.items()}
         self.calo_batch = calo_batch
         self.calo = dc.make_chain(dc.pack_library(lib, radius_neighbors=8, placement="crystal", dtype=self.dtype),
-                                  resp, dc.Caps(events=calo_batch, **per))
+                                  resp, dc.Caps(events=calo_batch, **per), truth=True)
         self.field = cechain.field_maps(maps)
         self.edge = EdgeEnergies(edge_library) if edge_library is not None else None
         self.pbtime_seed = pbtime_seed
@@ -223,7 +223,8 @@ class FastRecord:
                    calo_contact_x=np.full((n, 3), np.nan), calo_contact_t=np.full(n, np.nan))
         cl = {k: np.zeros((n, MAX_CLUSTERS), dt) for k, dt in
               (("valid", bool), ("energy", float), ("time", float), ("x", float), ("y", float), ("z", float),
-               ("size", np.int64), ("disk", np.int64), ("split", bool), ("edge", bool))}
+               ("size", np.int64), ("disk", np.int64), ("split", bool), ("edge", bool), ("etrue", float),
+               ("ttrue", float))}
         k = np.flatnonzero(left)
         pm = np.linalg.norm(pe[k], axis=1)
         T = np.sqrt(pm * pm + ME * ME) - ME
@@ -262,7 +263,7 @@ class FastRecord:
             out["calo_etrue"][ev[okd]] = self.lib_evis[dn[okd]]
             out["calo_etrue_g4"][ev[okd]] = self.lib_eg4[dn[okd]]
             cc = r["clusters"]
-            for name in ("valid", "energy", "time", "x", "y", "z", "size", "disk", "split"):
+            for name in ("valid", "energy", "time", "x", "y", "z", "size", "disk", "split", "etrue", "ttrue"):
                 cl[name][ev] = np.asarray(cc[name])[:m, :MAX_CLUSTERS]
         if self.edge is not None:          # inner-edge contacts: one cluster with the table's visible energy
             ed = np.flatnonzero(kind == EDGE)
@@ -275,7 +276,9 @@ class FastRecord:
                 cl["valid"][ev, 0] = True
                 cl["edge"][ev, 0] = True
                 cl["energy"][ev, 0] = vis[keep]
+                cl["etrue"][ev, 0] = vis[keep]
                 cl["time"][ev, 0] = tcon[ed2]
+                cl["ttrue"][ev, 0] = tcon[ed2]
                 d = c["disk"][ed2]
                 cl["x"][ev, 0] = c["x"][ed2, 0] - self.calo_origin[d, 0]
                 cl["y"][ev, 0] = c["x"][ed2, 1] - self.calo_origin[d, 1]

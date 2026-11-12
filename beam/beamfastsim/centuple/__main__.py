@@ -64,9 +64,16 @@ def cmd_donor(a):
 
 def cmd_assemble(a):
     from . import assemble
-    path, meta = assemble.build(a.record, a.donor, a.out, trigger=a.trigger, seed=a.seed)
+    path, meta = assemble.build(a.record, a.donor, a.out, trigger=a.trigger, seed=a.seed, trigger_cal=a.trigger_cal)
     print(json.dumps(dict(path=str(path), classes=meta["classes"], covered=len(meta["covered_paths"]),
                           missing=meta["covered_missing"])))
+
+
+def cmd_trigcal(a):
+    from . import trigcal
+    if len(a.records) != len(a.triggers):
+        raise SystemExit("trigcal: one --triggers file per --records file")
+    print(json.dumps(trigcal.build(a.stock, a.records, a.triggers, a.out, min_count=a.min_count, commit=a.commit)))
 
 
 def cmd_write(a):
@@ -220,7 +227,16 @@ def main(argv=None):
     s.add_argument("--donor", required=True)
     s.add_argument("--out", required=True)
     s.add_argument("--seed", type=int, default=20261111)
+    s.add_argument("--trigger-cal", help="on-spill response of the device paths (trigcal table .npz); opt-in")
     s.set_defaults(fn=cmd_assemble)
+    c = sp.add_parser("trigcal", help="on-spill response of the device paths from paired development events")
+    c.add_argument("--stock", nargs="+", required=True, help="stock EventNtuples, every digitized event kept")
+    c.add_argument("--records", nargs="+", required=True, help="fast centuple_record.npz of the same births")
+    c.add_argument("--triggers", nargs="+", required=True, help="their centuple_trigger.npz, without a response layer")
+    c.add_argument("--out", required=True)
+    c.add_argument("--min-count", type=int, default=50)
+    c.add_argument("--commit")
+    c.set_defaults(fn=cmd_trigcal)
     w = sp.add_parser("write")
     w.add_argument("--plan", required=True)
     w.add_argument("--donor-files", nargs="+", required=True)

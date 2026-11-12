@@ -78,7 +78,7 @@ def calo_match(rec):
     return has, j
 
 
-def build(record, donor_lib, out, *, trigger=None, seed=20261111):
+def build(record, donor_lib, out, *, trigger=None, seed=20261111, trigger_cal=None):
     """Write plan (npz) for every event of the record. Returns the path and counters."""
     rec = dict(np.load(record))
     meta = json.loads(str(rec.pop("meta")))
@@ -94,6 +94,16 @@ def build(record, donor_lib, out, *, trigger=None, seed=20261111):
         if not (np.array_equal(tz["event"], evn) and np.array_equal(tz["subrun"], sub)):
             raise ValueError("centuple: trigger file events differ from the record's")
         trig = {k[5:]: v.astype(bool) for k, v in tz.items() if k.startswith("trig_")}
+        if trigger_cal is not None:      # opt-in on-spill response of the device paths (trigcal)
+            from . import trigcal
+            names = sorted(trig)
+            raw = np.stack([trig[k] for k in names], 1)
+            new = trigcal.apply(trigcal.load(trigger_cal), names, raw, classes(rec), rec["birth_t"], run, sub, evn,
+                                seed)
+            trig = {k: new[:, j] for j, k in enumerate(names)}
+            trig_meta = dict(trig_meta, trigger_cal=str(trigger_cal),
+                             raw_pass={k: int(raw[:, j].sum()) for j, k in enumerate(names)},
+                             cal_pass={k: int(new[:, j].sum()) for j, k in enumerate(names)})
     missing = [p for p in covered if p not in trig]
     cov_paths = [p for p in covered if p in trig]
     cov = np.zeros(n, bool)
@@ -150,11 +160,18 @@ def build(record, donor_lib, out, *, trigger=None, seed=20261111):
     # calorimeter
     for k in ("valid", "energy", "time", "x", "y", "z", "size", "disk", "split", "edge"):
         plan["cl_" + k] = rec["cl_" + k]
-    # cluster truth: the drawn shower's visible energy, shared by the clusters in proportion to their energy
-    ev_cl = np.where(rec["cl_valid"], rec["cl_energy"], 0.0)
-    tot = ev_cl.sum(axis=1, keepdims=True)
-    plan["cl_etot"] = np.where(tot > 0, rec["calo_etrue"][:, None] * ev_cl / np.where(tot > 0, tot, 1.0), 0.0)
-    plan["cl_tprim"] = np.where(rec["cl_valid"], rec["calo_contact_t"][:, None], 0.0)
+    if "cl_etrue" in rec:
+        # cluster truth per crystal: the visible energy of the sampled shower steps in the cluster's hit crystals and
+        # the earliest of their times (inner-edge clusters: the table's visible energy and the contact time)
+        plan["cl_etot"] = np.where(rec["cl_valid"], rec["cl_etrue"], 0.0)
+        tt = rec["cl_ttrue"]
+        plan["cl_tprim"] = np.where(rec["cl_valid"], np.where(np.isfinite(tt), tt, rec["calo_contact_t"][:, None]), 0.0)
+    else:
+        # records without it: the drawn shower's visible energy, shared by the clusters in proportion to their energy
+        ev_cl = np.where(rec["cl_valid"], rec["cl_energy"], 0.0)
+        tot = ev_cl.sum(axis=1, keepdims=True)
+        plan["cl_etot"] = np.where(tot > 0, rec["calo_etrue"][:, None] * ev_cl / np.where(tot > 0, tot, 1.0), 0.0)
+        plan["cl_tprim"] = np.where(rec["cl_valid"], rec["calo_contact_t"][:, None], 0.0)
     plan["calo_match"] = has_cl & (cls == D.CLASS_Q)
     plan["calo_match_cluster"] = jcl
     plan["calo_contact_x"], plan["calo_contact_t"] = rec["calo_contact_x"], rec["calo_contact_t"]
