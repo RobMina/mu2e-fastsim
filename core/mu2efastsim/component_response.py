@@ -87,6 +87,11 @@ class ComponentType:
     def inside(self, points):
         return np.all(np.abs(points) <= np.asarray(self.half_size) + POSITION_ATOL, axis=-1)
 
+    def on_face(self, points):
+        """Inside the envelope and on at least one face (within POSITION_ATOL), whatever the direction."""
+        on = np.abs(np.abs(points) - np.asarray(self.half_size)) <= POSITION_ATOL
+        return self.inside(points) & np.any(on, axis=-1)
+
     def on_boundary(self, points, momentum, *, entering):
         h = np.asarray(self.half_size)
         on = np.abs(np.abs(points) - h) <= POSITION_ATOL
@@ -170,8 +175,11 @@ class Library:
         _kinematics(self.exits)
         if not component.on_boundary(self.entrances["position"], self.entrances["momentum"], entering=True).all():
             raise ValueError("entrances must be inward on the component boundary")
-        if not component.on_boundary(self.exits["position"], self.exits["momentum"], entering=False).all():
-            raise ValueError("exits must be outward on the component boundary")
+        # an exit is the first boundary crossing as Geant4 records it: on a face, with the post-step direction as
+        # recorded. Multiple scattering over the last, boundary-limited step can turn that direction back inward
+        # (the particle re-enters at once); next_in_vacuum then hands it back to the same placement at distance 0
+        if not component.on_face(self.exits["position"]).all():
+            raise ValueError("exits must lie on the component boundary")
         npart = np.diff(self.particle_offsets)
         if np.any(npart == 0):
             raise ValueError("every trial needs its incident root particle")
@@ -193,8 +201,8 @@ class Library:
             raise ValueError("step endpoint outside component; no clamping is allowed")
         if np.any(sx["edep"] < 0) or np.any(sx["length"] < 0) or np.any(sx["t0"] < 0) or np.any(sx["t1"] < sx["t0"]) or np.any(self.exits["time"] < 0):
             raise ValueError("negative deposits/lengths or invalid relative times")
-        if np.any(sx["length"] + POSITION_ATOL < np.linalg.norm(sx["x1"] - sx["x0"], axis=1)):
-            raise ValueError("step length is shorter than its endpoint separation")
+        # no chord rule: a Geant4 step length is the true path length, while the post-step point carries the
+        # multiple-scattering lateral displacement, so |x1 - x0| can exceed the length; both are kept as recorded
         ep = self.particle_offsets[_trial_rows(self.exit_offsets)] + self.exits["particle"]
         exited = np.bincount(ep, minlength=len(pt))
         if np.any(exited != self.particles["exited"].astype(int)):
