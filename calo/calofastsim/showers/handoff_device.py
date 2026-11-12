@@ -76,10 +76,13 @@ def disk_front(maps, geo, x, u, kinetic_energy, time, active, *, step_mm=10.0, p
         xn, un = SJ.helix(x, u, p, -1.0, bm, h)
         chosen = jnp.full(n, -1, jnp.int32)
         used, hx, hu = h, xn, un
+        # the plane scan runs until its slowest lane is done: lanes that are not live (results discarded below) get
+        # an empty interval, so a slow electron that stopped elsewhere does not set every step's cost
+        h_live = jnp.where(live, h, 0.0)
         for d in range(front.shape[0]):
             z = front[d]
             crossing = (x[:, 2] <= z) & (xn[:, 2] >= z) & (un[:, 2] > 0)
-            length = SJ.to_plane(x, u, p, -1.0, bm, jnp.full(n, z, dt), h)
+            length = SJ.to_plane(x, u, p, -1.0, bm, jnp.full(n, z, dt), h_live)
             ok = crossing & jnp.isfinite(length)
             length = jnp.where(ok, length, h)
             at, di = SJ.helix(x, u, p, -1.0, bm, length)
