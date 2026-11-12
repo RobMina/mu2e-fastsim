@@ -13,10 +13,12 @@ repository. Definitions live once in these modules, documented in ``README.md``:
     stats      robust statistics shared by every comparison (median, core sigma, MPV, binned ratio band)
     plots      shared plotting helpers + write_json
 
-Importing the package applies the GPU determinism setting (determinism.py, MU2EFS_DEVICE_DETERMINISTIC) before
-any JAX backend exists.
+Importing the package applies the GPU determinism setting (determinism.py, MU2EFS_DEVICE_DETERMINISTIC) and the
+device-loop setting (devloops.py, MU2EFS_DEVICE_LOOPS, off by default) before any JAX backend exists.
 """
 from . import determinism as _determinism
+from . import devloops as _devloops
 
 __version__ = "0.1.0"
 _determinism.apply()
+_devloops.apply()

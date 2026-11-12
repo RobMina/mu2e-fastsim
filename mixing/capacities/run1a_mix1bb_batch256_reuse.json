@@ -47,7 +47,9 @@
    "pack_sort": "packed",
    "flat_saturation_rows": "auto",
    "flat_saturation_pool": "tier",
-   "flat_saturation_tiles": "bounded"
+   "flat_saturation_tiles": "bounded",
+   "electronics_launches": "live",
+   "narrow_tier": "compact"
   },
   "crv": {
    "substeps": 310525,
@@ -113,7 +115,9 @@
     "pack_sort": "packed",
     "flat_saturation_rows": "auto",
     "flat_saturation_pool": "tier",
-    "flat_saturation_tiles": "bounded"
+    "flat_saturation_tiles": "bounded",
+    "electronics_launches": "live",
+    "narrow_tier": "compact"
    },
    "precompute": {
     "clusters_per_step": 64,
@@ -155,7 +159,9 @@
     "pack_sort": "packed",
     "flat_saturation_rows": "auto",
     "flat_saturation_pool": "tier",
-    "flat_saturation_tiles": "bounded"
+    "flat_saturation_tiles": "bounded",
+    "electronics_launches": "live",
+    "narrow_tier": "compact"
    },
    "frames_per_batch": 8192,
    "straws": 229376,

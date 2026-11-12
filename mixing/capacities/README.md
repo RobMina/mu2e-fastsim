@@ -46,6 +46,11 @@ NeutralsFlash pools at the stock intensity law.
 - **`flat_saturation_tiles: "bounded"`**: with the pool, each saturation chunk runs only the response tiles its ends
   need (exact); it has no size.
 
+- **`electronics_launches: "live"` and `narrow_tier: "compact"`** (batch-256 files; see
+  [../DEVICE_TRACKER.md](../DEVICE_TRACKER.md)): the narrow tier's live straws first and launches without a live
+  straw skipped. They have no size and change the time, not the digis; with them the largest per-launch
+  digitisation demand is 0.93-0.95 entries per straw, inside `digit_entries_per_straw`.
+
 - **`output.tracker_rows`** (batch-256 files): the tracker digi rows downloaded per batch, 229,376: 1.39 times the
   largest demand (164,716 digis in one batch of 256) over full development and held-out passes in float32 and
   float64. The other rows of the padded table are empty; it changes the time, not the outputs.
