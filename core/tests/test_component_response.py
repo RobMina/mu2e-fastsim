@@ -196,8 +196,8 @@ def test_proper_rotation_only(bad):
         replace(placement(), rotation=r)
 
 
-@pytest.mark.parametrize("bad", ["offsets", "parent", "root", "step_outside", "exit_inside", "exit_inward",
-                                  "entry_outward", "exit_duplicate", "late_step", "negative_edep", "length"])
+@pytest.mark.parametrize("bad", ["offsets", "parent", "root", "step_outside", "exit_inside", "entry_outward",
+                                  "exit_duplicate", "late_step", "negative_edep", "negative_length"])
 def test_invalid_interaction_records_rejected(bad):
     args = data()
     if bad == "offsets":
@@ -210,8 +210,6 @@ def test_invalid_interaction_records_rejected(bad):
         args["steps"]["x1"][0, 0] = 3.
     elif bad == "exit_inside":
         args["exits"]["position"][0, 2] = 0.
-    elif bad == "exit_inward":
-        args["exits"]["momentum"][0, 2] *= -1
     elif bad == "entry_outward":
         args["entrances"]["momentum"][0, 2] *= -1
     elif bad == "exit_duplicate":
@@ -221,9 +219,31 @@ def test_invalid_interaction_records_rejected(bad):
     elif bad == "negative_edep":
         args["steps"]["edep"][0] = -.1
     else:
-        args["steps"]["length"][0] = .1
+        args["steps"]["length"][0] = -.1
     with pytest.raises(ValueError):
         Library(**args)
+
+
+def test_geant4_msc_steps_and_returning_exits_are_kept_as_recorded():
+    """A multiple-scattering step whose chord exceeds its true path length, and a first exit whose post-step
+    direction points back in, are valid Geant4 records: kept, replayed as recorded, and the returning exit is
+    handed back to the same placement at distance 0 by next_in_vacuum."""
+    args = data()
+    args["steps"]["length"][0] = .1                      # chord |x1 - x0| is longer
+    args["exits"]["momentum"][0, 2] *= -1                # on the +z face, pointing back in
+    lib = Library(**args)
+    p = placement()
+    out = replay(lib, p, incoming(), [0], FixedRandom(.1), next_track=10)    # trial 0: step 0 and exit 0
+    assert out.trials[0] == 0 and out.steps["length"][0] == .1
+    back = {key: out.exits[key][:1] for key in INCOMING}
+    assert back["momentum"][0, 2] < 0
+    rows, which, entry = next_in_vacuum(back, [p])
+    np.testing.assert_array_equal(rows, [0])
+    np.testing.assert_array_equal(which, [0])
+    np.testing.assert_array_equal(entry["position"], back["position"])
+    assert entry["time"][0] == back["time"][0]
+    assert p.component.on_boundary(p.local_points(entry["position"]), p.local_vectors(entry["momentum"]),
+                                   entering=True).all()
 
 
 def test_bank_and_placement_copy_inputs_and_replay_leaves_inputs_untouched():
