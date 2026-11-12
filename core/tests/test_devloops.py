@@ -16,7 +16,7 @@ CLEAR = ("XLA_FLAGS", "MU2EFS_DEVICE_LOOPS", "MU2EFS_DEVICE_DETERMINISTIC")
 
 def run(code=PROBE, **env):
     e = {k: v for k, v in os.environ.items() if k not in CLEAR}
-    e.update(PYTHONPATH=str(ROOT), MU2EFS_DEVICE_DETERMINISTIC="0", **env)
+    e.update({"PYTHONPATH": str(ROOT), "MU2EFS_DEVICE_DETERMINISTIC": "0", **env})
     return subprocess.run([sys.executable, "-c", code], env=e, capture_output=True, text=True, timeout=300)
 
 

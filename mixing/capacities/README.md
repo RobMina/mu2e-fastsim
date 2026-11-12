@@ -19,7 +19,7 @@ NeutralsFlash pools at the stock intensity law.
 - **Layout choices** were picked by timing sweeps:
   - `clusters_per_step` 64 with long steps gathered to 1,109;
   - `clusters_per_end` 24 with end tiers at 64, 192, 768, 1,536 and 6,144 clusters;
-  - 16 charge blocks per launch;
+  - 16 charge blocks per launch (128 in the batch-256 files: 12 launches instead of 92 per batch);
   - scatter CRV waveforms.
 - The two widest end tiers keep at least 256 and 16 straws, above their measured demand.
 - `run1a_mix1bb_batch256.json` comes from its own census: 42 batches of 256 events, margin 1.25. Its SiPM cross-talk

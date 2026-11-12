@@ -176,6 +176,12 @@ block per sequential step. Every block keeps its key (`fold_in(key, 1)` then its
 cluster offset), so outputs equal the one-block path; `drift_clusters` is padded to a
 multiple of `G x 4096`. Without the key the drift is unchanged.
 
+The launches run in sequence, and each one's Polya-gain draws (`random.gamma`) loop until every lane is accepted, so
+fewer, wider launches pay: on one batch of 256 (A100), tracker apply 0.336 / 0.363 s at G = 16, 0.304 / 0.326 at 32,
+0.296 / 0.314 at 64 and 0.292 / 0.310 at 128 (float64 / float32 tracker), digis identical. The batch-256 capacity
+files use 128. Skipping launches without a live cluster (a `lax.cond` per launch) was tried and dropped: it changes
+how XLA fuses the float64 kernel, which moved 150k cluster times by 1-2 float32 ulps and then some digis.
+
 ## Donor-frame digi reuse (opt-in approximation)
 
 `mixing.device_reuse`, enabled by a `tracker_reuse` block in the capacity file (`run1a_mix1bb_batch256_reuse.json`).
