@@ -91,3 +91,18 @@ def test_domain_counts_refused_rows_without_drawing():
     assert rec["axes"]["boundary"]["above"] == 1 and rec["axes"]["state"]["above"] == 1
     with pytest.raises(CR.UnsupportedEntrance):
         CR.replay(lib, p, inc, np.arange(4), np.random.default_rng(1), next_track=10)
+
+
+def test_the_caller_cannot_replace_fields_the_replay_defines(tmp_path):
+    lib = bank()
+    base = CR.bank_name(lib.component)
+    for bad in (dict(kind="binned"), dict(dtype={}), dict(rng={}), dict(domain={}), dict(outputs=[]),
+                dict(validation={"bank_admissible": True}), dict(validation={"reason": "closed"}),
+                dict(name="secondaries.component.other"), dict(name=base + "."), dict(name=base + "x")):
+        with pytest.raises(ValueError):
+            CR.save_library(tmp_path / "bad.npz", lib, **bad)
+    m = CR.save_library(tmp_path / "ok.npz", lib, name=base + ".front_center_normal.k013", version=2,
+                        validation={"status": "not validated", "record": "none yet"})
+    assert m["name"] == base + ".front_center_normal.k013" and m["version"] == 2
+    assert m["validation"]["bank_admissible"] is False and "reason" in m["validation"]
+    assert CR.load_library(tmp_path / "ok.npz").component == lib.component

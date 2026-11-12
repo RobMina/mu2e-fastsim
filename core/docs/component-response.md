@@ -53,7 +53,7 @@ sum(deposits)+sum(outgoing total energy) for all species/interactions without th
 
 ## Replay and selection
 
-`replay(library, placement, incoming, interaction, rng, next_track=...)`:
+`replay(library, placement, incoming, interaction, rng, next_track=..., dtype=float64)`:
 
 1. Transforms incident positions/momenta to local coordinates.
 2. Matches the local entrance state to recorded trials, allowing only fixed floating-point roundoff tolerances.
@@ -72,6 +72,12 @@ The result contains `particles`, `steps`, `exits`, selected trial indices and `n
 fields accompany all rows. A surviving primary keeps its track ID. New tracks keep their actual sampled parents,
 including stopped/interacted ancestors. Null steps/exits are typed empty arrays, not omitted incoming trials.
 Input arrays are copied on library/placement construction; replay does not modify the bank or incoming states.
+
+`dtype` (float64 by default, or float32) is the dtype of the real outputs: positions, momenta, times, lengths, deposits
+and exit energies. The validation, the entrance match and the trial draw run in float64 in both dtypes. The same inputs
+therefore give the same trials, particle tree, track IDs and refusals. float32 differs from float64 only by float32
+rounding of the placement transform and the time shift; lengths, deposits and exit energies are the float32 casts of
+the recorded values. float64 is the reference; the float32 path is the same host code, and there is no device path.
 
 `next_in_vacuum(particles, placements)` is a small **field-free vacuum-only handoff** for outside-to-box entries,
 not a replacement for GDML material or field transport. It returns nearest forward entries and their source indices;
