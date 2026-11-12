@@ -61,6 +61,15 @@ def verify_batch(directory, ordinal_start, events, extra_tables=(), output_forma
     return census
 
 
+
+def pipeline_writers(args):
+    """Writer threads of the pipelined loop (device_pipeline_writers, default 1): a positive integer."""
+    writers = getattr(args, "device_pipeline_writers", None)
+    writers = 1 if writers is None else writers
+    if type(writers) is not int or writers < 1:
+        raise ValueError("device pipeline writers must be a positive integer")
+    return writers
+
 def run(args, source_factory=None, backend_factory=None):
     """One resident source and backend; loop over batches, not individual events."""
     backend_factory = backend_factory or factory(args.backend)
@@ -138,7 +147,10 @@ def run(args, source_factory=None, backend_factory=None):
 
         def collect(item):
             phase, size, batch, directory, prepare_s, started, handle = item
-            metrics = backend.collect(handle, directory)
+            return item, backend.collect(handle, directory)
+
+        def record(collected):
+            (phase, size, batch, directory, prepare_s, started, handle), metrics = collected
             if metrics["events"] != size:
                 raise ValueError("backend returned wrong event count")
             row = {"phase": phase, "directory": directory.name, "batch_index": batch.batch_index,
@@ -147,19 +159,23 @@ def run(args, source_factory=None, backend_factory=None):
             ledger.write(json.dumps(json_values(row), allow_nan=False) + "\n")
             ledger.flush()
 
+        writers = pipeline_writers(args)
+
         def drive(phase, sizes):
-            """--device-pipeline: batch k is collected on one worker thread while batch k + 1 is dispatched (a GPU
-            execution holds its calling thread); same batches, outputs and ledger order."""
+            """--device-pipeline: batch k is collected on a worker thread while batch k + 1 is dispatched (a GPU
+            execution holds its calling thread); with --device-pipeline-writers W, up to W batches are collected at
+            once. Same batches and outputs; ledger rows in dispatch order."""
+            from collections import deque
             from concurrent.futures import ThreadPoolExecutor
-            pending = None
-            with ThreadPoolExecutor(max_workers=1) as writer:
+            pending = deque()
+            with ThreadPoolExecutor(max_workers=writers) as writer:
                 for size in sizes:
                     item = dispatch(phase, size)
-                    if pending is not None:
-                        pending.result()
-                    pending = writer.submit(collect, item)
-                if pending is not None:
-                    pending.result()
+                    if len(pending) == writers:
+                        record(pending.popleft().result())
+                    pending.append(writer.submit(collect, item))
+                while pending:
+                    record(pending.popleft().result())
 
         sizes = [min(args.batch_events, args.events - start) for start in range(0, args.events, args.batch_events)]
         warm_start = time.perf_counter()
@@ -239,6 +255,9 @@ def main(argv=None):
                         help="device backend ROOT output only: compression (default: uproot ZLIB 1)")
     parser.add_argument("--device-pipeline", action="store_true",
                         help="device backend only: dispatch the next batch before writing the previous one")
+    parser.add_argument("--device-pipeline-writers", type=int, default=1,
+                        help="with --device-pipeline: batches downloaded and written at once, each on its own thread "
+                             "(default 1)")
     from mu2efastsim import approximations
     from .approximations import WORKFLOW
     approximations.add_arguments(parser)

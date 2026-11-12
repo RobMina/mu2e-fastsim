@@ -44,8 +44,9 @@ def _first(arr, idx):
     return ak.firsts(arr[idx], axis=1)
 
 
-def read_ntuple(path):
-    """Per ntuple entry: KEY, fit and CE-selection flags of the first fitted track, its front momentum and quantities."""
+def read_ntuple(path, fit_pdg=None):
+    """Per ntuple entry: KEY, fit and CE-selection flags of the first fitted track, its front momentum and quantities.
+    fit_pdg (opt-in): only fits of this hypothesis count (e.g. 11 in an ntuple that merges the e+-, mu+- fits)."""
     with uproot.open(path) as f:
         t = f[TREE]
         a = t.arrays([f"evtinfo/{k}" for k in KEY] + [f"trk/trk.{k}" for k in
@@ -54,6 +55,8 @@ def read_ntuple(path):
         pars = t["trksegpars_lh"].array()
         hits = t["trkhits"].array()
     good = a["trk/trk.status"] > 0
+    if fit_pdg is not None:
+        good = good & (a["trk/trk.pdg"] == fit_pdg)
     has = ak.to_numpy(ak.any(good, axis=1))
     i = ak.argmax(good, axis=1, keepdims=True)
     s = ak.fill_none(ak.firsts(seg[i], axis=1), [], axis=0)
@@ -90,11 +93,11 @@ def ce_selected(df, cuts=CE_CUTS):
     return c.fillna(False).to_numpy(bool)
 
 
-def read_arm(directory):
+def read_arm(directory, fit_pdg=None):
     files = sorted(glob.glob(os.path.join(directory, "**", "nts.*.root"), recursive=True))
     if not files:
         raise FileNotFoundError(f"no nts.*.root under {directory}")
-    d = pd.concat([read_ntuple(f) for f in files], ignore_index=True)
+    d = pd.concat([read_ntuple(f, fit_pdg) for f in files], ignore_index=True)
     d["ce"] = ce_selected(d)
     return d, len(files)
 

@@ -229,9 +229,10 @@ def test_capacity_usage_matches_tables_and_overflow_names_demand(template, cond,
         run(args, lambda manifest, **kwargs: source(c, **kwargs), Backend)
 
 
-@pytest.mark.parametrize("mode", ["root", "occupancy"])
-def test_pipelined_output_equals_serial(template, cond, tmp_path, mode):
-    """--device-pipeline dispatches batch k + 1 before writing batch k: the same files, byte for byte per array."""
+@pytest.mark.parametrize("mode,writers", [("root", 1), ("occupancy", 1), ("root", 3)])
+def test_pipelined_output_equals_serial(template, cond, tmp_path, mode, writers):
+    """--device-pipeline dispatches batch k + 1 before writing batch k (with W writers, up to W batches are written
+    at once): the same files, byte for byte per array, and the ledger in dispatch order."""
     from types import SimpleNamespace
     from trkfastsim.digi.digicond import Conditions
     from mixing.device_backend import Backend
@@ -251,7 +252,8 @@ def test_pipelined_output_equals_serial(template, cond, tmp_path, mode):
                                synthetic=False, backend="mixing.device_backend:Backend", events=5, batch_events=2,
                                max_selected_rows=448, chunk=2, warmup_batches=1, seed=17, tracker_seed=19,
                                sampling_seed=23, require_stage=[], template=template, device_output=mode,
-                               occupancy_geometry=geometry, device_pipeline=pipelined)
+                               occupancy_geometry=geometry, device_pipeline=pipelined,
+                               device_pipeline_writers=writers if pipelined else 1)
         report = run(args, lambda manifest, **kwargs: source(c, **kwargs), Backend)
         assert report["events"] == 5
     rows = {p: [json.loads(line) for line in (outs[p] / "batches.jsonl").read_text().splitlines()] for p in outs}
@@ -310,3 +312,69 @@ def test_output_compression_same_arrays(template, cond, tmp_path, compression):
     with pytest.raises(ValueError, match="output compression"):
         run(SimpleNamespace(**{**vars(args), "out": tmp_path / "bad", "output_compression": "gzip9"}),
             lambda manifest, **kwargs: source(c, **kwargs), Backend)
+
+
+def test_output_capacities_validated():
+    from mixing.device_physics import compact_rows, output_capacities
+    assert output_capacities(None) == {} and output_capacities({"tracker_rows": 4}) == {"tracker_rows": 4}
+    with pytest.raises(ValueError, match="unknown"):
+        output_capacities({"crv_rows": 4})
+    with pytest.raises(ValueError, match="positive integer"):
+        output_capacities({"tracker_rows": 0})
+    table = {"mask": np.array([True, True, False, False]), "ev": np.arange(4), "adc": np.arange(8).reshape(4, 2)}
+    rows, over, used = jax.device_get(compact_rows(table, 2))
+    assert not over and used == 2 and rows["adc"].tolist() == [[0, 1], [2, 3]] and rows["mask"].all()
+    _, over, used = jax.device_get(compact_rows(table, 1))
+    assert over and used == 2
+    same, over, _ = jax.device_get(compact_rows(table, 9))
+    assert not over and len(same["mask"]) == 4
+
+
+@pytest.mark.slow   # three physical-stream runs; device_physics changes run the slow tier in CI
+def test_tracker_output_rows_same_files(template, cond, tmp_path):
+    """response.output.tracker_rows hands the host only the leading tracker rows: the same files when every batch's
+    digis fit (here exactly), and a rejected batch naming demand and capacity when one row more is needed."""
+    from types import SimpleNamespace
+    from trkfastsim.digi.digicond import Conditions
+    from mixing.device_backend import Backend
+    from mixing.stream_benchmark import run
+
+    c = Conditions(cond.s, cond.a)
+    c.s["onspill"] = True
+
+    def stream(name, rows):
+        caps = json.loads(json.dumps(CAPACITY))
+        if rows is not None:
+            caps["response"]["output"] = {"tracker_rows": rows}
+        capacity = tmp_path / f"{name}.json"
+        capacity.write_text(json.dumps(caps))
+        args = SimpleNamespace(out=tmp_path / name, frames_manifest=None, device_platform="cpu",
+                               device_kernel="mixing.device_integration:model", device_capacities=capacity,
+                               synthetic=False, backend="mixing.device_backend:Backend", events=5, batch_events=2,
+                               max_selected_rows=448, chunk=2, warmup_batches=1, seed=17, tracker_seed=19,
+                               sampling_seed=23, require_stage=[], template=template)
+        run(args, lambda manifest, **kwargs: source(c, **kwargs), Backend)
+        return args.out
+
+    full = stream("full", None)
+    paths = sorted(full.glob("*/fast.root"))
+    counts = []
+    for path in paths:
+        with uproot.open(path) as root:
+            counts.append(int(ak.sum(ak.num(root["trkdigi/events"]["d_sid"].array(library="ak")))))
+    need = max(counts)
+    assert 0 < need < CAPACITY["response"]["tracker"]["straws"] * CAPACITY["response"]["tracker"]["pairs_per_straw"]
+    compact = stream("compact", need)
+    rows = [json.loads(line) for line in (compact / "batches.jsonl").read_text().splitlines()]
+    assert sorted(r["backend"]["capacity_usage"]["response/output/tracker_rows"] for r in rows) == sorted(counts)
+    for a in paths:
+        b = compact / a.parent.name / "fast.root"
+        with uproot.open(a) as ra, uproot.open(b) as rb:
+            assert sorted(ra.keys()) == sorted(rb.keys())
+            for name, tree in ra.items(filter_classname="TTree"):
+                for branch in tree.keys():
+                    assert (ak.to_list(tree[branch].array(library="ak"))
+                            == ak.to_list(rb[name][branch].array(library="ak"))), f"{name}/{branch}"
+        assert (a.parent / "sampling.json").read_text() == (b.parent / "sampling.json").read_text()
+    with pytest.raises(OverflowError, match=rf"response/output/tracker_rows \(demand >= {need}, capacity {need - 1}\)"):
+        stream("short", need - 1)

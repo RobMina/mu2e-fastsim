@@ -461,12 +461,14 @@ def test_scatter_waveform_needs_no_charge_capacity_and_validates_option(setup):
 
 
 def test_exact_restructure_options_match_default(setup):
-    """digi_starts="rows" and pulse_scan="bounded" give the same kept digis, pulses and clusters as the defaults."""
+    """digi_starts="rows" and pulse_scan="bounded" give the same kept digis, pulses and clusters as the defaults.
+
+    photons 256: the float32 draws (MU2EFS_DEVICE_FLOAT=float32) need more than the helper's 128."""
     collection, timing = inputs()
     timing["event_mask"][1] = False
     outs = {}
     for name, options in (("default", {}), ("exact", {"digi_starts": "rows", "pulse_scan": "bounded"})):
-        model = adapter(setup, capacity(waveform="scatter", **options))
+        model = adapter(setup, capacity(waveform="scatter", photons=256, **options))
         out, errors = run(model.apply, collection, timing, model.assets, jax.random.key(23))
         assert not any(errors.values()), [k for k, v in errors.items() if v]
         outs[name] = out

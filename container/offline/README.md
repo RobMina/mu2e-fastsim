@@ -62,6 +62,7 @@ The runner checks `MUSE_WORK_DIR`, expands FCL before running, records `mu2e --v
 | `OFFLINE_EVENTS` | all | Explicit event limit for smoke tests |
 | `OFFLINE_LOG_PREFIX` | `offline` | Output filename prefix; `.expanded.fcl`, `.art.time`, `.total.time`, `.cache.txt` |
 | `OFFLINE_WARM_REPEAT` | `0` | Set `1` to repeat art in the same mounted environment/cache, with a separate `.warm.root` and `.warm.art.time` |
+| `OFFLINE_CHAIN` | unset | Opt-in: a bash script run inside the mounted environment instead of `mu2e -c FCL` (several steps, or Python with the release's dictionaries); bind its directory |
 | `OFFLINE_SEARCH_PATH` | unset | Directory prepended to `MU2E_SEARCH_PATH` (e.g. a private geometry or conditions copy); also bind it with `OFFLINE_BINDS` |
 
 A long art job needs `SQLITE_TMPDIR` and `TMPDIR` on node-local disk. Inside `--containall` the session `/tmp` is small

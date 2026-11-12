@@ -97,6 +97,38 @@ A python -c "import jax, sys; print(jax.devices()); sys.exit(jax.default_backend
 tail -c 300 "$M2FS_OUT/point.txt"
 '''
 
+# Task beam_centuple: the fast EventNtuple file of one target geometry (beamfastsim.centuple point): beam stops on the
+# design studies' table, conversion electrons through the device chain with digis and the reco response, the
+# calorimeter (device chain at the disk fronts, the Geant4 inner-edge table at the edge), the device trigger, donor
+# events from stock development files, and the PyROOT writer in the Mu2e environment of the stock release (mounted
+# /cvmfs). The file out/nts.mu2efastsim.centuple.root (EventNtuple/ntuple, stock split layout) is the input of the
+# analysis server's EventNtuple analyses (e.g. Mu2eBO ce_chain's trigger_efficiency_ntuple); metrics are the ce_chain
+# counts of the default selection, the chain counters and the stops. Inputs: beam data root / centuple (names in
+# beamfastsim.centuple.__main__.DATA).
+CENT_DIR = "centuple"
+CENT_FILE = "nts.mu2efastsim.centuple.root"
+CENT_CORES = 8
+CENT_PARAMS = ("geom", "muons", "electrons", "seed", "dtype")
+CENT_METRICS = ("n_events", "n_selected", "n_triggered", "efficiency", "n_generated", "births", "class_Q", "class_F",
+                "class_N", "wall_s", "electrons_per_s", "beam_s", "stops_per_gen_event", "stops_per_pot", "stop_frac")
+CENT_BODY = '@runtime_a@G4T=@fnal_data@/../beam_fastsim/' + SOB_TABLE + '\n' + \
+    'CD=@fnal_data@/../beam_fastsim/' + CENT_DIR + '\n' + '''\
+for f in "$G4T" "$CD/donor/donor.npz" "$CD/trigger/replay.fcl"; do [ -r "$f" ] || { echo "missing $f"; exit 3; }; done
+[ -d /cvmfs/mu2e.opensciencegrid.org/Musings ] || { echo "no /cvmfs: the writer needs the Mu2e environment"; exit 3; }
+case @p_geom@ in
+  nominal) GEOM="" ;;
+  /*) GEOM=@p_geom@ ;;
+  *) GEOM="$M2FS_CODE/beam/geom/"@p_geom@ ;;
+esac
+@geometry_setup@[ -z "$GEOM" ] || [ -r "$GEOM" ] || { echo "missing geometry $GEOM"; exit 3; }
+A python -c "import jax, sys; print(jax.devices()); sys.exit(jax.default_backend() != 'gpu')" || { echo "JAX not on the GPU"; exit 5; }
+( cd "$M2FS_CODE" && PYTHONPATH="$M2FS_CODE/core:$M2FS_CODE/beam:$M2FS_CODE/calo:$M2FS_CODE/tracker:$M2FS_CODE" \\
+  XLA_PYTHON_CLIENT_PREALLOCATE=false "$M2FS_VENV/bin/python" -m beamfastsim.centuple point --g4 "$G4T" \\
+  --z-up ''' + str(SOB_Z_UP) + ''' ${GEOM:+--geom "$GEOM"} --data "$CD" --dtype @p_dtype@ --electrons @p_electrons@ \\
+  --muons @p_muons@ --seed @p_seed@ --out "$M2FS_OUT" ) > "$M2FS_OUT/point.txt" 2>&1 || { tail -20 "$M2FS_OUT/point.txt"; exit 6; }
+tail -c 300 "$M2FS_OUT/point.txt"
+'''
+
 
 def register(tasks, task_cls, resources_cls, fnal_tasks):
     """Add beam_point to a fastsimkit TASKS dict (and to its FNAL-only set)."""
@@ -113,6 +145,11 @@ def register(tasks, task_cls, resources_cls, fnal_tasks):
                                                           minutes=60),
                                   body=EDEP_BODY, defaults={"dtype": "float64"})
     fnal_tasks.add("beam_edep")
+    tasks["beam_centuple"] = task_cls(params=CENT_PARAMS, metrics=CENT_METRICS,
+                                      resources=resources_cls(cores=CENT_CORES, mem_gb=96, gpus=1, gpu_type="a100",
+                                                              minutes=90),
+                                      body=CENT_BODY, defaults={"dtype": "float64"})
+    fnal_tasks.add("beam_centuple")
 
 
 class _UVADelegate:

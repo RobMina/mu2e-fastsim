@@ -163,6 +163,9 @@
     "MuStopPileup",
     "MuBeamFlash"
    ]
+  },
+  "output": {
+   "tracker_rows": 229376
   }
  }
 }

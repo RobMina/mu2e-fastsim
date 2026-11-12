@@ -67,6 +67,9 @@ def derive(template, usage, margin):
             if key in usage:
                 step = min(batch, max(1, grow(usage[key])))
                 tier[0] = -(-max(1, grow(usage[key])) // step) * step
+    output = caps.get("response", {}).get("output")
+    if output is not None and output.get("tracker_rows") is not None and "response/output/tracker_rows" in usage:
+        output["tracker_rows"] = max(1, grow(usage["response/output/tracker_rows"]))
     crv = caps.get("response", {}).get("crv")
     if crv is not None:
         for name in CRV_SIZED + CRV_FLOOR:

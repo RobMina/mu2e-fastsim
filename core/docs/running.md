@@ -78,6 +78,7 @@ endpoint versions byte for byte. Tasks:
 | `beam_point` | stop fraction and stop profile of a target geometry (umbrella `beam/` on `PYTHONPATH`) | EAF, Slurm | 65 Geant4-evaluated design points: Geant4 / fast 1.0045 +- 0.0005 (+- 0.0077 from the predicted scale), rank correlation 0.998; paired stop fraction 0.5-0.7 % low |
 | `beam_sob` | sob stand-in of a target geometry: stops, conversion electrons, calorimeter proxy, the studies' approximate sensitivity (umbrella `beam/`; CPU) | EAF, Slurm | 65 design points: Geant4 / fast 0.9920 +- 0.0006 (+- 0.0077 from the stops normalisation), rms 0.46 %, rank correlation 0.993; the calorimeter proxy keeps 1.7 % too many electrons |
 | `beam_edep` | the EdepAna file (`EDepAna/tree`) of a target geometry for the analysis server's `approx_ce_sensitivity` and `edep` readers: stops, conversion electrons through the device chain, calorimeter shower library and wall proxy, the CeEndpoint storage filter; float64 or float32 (umbrella `beam/`, `calo/`, `tracker/`; one GPU) | EAF, Slurm | see `beam/docs/edepana.md` |
+| `beam_centuple` | the stock EventNtuple file of a target geometry for the analysis server's EventNtuple analyses (Mu2eBO ce_chain): stops, conversion electrons through the device chain with digis and the reco response, calorimeter device chain, device trigger, donor events, PyROOT writer in the stock release; float64 or float32 (umbrella `beam/`, `calo/`, `tracker/`, `trigger/`; one GPU, `/cvmfs`) | EAF | see `beam/docs/eventntuple.md` |
 
 ## Endpoint job scripts
 
