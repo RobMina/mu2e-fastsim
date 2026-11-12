@@ -53,6 +53,13 @@ There is no accepted truncation and no NumPy fallback. A failed run has no succe
 summary. Retrying a write failure needs a fresh output directory; existing output
 files are never overwritten by the backend.
 
+`response.output.tracker_rows` (optional) bounds the tracker digi rows downloaded per batch. The tracker table is
+padded to `straws x pairs_per_straw` rows (2.2 M at batch 256, about 7 % of them digis) and sorts its digis first,
+so the device hands the host only the leading `tracker_rows` rows: the same files, and for a batch of 256 a terminal
+transfer of about 90 MB instead of 350 MB (the tracker part 30 MB instead of 290 MB). A batch with a digi past them is rejected
+(`response/output/tracker_rows`, demand and capacity named); the demand is in the batch usage for
+`mixing.device_capacity`. Without the key the full padded table is downloaded, as before.
+
 The shapes bound expanded arrays, not total memory: resident host/device pools,
 receipts, JAX executables and workspaces also cost memory. Capacities have not been
 qualified for dense production pileup. Choose them explicitly, not from this tiny test.
