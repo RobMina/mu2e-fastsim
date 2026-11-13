@@ -184,3 +184,23 @@ def test_packaged_run1a_file_loads_by_name():
     c = capacity.Capacities.load("run1a_v01")
     assert c.cap("sipm_photons") == 1 << 22 and c.cap("photon_substeps") == 1 << 22
     assert c.cap("synth_samples", 64) and c.cap("steps")
+
+
+def test_device_sorted_charges_equal_host_concatenation():
+    from crvfastsim.capacity import Capacities
+    from crvfastsim.response import resident
+    rng = np.random.default_rng(5)
+    pieces, host = [], []
+    for width, n in ((500, 310), (500, 0), (500, 499), (500, 120)):
+        chan = rng.integers(0, 40, width)
+        time = np.round(rng.uniform(0, 50, width), 1)            # rounded: many equal (chan, time) pairs
+        charge, pe, photon = rng.uniform(size=width), rng.uniform(size=width), rng.integers(0, 10**6, width)
+        pieces.append(((jnp.asarray(chan), jnp.asarray(time), jnp.asarray(charge), jnp.asarray(pe),
+                        jnp.asarray(photon)), n))
+        host.append([x[:n] for x in (chan, time, charge, pe, photon)])
+    ref = [np.concatenate([h[i] for h in host]) for i in range(5)]
+    o = np.lexsort((ref[1], ref[0]))
+    for caps in (Capacities(record=True), Capacities({"format": "crvfastsim-capacities-1", "charges": 2000})):
+        out = resident._sorted_charges(pieces, caps)
+        for i, k in enumerate(("chan", "time", "charge", "pe", "photon")):
+            assert np.array_equal(out[k], ref[i][o]), k
