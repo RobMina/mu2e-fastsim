@@ -258,6 +258,25 @@ def test_warm_ladder_is_exact_and_new_tails_do_not_compile():
     assert len(_COMPILES) == before
 
 
+def test_cache_every_compile_only_with_a_cache_dir(monkeypatch, tmp_path):
+    keep = (jax.config.jax_compilation_cache_dir, jax.config.jax_persistent_cache_min_compile_time_secs,
+            jax.config.jax_persistent_cache_min_entry_size_bytes)
+    try:
+        jax.config.update("jax_compilation_cache_dir", None)
+        assert dev.cache_every_compile() is False
+        jax.config.update("jax_compilation_cache_dir", str(tmp_path))
+        monkeypatch.setattr(dev, "CACHE_ALL", False)
+        assert dev.cache_every_compile() is False
+        monkeypatch.setattr(dev, "CACHE_ALL", True)
+        assert dev.cache_every_compile() is True
+        assert jax.config.jax_persistent_cache_min_compile_time_secs == 0.0
+        assert jax.config.jax_persistent_cache_min_entry_size_bytes == -1
+    finally:
+        jax.config.update("jax_compilation_cache_dir", keep[0])
+        jax.config.update("jax_persistent_cache_min_compile_time_secs", keep[1])
+        jax.config.update("jax_persistent_cache_min_entry_size_bytes", keep[2])
+
+
 def test_load_references_and_stream_split(tmp_path, monkeypatch):
     paths = []
     for i, n in enumerate((3, 5)):

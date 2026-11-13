@@ -1031,10 +1031,29 @@ def run_ds_only(chain, x, p, t, pdg, enter, seed=20261107):
 
 # ---------------------------------------------------------------- inputs, bench entry points, CLI
 
+CACHE_ALL = os.environ.get("TSDEV_CACHE_ALL", "1") != "0"
+
+
+def cache_every_compile():
+    """With a persistent compilation cache directory configured (JAX_COMPILATION_CACHE_DIR or
+    jax_compilation_cache_dir), cache every executable, not only those that took over a second to compile: a chain
+    compiles a few hundred small executables (bucket compactions, scatters, refills, eager operations) besides the
+    large chunks, and a fresh process otherwise compiles them again. The executables are the same, so outputs are
+    unchanged. TSDEV_CACHE_ALL=0 keeps JAX's thresholds. Returns whether the thresholds were lowered."""
+    if not CACHE_ALL or not jax.config.jax_compilation_cache_dir:
+        return False
+    jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)
+    jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
+    return True
+
+
 def load_chain(gdml, field_config, offline_root, maps, ds_geom_file, ds_offline_root, ds_map,
                settings=Settings(), ds_prm=dst.Params(), pool=None, dtype="float64"):
+    """Device chain from the TS GDML, the TS field configuration and maps, the DS geometry and the DS field map
+    (with a persistent compilation cache configured, every compile is cached: cache_every_compile)."""
     from . import fieldmap
     from .tsgeometry import Geometry
+    cache_every_compile()
     set_dtype(dtype)
     tsg = DeviceGeometry(Geometry(gdml))
     tsf = DeviceField.from_config(field_config, offline_root, maps)
