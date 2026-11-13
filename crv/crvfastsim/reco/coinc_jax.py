@@ -3,7 +3,8 @@
 Layout: one row per (event, sector type) group, hits padded to H per group in collection order; one jitted call per
 sector type (cuts are static per type). Equivalences used to get fixed shapes:
   - stock findClusters joins until no hit is added and its link test is symmetric, so a cluster is the connected
-    component of its seed; components come from the boolean transitive closure (log2 H squarings)
+    component of its seed; components come from min-label propagation over the link graph (the lowest hit index of
+    each component, as the boolean transitive closure gives it)
   - checkCoincidence combinations are a dense tensor over K filtered hits per (side, layer) slot; the maxDistance
     widening is a max over passing combinations (order-independent); the stable x-sort is reproduced with ranks
   - only n == coincidenceLayers combinations are checked (cuts are uniform within a sector type: asserted)
@@ -204,9 +205,32 @@ def _closure(A):
     return R > 0
 
 
-def _labels(A, valid):
+def _labels_closure(A, valid):
+    """Component label (lowest hit index of the component) from the transitive closure: the reference for _labels."""
     R = _closure(A)
     return jnp.where(valid, jnp.argmax(R, axis=-1), -1)
+
+
+def _labels(A, valid):
+    """Per-hit component label of a symmetric boolean adjacency A [G, H, H] (diagonal set for valid hits): the lowest
+    hit index in the hit's connected component, -1 for invalid hits. Same integers as _labels_closure.
+
+    Min-label propagation with shortcuts, in a device loop that stops once no label changes: every label is always an
+    index of the hit's own component and never increases, and at the fixed point each label equals every neighbour's,
+    so it is the component's lowest index (its own label never changes). A few (G, H, H) min-reductions instead of
+    log2 H boolean matrix squarings."""
+    H = valid.shape[-1]
+    dtype = jnp.argmax(jnp.zeros((1,), bool)).dtype
+    lab0 = jnp.where(valid, jnp.arange(H, dtype=jnp.int32)[None, :], H)
+
+    def body(state):
+        lab, _, it = state
+        new = jnp.minimum(lab, jnp.min(jnp.where(A, lab[:, None, :], H), axis=-1))
+        new = jnp.minimum(new, jnp.take_along_axis(new, jnp.minimum(new, H - 1), axis=-1))   # shortcut
+        new = jnp.where(valid, new, H)
+        return new, jnp.any(new != lab), it + 1
+    lab, _, _ = jax.lax.while_loop(lambda st: st[1] & (st[2] < H), body, (lab0, jnp.bool_(True), jnp.int32(0)))
+    return jnp.where(valid, lab, -1).astype(dtype)
 
 
 def _attach_opposite(lab, kept, filt, comp, idx, bar, sipm, first, t, enabled, window):
