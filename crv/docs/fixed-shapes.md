@@ -44,3 +44,11 @@ the chunk length of the resident SiPM loop) is set by `--sipm-photons` (default 
 
 A call whose demand exceeds its capacity is not truncated. It runs with the bucketed shape: the output is the same,
 but that call compiles. It is counted in `runchain.capacity.overflow`, so a file that is too small shows in the report.
+
+## Bounded pulse scans
+
+In capacity mode both pulse fits (the 12-sample fit and the device refit of flagged waveforms) run with
+`pulsefit_jax.reconstruct_dense(bounded=True)`. The peak scans stop at the longest waveform, and the rounds stop once
+no waveform found a pulse (a waveform that finds none never finds one later). The pulses are the same:
+`runchain --save-reco` outputs are byte-identical with and without on one GPU, float32 and float64. The refit's 16
+rounds no longer run over every padded row.
