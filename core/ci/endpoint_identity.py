@@ -167,6 +167,7 @@ KIT_PARAMS = {
     "beam_point": {"geom": "move_extras12.txt", "muons": 105350.0, "seed": 1.0, "repeat": 0.0},
     "beam_sob": {"geom": "move_extras12.txt", "muons": 0, "electrons": 100000, "seed": 1},
     "beam_edep": {"geom": "move_extras12.txt", "muons": 0, "electrons": 100000, "seed": 1, "dtype": "float32"},
+    "beam_edep_cpu": {"geom": "move_extras12.txt", "muons": 0, "electrons": 100000, "seed": 1, "dtype": "float64"},
     "beam_centuple": {"geom": "move_extras12.txt", "muons": 0, "electrons": 20000, "seed": 1, "dtype": "float32"},
 }
 

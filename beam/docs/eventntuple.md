@@ -71,7 +71,7 @@ simulates. Everything else is the donor's.
 | `trksegpars_lh` at the TT surfaces | fast | from the reco state in the local field (rad = pT / (0.3 Bz), phi0 = phi - z / lam, t0 at z = 0); front d0, maxr, tanDip = response draws; errors (t0err) donor |
 | `trkqual.result` | donor | nearest active hits, fit consistency, tan(dip) |
 | `trkpid.result` | donor | own draw among e- donors with the same calorimeter match, nearest E/p |
-| `trkcalohit` (e- fit) | fast | leading fast cluster on the contact disk above 10 MeV: did, edep, ctime, csize, poca, mom, dt from the contact time |
+| `trkcalohit` (e- fit) | fast | leading fast cluster above 10 MeV on the contact disk, else on the other disk (stock matches either disk), kept with the stock calorimeter-hit inclusion efficiency of its energy (0.56 at 10-20 MeV, 0.99 above 70 MeV): did, edep, ctime, csize, poca, mom, dt from the contact time |
 | `trkmcsim[*][0]` | fast | the CE's birth (every fit of the same particle); ancestors donor |
 | `trksegsmc` TT surfaces | fast | entry state; TT_Mid from the last forward straw step carried on a helix; TT_Back from the tracker exit |
 | `caloclusters` | fast | front-face contacts: the calorimeter device chain (shower library, crystal response, digis, template fit, clusters); inner-edge contacts: one cluster with the Geant4 inner-edge table's visible energy |

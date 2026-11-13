@@ -39,7 +39,9 @@ CALO_FILES = ("Sim_crystal.txt", "CsI-waveform-2020-02-12.root", "ReadoutNoise.r
 # stock OnSpill MC proton bunch time (ProtonBunchTimeMC, MDC2025ax digitization): -212.296 ns + 5 ns x {-2..2}, and
 # the reco estimate of it (evtinfo.pbtime) within ~0.5 ns; the digitization window and the TDC zero follow it
 PBTIME_BASE, PBTIME_STEP, PBTIME_K, PBT_RECO_SIGMA = -212.296, 5.0, (-2, 2), 0.5
-CALO_CAPS = "steps=56,photoelectrons=5000,rows=26,digis=16,digi_length=96,hits=8,event_hits=32,rounds=8"
+# per-event capacities of the calorimeter device chain (steps..hits scale with the batch); rounds bounds the main and
+# split clustering rounds: 8 overflowed on 2 CE events in about 20,000; a larger cap leaves every other event unchanged
+CALO_CAPS = "steps=56,photoelectrons=5000,rows=26,digis=16,digi_length=96,hits=8,event_hits=32,rounds=16"
 
 
 def helix_to_z(x, p, t, z, bz=BZ_TRACKER, q=-1.0):
@@ -133,6 +135,7 @@ class FastRecord:
         per = {k: v * calo_batch if k in ("steps", "photoelectrons", "rows", "digis", "hits") else v
                for k, v in caps.items()}
         self.calo_batch = calo_batch
+        self.calo_recluster = 0
         self.calo = dc.make_chain(dc.pack_library(lib, radius_neighbors=8, placement="crystal", dtype=self.dtype),
                                   resp, dc.Caps(events=calo_batch, **per), truth=True)
         self.field = cechain.field_maps(maps)
@@ -216,7 +219,7 @@ class FastRecord:
         cnt = dict(births=n, entry=int(has.sum()), fit=int(cols["trk_fit"].sum()), qual=int(cols["trk_qual"].sum()),
                    mid=int(cols["mid_found"].sum()), back=int(ok.sum()), device_s=round(t_dev, 3),
                    calo_s=round(time.perf_counter() - tic - t_dev, 3),
-                   digis=0 if digis is None else int(len(digis["ev"])))
+                   digis=0 if digis is None else int(len(digis["ev"])), calo_recluster=self.calo_recluster)
         return cols, digis, cnt
 
     # -- calorimeter -------------------------------------------------------------------------------------------------
@@ -249,6 +252,7 @@ class FastRecord:
         rows = k[fr]
         B = self.calo_batch
         key = jax.random.PRNGKey(seed)
+        self.calo_recluster = 0
         for i, b0 in enumerate(range(0, rows.size, B)):
             sel = fr[b0:b0 + B]
             m = sel.size
@@ -264,6 +268,7 @@ class FastRecord:
                       "crystal_length": np.full(m, 200.0, np.float32)}
             q, t = dc.entries_batch(ent, timing, np.arange(m), B)
             r = dc.run(self.calo, q, t, jax.random.fold_in(key, i))
+            self.calo_recluster += int(r["stats"]["recluster"])   # events clustered again (dc.clusters)
             ev = rows[b0:b0 + B]
             dn = np.asarray(r["donor"])[:m]
             okd = dn >= 0

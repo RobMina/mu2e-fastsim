@@ -294,7 +294,11 @@ class DeviceChain:
     Geant4 library) or a library .npz / deltas.Library. response_config: a recoresp.config manifest (dict, JSON or
     path) or its hash; the response table must carry the same hash (tables built with table.build(..., config=...)),
     or DeviceChain raises. response_cuts: CE selection cuts applied at run time (table.with_cuts: tandip, d0, rmax as
-    (low, high), fitcon; fitcon needs all-track pools). nrow_library (opt-in approximation tracker_rows=sampled):
+    (low, high), fitcon; fitcon needs all-track pools). digi_electronics: levers of the resident digitiser's
+    electronics (trkfastsim.digi.digi_resident.electronics_options: entries_per_straw, saturation_rows,
+    saturation_pool, saturation_tiles; the same digis): "default" (DIGI_ELECTRONICS), a dict, or None (the pair
+    loop); the last call's demand counters are in digi_stats.
+    nrow_library (opt-in approximation tracker_rows=sampled):
     None (default: the tracker and albedo transport give nrow), or "default" / an .npz of trkfastsim.recoresp.nrow:
     nrow is drawn from the library given the entry helix and the tracker is not transported (no steps, no digis,
     no deltas; a call with digis and digi_cond is refused; the albedo option has no effect on nrow, the library
@@ -310,7 +314,7 @@ class DeviceChain:
                  response=None, digi_cond=None, dtype="float64", origin=ORIGIN, chord_mm=10.0, lanes=None,
                  ce_unroll=True, ce_shrink=2, digi_chunk=8000, resident_digis=True, complete_outer_wall=False,
                  albedo="default", albedo_species="all", albedo_max_chords=8192, deltas=None, response_config=None,
-                 response_cuts=None, nrow_library=None, track_observables="quality"):
+                 response_cuts=None, nrow_library=None, track_observables="quality", digi_electronics="default"):
         if track_observables not in ("quality", "fit"):
             raise ValueError("track_observables: 'quality' or 'fit'")
         self.track_observables = track_observables
@@ -327,6 +331,15 @@ class DeviceChain:
         self.ce_shrink = ce_shrink                 # cechain_jax compaction: bucket shrink factor (2 = its default)
         self.digi_chunk = digi_chunk
         self.resident_digis = resident_digis       # trkfastsim.digi.digi_resident: same digis, packing on the device
+        if isinstance(digi_electronics, str) and digi_electronics == "default":
+            digi_electronics = DIGI_ELECTRONICS if resident_digis else None
+        if digi_electronics is not None:           # electronics levers of the resident digitiser (the same digis)
+            from trkfastsim.digi import digi_resident as DR
+            if not resident_digis:
+                raise ValueError("digi_electronics needs resident_digis=True")
+            digi_electronics = DR.electronics_options(digi_electronics)
+        self.digi_electronics = digi_electronics
+        self.digi_stats = {}                       # with digi_electronics: the last digitize call's demand counters
         self.cg = cechain.from_offline(geom, offline_root)
         self.maps = cechain_jax.device_maps(maps, self.dt)
         org = np.asarray(origin, float)
@@ -551,6 +564,8 @@ class DeviceChain:
         nv = int(start[-1])
         st = flat({k: s[k] for k in DIGI_COLS + ("plane", "panel", "straw", "valid")}, DR._b(nv))
         outs = []
+        stats = {} if self.digi_electronics is not None else None
+        elec = {} if self.digi_electronics is None else {"electronics": self.digi_electronics, "stats": stats}
         todo = [(e0, min(chunk, nev - e0)) for e0 in range(0, nev, chunk)]
         while todo:                                   # event chunks (steps are in event order: contiguous rows)
             e0, ne = todo.pop(0)
@@ -560,7 +575,7 @@ class DeviceChain:
             sub = chunk_steps(st, jnp.int64(a), jnp.int64(b - a), jnp.int64(e0), DR._b(b - a))
             try:
                 d, cnt = DR.digitize(sub, ne, self.cond, jax.random.fold_in(key, e0), nstep=b - a, padded=True,
-                                     **_timing(event_timing, e0, ne))
+                                     **_timing(event_timing, e0, ne), **elec)
             except OverflowError:                     # beyond the digitiser's cluster capacity: halve the chunk
                 if ne == 1:
                     raise
@@ -572,6 +587,8 @@ class DeviceChain:
             rows = np.arange(a, b)
             d["step"] = rows[d["step"]] if len(d["step"]) else d["step"]   # row of the flat steps
             outs.append(d)
+        if stats is not None:
+            self.digi_stats = stats
         return _concat(outs, self.cond)
 
     def observables(self, res, seed):
@@ -618,13 +635,19 @@ class DeviceChain:
 
 
 _CHAIN = {}
+# The resident digitiser's electronics levers on by default (trkfastsim.digi.digi_resident.electronics_options; the
+# same digis): flat entries sized from the W2 census (largest launch demand 1.000 pairs per straw slot, 25 % margin),
+# float64 saturation rows, the bucket saturation pool and bounded tiles.
+DIGI_ELECTRONICS = {"entries_per_straw": 1.25, "saturation_rows": "auto", "saturation_pool": True,
+                    "saturation_tiles": "bounded"}
 
 
 def run(stops_or_births, seed, *, n=None, digis=True, event_timing=None, positrons=None, **chain_kw):
     """One batch through DeviceChain (built once per process and configuration): stops_or_births is a stop table
     (dict/npz with x, y, z, t; then n births are drawn) or births (x, u, p, t). positrons (opt-in): positron births
     (x, u, p, t), one per electron birth (pair events, DeviceChain.transport_pair). Returns DeviceChain's dict."""
-    key = tuple(sorted((k, tuple(v) if isinstance(v, (list, tuple)) else v) for k, v in chain_kw.items()))
+    key = tuple(sorted((k, tuple(v) if isinstance(v, (list, tuple)) else tuple(sorted(v.items())) if isinstance(v, dict)
+                        else v) for k, v in chain_kw.items()))
     if key not in _CHAIN:
         _CHAIN[key] = DeviceChain(**chain_kw)
     ch = _CHAIN[key]

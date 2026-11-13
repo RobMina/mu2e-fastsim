@@ -160,7 +160,7 @@ def _electronics_kernel(c, cap, pair_cap, batch, entries=None, saturation_rows=N
 
 @lru_cache(maxsize=32)
 def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=None, saturation_pool=False,
-                       saturation_tiles=None):
+                       saturation_tiles=None, bounded_loops=False):
     """The electronics kernel `run` (as _electronics_kernel) and, with saturation_pool=True (flat digitisation only),
     the kernels that saturate the ends of many launches together.
 
@@ -169,7 +169,11 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
     the pools of every launch of one kernel shape, flattened, and saturates their saturated ends in chunks of the same
     srows rows as per launch, so each chunk computes as a per-launch chunk does, but fewer chunks run (a launch's
     padding is filled by the next launch's ends); `pool_finish(volts, noise, row, kk, straw_us)` is the per-launch
-    ADC and PMP. Exact: the same keys and arithmetic, the same chunk shapes."""
+    ADC and PMP. Exact: the same keys and arithmetic, the same chunk shapes.
+
+    bounded_loops=True stops the fine threshold-crossing search once no lane is still refining (later passes leave
+    every lane unchanged) and sums the saturated ADC samples tile by tile over the response tiles that ran, instead of
+    over every response step (the steps past them are zero). The values are the same up to the order of the sums."""
     if saturation_pool and entries is None:
         raise ValueError("saturation_pool needs the flat digitisation (entries)")
     if saturation_tiles not in (None, "bounded"):
@@ -247,9 +251,21 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
         # a traced bound takes the static loop's index dtype, so the tile body is the same program
         upper = ntiles if tiles is None else tiles.astype(jnp.asarray(ntiles).dtype)
         resp = lax.fori_loop(0, upper, tile, jnp.zeros((n_.shape[0], padded_steps)))
+        scale = c.saturationSampleFactor * S["dv_a"] / S["dv_t"]
+        if bounded_loops:   # ADC samples summed over the response tiles that ran, tile by tile
+            resp = jnp.minimum(resp, c.saturationVoltage)
+
+            def sample_tile(k, acc):
+                offset = k * SATURATION_TILE
+                tick = offset + jnp.arange(SATURATION_TILE)
+                r = jnp.where(tick[None, :] < sat_steps, lax.dynamic_slice_in_dim(resp, offset, SATURATION_TILE, 1), 0)
+                tq = t0[:, None] + dts * tick[None, :].astype(df.FLOAT)
+                ii = jnp.clip(jnp.trunc((times[:, :, None] - tq[:, None, :]) * sr + rb / 2.), 0, rb - 1).astype(jnp.int32)
+                return acc + jnp.sum(r[:, None, :] * cond["resp_imp"][ii], 2)
+            acc = lax.fori_loop(0, upper, sample_tile, jnp.zeros(times.shape, resp.dtype))
+            return acc * scale[:, None], nstep > sat_steps
         resp = jnp.minimum(resp[:, :sat_steps], c.saturationVoltage)
         tq = t0[:, None] + dts * jnp.arange(sat_steps)[None, :].astype(df.FLOAT)
-        scale = c.saturationSampleFactor * S["dv_a"] / S["dv_t"]
         def sample(tm):
             ii = jnp.clip(jnp.trunc((tm[:, None] - tq) * sr + rb / 2.), 0, rb - 1).astype(jnp.int32)
             return jnp.sum(resp * cond["resp_imp"][ii], 1) * scale
@@ -425,7 +441,12 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
                 pres = jnp.where(act & ~up, smp, pres)
                 newt = pre + (post - pre) / (posts - pres) * (thr - pres)
                 return pre, post, pres, posts, jnp.where(act, newt, tt), jnp.where(act, newt - tt, dt)
-            _, _, _, _, tt, _ = lax.fori_loop(0, 10, finebody, (pre, post, pres, posts, tt, dt))
+            if bounded_loops:   # stop once no lane is refining: later passes leave every lane unchanged
+                _, (_, _, _, _, tt, _) = lax.while_loop(
+                    lambda x: (x[0] < 10) & jnp.any(found & (jnp.abs(x[1][5]) > .020)),
+                    lambda x: (x[0] + 1, finebody(x[0], x[1])), (jnp.int32(0), (pre, post, pres, posts, tt, dt)))
+            else:
+                _, _, _, _, tt, _ = lax.fori_loop(0, 10, finebody, (pre, post, pres, posts, tt, dt))
             time = jnp.where(found, tt, time)
             vcross = jnp.where(found, thr, vcross)
             advance = jnp.maximum(star, count(tt + LB))

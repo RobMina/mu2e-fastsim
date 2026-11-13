@@ -39,6 +39,44 @@ MAX_DRIFT_CLUSTERS = 16_000_000            # no host copies here: the device buf
 BIG = np.int64(2) ** 62
 ASYNC_BATCHES = True       # waveform batches without host reads (False: digi_jax's per-batch loop; same digis)
 FALLBACKS = [0]            # chunks that fell back to the per-batch loop (a batch failed or saturated at pair_cap 4)
+ENTRY_FALLBACKS = [0]      # of them, chunks whose flat digitisation needed more entries than its capacity
+ELECTRONICS = ("entries_per_straw", "saturation_rows", "saturation_pool", "saturation_tiles")
+
+
+def electronics_options(opts):
+    """Validated electronics levers of the async waveform path (digi_jax._electronics_parts; None: the pair loop).
+
+    entries_per_straw: flat digitisation over the present (straw, pair) entries, ceil(entries_per_straw x batch)
+    entries per launch (at most 4 = pair_cap per straw). saturation_rows "auto": saturation chunks of batch rows
+    instead of 2 x batch (float64 only; in float32 the response sums drift, so the option is ignored there).
+    saturation_pool: the saturated ends of every launch of one cluster width saturated together (same chunk shape).
+    saturation_tiles "bounded" (with the pool): each chunk's response tiles only as far as its ends need. All give
+    the pair loop's digis; a launch needing more entries than its capacity makes the chunk fall back to the pair loop
+    (counted in ENTRY_FALLBACKS and stats["electronics_entry_fallbacks"], with a warning)."""
+    if not opts:
+        return None
+    opts = dict(opts)
+    bad = set(opts) - set(ELECTRONICS)
+    if bad:
+        raise ValueError(f"unknown electronics options {sorted(bad)}")
+    e = opts.get("entries_per_straw")
+    if e is None or type(e) not in (int, float) or not 0 < e <= 4:
+        raise ValueError("electronics entries_per_straw must be in (0, 4] (the flat digitisation)")
+    if opts.get("saturation_rows") not in (None, "auto"):
+        raise ValueError("electronics saturation_rows must be None or 'auto'")
+    if opts.get("saturation_tiles") not in (None, "bounded"):
+        raise ValueError("electronics saturation_tiles must be None or 'bounded'")
+    if opts.get("saturation_tiles") and not opts.get("saturation_pool"):
+        raise ValueError("electronics saturation_tiles 'bounded' needs saturation_pool")
+    return {"entries_per_straw": float(e), "saturation_rows": opts.get("saturation_rows"),
+            "saturation_pool": bool(opts.get("saturation_pool", False)), "saturation_tiles": opts.get("saturation_tiles")}
+
+
+def _parts(c, cap, batch, elec):
+    """digi_jax electronics kernels of one launch shape at pair_cap 4, with the levers of elec."""
+    entries = int(np.ceil(elec["entries_per_straw"] * batch))
+    return DJ._electronics_parts(c, cap, 4, batch, entries, elec["saturation_rows"], elec["saturation_pool"],
+                                 elec["saturation_tiles"])
 
 
 def _b(n, lo=256):
@@ -369,8 +407,11 @@ def _append_acc(buf, acc, result, which, straw_ev, straw_sid, nref, pair_cap, ba
     """_append at the device offset acc["offset"]; the batch's flags and counters accumulate in acc (no host read)."""
     buf, kept = _append_rows(buf, acc["offset"], result, which, straw_ev, straw_sid, nref, pair_cap, batch)
     i64 = lambda x: jnp.asarray(x).astype(jnp.int64)
+    entry = jnp.asarray(result.get("entry_overflow", False)).astype(bool)
+    milli = -(-i64(result["pairs"]) * 1000 // batch)          # demand: pairs per straw slot of the launch, x 1000
     return buf, {"offset": acc["offset"] + i64(kept),
-                 "failed": acc["failed"] | jnp.asarray(result["failed"]).astype(bool),
+                 "entry": acc["entry"] | entry, "entries_milli": jnp.maximum(acc["entries_milli"], milli),
+                 "failed": acc["failed"] | jnp.asarray(result["failed"]).astype(bool) | entry,
                  "sat": acc["sat"] | jnp.asarray(result["sat_overflow"]).astype(bool),
                  "pairs": acc["pairs"] + i64(result["pairs"]),
                  "nan_ends": acc["nan_ends"] + i64(result["nan_ends"]),
@@ -397,10 +438,12 @@ def _timing_values(c, lengths):
     return tdc(lengths), tdc(jnp.full(1, float(c.eventWindowLength)))[0], ewl
 
 
-def _waveforms_async(c, plan, key3, tabs, gt, charge, wd, cs, straw, straw_ev, straw_sid, timing, obuf):
+def _waveforms_async(c, plan, key3, tabs, gt, charge, wd, cs, straw, straw_ev, straw_sid, timing, obuf, elec=None):
     """Every waveform batch at pair_cap 4 as three device calls (pack, electronics, append) and no host read: the
     output offset, the failure and saturation flags and the counters stay on the device. Returns (buf, acc, nbatch);
-    the caller reads acc once and falls back to _waveforms_sync if a batch failed or saturated."""
+    the caller reads acc once and falls back to _waveforms_sync if a batch failed or saturated.
+    elec (electronics_options): the flat digitisation and saturation levers; with the saturation pool every launch of
+    a cluster width runs first, then their saturated ends together, then each launch's ADC and append."""
     onspill = bool(c.onspill)
     timed = timing is not None
     tv = timing if timed else (jnp.zeros(1, jnp.int64), jnp.int64(0), jnp.float64(0))
@@ -418,19 +461,55 @@ def _waveforms_async(c, plan, key3, tabs, gt, charge, wd, cs, straw, straw_ev, s
         wh[:len(bucket_h)] = bucket_h
         nbs = np.minimum(batch, len(bucket_h) - batch * np.arange(nbt)).astype(np.int64)
         whichs, nbs_d = jnp.asarray(wh.reshape(nbt, batch)), jnp.asarray(nbs)
-        kern = DJ._electronics_kernel(c, cap, 4, batch)
+        parts = None if elec is None else _parts(c, cap, batch, elec)
+        kern = DJ._electronics_kernel(c, cap, 4, batch) if elec is None else parts.run   # default: unchanged
+        pooled = elec is not None and elec["saturation_pool"]
+        launches = []
         for i in range(nbt):
             args, targs, which, nref = _pack_at(whichs, nbs_d, i, cap, batch, onspill, timed, tabs, gt, charge, wd,
                                                 cs, straw, *tv)
-            result = kern(key3, *args, **targs)
-            if buf is None:
-                buf = _buffers(c, result, size)
-                z = jnp.int64(0)
-                acc = {"offset": z, "failed": jnp.bool_(False), "sat": jnp.bool_(False), "pairs": z, "nan_ends": z,
-                       "saturated_ends": z}
-            buf, acc = _append_acc(buf, acc, result, which, straw_ev, straw_sid, nref, 4, batch)
+            launches.append((kern(key3, *args, **targs), which, nref))
+            if not pooled:            # append each launch as it is made (pooled: after the bucket's saturation)
+                buf, acc = _append_launch(c, buf, acc, size, launches.pop(), straw_ev, straw_sid, batch)
+                nbatch += 1
+        for launch in _pool_bucket(parts, launches) if pooled else ():
+            buf, acc = _append_launch(c, buf, acc, size, launch, straw_ev, straw_sid, batch)
             nbatch += 1
     return buf, acc, nbatch
+
+
+def _append_launch(c, buf, acc, size, launch, straw_ev, straw_sid, batch):
+    result, which, nref = launch
+    if buf is None:
+        buf = _buffers(c, result, size)
+        z = jnp.int64(0)
+        acc = {"offset": z, "failed": jnp.bool_(False), "sat": jnp.bool_(False), "pairs": z, "nan_ends": z,
+               "saturated_ends": z, "entry": jnp.bool_(False), "entries_milli": z}
+    return _append_acc(buf, acc, result, which, straw_ev, straw_sid, nref, 4, batch)
+
+
+def _pool_bucket(parts, launches):
+    """Tier saturation pool of one cluster width: the launches' pools flattened, their saturated ends saturated
+    together (digi_jax pool_saturate: the per-launch chunk shape, filled across launches), then each launch's ADC
+    and PMP (pool_finish). The same digis as per-launch saturation."""
+    pools = [r["pool"] for r, _, _ in launches]
+    # padded to a power-of-two number of launches with unsaturated zero rows (never saturated, so the same chunks and
+    # digis), so the pool kernel compiles once per bucket size class, not for every launch count
+    pad = [jax.tree_util.tree_map(jnp.zeros_like, pools[0])] * (_b(len(pools), 1) - len(pools))
+    cat = lambda *x: jnp.concatenate(x)
+    full = pools + pad
+    lanes = jax.tree_util.tree_map(cat, *[p["lanes"] for p in full])
+    volts, overflow = parts.pool_saturate(lanes, cat(*[p["times"] for p in full]), cat(*[p["sat"] for p in full]),
+                                          cat(*[p["volts"] for p in full]))
+    out, first = [], 0
+    for (result, which, nref), p in zip(launches, pools):
+        rows = p["volts"].shape[0]
+        adc, pmp = parts.pool_finish(volts[first:first + rows], p["noise"], p["row"], p["kk"], p["us"])
+        first += rows
+        result = {k: v for k, v in result.items() if k != "pool"}
+        result.update(adc=adc, pmp=pmp, sat_overflow=result["sat_overflow"] | overflow)
+        out.append((result, which, nref))
+    return out
 
 
 def _waveforms_sync(c, plan, key3, tabs, gt, charge, wd, cs, straw, straw_ev, straw_sid, event_timing, obuf, stats):
@@ -493,12 +572,15 @@ def pad_steps(st, nstep):
     return {k: _padto(jnp.asarray(st[k]), sb) for k in COLS}
 
 
-def digitize(st, nev, c, key, stats=None, *, event_timing=None, nstep=None, padded=False):
+def digitize(st, nev, c, key, stats=None, *, event_timing=None, nstep=None, padded=False, electronics=None):
     """digi_jax.digitize with device-resident packing (same digis for the same inputs and key). st: flat device step
     arrays (COLS; `ev` the event index in [0, nev)). Returns a dict of device arrays.
     nstep: st is already padded (pad_steps: the first nstep rows are the steps, the rest zero, length _b(nstep)), so
     no array of a data-dependent length is made here. padded: return (digis at a power-of-two length, count) and
-    leave the cut to the caller (host side), so the call compiles nothing per output size."""
+    leave the cut to the caller (host side), so the call compiles nothing per output size.
+    electronics: opt-in electronics levers (electronics_options; the same digis); stats then also gets
+    "entries_per_straw_milli_max" (the largest per-launch demand) and "electronics_entry_fallbacks"."""
+    elec = electronics_options(electronics)
     if nstep is None:
         nstep = int(np.shape(st["ev"])[0])
         s = pad_steps(st, nstep)
@@ -575,7 +657,7 @@ def digitize(st, nev, c, key, stats=None, *, event_timing=None, nstep=None, padd
     if ASYNC_BATCHES:
         timing = None if event_timing is None else _timing_values(c, lengths)
         buf, acc, nbatch = _waveforms_async(c, plan, key3, tabs, gt, charge, wd, cs, straw, straw_ev, straw_sid,
-                                            timing, obuf)
+                                            timing, obuf, elec)
         h = None if acc is None else jax.device_get(acc)          # the one host read of the batch loop
         if h is None or not (h["failed"] or h["sat"]):
             done = True
@@ -586,6 +668,18 @@ def digitize(st, nev, c, key, stats=None, *, event_timing=None, nstep=None, padd
                     stats[field] = stats.get(field, 0) + int(val)
         else:
             FALLBACKS[0] += 1
+        if h is not None and elec is not None:
+            if stats is not None:
+                stats["entries_per_straw_milli_max"] = max(stats.get("entries_per_straw_milli_max", 0),
+                                                           int(h["entries_milli"]))
+            if h["entry"]:
+                import warnings
+                ENTRY_FALLBACKS[0] += 1
+                if stats is not None:
+                    stats["electronics_entry_fallbacks"] = stats.get("electronics_entry_fallbacks", 0) + 1
+                warnings.warn(f"flat digitisation: a launch needed {int(h['entries_milli']) / 1000:.3f} entries per "
+                              f"straw > entries_per_straw {elec['entries_per_straw']}; this chunk runs the pair loop "
+                              "(same digis, slower)", RuntimeWarning, stacklevel=2)
     if not done:      # a batch failed (or saturated) at pair_cap 4: digi_jax's loop, which retries or raises
         buf, offset = _waveforms_sync(c, plan, key3, tabs, gt, charge, wd, cs, straw, straw_ev, straw_sid,
                                       event_timing, obuf, stats)
