@@ -138,8 +138,25 @@ def test_classes_and_calo_match():
     assert A.classes(rec).tolist() == [D.CLASS_Q, D.CLASS_F, D.CLASS_N]
     rec = dict(cl_valid=np.array([[True, True], [True, False]]), cl_energy=np.array([[5.0, 80.0], [90.0, 0.0]]),
                cl_disk=np.array([[0, 0], [1, 0]]), calo_disk=np.array([0, 0]), calo_kind=np.array([1, 1]))
-    has, j = A.calo_match(rec)
+    has, j = A.calo_match(rec, rule="contact")
     assert has.tolist() == [True, False] and j[0] == 1
+    # stock rule: the other disk counts when the contact disk has none (event 1); kept with the inclusion efficiency
+    has, j = A.calo_match(rec, np.full(2, 1430), np.zeros(2, int), np.arange(2), 7)
+    assert j.tolist() == [1, 0]
+    assert has.tolist() == [True, True]                       # 80 and 90 MeV: efficiency >= 0.989 (these draws pass)
+
+
+def test_calo_match_stock_rule_follows_the_inclusion_efficiency():
+    n = 40000
+    e = np.where(np.arange(n) % 2 == 0, 15.0, 85.0)
+    rec = dict(cl_valid=np.ones((n, 1), bool), cl_energy=e[:, None], cl_disk=np.zeros((n, 1), int),
+               calo_disk=np.zeros(n, int), calo_kind=np.ones(n, int))
+    has, _ = A.calo_match(rec, np.full(n, 1430), np.zeros(n, int), np.arange(n), 3)
+    assert abs(has[e == 15.0].mean() - A.CALO_EFF[0]) < 0.01 and abs(has[e == 85.0].mean() - A.CALO_EFF[7]) < 0.01
+    again, _ = A.calo_match(rec, np.full(n, 1430), np.zeros(n, int), np.arange(n), 3)
+    np.testing.assert_array_equal(again, has)
+    with pytest.raises(ValueError):
+        A.calo_match(rec, rule="nearest")
 
 
 def test_contract_covers_every_reader_and_has_classes():

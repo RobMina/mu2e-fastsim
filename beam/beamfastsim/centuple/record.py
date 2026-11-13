@@ -39,7 +39,9 @@ CALO_FILES = ("Sim_crystal.txt", "CsI-waveform-2020-02-12.root", "ReadoutNoise.r
 # stock OnSpill MC proton bunch time (ProtonBunchTimeMC, MDC2025ax digitization): -212.296 ns + 5 ns x {-2..2}, and
 # the reco estimate of it (evtinfo.pbtime) within ~0.5 ns; the digitization window and the TDC zero follow it
 PBTIME_BASE, PBTIME_STEP, PBTIME_K, PBT_RECO_SIGMA = -212.296, 5.0, (-2, 2), 0.5
-CALO_CAPS = "steps=56,photoelectrons=5000,rows=26,digis=16,digi_length=96,hits=8,event_hits=32,rounds=8"
+# per-event capacities of the calorimeter device chain (steps..hits scale with the batch); rounds bounds the main and
+# split clustering rounds: 8 overflowed on 2 CE events in about 20,000; a larger cap leaves every other event unchanged
+CALO_CAPS = "steps=56,photoelectrons=5000,rows=26,digis=16,digi_length=96,hits=8,event_hits=32,rounds=16"
 
 
 def helix_to_z(x, p, t, z, bz=BZ_TRACKER, q=-1.0):

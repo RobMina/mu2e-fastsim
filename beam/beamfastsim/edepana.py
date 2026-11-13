@@ -67,6 +67,17 @@ EDGE_MIN_ROWS = 20                    # a sparser bin borrows its nearest depth 
 RMAX_MIN = 400.0                      # contacts of helices whose maximum radius (1 T) stays below this deposit nothing
 B_REF = 1.0                           # [T] the uniform field of the maximum-radius variable (binning, not transport)
 RADIUS_NEIGHBORS = 8                  # the W7 production setting of the shower-library draw
+# births per batch when none is given: large on a GPU (one launch keeps it busy); on one CPU core the lane arrays of
+# smaller batches stay in cache and compile fewer shapes (one core, 100k electrons: 5,000 -> 1.6 h, 50,000 -> ~2x slower
+# per electron and the compiler ran out of memory)
+BATCH_GPU = 65536
+BATCH_CPU = 5000
+
+
+def default_batch():
+    """BATCH_CPU on the CPU backend, else BATCH_GPU."""
+    import jax
+    return BATCH_CPU if jax.default_backend() == "cpu" else BATCH_GPU
 WALL_MARGIN_MM = 10.0                 # helices reaching within this of the wall's inner radius go through the proxy
 FRONT_CONTACT_MM = 3.0                # a proxy contact this close behind a crystal front face is a front entry
 
@@ -679,14 +690,16 @@ DEVICE_COLUMNS = "edep_device_columns.npz"
 
 
 def run(stops, electrons, seed, out, *, offline_root, maps, gdml, library, geom=None, dtype="float64",
-        calo=CALO_MODE, deltas=None, batch=65536, run_number=1, name=FILE_NAME, extra_provenance=None,
+        calo=CALO_MODE, deltas=None, batch=None, run_number=1, name=FILE_NAME, extra_provenance=None,
         keep_columns=False, procs=1, stage="all", columns=None, edge_library=None):
     """Births from the mu- stops -> EdepAna rows (one subrun per batch) -> the file and its sidecars in `out`.
     Every batch transports `batch` electrons (the last one padded and the padding dropped), so the device compiles
     one shape. stage: "all"; "device" (the device part only: per-batch columns to out/edep_device_columns.npz, no
-    file); "calo" (the host part from `columns`, a device-stage npz: same births, same file as "all").
-    Returns (paths, counters)."""
+    file); "calo" (the host part from `columns`, a device-stage npz: same births, same file as "all"). batch None:
+    default_batch() (5,000 on the CPU backend, 65,536 on a GPU; the random stream depends on the batch, the
+    distributions do not). Returns (paths, counters)."""
     from .cetracker import DeviceChain
+    batch = default_batch() if batch is None else int(batch)
     if stage not in ("all", "device", "calo"):
         raise ValueError("edepana: stage must be all, device or calo")
     st = _mu_minus_stops(stops) if stage != "calo" else None
@@ -839,7 +852,8 @@ def main(argv=None):
         s.add_argument("--edge-library", dest="edge_library", default=None,
                        help="Geant4 inner-edge energy table (.npz: disk, dz, e_vis, e_g4), for calo library+edge")
         s.add_argument("--deltas", action="store_true", help="delta-ray straw steps (trkfastsim.sim.deltas library)")
-        s.add_argument("--batch", type=int, default=65536, help="births per batch (one subrun each)")
+        s.add_argument("--batch", type=int, default=None,
+                       help="births per batch (one subrun each); default 5,000 on the CPU backend, 65,536 on a GPU")
         s.add_argument("--keep", action="store_true", help="keep per-electron columns (and the stops of point)")
         s.add_argument("--procs", type=int, default=1, help="processes for the side-entry wall proxy (host)")
         s.add_argument("--out", required=True)
