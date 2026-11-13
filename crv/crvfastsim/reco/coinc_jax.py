@@ -603,16 +603,26 @@ def find_async(ev, idx, bar, sipm, time, pe, seq, G, status, cfg=C.FinderConfig(
                 tables=tables, timers=timers, with_pos=with_pos, device=D, caps=caps)
 
 
-def finish(h, fallback=True):
-    """Collect the kernels of a find_async handle; overflowing groups are promoted to the next tier (synchronously),
-    groups beyond the last tier send their event to coinc.py. Returns cl_* per cluster and the member table mem_*."""
-    import time as _time
-    G, cfg, tiers, tables, timers = h["G"], h["cfg"], h["tiers"], h["tables"], h["timers"]
-    keys = POS_KEYS if h.get("with_pos") else OUT_KEYS
-    rows, mems, redo = [], [], set()
-    ncl = [0]
+def _to_ev(meta):
+    return (lambda b, m=meta: m["gev_of"][b]) if meta["gev_of"] is not None else (lambda b: b)
 
-    def take(d, arr, tg, tt, to_ev):
+
+class _Finish:
+    """finish() of one find_async handle in steps: collect (first-choice tiers), promotions (_promote, possibly batched
+    with other handles), complete (concatenation and numpy fallback). Clusters are numbered in take order."""
+
+    def __init__(self, h):
+        self.h = h
+        self.keys = POS_KEYS if h.get("with_pos") else OUT_KEYS
+        self.rows, self.mems, self.redo, self.ncl = [], [], set(), 0
+        self.meta = {}
+        for m in h["jobs"]:
+            if m.get("meta"):
+                self.meta.setdefault(m["tt"], m)
+        self.pend = {}
+
+    def take(self, d, arr, tg, tt):
+        to_ev = _to_ev(self.meta[tt])
         good = ~d["overflow"]
         g, r = np.nonzero(d["root"] & good[:, None])
         row = dict(cl_event=to_ev(tg[g]), cl_type=np.full(len(g), tt), **{f"cl_{k}": d[k][g, r] for k in
@@ -620,65 +630,150 @@ def finish(h, fallback=True):
         if "tref" in arr:   # centred hit times (reduced precision): back to absolute cluster times
             for k in ("cl_start", "cl_end", "cl_avgtime"):
                 row[k] = row[k] + arr["tref"][g]
-        rows.append(row)
+        self.rows.append(row)
         cmap = np.full(d["root"].shape, -1, np.int64)
-        cmap[g, r] = ncl[0] + np.arange(len(g))
-        ncl[0] += len(g)
+        cmap[g, r] = self.ncl + np.arange(len(g))
+        self.ncl += len(g)
         hg, hh = np.nonzero((d["label"] >= 0) & good[:, None])
         cl = cmap[hg, d["label"][hg, hh]]
-        mems.append(dict(mem_cl=cl[cl >= 0], mem_idx=arr["idx"][hg, hh][cl >= 0], mem_event=to_ev(tg[hg][cl >= 0])))
+        self.mems.append(dict(mem_cl=cl[cl >= 0], mem_idx=arr["idx"][hg, hh][cl >= 0],
+                              mem_event=to_ev(tg[hg][cl >= 0])))
         return tg[d["overflow"]]
 
-    t0 = _time.perf_counter()
-    pend = {}
-    for j in h["jobs"]:
-        if j.get("meta"):
-            continue
-        meta = next(m for m in h["jobs"] if m.get("meta") and m["tt"] == j["tt"])
-        to_ev = (lambda b, m=meta: m["gev_of"][b]) if meta["gev_of"] is not None else (lambda b: b)
-        ov = take(_collect_tier(j["outs"], keys), j["arr"], j["tg"], j["tt"], to_ev)
-        if len(ov):
-            pend.setdefault(j["tt"], []).append((j["ti"], ov))
-    timers["kernel_s"] = timers.get("kernel_s", 0.0) + _time.perf_counter() - t0
-    for tt, lst in pend.items():
-        meta = next(m for m in h["jobs"] if m.get("meta") and m["tt"] == tt)
-        to_ev = (lambda b, m=meta: m["gev_of"][b]) if meta["gev_of"] is not None else (lambda b: b)
+    def collect(self):
+        import time as _time
+        t0 = _time.perf_counter()
+        for j in self.h["jobs"]:
+            if j.get("meta"):
+                continue
+            ov = self.take(_collect_tier(j["outs"], self.keys), j["arr"], j["tg"], j["tt"])
+            if len(ov):
+                self.pend.setdefault(j["tt"], []).append((j["ti"], ov))
+        timers = self.h["timers"]
+        timers["kernel_s"] = timers.get("kernel_s", 0.0) + _time.perf_counter() - t0
+        return self
+
+    def promote_one(self):
+        """The promotions of this handle alone (host pack, or a handle that cannot be batched)."""
+        h = self.h
+        G, cfg, tiers, tables, timers = h["G"], h["cfg"], h["tiers"], h["tables"], h["timers"]
+        for tt, lst in self.pend.items():
+            meta = self.meta[tt]
+            P = type_params(G, cfg)[tt]
+            for ti0, ov in lst:
+                ti = ti0 + 1
+                while len(ov) and ti < len(tiers):
+                    H, K, batch = tiers[ti]
+                    if h.get("device") is not None:
+                        pick = np.searchsorted(meta["gev"], ov)
+                        hit, hrow, hidx = _tier_hits(meta["gcols"], meta["inv"], pick)
+                        outs, arr = _launch(hit, hrow, meta["col"][hidx], len(pick), H, _kfor(P, K), batch, P,
+                                            h["device"], tables, h.get("caps"))
+                        tg, d = ov, _collect_tier(outs, self.keys)
+                    else:
+                        arr, tg, _ = pack(*meta["gcols"], G, tables, tt, H, cfg, events=ov)
+                        d = _run_tier(arr, P, _kfor(P, K), batch, self.keys)
+                    timers[f"promoted_H{H}"] = timers.get(f"promoted_H{H}", 0) + len(tg)
+                    ov = self.take(d, arr, tg, tt)
+                    ti += 1
+                self.redo.update(_to_ev(meta)(ov).tolist())
+        self.pend = {}
+
+    def complete(self, fallback=True):
+        import time as _time
+        h = self.h
+        tiers = h["tiers"]
+        for m in h["jobs"]:   # groups larger than the last tier never ran
+            if m.get("meta"):
+                self.redo.update(_to_ev(m)(m["gev"][m["tier"] >= len(tiers)]).tolist())
+        rows, mems = self.rows, self.mems
+        cat = lambda L, k: np.concatenate([x[k] for x in L]) if L else np.zeros(0)
+        out = {k: cat(rows, k) for k in ("cl_event", "cl_type", "cl_pe", "cl_start", "cl_end", "cl_slope",
+                                          "cl_avgtime", "cl_poscalc")}
+        out.update({k: cat(mems, k) for k in ("mem_cl", "mem_idx", "mem_event")})
+        if h.get("with_pos"):
+            out["cl_pos"] = np.concatenate([x["cl_pos"] for x in rows]) if rows else np.zeros((0, 3))
+        redo = np.array(sorted(self.redo), np.int64)
+        out["fallback_events"] = redo
+        if fallback and len(redo):
+            t0 = _time.perf_counter()
+            _replace_with_numpy(out, redo, *h["cols"], h["G"], h["status"], h["cfg"])
+            timers = h["timers"]
+            timers["fallback_s"] = timers.get("fallback_s", 0.0) + _time.perf_counter() - t0
+        return out
+
+
+def _promote(states):
+    """Promotions of several handles (the chunks of one run): per sector type and first-choice tier, each promotion
+    level runs once for the overflowing groups of all handles, device-packed into the same kernel batches. A kernel
+    row depends only on its own hits and the batch shape, so every handle takes the same clusters, in the same order,
+    as from its own promotions (promote_one). Handles that cannot share calls (host pack, different tables, tiers,
+    geometry, settings or outputs) are promoted one by one."""
+    states = [s for s in states if s.pend]
+    if not states:
+        return
+    h0 = states[0].h
+    same = all(s.h.get("device") is not None and s.h["tables"] is h0["tables"] and s.h["tiers"] == h0["tiers"]
+               and s.h["G"] is h0["G"] and s.h["cfg"] == h0["cfg"] and s.keys == states[0].keys
+               and s.h.get("caps") is h0.get("caps") for s in states)
+    if not same:
+        for s in states:
+            s.promote_one()
+        return
+    G, cfg, tiers, tables, keys = h0["G"], h0["cfg"], h0["tiers"], h0["tables"], states[0].keys
+    for tt in sorted({tt for s in states for tt in s.pend}):
         P = type_params(G, cfg)[tt]
-        for ti0, ov in lst:
+        for ti0 in sorted({t for s in states for t, _ in s.pend.get(tt, [])}):
+            cur = {i: ov for i, s in enumerate(states) for t, ov in s.pend.get(tt, []) if t == ti0}
             ti = ti0 + 1
-            while len(ov) and ti < len(tiers):
+            while any(len(ov) for ov in cur.values()) and ti < len(tiers):
                 H, K, batch = tiers[ti]
-                if h.get("device") is not None:
+                hits, hrows, cols, spans, off = [], [], [], {}, 0
+                for i, ov in cur.items():
+                    if not len(ov):
+                        continue
+                    meta = states[i].meta[tt]
                     pick = np.searchsorted(meta["gev"], ov)
                     hit, hrow, hidx = _tier_hits(meta["gcols"], meta["inv"], pick)
-                    outs, arr = _launch(hit, hrow, meta["col"][hidx], len(pick), H, _kfor(P, K), batch, P,
-                                        h["device"], tables, h.get("caps"))
-                    tg, d = ov, _collect_tier(outs, keys)
-                else:
-                    arr, tg, _ = pack(*meta["gcols"], G, tables, tt, H, cfg, events=ov)
-                    d = _run_tier(arr, P, _kfor(P, K), batch, keys)
-                timers[f"promoted_H{H}"] = timers.get(f"promoted_H{H}", 0) + len(tg)
-                ov = take(d, arr, tg, tt, to_ev)
+                    hits.append(hit)
+                    hrows.append(hrow + off)
+                    cols.append(meta["col"][hidx])
+                    spans[i] = (off, len(pick))
+                    off += len(pick)
+                hit = {k: np.concatenate([x[k] for x in hits]) for k in hits[0]}
+                outs, arr = _launch(hit, np.concatenate(hrows), np.concatenate(cols), off, H, _kfor(P, K), batch, P,
+                                    h0["device"], tables, h0.get("caps"))
+                d = _collect_tier(outs, keys)
+                for i, (a, n) in spans.items():
+                    sl = slice(a, a + n)
+                    timers = states[i].h["timers"]
+                    timers[f"promoted_H{H}"] = timers.get(f"promoted_H{H}", 0) + n
+                    cur[i] = states[i].take({k: v[sl] for k, v in d.items()}, {k: v[sl] for k, v in arr.items()},
+                                            cur[i], tt)
                 ti += 1
-            redo.update(to_ev(ov).tolist())
-        # groups larger than the last tier never ran
-    for m in h["jobs"]:
-        if m.get("meta"):
-            to_ev = (lambda b, mm=m: mm["gev_of"][b]) if m["gev_of"] is not None else (lambda b: b)
-            redo.update(to_ev(m["gev"][m["tier"] >= len(tiers)]).tolist())
-    cat = lambda L, k: np.concatenate([x[k] for x in L]) if L else np.zeros(0)
-    out = {k: cat(rows, k) for k in ("cl_event", "cl_type", "cl_pe", "cl_start", "cl_end", "cl_slope", "cl_avgtime",
-                                      "cl_poscalc")}
-    out.update({k: cat(mems, k) for k in ("mem_cl", "mem_idx", "mem_event")})
-    if h.get("with_pos"):
-        out["cl_pos"] = np.concatenate([x["cl_pos"] for x in rows]) if rows else np.zeros((0, 3))
-    redo = np.array(sorted(redo), np.int64)
-    out["fallback_events"] = redo
-    if fallback and len(redo):
-        t0 = _time.perf_counter()
-        _replace_with_numpy(out, redo, *h["cols"], G, h["status"], cfg)
-        timers["fallback_s"] = timers.get("fallback_s", 0.0) + _time.perf_counter() - t0
-    return out
+            for i, ov in cur.items():
+                states[i].redo.update(_to_ev(states[i].meta[tt])(ov).tolist())
+    for s in states:
+        s.pend = {}
+
+
+def collect(h):
+    """First step of finish(): the first-choice tier kernels of a find_async handle. Pass the result to
+    complete_all() (with the collected handles of the other chunks, to batch their promotions)."""
+    return _Finish(h).collect()
+
+
+def complete_all(states, fallback=True):
+    """Promotions (batched across the collected handles) and the outputs of each, as finish() of each handle."""
+    _promote(states)
+    return [s.complete(fallback) for s in states]
+
+
+def finish(h, fallback=True):
+    """Collect the kernels of a find_async handle; overflowing groups are promoted to the next tier (synchronously),
+    groups beyond the last tier send their event to coinc.py. Returns cl_* per cluster and the member table mem_*.
+    For several handles (the chunks of a run) collect() each and complete_all() them: the promotions then share calls."""
+    return complete_all([collect(h)], fallback)[0]
 
 
 def find(ev, idx, bar, sipm, time, pe, seq, G, status, cfg=C.FinderConfig(), tiers=TIERS, fallback=True,
