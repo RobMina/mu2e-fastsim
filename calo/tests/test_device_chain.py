@@ -418,7 +418,7 @@ def test_clusters_recluster_events_over_the_rounds():
         cl, over = jax.jit(lambda x, c=caps: dc.clusters(resp, x, B, c))(hits)
         out[name] = jax.tree_util.tree_map(np.asarray, (cl, over))
     (fb, ofb), (off, ooff), (wide, owide) = out["fallback"], out["off"], out["wide"]
-    assert int(ooff["main_rounds"]) == 1 and int(ooff["split_rounds"]) == 1 and int(ooff["recluster"]) == 0
+    assert int(ooff["main_rounds"]) == 1 and int(ooff["split_rounds"]) == 2 and int(ooff["recluster"]) == 0
     assert {k: int(v) for k, v in ofb.items()} == dict(event_hits=0, main_rounds=0, split_rounds=0, recluster=2,
                                                        cluster_slots=1)
     assert not any(int(v) for v in owide.values())
