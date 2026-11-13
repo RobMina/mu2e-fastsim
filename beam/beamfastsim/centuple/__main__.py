@@ -64,9 +64,16 @@ def cmd_donor(a):
 
 def cmd_assemble(a):
     from . import assemble
-    path, meta = assemble.build(a.record, a.donor, a.out, trigger=a.trigger, seed=a.seed)
+    path, meta = assemble.build(a.record, a.donor, a.out, trigger=a.trigger, seed=a.seed, trigger_cal=a.trigger_cal)
     print(json.dumps(dict(path=str(path), classes=meta["classes"], covered=len(meta["covered_paths"]),
                           missing=meta["covered_missing"])))
+
+
+def cmd_trigcal(a):
+    from . import trigcal
+    if len(a.records) != len(a.triggers):
+        raise SystemExit("trigcal: one --triggers file per --records file")
+    print(json.dumps(trigcal.build(a.stock, a.records, a.triggers, a.out, min_count=a.min_count, commit=a.commit)))
 
 
 def cmd_write(a):
@@ -121,7 +128,7 @@ def cmd_point(a):
     from .. import cesob
     from ..__main__ import main as beam_main, MAPS, OFFLINE_ROOT
     from ..edepana import _mu_minus_stops
-    from . import assemble, record
+    from . import assemble, record, trigcal
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     d = {k: os.path.join(a.data, v) for k, v in DATA.items()}
@@ -142,11 +149,14 @@ def cmd_point(a):
                         gdml=d["gdml"], library=d["library"], calo_response=d["calo_response"], digi_cond=d["digi_cond"], geom=a.geom,
                         dtype=a.dtype, edge_library=d["edge"], response="onspill")
     py = [sys.executable, "-m", "beamfastsim.centuple"]
+    # the on-spill trigger table (trigcal) replaces the off-spill response layer: device decisions without it
+    tcal = None if a.trigger_cal == "none" else (a.trigger_cal or str(trigcal.SHIPPED))
+    resp = [] if tcal else ["--response", d["trig_response"]]
     subprocess.run(py + ["trigger", "--digis", str(out / record.DIGIS), "--out", str(out), "--menu", d["menu"],
-                         "--conditions", d["conditions"], "--tc-mva", d["tc_mva"], "--response", d["trig_response"],
+                         "--conditions", d["conditions"], "--tc-mva", d["tc_mva"], *resp,
                          "--precision", a.dtype], check=True)
     plan, pmeta = assemble.build(out / record.RECORD, d["donor"], out, trigger=out / "centuple_trigger.npz",
-                                 seed=a.seed)
+                                 seed=a.seed, trigger_cal=tcal)
     files = [os.path.join(a.data, "donor", f) for f in pmeta["donor_files"]]
     env = dict(os.environ, CENTUPLE_PYTHONPATH=str(Path(__file__).resolve().parents[2]))
     here = Path(__file__).resolve().parent
@@ -220,7 +230,16 @@ def main(argv=None):
     s.add_argument("--donor", required=True)
     s.add_argument("--out", required=True)
     s.add_argument("--seed", type=int, default=20261111)
+    s.add_argument("--trigger-cal", help="on-spill response of the device paths (trigcal table .npz); opt-in")
     s.set_defaults(fn=cmd_assemble)
+    c = sp.add_parser("trigcal", help="on-spill response of the device paths from paired development events")
+    c.add_argument("--stock", nargs="+", required=True, help="stock EventNtuples, every digitized event kept")
+    c.add_argument("--records", nargs="+", required=True, help="fast centuple_record.npz of the same births")
+    c.add_argument("--triggers", nargs="+", required=True, help="their centuple_trigger.npz, without a response layer")
+    c.add_argument("--out", required=True)
+    c.add_argument("--min-count", type=int, default=50)
+    c.add_argument("--commit")
+    c.set_defaults(fn=cmd_trigcal)
     w = sp.add_parser("write")
     w.add_argument("--plan", required=True)
     w.add_argument("--donor-files", nargs="+", required=True)
@@ -244,6 +263,8 @@ def main(argv=None):
     q.add_argument("--offline-root")
     q.add_argument("--maps", nargs=2)
     q.add_argument("--keep", action="store_true")
+    q.add_argument("--trigger-cal", help="on-spill trigger table (default: the shipped trigcal table; 'none': the "
+                                         "off-spill response layer of the data directory)")
     q.set_defaults(fn=cmd_point)
     a = p.parse_args(argv)
     a.fn(a)

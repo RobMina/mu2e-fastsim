@@ -27,5 +27,5 @@ beamfastsim = "beamfastsim.__main__:main"
 include = ["beamfastsim*"]
 
 [tool.setuptools.package-data]
-beamfastsim = ["data/*.csv", "data/*.json"]
+beamfastsim = ["data/*.csv", "data/*.json", "centuple/data/*.npz"]
 

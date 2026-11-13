@@ -106,6 +106,31 @@ def test_t0_is_drawn_on_its_own_stream_when_the_table_has_it():
     assert not np.isfinite(np.asarray(b["t0"])[~q]).any()
 
 
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
+def test_fit_observables_opt_in_keeps_failing_fits_and_the_draws(dtype):
+    jax = pytest.importorskip("jax")
+    from trkfastsim.recoresp import device as RD
+    rng = np.random.default_rng(18)
+    d = _reference(20000, rng)
+    d["t_t"] = rng.uniform(500, 1500, len(d))
+    d["t0"] = np.where(d.fit, d.t_t + rng.normal(1.2, 0.4, len(d)), np.nan)
+    tab = RT.build(d)
+    v = _reference(5000, np.random.default_rng(19))
+    x, p = v[["e_x", "e_y", "e_z"]].to_numpy(dtype), v[["e_px", "e_py", "e_pz"]].to_numpy(dtype)
+    tb = RD.to_device(tab, dtype)
+    args = (jax.numpy.asarray(v.has_entry.to_numpy()), jax.numpy.asarray(v.nrow.to_numpy()), jax.numpy.asarray(x),
+            jax.numpy.asarray(p), jax.numpy.full(len(v), 800.0, dtype))
+    a = {k: np.asarray(w) for k, w in RD.apply(tb, jax.random.PRNGKey(4), *args).items()}
+    b = {k: np.asarray(w) for k, w in RD.apply(tb, jax.random.PRNGKey(4), *args, observables="fit").items()}
+    for k in ("fit", "qual", "ce", "p_true"):
+        assert np.array_equal(a[k], b[k], equal_nan=True), k
+    q, f = a["qual"], a["fit"]
+    assert (f & ~q).sum() > 0
+    for k in ("p_reco", "tandip", "d0", "rmax", "fitcon", "chi2ndf", "nactive", "t0"):
+        assert np.array_equal(a[k][q], b[k][q]), k             # same draws where the quality passes
+        assert np.isfinite(b[k][f]).all() and not np.isfinite(b[k][~f]).any(), k
+
+
 def test_entry_time_turn_on_removes_tracks_before_the_window():
     jax = pytest.importorskip("jax")
     from trkfastsim.recoresp import device as RD

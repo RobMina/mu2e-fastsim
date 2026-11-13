@@ -7,6 +7,7 @@ correlated through the bin's Gaussian copula.
 With pools, one reference track of the bin is drawn instead; with all-track pools (`pool_dir`), the quality pass is
 that track's direction and its fit consistency above the table's cut (`cuts[6]`, which can be changed at run time).
 """
+from functools import partial
 from typing import NamedTuple
 
 import numpy as np
@@ -71,10 +72,11 @@ def _bin(edges, v):
     return jnp.clip(jnp.searchsorted(edges, v, side="right", method="compare_all") - 1, 0, edges.shape[0] - 2)
 
 
-@jax.jit
-def apply(tb, key, has_entry, nrow, x, p, t=None):
+@partial(jax.jit, static_argnames=("observables",))
+def apply(tb, key, has_entry, nrow, x, p, t=None, observables="quality"):
     """Per event (device arrays): fit, qual, ce (bool) and p_true, p_reco, tandip, d0, rmax, fitcon, chi2ndf, nactive
-    (NaN where no quality-passing track). x, p [n, 3]: entry state (Mu2e frame); nrow [n]: step rows of the event.
+    (NaN where no quality-passing track; with observables="fit", opt-in, NaN only where no fitted track: the drawn
+    observables of fits failing the quality are kept, the draws are unchanged). x, p [n, 3]: entry state (Mu2e frame); nrow [n]: step rows of the event.
     t [n] (optional): entry time [ns]; with tables that hold them, applies the entry-time turn-on of the fit
     efficiency and adds t0 (track time at the front)."""
     dt = x.dtype
@@ -117,5 +119,8 @@ def apply(tb, key, has_entry, nrow, x, p, t=None):
         it_ = ft.astype(jnp.int32)
         wt = ft - it_
         obs["t0"] = t + tb.icdf_dt0[bn, bt, it_] * (1 - wt) + tb.icdf_dt0[bn, bt, it_ + 1] * wt
-    obs = {k: jnp.where(qual, v, nan) for k, v in obs.items()}
+    if observables not in ("quality", "fit"):
+        raise ValueError("observables: 'quality' or 'fit'")
+    keep = qual if observables == "quality" else fit
+    obs = {k: jnp.where(keep, v, nan) for k, v in obs.items()}
     return dict(fit=fit, qual=qual, ce=ce, p_true=jnp.where(has_entry, ptrue, nan), **obs)
