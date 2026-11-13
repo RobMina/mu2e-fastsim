@@ -79,8 +79,9 @@ COVERAGE = [
     ("trkqual.result", "vector<MVAResultInfo>", "donor", "nearest active hits / fit consistency / tan dip"),
     ("trkpid.result", "vector<MVAResultInfo>", "donor", "own draw among e- donors with the same calo match, nearest E/p"),
     ("trkcalohit (e- fit)", "vector<TrkCaloHitInfo>", "fast",
-     "match = leading fast cluster on the contact disk above 10 MeV: did, edep, ctime, csize, poca, mom; dt from the "
-     "contact time; resolution fields reset/donor"),
+     "match = leading fast cluster above 10 MeV on the contact disk, else on the other disk, kept with the stock "
+     "calorimeter-hit inclusion efficiency of its energy: did, edep, ctime, csize, poca, mom; dt from the contact "
+     "time; resolution fields reset/donor"),
     ("trkmcsim[*][0]", "vector<vector<SimInfo>>", "fast", "birth state of the CE (every track of the same particle)"),
     ("trkmcsim ancestors", "", "donor", ""),
     ("trksegsmc TT_Front/TT_Mid/TT_Back", "vector<vector<SurfaceStepInfo>>", "fast",

@@ -54,6 +54,8 @@ NeutralsFlash pools at the stock intensity law.
 - **CRV `thermal_counters: "hit"`** (batch-256 files; opt-in approximation, see [../DEVICE_CRV.md](../DEVICE_CRV.md)):
   thermal noise only on counters with steps; `thermal` 35,332 and `charge_clusters` 47,107 are 1.25 times the largest
   demand over full development and held-out passes in float32 and float64; `ct1` and `ct2` halved.
+- **`electronics_loops: "bounded"`** (batch-256 files): the fine crossing search stops once converged and the
+  saturated ADC samples are summed over the response tiles that ran; no size.
 
 - **`output.tracker_rows`** (batch-256 files): the tracker digi rows downloaded per batch, 229,376: 1.39 times the
   largest demand (164,716 digis in one batch of 256) over full development and held-out passes in float32 and
