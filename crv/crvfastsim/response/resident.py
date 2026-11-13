@@ -45,7 +45,10 @@ def _photon_pieces(steps, pdg, geom, cfg, device_tables, deviation, rng, key, ca
         while cuts[-1] < len(nsub):
             nxt = int(np.searchsorted(starts, starts[cuts[-1]] + max_sub, side="right")) - 1
             cuts.append(max(nxt, cuts[-1] + 1))
-        step_d, chan_d = jnp.asarray(rows["step"]), jnp.asarray(rows["chan"])
+        nb = len(nsub)
+        NBR = nb if caps is None else caps.size("photon_block_rows", nb, nb)   # whole block on the device (indexing only)
+        step_d = jnp.asarray(np.pad(rows["step"], (0, NBR - nb)))
+        chan_d = jnp.asarray(np.pad(rows["chan"], (0, NBR - nb)))
         k = sub
         for a, b in zip(cuts[:-1], cuts[1:]):
             R = b - a
@@ -157,6 +160,9 @@ def charges(steps, pdg, geom, cond, cfg, rng, key, tabs, pmap, status, event_key
     (s, c, t), n = _concat(pieces, size)
     if int(jnp.max(jnp.where(jnp.arange(size) < n, c, 0))) >= chan_mult:
         raise ValueError(f"channel >= CHAN_MULT {chan_mult}: SiPM labels would overlap the next event")
+    if caps is not None:                     # one step-count shape per capacity file (photons index it by step row)
+        ns = len(event_keys)
+        event_keys = np.pad(event_keys, (0, caps.size("steps", ns, ns) - ns))
     lab, tim, pho, rank, lastb, nk, n_photons = _label_sort(s, c, t, n, jnp.asarray(status), jnp.asarray(event_keys),
                                                              chan_mult, t_end)
     nk, n_photons = int(nk), int(n_photons)

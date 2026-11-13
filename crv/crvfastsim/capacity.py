@@ -17,6 +17,8 @@ in the report.
 File format (JSON)::
 
     {"format": "crvfastsim-capacities-1", "margin": 1.25, "census": "...",
+     "steps": N,                                                       # CRV steps of a file (event keys per step)
+     "photon_block_rows": B,                                           # (step, SiPM) rows of one lookup-table block
      "photon_rows": R, "photon_substeps": S, "photon_arrivals": A,     # per photons_jax kernel chunk
      "photon_buffer": B,                                               # all arrivals of a file + one SiPM chunk
      "sipm_photons": N,                       # SiPM chunk size (resident path; also its max_photons), set by hand
@@ -29,8 +31,8 @@ import math
 from pathlib import Path
 
 FORMAT = "crvfastsim-capacities-1"
-SCALARS = ("photon_rows", "photon_substeps", "photon_arrivals", "photon_buffer", "sipm_photons", "refit_rows",
-           "refit_samples")
+SCALARS = ("steps", "photon_block_rows", "photon_rows", "photon_substeps", "photon_arrivals", "photon_buffer",
+           "sipm_photons", "refit_rows", "refit_samples")
 FIXED = ("sipm_photons",)   # set by hand (the SiPM chunk size), not derived from demand
 PER_Q = ("synth_rows", "synth_samples")
 
