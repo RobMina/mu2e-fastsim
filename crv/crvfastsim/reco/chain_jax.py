@@ -148,7 +148,7 @@ def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.Finde
     for k in range(len(chunks) + 2):
         if k < len(chunks):
             t0 = tic()
-            pul[k] = _pulse_dispatch(W, chunks[k], cfg, batch, L, bounded=capacities is not None)
+            pul[k] = _pulse_dispatch(W, chunks[k], cfg, batch, L, **({"bounded": True} if capacities is not None else {}))
             add("pulse_dispatch_s", t0)
         if 0 <= k - 1 < len(chunks):
             t0 = tic()
