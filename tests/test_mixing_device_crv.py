@@ -460,6 +460,26 @@ def test_scatter_waveform_needs_no_charge_capacity_and_validates_option(setup):
         adapter(setup, {**capacity(), "waveform": "sparse"})
 
 
+def test_thermal_counters_hit_only_on_counters_with_steps(setup):
+    """thermal_counters="hit" draws thermal noise only on the SiPMs of counters with an in-window step; the default
+    draws it on every live SiPM."""
+    collection, timing = inputs()
+    stepped = {(0, int(b)) for b in collection["columns"]["bar"]}
+    found = {}
+    for mode in ("all", "hit"):
+        model = adapter(setup, capacity(thermal=16384, ct1=4096, ct2=1024, ct3=256, thermal_counters=mode))
+        fn = lambda c, t, a, k, model=model: model.charges(c, t, a, k)
+        q, errors = run(fn, collection, timing, model.assets, jax.random.key(29))
+        assert not any(errors.values()), [k for k, v in errors.items() if v]
+        thermal = q["mask"] & (q["photon"] < 0)
+        chan = q["chan"][thermal]
+        found[mode] = {(int(c // CH.CHAN_MULT), int(c % CH.CHAN_MULT) // 4) for c in chan}
+    assert found["hit"] and found["hit"] <= stepped
+    assert found["all"] - stepped
+    with pytest.raises(ValueError, match="thermal_counters"):
+        adapter(setup, capacity(thermal_counters="some"))
+
+
 def test_exact_restructure_options_match_default(setup):
     """digi_starts="rows" and pulse_scan="bounded" give the same kept digis, pulses and clusters as the defaults.
 
