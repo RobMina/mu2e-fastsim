@@ -167,6 +167,7 @@ class FastRecord:
         fin = res["tracker"].final
         steps = res["tracker"].steps
         h = jax.device_get(dict(has=res["has_entry"], x=res["x"], p=res["p"], t=res["t"], nrow=res["nrow"],
+                                nrow_dts=res["nrow_dts"],
                                 fin={k: fin[k] for k in ("x", "y", "z", "px", "py", "pz", "t", "status")},
                                 steps={k: steps[k] for k in ("valid", "x1", "y1", "z1", "px", "py", "pz", "t")},
                                 trk=trk))
@@ -183,6 +184,7 @@ class FastRecord:
         cols["front_p"] = np.where(has[:, None], np.asarray(h["p"], float), np.nan)
         cols["front_t"] = np.where(has, np.asarray(h["t"], float), np.nan)
         cols["nrow"] = np.asarray(h["nrow"], np.int64)
+        cols["nrow_dts"] = np.asarray(h["nrow_dts"], np.int64)     # rows the dts PrimaryFilter counts
         for k, v in h["trk"].items():
             cols["trk_" + k] = np.asarray(v, bool if v.dtype == bool else float)
         found, x, p, t = plane_truth(h["steps"], Z_MID)
@@ -204,6 +206,10 @@ class FastRecord:
                 bz[ok_] = ehelix.field_at(self.field, xm[ok_])[:, 2]
             cols[name + "_bz"] = bz
         cols.update(self._calo(left, xe + ORIGIN, pe, np.asarray(f["t"], float), seed, n, pb_mc))
+        # the emulated dts PrimaryFilter (tracker rows or the shower's visible calorimeter energy); assemble applies
+        # it only on request (--dts-filter)
+        from ..cetracker import dts_keep
+        cols["dts_keep"] = dts_keep(cols["nrow_dts"], cols["calo_etrue"])
         digis = res.get("digis")
         cols["nsd"] = (np.bincount(np.asarray(digis["ev"]), minlength=n)[:n].astype(np.int64) if digis is not None
                        else np.full(n, -1, np.int64))

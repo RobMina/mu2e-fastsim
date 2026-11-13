@@ -44,6 +44,13 @@ STATE = ["x", "y", "z", "px", "py", "pz", "t"]
 PDG_E = 11
 ORIGIN = (-3904.0, 0.0, 10171.0)          # tracker (detector) origin in the Mu2e frame, Run 1A [mm]
 B_DS_MIN = 0.5                            # [T] the first map must give at least this field at ORIGIN (DS map)
+# The selection of every primary dts (Production JobConfig/primary/prolog.fcl, PrimaryFilter, a DetectorStepFilter):
+# an event is kept if one particle made at least DTS_MIN_STEPS StrawGasSteps with |p| > DTS_MIN_P (ionizing energy
+# > 1 eV each), or the calorimeter got at least DTS_MIN_CALO of visible (Birks) energy.
+DTS_MIN_P = 50.0                          # [MeV/c]
+DTS_MIN_STEPS = 12
+DTS_MIN_EION = 1.0e-6                     # [MeV]
+DTS_MIN_CALO = 45.0                       # [MeV]
 STEP_COLS = KEY + ["nsgs", "sid", "plane", "panel", "straw", "upanel", "shape", "ion", "sp", "eion", "len",
                    "width", "t", "x0", "y0", "z0", "x1", "y1", "z1", "px", "py", "pz"]
 
@@ -187,6 +194,24 @@ def write_injector(path, steps, entries):
     tables.write(str(path), {"sgsteps": s[STEP_COLS], "particles": p}, as_ttree=True)
 
 
+def dts_rows(steps, min_p=DTS_MIN_P):
+    """Per track: the step rows the dts PrimaryFilter counts (valid, |p| > min_p, ionizing energy > 1 eV), from
+    fieldsteps_jax step records ([n, slots] device arrays). Device array [n]."""
+    import jax.numpy as jnp
+    p2 = steps["px"] ** 2 + steps["py"] ** 2 + steps["pz"] ** 2
+    ok = steps["valid"] & (p2 > min_p * min_p) & (steps["eion"] > DTS_MIN_EION)
+    return jnp.sum(ok, axis=1)
+
+
+def dts_keep(nrow_dts, calo_vis=None, min_steps=DTS_MIN_STEPS, min_calo=DTS_MIN_CALO):
+    """Emulated dts PrimaryFilter per event (host bool array): nrow_dts (DeviceChain's `nrow_dts`) >= min_steps, or
+    calo_vis (visible calorimeter energy of the electron's shower, MeV; None: tracker only) >= min_calo."""
+    keep = np.asarray(nrow_dts) >= min_steps
+    if calo_vis is not None:
+        keep = keep | (np.nan_to_num(np.asarray(calo_vis, float)) >= min_calo)
+    return keep
+
+
 DIGI_COLS = ("shape", "ion", "eion", "len", "width", "t", "x0", "y0", "z0", "x1", "y1", "z1")
 
 
@@ -268,7 +293,12 @@ class DeviceChain:
     nrow is drawn from the library given the entry helix and the tracker is not transported (no steps, no digis,
     no deltas; a call with digis and digi_cond is refused; the albedo option has no effect on nrow, the library
     holds the default chain's rows). track_observables: "quality" (default: the track observables are NaN unless the
-    fit passes the quality) or, opt-in, "fit" (kept for every fitted track; same draws))."""
+    fit passes the quality) or, opt-in, "fit" (kept for every fitted track; same draws)).
+
+    Births taken from a primary dts (e.g. CeEndpoint) are conditioned on Geant4's own transport of them passing the
+    dts PrimaryFilter; this chain transports them afresh, so some of them fail it here (an entry with few or no step
+    rows, often after a large energy loss upstream). Compare per generated electron, or apply the emulated filter to
+    both arms: `nrow_dts` with `dts_keep` (with the calorimeter's visible energy where there is one)."""
 
     def __init__(self, offline_root, maps, gdml, geom="Offline/Mu2eG4/geom/geom_2021_PhaseI_v03.txt",
                  response=None, digi_cond=None, dtype="float64", origin=ORIGIN, chord_mm=10.0, lanes=None,
@@ -352,7 +382,9 @@ class DeviceChain:
     def transport(self, births, seed):
         """cechain + tracker transport of births ((x, u, p, t) host or device arrays, or a DataFrame with KEY +
         STATE columns). Returns a dict: cechain (Result, device), has_entry, entry x, p, t, tracker
-        (fieldsteps_jax.Result), nrow (step rows per event), timing (enqueue wall seconds; the device may still run)."""
+        (fieldsteps_jax.Result), nrow (step rows per event), nrow_dts (the electron's first-passage rows the dts
+        PrimaryFilter counts, `dts_rows`; None with sampled rows), timing (enqueue wall seconds; the device may still
+        run)."""
         import jax
         import jax.numpy as jnp
         from trkfastsim.sim import fieldsteps_jax as FJ
@@ -379,10 +411,11 @@ class DeviceChain:
         tic = time.perf_counter()
         if self.nrow is not None:                  # sampled rows: no tracker transport (tracker_rows=sampled)
             nrow = self._nrow_sample(self.nrow, jax.random.fold_in(key, 6), has, r.x, pe)
-            return dict(cechain=r, has_entry=has, x=r.x, p=pe, t=r.t, tracker=None, nrow=nrow,
+            return dict(cechain=r, has_entry=has, x=r.x, p=pe, t=r.t, tracker=None, nrow=nrow, nrow_dts=None,
                         timing=dict(cechain_s=round(t_ce, 3), tracker_s=round(time.perf_counter() - tic, 3)))
         trk = FJ.transport(self.trk, jax.random.fold_in(key, 1), r.x, pe, r.t, active=has)
         nrow = trk.steps["valid"].sum(axis=1)       # the conversion electron's rows (the response layer's input)
+        nrow_dts = dts_rows(trk.steps)               # its rows the dts PrimaryFilter counts (first passage)
         out = {}
         if self.alb is not None:
             # the response tables count every row of the Geant4 conversion electron, its own albedo included
@@ -391,7 +424,7 @@ class DeviceChain:
         if self.dl is not None:                    # after the albedo: the returns' crossings get deltas too
             trk, out["deltas"] = self._deltas(trk, jax.random.fold_in(key, 5))
         t_trk = time.perf_counter() - tic
-        return dict(cechain=r, has_entry=has, x=r.x, p=pe, t=r.t, tracker=trk, nrow=nrow,
+        return dict(cechain=r, has_entry=has, x=r.x, p=pe, t=r.t, tracker=trk, nrow=nrow, nrow_dts=nrow_dts,
                     timing=dict(cechain_s=round(t_ce, 3), tracker_s=round(t_trk, 3)), **out)
 
     def _deltas(self, trk, key):
