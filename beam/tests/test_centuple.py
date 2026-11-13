@@ -214,3 +214,15 @@ def test_cluster_truth_time_folds_like_the_reco_time():
                               np.array([0.0, 0.0, 1129.4 + A.MBTIME]), valid)
     np.testing.assert_allclose(reco - tp[:, 0], [1.6, 1.0, 1.8], atol=1e-9)
     assert np.all(tp[:, 1:] == 0.0)
+
+
+def test_dts_select_keeps_the_per_event_rows_and_the_path_names():
+    n = 4
+    plan = dict(event=np.arange(n), trig=np.ones((n, 2), bool), seg_front_pos=np.zeros((n, 3)),
+                trig_names=np.array(["a", "b", "c", "d"]), pid=np.array([0.1, np.nan, 0.3, 0.4]))
+    keep = np.array([True, False, True, False])
+    got = A.dts_select(plan, keep, n)
+    assert got["event"].tolist() == [0, 2]
+    assert got["trig"].shape == (2, 2) and got["seg_front_pos"].shape == (2, 3)
+    assert got["trig_names"].tolist() == ["a", "b", "c", "d"]     # path names, even when there are n of them
+    assert got["pid"].tolist() == [0.1, 0.3]
