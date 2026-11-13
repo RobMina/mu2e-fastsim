@@ -465,9 +465,11 @@ def test_thermal_counters_hit_only_on_counters_with_steps(setup):
     draws it on every live SiPM."""
     collection, timing = inputs()
     stepped = {(0, int(b)) for b in collection["columns"]["bar"]}
+    geom, cond, cfg, counters, tables, pmap = setup
+    noisy = replace(cfg, sipm=replace(cfg.sipm, thermal_rate=1e-2))   # many dark counts per SiPM, both modes
     found = {}
     for mode in ("all", "hit"):
-        model = adapter(setup, capacity(thermal=16384, ct1=4096, ct2=1024, ct3=256, thermal_counters=mode))
+        model = adapter(setup, capacity(thermal=16384, ct1=4096, ct2=1024, ct3=256, thermal_counters=mode), cfg=noisy)
         fn = lambda c, t, a, k, model=model: model.charges(c, t, a, k)
         q, errors = run(fn, collection, timing, model.assets, jax.random.key(29))
         assert not any(errors.values()), [k for k, v in errors.items() if v]
