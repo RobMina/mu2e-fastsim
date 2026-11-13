@@ -14,8 +14,9 @@ PROBE = ("import json, os, mu2efastsim\nfrom mu2efastsim import determinism as d
 
 
 def run(code=PROBE, **env):
-    e = {k: v for k, v in os.environ.items() if k not in ("XLA_FLAGS", "MU2EFS_DEVICE_DETERMINISTIC", "MU2EFS_DEVICE_LOOPS")}
-    e["MU2EFS_DEVICE_LOOPS"] = "0"   # the device-loop flag has its own tests (test_devloops.py)
+    e = {k: v for k, v in os.environ.items()
+         if k not in ("XLA_FLAGS", "MU2EFS_DEVICE_DETERMINISTIC", "MU2EFS_DEVICE_LOOPS", "MU2EFS_GRAPH_CONCURRENCY")}
+    e["MU2EFS_DEVICE_LOOPS"] = e["MU2EFS_GRAPH_CONCURRENCY"] = "0"   # the command-buffer flags: test_devloops.py
     e.update(PYTHONPATH=str(ROOT), **env)
     r = subprocess.run([sys.executable, "-c", code], env=e, capture_output=True, text=True, timeout=300)
     return r

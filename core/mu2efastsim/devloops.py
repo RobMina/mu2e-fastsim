@@ -24,7 +24,15 @@ JAX backend (mu2efastsim.bench does, from --workflow; beamfastsim.cetracker does
 appended flag for that workflow. A value the user already put in XLA_FLAGS for the same flag is left alone. A
 select after a JAX backend exists cannot change the setting: it is recorded as `late` (and warned about when it would
 have changed it). `state()` (recorded by `precision.provenance()`) gives the setting, the workflow, whether the flag
-is set and where it came from. Standard library only.
+is set and where it came from.
+
+Concurrent graph regions: MU2EFS_GRAPH_CONCURRENCY=1 (default) or 0, independent of the device-loop setting and of
+the workflow. By default XLA records the kernels of a command buffer as a chain, one after another. With the setting
+on, `apply()` also appends `--xla_gpu_graph_enable_concurrent_region=true`: kernels that do not depend on each other
+become parallel branches of the CUDA graph, so many small kernels (a W6 batch step launches tens of thousands, most of
+them a few microseconds long) share the GPU. XLA keeps its own dependencies, so the results do not change (W6 mixing
+outputs identical with and without it over full passes, every capacity file and dtype). A value the user already put
+in XLA_FLAGS for this flag is left alone; `concurrency_state()` is its provenance record. Standard library only.
 """
 import os
 import warnings
@@ -35,7 +43,10 @@ FLAG = "--xla_gpu_enable_command_buffer"
 VALUE = "+CONDITIONAL,+WHILE"
 # device loops per workflow in auto mode (measured on A100 GPUs, same card, in sequence); unlisted workflows: on
 WORKFLOWS = {"W2": False, "W6": True, "mixing": True}
+CONCURRENCY_FLAG = "--xla_gpu_graph_enable_concurrent_region"
+CONCURRENCY_VALUE = "true"
 _STATE = {}
+_CONCURRENCY = {}
 
 
 def setting():
@@ -83,8 +94,41 @@ def _set(on):
     os.environ["XLA_FLAGS"] = " ".join(parts)
 
 
+def concurrency_requested():
+    """MU2EFS_GRAPH_CONCURRENCY: on unless "0" (or "false"/"off"/"no")."""
+    value = os.environ.get("MU2EFS_GRAPH_CONCURRENCY", "1").strip().lower()
+    if value not in ("1", "0", "true", "false", "on", "off", "yes", "no", ""):
+        raise ValueError(f"MU2EFS_GRAPH_CONCURRENCY must be 1 or 0, not {value!r}")
+    return value not in ("0", "false", "off", "no")
+
+
+def _apply_concurrency():
+    if _CONCURRENCY:
+        return
+    on, user = concurrency_requested(), CONCURRENCY_FLAG in _flags()
+    if on and not user:
+        os.environ["XLA_FLAGS"] = " ".join(_flags().split() + [CONCURRENCY_FLAG + "=" + CONCURRENCY_VALUE])
+    _CONCURRENCY.update(requested=on, flag_source="user" if user else ("setting" if on else "none"),
+                        late=bool(on and not user and _backend_started()))
+
+
+def concurrency_state():
+    """Concurrent-region record for provenance: the setting, where the flag came from, the flag value XLA sees now,
+    and `late` (appended after a JAX backend already existed, so not in effect for this process)."""
+    s = dict(_CONCURRENCY) if _CONCURRENCY else {"requested": concurrency_requested(), "flag_source": "not applied",
+                                                 "late": False}
+    value = None
+    for tok in _flags().split():
+        if tok.startswith(CONCURRENCY_FLAG):
+            value = tok.partition("=")[2]
+    s["xla_gpu_graph_enable_concurrent_region"] = value
+    return s
+
+
 def apply():
-    """Append the device-loop flag to XLA_FLAGS unless the setting is off (once per process)."""
+    """Append the device-loop flag to XLA_FLAGS unless the setting is off, and the concurrent-region flag unless
+    MU2EFS_GRAPH_CONCURRENCY is off (once per process)."""
+    _apply_concurrency()
     if _STATE:
         return dict(_STATE)
     user = FLAG in _flags()
