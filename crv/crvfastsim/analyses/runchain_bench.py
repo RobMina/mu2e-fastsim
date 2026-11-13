@@ -48,9 +48,7 @@ def main(argv=None):
     p.add_argument("--tier1b-dir")
     p.add_argument("--library")
     p.add_argument("--seed", type=int, default=1)
-    p.add_argument("--prefetch", nargs="?", type=int, const=1, default=0, metavar="K",
-                   help="host stages (read, transport, tier 1b) of the next K files (default 1) run in K threads "
-                        "while the device works; the same draws as without")
+    p.add_argument("--prefetch", action="store_true")
     p.add_argument("--device-refit", action="store_true",
                    help="flagged waveforms refit on the device first (ChainConfig.device_refit)")
     p.add_argument("--resident-response", action=argparse.BooleanOptionalAction, default=None,
