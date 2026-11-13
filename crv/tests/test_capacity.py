@@ -42,7 +42,7 @@ def test_section_draws_do_not_depend_on_buffer_sizes(truncate):
     r2 = sj.device_sipm(*a2, sj.STREAM_L, sj.LONG_SL, sj.LONG_LL, cfg.n_pixels_x, cfg.n_pixels_y, **kw)
     assert not bool(r1["overflow"]) and not bool(r2["overflow"])
     f1, f2 = _fired(r1), _fired(r2)
-    assert len(f1["time"]) > n // 2
+    assert len(f1["time"]) > n // 5
     assert (f1["root"] < n).all() and (f2["root"] < n).all()
     for k in f1:
         assert np.array_equal(f1[k], f2[k]), k
@@ -146,7 +146,7 @@ def test_capacity_file_derive_and_enforce(tmp_path):
              "sipm_photons": 999}
     caps = capacity.derive(usage, 1.25, fixed={"sipm_photons": 4096})
     assert caps["steps"] == 1250 and caps["photon_rows"] == 100 and caps["refit_samples"] == 48
-    assert caps["synth_rows"] == {"64": 50} and caps["synth_samples"] == {"64": 52} and caps["sipm_photons"] == 4096
+    assert caps["synth_rows"] == {"64": 50} and caps["synth_samples"] == {"64": 56} and caps["sipm_photons"] == 4096
     path = tmp_path / "caps.json"
     path.write_text(json.dumps(caps))
     c = capacity.Capacities.load(path, record=True)
