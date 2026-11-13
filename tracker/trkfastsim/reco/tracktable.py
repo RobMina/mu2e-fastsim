@@ -36,7 +36,7 @@ XING_KEYS = ("sid", "active", "wall", "gas", "wire", "radlen", "doca", "docavar"
 
 
 def _events(path):
-    a = uproot.open(path)["trkdump/events"].arrays(["run", "subrun", "event", "pbt"], library="np")
+    a = hitreco.tree(path, "events").arrays(["run", "subrun", "event", "pbt"], library="np")
     return {"run": a["run"].astype(np.int64), "subrun": a["subrun"].astype(np.int64),
             "event": a["event"].astype(np.int64), "pbt": a["pbt"].astype(np.float32)}
 
@@ -113,7 +113,7 @@ def from_stock(path, cond, settings="mc"):
         sh[c] = rs[c].astype(sh[c].dtype)
     cols = ["kl_" + k for k in ("d0", "phi0", "z0", "theta", "t0", "mom")]
     cols += [c + "err" for c in cols] + ["kl_status", "kl_chi2", "kl_ndof", "kh_trk", "kh_ind", "kh_ambig", "kh_active"]
-    tree = uproot.open(path)["trkdump/events"]
+    tree = hitreco.tree(path, "events")
     xcols = ["kst_trk", "kst_sid", "kst_active", "kst_wall", "kst_gas", "kst_wire", "kst_radlen"]
     has_x = all(c in tree.keys() for c in xcols)                   # older dumps have no straw crossings
     a = tree.arrays(cols + (xcols if has_x else []))
