@@ -18,7 +18,8 @@ CAPACITIES = ("substeps", "photons", "thermal", "ct1", "ct2", "ct3", "pixel_shor
               "pixel_long_streams", "pixel_long_hits", "charge_clusters", "charges_per_cluster",
               "waveform_samples", "digis", "reco_waveforms", "reco_samples", "pulse_rounds",
               "coinc_hits", "coinc_combinations")
-OPTIONS = {"waveform": ("dense", "scatter"), "digi_starts": ("dense", "rows"), "pulse_scan": ("dense", "bounded")}
+OPTIONS = {"waveform": ("dense", "scatter"), "digi_starts": ("dense", "rows"), "pulse_scan": ("dense", "bounded"),
+           "thermal_counters": ("all", "hit")}
 STEP_FLOATS = ("edep", "x0", "y0", "z0", "x1", "y1", "z1", "px0", "py0", "pz0", "p1", "len")
 PERIOD = 1695.0
 
@@ -124,6 +125,7 @@ class Adapter:
     waveform: str = "dense"
     digi_mode: str = "dense"
     pulse_mode: str = "dense"
+    thermal_mode: str = "all"
     kind: str = "physics"
     support: tuple = ("crv_digis", "crv_reco")
 
@@ -136,6 +138,7 @@ class Adapter:
                     waveform=self.waveform,
                     **({"digi_starts": self.digi_mode} if self.digi_mode != "dense" else {}),
                     **({"pulse_scan": self.pulse_mode} if self.pulse_mode != "dense" else {}),
+                    **({"thermal_counters": self.thermal_mode} if self.thermal_mode != "all" else {}),
                     unsupported=["traps", "NZS", "background", "fused response"],
                     validation="local kernel/packing tests; no production closure or memory qualification")
 
@@ -243,7 +246,11 @@ class Adapter:
             valid &= ((assets["status"][channel] & 0b101) == 0) & (times <= self.cfg.window[1])
             photons.append(dict(chan=ev[rr] * CH.CHAN_MULT + channel, time=times, photon=rr, mask=valid))
         optical = {name: jnp.concatenate([p[name] for p in photons]) for name in photons[0]}
-        dark, thermal_over = self._thermal(timing, assets, keys[-2])
+        hit = None
+        if self.thermal_mode == "hit":   # thermal noise only on the SiPMs of counters with an in-window step
+            hit = jnp.zeros((b, self.nbars), bool).at[ev, bar].max(active)
+            hit = jnp.repeat(hit, 4, axis=1)
+        dark, thermal_over = self._thermal(timing, assets, keys[-2], hit)
         slot = jnp.concatenate([optical["chan"], dark["chan"]])
         time = jnp.concatenate([optical["time"], dark["time"]])
         mask = jnp.concatenate([optical["mask"], dark["mask"]])
@@ -269,9 +276,13 @@ class Adapter:
             out["usage"] = {"substeps": sub_used, "photons": arrival_used, "thermal": dark["demand"]}
         return out, errors
 
-    def _thermal(self, timing, assets, key):
+    def _thermal(self, timing, assets, key, hit=None):
         kc, kt, kx, ky = jax.random.split(key, 4)
         live = ((assets["status"] & 0b101) == 0)[None, :] & timing["event_mask"][:, None]
+        if hit is not None:
+            if hit.shape != live.shape:
+                raise ValueError("CRV thermal_counters 'hit' needs four SiPM channels per bar")
+            live &= hit
         lo, hi = self.cfg.window
         lam = self.cfg.sipm.thermal_rate / self.cfg.sipm.p_fire(self.cfg.sipm.overvoltage) * (hi - lo + 100)
         count = jax.random.poisson(kc, jnp.where(live, lam, 0.), dtype=jnp.int64).ravel()
@@ -469,6 +480,9 @@ def prepare(geom, cond, cfg, counters, capacities, tabs, pmap):
     Exact restructures, same results: `digi_starts` "rows" (digi starts listed from the rows that hold one, and the
     scatter synthesis' gated scan stops at the longest waveform) and `pulse_scan` "bounded" (pulse-fit peak scans stop
     at the longest reco waveform, rounds stop once no waveform found a pulse).
+    Approximation (opt-in): `thermal_counters` "hit" draws SiPM thermal noise (dark counts) only on the four SiPMs of
+    the counters that have an in-window step in the event, instead of on every SiPM ("all", default). A counter with
+    no step then has no thermal hits; with the Run 1A conditions such counters carried no digi in real mixed batches.
     """
     if not jax.config.jax_enable_x64:
         raise ValueError("JAX_ENABLE_X64=1 is required")
@@ -592,4 +606,4 @@ def prepare(geom, cond, cfg, counters, capacities, tabs, pmap):
     return Adapter(assets, cap, tuple(blocks), tuple(statics),
                    tuple((int(t), p.ld, p.ns, p.uniform) for t, p in params.items()),
                    cfg, w, pcfg, fcfg, geom.nbars, len(ufeb), pmap.shape[1], options["waveform"],
-                   options["digi_starts"], options["pulse_scan"])
+                   options["digi_starts"], options["pulse_scan"], options["thermal_counters"])
