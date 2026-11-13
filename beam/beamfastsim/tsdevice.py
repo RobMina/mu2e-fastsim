@@ -720,17 +720,71 @@ def _refill(cur, rows, full, live, nl, k, nxt):
     return cur, jnp.where(fill, src, rows), pos >= nl + k
 
 
+@partial(jax.jit, static_argnums=(4, 5, 6))
+def _compact(cur, rows, live, nl, n, m, kill):
+    """The first m slots after a stable sort that puts live lanes first; slots past the live count are killed and
+    their rows set out of range (n, dropped on scatter)."""
+    order = jnp.argsort(~live, stable=True)[:m]
+    cur = _tree(lambda a: a[order], cur)
+    pad = jnp.arange(m) >= nl
+    return kill(cur, pad), jnp.where(pad, n, rows[order])
+
+
+WARM_LADDER = os.environ.get("TSDEV_WARM_LADDER", "1") != "0"
+_WARMED = set()
+
+
+def ladder(size, min_bucket):
+    """Every lane-bucket size run_resident can run: the starting size, then each power of two from min_bucket
+    below it (compaction picks the smallest power of two >= the live count, floored at min_bucket)."""
+    out, m = [size], min_bucket
+    while m < size:
+        out.append(m)
+        m *= 2
+    return sorted(set(out), reverse=True)
+
+
+def _warm(run_chunk, state, live_of, kill, key, size, min_bucket, result):
+    """Compile every bucket size of the ladder once, on killed lanes (no result changes: their rows are out of
+    range), so that new inputs whose tails reach other sizes never compile during a run."""
+    n = state[0].shape[0]
+    sig = (run_chunk, live_of, kill, n, size, min_bucket,
+           tuple((a.shape[1:], str(a.dtype)) for a in jax.tree_util.tree_leaves(state)))
+    if sig in _WARMED:
+        return result
+    sizes = ladder(size, min_bucket)
+    dead = kill(_tree(lambda a: a[:size], state), jnp.ones(size, bool))
+    for i, s in enumerate(sizes):
+        cur = _tree(lambda a: a[:s], dead)
+        rows = jnp.where(jnp.ones(s, bool), n, jnp.arange(s))
+        cur = run_chunk(jax.random.fold_in(key, i), cur)
+        result = _scatter(result, rows, cur)
+        live = live_of(cur)
+        int(jnp.sum(live))
+        for m in sizes[i + 1:]:
+            _compact(cur, rows, live, 0, n, m, kill)
+    _WARMED.add(sig)
+    return result
+
+
 def run_resident(run_chunk, state, live_of, kill, key, max_chunks=100000, min_bucket=1024, pool=None,
-                 strict=True):
+                 strict=True, warm_ladder=False):
     """Run a jitted chunk function (key, state) -> state over every lane of `state`, all on the device.
 
     A pool of `pool` lanes (default: all) runs at a time; after each chunk finished lanes are replaced by the next
     inputs, and once the inputs are exhausted the live lanes are compacted into power-of-two buckets. Only the live
     count crosses to the host. Returns the full-size final state and the number of lane-chunks run. After max_chunks
-    with live lanes: raise when strict, else return them still live (the caller labels them)."""
+    with live lanes: raise when strict, else return them still live (the caller labels them).
+
+    warm_ladder: compile every bucket size of the ladder before the first chunk (once per chunk function, input
+    size and pool), so the run never compiles on new data; kill and live_of must then be stable functions (they
+    key the compile cache). The results are the same either way."""
     n = state[0].shape[0]
     size = n if pool is None or pool >= n else int(pool)
     result = _tree(jnp.copy, state)
+    if warm_ladder:
+        result = _warm(run_chunk, state, live_of, kill, jax.random.fold_in(key, -1 & 0x7FFFFFFF), size, min_bucket,
+                       result)
     rows = jnp.arange(size)
     cur = _tree(lambda a: a[:size], state)
     nxt, lane_chunks = size, 0
@@ -756,11 +810,7 @@ def run_resident(run_chunk, state, live_of, kill, key, max_chunks=100000, min_bu
             return result, lane_chunks
         m = _next_pow2(nl, min_bucket)
         if m < rows.shape[0]:
-            order = jnp.argsort(~live, stable=True)[:m]
-            cur = _tree(lambda a: a[order], cur)
-            pad = jnp.arange(m) >= nl
-            rows = jnp.where(pad, n, rows[order])        # out of range: dropped on scatter
-            cur = kill(cur, pad)
+            cur, rows = _compact(cur, rows, live, nl, n, m, kill)     # padded rows out of range: dropped on scatter
     if strict:
         raise RuntimeError("chunk limit reached with live lanes")
     return result, lane_chunks
@@ -805,9 +855,25 @@ def ts_initial(x, p, t, pdg, n_materials, key):
 def transport_ts(ts_chunk, geom, x, p, t, pdg, key, min_bucket=None, pool=None):
     k0, k1 = jax.random.split(key)
     st = ts_initial(x, p, t, pdg, len(geom.names), k0)
-    return run_resident(ts_chunk, st, lambda s: s.fate == LIVE,
-                        lambda s, pad: s._replace(fate=jnp.where(pad, jnp.int8(PATH_LIMIT), s.fate)),
-                        k1, min_bucket=default_min_bucket() if min_bucket is None else min_bucket, pool=pool)[0]
+    return run_resident(ts_chunk, st, _ts_live, _ts_kill, k1,
+                        min_bucket=default_min_bucket() if min_bucket is None else min_bucket, pool=pool,
+                        warm_ladder=WARM_LADDER)[0]
+
+
+def _ts_live(s):
+    return s.fate == LIVE
+
+
+def _ts_kill(s, pad):
+    return s._replace(fate=jnp.where(pad, jnp.int8(PATH_LIMIT), s.fate))
+
+
+def _ds_live(s):
+    return s.fate == 0
+
+
+def _ds_kill(s, pad):
+    return s._replace(fate=jnp.where(pad, 9, s.fate))
 
 
 # ---------------------------------------------------------------- DS stage and the joined chain
@@ -832,9 +898,8 @@ def transport_ds(ds_chunk, prm, x, p3, t, q, tau_max, enter, key, min_bucket=256
     """DS stage on the lanes with `enter`; other lanes are inert (fate 9) and keep foil -1."""
     st = ds_initial(x, p3, t, q, tau_max)
     st = st._replace(fate=jnp.where(enter, 0, 9).astype(jnp.int32))
-    out, _ = run_resident(ds_chunk, st, lambda s: s.fate == 0,
-                          lambda s, pad: s._replace(fate=jnp.where(pad, 9, s.fate)), key,
-                          max_chunks=int(np.ceil(prm.max_steps / DS_CHUNK)), min_bucket=min_bucket, strict=False)
+    out, _ = run_resident(ds_chunk, st, _ds_live, _ds_kill, key, max_chunks=int(np.ceil(prm.max_steps / DS_CHUNK)),
+                          min_bucket=min_bucket, strict=False, warm_ladder=WARM_LADDER)
     return out._replace(fate=jnp.where(out.fate == 0, 9, out.fate))
 
 
