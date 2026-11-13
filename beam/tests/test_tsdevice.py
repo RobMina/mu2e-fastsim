@@ -143,6 +143,45 @@ def test_full_gather_bucket_defers_lanes(monkeypatch):
     assert not np.any(fate == dev.UNCONVERGED)
 
 
+def test_material_bucket_runs_only_in_material_lanes(monkeypatch):
+    """Material slots on a gathered bucket, with the every-lane branch when more lanes are in material: the slab
+    ranges out as with every lane (fraction 0.9: the bucket once a tenth has stopped; 0.02: mostly every lane)."""
+    monkeypatch.setattr(dev, "GATHER_FLOOR", 8)
+    settings = dev.Settings(step_mm=7.0, material_step_mm=0.1)
+    runs = {}
+    for frac in (0.0, 0.9, 0.02):
+        monkeypatch.setattr(dev, "MATERIAL_FRACTION", frac)
+        runs[frac] = _run(Tube(slab=20.0), 13, 20.0, n=1000, settings=settings)
+    ref = np.asarray(runs[0.0].path)[np.asarray(runs[0.0].fate) == dev.RANGEOUT]
+    for frac, out in runs.items():
+        fate = np.asarray(out.fate)
+        assert np.all((fate == dev.RANGEOUT) | (fate == dev.MU_DECAY)), frac
+        assert not np.any(fate == dev.UNCONVERGED)
+        path = np.asarray(out.path)[fate == dev.RANGEOUT]
+        assert abs(path.mean() - ref.mean()) < 5 * np.hypot(path.std() / np.sqrt(len(path)), ref.std() / np.sqrt(len(ref)))
+
+
+def test_solid_bucket_is_exact(geometry, monkeypatch):
+    """Generic-solid interval lengths on a candidate bucket equal the every-lane result to rounding, through the
+    bucket and through the every-lane branch."""
+    g = dev.DeviceGeometry(geometry)
+    if not g._matter:
+        pytest.skip("fixture has no generic solid")
+    rng = np.random.default_rng(4)
+    lo = np.array([-500.0, -400.0, geometry.z_start - 100])
+    hi = np.array([4500.0, 400.0, geometry.z_end + 100])
+    a = jnp.asarray(rng.uniform(lo, hi, (4000, 3)))
+    d = jnp.asarray(rng.normal(0, 30, (4000, 3)))
+    monkeypatch.setattr(dev, "GATHER_FLOOR", 4)
+    out = {}
+    for frac in (0.0, 0.5, 0.001):
+        monkeypatch.setattr(dev, "SOLID_FRACTION", frac)
+        out[frac] = np.asarray(jax.jit(g.columns_d)(a, d))
+    assert out[0.0].any()
+    np.testing.assert_allclose(out[0.5], out[0.0], rtol=1e-12, atol=1e-9)    # summation order may differ
+    np.testing.assert_allclose(out[0.001], out[0.0], rtol=1e-12, atol=1e-9)
+
+
 @pytest.mark.slow   # statistical, 4000 pions
 def test_pion_decay_fraction():
     out = _run(Tube(), 211, 100.0, n=4000)

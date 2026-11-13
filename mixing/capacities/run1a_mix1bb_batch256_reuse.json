@@ -55,14 +55,14 @@
   "crv": {
    "substeps": 310525,
    "photons": 172294,
-   "thermal": 565032,
-   "ct1": 196608,
-   "ct2": 49152,
+   "thermal": 35332,
+   "ct1": 98304,
+   "ct2": 24576,
    "ct3": 12288,
    "pixel_short": 32,
    "pixel_long_streams": 64,
    "pixel_long_hits": 256,
-   "charge_clusters": 257030,
+   "charge_clusters": 47107,
    "charges_per_cluster": 553,
    "waveform_samples": 256,
    "digis": 9170,
@@ -73,7 +73,8 @@
    "coinc_combinations": 64,
    "waveform": "scatter",
    "digi_starts": "rows",
-   "pulse_scan": "bounded"
+   "pulse_scan": "bounded",
+   "thermal_counters": "hit"
   },
   "tracker_reuse": {
    "compute": {
