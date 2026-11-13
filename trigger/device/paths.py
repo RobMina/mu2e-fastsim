@@ -44,9 +44,15 @@ def _check_helix(h, cut, helicity):
 
 
 def helix_pass(h, cfg):
-    """Per helix [E, NTC]: passes HelixFilter's helicity-matched cuts (before the D0-phi prescale)."""
-    pos = _check_helix(h, cfg["posHelicitySelection"], 1.0)
-    neg = _check_helix(h, cfg["negHelicitySelection"], -1.0)
+    """Per helix [E, NTC]: passes HelixFilter's helicity-matched cuts (before the D0-phi prescale).
+
+    HelixFilter::checkHelixFromHelicity sends a helix to the cut set whose helicity it has; a cut set records its
+    helicity only when it is configured, so the helices of an unconfigured helicity match neither set and fail
+    (they do not reach checkHelix's `configured: false` pass). Example: the De helix paths configure only the
+    positive helicity, and the finder also fits negative-helicity helices (an RPC e+ going downstream)."""
+    pc, nc = cfg["posHelicitySelection"], cfg["negHelicitySelection"]
+    pos = _check_helix(h, pc, 1.0) & bool(pc.get("configured", False))
+    neg = _check_helix(h, nc, -1.0) & bool(nc.get("configured", False))
     return jnp.where(h["helicity"] > 0, pos, jnp.where(h["helicity"] < 0, neg, False))
 
 

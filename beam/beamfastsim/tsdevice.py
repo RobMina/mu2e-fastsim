@@ -83,6 +83,14 @@ def gather_floor():
 # batch (every lane as the fallback); the last level runs the remaining rounds. "" runs every round on every lane.
 SHRINK_MARGIN_F32 = 1e-2
 CROSS_FRACTION = float(os.environ.get("TSDEV_CROSS_FRACTION", 1 / 64))   # DS-plane lanes re-measured per step
+# lanes whose step chord has material run the material slots (energy loss, scattering) in a gathered bucket of this
+# fraction of the lanes (in-material lanes beyond it wait a step); 0 runs them on every lane, drawing the random numbers
+# of earlier versions. With the bucket the in-material lanes draw their own numbers, from the same distributions.
+MATERIAL_FRACTION = float(os.environ.get("TSDEV_MATERIAL_FRACTION", 0.5))
+TS_CHUNK = int(os.environ.get("TSDEV_TS_CHUNK", 256))     # TS steps per resident chunk (refill and compaction between)
+# generic (non-tube) solids: the lanes whose chord box meets the box of any of them compute their interval lengths
+# in a gathered bucket of this fraction of the lanes (every lane when more are candidates); 0 computes every lane
+SOLID_FRACTION = float(os.environ.get("TSDEV_SOLID_FRACTION", 0.25))
 SHRINK_LEVELS = tuple(float(v) for v in os.environ.get("TSDEV_SHRINK_LEVELS", "0.5,0.25,0.015625").split(",") if v)
 PLANE_TOL_F32 = 1e-2   # mm; float32 rounding of Mu2e coordinates near z = 4179 mm is ~5e-4 mm
 
@@ -248,10 +256,38 @@ class DeviceGeometry:
         out = jnp.zeros((x0.shape[0], len(self.names)))
         if self._tubes is not None:
             out = out + self._tube_columns(x0, delta, length)
+        n = x0.shape[0]
+        kb = n if SOLID_FRACTION <= 0 or not self._matter else \
+            min(n, max(gather_floor(), int(np.ceil(n * SOLID_FRACTION))))
+        local, cands = [], []
         for s, R, t, m, lo, hi in self._matter:
             o, d = _mm(x0 - t, R), _mm(delta, R)
-            cand = jnp.all((jnp.maximum(o, o + d) >= lo - 1e-9) & (jnp.minimum(o, o + d) <= hi + 1e-9), axis=1)
-            out = out.at[:, m].add(jnp.where(cand, self._generic_add(s, o, d, length), 0.0))
+            local.append((s, m, o, d))
+            cands.append(jnp.all((jnp.maximum(o, o + d) >= lo - 1e-9) & (jnp.minimum(o, o + d) <= hi + 1e-9), axis=1))
+
+        def solids(o_d, length, cands):
+            return [jnp.where(c, self._generic_add(s, o, d, length), 0.0) for (s, m, _, _), (o, d), c
+                    in zip(local, o_d, cands)]
+
+        every = lambda _: jnp.stack(solids([(o, d) for _, _, o, d in local], length, cands), axis=1)
+        if kb >= n or not self._matter:
+            per = every(None) if self._matter else None
+        else:
+            # the interval searches on the lanes that are a candidate of any generic solid, gathered into a bucket
+            # of kb lanes; when more lanes are candidates, on every lane (one device-side branch). Per-lane
+            # arithmetic is the same either way.
+            anyc = jnp.any(jnp.stack(cands), axis=0)
+
+            def bucket(_):
+                idx = jnp.nonzero(anyc, size=kb, fill_value=n)[0]
+                j = jnp.minimum(idx, n - 1)
+                v = jnp.stack(solids([(o[j], d[j]) for _, _, o, d in local], length[j], [c[j] for c in cands]),
+                              axis=1)
+                return jnp.zeros((n, len(local)), length.dtype).at[idx].set(v, mode="drop")
+
+            per = lax.cond(jnp.sum(anyc) <= kb, bucket, every, None)
+        for k, (_, m, _, _) in enumerate(local):
+            out = out.at[:, m].add(per[:, k])
         return out
 
 
@@ -569,24 +605,36 @@ def make_ts_step(field, geom, s):
             dz = (6 * f2 - 6 * fr) * z0 + (3 * f2 - 4 * fr + 1) * hz0 + (6 * fr - 6 * f2) * z1 + (3 * f2 - 2 * fr) * hz1
             fr = jnp.clip(fr + (geom.z_end - z) / jnp.where(jnp.abs(dz) > 1e-12, dz, 1e-12), 0.0, 1.0)
         hc = jnp.where(cross, h * fr, h)
-        xc, uc, okc = _rk4(field, st.x, u, kq, hc, b0, rel)
-        pick = cross[:, None]
-        if rel:
-            ec = xc.at[:, 2].set(geom.z_end - st.x[:, 2])
-            e = jnp.where(pick, ec, e)
-            xc = st.x + xc
-        xn = jnp.where(pick, xc.at[:, 2].set(geom.z_end), xn)
-        un = jnp.where(pick, uc, un)
-        ok = jnp.where(cross, okc, ok)
-        h = hc
         kc = min(n_lanes, max(gather_floor(), int(np.ceil(n_lanes * CROSS_FRACTION))))
         if kc >= n_lanes:
+            xc, uc, okc = _rk4(field, st.x, u, kq, hc, b0, rel)
+            pick = cross[:, None]
+            if rel:
+                ec = xc.at[:, 2].set(geom.z_end - st.x[:, 2])
+                e = jnp.where(pick, ec, e)
+                xc = st.x + xc
+            xn = jnp.where(pick, xc.at[:, 2].set(geom.z_end), xn)
+            un = jnp.where(pick, uc, un)
+            ok = jnp.where(cross, okc, ok)
             cols = jnp.where(pick, cols_of(st.x, e if rel else xn), cols)
-        else:                         # DS-plane lanes beyond the bucket wait a step (deferred)
+        else:
+            # the plane step and its columns only for the DS-plane lanes of the bucket; the others wait a step
+            # (deferred: their state is kept, so nothing of this step is used for them)
             idx = jnp.nonzero(cross, size=kc, fill_value=n_lanes)[0]
             j = jnp.minimum(idx, n_lanes - 1)
-            cols = cols.at[idx].set(cols_of(st.x[j], (e if rel else xn)[j]), mode="drop")
+            x0j = st.x[j]
+            xc, uc, okc = _rk4(field, x0j, u[j], kq[j], hc[j], b0[j], rel)
+            if rel:
+                ec = xc.at[:, 2].set(geom.z_end - x0j[:, 2])
+                e = e.at[idx].set(ec, mode="drop")
+                xc = x0j + xc
+            xc = xc.at[:, 2].set(geom.z_end)
+            xn = xn.at[idx].set(xc, mode="drop")
+            un = un.at[idx].set(uc, mode="drop")
+            ok = ok.at[idx].set(okc, mode="drop")
+            cols = cols.at[idx].set(cols_of(x0j, ec if rel else xc), mode="drop")
             deferred = deferred | (cross & ~jnp.zeros(n_lanes, bool).at[idx].set(True, mode="drop"))
+        h = hc
         fate = jnp.where(live & ~deferred & ~ok, FIELD_MISSING, fate)
         fate = jnp.where(live & ok & unconverged, UNCONVERGED, fate)
         live = (fate == LIVE) & ~deferred          # deferred lanes keep their state and retry next step
@@ -605,47 +653,72 @@ def make_ts_step(field, geom, s):
 
         # material: the two largest columns of the step, largest first (a capped chord rarely spans more), each a
         # frozen-rate Urban loss and a cumulative Highland kick with per-lane material constants
-        newp = un * pm[:, None]
-        travelled = jnp.ones_like(h)
-        stopped = jnp.zeros_like(live)
-        hist, mpath = st.hist, st.mpath
-        lanes = jnp.arange(h.shape[0])
-        order = jnp.argsort(-cols, axis=1) if M else None
-        mkeys = jax.random.split(k_mat, 2 * MATERIAL_SLOTS)
-        for slot in range(min(M, MATERIAL_SLOTS)):
-            m = order[:, slot]
-            mm = cols[lanes, m]
-            active = moving & (mm > 0) & ~stopped
-            c = eloss_jax.MatConsts(*(tab[m] for tab in const_tab))
-            pa = jnp.linalg.norm(newp, axis=1)
-            pas = jnp.maximum(pa, 1e-12)
-            tk = pa * (pa / (jnp.hypot(pa, mass) + mass))
-            cold = tk <= phys.TK_STOP_MEV
-            length = jnp.where(active, mm, 1.0)
-            mean = eloss_jax._dedx(c, pas, 1e9, mass) * length
-            loss = eloss_jax._sample(mkeys[2 * slot], c, pas, length, 1e9, mass, unroll=UNROLL_LOSS)
-            loss = jnp.maximum(jnp.where(loss >= tk, mean, loss), 0.0)
-            rem = jnp.maximum(tk - loss, 0.0)
-            stop = cold | (rem <= phys.TK_STOP_MEV)
-            frac = jnp.where(cold, 0.0, jnp.where(stop & (loss > 0), (tk - phys.TK_STOP_MEV) / jnp.where(
-                loss > 0, loss, 1.0), 1.0))
-            frac = jnp.clip(frac, 0.0, 1.0)
-            newpm = jnp.sqrt(rem * (rem + 2 * mass))
-            d = newp / pas[:, None]
-            x0m = x0_mm[m]
-            prev = hist[lanes, m]
-            var = _highland_var(pas, prev, prev + length / x0m, mass)
-            kick = jax.random.normal(mkeys[2 * slot + 1], d.shape, _fdt())
-            kick = kick - jnp.sum(kick * d, axis=1)[:, None] * d
-            d = d + jnp.sqrt(var)[:, None] * kick
-            d = d / jnp.linalg.norm(d, axis=1)[:, None]
-            after = jnp.where(stop[:, None], 0.0, d * newpm[:, None])
-            newp = jnp.where(active[:, None], after, newp)
-            travelled = jnp.where(active, jnp.minimum(travelled, frac), travelled)
-            stopped = stopped | (active & stop)
-            hist = hist.at[lanes, m].add(jnp.where(active, mm * frac / x0m, 0.0))
-            mpath = mpath + jnp.where(active, mm * frac, 0.0)
+        def material(newp, cols, moving, mass, hist, mpath):
+            """The material slots of the step on these lanes: (momentum, travelled fraction, stopped, x/X0
+            history, material path)."""
+            travelled = jnp.ones(newp.shape[0], newp.dtype)
+            stopped = jnp.zeros(newp.shape[0], bool)
+            lanes = jnp.arange(newp.shape[0])
+            order = jnp.argsort(-cols, axis=1) if M else None
+            mkeys = jax.random.split(k_mat, 2 * MATERIAL_SLOTS)
+            for slot in range(min(M, MATERIAL_SLOTS)):
+                m = order[:, slot]
+                mm = cols[lanes, m]
+                active = moving & (mm > 0) & ~stopped
+                c = eloss_jax.MatConsts(*(tab[m] for tab in const_tab))
+                pa = jnp.linalg.norm(newp, axis=1)
+                pas = jnp.maximum(pa, 1e-12)
+                tk = pa * (pa / (jnp.hypot(pa, mass) + mass))
+                cold = tk <= phys.TK_STOP_MEV
+                length = jnp.where(active, mm, 1.0)
+                mean = eloss_jax._dedx(c, pas, 1e9, mass) * length
+                loss = eloss_jax._sample(mkeys[2 * slot], c, pas, length, 1e9, mass, unroll=UNROLL_LOSS)
+                loss = jnp.maximum(jnp.where(loss >= tk, mean, loss), 0.0)
+                rem = jnp.maximum(tk - loss, 0.0)
+                stop = cold | (rem <= phys.TK_STOP_MEV)
+                frac = jnp.where(cold, 0.0, jnp.where(stop & (loss > 0), (tk - phys.TK_STOP_MEV) / jnp.where(
+                    loss > 0, loss, 1.0), 1.0))
+                frac = jnp.clip(frac, 0.0, 1.0)
+                newpm = jnp.sqrt(rem * (rem + 2 * mass))
+                d = newp / pas[:, None]
+                x0m = x0_mm[m]
+                prev = hist[lanes, m]
+                var = _highland_var(pas, prev, prev + length / x0m, mass)
+                kick = jax.random.normal(mkeys[2 * slot + 1], d.shape, _fdt())
+                kick = kick - jnp.sum(kick * d, axis=1)[:, None] * d
+                d = d + jnp.sqrt(var)[:, None] * kick
+                d = d / jnp.linalg.norm(d, axis=1)[:, None]
+                after = jnp.where(stop[:, None], 0.0, d * newpm[:, None])
+                newp = jnp.where(active[:, None], after, newp)
+                travelled = jnp.where(active, jnp.minimum(travelled, frac), travelled)
+                stopped = stopped | (active & stop)
+                hist = hist.at[lanes, m].add(jnp.where(active, mm * frac / x0m, 0.0))
+                mpath = mpath + jnp.where(active, mm * frac, 0.0)
 
+            return newp, travelled, stopped, hist, mpath
+
+        newp = un * pm[:, None]
+        km = n_lanes if MATERIAL_FRACTION <= 0 or not M else \
+            min(n_lanes, max(gather_floor(), int(np.ceil(n_lanes * MATERIAL_FRACTION))))
+        if km >= n_lanes:
+            newp, travelled, stopped, hist, mpath = material(newp, cols, moving, mass, st.hist, st.mpath)
+        else:
+            # only the lanes with material on the chord run the slots, gathered into a bucket of MATERIAL_FRACTION
+            # of the lanes (sized from the measured demand); in-material lanes beyond it wait a step (deferred)
+            inmat = moving & (jnp.sum(cols, axis=1) > 0)
+            idx = jnp.nonzero(inmat, size=km, fill_value=n_lanes)[0]
+            j = jnp.minimum(idx, n_lanes - 1)
+            nj, tj, sj, hj, mj = material(newp[j], cols[j], inmat[j] & (idx < n_lanes), mass[j], st.hist[j],
+                                          st.mpath[j])
+            over = inmat & ~jnp.zeros(n_lanes, bool).at[idx].set(True, mode="drop")
+            newp = newp.at[idx].set(nj, mode="drop")
+            travelled = jnp.ones_like(h).at[idx].set(tj, mode="drop")
+            stopped = jnp.zeros_like(live).at[idx].set(sj, mode="drop")
+            hist = st.hist.at[idx].set(hj, mode="drop")
+            mpath = st.mpath.at[idx].set(mj, mode="drop")
+            deferred = deferred | over
+            live = live & ~over
+            moving = moving & ~over
         actual = h * travelled
         go = live
         x = jnp.where(go[:, None], st.x + ((e if rel else xn - st.x) * travelled[:, None]), st.x)
@@ -720,17 +793,71 @@ def _refill(cur, rows, full, live, nl, k, nxt):
     return cur, jnp.where(fill, src, rows), pos >= nl + k
 
 
+@partial(jax.jit, static_argnums=(4, 5, 6))
+def _compact(cur, rows, live, nl, n, m, kill):
+    """The first m slots after a stable sort that puts live lanes first; slots past the live count are killed and
+    their rows set out of range (n, dropped on scatter)."""
+    order = jnp.argsort(~live, stable=True)[:m]
+    cur = _tree(lambda a: a[order], cur)
+    pad = jnp.arange(m) >= nl
+    return kill(cur, pad), jnp.where(pad, n, rows[order])
+
+
+WARM_LADDER = os.environ.get("TSDEV_WARM_LADDER", "1") != "0"
+_WARMED = set()
+
+
+def ladder(size, min_bucket):
+    """Every lane-bucket size run_resident can run: the starting size, then each power of two from min_bucket
+    below it (compaction picks the smallest power of two >= the live count, floored at min_bucket)."""
+    out, m = [size], min_bucket
+    while m < size:
+        out.append(m)
+        m *= 2
+    return sorted(set(out), reverse=True)
+
+
+def _warm(run_chunk, state, live_of, kill, key, size, min_bucket, result):
+    """Compile every bucket size of the ladder once, on killed lanes (no result changes: their rows are out of
+    range), so that new inputs whose tails reach other sizes never compile during a run."""
+    n = state[0].shape[0]
+    sig = (run_chunk, live_of, kill, n, size, min_bucket,
+           tuple((a.shape[1:], str(a.dtype)) for a in jax.tree_util.tree_leaves(state)))
+    if sig in _WARMED:
+        return result
+    sizes = ladder(size, min_bucket)
+    dead = kill(_tree(lambda a: a[:size], state), jnp.ones(size, bool))
+    for i, s in enumerate(sizes):
+        cur = _tree(lambda a: a[:s], dead)
+        rows = jnp.where(jnp.ones(s, bool), n, jnp.arange(s))
+        cur = run_chunk(jax.random.fold_in(key, i), cur)
+        result = _scatter(result, rows, cur)
+        live = live_of(cur)
+        int(jnp.sum(live))
+        for m in sizes[i + 1:]:
+            _compact(cur, rows, live, 0, n, m, kill)
+    _WARMED.add(sig)
+    return result
+
+
 def run_resident(run_chunk, state, live_of, kill, key, max_chunks=100000, min_bucket=1024, pool=None,
-                 strict=True):
+                 strict=True, warm_ladder=False):
     """Run a jitted chunk function (key, state) -> state over every lane of `state`, all on the device.
 
     A pool of `pool` lanes (default: all) runs at a time; after each chunk finished lanes are replaced by the next
     inputs, and once the inputs are exhausted the live lanes are compacted into power-of-two buckets. Only the live
     count crosses to the host. Returns the full-size final state and the number of lane-chunks run. After max_chunks
-    with live lanes: raise when strict, else return them still live (the caller labels them)."""
+    with live lanes: raise when strict, else return them still live (the caller labels them).
+
+    warm_ladder: compile every bucket size of the ladder before the first chunk (once per chunk function, input
+    size and pool), so the run never compiles on new data; kill and live_of must then be stable functions (they
+    key the compile cache). The results are the same either way."""
     n = state[0].shape[0]
     size = n if pool is None or pool >= n else int(pool)
     result = _tree(jnp.copy, state)
+    if warm_ladder:
+        result = _warm(run_chunk, state, live_of, kill, jax.random.fold_in(key, -1 & 0x7FFFFFFF), size, min_bucket,
+                       result)
     rows = jnp.arange(size)
     cur = _tree(lambda a: a[:size], state)
     nxt, lane_chunks = size, 0
@@ -756,11 +883,7 @@ def run_resident(run_chunk, state, live_of, kill, key, max_chunks=100000, min_bu
             return result, lane_chunks
         m = _next_pow2(nl, min_bucket)
         if m < rows.shape[0]:
-            order = jnp.argsort(~live, stable=True)[:m]
-            cur = _tree(lambda a: a[order], cur)
-            pad = jnp.arange(m) >= nl
-            rows = jnp.where(pad, n, rows[order])        # out of range: dropped on scatter
-            cur = kill(cur, pad)
+            cur, rows = _compact(cur, rows, live, nl, n, m, kill)     # padded rows out of range: dropped on scatter
     if strict:
         raise RuntimeError("chunk limit reached with live lanes")
     return result, lane_chunks
@@ -805,9 +928,25 @@ def ts_initial(x, p, t, pdg, n_materials, key):
 def transport_ts(ts_chunk, geom, x, p, t, pdg, key, min_bucket=None, pool=None):
     k0, k1 = jax.random.split(key)
     st = ts_initial(x, p, t, pdg, len(geom.names), k0)
-    return run_resident(ts_chunk, st, lambda s: s.fate == LIVE,
-                        lambda s, pad: s._replace(fate=jnp.where(pad, jnp.int8(PATH_LIMIT), s.fate)),
-                        k1, min_bucket=default_min_bucket() if min_bucket is None else min_bucket, pool=pool)[0]
+    return run_resident(ts_chunk, st, _ts_live, _ts_kill, k1,
+                        min_bucket=default_min_bucket() if min_bucket is None else min_bucket, pool=pool,
+                        warm_ladder=WARM_LADDER)[0]
+
+
+def _ts_live(s):
+    return s.fate == LIVE
+
+
+def _ts_kill(s, pad):
+    return s._replace(fate=jnp.where(pad, jnp.int8(PATH_LIMIT), s.fate))
+
+
+def _ds_live(s):
+    return s.fate == 0
+
+
+def _ds_kill(s, pad):
+    return s._replace(fate=jnp.where(pad, 9, s.fate))
 
 
 # ---------------------------------------------------------------- DS stage and the joined chain
@@ -832,9 +971,8 @@ def transport_ds(ds_chunk, prm, x, p3, t, q, tau_max, enter, key, min_bucket=256
     """DS stage on the lanes with `enter`; other lanes are inert (fate 9) and keep foil -1."""
     st = ds_initial(x, p3, t, q, tau_max)
     st = st._replace(fate=jnp.where(enter, 0, 9).astype(jnp.int32))
-    out, _ = run_resident(ds_chunk, st, lambda s: s.fate == 0,
-                          lambda s, pad: s._replace(fate=jnp.where(pad, 9, s.fate)), key,
-                          max_chunks=int(np.ceil(prm.max_steps / DS_CHUNK)), min_bucket=min_bucket, strict=False)
+    out, _ = run_resident(ds_chunk, st, _ds_live, _ds_kill, key, max_chunks=int(np.ceil(prm.max_steps / DS_CHUNK)),
+                          min_bucket=min_bucket, strict=False, warm_ladder=WARM_LADDER)
     return out._replace(fate=jnp.where(out.fate == 0, 9, out.fate))
 
 
@@ -902,7 +1040,7 @@ def load_chain(gdml, field_config, offline_root, maps, ds_geom_file, ds_offline_
     tsf = DeviceField.from_config(field_config, offline_root, maps)
     dsg = dsgeometry.from_offline(ds_geom_file, ds_offline_root)
     fm = fieldmap.to_device(fieldmap.load(ds_map))
-    return build_chain(tsf, tsg, fm, dsg, settings, ds_prm, pool=pool)
+    return build_chain(tsf, tsg, fm, dsg, settings, ds_prm, ts_chunk=TS_CHUNK, pool=pool)
 
 
 def load_reference(path, limit=None):

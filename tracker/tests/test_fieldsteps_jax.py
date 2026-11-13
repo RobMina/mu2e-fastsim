@@ -157,3 +157,47 @@ def test_a_chord_budget_caps_the_slow_loopers_only():
         assert np.array_equal(np.asarray(a.steps[k])[:20], np.asarray(b.steps[k])[:20]), k
     va, vb = np.asarray(a.steps["valid"])[20:], np.asarray(b.steps["valid"])[20:]
     assert vb.any() and (vb.sum(1) <= va.sum(1)).all() and (vb.sum() < va.sum())
+
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_positron_rows_are_the_electron_rows_in_the_reversed_field(dtype):
+    # without loss and scattering a positron in B crosses the straws of an electron in -B, record for record
+    B = np.array([0.0, 0.2, 1.0])
+    _, _, tp = _setup(B, chord_mm=5.0, eloss_on=False, msc=False, dtype=dtype)
+    _, _, te = _setup(-B, chord_mm=5.0, eloss_on=False, msc=False, dtype=dtype)
+    o, d = _lines(200, np.random.default_rng(21))
+    e = FJ.transport(te, jax.random.PRNGKey(1), o, d * 60.0, np.zeros(len(o)))
+    p = FJ.transport(tp, jax.random.PRNGKey(1), o, d * 60.0, np.zeros(len(o)), positron=True)
+    ve, vp = np.asarray(e.steps["valid"]), np.asarray(p.steps["valid"])
+    assert np.array_equal(ve, vp) and ve.sum() > 100
+    tol = 1e-8 if dtype == np.float64 else 2e-3
+    assert np.array_equal(np.asarray(e.steps["straw"])[ve], np.asarray(p.steps["straw"])[vp])
+    for c in ("len", "t", "x0", "y1", "z1", "px", "pz"):
+        np.testing.assert_allclose(np.asarray(p.steps[c])[vp], np.asarray(e.steps[c])[ve], atol=tol, rtol=tol)
+    # the same positron in -B (the electron's field) bends the other way
+    q = FJ.transport(te, jax.random.PRNGKey(1), o, d * 60.0, np.zeros(len(o)), positron=True)
+    fe, fq = np.asarray(e.final["x"]), np.asarray(q.final["x"])
+    assert np.abs(fe - fq).max() > 1.0
+
+
+def test_positron_loss_tables_are_bhabha_and_the_full_transport_runs():
+    B = np.array([0.0, 0.0, 1.0])
+    _, _, trk = _setup(B)
+    from mu2efastsim import eslab_jax as SJ
+    dedx_e, dedx_p = np.asarray(trk.T["dedx"]), np.asarray(trk.T["p_dedx"])
+    assert dedx_e.shape == dedx_p.shape and not np.allclose(dedx_e, dedx_p)
+    hi = SJ._grid()[1] > 1.0                                        # above 1 MeV: e+ and e- loss within ~10 %
+    np.testing.assert_allclose(dedx_p[:, hi], dedx_e[:, hi], rtol=0.15)
+    assert not np.allclose(np.asarray(trk.T["gas_dedx"]), np.asarray(trk.T["p_gas_dedx"]))
+    o, d = _lines(400, np.random.default_rng(22))
+    e = FJ.transport(trk, jax.random.PRNGKey(5), o, d * 105.0, np.zeros(len(o)))
+    p = FJ.transport(trk, jax.random.PRNGKey(5), o, d * 105.0, np.zeros(len(o)), positron=True)
+    p2 = FJ.transport(trk, jax.random.PRNGKey(5), o, d * 105.0, np.zeros(len(o)), positron=True)
+    for k in p.steps:                                               # seeded
+        assert np.array_equal(np.asarray(p.steps[k]), np.asarray(p2.steps[k]), equal_nan=True)
+    ne, np_ = int(np.asarray(e.steps["valid"]).sum()), int(np.asarray(p.steps["valid"]).sum())
+    assert abs(np_ - ne) < 0.1 * ne
+    ee = np.asarray(e.steps["eion"])[np.asarray(e.steps["valid"])]
+    ep = np.asarray(p.steps["eion"])[np.asarray(p.steps["valid"])]
+    assert abs(ep.mean() - ee.mean()) < 0.1 * ee.mean()

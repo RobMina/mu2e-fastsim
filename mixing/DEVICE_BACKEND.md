@@ -125,7 +125,7 @@ default there) or `"device_pipeline"` (bench configuration; **on by default**, `
 - two batches' outputs are on the device at once.
 
 `--device-pipeline-writers W` (stream benchmark; default 1) or `"device_pipeline_writers": W` (bench configuration;
-**default 2**)
+**default 3**)
 collects up to W batches at once, each on its own worker thread: batch k + W is dispatched once batch k is written.
 Each batch writes its own files, so the files are those of one writer; ledger rows stay in dispatch order. The ROOT
 compression (zlib) runs outside the Python lock, so writers overlap the write, which with full digis takes longer than
@@ -133,12 +133,14 @@ the device step once that is under about 0.35 s per batch of 256. W + 1 batches'
 
 Per-batch metrics then report `wait_transfer_and_write_s` instead of separate device and transfer times.
 
-## Device-side loops (core `MU2EFS_DEVICE_LOOPS`, on by default)
+## Device-side loops (core `MU2EFS_DEVICE_LOOPS`, on for this workflow)
 
 The batch step runs many short device loops (tracker electronics crossings and saturation, CRV SiPM and pulse
 fits). By default XLA runs each `lax.while_loop` and `lax.cond` from the host, one predicate read-back per
-iteration. Core `devloops.py` (on by default; `MU2EFS_DEVICE_LOOPS=0` in the environment turns it off, before JAX
-starts, so it is an environment setting, not a configuration key) makes XLA run them inside its GPU command buffers.
+iteration. Core `devloops.py` makes XLA run them inside its GPU command buffers. It is chosen per workflow
+(`MU2EFS_DEVICE_LOOPS=auto`, the default: on for `--workflow mixing` / W6; `MU2EFS_DEVICE_LOOPS=0` or the bench's
+`--device-loops off` turns it off, before JAX starts, so it is an environment or command-line setting, not a
+configuration key).
 It changes the launches, not the computation: over full development and held-out passes at batch 256 the output
 files are identical with and without it (CRV float32 and float64, float32 tracker; exact and reuse capacity files).
 On one batch of 256 (A100) the device step falls from 0.45 to 0.42 s (CRV float32) and from 0.49 to 0.46 s (CRV

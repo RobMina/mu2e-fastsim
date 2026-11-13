@@ -39,7 +39,9 @@ CALO_FILES = ("Sim_crystal.txt", "CsI-waveform-2020-02-12.root", "ReadoutNoise.r
 # stock OnSpill MC proton bunch time (ProtonBunchTimeMC, MDC2025ax digitization): -212.296 ns + 5 ns x {-2..2}, and
 # the reco estimate of it (evtinfo.pbtime) within ~0.5 ns; the digitization window and the TDC zero follow it
 PBTIME_BASE, PBTIME_STEP, PBTIME_K, PBT_RECO_SIGMA = -212.296, 5.0, (-2, 2), 0.5
-CALO_CAPS = "steps=56,photoelectrons=5000,rows=26,digis=16,digi_length=96,hits=8,event_hits=32,rounds=8"
+# per-event capacities of the calorimeter device chain (steps..hits scale with the batch); rounds bounds the main and
+# split clustering rounds: 8 overflowed on 2 CE events in about 20,000; a larger cap leaves every other event unchanged
+CALO_CAPS = "steps=56,photoelectrons=5000,rows=26,digis=16,digi_length=96,hits=8,event_hits=32,rounds=16"
 
 
 def helix_to_z(x, p, t, z, bz=BZ_TRACKER, q=-1.0):
@@ -133,6 +135,7 @@ class FastRecord:
         per = {k: v * calo_batch if k in ("steps", "photoelectrons", "rows", "digis", "hits") else v
                for k, v in caps.items()}
         self.calo_batch = calo_batch
+        self.calo_recluster = 0
         self.calo = dc.make_chain(dc.pack_library(lib, radius_neighbors=8, placement="crystal", dtype=self.dtype),
                                   resp, dc.Caps(events=calo_batch, **per), truth=True)
         self.field = cechain.field_maps(maps)
@@ -167,6 +170,7 @@ class FastRecord:
         fin = res["tracker"].final
         steps = res["tracker"].steps
         h = jax.device_get(dict(has=res["has_entry"], x=res["x"], p=res["p"], t=res["t"], nrow=res["nrow"],
+                                nrow_dts=res["nrow_dts"],
                                 fin={k: fin[k] for k in ("x", "y", "z", "px", "py", "pz", "t", "status")},
                                 steps={k: steps[k] for k in ("valid", "x1", "y1", "z1", "px", "py", "pz", "t")},
                                 trk=trk))
@@ -183,6 +187,7 @@ class FastRecord:
         cols["front_p"] = np.where(has[:, None], np.asarray(h["p"], float), np.nan)
         cols["front_t"] = np.where(has, np.asarray(h["t"], float), np.nan)
         cols["nrow"] = np.asarray(h["nrow"], np.int64)
+        cols["nrow_dts"] = np.asarray(h["nrow_dts"], np.int64)     # rows the dts PrimaryFilter counts
         for k, v in h["trk"].items():
             cols["trk_" + k] = np.asarray(v, bool if v.dtype == bool else float)
         found, x, p, t = plane_truth(h["steps"], Z_MID)
@@ -204,13 +209,17 @@ class FastRecord:
                 bz[ok_] = ehelix.field_at(self.field, xm[ok_])[:, 2]
             cols[name + "_bz"] = bz
         cols.update(self._calo(left, xe + ORIGIN, pe, np.asarray(f["t"], float), seed, n, pb_mc))
+        # the emulated dts PrimaryFilter (tracker rows or the shower's visible calorimeter energy); assemble applies
+        # it only on request (--dts-filter)
+        from ..cetracker import dts_keep
+        cols["dts_keep"] = dts_keep(cols["nrow_dts"], cols["calo_etrue"])
         digis = res.get("digis")
         cols["nsd"] = (np.bincount(np.asarray(digis["ev"]), minlength=n)[:n].astype(np.int64) if digis is not None
                        else np.full(n, -1, np.int64))
         cnt = dict(births=n, entry=int(has.sum()), fit=int(cols["trk_fit"].sum()), qual=int(cols["trk_qual"].sum()),
                    mid=int(cols["mid_found"].sum()), back=int(ok.sum()), device_s=round(t_dev, 3),
                    calo_s=round(time.perf_counter() - tic - t_dev, 3),
-                   digis=0 if digis is None else int(len(digis["ev"])))
+                   digis=0 if digis is None else int(len(digis["ev"])), calo_recluster=self.calo_recluster)
         return cols, digis, cnt
 
     # -- calorimeter -------------------------------------------------------------------------------------------------
@@ -243,6 +252,7 @@ class FastRecord:
         rows = k[fr]
         B = self.calo_batch
         key = jax.random.PRNGKey(seed)
+        self.calo_recluster = 0
         for i, b0 in enumerate(range(0, rows.size, B)):
             sel = fr[b0:b0 + B]
             m = sel.size
@@ -258,6 +268,7 @@ class FastRecord:
                       "crystal_length": np.full(m, 200.0, np.float32)}
             q, t = dc.entries_batch(ent, timing, np.arange(m), B)
             r = dc.run(self.calo, q, t, jax.random.fold_in(key, i))
+            self.calo_recluster += int(r["stats"]["recluster"])   # events clustered again (dc.clusters)
             ev = rows[b0:b0 + B]
             dn = np.asarray(r["donor"])[:m]
             okd = dn >= 0
