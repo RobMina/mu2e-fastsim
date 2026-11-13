@@ -303,13 +303,12 @@ def save(path, tab, **provenance):
 # with pools: the default
 FULLDTS = Path(__file__).with_name("data") / "ce_loophelix_run1a_fulldts_pools.npz"
 DEFAULT = FULLDTS
-# the conversion electron's own Geant4 steps only (the earlier default), on the same events and bins; and with pools
+# the conversion electron's own Geant4 steps only (the earlier default, Gaussian copula draw), on the same events and
+# bins (its pool variant is parked: PARKED.md)
 CEONLY = Path(__file__).with_name("data") / "ce_loophelix_run1a.npz"
-POOLS = Path(__file__).with_name("data") / "ce_loophelix_run1a_pools.npz"
 # OnSpill digitization and reco (the production CE chain, e.g. Mu2eBO ce_chain), e- fits, with pools (opt-in)
 ONSPILL = Path(__file__).with_name("data") / "ce_loophelix_run1a_onspill_pools.npz"
-NAMED = {"default": DEFAULT, "fulldts": FULLDTS, "ceonly": CEONLY, "pools": POOLS, "ceonly_pools": POOLS,
-         "onspill": ONSPILL}
+NAMED = {"default": DEFAULT, "fulldts": FULLDTS, "ceonly": CEONLY, "onspill": ONSPILL}
 
 
 # Tables of other stock configurations are not in git: a registry (data/registry.json) maps a stock-input hash
@@ -425,13 +424,6 @@ SHIPPED = {
         source=dict(description="the conversion electron's own Geant4 StrawGasSteps from its tracker entry, injected "
                                 "into the same events", samples=[dict(dataset=_DTS, selection="sequencers "
                                 "001430_00000000..00000600", events=19630)]),
-        split=dict(training="sequencers 001430_00000000..00000600", held_out="sequencers 001430_00000700..00001300",
-                   rule="disjoint sequencers"),
-        **_COMMON),
-    "ce_loophelix_run1a_pools.npz": dict(
-        name="tracker.response.ce_loophelix.ceonly_pools.run1a",
-        source=dict(description="as ce_loophelix_run1a.npz, plus each bin's pool", samples=[dict(dataset=_DTS,
-                    selection="sequencers 001430_00000000..00000600", events=19630)]),
         split=dict(training="sequencers 001430_00000000..00000600", held_out="sequencers 001430_00000700..00001300",
                    rule="disjoint sequencers"),
         **_COMMON),

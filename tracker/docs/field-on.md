@@ -170,8 +170,8 @@ device and applies the CE fiducial cuts to the smeared values. The shipped table
 development events only; check agreement on independent events. It extrapolates only as far as its reference:
 conversion electrons in the Run 1A tracker.
 
-Opt-in empirical joint draw (`table.build(..., pools=True)`, shipped as `recoresp/data/ce_loophelix_run1a_pools.npz`,
-`DeviceChain(response="pools")`): each bin also stores its pool of reference quality tracks, and the response draws
+Empirical joint draw (`table.build(..., pools=True)`; the default full-event table carries pools; the CE-only table
+with pools, formerly `DeviceChain(response="pools")`, is parked on `park/recoresp-ceonly-pools`): each bin also stores its pool of reference quality tracks, and the response draws
 one reference track's full vector (momentum, tan(dip), d0, r_max residuals and the fit-quality outputs) instead of the
 Gaussian copula and inverse CDFs. The copula keeps rank correlations but not tail dependence: a large momentum residual
 of the stock fit usually comes with an off-cut d0, r_max or tan(dip) and fails the fiducial cuts. On Run 1A DIO

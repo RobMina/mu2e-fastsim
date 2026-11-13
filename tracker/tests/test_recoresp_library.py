@@ -11,7 +11,7 @@ import pytest
 from mu2efastsim.library import hashing, store as LS
 from trkfastsim.recoresp import table as RT
 
-SHIPPED = [RT.CEONLY, RT.POOLS, RT.FULLDTS]
+SHIPPED = [RT.CEONLY, RT.FULLDTS]
 
 
 def _legacy_load(path):
@@ -46,7 +46,7 @@ def test_shipped_tables_load_bit_identical_with_their_manifests(path):
 
 def test_shipped_tables_have_distinct_names_and_reproducible_sidecars(tmp_path, monkeypatch):
     names = {LS.load(p).manifest["name"] for p in SHIPPED}
-    assert len(names) == 3
+    assert len(names) == len(SHIPPED)
     data = tmp_path / "data"
     data.mkdir()
     for p in SHIPPED:
@@ -99,7 +99,7 @@ def test_a_registered_table_without_a_manifest_loads_by_its_registry_pin(tmp_pat
 
 
 def test_save_embeds_a_manifest_and_tampering_is_refused(tmp_path):
-    raw = {k: np.array(v) for k, v in _legacy_load(RT.POOLS).items()}
+    raw = {k: np.array(v) for k, v in _legacy_load(RT.FULLDTS).items()}
     m = RT.save(tmp_path / "t.npz", raw)
     assert m["kind"] == "pool" and m["content_hash"] == hashing.content_hash(raw)
     raw["eff_fit"][0, 0] += 1e-9

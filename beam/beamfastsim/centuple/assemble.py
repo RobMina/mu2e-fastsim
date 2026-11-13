@@ -76,21 +76,16 @@ CALO_EFF_EDGES = np.array([10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0,
 CALO_EFF = np.array([0.559, 0.601, 0.682, 0.785, 0.826, 0.934, 0.989, 0.999, 0.997])
 
 
-def calo_match(rec, run=None, subrun=None, event=None, seed=None, rule="stock"):
-    """Track-cluster match of the fast electron: (has, cluster index).
+def calo_match(rec, run, subrun, event, seed):
+    """Track-cluster match of the fast electron, as stock: (has, cluster index).
 
-    rule "stock" (default): the leading cluster above E_MATCH on the disk of the first contact, else the leading one on
-    the other disk (stock matches either disk), kept with the stock inclusion efficiency of its energy (CALO_EFF, one
-    draw per event from SeedSequence([seed, 3, run, subrun, event])). rule "contact": the leading cluster above E_MATCH on
-    the contact disk only, always kept (the rule before)."""
+    The leading cluster above E_MATCH on the disk of the first contact, else the leading one on the other disk (stock
+    matches either disk), kept with the stock inclusion efficiency of its energy (CALO_EFF, one draw per event from
+    SeedSequence([seed, 3, run, subrun, event])). The earlier contact-disk-only rule is parked (PARKED.md)."""
     valid, energy, disk = rec["cl_valid"], rec["cl_energy"], rec["cl_disk"]
     big = valid & (energy > E_MATCH)
     on = big & (disk == rec["calo_disk"][:, None]) & (rec["calo_kind"][:, None] > 0)
     j_on = np.argmax(np.where(on, energy, -1.0), axis=1)
-    if rule == "contact":
-        return on.any(axis=1), j_on
-    if rule != "stock":
-        raise ValueError("calo_match rule: 'stock' or 'contact'")
     j_any = np.argmax(np.where(big, energy, -1.0), axis=1)
     j = np.where(on.any(axis=1), j_on, j_any)
     has = big.any(axis=1)
