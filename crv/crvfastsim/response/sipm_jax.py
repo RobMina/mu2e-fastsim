@@ -121,22 +121,38 @@ LONG_LL = 64      # ... and their length; on overflow the caller retries once wi
 LONG_CELLS_MAX = 1 << 26  # long-table cells beyond which the chunk goes to the host path instead (memory guard)
 
 
-@partial(dprec.jit, static_argnames=("NB", "M1", "M2", "M3", "Ntot", "L", "SL", "LL", "nx", "ny", "gens", "truncate"))
+DRAWS = ("offset", "section")
+
+
+@partial(dprec.jit, static_argnames=("NB", "M1", "M2", "M3", "Ntot", "L", "SL", "LL", "nx", "ny", "gens", "truncate",
+                                     "draws"))
 def device_sipm(slot, t, valid, key, cum, ncol, dead, q_ct, vov, tau, p1, p2, cap,
-                NB, M1, M2, M3, Ntot, L, SL, LL, nx, ny, gens=GENERATIONS, *, pixel_override=None, truncate=False):
+                NB, M1, M2, M3, Ntot, L, SL, LL, nx, ny, gens=GENERATIONS, *, pixel_override=None, truncate=False,
+                draws="offset"):
     """All of the SiPM stage in one jitted call, fixed shapes, no host round trip.
 
     slot [NB] SiPM slot per photon, t [NB], valid [NB]; cum: normalised cumulative photon map; ncol: its row length.
     pixel_override: optional [NB] flat pixel ids (x * NPIX + y); -1 retains the optical draw.
     truncate: pixel id of the GetRandom2 point by truncation (SiPMConfig.pixel_id "truncate", the map bin) instead of
     lrint (bin or bin + 1); the same random numbers are drawn either way.
+    draws: "offset" (default) draws each hit's firing uniform at its position in the concatenated [Ntot] hit list
+    (photons, then each candidate generation after the previous buffer), so it depends on NB and M1..M3; "section"
+    draws the photon section [NB] and each candidate generation [Mg] from their own keys (and the lrint offsets as
+    [NB, 2]). With "section" a hit's draws depend only on its index inside its own section, which is fixed by the
+    data, so the charges are the same for any buffer sizes that hold the chunk (fixed capacities), not only the
+    power-of-two buckets of device_buckets. Another realization than "offset", same distributions.
     Returns per hit (photons first, then cross-talk candidates): slot, time, root photon index, fired, charge, pe, and
     an overflow flag (a candidate buffer filled up, or the long-stream table [SL, LL] was too small: retry with
     long_buckets(r), else rerun those inputs on the host path).
     """
+    if draws not in DRAWS:
+        raise ValueError(f"sipm_jax: draws must be one of {DRAWS}, got {draws!r}")
     kp, kx, ku, *kg = jax.random.split(key, 3 + gens)
     b_ = jnp.searchsorted(cum, jax.random.uniform(kp, (NB,)), side="right")
-    h = jax.random.uniform(kx, (2, NB)) >= 0.5                       # GetRandom2 + lrint (sipm.draw_pixels)
+    if draws == "section":
+        h = (jax.random.uniform(kx, (NB, 2)) >= 0.5).T              # leading axis NB: a hit's pair is NB-independent
+    else:
+        h = jax.random.uniform(kx, (2, NB)) >= 0.5                   # GetRandom2 + lrint (sipm.draw_pixels)
     if truncate:
         h = jnp.zeros_like(h)
     pix = (b_ // ncol + h[0]) * NPIX + (b_ % ncol + h[1])
@@ -155,7 +171,12 @@ def device_sipm(slot, t, valid, key, cum, ncol, dead, q_ct, vov, tau, p1, p2, ca
     pad = Ntot - S_.shape[0]
     S_, P_, T_ = jnp.pad(S_, (0, pad)), jnp.pad(P_, (0, pad)), jnp.pad(T_, (0, pad))
     PAR, V_ = jnp.pad(PAR, (0, pad), constant_values=-1), jnp.pad(V_, (0, pad))
-    U = jax.random.uniform(ku, (Ntot,))
+    if draws == "section":
+        U = jnp.concatenate([jax.random.uniform(ku if g == 0 else jax.random.fold_in(ku, g), (x.shape[0],))
+                             for g, x in enumerate(hs)])
+        U = jnp.pad(U, (0, pad))
+    else:
+        U = jax.random.uniform(ku, (Ntot,))
     ksort = jnp.where(V_, S_ * NP2 + P_, jnp.iinfo(jnp.int64).max)
     fired, v, n_long, max_long, max_len = _solve(ksort, T_, U, PAR, V_, dead, vov, tau, p1, p2, L, SL, LL, gens + 1)
     stream_over = (n_long > SL) | (max_long > LL)
@@ -183,9 +204,11 @@ def _truncate(cfg):
     return pid == "truncate"
 
 
-def run_device_sipm(args, cfg, *, pixel_override=None):
+def run_device_sipm(args, cfg, *, pixel_override=None, draws="offset"):
     """device_sipm with the default long table, retried once with measured buckets on a stream overflow."""
     kw = {"truncate": True} if _truncate(cfg) else {}    # lrint: the same call (and compile-cache key) as before
+    if draws != "offset":
+        kw["draws"] = draws
     r = device_sipm(*args, STREAM_L, LONG_SL, LONG_LL, cfg.n_pixels_x, cfg.n_pixels_y,
                     pixel_override=pixel_override, **kw)
     if bool(r["stream_overflow"]):
@@ -196,10 +219,13 @@ def run_device_sipm(args, cfg, *, pixel_override=None):
     return r
 
 
-def device_buckets(n_photons, cfg):
-    """Static shapes for device_sipm from the photon count only (no data-dependent host sync)."""
+def device_buckets(n_photons, cfg, NB=None):
+    """Static shapes for device_sipm from the photon count only (no data-dependent host sync); NB: a fixed photon
+    capacity (>= n_photons) instead of the power-of-two bucket (the candidate buffers follow from NB)."""
     q_ct = (1.0 - (1.0 - cfg.cross_talk) ** 0.25) / cfg.p_fire(cfg.overvoltage)
-    NB = _bucket(n_photons)
+    if NB is not None and NB < n_photons:
+        raise ValueError(f"sipm_jax: photon capacity {NB} < {n_photons} photons")
+    NB = _bucket(n_photons) if NB is None else int(NB)
     Ms, prev = [], NB
     for _ in range(GENERATIONS):
         mu = 4 * q_ct * prev

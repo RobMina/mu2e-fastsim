@@ -667,6 +667,79 @@ def _synth_jax_bucketed(WJ, Q, tdc0_row, cfg, noise=0.0, seed=0, budget_gib=SYNT
     return {k: v[o] for k, v in out.items()}
 
 
+_KEYS = []
+
+
+def _cluster_keys():
+    """jit(vmap(fold_in)): one noise key per cluster index, built once per process (one compile per row count)."""
+    if not _KEYS:
+        import jax
+        _KEYS.append(jax.jit(jax.vmap(jax.random.fold_in, (None, 0))))
+    return _KEYS[0]
+
+
+def _synth_jax_fixed(WJ, Q, tdc0_row, cfg, caps, noise=0.0, seed=0, budget_gib=SYNTH_BUCKET_GIB, window=(0.0, 1e5),
+                     *, stock_scan=False):
+    """_synth_jax_bucketed with fixed shapes (crvfastsim.capacity): clusters grouped by power-of-two charges Q (the
+    data's own, so the sum over charges is the bucketed one); per Q one capacity of rows and samples from the file,
+    so new events bring no new shapes. Noise from one key per cluster (fold_in(seed key, cluster index)): a cluster's
+    noise does not depend on how clusters are grouped or padded. Clusters beyond the file's samples take the bucketed
+    shape (counted as capacity overflow). Same digis as _synth_jax_bucketed without noise; with noise another draw."""
+    import jax
+    import jax.numpy as jnp
+    rows, t, q = Q["row"], Q["time"], Q["charge"]
+    cid = waveform.charge_clusters(rows, t, cfg)
+    if not len(cid):
+        return _synth_jax_bucketed(WJ, Q, tdc0_row, cfg, noise, seed, budget_gib, window, stock_scan=stock_scan)
+    C = int(cid[-1]) + 1
+    first = np.flatnonzero(np.r_[True, cid[1:] != cid[:-1]])
+    nq = np.bincount(cid, minlength=C)
+    span = np.zeros(C)
+    np.maximum.at(span, cid, t - t[first][cid])
+    need = (np.ceil(span + cfg.single_pe_max_time) / pulsefit.PERIOD).astype(np.int64) + 2 + cfg.samples_zs  # as WJ.pack
+    qb = _p2(nq)
+    root = jax.random.PRNGKey(seed)
+    keys_of = _cluster_keys()
+    parts = []
+    for Qb in np.unique(qb):
+        Qb = int(Qb)
+        in_q = np.flatnonzero(qb == Qb)
+        caps.note(f"synth_samples/{Qb}", int(need[in_q].max()))
+        caps.note(f"synth_rows/{Qb}", len(in_q))
+        Lcap = caps.cap("synth_samples", Qb)
+        fit = need[in_q] <= Lcap if Lcap is not None else np.zeros(len(in_q), bool)
+        groups = [(in_q[fit], Lcap, True)] if fit.any() else []
+        if Lcap is not None and not fit.all():
+            caps.overflowed("synth_samples", int((~fit).sum()), q=Qb)
+        rest = in_q[~fit]                                               # bucketed shapes, as _synth_jax_bucketed
+        groups += [(rest[_p2(need[rest]) == lb], int(lb), False) for lb in np.unique(_p2(need[rest]))]
+        for cl, Lb, fixed in groups:
+            mem = int(2 ** np.floor(np.log2(max(1, budget_gib * 2 ** 30 / (Qb * Lb * 8)))))
+            Cp = caps.cap("synth_rows", Qb) if fixed else None
+            if Cp is not None and len(cl) > Cp:
+                caps.overflowed("synth_rows", 1, q=Qb)                  # more calls of the same shape, no compile
+            Cp = min(Cp, mem) if Cp is not None else min(int(_p2(len(cl))), mem)
+            for a in range(0, len(cl), Cp):
+                c = cl[a:a + Cp]
+                lens = nq[c]
+                idx = np.repeat(first[c] - np.r_[0, np.cumsum(lens)[:-1]], lens) + np.arange(lens.sum())
+                pk = WJ.pack(rows[idx], t[idx], q[idx], tdc0_row, cfg, Q=Qb, L=Lb)
+                n = len(pk["n"])
+                pad = lambda x, v: np.concatenate([x, np.full((Cp - n,) + x.shape[1:], v, x.dtype)]) if Cp > n else x
+                keys = keys_of(root, jnp.asarray(pad(c.astype(np.uint32), 0)))
+                options = dict(stock_scan=True, window_start=window[0], window_end=window[1]) if stock_scan else {}
+                wave, adc, st, last = WJ.synth_dense(pad(pk["T"], 0.0), pad(pk["W"], 0.0), pad(pk["n"], 0),
+                                                     pad(pk["t_start"], 0.0), pad(pk["keep"], False), pk["tmpl"],
+                                                     keys, Lb, cfg.samples_zs, cfg.single_pe_precision, noise,
+                                                     cfg.min_voltage, cfg.adc_conversion, cfg.pedestal, cfg.min_adc,
+                                                     cfg.max_adc, **options)
+                parts.append(WJ.to_digis(pk, np.asarray(wave)[:n], np.asarray(adc)[:n], np.asarray(st)[:n],
+                                         np.asarray(last)[:n], cfg, window))
+    out = {k: np.concatenate([p[k] for p in parts]) for k in parts[0]}
+    o = np.lexsort((out["start"], out["chan"]))
+    return {k: v[o] for k, v in out.items()}
+
+
 def cmd_noise(args):
     """Noise-pulse model: fit on even events of a data table, generate for the odd events, compare with the held-out
     data (count per event, channels, PE, time), then coincidences from (data signal pulses + generated noise) vs the
