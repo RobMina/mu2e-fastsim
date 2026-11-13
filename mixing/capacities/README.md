@@ -51,6 +51,9 @@ NeutralsFlash pools at the stock intensity law.
   straw skipped. They have no size and change the time, not the digis; with them the largest per-launch
   digitisation demand is 0.93-0.95 entries per straw, inside `digit_entries_per_straw`.
 
+- **CRV `thermal_counters: "hit"`** (batch-256 files; opt-in approximation, see [../DEVICE_CRV.md](../DEVICE_CRV.md)):
+  thermal noise only on counters with steps; `thermal` 35,332 and `charge_clusters` 47,107 are 1.25 times the largest
+  demand over full development and held-out passes in float32 and float64; `ct1` and `ct2` halved.
 - **`electronics_loops: "bounded"`** (batch-256 files): the fine crossing search stops once converged and the
   saturated ADC samples are summed over the response tiles that ran; no size.
 
