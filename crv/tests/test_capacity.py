@@ -177,3 +177,10 @@ def test_slab_crossings_padding_is_exact():
     b = crossings.slab_crossings(o, d, lo, hi, backend="numpy")
     assert a[0].shape == (1000, 7)
     assert np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1])
+
+
+def test_packaged_run1a_file_loads_by_name():
+    from crvfastsim import capacity
+    c = capacity.Capacities.load("run1a_v01")
+    assert c.cap("sipm_photons") == 1 << 22 and c.cap("photon_substeps") == 1 << 22
+    assert c.cap("synth_samples", 64) and c.cap("steps")

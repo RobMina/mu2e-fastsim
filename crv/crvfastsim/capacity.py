@@ -31,6 +31,7 @@ import math
 from pathlib import Path
 
 FORMAT = "crvfastsim-capacities-1"
+PACKAGED = Path(__file__).resolve().parent / "configs"
 SCALARS = ("steps", "photon_block_rows", "photon_rows", "photon_substeps", "photon_arrivals", "photon_buffer",
            "sipm_photons", "refit_rows", "refit_samples")
 FIXED = ("sipm_photons",)   # set by hand (the SiPM chunk size), not derived from demand
@@ -59,7 +60,11 @@ class Capacities:
 
     @classmethod
     def load(cls, path, record=False):
-        return cls(json.loads(Path(path).read_text()), record=record)
+        """A capacity file, or the name of a packaged one (configs/capacities_<name>_runchain.json, e.g. run1a_v01)."""
+        p = Path(path)
+        if not p.exists() and p.name == str(path) and (PACKAGED / f"capacities_{path}_runchain.json").exists():
+            p = PACKAGED / f"capacities_{path}_runchain.json"
+        return cls(json.loads(p.read_text()), record=record)
 
     def note(self, name, demand):
         if self.record:

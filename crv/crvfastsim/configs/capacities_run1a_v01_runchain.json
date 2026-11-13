@@ -1,0 +1,43 @@
+{
+ "format": "crvfastsim-capacities-1",
+ "margin": 1.25,
+ "census": "runchain_bench --record-capacities, Run 1A training gen files 101-119 (odd), 4 files per pass, 3 fresh passes, seeds 7 and 100, float32 and float64 on A100/A6000-class GPUs: 10 distinct files, 48 file passes",
+ "photon_arrivals": 2692993,
+ "photon_block_rows": 131512,
+ "photon_buffer": 34646955,
+ "photon_rows": 59973,
+ "photon_substeps": 4194304,
+ "refit_rows": 2350,
+ "refit_samples": 48,
+ "steps": 135004,
+ "synth_rows": {
+  "1": 7515,
+  "2": 3642,
+  "4": 4260,
+  "8": 5937,
+  "16": 10728,
+  "32": 35440,
+  "64": 82497,
+  "128": 41703,
+  "256": 6650,
+  "512": 653,
+  "1024": 77,
+  "2048": 7
+ },
+ "synth_samples": {
+  "1": 32,
+  "2": 48,
+  "4": 48,
+  "8": 56,
+  "16": 56,
+  "32": 56,
+  "64": 56,
+  "128": 64,
+  "256": 72,
+  "512": 64,
+  "1024": 56,
+  "2048": 48
+ },
+ "sipm_photons": 4194304,
+ "note": "runchain (generated CRY cosmics -> CRV clusters), run1a_v01, offspill, resident response + device refit; sizes = ceil(1.25 x largest demand), photon_substeps clamped to the 2^22 kernel chunk, sipm_photons set to 2^22"
+}
