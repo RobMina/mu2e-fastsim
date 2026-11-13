@@ -68,6 +68,7 @@ class Caps:
     rounds: int = 8
     window: int = 8              # samples per row histogrammed for the pulse matmul
     outliers: int = 1 << 18      # photoelectrons outside a row's window (scattered one by one)
+    recluster: bool = True       # events with more main or split clusters than ``rounds``: cluster again (clusters)
 
 
 # ----------------------------------------------------------------------------------------------- host packing
@@ -805,13 +806,22 @@ def _closest_pairs(member_a, member_b, dist):
 
 
 def clusters(resp: DeviceResponse, hits, n_events, caps: Caps):
-    """cluster.make_clusters on padded per-event hits; returns per-event clusters sorted by energy, and overflows."""
+    """cluster.make_clusters on padded per-event hits; returns per-event clusters sorted by energy, and overflows.
+
+    Main and split clusters grow in ``caps.rounds`` rounds, and the result has ``caps.rounds`` slots. With
+    ``caps.recluster`` (default) an event that still has seeds after those rounds is clustered again with
+    ``caps.event_hits`` rounds, which always suffices (each round takes its seed hit); the result keeps that event's
+    ``caps.rounds`` most energetic clusters. This branch runs only in batches that need it and replaces only those
+    events, so the other events are unchanged. ``over`` also holds ``recluster`` (events clustered again) and
+    ``cluster_slots`` (of those, events with more clusters than slots); ``main_rounds`` / ``split_rounds`` count the
+    events left with seeds (0 with ``recluster``).
+    """
     import jax
     import jax.numpy as jnp
     from jax import lax
     cfg = resp.cluster_cfg
     a = resp.arrays
-    B, Hm, R = n_events, caps.event_hits, caps.rounds
+    B, Hm, R0 = n_events, caps.event_hits, caps.rounds
     ok = hits["ok"]
     ev = jnp.where(ok, hits["event"], B)
     hidx = jnp.arange(ev.shape[0])
@@ -863,94 +873,120 @@ def clusters(resp: DeviceResponse, hits, n_events, caps: Caps):
         _, _, mem, _ = lax.while_loop(cond, body, (visited, visited, mem, jnp.bool_(True)))
         return mem
 
-    def rounds(seedable, avail):
-        seedable = seedable & avail
+    def cluster_events(R):
+        """Per-event clusters with R rounds and R slots; per event, seeds left after the main / split rounds."""
+        def rounds(seedable, avail):
+            seedable = seedable & avail
 
-        def body(r, st):
-            label, seedable, avail, seed_t = st
-            has = seedable.any(axis=1)
-            seed = jnp.where(has, jnp.argmax(seedable, axis=1), -1)
-            mem = grow(seed, avail)
-            label = jnp.where(mem, r, label)
-            avail = avail & ~mem
-            seedable = seedable & ~mem
-            seed_t = seed_t.at[:, r].set(jnp.where(has, t64[rows, jnp.maximum(seed, 0)], jnp.nan))
-            return label, seedable, avail, seed_t
+            def body(r, st):
+                label, seedable, avail, seed_t = st
+                has = seedable.any(axis=1)
+                seed = jnp.where(has, jnp.argmax(seedable, axis=1), -1)
+                mem = grow(seed, avail)
+                label = jnp.where(mem, r, label)
+                avail = avail & ~mem
+                seedable = seedable & ~mem
+                seed_t = seed_t.at[:, r].set(jnp.where(has, t64[rows, jnp.maximum(seed, 0)], jnp.nan))
+                return label, seedable, avail, seed_t
 
-        label, seedable, avail, seed_t = lax.fori_loop(
-            0, R, body, (jnp.full((B, Hm), -1, jnp.int64), seedable, avail, jnp.full((B, R), jnp.nan)))
-        return label, seed_t, avail, jnp.sum(seedable.any(axis=1))
+            label, seedable, avail, seed_t = lax.fori_loop(
+                0, R, body, (jnp.full((B, Hm), -1, jnp.int64), seedable, avail, jnp.full((B, R), jnp.nan)))
+            return label, seed_t, avail, seedable.any(axis=1)
 
-    main, seed_t, avail, over_main = rounds(avail & (e > cfg.emin_seed), avail)
-    keep = jnp.any(seed_t[:, None, :] - t64[:, :, None] < cfg.delta_time, axis=2)
-    avail = avail & keep
-    split, _, _, over_split = rounds(avail, avail)
-    m_lead, m_time, _, _ = _cluster_props(main, R, t, e)
-    s_lead, s_time, _, s_mem = _cluster_props(split, R, t, e)
-    m_order = jnp.argsort(m_time, axis=1, stable=True)
-    rank = jnp.zeros_like(m_order).at[rows[:, None], m_order].set(jnp.broadcast_to(jnp.arange(R), (B, R)))
-    main_sorted = jnp.where(main >= 0, jnp.take_along_axis(rank, jnp.maximum(main, 0), axis=1), -1)
-    ms_time = jnp.take_along_axis(m_time, m_order, axis=1)
-    ms_lead = jnp.take_along_axis(m_lead, m_order, axis=1)
-    ms_mem = main_sorted[:, :, None] == jnp.arange(R)[None, None, :]
-    # split -> closest main within time and distance (first minimum in time order)
-    d_ms = _closest_pairs(ms_mem, s_mem, dist)                                  # (B, main j, split k)
-    pl = lambda lead: a["position"][jnp.take_along_axis(crystal, jnp.maximum(lead, 0), axis=1)]  # noqa: E731
-    d0 = jnp.linalg.norm(pl(ms_lead)[:, :, None, :] - pl(s_lead)[:, None, :, :], axis=-1)
-    okp = ((s_lead >= 0)[:, None, :] & (ms_lead >= 0)[:, :, None] &
-           (s_time[:, None, :] - ms_time[:, :, None] <= cfg.delta_time) &
-           (ms_time[:, :, None] - s_time[:, None, :] <= cfg.delta_time) & (d0 <= 2.5 * cfg.max_dist_split))
-    cand = jnp.where(okp & (d_ms < cfg.max_dist_split) & (d_ms < 1e6), d_ms, jnp.inf)
-    best = jnp.argmin(cand, axis=1)
-    split_to = jnp.where(jnp.isfinite(jnp.min(cand, axis=1)), best, -1)        # (B, split k)
-    temp = main_sorted
-    sj = jnp.where(split >= 0, jnp.take_along_axis(split_to, jnp.maximum(split, 0), axis=1), -1)
-    temp = jnp.where((split >= 0) & (sj >= 0), sj, temp)
-    t_mem = temp[:, :, None] == jnp.arange(R)[None, None, :]
-    d_mm = _closest_pairs(t_mem, t_mem, dist)                                    # (B, i, j)
-    ii, jj = jnp.arange(R)[:, None], jnp.arange(R)[None, :]
-    okm = ((ii < jj)[None] & (ms_lead >= 0)[:, :, None] & (ms_lead >= 0)[:, None, :] &
-           ((ms_time[:, None, :] - ms_time[:, :, None]) <= cfg.delta_time) & (d_mm <= cfg.max_dist_main))
-    parent = jnp.where(okm.any(axis=1), jnp.argmax(okm, axis=1), -1)            # first i for each j
-    root = jnp.broadcast_to(jnp.arange(R), (B, R))
-    for _ in range(R):
-        p = jnp.take_along_axis(parent, root, axis=1)
-        root = jnp.where(p >= 0, p, root)
-    final = jnp.where(temp >= 0, jnp.take_along_axis(root, jnp.maximum(temp, 0), axis=1), -1)
-    merged = jnp.zeros((B, R + 1), bool).at[rows[:, None], jnp.where(parent >= 0, root, R)].set(True)[:, :R]
-    has_split = jnp.zeros((B, R + 1), bool).at[rows[:, None], jnp.where((split >= 0) & (sj >= 0), final, R)].set(
-        True)[:, :R]
-    lead, ctime, esum, f_mem = _cluster_props(final, R, t, e)
-    exists = lead >= 0
-    lead_disk = a["disk"][jnp.take_along_axis(crystal, jnp.maximum(lead, 0), axis=1)]  # (B, C)
-    hit_disk = a["disk"][crystal]
-    on_disk = f_mem & (hit_disk[:, :, None] == lead_disk[:, None, :])
-    w = jnp.where(on_disk, e[:, :, None].astype(a["position"].dtype), 0.0)                     # (B, H, C)
-    sw = w.sum(axis=1)
-    sxyz = jnp.einsum("bhc,bhk->bck", w, pos, precision=_physics(w, pos))
-    cog = sxyz / jnp.where(sw > 0, sw, 1.0)[..., None] - a["front_face"][lead_disk]
-    size = f_mem.sum(axis=1)
-    order = jnp.argsort(jnp.where(exists, -esum, jnp.inf), axis=1, stable=True)
-    take = lambda v: jnp.take_along_axis(v, order, axis=1)  # noqa: E731
-    out = dict(valid=take(exists), energy=take(esum), time=take(ctime), x=take(cog[..., 0]), y=take(cog[..., 1]),
-               z=take(cog[..., 2]), size=take(size), disk=take(lead_disk), split=take(has_split | merged))
-    if "etrue" in hits:   # opt-in truth: the member hits' true deposits (sum) and earliest true time (min)
-        etr = pad(hits["etrue"], 0.0, jnp.float64)
-        ttr = pad(hits["ttrue"], jnp.inf, jnp.float64)
-        out["etrue"] = take(jnp.einsum("bhc,bh->bc", f_mem.astype(jnp.float64), etr))
-        out["ttrue"] = take(jnp.min(jnp.where(f_mem, ttr[:, :, None], jnp.inf), axis=1))
-    over = dict(event_hits=over_hits, main_rounds=over_main, split_rounds=over_split)
+        main, seed_t, left, over_main = rounds(avail & (e > cfg.emin_seed), avail)
+        keep = jnp.any(seed_t[:, None, :] - t64[:, :, None] < cfg.delta_time, axis=2)
+        left = left & keep
+        split, _, _, over_split = rounds(left, left)
+        m_lead, m_time, _, _ = _cluster_props(main, R, t, e)
+        s_lead, s_time, _, s_mem = _cluster_props(split, R, t, e)
+        m_order = jnp.argsort(m_time, axis=1, stable=True)
+        rank = jnp.zeros_like(m_order).at[rows[:, None], m_order].set(jnp.broadcast_to(jnp.arange(R), (B, R)))
+        main_sorted = jnp.where(main >= 0, jnp.take_along_axis(rank, jnp.maximum(main, 0), axis=1), -1)
+        ms_time = jnp.take_along_axis(m_time, m_order, axis=1)
+        ms_lead = jnp.take_along_axis(m_lead, m_order, axis=1)
+        ms_mem = main_sorted[:, :, None] == jnp.arange(R)[None, None, :]
+        # split -> closest main within time and distance (first minimum in time order)
+        d_ms = _closest_pairs(ms_mem, s_mem, dist)                                  # (B, main j, split k)
+        pl = lambda lead: a["position"][jnp.take_along_axis(crystal, jnp.maximum(lead, 0), axis=1)]  # noqa: E731
+        d0 = jnp.linalg.norm(pl(ms_lead)[:, :, None, :] - pl(s_lead)[:, None, :, :], axis=-1)
+        okp = ((s_lead >= 0)[:, None, :] & (ms_lead >= 0)[:, :, None] &
+               (s_time[:, None, :] - ms_time[:, :, None] <= cfg.delta_time) &
+               (ms_time[:, :, None] - s_time[:, None, :] <= cfg.delta_time) & (d0 <= 2.5 * cfg.max_dist_split))
+        cand = jnp.where(okp & (d_ms < cfg.max_dist_split) & (d_ms < 1e6), d_ms, jnp.inf)
+        best = jnp.argmin(cand, axis=1)
+        split_to = jnp.where(jnp.isfinite(jnp.min(cand, axis=1)), best, -1)        # (B, split k)
+        temp = main_sorted
+        sj = jnp.where(split >= 0, jnp.take_along_axis(split_to, jnp.maximum(split, 0), axis=1), -1)
+        temp = jnp.where((split >= 0) & (sj >= 0), sj, temp)
+        t_mem = temp[:, :, None] == jnp.arange(R)[None, None, :]
+        d_mm = _closest_pairs(t_mem, t_mem, dist)                                    # (B, i, j)
+        ii, jj = jnp.arange(R)[:, None], jnp.arange(R)[None, :]
+        okm = ((ii < jj)[None] & (ms_lead >= 0)[:, :, None] & (ms_lead >= 0)[:, None, :] &
+               ((ms_time[:, None, :] - ms_time[:, :, None]) <= cfg.delta_time) & (d_mm <= cfg.max_dist_main))
+        parent = jnp.where(okm.any(axis=1), jnp.argmax(okm, axis=1), -1)            # first i for each j
+        root = jnp.broadcast_to(jnp.arange(R), (B, R))
+        for _ in range(R):
+            p = jnp.take_along_axis(parent, root, axis=1)
+            root = jnp.where(p >= 0, p, root)
+        final = jnp.where(temp >= 0, jnp.take_along_axis(root, jnp.maximum(temp, 0), axis=1), -1)
+        merged = jnp.zeros((B, R + 1), bool).at[rows[:, None], jnp.where(parent >= 0, root, R)].set(True)[:, :R]
+        has_split = jnp.zeros((B, R + 1), bool).at[rows[:, None], jnp.where((split >= 0) & (sj >= 0), final, R)].set(
+            True)[:, :R]
+        lead, ctime, esum, f_mem = _cluster_props(final, R, t, e)
+        exists = lead >= 0
+        lead_disk = a["disk"][jnp.take_along_axis(crystal, jnp.maximum(lead, 0), axis=1)]  # (B, C)
+        hit_disk = a["disk"][crystal]
+        on_disk = f_mem & (hit_disk[:, :, None] == lead_disk[:, None, :])
+        w = jnp.where(on_disk, e[:, :, None].astype(a["position"].dtype), 0.0)                     # (B, H, C)
+        sw = w.sum(axis=1)
+        sxyz = jnp.einsum("bhc,bhk->bck", w, pos, precision=_physics(w, pos))
+        cog = sxyz / jnp.where(sw > 0, sw, 1.0)[..., None] - a["front_face"][lead_disk]
+        size = f_mem.sum(axis=1)
+        order = jnp.argsort(jnp.where(exists, -esum, jnp.inf), axis=1, stable=True)
+        take = lambda v: jnp.take_along_axis(v, order, axis=1)  # noqa: E731
+        out = dict(valid=take(exists), energy=take(esum), time=take(ctime), x=take(cog[..., 0]), y=take(cog[..., 1]),
+                   z=take(cog[..., 2]), size=take(size), disk=take(lead_disk), split=take(has_split | merged))
+        if "etrue" in hits:   # opt-in truth: the member hits' true deposits (sum) and earliest true time (min)
+            etr = pad(hits["etrue"], 0.0, jnp.float64)
+            ttr = pad(hits["ttrue"], jnp.inf, jnp.float64)
+            out["etrue"] = take(jnp.einsum("bhc,bh->bc", f_mem.astype(jnp.float64), etr))
+            out["ttrue"] = take(jnp.min(jnp.where(f_mem, ttr[:, :, None], jnp.inf), axis=1))
+        return out, over_main, over_split
+
+    out, left_main, left_split = cluster_events(R0)
+    redo = left_main | left_split
+    n_redo = jnp.sum(redo)
+    n_slots = jnp.int64(0)
+    if caps.recluster and Hm > R0:
+        def again():
+            big, bm, bs = cluster_events(Hm)
+            pick = lambda x, y: jnp.where(redo.reshape((B,) + (1,) * (x.ndim - 1)), y[:, :R0], x)  # noqa: E731
+            n_over = jnp.sum(redo & (jnp.sum(big["valid"], axis=1) > R0))
+            return {k: pick(v, big[k]) for k, v in out.items()}, left_main & bm, left_split & bs, n_over
+
+        out, left_main, left_split, n_slots = lax.cond(
+            n_redo > 0, again, lambda: (out, left_main, left_split, n_slots))
+    else:
+        n_redo = jnp.int64(0)
+    over = dict(event_hits=over_hits, main_rounds=jnp.sum(left_main), split_rounds=jnp.sum(left_split),
+                recluster=n_redo, cluster_slots=n_slots)
     return out, over
 
 
 # ----------------------------------------------------------------------------------------------- driver
+
+def _with_cluster_stats(stats, over_cl):
+    """stats plus the clustering's ``recluster`` / ``cluster_slots`` counts (:func:`clusters`)."""
+    return dict(stats, recluster=over_cl["recluster"], cluster_slots=over_cl["cluster_slots"])
+
 
 def make_chain(lib: DeviceLibrary, resp: DeviceResponse, caps: Caps = Caps(), digi_response="waveform", truth=False):
     """Return ``chain(q, timing, key, uniform=None)``: one jitted call from entrance states to clusters.
 
     ``q``/``timing`` come from :func:`entries_batch` (``caps.events`` rows). The result stays on the device:
     ``clusters`` (per event, sorted by energy, ``caps.rounds`` slots with ``valid``), ``overflow`` (int64 per
-    :data:`OVERFLOW_NAMES`) and ``stats`` (counts of draws, mapped steps, photoelectrons, digis, hits).
+    :data:`OVERFLOW_NAMES`) and ``stats`` (counts of draws, mapped steps, photoelectrons, digis, hits, and the
+    events clustered again, ``recluster`` / ``cluster_slots``: :func:`clusters`).
     ``uniform`` (per query, in [0,1)) replaces the library draw's random numbers, for tests.
     ``digi_response``: "waveform" (default: photoelectrons, digis, template fit) or the opt-in approximation
     "parametric" (or a table path): hits drawn per crystal from :mod:`calofastsim.param_response` (:func:`param_hits`);
@@ -995,7 +1031,7 @@ def make_chain(lib: DeviceLibrary, resp: DeviceResponse, caps: Caps = Caps(), di
                          steps=jnp.sum(st["valid"]), mapped=jnp.sum(mapped), photoelectrons=jnp.float64(0),
                          digis=jnp.int64(0), hits=jnp.sum(hits["ok"]))
             return dict(clusters=cl, overflow=jnp.stack([jnp.asarray(over[k], jnp.int64) for k in OVERFLOW_NAMES]),
-                        stats=stats, donor=donor)
+                        stats=_with_cluster_stats(stats, over_cl), donor=donor)
         ev, sipm, pe_t, weight, pe_ok, over_pe = photoelectrons(resp, q, t, st, crystal, depth, mapped, k_pe,
                                                                 caps.photoelectrons)
         dg, over_dg = digitise(resp, t, ev, sipm, pe_t, weight, pe_ok, k_digi, caps)
@@ -1010,7 +1046,7 @@ def make_chain(lib: DeviceLibrary, resp: DeviceResponse, caps: Caps = Caps(), di
                      mapped=jnp.sum(mapped), photoelectrons=jnp.sum(jnp.where(pe_ok, weight, 0.0)),
                      digis=jnp.sum(dg["ok"]), hits=jnp.sum(hits["ok"]))
         return dict(clusters=cl, overflow=jnp.stack([jnp.asarray(over[k], jnp.int64) for k in OVERFLOW_NAMES]),
-                    stats=stats, donor=donor)
+                    stats=_with_cluster_stats(stats, over_cl), donor=donor)
 
     return jax.jit(chain)
 
@@ -1042,7 +1078,7 @@ def make_steps_chain(resp: DeviceResponse, caps: Caps = Caps(), digi_response="w
             stats.update(steps=jnp.sum(ok), photoelectrons=jnp.float64(0), digis=jnp.int64(0),
                          hits=jnp.sum(hits["ok"]))
             return dict(clusters=cl, overflow=jnp.stack([jnp.asarray(over[k], jnp.int64) for k in OVERFLOW_NAMES]),
-                        stats=stats)
+                        stats=_with_cluster_stats(stats, over_cl))
         ev, sipm, pe_t, weight, pe_ok, over_pe = photoelectrons(resp, {"event": steps["event"]}, t, st,
                                                                 steps["crystal"], steps["z_local"], ok, k_pe,
                                                                 caps.photoelectrons)
@@ -1057,7 +1093,7 @@ def make_steps_chain(resp: DeviceResponse, caps: Caps = Caps(), digi_response="w
         stats.update(steps=jnp.sum(ok), photoelectrons=jnp.sum(jnp.where(pe_ok, weight, 0.0)),
                      digis=jnp.sum(dg["ok"]), hits=jnp.sum(hits["ok"]))
         return dict(clusters=cl, overflow=jnp.stack([jnp.asarray(over[k], jnp.int64) for k in OVERFLOW_NAMES]),
-                    stats=stats)
+                    stats=_with_cluster_stats(stats, over_cl))
 
     return jax.jit(chain)
 

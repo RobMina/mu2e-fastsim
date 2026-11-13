@@ -1,4 +1,6 @@
 """Device chain against the host reference: library draw, placement, and the deterministic response-to-clusters path."""
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -359,3 +361,76 @@ def test_float32_products_ask_for_highest_matmul_precision():
     for dtype, highest in ((jnp.float32, True), (jnp.float64, False)):
         x = jnp.ones((2, 3, 4), dtype)
         assert ("HIGHEST" in jax.jit(centroid).lower(x, x).as_text()) is highest
+
+
+def _ring_crystals(pos, disk, d, n, radius=517.0, phase=0.0):
+    """n crystals of disk d spread on a ring (far apart: no neighbours, beyond the split / merge distances)."""
+    phi = phase + 2 * np.pi * np.arange(n) / n
+    target = np.column_stack((radius * np.cos(phi), radius * np.sin(phi)))
+    on = np.flatnonzero(disk == d)
+    return on[np.argmin(np.linalg.norm(pos[on, None, :2] - target[None, :, :], axis=2), axis=0)]
+
+
+def _many_cluster_hits(pos, disk):
+    """Four events: 0 = one main seed and 12 isolated split hits (12 split rounds), 1 = 16 isolated main seeds
+    (16 main clusters), 2 and 3 = a small cluster plus one isolated hit."""
+    ev, cr, t, e = [], [], [], []
+
+    def add(i, crystals, time, energy):
+        ev.extend([i] * len(crystals))
+        cr.extend(crystals)
+        t.extend(np.broadcast_to(time, len(crystals)))
+        e.extend(np.broadcast_to(energy, len(crystals)))
+
+    ring = _ring_crystals(pos, disk, 0, 13)
+    add(0, ring[:1], 700.0, 30.0)
+    add(0, ring[1:], 700.5, 2.0)
+    add(1, np.r_[_ring_crystals(pos, disk, 0, 8), _ring_crystals(pos, disk, 1, 8, phase=0.2)],
+        800.0 + 0.1 * np.arange(16), 20.0 + np.arange(16))
+    for i, time in ((2, 900.0), (3, 950.0)):
+        c = _ring_crystals(pos, disk, i - 2, 2, phase=0.3)
+        near = np.flatnonzero((disk == disk[c[0]]) & (np.linalg.norm(pos[:, :2] - pos[c[0], :2], axis=1) < 1.5 * PITCH))
+        add(i, near[:3], time + np.array([0.0, 0.3, 0.6]), np.array([25.0, 5.0, 3.0]))
+        add(i, c[1:], time + 0.4, 4.0)
+    order = np.argsort(np.asarray(ev), kind="stable")
+    return {k: np.asarray(v)[order] for k, v in (("event", ev), ("crystal", cr), ("t", t), ("e", e))}
+
+
+def test_clusters_recluster_events_over_the_rounds():
+    """An event with more main or split clusters than ``rounds`` is clustered again with ``event_hits`` rounds: the
+    same clusters as with that many rounds (its ``rounds`` most energetic), the host clusters, no overflow; the
+    other events are bit-identical to the run without the fallback."""
+    pos, disk = _grid()
+    geom = _geom(pos, disk)
+    table = PropagationTable(np.ones((1, 1), np.float32), np.zeros(1, np.float32), np.float32(1.0))
+    resp = dc.pack_response(_sim(len(disk)), _pulse(), np.full(1000, 12.0), table, geom)
+    h = _many_cluster_hits(pos, disk)
+    n, cap, B = len(h["event"]), 64, 4
+    hits = {"ok": np.arange(cap) < n}
+    for k, dt in (("event", np.int64), ("crystal", np.int64), ("t", np.float32), ("e", np.float32)):
+        hits[k] = np.zeros(cap, dt)
+        hits[k][:n] = h[k]
+    hits = {k: jnp.asarray(v) for k, v in hits.items()}
+    small = dc.Caps(events=B, hits=cap, event_hits=24, rounds=4)
+    out = {}
+    for name, caps in (("fallback", small), ("off", dataclasses.replace(small, recluster=False)),
+                       ("wide", dataclasses.replace(small, rounds=24))):
+        cl, over = jax.jit(lambda x, c=caps: dc.clusters(resp, x, B, c))(hits)
+        out[name] = jax.tree_util.tree_map(np.asarray, (cl, over))
+    (fb, ofb), (off, ooff), (wide, owide) = out["fallback"], out["off"], out["wide"]
+    assert int(ooff["main_rounds"]) == 1 and int(ooff["split_rounds"]) == 1 and int(ooff["recluster"]) == 0
+    assert {k: int(v) for k, v in ofb.items()} == dict(event_hits=0, main_rounds=0, split_rounds=0, recluster=2,
+                                                       cluster_slots=1)
+    assert not any(int(v) for v in owide.values())
+    for k, v in fb.items():
+        assert v.shape[1] == 4
+        np.testing.assert_array_equal(v[:2], wide[k][:2, :4])      # re-clustered: the wide result's top slots
+        np.testing.assert_array_equal(v[2:], off[k][2:])          # untouched events: bit-identical
+    assert wide["valid"][1].sum() == 16 and fb["valid"][0].sum() == 1
+    ref = make_clusters({"event": h["event"], "crystal": h["crystal"], "time": h["t"], "energy": h["e"],
+                         "energy_error": np.ones(n), "time_error": np.ones(n)}, B, geom)
+    got = dc.flat_clusters(wide)
+    for k in ("event", "size", "disk", "split"):
+        np.testing.assert_array_equal(got[k], ref[k])
+    for k in ("energy", "x", "y", "z", "time"):
+        np.testing.assert_allclose(got[k], ref[k], rtol=1e-6, atol=1e-6)
