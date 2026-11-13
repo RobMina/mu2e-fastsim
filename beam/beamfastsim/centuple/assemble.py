@@ -86,8 +86,20 @@ def cluster_truth_time(ttrue, ctime, contact_t, valid):
     return np.where(valid, tt - MBTIME * kc, 0.0)
 
 
-def build(record, donor_lib, out, *, trigger=None, seed=20261111, trigger_cal=None):
-    """Write plan (npz) for every event of the record. Returns the path and counters."""
+def dts_select(plan, keep, per_event_n):
+    """The plan restricted to the events with keep (per-event arrays: leading length per_event_n; trig_names kept)."""
+    keep = np.asarray(keep, bool)
+    return {k: (v[keep] if k != "trig_names" and np.ndim(v) and len(v) == per_event_n else v) for k, v in plan.items()}
+
+
+def build(record, donor_lib, out, *, trigger=None, seed=20261111, trigger_cal=None, dts_filter=False):
+    """Write plan (npz) for every event of the record. Returns the path and counters.
+
+    dts_filter (opt-in): keep only the events that pass the emulated dts PrimaryFilter (record column `dts_keep`,
+    cetracker.dts_keep). The stock files of a primary dts hold only events whose Geant4 transport passed it; fast
+    events that fail it would otherwise be stored through the donor's MC-truth paths. Use it with births drawn per
+    generated electron (record --stops), which the dts filter selects as it did the stock births. The kept events'
+    entries are those of the unfiltered plan."""
     rec = dict(np.load(record))
     meta = json.loads(str(rec.pop("meta")))
     lib = D.load(donor_lib)
@@ -190,7 +202,17 @@ def build(record, donor_lib, out, *, trigger=None, seed=20261111, trigger_cal=No
     plan["nsd"] = rec.get("nsd", np.full(n, -1, np.int64))
     plan["pbtime_mc"] = rec.get("pbtime_mc", np.full(n, np.nan))
     plan["pbtime_reco"] = rec.get("pbtime_reco", np.full(n, np.nan))
+    dts = None
+    if dts_filter:
+        if "dts_keep" not in rec:
+            raise ValueError("centuple: --dts-filter needs a record with dts_keep (record from this version on)")
+        keep = rec["dts_keep"].astype(bool)
+        plan = dts_select(plan, keep, n)
+        cls = cls[keep]
+        dts = dict(rule="dts PrimaryFilter, emulated (cetracker.dts_keep)", events=int(n), kept=int(keep.sum()),
+                   dropped=int(n - keep.sum()))
     pmeta = dict(stage="assemble", seed=int(seed), record=meta, trigger=trig_meta, donor=str(donor_lib),
+                 dts_filter=dts,
                  donor_name=str(lib.get("__name__", D.NAME)), covered_paths=cov_paths, covered_missing=missing,
                  e_match_mev=E_MATCH, donor_files=[str(f) for f in lib["file_names"]],
                  donor_sha256=[str(f) for f in lib["file_sha256"]],
