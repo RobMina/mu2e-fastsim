@@ -159,8 +159,11 @@ one node):
 
 | capacity file | CRV float32 (ev/s) | float64 (ev/s) |
 |---|---|---|
-| exact | 666 / 661 -> 714 / 717 (x1.08) | 612 / 610 -> 657 / 659 (x1.08) |
-| reuse | 1003 / 1010 -> 1130 / 1080 (x1.10) | 866 / 859 -> 902 / 903 (x1.05) |
+| exact | 640 / 642 -> 689 / 690 (x1.07) | 615 / 618 -> 662 / 662 (x1.07) |
+| reuse | 998 / 1012 -> 1026 / 1041 (x1.03) | 885 / 866 -> 933 / 940 (x1.07) |
+
+The device step of the reuse file falls from 0.208 to 0.195 s (CRV float32), below the two writers' 0.33 s of
+transfer and write per batch, so that rate is now set by the writers.
 
 ## Output compression (opt-in)
 
