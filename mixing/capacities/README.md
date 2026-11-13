@@ -38,7 +38,7 @@ NeutralsFlash pools at the stock intensity law.
 
 - **CRV `digi_starts: "rows"` and `pulse_scan: "bounded"`** (see [../DEVICE_CRV.md](../DEVICE_CRV.md)) list digi starts
   from the occupied rows and stop the pulse-fit scans at the longest waveform. They have no size and change the
-  time, not the outputs.
+  time, not the outputs. Both are also the code defaults; the files keep them explicit.
 - **`flat_saturation_rows: "auto"`**: saturation chunks of one row per straw in float64 (exact there); float32 keeps
   two per straw.
 - **`flat_saturation_pool: "tier"`**: saturated ends of all launches of a kernel shape in shared chunks (`"auto"`: in
