@@ -431,6 +431,97 @@ def _kfor(P, K):
     return min(K, K_MAX_4LAYER) if P.max_layers == 4 else K
 
 
+DEVICE_PACK = True   # kernel inputs built on the device from the hits (_pack_device): the same arrays as pack()
+HIT_LO = 1024        # smallest hit buffer of a device-packed batch (power-of-two buckets above, or a capacity)
+DENSE_KEYS = ("valid", "idx", "side", "bar", "sipm", "first", "layer", "counter", "x", "y", "t", "pe", "pos", "cut")
+
+
+def _p2(n, lo=1):
+    return max(lo, 1 << max(int(n) - 1, 0).bit_length())
+
+
+def _device_tables(G, tables):
+    """Per-bar and per-channel lookups of pack() on the device (float64; uploaded once per tables dict)."""
+    d = tables.get("_device")
+    if d is None:
+        f64 = lambda a: jnp.asarray(np.asarray(a, np.float64), dtype=jnp.float64)
+        i64 = lambda a: jnp.asarray(np.asarray(a, np.int64), dtype=jnp.int64)
+        d = dict(layer=i64(G.layer), counter=i64(G.counter_in_type), x=f64(G.x), y=f64(G.y), pos=f64(G.pos),
+                 tcorr=f64(tables["tcorr"]), pefac=f64(tables["pefac"]), cuts=f64(tables["cuts"]))
+        tables["_device"] = d
+    return d
+
+
+@partial(jax.jit, static_argnames=("B", "H", "single"))
+def _pack_device(slot, idx, bar, sipm, first, time, pe, nrows, D, B, H, single):
+    """pack() on the device for one kernel batch: hits scattered to [B, H] at slot = row * H + column (slots >= B * H
+    are padding and dropped). Rows below nrows get pack()'s fill values, rows from nrows on are zero as the host's batch
+    padding. Floating columns are computed in float64 as on the host (same operations, so the same values), centred
+    in reduced precision as _centre does; find_dense casts them to the device float as it does the host arrays."""
+    real = jnp.arange(B) < nrows
+
+    def dense(v, fill, dt):
+        tail = v.shape[1:]
+        base = jnp.where(real.reshape((B,) + (1,) * (1 + len(tail))), jnp.asarray(fill, dt), jnp.zeros((), dt))
+        base = jnp.broadcast_to(base, (B, H) + tail).reshape((B * H,) + tail)
+        return base.at[slot].set(v.astype(dt), mode="drop").reshape((B, H) + tail)
+    ch = bar * 4 + sipm
+    f8, i8 = jnp.float64, jnp.int64
+    out = dict(valid=dense(jnp.ones(slot.shape, bool), False, bool), idx=dense(idx, -1, i8),
+               side=dense(sipm % 2, 0, i8), bar=dense(bar, -1, i8), sipm=dense(sipm, -1, i8),
+               first=dense(first, False, bool), layer=dense(D["layer"][bar], 0, i8),
+               counter=dense(D["counter"][bar], 0, i8), x=dense(D["x"][bar], 0.0, f8), y=dense(D["y"][bar], 0.0, f8),
+               t=dense(time + D["tcorr"][ch], 0.0, f8), pe=dense(pe * D["pefac"][ch], 0.0, f8),
+               pos=dense(D["pos"][bar], 0.0, f8), cut=dense(D["cuts"][ch], 0.0, f8))
+    if single:
+        for k in ("t", "x", "y"):
+            out[k] = jnp.where(out["valid"], out[k] - out[k][:, :1], out[k])
+    return out
+
+
+def _launch(hit, rows, col, n, H, K, batch, P, D, tables, caps=None):
+    """Device-packed kernel batches of one tier: hits (columns idx, bar, sipm, first, time, pe; ordered by row) at
+    (row, col) of n kernel rows. Returns the kernel outputs as _dispatch_tier, and the host part of pack()'s arrays
+    that finish() reads (idx [n, H]; tref in reduced precision)."""
+    outs = []
+    starts = np.arange(0, n, batch)
+    bounds = np.searchsorted(rows, np.r_[starts, n])
+    for b, a in enumerate(starts):
+        lo, hi = bounds[b], bounds[b + 1]
+        m = int(hi - lo)
+        M = _p2(m, HIT_LO)
+        if caps is not None:
+            M = caps.size("coinc_hits", m, M, q=H)
+        slot = np.full(M, batch * H, np.int64)
+        slot[:m] = (rows[lo:hi] - a) * H + col[lo:hi]
+        pad = lambda v: np.concatenate([v[lo:hi], np.zeros(M - m, v.dtype)])
+        arr = _pack_device(slot, *(pad(hit[k]) for k in ("idx", "bar", "sipm", "first", "time", "pe")),
+                           np.int64(min(batch, n - a)), D, B=batch, H=H, single=bool(dprec.SINGLE))
+        d = find_dense(*[arr[k] for k in DENSE_KEYS], jnp.asarray(P.tp), jnp.asarray(P.cu), ld=P.ld, ns=P.ns,
+                       uniform=P.uniform, K=K)
+        outs.append(({k: d[k] for k in POS_KEYS}, int(min(batch, n - a))))
+    host = dict(idx=np.full((n, H), -1, np.int64))
+    host["idx"][rows, col] = hit["idx"]
+    if dprec.SINGLE and n:
+        f = col == 0
+        ch = hit["bar"][f] * 4 + hit["sipm"][f]
+        host["tref"] = np.zeros(n)
+        host["tref"][rows[f]] = hit["time"][f] + tables["tcorr"][ch]
+    return outs, host
+
+
+def _tier_hits(gcols, inv, pick):
+    """Hits of the groups `pick` (sorted positions into the unique groups; inv: group position of each hit) as
+    _launch columns, with each hit's kernel row (rank of its group in pick)."""
+    mark = np.zeros(int(inv.max()) + 1 if len(inv) else 0, bool)
+    mark[pick] = True
+    hidx = np.flatnonzero(mark[inv])
+    rows = np.searchsorted(pick, inv[hidx])
+    _, idx, bar, sipm, time, pe, seq = gcols
+    hit = dict(idx=idx[hidx], bar=bar[hidx], sipm=sipm[hidx], first=seq[hidx] == 0, time=time[hidx], pe=pe[hidx])
+    return hit, rows, hidx
+
+
 def _groups(tt, P, ev, idx, bar, sipm, time, pe, seq, G, tables, cfg, split, split_min, timers):
     """Hits of one sector type as kernel groups: (event) or, for groups above split_min hits, exact blocks."""
     import time as _time
@@ -465,36 +556,51 @@ def _groups(tt, P, ev, idx, bar, sipm, time, pe, seq, G, tables, cfg, split, spl
 
 
 def find_async(ev, idx, bar, sipm, time, pe, seq, G, status, cfg=C.FinderConfig(), tiers=TIERS, split=True,
-               split_min=SPLIT_MIN, timers=None, params=None, tables=None, with_pos=False):
+               split_min=SPLIT_MIN, timers=None, params=None, tables=None, with_pos=False, device_pack=None, caps=None):
     """Host preparation and kernel launch for all sector types and first-choice tiers; returns a handle for finish().
     The GPU starts on the first type while the host prepares the next. with_pos: finish() also returns cl_pos [n, 3]
-    (Mu2e frame, length axis from the timing when cl_poscalc)."""
+    (Mu2e frame, length axis from the timing when cl_poscalc). device_pack (default DEVICE_PACK): the kernel inputs are
+    built on the device from the hits (_pack_device) instead of packed and padded on the host (pack); the kernels get
+    the same arrays. caps (crvfastsim.capacity): fixed hit-buffer sizes of the device pack (coinc_hits per H)."""
     import time as _time
     tiers = backend_tiers(tiers)
     timers = timers if timers is not None else {}
     params = params or type_params(G, cfg)
     tables = tables or hit_tables(G, status, cfg)
+    device_pack = DEVICE_PACK if device_pack is None else bool(device_pack)
+    D = _device_tables(G, tables) if device_pack else None
     jobs = []
     for tt, P in sorted(params.items()):
         gr = _groups(tt, P, ev, idx, bar, sipm, time, pe, seq, G, tables, cfg, split, split_min, timers)
         sel = gr["sel"]
         gcols = (gr["g"], idx[sel], bar[sel], sipm[sel], time[sel], pe[sel], seq[sel])
-        gev, cnt = np.unique(gr["g"], return_counts=True)
+        gev, first, cnt = np.unique(gr["g"], return_index=True, return_counts=True)   # g is sorted (contiguous groups)
+        inv = np.repeat(np.arange(len(gev)), cnt)
+        col = np.arange(len(inv)) - first[inv]
         tier = np.searchsorted([h for h, _, _ in tiers], cnt)       # smallest tier with H >= count
         for ti, (H, K, batch) in enumerate(tiers):
             todo = tier == ti
             if not todo.any():
                 continue
             t0 = _time.perf_counter()
-            arr, tg, _ = pack(*gcols, G, tables, tt, H, cfg, events=gev[todo])
+            if device_pack:
+                pick = np.flatnonzero(todo)
+                hit, rows, hidx = _tier_hits(gcols, inv, pick)
+                tg = gev[pick]
+            else:
+                arr, tg, _ = pack(*gcols, G, tables, tt, H, cfg, events=gev[todo])
             timers["pack_s"] = timers.get("pack_s", 0.0) + _time.perf_counter() - t0
             t0 = _time.perf_counter()
-            jobs.append(dict(tt=tt, P=P, ti=ti, arr=arr, tg=tg, outs=_dispatch_tier(arr, P, _kfor(P, K), batch)))
+            if device_pack:
+                outs, arr = _launch(hit, rows, col[hidx], len(pick), H, _kfor(P, K), batch, P, D, tables, caps)
+            else:
+                outs = _dispatch_tier(arr, P, _kfor(P, K), batch)
+            jobs.append(dict(tt=tt, P=P, ti=ti, arr=arr, tg=tg, outs=outs))
             timers["dispatch_s"] = timers.get("dispatch_s", 0.0) + _time.perf_counter() - t0
             timers[f"groups_H{H}"] = timers.get(f"groups_H{H}", 0) + len(tg)
-        jobs.append(dict(tt=tt, meta=True, gcols=gcols, gev_of=gr["gev_of"], gev=gev, tier=tier))
+        jobs.append(dict(tt=tt, meta=True, gcols=gcols, gev_of=gr["gev_of"], gev=gev, tier=tier, inv=inv, col=col))
     return dict(jobs=jobs, cols=(ev, idx, bar, sipm, time, pe, seq), G=G, status=status, cfg=cfg, tiers=tiers,
-                tables=tables, timers=timers, with_pos=with_pos)
+                tables=tables, timers=timers, with_pos=with_pos, device=D, caps=caps)
 
 
 def finish(h, fallback=True):
@@ -542,8 +648,15 @@ def finish(h, fallback=True):
             ti = ti0 + 1
             while len(ov) and ti < len(tiers):
                 H, K, batch = tiers[ti]
-                arr, tg, _ = pack(*meta["gcols"], G, tables, tt, H, cfg, events=ov)
-                d = _run_tier(arr, P, _kfor(P, K), batch, keys)
+                if h.get("device") is not None:
+                    pick = np.searchsorted(meta["gev"], ov)
+                    hit, hrow, hidx = _tier_hits(meta["gcols"], meta["inv"], pick)
+                    outs, arr = _launch(hit, hrow, meta["col"][hidx], len(pick), H, _kfor(P, K), batch, P,
+                                        h["device"], tables, h.get("caps"))
+                    tg, d = ov, _collect_tier(outs, keys)
+                else:
+                    arr, tg, _ = pack(*meta["gcols"], G, tables, tt, H, cfg, events=ov)
+                    d = _run_tier(arr, P, _kfor(P, K), batch, keys)
                 timers[f"promoted_H{H}"] = timers.get(f"promoted_H{H}", 0) + len(tg)
                 ov = take(d, arr, tg, tt, to_ev)
                 ti += 1
@@ -569,13 +682,13 @@ def finish(h, fallback=True):
 
 
 def find(ev, idx, bar, sipm, time, pe, seq, G, status, cfg=C.FinderConfig(), tiers=TIERS, fallback=True,
-         timers=None, split=True, split_min=SPLIT_MIN):
+         timers=None, split=True, split_min=SPLIT_MIN, device_pack=None):
     """Flat pulses of many events (sorted by event, collection order within) -> clusters (find_async + finish).
     split: (event, sector type) groups above split_min hits are cut into independent blocks at time and x gaps larger
     than any link (split_blocks, exact); each kernel row runs in the smallest (H, K) tier it fits, promoted on
     overflow; rows beyond the last tier send their event to coinc.py ('fallback_events')."""
-    return finish(find_async(ev, idx, bar, sipm, time, pe, seq, G, status, cfg, tiers, split, split_min, timers),
-                  fallback)
+    return finish(find_async(ev, idx, bar, sipm, time, pe, seq, G, status, cfg, tiers, split, split_min, timers,
+                             device_pack=device_pack), fallback)
 
 
 def _replace_with_numpy(out, redo, ev, idx, bar, sipm, time, pe, seq, G, status, cfg):

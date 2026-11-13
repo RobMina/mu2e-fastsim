@@ -91,7 +91,21 @@ TS_CHUNK = int(os.environ.get("TSDEV_TS_CHUNK", 256))     # TS steps per residen
 # generic (non-tube) solids: the lanes whose chord box meets the box of any of them compute their interval lengths
 # in a gathered bucket of this fraction of the lanes (every lane when more are candidates); 0 computes every lane
 SOLID_FRACTION = float(os.environ.get("TSDEV_SOLID_FRACTION", 0.25))
-SHRINK_LEVELS = tuple(float(v) for v in os.environ.get("TSDEV_SHRINK_LEVELS", "0.5,0.25,0.015625").split(",") if v)
+# material-cap shortening cascade: bucket fraction per level (one round each, the last level runs the remaining
+# rounds). Sized from the measured pending share per level over full passes (with at least 1.3x margin): level 0
+# about 23 % of the lanes in both dtypes; level 1 under 1 % in float32 but about 19 % in float64 (its 1e-6 margin
+# leaves most once-shortened steps a rounding over the cap); the last level under 0.4 %. A pending lane beyond a
+# bucket waits a step. TSDEV_SHRINK_LEVELS overrides both ("" runs every round on every lane).
+SHRINK_LEVELS_F32, SHRINK_LEVELS_F64 = (0.3, 0.015625, 0.00390625), (0.3, 0.25, 0.00390625)
+_SHRINK_ENV = os.environ.get("TSDEV_SHRINK_LEVELS")
+SHRINK_LEVELS = None if _SHRINK_ENV is None else tuple(float(v) for v in _SHRINK_ENV.split(",") if v)
+
+
+def shrink_levels():
+    """The cascade levels in effect: TSDEV_SHRINK_LEVELS (or a value set on SHRINK_LEVELS), else per dtype."""
+    if SHRINK_LEVELS is not None:
+        return SHRINK_LEVELS
+    return SHRINK_LEVELS_F64 if jax.config.jax_enable_x64 else SHRINK_LEVELS_F32
 PLANE_TOL_F32 = 1e-2   # mm; float32 rounding of Mu2e coordinates near z = 4179 mm is ~5e-4 mm
 
 
@@ -582,7 +596,7 @@ def make_ts_step(field, geom, s):
             return tuple(a.at[idx].set(v, mode="drop") for a, v in zip(args, out)), done
 
         state = (h, xn, un, ok, cols)
-        levels = SHRINK_LEVELS if SHRINK_LEVELS else (1.0,)
+        levels = shrink_levels() or (1.0,)
         deferred = jnp.zeros(n_lanes, bool)
         for level, frac in enumerate(levels):
             last = level == len(levels) - 1
@@ -1031,10 +1045,29 @@ def run_ds_only(chain, x, p, t, pdg, enter, seed=20261107):
 
 # ---------------------------------------------------------------- inputs, bench entry points, CLI
 
+CACHE_ALL = os.environ.get("TSDEV_CACHE_ALL", "1") != "0"
+
+
+def cache_every_compile():
+    """With a persistent compilation cache directory configured (JAX_COMPILATION_CACHE_DIR or
+    jax_compilation_cache_dir), cache every executable, not only those that took over a second to compile: a chain
+    compiles a few hundred small executables (bucket compactions, scatters, refills, eager operations) besides the
+    large chunks, and a fresh process otherwise compiles them again. The executables are the same, so outputs are
+    unchanged. TSDEV_CACHE_ALL=0 keeps JAX's thresholds. Returns whether the thresholds were lowered."""
+    if not CACHE_ALL or not jax.config.jax_compilation_cache_dir:
+        return False
+    jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)
+    jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
+    return True
+
+
 def load_chain(gdml, field_config, offline_root, maps, ds_geom_file, ds_offline_root, ds_map,
                settings=Settings(), ds_prm=dst.Params(), pool=None, dtype="float64"):
+    """Device chain from the TS GDML, the TS field configuration and maps, the DS geometry and the DS field map
+    (with a persistent compilation cache configured, every compile is cached: cache_every_compile)."""
     from . import fieldmap
     from .tsgeometry import Geometry
+    cache_every_compile()
     set_dtype(dtype)
     tsg = DeviceGeometry(Geometry(gdml))
     tsf = DeviceField.from_config(field_config, offline_root, maps)

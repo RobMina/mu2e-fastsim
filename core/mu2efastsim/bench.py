@@ -432,6 +432,7 @@ def main(argv=None):
         return 2
     report["entry"] = a.entry
     report["device_loops"] = devloops.state()
+    report["graph_concurrency"] = devloops.concurrency_state()
     report["prepare"] = a.prepare
     report["kwargs"] = kwargs
     report["approximations"] = approx_record

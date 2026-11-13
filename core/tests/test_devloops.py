@@ -1,5 +1,7 @@
 """Device-loop setting (mu2efastsim.devloops): importing the package appends the XLA command-buffer flag unless the
 user set it or the setting is off; a workflow's select (auto by default) then keeps or removes it for that workflow.
+The concurrent-region setting (MU2EFS_GRAPH_CONCURRENCY, on by default) appends its own flag at import; it is off in
+these subprocesses unless a test sets it, so the device-loop cases see only their own flag.
 Each case runs in a subprocess because the setting acts before the first JAX backend."""
 import json
 import os
@@ -12,12 +14,14 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 PROBE = ("import json, os, mu2efastsim\nfrom mu2efastsim import devloops as d\n"
          "print(json.dumps({'flags': os.environ.get('XLA_FLAGS'), 'state': d.state()}))")
-CLEAR = ("XLA_FLAGS", "MU2EFS_DEVICE_LOOPS", "MU2EFS_DEVICE_DETERMINISTIC")
+CLEAR = ("XLA_FLAGS", "MU2EFS_DEVICE_LOOPS", "MU2EFS_GRAPH_CONCURRENCY", "MU2EFS_DEVICE_DETERMINISTIC")
+LOOPS = "--xla_gpu_enable_command_buffer=+CONDITIONAL,+WHILE"
+CONC = "--xla_gpu_graph_enable_concurrent_region=true"
 
 
 def run(code=PROBE, **env):
     e = {k: v for k, v in os.environ.items() if k not in CLEAR}
-    e.update({"PYTHONPATH": str(ROOT), "MU2EFS_DEVICE_DETERMINISTIC": "0", **env})
+    e.update({"PYTHONPATH": str(ROOT), "MU2EFS_DEVICE_DETERMINISTIC": "0", "MU2EFS_GRAPH_CONCURRENCY": "0", **env})
     return subprocess.run([sys.executable, "-c", code], env=e, capture_output=True, text=True, timeout=300)
 
 
@@ -125,3 +129,51 @@ def test_bench_selects_for_its_workflow(tmp_path):
     out = json.loads(r.stdout.strip().splitlines()[-1])
     assert out["workflow"] == "W2" and out["requested"] is False and out["xla_gpu_enable_command_buffer"] is None
 
+
+
+CONC_PROBE = ("import json, os, mu2efastsim\nfrom mu2efastsim import devloops as d\n"
+              "print(json.dumps({'flags': os.environ.get('XLA_FLAGS'), 'state': d.concurrency_state()}))")
+
+
+@pytest.mark.parametrize("on", ["1", "true", "on"])
+def test_concurrency_on_appends_its_flag(on):
+    out = probe(code=CONC_PROBE, XLA_FLAGS="--a=1", MU2EFS_GRAPH_CONCURRENCY=on, MU2EFS_DEVICE_LOOPS="0")
+    assert out["flags"] == f"--a=1 {CONC}"
+    assert out["state"] == {"requested": True, "flag_source": "setting", "late": False,
+                            "xla_gpu_graph_enable_concurrent_region": "true"}
+
+
+def test_concurrency_is_on_by_default_and_independent_of_loops():
+    e = {k: v for k, v in os.environ.items() if k not in CLEAR}
+    e.update(PYTHONPATH=str(ROOT), MU2EFS_DEVICE_DETERMINISTIC="0")       # MU2EFS_GRAPH_CONCURRENCY unset
+    r = subprocess.run([sys.executable, "-c", CONC_PROBE], env=e, capture_output=True, text=True, timeout=300)
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout.strip().splitlines()[-1])["flags"] == f"{CONC} {LOOPS}"
+    out = select_probe(['("W2")'], MU2EFS_GRAPH_CONCURRENCY="1")       # W2 drops device loops, keeps concurrency
+    assert out["flags"] == CONC and out["state"]["requested"] is False
+
+
+@pytest.mark.parametrize("off", ["0", "false", "off"])
+def test_concurrency_off_leaves_flags(off):
+    out = probe(code=CONC_PROBE, XLA_FLAGS="--a=1", MU2EFS_GRAPH_CONCURRENCY=off, MU2EFS_DEVICE_LOOPS="0")
+    assert out["flags"] == "--a=1"
+    assert out["state"] == {"requested": False, "flag_source": "none", "late": False,
+                            "xla_gpu_graph_enable_concurrent_region": None}
+
+
+def test_user_value_of_the_concurrency_flag_wins():
+    out = probe(code=CONC_PROBE, XLA_FLAGS="--xla_gpu_graph_enable_concurrent_region=false",
+                MU2EFS_GRAPH_CONCURRENCY="1", MU2EFS_DEVICE_LOOPS="0")
+    assert out["flags"] == "--xla_gpu_graph_enable_concurrent_region=false"
+    assert out["state"]["flag_source"] == "user" and out["state"]["xla_gpu_graph_enable_concurrent_region"] == "false"
+
+
+def test_bad_concurrency_value_refused():
+    r = run(MU2EFS_GRAPH_CONCURRENCY="maybe")
+    assert r.returncode != 0 and "MU2EFS_GRAPH_CONCURRENCY" in r.stderr
+
+
+def test_provenance_records_concurrency():
+    out = probe(code="import json\nfrom mu2efastsim import precision\n"
+                     "print(json.dumps(precision.provenance()['graph_concurrency']))", MU2EFS_GRAPH_CONCURRENCY="1")
+    assert out["requested"] is True and out["xla_gpu_graph_enable_concurrent_region"] == "true"

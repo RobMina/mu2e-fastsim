@@ -25,6 +25,19 @@ SH_SETTINGS = {
 }
 
 
+def tree(path, name="events"):
+    """The dumper tree `name` of a StrawHitTableDumper file: under trkdump/ (dump_strawhits_mc.fcl, the T-VR tables)
+    or under the module label of another dump (e.g. stagedump/ of dump_recostages_ce.fcl)."""
+    f = uproot.open(path)
+    keys = sorted({k.split(";")[0] for k in f.keys()})
+    if f"trkdump/{name}" in keys:
+        return f[f"trkdump/{name}"]
+    hits = [k for k in keys if k.endswith("/" + name) and k.count("/") == 1]
+    if len(hits) != 1:
+        raise KeyError(f"{path}: no single StrawHitTableDumper {name} tree (found {hits})")
+    return f[hits[0]]
+
+
 def unique_panel(sid):
     return (sid >> 10) * NPANELS + ((sid & 0x380) >> 7)
 
@@ -35,7 +48,7 @@ def unique_straw(sid):
 
 def extract_conditions(ref_path, out_txt):
     """Conditions tree of one dumper file -> JSON text file of every constant the hit reco needs."""
-    t = uproot.open(ref_path)["trkdump/conditions"].arrays(library="np")
+    t = tree(ref_path, "conditions").arrays(library="np")
     g = {k: np.asarray(v[0]) for k, v in t.items()}
     k = g["kgrid"]
     idx = np.rint(np.arange(59) * EBIN / 0.005).astype(int)        # probe points at the 0.1 keV knots
@@ -89,7 +102,7 @@ def read_digis(paths):
     out = {k: [] for k in ("ev", "sid", "tdc0", "tdc1", "tot0", "tot1", "nadc", "adc", "pbt", "evkey")}
     off = 0
     for p in paths:
-        a = uproot.open(p)["trkdump/events"].arrays(["run", "subrun", "event", "pbt", "d_sid", "d_tdc0", "d_tdc1",
+        a = tree(p).arrays(["run", "subrun", "event", "pbt", "d_sid", "d_tdc0", "d_tdc1",
                                                       "d_tot0", "d_tot1", "d_nadc", "d_adc"])
         nd = ak.to_numpy(ak.num(a.d_sid))
         out["ev"].append(np.repeat(np.arange(len(a)) + off, nd))

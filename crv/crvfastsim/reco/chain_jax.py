@@ -126,8 +126,8 @@ def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.Finde
     coinc_finish_s, wall_s). keep_pulses: each chunk output also carries its flat pulses under "pulses" (ev, idx, bar,
     sipm, seq, pe, time; idx is the member index mem_idx refers to). with_pos: clusters carry cl_pos [n, 3].
     device_refit: flagged waveforms are refit on the device at full length first (_device_refit), numpy only after.
-    capacities (crvfastsim.capacity): fixed refit shapes, and both pulse fits with bounded scans (the peak scans stop
-    at the longest waveform, the rounds once no waveform found a pulse: the same pulses).
+    capacities (crvfastsim.capacity): fixed refit shapes and coincidence hit buffers, and both pulse fits with bounded
+    scans (the peak scans stop at the longest waveform, the rounds once no waveform found a pulse: the same pulses).
     add_pulses: callable(events) -> extra pulses (ev, bar, sipm, pe, time, seq) merged before the coincidence finder
     (reco.background: out-of-time light deposits the MC does not simulate)."""
     timers = timers if timers is not None else {}
@@ -174,7 +174,8 @@ def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.Finde
             add("pulse_collect_s", t0)
             t0 = tic()
             coin[k - 1] = CJ.find_async(ev, idx, bar, sipm, tm, pe, seq, G, status, coinc_cfg,
-                                        params=params, tables=tables, timers=timers, with_pos=with_pos)
+                                        params=params, tables=tables, timers=timers, with_pos=with_pos,
+                                        **({"caps": capacities} if capacities is not None else {}))
             add("coinc_async_s", t0)
             timers["pulses"] = timers.get("pulses", 0) + len(ev)
             if keep_pulses:
