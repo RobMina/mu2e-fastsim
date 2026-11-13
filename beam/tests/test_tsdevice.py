@@ -178,6 +178,47 @@ def test_resident_driver_compacts_and_keeps_rows():
     assert calls == [4, 4, 4]
 
 
+_COMPILES = []
+
+
+def _count_compile(event, duration, **kw):
+    if event == "/jax/core/compile/backend_compile_duration":
+        _COMPILES.append(duration)
+
+
+jax.monitoring.register_event_duration_secs_listener(_count_compile)
+
+
+@jax.jit
+def _die_at_t(key, st):
+    """Toy chunk: a lane finishes once its step count reaches its t (so the live tail follows the data)."""
+    steps = jnp.where(st.fate == dev.LIVE, st.steps + 1, st.steps)
+    return st._replace(steps=steps, fate=jnp.where((st.fate == dev.LIVE) & (steps >= st.t), jnp.int8(dev.DS), st.fate))
+
+
+def _toy_state(lifetimes):
+    n = len(lifetimes)
+    return dev.ts_initial(np.zeros((n, 3)), np.ones((n, 3)), np.asarray(lifetimes, float), np.full(n, 13), 0,
+                          jax.random.PRNGKey(1))
+
+
+def test_warm_ladder_is_exact_and_new_tails_do_not_compile():
+    rng = np.random.default_rng(3)
+    a, b = _toy_state(rng.integers(1, 6, 96)), _toy_state(np.r_[rng.integers(1, 3, 95), 40])
+    assert dev.ladder(16, 4) == [16, 8, 4] and dev.ladder(20, 4) == [20, 16, 8, 4] and dev.ladder(3, 4) == [3]
+    kw = dict(min_bucket=4, pool=16)
+    for st in (a, b):
+        cold, _ = dev.run_resident(_die_at_t, st, dev._ts_live, dev._ts_kill, jax.random.PRNGKey(2), **kw)
+        warm, _ = dev.run_resident(_die_at_t, st, dev._ts_live, dev._ts_kill, jax.random.PRNGKey(2), warm_ladder=True,
+                                   **kw)
+        for x, y in zip(cold, warm):
+            np.testing.assert_array_equal(np.asarray(x), np.asarray(y))
+    c = _toy_state(np.r_[rng.integers(1, 4, 90), [7, 9, 13, 21, 33, 50]])      # a tail through other bucket sizes
+    before = len(_COMPILES)
+    dev.run_resident(_die_at_t, c, dev._ts_live, dev._ts_kill, jax.random.PRNGKey(5), warm_ladder=True, **kw)
+    assert len(_COMPILES) == before
+
+
 def test_load_references_and_stream_split(tmp_path, monkeypatch):
     paths = []
     for i, n in enumerate((3, 5)):
