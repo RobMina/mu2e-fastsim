@@ -650,8 +650,8 @@ def finish(h, fallback=True):
                 H, K, batch = tiers[ti]
                 if h.get("device") is not None:
                     pick = np.searchsorted(meta["gev"], ov)
-                    hit, rows, hidx = _tier_hits(meta["gcols"], meta["inv"], pick)
-                    outs, arr = _launch(hit, rows, meta["col"][hidx], len(pick), H, _kfor(P, K), batch, P,
+                    hit, hrow, hidx = _tier_hits(meta["gcols"], meta["inv"], pick)
+                    outs, arr = _launch(hit, hrow, meta["col"][hidx], len(pick), H, _kfor(P, K), batch, P,
                                         h["device"], tables, h.get("caps"))
                     tg, d = ov, _collect_tier(outs, keys)
                 else:
