@@ -162,8 +162,9 @@ one node):
 | exact | 640 / 642 -> 689 / 690 (x1.07) | 615 / 618 -> 662 / 662 (x1.07) |
 | reuse | 998 / 1012 -> 1026 / 1041 (x1.03) | 885 / 866 -> 933 / 940 (x1.07) |
 
-The device step of the reuse file falls from 0.208 to 0.195 s (CRV float32), below the two writers' 0.33 s of
-transfer and write per batch, so that rate is now set by the writers.
+The device step of the reuse file falls from 0.208 to 0.195 s (CRV float32); its rate is then held back by the
+writers (0.33 s of transfer and write per batch each): with three writers it is 1,111 / 1,126 ev/s against 1,056 /
+1,034 with two, on the same node.
 
 ## Output compression (opt-in)
 
