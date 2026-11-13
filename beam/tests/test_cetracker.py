@@ -247,3 +247,43 @@ def test_bench_prepare_with_a_seed_draws_that_seeds_births(tmp_path, monkeypatch
         assert np.array_equal(a, b)
     other = H.bench_prepare(64, seed=8)[0]
     assert not np.array_equal(births[0], other[0])
+
+
+
+def test_transport_pair_appends_the_positron_rows_to_each_event():
+    jnp = pytest.importorskip("jax.numpy")
+    from trkfastsim.sim import fieldsteps_jax as FJ
+    R = FJ.R_CAP
+
+    def leg(rows, tag):
+        n = len(rows)
+        valid = np.zeros((n, R), bool)
+        for i, k in enumerate(rows):
+            valid[i, :k] = True
+        steps = {"valid": jnp.asarray(valid), "t": jnp.asarray(np.where(valid, tag, 0.0))}
+        trk = FJ.Result(steps, {"x": jnp.zeros(n)}, {})
+        return dict(has_entry=jnp.ones(n, bool), x=jnp.zeros((n, 3)), p=jnp.zeros((n, 3)), t=jnp.zeros(n),
+                    nrow=jnp.asarray(rows), tracker=trk, cechain=None, timing={})
+
+    ch = object.__new__(H.DeviceChain)
+    calls = []
+
+    def fake(births, seed, positron=False):
+        calls.append(positron)
+        return leg([3, 0, R - 2], 2.0) if positron else leg([5, 2, 4], 1.0)
+    ch.transport = fake
+    res = ch.transport_pair("e-", "e+", 7)
+    assert calls == [False, True]
+    v = np.asarray(res["tracker"].steps["valid"])
+    t = np.asarray(res["tracker"].steps["t"])
+    assert list(v.sum(1)) == [8, 2, R]                       # e- rows, then the e+ rows; the third event is capped
+    assert (t[0, :5] == 1.0).all() and (t[0, 5:8] == 2.0).all()
+    assert res["pair"]["dropped"] == 2                      # 4 + (R - 2) rows in an R-slot event
+    assert list(np.asarray(res["nrow"])) == [5, 2, 4]           # the electron's rows feed the response
+    assert list(np.asarray(res["positron"]["nrow"])) == [3, 0, R - 2]
+
+    def bad(births, seed, positron=False):
+        return leg([1, 1], 2.0) if positron else leg([1, 1, 1], 1.0)
+    ch.transport = bad
+    with pytest.raises(ValueError, match="positron births"):
+        ch.transport_pair("e-", "e+", 7)
