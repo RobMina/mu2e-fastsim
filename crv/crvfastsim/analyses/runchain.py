@@ -472,18 +472,19 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
 
     files = list(tables.expand(inputs)) if not native else [f"native:{k}" for k in range(-(-gen_events // gen_chunk))]
     pool = None
-    if kw.get("prefetch") and len(files) > 1:   # file i+1's host stage runs while the device works on file i
+    ahead = int(kw.get("prefetch") or 0)          # True = 1: file i+1's host stage runs while the device works on file i;
+    if ahead and len(files) > 1:                  # K > 1: K files ahead on K threads (each file its own rng: same draws)
         from concurrent.futures import ThreadPoolExecutor
-        pool = ThreadPoolExecutor(max_workers=1)
-        nxt = pool.submit(host_stage, 0, files[0])
+        pool = ThreadPoolExecutor(max_workers=ahead)
+        pending = {j: pool.submit(host_stage, j, files[j]) for j in range(min(ahead, len(files)))}
     try:
         for i, f in enumerate(files):
             if pool is not None:
                 a = time.perf_counter()
-                ngen, st, pa, rng, t, keys = nxt.result()
+                ngen, st, pa, rng, t, keys = pending.pop(i).result()
                 T["host_wait_s"] = T.get("host_wait_s", 0.0) + time.perf_counter() - a
-                if i + 1 < len(files):
-                    nxt = pool.submit(host_stage, i + 1, files[i + 1])
+                if i + ahead < len(files):
+                    pending[i + ahead] = pool.submit(host_stage, i + ahead, files[i + ahead])
             else:
                 ngen, st, pa, rng, t, keys = host_stage(i, f)
             n_gen += ngen

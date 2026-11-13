@@ -163,8 +163,9 @@ def build_parser():
             sp.add_argument("--seed", type=int, default=1)
             sp.add_argument("--compare", nargs="+", default=None, metavar="ROOT", help="stock CrvRecoTableDumper files")
             sp.add_argument("--reco-cpu", action="store_true", help="with --jax: pulses and coincidences on the JAX CPU backend")
-            sp.add_argument("--prefetch", action="store_true",
-                            help="read, transport and tier 1b of the next file in a thread while the device runs this one")
+            sp.add_argument("--prefetch", nargs="?", type=int, const=1, default=0, metavar="K",
+                            help="read, transport and tier 1b of the next K files (default 1) in K threads while the "
+                                 "device runs this one; the same draws as without")
             sp.add_argument("--device-refit", action="store_true",
                             help="with --jax: waveforms the short pulse fit flags are refit on the device at full "
                                  "length before any numpy refit (reco.chain_jax._device_refit)")
