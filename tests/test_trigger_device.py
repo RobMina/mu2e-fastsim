@@ -92,6 +92,24 @@ def test_panel_combine_greedy():
     assert np.asarray(out["time"])[0, 0] == pytest.approx(105.0)
 
 
+
+def test_helix_pass_rejects_the_unconfigured_helicity():
+    """HelixFilter: a helix of a helicity whose selection is not configured fails (it matches no cut set)."""
+    pytest.importorskip("jax")
+    import jax.numpy as jnp
+    from trigger.device import paths
+    h = {"ok": jnp.array([[True, True, True]]), "helicity": jnp.array([[1.0, -1.0, 0.0]]),
+         "nsh": jnp.array([[20.0, 20.0, 20.0]]), "pt": jnp.full((1, 3), 60.0), "chi2xy": jnp.ones((1, 3)),
+         "chi2zphi": jnp.ones((1, 3)), "d0": jnp.zeros((1, 3)), "lambda": jnp.array([[200.0, -200.0, 0.0]]),
+         "nloops": jnp.full((1, 3), 2.0), "p": jnp.full((1, 3), 90.0), "hitratio": jnp.ones((1, 3))}
+    pos_only = {"posHelicitySelection": {"configured": True, "minMomentum": 70}, "negHelicitySelection": {"configured": False}}
+    assert np.asarray(paths.helix_pass(h, pos_only)).tolist() == [[True, False, False]]
+    both = {"posHelicitySelection": {"configured": True, "minMomentum": 95},
+            "negHelicitySelection": {"configured": True, "minMomentum": 70}}
+    assert np.asarray(paths.helix_pass(h, both)).tolist() == [[False, True, False]]
+    assert np.asarray(paths.helix_pass(h, {"posHelicitySelection": {"configured": False},
+                                           "negHelicitySelection": {"configured": False}})).tolist() == [[False] * 3]
+
 def test_helix_fit_recovers_parameters():
     pytest.importorskip("jax")
     import jax.numpy as jnp
