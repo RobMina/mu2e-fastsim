@@ -34,6 +34,7 @@ FORMAT = "crvfastsim-capacities-1"
 SCALARS = ("steps", "photon_block_rows", "photon_rows", "photon_substeps", "photon_arrivals", "photon_buffer",
            "sipm_photons", "refit_rows", "refit_samples")
 FIXED = ("sipm_photons",)   # set by hand (the SiPM chunk size), not derived from demand
+CLAMP = {"photon_substeps": 1 << 22}   # hard per-chunk limits of the kernels (photons_jax max_sub): never above
 PER_Q = ("synth_rows", "synth_samples")
 
 
@@ -105,7 +106,7 @@ def derive(usage, margin=1.25, census="", fixed=None):
         if base in FIXED:
             continue
         if base in SCALARS:
-            out[base] = grow(value, 8 if base == "refit_samples" else 1)
+            out[base] = min(grow(value, 8 if base == "refit_samples" else 1), CLAMP.get(base, 1 << 62))
         elif base in PER_Q:
             out.setdefault(base, {})[q] = grow(value, 8 if base == "synth_samples" else 1)
     out.update(fixed or {})

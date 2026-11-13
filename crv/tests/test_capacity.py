@@ -143,9 +143,10 @@ def test_fixed_synthesis_without_noise_equals_bucketed():
 def test_capacity_file_derive_and_enforce(tmp_path):
     from crvfastsim import capacity
     usage = {"steps": 1000, "photon_rows": 80, "refit_samples": 33, "synth_rows/64": 40, "synth_samples/64": 41,
-             "sipm_photons": 999}
+             "sipm_photons": 999, "photon_substeps": 1 << 22}
     caps = capacity.derive(usage, 1.25, fixed={"sipm_photons": 4096})
     assert caps["steps"] == 1250 and caps["photon_rows"] == 100 and caps["refit_samples"] == 48
+    assert caps["photon_substeps"] == 1 << 22                         # clamped to the kernel's chunk limit
     assert caps["synth_rows"] == {"64": 50} and caps["synth_samples"] == {"64": 56} and caps["sipm_photons"] == 4096
     path = tmp_path / "caps.json"
     path.write_text(json.dumps(caps))
