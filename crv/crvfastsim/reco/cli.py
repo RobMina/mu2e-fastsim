@@ -667,6 +667,17 @@ def _synth_jax_bucketed(WJ, Q, tdc0_row, cfg, noise=0.0, seed=0, budget_gib=SYNT
     return {k: v[o] for k, v in out.items()}
 
 
+_KEYS = []
+
+
+def _cluster_keys():
+    """jit(vmap(fold_in)): one noise key per cluster index, built once per process (one compile per row count)."""
+    if not _KEYS:
+        import jax
+        _KEYS.append(jax.jit(jax.vmap(jax.random.fold_in, (None, 0))))
+    return _KEYS[0]
+
+
 def _synth_jax_fixed(WJ, Q, tdc0_row, cfg, caps, noise=0.0, seed=0, budget_gib=SYNTH_BUCKET_GIB, window=(0.0, 1e5),
                      *, stock_scan=False):
     """_synth_jax_bucketed with fixed shapes (crvfastsim.capacity): clusters grouped by power-of-two charges Q (the
@@ -688,7 +699,7 @@ def _synth_jax_fixed(WJ, Q, tdc0_row, cfg, caps, noise=0.0, seed=0, budget_gib=S
     need = (np.ceil(span + cfg.single_pe_max_time) / pulsefit.PERIOD).astype(np.int64) + 2 + cfg.samples_zs  # as WJ.pack
     qb = _p2(nq)
     root = jax.random.PRNGKey(seed)
-    keys_of = jax.jit(jax.vmap(jax.random.fold_in, (None, 0)))
+    keys_of = _cluster_keys()
     parts = []
     for Qb in np.unique(qb):
         Qb = int(Qb)
