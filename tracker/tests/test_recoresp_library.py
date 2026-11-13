@@ -46,7 +46,7 @@ def test_shipped_tables_load_bit_identical_with_their_manifests(path):
 
 def test_shipped_tables_have_distinct_names_and_reproducible_sidecars(tmp_path, monkeypatch):
     names = {LS.load(p).manifest["name"] for p in SHIPPED}
-    assert len(names) == 3
+    assert len(names) == len(SHIPPED)
     data = tmp_path / "data"
     data.mkdir()
     for p in SHIPPED:
