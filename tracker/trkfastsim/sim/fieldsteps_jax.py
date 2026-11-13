@@ -721,7 +721,9 @@ def _chord(tk_, s, rec, lane, key, it):
                    ("p1", jnp.broadcast_to(p[:, None], slot.shape)), ("len", sp["gas"]), ("t", tin)):
         rec[f] = rec[f].at[row, wslot].set(val, mode="drop")
     last = jnp.where(cont & (s["nrec"] - 1 < R), s["nrec"] - 1, R)
-    rec["len"] = rec["len"].at[lane, last].add(sp["gas"][:, 0], mode="drop")
+    # one target per lane: written as gather + add + set (the same sum; no float scatter-add in the kernel)
+    rec["len"] = rec["len"].at[lane, last].set(rec["len"][lane, jnp.minimum(last, R - 1)] + sp["gas"][:, 0],
+                                               mode="drop")
     rec["pos1"] = rec["pos1"].at[lane, last].set(pos1[:, 0], mode="drop")
     rec["d1"] = rec["d1"].at[lane, last].set(c, mode="drop")
     rec["p1"] = rec["p1"].at[lane, last].set(p, mode="drop")
