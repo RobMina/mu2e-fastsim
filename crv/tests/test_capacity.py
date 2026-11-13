@@ -186,6 +186,15 @@ def test_packaged_run1a_file_loads_by_name():
     assert c.cap("synth_samples", 64) and c.cap("steps")
 
 
+def test_packaged_run1a_coinc_hits_cover_every_tier():
+    # every coincidence tier has a fixed hit buffer, never above the most hits a batch can hold (batch x H)
+    from crvfastsim import capacity
+    from crvfastsim.reco import coinc_jax as J
+    c = capacity.Capacities.load("run1a_v01")
+    for H, _, batch in J.TIERS:
+        assert 0 < c.cap("coinc_hits", H) <= batch * H, H
+
+
 def test_device_sorted_charges_equal_host_concatenation():
     from crvfastsim.capacity import Capacities
     from crvfastsim.response import resident
