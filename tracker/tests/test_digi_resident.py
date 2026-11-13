@@ -107,6 +107,53 @@ def test_a_failed_batch_falls_back_to_the_per_batch_loop(cond, monkeypatch):
     _same(a, DR.digitize(st, 6, c, key))
 
 
+LEVERS = {"flat": {"entries_per_straw": 4},
+          "flat_rows": {"entries_per_straw": 4, "saturation_rows": "auto"},
+          "pool": {"entries_per_straw": 4, "saturation_pool": True},
+          "pool_tiles": {"entries_per_straw": 4, "saturation_rows": "auto", "saturation_pool": True,
+                         "saturation_tiles": "bounded"}}
+
+
+def test_electronics_levers_give_the_same_digis(cond):
+    """The flat digitisation, saturation rows, the bucket saturation pool and bounded tiles: digi_jax's digis bit for
+    bit, with saturated ends present; the demand counter is the largest pairs per straw slot of a launch."""
+    c = cond
+    st = _random_steps(c, np.random.default_rng(1))
+    st["eion"] = st["eion"] * np.where(np.arange(len(st["eion"])) % 7 == 0, 40.0, 1.0)   # some ends saturate
+    st = {k: jax.numpy.asarray(v) for k, v in st.items()}
+    key = jax.random.key(5)
+    s0 = {}
+    a = DR.digitize(st, 6, c, key, stats=s0)
+    assert s0["saturated_ends"] > 0 and len(a["ev"]) > 20
+    for name, opts in LEVERS.items():
+        s = {}
+        _same(a, DR.digitize(st, 6, c, key, stats=s, electronics=opts))
+        assert s["saturated_ends"] == s0["saturated_ends"] and 0 < s["entries_per_straw_milli_max"] <= 4000, name
+        assert s.get("electronics_entry_fallbacks", 0) == 0, name
+
+
+def test_too_few_flat_entries_fall_back_to_the_pair_loop(cond):
+    """A launch needing more flat entries than its capacity is never truncated: the chunk runs the pair loop (the same
+    digis), with a warning and the fallback counted."""
+    c = cond
+    st = {k: jax.numpy.asarray(v) for k, v in _random_steps(c, np.random.default_rng(1)).items()}
+    key = jax.random.key(5)
+    a = DR.digitize(st, 6, c, key)
+    n0, s = DR.ENTRY_FALLBACKS[0], {}
+    with pytest.warns(RuntimeWarning, match="flat digitisation"):
+        b = DR.digitize(st, 6, c, key, stats=s, electronics={"entries_per_straw": 0.001})
+    _same(a, b)
+    assert DR.ENTRY_FALLBACKS[0] == n0 + 1 and s["electronics_entry_fallbacks"] == 1
+
+
+def test_electronics_options_are_validated():
+    assert DR.electronics_options(None) is None
+    for bad in ({"saturation_pool": True}, {"entries_per_straw": 5}, {"entries_per_straw": 1, "x": 1},
+                {"entries_per_straw": 1, "saturation_tiles": "bounded"}, {"entries_per_straw": 1, "saturation_rows": 2}):
+        with pytest.raises(ValueError):
+            DR.electronics_options(bad)
+
+
 @pytest.mark.slow   # second full compile of both digitisers; per PR the off-spill case checks the same packing
 def test_onspill_digis_with_ghosts_equal_digi_jax(cond):
     c = DC.Conditions(cond.s, cond.a)
@@ -134,13 +181,13 @@ def test_no_steps_in_the_window_gives_the_empty_layout(cond):
 @pytest.mark.skipif(df.SINGLE, reason="runs this module in a float32 subprocess")
 def test_float32_digis_equal_digi_jax(tmp_path):
     """Following the core float32 (TRKFASTSIM_DEVICE_FLOAT=core): the device-made relative positions and times give
-    digi_jax's float32 digis bit for bit, off spill, padded, and with the per-batch loop."""
+    digi_jax's float32 digis bit for bit, off spill, padded, with the per-batch loop and with the electronics levers."""
     tests = Path(__file__).resolve().parent
     env = dict(os.environ, MU2EFS_DEVICE_FLOAT="float32", TRKFASTSIM_DEVICE_FLOAT="core", JAX_PLATFORMS="cpu",
                PYTHONPATH=os.pathsep.join([str(tests), str(tests.parent), os.environ.get("PYTHONPATH", "")]))
     env.pop("TRKFASTSIM_DRAW64", None)
     r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", str(Path(__file__).resolve()),
-                        "-k", "offspill or padded or without_host_reads", "-m", "not slow"],
+                        "-k", "offspill or padded or without_host_reads or levers", "-m", "not slow"],
                        cwd=tmp_path, env=env, capture_output=True, text=True)
     assert r.returncode == 0, r.stdout[-3000:] + r.stderr[-2000:]
-    assert "3 passed" in r.stdout, r.stdout[-2000:]
+    assert "4 passed" in r.stdout, r.stdout[-2000:]

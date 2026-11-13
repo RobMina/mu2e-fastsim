@@ -247,3 +247,12 @@ def test_bench_prepare_with_a_seed_draws_that_seeds_births(tmp_path, monkeypatch
         assert np.array_equal(a, b)
     other = H.bench_prepare(64, seed=8)[0]
     assert not np.array_equal(births[0], other[0])
+
+
+def test_default_digi_electronics_are_valid_levers():
+    """The default electronics levers of the resident digitiser validate (digi_resident.electronics_options) and keep
+    the flat entries at most the pair capacity."""
+    pytest.importorskip("jax")
+    from trkfastsim.digi import digi_resident as DR
+    opts = DR.electronics_options(H.DIGI_ELECTRONICS)
+    assert 1 <= opts["entries_per_straw"] <= 4 and opts["saturation_pool"] and opts["saturation_tiles"] == "bounded"
