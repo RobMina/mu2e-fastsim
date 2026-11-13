@@ -321,6 +321,8 @@ class DeviceChain:
         if nrow_library is not None and (deltas is not None or response is None):
             raise ValueError("nrow_library (sampled rows) has no tracker steps and feeds only the response: it takes "
                              "no deltas, and needs a response")
+        from mu2efastsim import devloops
+        devloops.select("W2")                      # the W2 device-loop setting, if no JAX backend exists yet
         import jax  # noqa: F401  (device backend)
         from mu2efastsim import ehelix
         from trkfastsim.sim import fieldsteps_jax as FJ
@@ -698,6 +700,8 @@ def main(argv=None):
     ap.add_argument("--geom", default="Offline/Mu2eG4/geom/geom_common.txt")
     ap.add_argument("--backend", choices=("numpy", "device"), default="numpy")
     ap.add_argument("--device-float", choices=("float64", "float32"), default="float64")
+    ap.add_argument("--device-loops", choices=("auto", "on", "off"), default="auto",
+                    help="XLA device-side loops (mu2efastsim.devloops): auto (default: the W2 setting, off) or forced")
     ap.add_argument("--lanes", type=int, help="device chain: lanes per launch (default all)")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--max-events", type=int)
@@ -720,6 +724,8 @@ def main(argv=None):
     from .approximations import W2
     approximations.add_arguments(ap)
     a = ap.parse_args(argv)
+    from mu2efastsim import devloops
+    devloops.select("W2", a.device_loops)        # before the device modules create a JAX backend
     try:
         selection = approximations.from_args(a, W2)
         selection.apply_namespace(a, ap)
