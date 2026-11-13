@@ -259,7 +259,8 @@ def _decide_main(monkeypatch, tmp_path, extra, cpu):
     keys = [(1, 0, 500 + i) for i in range(n)]
     ev = {k: [rng.integers(0, 50, m) for m in sizes] for k in run.DIG}
     ev["pbt"], ev["spill"] = np.zeros(n), np.zeros(n, np.int64)
-    stock = {p + k: [np.arange(m) for m in sizes] for p in ("s_", "p_") for k in ("sid",)}
+    fields = ("sid", "flag", "time", "edep", "x", "y", "z", "wdist", "uvar", "ncombo", "vvar")
+    stock = {p + k: [np.arange(m) for m in sizes] for p in ("s_", "p_") for k in fields}
     seen = {}
 
     class Fake:
@@ -271,7 +272,8 @@ def _decide_main(monkeypatch, tmp_path, extra, cpu):
         def decide(self, b):                    # per-event results from the event's own digis only
             nh = b["valid"].sum(axis=1)
             seen.setdefault("shapes", []).append(b["valid"].shape)
-            hits = {"valid": b["valid"], "sid": np.where(b["valid"], np.cumsum(b["valid"], axis=1) - 1, -1)}
+            idx = np.where(b["valid"], np.cumsum(b["valid"], axis=1) - 1, -1)   # the stub stock's values
+            hits = {"valid": b["valid"], **{k: idx for k in fields}}
             return ({"P": (nh + b["event"]) % 3 == 0}, {"a:tc": nh % 2 == 1},
                     {"sh": hits, "ph": hits} if seen["debug"] else {})
 
