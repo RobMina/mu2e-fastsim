@@ -119,13 +119,27 @@ def unsort(rows, parts):
     return out
 
 
-def check_hits(diag, stock, lo, n, report):
-    """Device straw/panel hits vs the stock TrigMakeSH/TrigMakePH of the same events."""
+# per-backend batching defaults of `decide` and the bench (bit-identical decisions at every setting): on a CPU (one
+# core per process, as a grid slot) small batches, a low hit-axis floor and the compact cluster path (one CPU core,
+# f32 358 -> 587, f64 204 -> 387 events/s against batch 64 and the one-call path); on a GPU the one-call path (the
+# compact path's host reads would stall the device) and the tool's own batch size
+CPU_BATCHING = {"batch": 16, "hmin": 32, "compact": True}
+
+
+def on_cpu():
+    import jax
+    return jax.default_backend() == "cpu"
+
+
+def check_hits(diag, stock, rows, report):
+    """Device straw/panel hits vs the stock TrigMakeSH/TrigMakePH of the same events (rows: each block event's input
+    index)."""
+    n = len(rows)
     for tag, d, pre in (("straw", diag["sh"], "s_"), ("panel", diag["ph"], "p_")):
         r = report.setdefault(tag, {"events": 0, "events_same_count": 0, "hits": 0, "exact": {}, "max_abs": {}})
         valid = np.asarray(d["valid"])[:n]
         for i in range(n):
-            ns = len(stock[pre + "sid"][lo + i])
+            ns = len(stock[pre + "sid"][rows[i]])
             m = valid[i]
             r["events"] += 1
             if int(m.sum()) != ns:
@@ -134,7 +148,7 @@ def check_hits(diag, stock, lo, n, report):
             r["hits"] += ns
             for k in ("sid", "flag", "time", "edep", "x", "y", "z", "wdist", "uvar") + (("ncombo", "vvar") if tag == "panel" else ()):
                 dv = np.asarray(d[k])[i][m]
-                sv = np.asarray(stock[pre + k][lo + i])
+                sv = np.asarray(stock[pre + k][rows[i]])
                 if k == "flag":
                     dv, sv = dv.astype(np.uint32), sv.astype(np.uint32)
                     eq = dv == sv
@@ -217,24 +231,30 @@ def cmd_decide(args):
     cfg = menu.parse_fcl(Path(args.menu).read_text())
     cond = conditions(args.dump[0], args.tree)
     resp = json.loads(Path(args.response).read_text()) if args.response else {}
+    cpu = CPU_BATCHING if on_cpu() else {}
+    batch = args.batch if args.batch is not None else cpu.get("batch", 512)
+    hmin = args.hmin if args.hmin is not None else cpu.get("hmin", 64)
+    compact = args.compact if args.compact is not None else cpu.get("compact", False)
     ch = chainmod.Chain(cfg, cond, args.tc_mva, response=resp, debug=args.check_hits, precision=args.precision,
-                        compact=args.compact)
+                        compact=compact)
     report, device, stages, stage_flags, path_vars = {}, {}, {}, {}, {}
     t_dev = 0.0
     for dump in args.dump:
         keys, ev, stock = load_dump(dump, args.tree)
-        outs, auxs = [], []
-        for lo, n, b in batches(keys, ev, args.batch):
+        outs, auxs, rows_all = [], [], []
+        blocks = (sorted_batches(keys, ev, batch, hmin=hmin) if args.order == "hits" else
+                  ((np.arange(lo, lo + n), n, b) for lo, n, b in batches(keys, ev, batch, hmin)))
+        for rows, n, b in blocks:
             t0 = time.perf_counter()
             out, aux, diag = ch.decide(b)
             out = {k: np.asarray(v)[:n] for k, v in out.items()}
             t_dev += time.perf_counter() - t0
             outs.append(out)
             auxs.append({k: np.asarray(v)[:n] for k, v in aux.items()})
+            rows_all.append(rows)
             if args.check_hits:
-                check_hits(diag, stock, lo, n, report)
-        dec = {k: np.concatenate([o[k] for o in outs]) for k in outs[0]}
-        aux = {k: np.concatenate([a[k] for a in auxs]) for k in auxs[0]}
+                check_hits(diag, stock, rows, report)
+        dec, aux = unsort(rows_all, outs), unsort(rows_all, auxs)   # event order (prescale counter)
         dec = ch.finish(dec, aux, len(keys))
         for i, key in enumerate(keys):            # time-cluster straw hits per path (binned response variable)
             path_vars["|".join(map(str, key))] = {
@@ -254,7 +274,8 @@ def cmd_decide(args):
                 raise ValueError(f"event {key} in two dumps")
             device[key] = {p: bool(v[i]) for p, v in dec.items()}
     result = {"dumps": [str(d) for d in args.dump], "events": len(device), "paths": sorted(ch.plan),
-              "precision": ch.precision, "skipped": ch.skipped, "response": resp, "stages": stages, "hits": report,
+              "precision": ch.precision, "batching": {"order": args.order, "batch": batch, "hmin": hmin,
+                                                      "compact": compact}, "skipped": ch.skipped, "response": resp, "stages": stages, "hits": report,
               "wall_s_including_compile": t_dev}
     if args.logs:
         manifest = json.loads((Path(args.prepared) / "manifest.json").read_text())
@@ -312,11 +333,15 @@ def main(argv=None):
     d.add_argument("--logs", nargs="*")
     d.add_argument("--prepared")
     d.add_argument("--event-mode", default="OffSpill")
-    d.add_argument("--batch", type=int, default=512)
+    d.add_argument("--batch", type=int, help="events per block (default 512; on a CPU 16)")
+    d.add_argument("--hmin", type=int, help="hit-axis floor of a block (default 64; on a CPU 32)")
+    d.add_argument("--order", choices=("hits", "input"), default="hits",
+                   help="hits: blocks of events of similar digi count, results put back in event order (default; the "
+                        "same decisions bit for bit); input: the dumps' order")
     d.add_argument("--precision", choices=chainmod.PRECISIONS, default="float64")
-    d.add_argument("--compact", action="store_true",
+    d.add_argument("--compact", action=argparse.BooleanOptionalAction, default=None,
                    help="time-cluster refinement and helix fits on the occupied (event, cluster) pairs only (three "
-                        "device calls per batch; the same decisions; faster on CPUs)")
+                        "device calls per batch; the same decisions; default on a CPU, off on a GPU)")
     d.add_argument("--check-hits", action="store_true")
     d.add_argument("--output", required=True)
     from mu2efastsim import approximations

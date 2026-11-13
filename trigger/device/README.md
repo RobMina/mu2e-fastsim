@@ -57,15 +57,18 @@ JAX's x64 flag is process-wide, so a process runs one precision. float32 also se
 `jax_default_matmul_precision` to `highest`, so the helix matmuls do not run on TF32 tensor cores. The time-cluster MVA
 is float32 in both precisions, as stock, and asks for `precision="highest"` itself.
 
-### Batching and CPU settings (bench)
+### Batching and CPU settings
 
 `trigger/device/bench.py` batches events by digi count (`TRIGGER_DEVICE_ORDER=hits`, the default; `input` keeps the
 dumps' order in each batch): every block pads its hit axis only to its own largest event, and the per-event results
 are put back in event order before the prescale counter, so the decisions are the same bit for bit. The hit-axis
 floor is `TRIGGER_DEVICE_HMIN` (default 64, as `hits.pack_events`).
 
-On a CPU (one core per process, as a grid slot) use small batches and the compact cluster path:
-`TRIGGER_DEVICE_BATCH=16 TRIGGER_DEVICE_HMIN=32 TRIGGER_DEVICE_COMPACT=1` (`run.py decide --compact`). The compact path
+`run.py decide` batches the same way (`--order hits`, the default; `--order input` keeps the dumps' order).
+
+On a CPU backend (one core per process, as a grid slot) both use small batches and the compact cluster path by default
+(`run.CPU_BATCHING`: batch 16, hit-axis floor 32, compact on; override with `TRIGGER_DEVICE_BATCH`, `TRIGGER_DEVICE_HMIN`,
+`TRIGGER_DEVICE_COMPACT=0|1`, or `decide --batch`, `--hmin`, `--no-compact`). The compact path
 refines time clusters and fits helices only on the occupied (event, cluster) pairs (about a quarter of the
 `NTC` slots), in per-producer device calls with a host read of the counts between them; pair capacities are 1/4, 1/2 or
 all of the batch's cluster slots, and the bench compiles them all in its first pass (setup), so later passes compile
