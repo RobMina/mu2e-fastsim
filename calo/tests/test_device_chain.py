@@ -281,6 +281,27 @@ def test_cluster_truth_opt_in(library):
     assert np.all(np.isfinite(cl["ttrue"][ok])) and np.all(np.isinf(cl["ttrue"][~ok]))
 
 
+def test_more_cluster_rounds_leave_the_clusters_unchanged(library):
+    """A larger rounds capacity changes nothing for events that fit the smaller one (only more slots)."""
+    pos, disk = _grid()
+    geom = _geom(pos, disk)
+    table = PropagationTable(np.array([[0.5, 1.0]], np.float32), np.array([0.5, 1.5], np.float32), np.float32(400.0))
+    noise = np.random.default_rng(2).normal(12.0, 1.0, 20000)
+    resp = dc.pack_response(_sim(len(disk)), _pulse(), noise, table, geom)
+    lib = dc.pack_library(library, radius_neighbors=0, placement="crystal")
+    query = _queries(40, seed=6)
+    out = {}
+    for r in (6, 10):
+        caps = dc.Caps(events=48, steps=2048, photoelectrons=1 << 19, rows=1024, digis=1024, digi_length=96,
+                       hits=1024, event_hits=48, rounds=r)
+        q, t = dc.entries_batch(query, _timing(40), np.arange(40), caps.events)
+        out[r] = dc.run(dc.make_chain(lib, resp, caps, truth=True), q, t, jax.random.PRNGKey(3))
+    a, b = out[6]["clusters"], out[10]["clusters"]
+    assert not b["valid"][:, 6:].any()
+    for k in a:
+        np.testing.assert_array_equal(a[k], b[k][:, :6], err_msg=k)
+
+
 def test_float32_draw_and_placement_close_to_host(library):
     """Single-precision geometry: same donors; crystals and depths agree except at float32 boundary roundoff."""
     query = _queries()

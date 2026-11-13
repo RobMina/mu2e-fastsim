@@ -37,7 +37,7 @@ def cmd_record(a):
     b = _births(a)
     paths, cnt = record.run(b, a.out, a.seed, batch=a.batch, offline_root=a.offline_root, maps=a.maps, gdml=a.gdml,
                             library=a.library, calo_response=a.calo_response, digi_cond=a.digi_cond, geom=a.geom, dtype=a.dtype,
-                            response=a.response, edge_library=a.edge_library)
+                            response=a.response, edge_library=a.edge_library, calo_caps=a.calo_caps or record.CALO_CAPS)
     print(json.dumps(dict(paths={k: str(v) for k, v in paths.items()}, **cnt)))
 
 
@@ -199,6 +199,7 @@ def main(argv=None):
     r.add_argument("--response", default="onspill",
                    help="reco response table (default 'onspill': the OnSpill production chain, recoresp NAMED)")
     r.add_argument("--geom")
+    r.add_argument("--calo-caps", default=None, help="calorimeter device chain capacities (record.CALO_CAPS format)")
     r.set_defaults(fn=cmd_record)
     t = sp.add_parser("trigger")
     t.add_argument("--digis", required=True)
