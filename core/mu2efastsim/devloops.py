@@ -5,9 +5,11 @@ XLA records most GPU kernels of a compiled program into command buffers (CUDA gr
 launches the next iteration. Kernels with many short device loops (the tracker electronics, the SiPM and pulse-fit
 loops) spend part of their time waiting on those round trips. With the setting on (the default),
 `--xla_gpu_enable_command_buffer=+CONDITIONAL,+WHILE` is appended to XLA_FLAGS: XLA keeps its default command-buffer
-types and also records loops and conditionals, which then run on the device (CUDA conditional nodes). It changes how
-the kernels are launched, not what they compute (the W6 mixing outputs were checked identical with and without it
-over full passes). It has no effect on CPU backends. MU2EFS_DEVICE_LOOPS=0 leaves XLA's default.
+types and also records loops and conditionals, which then run on the device (CUDA conditional nodes). It is meant
+to change how the kernels are launched, not what they compute (the W6 mixing outputs were checked identical with and
+without it over full passes). The calorimeter device chain is an exception: its clustering (nested device loops) gave
+wrong clusters with it on A100 GPUs, so calofastsim.device_chain compiles its chains without command buffers (a
+per-jit XLA option). It has no effect on CPU backends. MU2EFS_DEVICE_LOOPS=0 leaves XLA's default.
 
 XLA reads XLA_FLAGS when JAX creates its first backend, so `apply()` runs when the `mu2efastsim` package is imported,
 as for the determinism setting (determinism.py). A value the user already put in XLA_FLAGS for the same flag is left

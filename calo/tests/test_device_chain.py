@@ -434,3 +434,31 @@ def test_clusters_recluster_events_over_the_rounds():
         np.testing.assert_array_equal(got[k], ref[k])
     for k in ("energy", "x", "y", "z", "time"):
         np.testing.assert_allclose(got[k], ref[k], rtol=1e-6, atol=1e-6)
+
+
+def test_chains_compile_without_command_buffers(monkeypatch):
+    """make_chain / make_steps_chain jit with COMPILER_OPTIONS (no XLA command buffers: the device-loop command buffers
+    gave wrong clusters on GPUs), and those options compile here."""
+    seen = []
+    real = jax.jit
+
+    def spy(f, **kw):
+        seen.append(kw.get("compiler_options"))
+        return real(f, **kw)
+
+    pos, disk = _grid()
+    table = PropagationTable(np.ones((1, 1), np.float32), np.zeros(1, np.float32), np.float32(1.0))
+    resp = dc.pack_response(_sim(len(disk)), _pulse(), np.full(1000, 12.0), table, _geom(pos, disk))
+    caps = dc.Caps(events=4, steps=64, photoelectrons=4096, rows=64, digis=64, digi_length=64, hits=64, event_hits=16,
+                   rounds=4)
+    monkeypatch.setattr(jax, "jit", spy)
+    chain = dc.make_steps_chain(resp, caps)
+    monkeypatch.setattr(jax, "jit", real)
+    assert seen == [dc.COMPILER_OPTIONS] and dc.COMPILER_OPTIONS == {"xla_gpu_enable_command_buffer": ""}
+    t = dc.entries_batch({k: np.zeros((0, 3) if k in ("position", "direction") else 0) for k in
+                          ("energy", "cosine", "radius", "disk", "time", "position", "direction")},
+                         _timing(4), np.zeros(0, int), caps.events)[1]
+    steps = dc.steps_batch({"event": [0, 0], "crystal": [5, 5], "energy_g4": [20.0, 5.0], "energy_birks": [20.0, 5.0],
+                            "time": [700.0, 700.5], "z_local": [50.0, 60.0]}, caps.steps)
+    out = dc.run(chain, steps, t, jax.random.PRNGKey(0))
+    assert out["clusters"]["valid"][0].sum() == 1

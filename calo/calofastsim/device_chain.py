@@ -24,7 +24,8 @@ host rules; differences, by design:
 - every collection has a static capacity (:class:`Caps`). Entries beyond a capacity are dropped and counted in
   ``overflow``; :func:`run` raises unless the caller asks to tolerate it. Pick capacities from a first batch.
 
-JAX x64 must be enabled by the caller.
+The jitted chains compile without XLA command buffers (:data:`COMPILER_OPTIONS`), whatever the process's
+device-loop setting (``mu2efastsim.devloops``). JAX x64 must be enabled by the caller.
 """
 from __future__ import annotations
 
@@ -39,12 +40,18 @@ from .readout import PropagationTable, ReadoutConfig
 from .showers.library import Binning, cells, frame
 from .templatefit import FitConfig
 
-__all__ = ["Caps", "pack_library", "pack_response", "make_chain", "make_steps_chain", "run", "entries_batch",
-           "steps_batch", "flat_clusters", "OVERFLOW_NAMES"]
+__all__ = ["Caps", "COMPILER_OPTIONS", "pack_library", "pack_response", "make_chain", "make_steps_chain", "run",
+           "entries_batch", "steps_batch", "flat_clusters", "OVERFLOW_NAMES"]
 
 OVERFLOW_NAMES = ("steps", "photoelectrons", "rows", "outliers", "digis", "digi_length", "hits", "event_hits",
                   "main_rounds", "split_rounds")
 TF32_EXACT = "default"   # matmul precision for products TF32 computes exactly (0/1 operands, integer sums)
+# XLA options of the chain's jit: no command buffers. With XLA's loop and conditional command buffers on (the
+# mu2efastsim.devloops default, --xla_gpu_enable_command_buffer=+CONDITIONAL,+WHILE) the clustering's nested device
+# loops gave wrong clusters on A100 GPUs, in about a quarter of the events of a batch and differently from run to
+# run; compiled without command buffers they match the CPU result (float64 identical). Set per jit, so other programs
+# keep the process setting.
+COMPILER_OPTIONS = {"xla_gpu_enable_command_buffer": ""}
 
 
 def _physics(*xs):
@@ -1048,7 +1055,7 @@ def make_chain(lib: DeviceLibrary, resp: DeviceResponse, caps: Caps = Caps(), di
         return dict(clusters=cl, overflow=jnp.stack([jnp.asarray(over[k], jnp.int64) for k in OVERFLOW_NAMES]),
                     stats=_with_cluster_stats(stats, over_cl), donor=donor)
 
-    return jax.jit(chain)
+    return jax.jit(chain, compiler_options=COMPILER_OPTIONS)
 
 
 def make_steps_chain(resp: DeviceResponse, caps: Caps = Caps(), digi_response="waveform"):
@@ -1095,7 +1102,7 @@ def make_steps_chain(resp: DeviceResponse, caps: Caps = Caps(), digi_response="w
         return dict(clusters=cl, overflow=jnp.stack([jnp.asarray(over[k], jnp.int64) for k in OVERFLOW_NAMES]),
                     stats=_with_cluster_stats(stats, over_cl))
 
-    return jax.jit(chain)
+    return jax.jit(chain, compiler_options=COMPILER_OPTIONS)
 
 
 def steps_batch(steps, n_steps):
