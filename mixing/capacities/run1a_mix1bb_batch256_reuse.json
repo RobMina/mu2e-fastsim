@@ -77,10 +77,10 @@
   "tracker_reuse": {
    "compute": {
     "clusters_per_step": 64,
-    "long_steps": 256,
+    "long_steps": 277,
     "clusters_per_long_step": 1124,
-    "drift_clusters": 2040000,
-    "straws": 98304,
+    "drift_clusters": 1437563,
+    "straws": 57344,
     "clusters_per_end": 24,
     "end_tiers": [
      [
@@ -88,7 +88,7 @@
       64
      ],
      [
-      8192,
+      5190,
       192
      ],
      [
@@ -107,8 +107,8 @@
     "pairs_per_straw": 8,
     "electronics_batch": 8192,
     "charge_blocks_per_launch": 128,
-    "flat_clusters": 1470000,
-    "minion_steps": 15872,
+    "flat_clusters": 868390,
+    "minion_steps": 15380,
     "minion_search": "compare_all",
     "minion_unroll": 4,
     "digit_entries_per_straw": 1.4,
@@ -164,10 +164,11 @@
     "narrow_tier": "compact"
    },
    "frames_per_batch": 8192,
-   "straws": 229376,
+   "straws": 274479,
    "streams": [
     "MuStopPileup",
-    "MuBeamFlash"
+    "MuBeamFlash",
+    "NeutralsFlash"
    ]
   },
   "output": {
