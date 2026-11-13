@@ -249,16 +249,6 @@ def test_pool_draw_leaves_the_t0_stream_unchanged():
     assert np.array_equal(oa["t0"], ob["t0"], equal_nan=True)
 
 
-def test_shipped_pool_table_is_the_default_table_plus_pools():
-    a, b = RT.load(RT.CEONLY), RT.load(RT.POOLS)
-    assert set(b) - set(a) == {"pool_res", "pool_idx", "pool_start", "pool_count", "reference"}
-    assert "CE" in str(b["reference"])
-    for k in a:
-        assert np.array_equal(a[k], b[k]), k
-    assert b["pool_res"].shape[1] == len(RT.RES + RT.QUAL) and (b["pool_count"] > 0).all()
-    assert int(b["pool_idx"].max()) < len(b["pool_res"])
-
-
 def test_reference_text_is_stored_only_when_given():
     d = _reference(5000, np.random.default_rng(34))
     assert "reference" not in RT.build(d)
@@ -409,7 +399,7 @@ def test_knob_interpolation_mixes_the_neighbouring_grid_tables():
         RT.interpolate(lo, RT.build(d.iloc[:20000], pools="all"), 0.5)
 def test_shipped_fulldts_table_has_the_default_bins_and_pools():
     a, b = RT.load(RT.CEONLY), RT.load(RT.NAMED["fulldts"])
-    assert set(b) == set(RT.load(RT.POOLS))
+    assert set(b) - set(a) == {"pool_res", "pool_idx", "pool_start", "pool_count", "reference"}
     for k in ("nrow_edges", "tandip_edges", "qnodes", "time_edges", "cuts", "axis_xy"):
         assert np.array_equal(a[k], b[k]), k          # the same bins, in the CE's own rows
     assert (b["count"] >= a["count"]).all() and b["count"].sum() > 2.5 * a["count"].sum()   # 21 dts files, not 7
@@ -421,7 +411,7 @@ def test_shipped_fulldts_table_has_the_default_bins_and_pools():
 
 
 def test_named_tables_resolve_to_shipped_files():
-    assert RT.NAMED["default"] == RT.DEFAULT == RT.FULLDTS and RT.NAMED["pools"] == RT.POOLS
+    assert RT.NAMED["default"] == RT.DEFAULT == RT.FULLDTS and "pools" not in RT.NAMED
     assert RT.NAMED["ceonly"] == RT.CEONLY and RT.load()["reference"] == RT.load(RT.FULLDTS)["reference"]
     assert all(p.exists() for p in RT.NAMED.values())
 
@@ -441,7 +431,7 @@ def test_registered_tables_are_fetched_into_the_cache_and_checked(tmp_path, monk
     p = RT.resolve(h, RT.registry(reg))
     assert p.parent == tmp_path / "cache" and str(RT.load(p)["config_hash"]) == h
     RT.check_config(RT.load(p), MANIFEST)
-    assert RT.resolve("pools") == RT.POOLS and RT.resolve(str(src / "t.npz")) == src / "t.npz"
+    assert RT.resolve("ceonly") == RT.CEONLY and RT.resolve(str(src / "t.npz")) == src / "t.npz"
     p.write_bytes(b"corrupt")                                             # a changed file fails the sha256
     with pytest.raises(ValueError):
         RT.fetch(h, RT.registry(reg))

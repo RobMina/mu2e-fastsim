@@ -12,10 +12,8 @@ reconstruction and EventNtuple. Bins: step rows (`nrow_edges`) x entry tan(dip) 
 digitisation window); the bin tables use entry times from 300 ns on. Validation on independent events is not part of
 the table.
 
-`ce_loophelix_run1a_pools.npz` (`"pools"` or `"ceonly_pools"`): the same tables, built from the same events, plus each bin's pool
-(`table --pools`: `pool_res`, `pool_idx`, `pool_start`, `pool_count`). A response table with pools draws the seven
-residual and quality quantities jointly from one reference track of the bin pool instead of the Gaussian copula and
-inverse CDFs. Every array the CE-only file holds is identical in both files; the pool file also records its `reference` text.
+The CE-only table with pools (`ce_loophelix_run1a_pools.npz`, formerly `"pools"` / `"ceonly_pools"`) is parked on
+the branch `park/recoresp-ceonly-pools` (see PARKED.md): the full-event table carries pools and is the default.
 
 `ce_loophelix_run1a_fulldts_pools.npz` (the default; also `"fulldts"`): the same bins, built from three times the
 development events (sequencers 001430_00000000..00000600, 00000050..00000750 and 00001400..00001900 of the same
