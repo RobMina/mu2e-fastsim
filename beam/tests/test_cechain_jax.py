@@ -162,3 +162,49 @@ def test_geometries_share_one_compile_and_padding_changes_nothing(dtype, monkeyp
         for f, va in a._asdict().items():
             if va is not None:
                 assert np.asarray(va).tobytes() == np.asarray(getattr(b, f)).tobytes(), f
+
+
+
+@pytest.mark.parametrize("dtype,tol", [(np.float64, 1e-9), (np.float32, 1e-4)])
+def test_a_positron_in_B_follows_the_electron_path_in_minus_B(dtype, tol):
+    # no material on the way: charge +1 in B is charge -1 in -B, step for step (device and NumPy chains)
+    rng = np.random.default_rng(11)
+    g = _geom(**VACUUM)
+    x, u = _starts(200, rng, r=10.0, cos=(0.6, 0.8))
+    B = np.array([0.05, 0.0, 1.0])
+    kw = dict(z_record=7000.0, dtype=dtype, min_bucket=64)
+    e = CJ.transport(jax.random.PRNGKey(0), g, -B, x, u, C.P_CE_AL, 3.0, **kw)
+    p = CJ.transport(jax.random.PRNGKey(0), g, B, x, u, C.P_CE_AL, 3.0, positron=True, **kw)
+    assert (p.fate == C.PLANE).all()
+    for f in ("x", "u", "T", "t", "path", "rec_x", "rec_u", "rec_T", "rec_t"):
+        assert np.allclose(getattr(p, f), getattr(e, f), rtol=tol, atol=tol if dtype == np.float64 else 0.2), f
+    a = C.transport(np.random.default_rng(1), g, -B, x, u, C.P_CE_AL, 3.0)
+    b = C.transport(np.random.default_rng(1), g, B, x, u, C.P_CE_AL, 3.0, positron=True)
+    for f in ("x", "u", "T", "t", "path"):
+        assert np.allclose(getattr(b, f), getattr(a, f), rtol=1e-12, atol=1e-9), f
+    # and the positron in B curls the other way round: not the electron path in B
+    c = CJ.transport(jax.random.PRNGKey(0), g, B, x, u, C.P_CE_AL, 3.0, **kw)
+    assert np.abs(c.x[:, :2] - p.x[:, :2]).max() > 10.0
+
+
+@pytest.mark.slow   # statistical NumPy-device comparison of the positron chain, 1000 tracks
+def test_positron_foil_births_agree_with_the_numpy_chain():
+    rng = np.random.default_rng(12)
+    g = _geom(foil_z=tuple(5800.0 + 22.0 * np.arange(5)), ipa=(300.0, 0.5, 6000.0, 7000.0), ring=9.525)
+    n = 1000
+    k = rng.integers(0, 5, n)
+    r = np.sqrt(rng.uniform(21.5 ** 2, 75.0 ** 2, n))
+    ph = rng.uniform(0, 2 * np.pi, n)
+    x = np.stack([AXIS + r * np.cos(ph), r * np.sin(ph), g.beam.foil_z[k] + rng.uniform(-0.05, 0.05, n)], axis=1)
+    u = C.isotropic(rng, n)
+    a = C.transport(np.random.default_rng(13), g, [0.0, 0.0, 1.0], x, u, C.P_CE_AL, 0.0, backend="jax", positron=True)
+    b = CJ.transport(jax.random.PRNGKey(13), g, [0.0, 0.0, 1.0], x, u, C.P_CE_AL, 0.0, min_bucket=256, positron=True)
+    assert (b.nfoil >= 1).all() and (b.fate != C.LIVE).all()
+    for fv in (C.PLANE, C.STOPPED, C.ABSORBED):
+        fa, fb = (a.fate == fv).mean(), (b.fate == fv).mean()
+        assert fb == pytest.approx(fa, abs=5 * np.sqrt(max(fa, 0.01) / n)), C.FATES[fv]
+    for f in ("nfoil", "nipa", "nring"):
+        assert getattr(b, f).mean() == pytest.approx(getattr(a, f).mean(), abs=0.1 + 0.1 * getattr(a, f).mean()), f
+    pa, pb = a.fate == C.PLANE, b.fate == C.PLANE
+    T0 = np.hypot(C.P_CE_AL, 0.511) - 0.511
+    assert np.median(T0 - b.T[pb]) == pytest.approx(np.median(T0 - a.T[pa]), rel=0.15)

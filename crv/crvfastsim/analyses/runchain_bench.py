@@ -5,6 +5,7 @@
         [--seed 7] [--prefetch] [--resident-response] [--compile-cache DIR] [--passes 3] --out bench.json [--outdir DIR]
         [--fresh-inputs --files-per-pass K [--allow-file-reuse]]
         [--approx-preset default|fast|fidelity] [--approx NAME=LEVEL ...] [--approximations FILE]
+        [--capacities CAPS.json | --record-capacities]
 
 The gen tables are read into host memory first (reported as prepare_s). Each pass is one runchain.run over all of
 them in this process (the multi-file stream: every file through transport, tier 1b, response and reco). The
@@ -19,6 +20,13 @@ distinct files; with fewer, the run is refused unless --allow-file-reuse, which 
 file is generated-level identical but is transported with a new seed) and records the reuse in the report. All gen
 tables are read once before the passes (prepare_s). Passes may then hold different event counts: the report's
 warm_rate and n10 use the events of each pass (events_per_pass), and "events" is their mean.
+
+--capacities CAPS.json (crvfastsim.capacity; needs the resident response): every device call takes its shape from
+the file instead of a power-of-two bucket of its own size, so passes on new events compile nothing; the SiPM and
+waveform-noise draws are made independent of the shapes (another realization than the default). The report's
+runchain.capacity holds the largest demand per buffer and any overflow (calls that exceeded the file and ran with
+their bucketed shape). --record-capacities runs the same draws with bucketed shapes and records the demand; derive a
+file with python3 -m crvfastsim.capacity REPORT.json ... --out CAPS.json.
 """
 import argparse
 import json
@@ -48,6 +56,10 @@ def main(argv=None):
                         "on an accelerator and off on the CPU backend (runchain's default with --jax); "
                         "--no-resident-response: the two-stage path")
     p.add_argument("--compile-cache", metavar="DIR")
+    cap = p.add_mutually_exclusive_group()
+    cap.add_argument("--capacities", metavar="CAPS.json", help="fixed device shapes (crvfastsim.capacity)")
+    cap.add_argument("--record-capacities", action="store_true",
+                     help="capacity draws with bucketed shapes; record the demand per buffer for a capacity file")
     p.add_argument("--passes", type=int, default=3)
     p.add_argument("--out", required=True, help="timer report JSON")
     p.add_argument("--outdir", default=None, help="runchain stats directory (default: next to --out)")
@@ -98,6 +110,12 @@ def main(argv=None):
         p.error(str(e))
     run_kw = {k: v for k, v in merged.items() if k not in setup}   # run-time options only (not the prepared context)
     run_kw["approximations"] = selection
+    if a.capacities or a.record_capacities:
+        from ..capacity import Capacities
+        if a.resident_response is False:
+            p.error("--capacities / --record-capacities need the resident response")
+        setup["resident_response"] = True
+        run_kw["capacities"] = Capacities.load(a.capacities, record=True) if a.capacities else Capacities(record=True)
     outdir = a.outdir or str(Path(a.out).with_suffix("")) + "_runchain"
     state = {}
 
@@ -136,7 +154,9 @@ def main(argv=None):
     res = state["result"]
     report["approximations"] = res.get("approximations")
     report["runchain"] = {k: res[k] for k in ("generated_events", "clusters_per_generated", "timers", "run_config",
-                                              "tier1b", "conditions", "precision") if k in res}
+                                              "tier1b", "conditions", "precision", "capacity") if k in res}
+    if a.capacities:
+        report["runchain"]["capacity_file"] = a.capacities
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     Path(a.out).write_text(json.dumps(report, indent=1, default=str) + "\n")
     print(bench.format_report(report), flush=True)

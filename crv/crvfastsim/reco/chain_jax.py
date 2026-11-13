@@ -46,13 +46,16 @@ def _bucket(n, lo):
     return max(lo, 1 << int(np.ceil(np.log2(max(n, 1)))))
 
 
-def _device_refit(W, g, cfg_np):
+def _device_refit(W, g, cfg_np, caps=None):
     """Waveforms g (W rows) through the dense JAX fit at full length (power-of-two padded) with REFIT_ROUNDS rounds.
     Returns (flat pulses wf/seq/pe/time with wf indexing g, mask of g still needing the numpy refit)."""
     import jax.numpy as jnp
     n = W["n"][g]
     L2 = _bucket(int(n.max()), REFIT_MIN_L)
     R = _bucket(len(g), 1024)
+    if caps is not None:   # fixed shapes (crvfastsim.capacity): rows only pad, samples must hold every waveform
+        L2 = caps.size("refit_samples", int(n.max()), L2)
+        R = caps.size("refit_rows", len(g), R)
     adc = np.zeros((R, L2), W["adc"].dtype)
     width = min(L2, W["adc"].shape[1])
     adc[:len(g), :width] = W["adc"][g][:, :width]
@@ -68,7 +71,7 @@ def _device_refit(W, g, cfg_np):
     return dict(wf=wf, seq=seq, pe=d["pe"][wf, seq], time=d["time"][wf, seq]), again
 
 
-def _pulse_collect(outs, W, rows, cfg_np, device_refit=False, counts=None):
+def _pulse_collect(outs, W, rows, cfg_np, device_refit=False, counts=None, caps=None):
     """Flat pulses (waveform row, seq, pe, time) in (waveform, seq) order; flagged waveforms redone in numpy, or first
     on the device at full length (device_refit) with only the ones that still overflow in numpy."""
     d = {k: np.concatenate([dprec.host(o[k])[:n] for o, n in outs]) for k in PULSE_KEYS}
@@ -78,7 +81,7 @@ def _pulse_collect(outs, W, rows, cfg_np, device_refit=False, counts=None):
     nredo = int(redo.sum())
     if nredo and device_refit:
         rr = np.flatnonzero(redo)
-        dev, again = _device_refit(W, rows[rr], cfg_np)
+        dev, again = _device_refit(W, rows[rr], cfg_np, caps)
         parts = [dev]
         if again.any():
             ra = np.flatnonzero(again)
@@ -113,7 +116,7 @@ def _pulse_collect(outs, W, rows, cfg_np, device_refit=False, counts=None):
 
 
 def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.FinderConfig(), timers=None,
-        keep_pulses=False, with_pos=False, add_pulses=None, pulse_cfg=None, device_refit=False):
+        keep_pulses=False, with_pos=False, add_pulses=None, pulse_cfg=None, device_refit=False, capacities=None):
     """W: waveforms sorted by (ev, channel, time) with pulsefit inputs and ev, bar, sipm; optional "toff" (per-waveform
     DB time offset [ns], added to the pulse times as CrvRecoPulsesFinder does with useTimeOffsetDB; offspill TDC0time
     is 0). Optional "event_t0" is a per-waveform bunch correction added independently of DB calibration.
@@ -145,7 +148,8 @@ def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.Finde
             add("pulse_dispatch_s", t0)
         if 0 <= k - 1 < len(chunks):
             t0 = tic()
-            wrow, seq, pe, tm, nredo = (_pulse_collect(pul.pop(k - 1), W, chunks[k - 1], cfg_np, True, timers)
+            wrow, seq, pe, tm, nredo = (_pulse_collect(pul.pop(k - 1), W, chunks[k - 1], cfg_np, True, timers,
+                                                       capacities)
                                         if device_refit else _pulse_collect(pul.pop(k - 1), W, chunks[k - 1], cfg_np))
             if cfg_np.ignore_channels:
                 keep = (status[W['bar'][wrow] * 4 + W['sipm'][wrow]] & 0b010) == 0

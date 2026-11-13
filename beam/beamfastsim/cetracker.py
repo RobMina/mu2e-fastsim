@@ -27,6 +27,12 @@ observables, every stage on one device. The track observables come from the reco
 (trkfastsim.recoresp: efficiency and residual tables measured from stock LoopHelix reconstruction), applied per
 event to the device entry state and the number of step rows. Digitisation (optional) runs the device digitiser
 (trkfastsim.digi.digi_jax), whose host packing reads the steps once.
+
+Pair events (opt-in, `positrons=`): a second leg of positron births, one per electron birth of the same event (e.g.
+the e+ e- pair of an RPC internal conversion), runs through the same stages with charge +1 (cechain_jax and
+fieldsteps_jax positron=True: positron loss and scattering tables), its own albedo and deltas; its straw steps are
+appended to the event's rows before digitisation. The track observables stay those of the electron (the reco
+response is the electron's). starts(paths, pdg=-11) reads the positron births from the dumper tables.
 """
 import json
 import time
@@ -42,6 +48,8 @@ from . import cechain
 KEY = tables.KEY
 STATE = ["x", "y", "z", "px", "py", "pz", "t"]
 PDG_E = 11
+PDG_POSITRON = -11
+POSITRON_STREAM = 0x2B                    # DeviceChain: the positron leg's random keys are folded with this
 ORIGIN = (-3904.0, 0.0, 10171.0)          # tracker (detector) origin in the Mu2e frame, Run 1A [mm]
 B_DS_MIN = 0.5                            # [T] the first map must give at least this field at ORIGIN (DS map)
 # The selection of every primary dts (Production JobConfig/primary/prolog.fcl, PrimaryFilter, a DetectorStepFilter):
@@ -55,29 +63,31 @@ STEP_COLS = KEY + ["nsgs", "sid", "plane", "panel", "straw", "upanel", "shape", 
                    "width", "t", "x0", "y0", "z0", "x1", "y1", "z1", "px", "py", "pz"]
 
 
-def starts(paths):
+def starts(paths, pdg=PDG_E):
     """The generated electron of each event (Mu2e frame), one row per event, from the dumper tables: the electron in the
     gen tree, or, for an event whose gen tree holds no electron (CeEndpoint dts keep the stopped muon there), the
-    birth state of its primary electron SimParticle."""
+    birth state of its primary electron SimParticle. pdg=-11 (PDG_POSITRON): the generated positron instead (the e+
+    of an RPC pair), with the same rules."""
     g = tables.read_many(paths, "gen")
     for k in KEY:
         g[k] = g[k].astype(np.uint64)
     events = g[KEY].drop_duplicates()
-    g = g[g.pdg == PDG_E]
+    g = g[g.pdg == pdg]
     missing = events.merge(g[KEY].drop_duplicates(), on=KEY, how="left", indicator=True)
     missing = missing[missing._merge == "left_only"][KEY]
     if len(missing):
         p = tables.read_many(paths, "particles")
         for k in KEY:
             p[k] = p[k].astype(np.uint64)
-        p = p[(p.pdg == PDG_E) & ((p.isprim == 1) | (p.ismcprim == 1))].rename(
+        p = p[(p.pdg == pdg) & ((p.isprim == 1) | (p.ismcprim == 1))].rename(
             columns={"sx": "x", "sy": "y", "sz": "z", "spx": "px", "spy": "py", "spz": "pz", "st": "t"})
         g = pd.concat([g[KEY + ["pdg"] + STATE], p.merge(missing, on=KEY)[KEY + ["pdg"] + STATE]], ignore_index=True)
+    what = "electron" if pdg == PDG_E else f"pdg {pdg}"
     if g.empty:
-        raise ValueError("no generated electrons in the tables")
+        raise ValueError(f"no generated {what} in the tables")
     g = g[KEY + ["pdg"] + STATE].copy()
     if g.duplicated(KEY).any():
-        raise ValueError("more than one generated electron in an event")
+        raise ValueError(f"more than one generated {what} in an event")
     return g.sort_values(KEY).reset_index(drop=True)
 
 
@@ -311,6 +321,8 @@ class DeviceChain:
         if nrow_library is not None and (deltas is not None or response is None):
             raise ValueError("nrow_library (sampled rows) has no tracker steps and feeds only the response: it takes "
                              "no deltas, and needs a response")
+        from mu2efastsim import devloops
+        devloops.select("W2")                      # the W2 device-loop setting, if no JAX backend exists yet
         import jax  # noqa: F401  (device backend)
         from mu2efastsim import ehelix
         from trkfastsim.sim import fieldsteps_jax as FJ
@@ -379,12 +391,13 @@ class DeviceChain:
                                            np.asarray(stops["t"], float), n)
         return x, u, p, t
 
-    def transport(self, births, seed):
+    def transport(self, births, seed, positron=False):
         """cechain + tracker transport of births ((x, u, p, t) host or device arrays, or a DataFrame with KEY +
         STATE columns). Returns a dict: cechain (Result, device), has_entry, entry x, p, t, tracker
         (fieldsteps_jax.Result), nrow (step rows per event), nrow_dts (the electron's first-passage rows the dts
         PrimaryFilter counts, `dts_rows`; None with sampled rows), timing (enqueue wall seconds; the device may still
-        run)."""
+        run). positron (opt-in): the births are positrons (charge +1 in cechain_jax and fieldsteps_jax, positron
+        tables; own albedo returns as positrons); their random keys are folded with POSITRON_STREAM."""
         import jax
         import jax.numpy as jnp
         from trkfastsim.sim import fieldsteps_jax as FJ
@@ -398,10 +411,14 @@ class DeviceChain:
         else:
             x, u, p, t0 = (np.asarray(v, float) for v in births)
         key = jax.random.PRNGKey(seed)
+        if positron:
+            if self.nrow is not None:
+                raise ValueError("positron leg: nrow_library (sampled rows) has no tracker steps")
+            key = jax.random.fold_in(key, POSITRON_STREAM)
         tic = time.perf_counter()
         r = cechain_jax.transport(jax.random.fold_in(key, 0), self.cg, self.maps, x, u, p, t0, h=10.0,
                                   dtype=self.dt, lanes=self.lanes, unroll=self.ce_unroll, shrink=self.ce_shrink,
-                                  device_out=True)
+                                  device_out=True, positron=bool(positron))
         t_ce = time.perf_counter() - tic
         has = r.fate == cechain.PLANE
         T = r.T
@@ -413,13 +430,13 @@ class DeviceChain:
             nrow = self._nrow_sample(self.nrow, jax.random.fold_in(key, 6), has, r.x, pe)
             return dict(cechain=r, has_entry=has, x=r.x, p=pe, t=r.t, tracker=None, nrow=nrow, nrow_dts=None,
                         timing=dict(cechain_s=round(t_ce, 3), tracker_s=round(time.perf_counter() - tic, 3)))
-        trk = FJ.transport(self.trk, jax.random.fold_in(key, 1), r.x, pe, r.t, active=has)
+        trk = FJ.transport(self.trk, jax.random.fold_in(key, 1), r.x, pe, r.t, active=has, positron=bool(positron))
         nrow = trk.steps["valid"].sum(axis=1)       # the conversion electron's rows (the response layer's input)
         nrow_dts = dts_rows(trk.steps)               # its rows the dts PrimaryFilter counts (first passage)
         out = {}
         if self.alb is not None:
             # the response tables count every row of the Geant4 conversion electron, its own albedo included
-            trk, out["albedo"], ce_rows = self._albedo(trk, jax.random.fold_in(key, 4))
+            trk, out["albedo"], ce_rows = self._albedo(trk, jax.random.fold_in(key, 4), positron=bool(positron))
             nrow = nrow + ce_rows
         if self.dl is not None:                    # after the albedo: the returns' crossings get deltas too
             trk, out["deltas"] = self._deltas(trk, jax.random.fold_in(key, 5))
@@ -447,11 +464,13 @@ class DeviceChain:
         return trk._replace(steps=steps), dict(steps=total, kept=int(h["kept"]), dropped=int(h["dropped"]), overflow=over,
                                                outside=total - over - int(h["kept"]))
 
-    def _albedo(self, trk, key):
+    def _albedo(self, trk, key, positron=False):
         """Downstream albedo (trkfastsim.sim.albedo): tracks that left the tracker downstream pick a Geant4 exit of
         their bin; its returns are transported from the tracker's back plane and their records appended to the
         track's rows (beyond R_CAP dropped and counted). Returns (tracker result, stats, the rows of the electron's
-        own returns per track, before the R_CAP cut). One host read (the return count)."""
+        own returns per track, before the R_CAP cut). One host read (the return count). positron: the tracks are
+        positrons; the library (built from electron exits) is used as it is, the track's own returns (isce) are
+        transported as positrons and the shower returns as electrons."""
         import jax
         import jax.numpy as jnp
         from trkfastsim.sim import albedo as AL, fieldsteps_jax as FJ
@@ -470,8 +489,16 @@ class DeviceChain:
             return trk, dict(stats, dropped=0), jnp.zeros_like(trk.steps["valid"].sum(axis=1))
         size = max(64, 1 << int(np.ceil(np.log2(stats["total"]))))
         rr = self.alb.returns(g, phi, te, jnp.arange(g.shape[0]), size)
-        ret = FJ.transport(self.trk, jax.random.fold_in(key, 1), rr["x"], rr["p"], rr["t"], active=rr["valid"],
+        act = (rr["valid"] & ~rr["isce"]) if positron else rr["valid"]
+        ret = FJ.transport(self.trk, jax.random.fold_in(key, 1), rr["x"], rr["p"], rr["t"], active=act,
                            max_chords=self.alb_max_chords)
+        if positron:                               # the positron's own returns: charge +1, merged lane by lane
+            own = rr["valid"] & rr["isce"]
+            rp = FJ.transport(self.trk, jax.random.fold_in(key, 2), rr["x"], rr["p"], rr["t"], active=own,
+                              max_chords=self.alb_max_chords, positron=True)
+            pick = lambda a, b: jnp.where(own.reshape((-1,) + (1,) * (a.ndim - 1)), a, b)
+            ret = ret._replace(steps={k: pick(rp.steps[k], v) for k, v in ret.steps.items()},
+                               final={k: pick(rp.final[k], v) for k, v in ret.final.items()})
         stats["capped"] = int(jnp.sum((ret.final["status"] == FJ.CAPPED) & rr["valid"]))
         steps, dropped = AL.merge_records(trk.steps, ret.steps, rr["track"], rr["valid"], FJ.R_CAP)
         stats["dropped"] = int(dropped)
@@ -573,10 +600,35 @@ class DeviceChain:
         return RD.apply(self.resp, jax.random.fold_in(jax.random.PRNGKey(seed), 2), res["has_entry"], res["nrow"],
                         res["x"], res["p"], res["t"], observables=self.track_observables)
 
-    def __call__(self, births, seed, digis=True, event_timing=None):
+    def transport_pair(self, births, positrons, seed):
+        """Pair events: the electron births and, one per event in the same order, the positron births, each leg
+        through transport (the positron with positron=True); the positron leg's straw steps (with its albedo and
+        deltas) are appended to the event's rows (albedo.merge_records; beyond R_CAP dropped and counted). Returns the
+        electron leg's dict with the merged tracker steps and nrow_dts (both legs), `positron` (the positron leg's
+        has_entry, x, p, t, nrow, nrow_dts, cechain, stats) and `pair` (dropped records)."""
+        import jax.numpy as jnp
+        from trkfastsim.sim import albedo as AL, fieldsteps_jax as FJ
+        re = self.transport(births, seed)
+        rp = self.transport(positrons, seed, positron=True)
+        n = int(re["has_entry"].shape[0])
+        if int(rp["has_entry"].shape[0]) != n:
+            raise ValueError(f"transport_pair: {n} electron births but {int(rp['has_entry'].shape[0])} positron births")
+        steps, dropped = AL.merge_records(re["tracker"].steps, rp["tracker"].steps, jnp.arange(n),
+                                          jnp.ones(n, bool), FJ.R_CAP)
+        out = dict(re, tracker=re["tracker"]._replace(steps=steps))
+        if re.get("nrow_dts") is not None and rp.get("nrow_dts") is not None:
+            out["nrow_dts"] = re["nrow_dts"] + rp["nrow_dts"]      # the dts PrimaryFilter counts both legs' steps
+        out["positron"] = {k: v for k, v in rp.items() if k != "tracker"}
+        out["positron"]["final"] = rp["tracker"].final
+        out["pair"] = dict(dropped=int(dropped))
+        return out
+
+    def __call__(self, births, seed, digis=True, event_timing=None, positrons=None):
+        """One batch: transport (or transport_pair with positrons: positron births, one per electron birth, same
+        order), digis (optional) and the electron's track observables."""
         if digis and self.cond is not None and self.nrow is not None:
             raise ValueError("nrow_library (sampled rows) has no tracker steps to digitise: call with digis=False")
-        res = self.transport(births, seed)
+        res = self.transport(births, seed) if positrons is None else self.transport_pair(births, positrons, seed)
         if digis and self.cond is not None:
             res["digis"] = self.digitize(res, seed, event_timing)
         if self.resp is not None:
@@ -592,19 +644,22 @@ DIGI_ELECTRONICS = {"entries_per_straw": 1.25, "saturation_rows": "auto", "satur
                     "saturation_tiles": "bounded"}
 
 
-def run(stops_or_births, seed, *, n=None, digis=True, event_timing=None, **chain_kw):
+def run(stops_or_births, seed, *, n=None, digis=True, event_timing=None, positrons=None, **chain_kw):
     """One batch through DeviceChain (built once per process and configuration): stops_or_births is a stop table
-    (dict/npz with x, y, z, t; then n births are drawn) or births (x, u, p, t). Returns DeviceChain's dict."""
+    (dict/npz with x, y, z, t; then n births are drawn) or births (x, u, p, t). positrons (opt-in): positron births
+    (x, u, p, t), one per electron birth (pair events, DeviceChain.transport_pair). Returns DeviceChain's dict."""
     key = tuple(sorted((k, tuple(v) if isinstance(v, (list, tuple)) else tuple(sorted(v.items())) if isinstance(v, dict)
                         else v) for k, v in chain_kw.items()))
     if key not in _CHAIN:
         _CHAIN[key] = DeviceChain(**chain_kw)
     ch = _CHAIN[key]
     if hasattr(stops_or_births, "keys") or hasattr(stops_or_births, "files"):
+        if positrons is not None:
+            raise ValueError("run: positrons need electron births, not a stop table")
         births = ch.births(stops_or_births, int(n), seed)
     else:
         births = stops_or_births
-    return ch(births, seed, digis=digis, event_timing=event_timing)
+    return ch(births, seed, digis=digis, event_timing=event_timing, positrons=positrons)
 
 
 def bench_prepare(n, seed=None):
@@ -645,6 +700,8 @@ def main(argv=None):
     ap.add_argument("--geom", default="Offline/Mu2eG4/geom/geom_common.txt")
     ap.add_argument("--backend", choices=("numpy", "device"), default="numpy")
     ap.add_argument("--device-float", choices=("float64", "float32"), default="float64")
+    ap.add_argument("--device-loops", choices=("auto", "on", "off"), default="auto",
+                    help="XLA device-side loops (mu2efastsim.devloops): auto (default: the W2 setting, off) or forced")
     ap.add_argument("--lanes", type=int, help="device chain: lanes per launch (default all)")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--max-events", type=int)
@@ -667,6 +724,8 @@ def main(argv=None):
     from .approximations import W2
     approximations.add_arguments(ap)
     a = ap.parse_args(argv)
+    from mu2efastsim import devloops
+    devloops.select("W2", a.device_loops)        # before the device modules create a JAX backend
     try:
         selection = approximations.from_args(a, W2)
         selection.apply_namespace(a, ap)

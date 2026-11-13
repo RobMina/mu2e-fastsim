@@ -17,6 +17,9 @@ except ImportError:
     HAVE_JAX = False
 
 
+ROWS_STEP = 8192   # JAX path: track rows padded to a multiple of this (results per row are unchanged)
+
+
 def _slab(xp, origin, direction, lo, hi):
     inv = 1.0 / xp.where(direction == 0.0, 1e-300, direction)
     t1 = (lo[None, :, :] - origin[:, None, :]) * inv[:, None, :]
@@ -33,8 +36,12 @@ def slab_crossings(origin, direction, lo, hi, backend=None):
     use_jax = HAVE_JAX if backend is None else backend == "jax"
     if use_jax:
         f64 = lambda x: jnp.asarray(x, jnp.float64)
-        t_in, t_out = _slab_jax(f64(origin), f64(direction), f64(lo), f64(hi))
-        return np.asarray(t_in), np.asarray(t_out)
+        n = len(origin)
+        pad = -(-max(n, 1) // ROWS_STEP) * ROWS_STEP - n     # track rows padded to a multiple of ROWS_STEP: few shapes,
+        o = np.pad(np.asarray(origin, np.float64), ((0, pad), (0, 0)))           # so new inputs do not recompile; each
+        d = np.pad(np.asarray(direction, np.float64), ((0, pad), (0, 0)), constant_values=1.0)   # row is independent
+        t_in, t_out = _slab_jax(f64(o), f64(d), f64(lo), f64(hi))
+        return np.asarray(t_in)[:n], np.asarray(t_out)[:n]
     return _slab(np, np.asarray(origin), np.asarray(direction), np.asarray(lo), np.asarray(hi))
 
 

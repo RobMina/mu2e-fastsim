@@ -148,9 +148,9 @@ def event_key(df):
     return (df.subrun.to_numpy().astype(np.int64) << 20) | df.event.to_numpy().astype(np.int64)
 
 
-def charges(steps, parts, geom, cond, cfg, rng, key=None, tabs=None, pmap=None, timers=None, pdg=None):
+def charges(steps, parts, geom, cond, cfg, rng, key=None, tabs=None, pmap=None, timers=None, pdg=None, caps=None):
     """CrvSteps (+ particles for pdg, or pdg per step given) -> SiPM charges. Returns dict chan (label), time, charge,
-    pe, photon (step row)."""
+    pe, photon (step row). caps (crvfastsim.capacity.Capacities, resident JAX path only): fixed device shapes."""
     from .response.contract import validate_sipm, validate_window, require_complete
     validate_sipm(cfg.sipm)
     validate_window(cfg.window, fused=cfg.jax and cfg.fused_response)
@@ -184,7 +184,9 @@ def charges(steps, parts, geom, cond, cfg, rng, key=None, tabs=None, pmap=None, 
         from .response import resident
         key = key if key is not None else jax.random.PRNGKey(0)
         return resident.charges(steps, pdg, geom, cond, cfg, rng, key, tabs, pmap, status, event_key(steps), CHAN_MULT,
-                                timers)
+                                timers, caps=caps)
+    if caps is not None:
+        raise ValueError("capacities need the resident JAX response (ChainConfig.resident_response)")
     if cfg.jax:
         import jax
         from .response import photons_jax, sipm_jax
@@ -229,8 +231,9 @@ def tdc0_per_feb(labels, cond, rng, width=PERIOD, key="roc_feb"):
     return rng.random(len(u))[inv.ravel()] * width
 
 
-def digis(Q, cond, cfg, rng, key=None, timers=None, *, stock_scan=False):
-    """SiPM charges -> zero-suppressed digis (reco.waveform[_jax]); per digi chan (label), starttdc, adc [n, 12]."""
+def digis(Q, cond, cfg, rng, key=None, timers=None, *, stock_scan=False, caps=None):
+    """SiPM charges -> zero-suppressed digis (reco.waveform[_jax]); per digi chan (label), starttdc, adc [n, 12].
+    caps (crvfastsim.capacity.Capacities, JAX bucketed path): fixed synthesis shapes, noise per charge cluster."""
     from .reco import waveform as WF
     timers = timers if timers is not None else {}
     labels = np.unique(Q["chan"])
@@ -242,13 +245,19 @@ def digis(Q, cond, cfg, rng, key=None, timers=None, *, stock_scan=False):
         import jax
         from .reco import waveform_jax
         from .reco.coinc_jax import is_oneapi
+        if caps is not None and (is_oneapi() or cfg.unbucketed_synth):
+            raise ValueError("capacities need the bucketed JAX synthesis")
         if is_oneapi() or not cfg.unbucketed_synth:   # one call padded to the largest cluster needs tens of GiB
-            from .reco.cli import _synth_jax_bucketed    # (OOM on A100-40/80, UVA jobs 21732754-60): bucketed calls
-            seed = int(rng.integers(2 ** 31))
+            from .reco.cli import _synth_jax_bucketed, _synth_jax_fixed   # (OOM on A100-40/80, UVA jobs
+            seed = int(rng.integers(2 ** 31))                              # 21732754-60): bucketed calls
             options = {"stock_scan": True} if stock_scan else {}
-            D = _synth_jax_bucketed(waveform_jax, {"row": Q["chan"], "time": Q["time"], "charge": Q["charge"]},
-                                    lut, wcfg, noise=wcfg.noise if cfg.noise else 0.0, seed=seed, window=cfg.window,
-                                    **options)
+            Qd = {"row": Q["chan"], "time": Q["time"], "charge": Q["charge"]}
+            if caps is not None:
+                D = _synth_jax_fixed(waveform_jax, Qd, lut, wcfg, caps, noise=wcfg.noise if cfg.noise else 0.0,
+                                     seed=seed, window=cfg.window, **options)
+            else:
+                D = _synth_jax_bucketed(waveform_jax, Qd, lut, wcfg, noise=wcfg.noise if cfg.noise else 0.0, seed=seed,
+                                        window=cfg.window, **options)
         else:
             options = {"stock_scan": True} if stock_scan else {}
             D = waveform_jax.synthesize(Q["chan"], Q["time"], Q["charge"], lut, wcfg, window=cfg.window,
@@ -284,7 +293,7 @@ def background_sampler(cfg, rng):
     return lambda events: cfg.background.sample(events, cfg.window, rng, rate_scale=cfg.background_scale)
 
 
-def clusters(W, cond, geom, counters_cfg, cfg, timers=None, detail=False, rng=None):
+def clusters(W, cond, geom, counters_cfg, cfg, timers=None, detail=False, rng=None, caps=None):
     """Reco waveforms -> pulses -> coincidence clusters. JAX: reco.chain_jax.run (pipelined pulses + coincidences);
     numpy: reco.pulsefit.reconstruct then reco.coinc.find_event per event (the validated references; no JAX needed).
     Returns (list of cluster dicts with cl_event, cl_type, cl_pe, ..., timers). detail: each dict also carries cl_pos,
@@ -302,7 +311,8 @@ def clusters(W, cond, geom, counters_cfg, cfg, timers=None, detail=False, rng=No
         return chain_jax.run(W, G, cond.status, n_chunks=max(1, min(8, len(np.unique(W["ev"])) // 1000)),
                              rounds=cfg.rounds, L=12, timers=timers, keep_pulses=detail, with_pos=detail, coinc_cfg=fcfg, pulse_cfg=rcfg,
                              add_pulses=background_sampler(cfg, rng if rng is not None else np.random.default_rng()),
-                             **({"device_refit": True} if cfg.device_refit else {}))
+                             **({"device_refit": True} if cfg.device_refit else {}),
+                             **({"capacities": caps} if caps is not None else {}))
     t0 = _time.perf_counter()
     P = pulsefit.reconstruct_full(W["adc"], W["n"], W["start"], W["ped"], W["area"], W["height"], rcfg)
     P = pulsefit.filter_channels(P, W['bar'] * 4 + W['sipm'], cond.status, rcfg)

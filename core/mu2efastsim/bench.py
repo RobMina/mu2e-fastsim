@@ -391,9 +391,14 @@ def main(argv=None):
     p.add_argument("--boundary", help='input -> output in one line, e.g. "stock TS states -> stops"')
     p.add_argument("--output-included", action="store_true", help="the entry point writes its output")
     p.add_argument("--device-label", help="override the detected device label")
+    p.add_argument("--device-loops", choices=("auto", "on", "off"), default="auto",
+                   help="XLA device-side loops (mu2efastsim.devloops): auto (default) picks the faster setting for "
+                        "--workflow; on or off forces it")
     p.add_argument("--out", type=Path, help="write the report JSON here")
     approx_mod.add_arguments(p)
     a = p.parse_args(argv)
+    from . import devloops
+    devloops.select(a.workflow, a.device_loops)     # before the entry point's module creates a JAX backend
     kwargs = json.loads(a.kwargs)
     if not isinstance(kwargs, dict):
         p.error("--kwargs must be a JSON object")
@@ -426,6 +431,8 @@ def main(argv=None):
         print(f"bench: error: {e}", file=sys.stderr)
         return 2
     report["entry"] = a.entry
+    report["device_loops"] = devloops.state()
+    report["graph_concurrency"] = devloops.concurrency_state()
     report["prepare"] = a.prepare
     report["kwargs"] = kwargs
     report["approximations"] = approx_record

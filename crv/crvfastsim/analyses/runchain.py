@@ -316,6 +316,10 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
     if removed:
         raise ValueError(f"runchain: options {removed} were removed (the transport subcommand keeps them)")
     approx = approximations_record(approximations, jax)
+    caps = kw.get("capacities")   # crvfastsim.capacity.Capacities: fixed device shapes (resident JAX path)
+    if caps is not None and not jax:
+        raise ValueError("capacities need the JAX path")
+    caps_kw = {} if caps is None else {"caps": caps}
     gen, inputs = resolve_generator(gen, inputs, jax)
     native = gen in ("native", "device")
     generator_backend = gen
@@ -488,8 +492,8 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
             T["steps"] = T.get("steps", 0) + len(st)
             T["events_with_steps"] = T.get("events_with_steps", 0) + int(st[tables.KEY].drop_duplicates().shape[0])
             file_timers = {} if benchmark is not None else T
-            Q = chain.charges(st, pa, geom, cond, cfg, rng, tabs=tabs, pmap=pmap, timers=file_timers)
-            D = chain.digis(Q, cond, cfg, rng, timers=file_timers)
+            Q = chain.charges(st, pa, geom, cond, cfg, rng, tabs=tabs, pmap=pmap, timers=file_timers, **caps_kw)
+            D = chain.digis(Q, cond, cfg, rng, timers=file_timers, **caps_kw)
             a = time.perf_counter() if benchmark is not None else None
             W = chain.reco_waveforms(D, cond)
             if benchmark is not None:
@@ -499,9 +503,9 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
             if reco_cpu and jax:   # response on the accelerator, reco with the JAX CPU backend (oneAPI: reco kernels slow)
                 import jax as _jax
                 with _jax.default_device(_jax.devices("cpu")[0]):
-                    outs, _ = chain.clusters(W, cond, geom, ccfg, cfg, timers=file_timers, **detail_kw)
+                    outs, _ = chain.clusters(W, cond, geom, ccfg, cfg, timers=file_timers, **caps_kw, **detail_kw)
             else:
-                outs, _ = chain.clusters(W, cond, geom, ccfg, cfg, timers=file_timers, **detail_kw)
+                outs, _ = chain.clusters(W, cond, geom, ccfg, cfg, timers=file_timers, **caps_kw, **detail_kw)
             file_timers["reco_s"] = file_timers.get("reco_s", 0.0) + time.perf_counter() - a
             if benchmark is not None:
                 for k_, v_ in file_timers.items():
@@ -534,6 +538,8 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
            "events_basis": "events_with_steps" if steps_input else "generated",
            "clusters_per_generated": {stype_name.get(int(k), str(k)): float((cl_type == k).sum() / n_gen)
                                       for k in np.unique(cl_type)}}
+    if caps is not None:
+        res["capacity"] = caps.report()
     if native_receipt is not None:
         live = native_receipt["live_seconds"]
         res["native_generator"] = native_receipt
