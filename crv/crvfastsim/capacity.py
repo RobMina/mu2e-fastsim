@@ -131,7 +131,8 @@ def main(argv=None):
             raise SystemExit(f"{r}: no recorded capacity usage (run with --record-capacities)")
         for k, v in u.items():
             usage[k] = max(usage.get(k, 0), int(v))
-    caps = derive(usage, a.margin, census=" ".join(r.name for r in a.reports),
+    caps = derive(usage, a.margin, census=" ".join(r.parent.name if r.name == "bench.json" else r.name
+                                                    for r in a.reports),
                   fixed={"sipm_photons": a.sipm_photons})
     with a.out.open("x") as f:
         f.write(json.dumps(caps, indent=1) + "\n")

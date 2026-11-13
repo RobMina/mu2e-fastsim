@@ -153,7 +153,7 @@ def test_capacity_file_derive_and_enforce(tmp_path):
     c = capacity.Capacities.load(path, record=True)
     assert c.size("photon_rows", 90, 128) == 100
     assert c.size("photon_rows", 101, 128) == 128                     # overflow: the bucketed shape, counted
-    assert c.size("photon_substeps", 7, 8) == 8                       # no capacity for this buffer
+    assert c.size("photon_arrivals", 7, 8) == 8                       # no capacity for this buffer
     assert c.cap("synth_samples", 64) == 52 and c.cap("synth_samples", 128) is None
     rep = c.report()
     assert rep["overflow"] == {"photon_rows": 1} and rep["usage"]["photon_rows"] == 101
