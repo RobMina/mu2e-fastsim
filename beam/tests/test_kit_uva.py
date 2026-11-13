@@ -549,3 +549,38 @@ def test_beam_centuple_mounted_body_runs_the_point_on_the_gpu():
     assert t.resources.gpus == 1 and t.defaults == {"dtype": "float64"} and "beam_centuple" in kitmod.FNAL_TASKS
     assert "-m beamfastsim.centuple point" in t.body and "@p_dtype@" in t.body and "/cvmfs" in t.body
     assert kit_task.CENT_DIR in t.body and set(t.params) == set(kit_task.CENT_PARAMS)
+
+
+def test_beam_edep_cpu_streams_the_same_inputs_into_one_cpu_core(tmp_path):
+    site, ep, kit, streamed = make(tmp_path)
+    kit._delegates["beam_edep_cpu"] = kit_uva.BeamEdepCpuStream(kit, source=Source(), code="/path/to/slurm/beam",
+                                                               background=False)
+    assert kit_task._UVAEdepCpuDelegate.applies(ep)
+    assert kit_uva.validate({k: v for k, v in PE.items() if k not in ("dtype", "task")},
+                            "beam_edep_cpu")["dtype"] == "float64"
+    pc = {**PE, "task": "beam_edep_cpu", "dtype": "float64"}
+    assert kit.submit("bc1", pc, [], []) == {"handle": "bc1"}
+    j = ep.state.get("bc1").job_id
+    body = site.body
+    assert "-m beamfastsim.edepana point" in body and "--dtype float64 " in body and "--procs 1 " in body
+    assert "--nv" not in body and "nvidia-smi" not in body and "JAX not on the GPU" not in body
+    assert "JAX_PLATFORMS=cpu" in body and "cpus ${SLURM_CPUS_PER_TASK:-?}" in body
+    assert "--xla_cpu_multi_thread_eigen=false" in body and "--batch" not in body   # edepana's CPU default batch
+    assert kit_uva.EDEP_CPU_RESOURCES.cores == 1 and kit_uva.EDEP_CPU_RESOURCES.gpus == 0
+    r = subprocess.run(["bash", "-n"], input=body.encode(), capture_output=True)
+    assert r.returncode == 0, r.stderr.decode()
+    site.state[j] = "RUNNING"
+    site.files[f"{site.dirs[j]}/inbox"] = "udc-a1 /dev/shm/beamfs_kit_j7001_9\n"
+    kit.status("bc1")
+    assert {s for s, _ in streamed} == {kit_task.SOB_TABLE, kit_task.EDEP_LIBRARY, kit_task.EDEP_GDML,
+                                        kit_task.EDEP_EDGE}
+
+
+def test_beam_edep_cpu_mounted_body_runs_the_writer_on_one_core():
+    t = kitmod.TASKS["beam_edep_cpu"]
+    assert t.resources.gpus == 0 and t.resources.cores == 1 and t.defaults == {"dtype": "float64"}
+    assert "beam_edep_cpu" in kitmod.FNAL_TASKS
+    assert "-m beamfastsim.edepana point" in t.body and "JAX not on the GPU" not in t.body
+    assert "JAX_PLATFORMS=cpu" in t.body and "--procs 1 " in t.body and '--edge-library "$EE"' in t.body
+    gpu = kitmod.TASKS["beam_edep"].body
+    assert "JAX not on the GPU" in gpu and "JAX_PLATFORMS=cpu" not in gpu

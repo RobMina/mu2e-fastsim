@@ -123,6 +123,23 @@ Two CRV capacity options restructure padded scans without changing results:
 On an A100 at batch 256 the CRV stage goes 0.183 -> 0.102 s (float32) and 0.227 -> 0.133 s (float64). Full-pass
 outputs are identical to the defaults (dev and held-out, both dtypes). The Run 1A capacity files set both.
 
+## Thermal noise on counters with steps (opt-in approximation)
+
+`"thermal_counters": "hit"` draws the SiPM thermal noise (dark counts) only on the four SiPMs of each counter that
+has an in-window step in the event; the default `"all"` draws it on every live SiPM. In real mixed batches of 256
+(Run 1A pileup) counters without a step carried essentially no output (0 digis and 0 pulses in two batches, one digi in
+a third), but their dark counts were about 94 % of the thermal hits: with the option the thermal hits fall from 451k
+to 27k per batch and the charge clusters from 203k to 36k. The batch-256 capacity files set it, with `thermal` and
+`charge_clusters` sized to 1.25 times the largest demand over full development and held-out passes (28,265 and 37,685)
+and `ct1`/`ct2` halved (full passes run without overflow).
+
+The draws change, so the outputs are statistically, not bit-for-bit, those of the default. Held-out subrun 1194, three
+pileup seeds, float32 and float64: against the stock sample the CRV pulse totals and per-sector shapes agree as the
+default's do (pulse ratio 0.981-1.004 +- 0.017, sector chi2 <= 1.3/2); against the default at the same seed the pulse
+total is 0.06-0.10 % lower on average (per seed -0.19 % to +0.05 %, paired error 0.09 %), and the pulse PE, time and
+per-event shapes are within the default's seed-to-seed spread. A real batch of 256 (A100): CRV 0.103 -> 0.093 s
+(float32), 0.137 -> 0.121 s (float64).
+
 ## Scope and validation
 
 Supported: staged stock onspill ZS response through reduced coincidence outputs.

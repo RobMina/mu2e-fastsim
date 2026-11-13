@@ -14,7 +14,38 @@ python3 -m beamfastsim.edepana point --g4 BEAM_TABLE.npz --z-up 3900 --geom GEOM
 ```
 
 fastsimkit task `beam_edep` (params `geom`, `muons`, `electrons`, `seed`, `dtype`) runs `point` as one GPU job and
-returns the file with the results (kind `root`).
+returns the file with the results (kind `root`). `beam_edep_cpu` (same params) runs the same `point` on one CPU core:
+a grid-slot-sized job with JAX single-threaded, float64 by default.
+
+## One CPU core
+
+Without `--batch`, `edepana` takes 5,000 electrons per batch on the CPU backend and 65,536 on a GPU (`default_batch`).
+On one core the lane arrays of smaller batches stay in cache and fewer shapes are compiled. Measured with one design
+point (`point`, 100k electrons, stops included, compilation included, one core, single-threaded):
+
+| batch | float64 wall | per electron (warm) | peak memory |
+|---|---|---|---|
+| 2,500 | 1.83 h | 62 ms | 6.9 GB |
+| 5,000 | **1.61 h** | **53 ms** (CE chain 26, tracker and albedo 27) | 8.9 GB |
+| 10,000 | 1.93 h | 63 ms | 10.4 GB |
+| 50,000 | did not finish: the compiler ran out of memory | ~110 ms | 11-15 GB |
+
+- **CPU models:** these are Intel Xeon Gold 6248 timings. float32 is slower on that CPU (2.03 h at 5,000). On an AMD EPYC
+  9454 core a point takes 1.4 h in float32 and 1.7 h in float64.
+- **What dominates:** the CE chain to the tracker entrance and the tracker transport. The stops of the point take
+  1-2 minutes and the calorimeter about 1 s per batch. About 7 minutes per point are compilation.
+- **A prebuilt compilation cache (`JAX_COMPILATION_CACHE_DIR` filled by an earlier job,
+  `JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0`).** Measured on a 5,000-electron point:
+  - **Reuse on the same CPU model:** 23.3 min against 10.0 min (Intel Gold 6248). About 60 % of the compile time is
+    saved; about 350 of the roughly 900 executables miss the cache and are compiled again.
+  - **Reuse on another CPU model:** an AMD EPYC 9454 core recompiles everything (12.7 min, the native-compile time).
+    The cache key includes the CPU, so code built for one CPU is never loaded on another.
+  - **Outputs:** identical on both CPUs, with or without the cache.
+  - **For grid jobs:** a cache helps only per CPU model, so it would need one cache per model the grid offers. Running
+    several design points in one process pays the compile once.
+- **Agreement with the GPU files of the validation below:** on three design points the stored-event rate and CE
+  acceptance agree within 0.6 sigma in both dtypes (different random streams: the batch size sets them), and so do the
+  mean tracker and calorimeter deposits.
 
 ## Outputs
 

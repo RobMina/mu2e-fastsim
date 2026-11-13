@@ -247,3 +247,30 @@ def test_bench_prepare_with_a_seed_draws_that_seeds_births(tmp_path, monkeypatch
         assert np.array_equal(a, b)
     other = H.bench_prepare(64, seed=8)[0]
     assert not np.array_equal(births[0], other[0])
+
+
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
+def test_dts_rows_count_the_rows_primaryfilter_counts(dtype):
+    """dts_rows: valid rows with |p| > 50 MeV/c and ionizing energy > 1 eV (the dts PrimaryFilter's step test)."""
+    jax = pytest.importorskip("jax")
+    jnp = jax.numpy
+    p = np.array([[104.0, 60.0, 50.0, 49.9, 104.0, 104.0],
+                  [30.0, 104.0, 104.0, 104.0, 104.0, 104.0]])
+    eion = np.array([[1e-3, 1e-3, 1e-3, 1e-3, 0.0, 1e-3],
+                     [1e-3, 1e-3, 1e-3, 1e-3, 1e-3, 1e-3]])
+    valid = np.array([[True, True, True, True, True, False],
+                      [True, True, True, False, False, False]])
+    u = np.array([0.6, 0.0, 0.8])                                  # unit direction: |p| is the momentum
+    s = {"px": p * u[0], "py": p * u[1], "pz": p * u[2], "eion": eion, "valid": valid}
+    s = {k: jnp.asarray(v if k == "valid" else v.astype(dtype)) for k, v in s.items()}
+    got = np.asarray(H.dts_rows(s))
+    # row 0: 104 and 60 pass; exactly 50 and 49.9 fail; no ionization fails; invalid fails. row 1: two of 104
+    assert got.tolist() == [2, 2]
+
+
+def test_dts_keep_takes_the_tracker_rows_or_the_calorimeter():
+    nrow = np.array([0, 11, 12, 40, 0, 0])
+    calo = np.array([0.0, 44.9, 0.0, 0.0, 45.0, np.nan])
+    assert H.dts_keep(nrow).tolist() == [False, False, True, True, False, False]
+    assert H.dts_keep(nrow, calo).tolist() == [False, False, True, True, True, False]
+    assert (H.DTS_MIN_P, H.DTS_MIN_STEPS, H.DTS_MIN_CALO) == (50.0, 12, 45.0)

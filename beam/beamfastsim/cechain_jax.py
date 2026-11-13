@@ -13,7 +13,9 @@ with the whole chain from the start state to the tracker entry plane in one jitt
   wait one iteration unchanged (the vacuum step is deterministic, so this changes nothing but the time);
 - a lane that reaches a layer enters it in the next iteration (no waiting for the others, unlike the NumPy driver:
   the per-lane physics is the same, the random streams differ);
-- every `chunk` iterations the live lanes are gathered into a power-of-two bucket (finished lanes are copied out).
+- every `chunk` iterations the live lanes are gathered into a power-of-two bucket (finished lanes are copied out);
+- positron=True (opt-in) carries positrons: charge +1 and the eslab_jax positron layer tables (Bhabha deltas,
+  positron bremsstrahlung, annihilation in flight), as cechain.transport(positron=True); compiled separately.
 
 Statistically equivalent to the NumPy chain, not identical per seed. Computes in float64 or float32 (dtype); the
 field maps and tables are cast to it. Mu2e frame, mm, ns, MeV.
@@ -67,18 +69,18 @@ def _pad_types(lt, n_foil, m):
                          *(p(v) for v in (lt.length, lt.tcut, lt.kcut, lt.dsmax)))
 
 
-def geometry_inputs(geom, dt, msc):
+def geometry_inputs(geom, dt, msc, positron=False):
     """The per-geometry inputs of the compiled chain: (static layout, device arrays). The layout (array sizes, shell
     type indices, ring presence, table grid) keys the compile; the arrays (foils, layer tables, surfaces) are
     arguments, cast to dt as the constants were."""
-    key = (id(geom), np.dtype(dt).name, msc)
+    key = (id(geom), np.dtype(dt).name, msc, bool(positron))
     if key in _PARAMS and _PARAMS[key][0] is geom:
         return _PARAMS[key][1:]
     b = geom.beam
     specs, Lf, t_ipa, t_opa, t_ring, counter = layer_types(geom)
     nlf = len(Lf)
     m = PAD * int(np.ceil(nlf / PAD))
-    lt = _pad_types(SJ.lane_tables(specs, msc=msc), nlf, m)
+    lt = _pad_types(SJ.lane_tables(specs, positron=bool(positron), msc=msc), nlf, m)
     counter = np.concatenate([counter[:nlf], np.zeros(m - nlf, np.int32), counter[nlf:]]).astype(np.int32)
     shift = m - nlf
     nfp = PAD * int(np.ceil(b.foil_z.size / PAD))
@@ -113,18 +115,18 @@ def _lane_tables(layout, g):
     return SJ.LaneTables(tab, mc_type(*g["lt_mc"]), *g["lt_rows"])
 
 
-def _build(layout, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unroll, const_field):
+def _build(layout, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unroll, const_field, positron=False):
     """init and run of the chain for one layout (geometry_inputs) and policy; the geometry is an argument, so every
     geometry of the same layout shares the compiled functions. Both take env = (field maps, geometry arrays)."""
     key = (layout, np.dtype(dt).name, h, s_max, msc, layer_field, shell_curvature, z_record, unroll,
-           None if const_field is None else tuple(np.asarray(const_field, float)))
+           None if const_field is None else tuple(np.asarray(const_field, float)), bool(positron))
     if key in _BUILT:
         return _BUILT[key]
     n_types, t_ipa, t_opa, t_ring = layout[:4]
 
     def make(g):
         return _kernels(g, _lane_tables(layout, g), n_types, t_ipa, t_opa, t_ring, dt, h, s_max, msc, layer_field,
-                        shell_curvature, z_record, unroll, const_field)
+                        shell_curvature, z_record, unroll, const_field, bool(positron))
 
     def init(env, x, u, T, t, k0, zl):
         maps, g = env
@@ -150,18 +152,18 @@ def _build(layout, dt, h, s_max, msc, layer_field, shell_curvature, z_record, un
 
 
 def _kernels(gp, lt, n_types, t_ipa, t_opa, t_ring, dt, h, s_max, msc, layer_field, shell_curvature, z_record,
-             unroll, const_field):
+             unroll, const_field, positron=False):
     """(init, step) over the geometry numbers gp (traced) and layer tables lt."""
     Ltype = jnp.asarray(lt.length, dt)
     counter_d = gp["counter"]
-    geometry = TG.kernels(gp, dt, n_types, charge=-1.0, const_field=const_field,
+    q = 1.0 if positron else -1.0
+    geometry = TG.kernels(gp, dt, n_types, charge=q, const_field=const_field,
                           layer_field=layer_field, shell_curvature=shell_curvature, unroll=unroll)
     ftype, face_up, face_dn = geometry.ftype, geometry.face_up, geometry.face_dn
     frin, frout, nf = geometry.frin, geometry.frout, geometry.nf
     eps = 1e-7 if np.dtype(dt) == np.float64 else 2e-3       # foil-face search offset (a few ulp of z in float32)
     ztsda = gp["ztsda"]
     zr = [(gp["zr"][i, 0], gp["zr"][i, 1]) for i in range(2)]
-    q = -1.0
     cms = C.C_MM_NS
 
     def W(c, a, b_):
@@ -171,7 +173,7 @@ def _kernels(gp, lt, n_types, t_ipa, t_opa, t_ring, dt, h, s_max, msc, layer_fie
 
     def reset_slab(sl, enter, keep, T, d, ty):
         """Slab state: a fresh one (depth 0) for entering lanes, unchanged for lanes still inside, exited otherwise."""
-        new = SJ.lane_state(T, d, jnp.zeros_like(T), Ltype[ty])
+        new = SJ.lane_state(T, d, jnp.zeros_like(T), Ltype[ty], positron=positron)
         out = {k: (v if k == "it" else jnp.where(enter.reshape((-1,) + (1,) * (v.ndim - 1)), new[k], v))
                for k, v in sl.items()}
         out["exited"] = jnp.where(enter, new["exited"], keep & sl["exited"] | ~keep)
@@ -182,7 +184,7 @@ def _kernels(gp, lt, n_types, t_ipa, t_opa, t_ring, dt, h, s_max, msc, layer_fie
         born = k0 >= 0
         ty = jnp.where(born, ftype[jnp.clip(k0, 0, nf - 1)], 0)
         e1, e2, nn, entry, dloc, Bl = frames(maps, x, u, T, ty, k0)
-        sl = SJ.lane_state(T, dloc, jnp.where(born, zl, 0.0), Ltype[ty])
+        sl = SJ.lane_state(T, dloc, jnp.where(born, zl, 0.0), Ltype[ty], positron=positron)
         sl["exited"] = sl["exited"] | ~born
         st = dict(x=x, u=u, T=T, t=t, s=jnp.zeros(n, dt), fate=jnp.zeros(n, jnp.int32), inl=born, lty=ty,
                   e1=e1, e2=e2, en=nn, xent=entry, Tin=T, Bl=Bl, cnt=jnp.zeros((n, NCOUNT), jnp.int32), slab=sl,
@@ -326,7 +328,7 @@ def _kernels(gp, lt, n_types, t_ipa, t_opa, t_ring, dt, h, s_max, msc, layer_fie
         idx, ic, ok, chosen = gather(act, m_slab)
         sub = {k: (v if k == "it" else v[ic]) for k, v in sl.items()}
         sub["exited"] = sub["exited"] | ~ok
-        sub = lax.cond(jnp.any(act), lambda s: SJ.lane_step(key, lt, st["lty"][ic], s, st["Bl"][ic], msc=msc,
+        sub = lax.cond(jnp.any(act), lambda s: SJ.lane_step(key, lt, st["lty"][ic], s, st["Bl"][ic], positron=positron, msc=msc,
                                                             unroll=unroll),
                        lambda s: {**s, "it": s["it"] + 1}, sub)
         sl = {k: (sub[k] if k == "it" else sl[k].at[idx].set(sub[k], mode="drop")) for k in sl}
@@ -346,7 +348,7 @@ def _kernels(gp, lt, n_types, t_ipa, t_opa, t_ring, dt, h, s_max, msc, layer_fie
                   fate=jnp.where(done & stop, C.STOPPED, st["fate"]), inl=st["inl"] & ~done,
                   nslab=st["nslab"] + stepped)
         st, enter, dloc = vacuum(maps, st, m_cand)
-        new = SJ.lane_state(st["T"], dloc, jnp.zeros_like(st["T"]), Ltype[st["lty"]])
+        new = SJ.lane_state(st["T"], dloc, jnp.zeros_like(st["T"]), Ltype[st["lty"]], positron=positron)
         sl = st["slab"]
         sl = {k: (v if k == "it" else jnp.where(enter.reshape((-1,) + (1,) * (v.ndim - 1)), new[k], v))
               for k, v in sl.items()}
@@ -377,7 +379,7 @@ def _copy_out(final, st, src, dst):
 
 def transport(key, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True, layer_field=True, z_record=None,
               shell_curvature=True, dtype=np.float64, chunk=256, min_bucket=64, cand_frac=0.125, slab_frac=0.5,
-              unroll=False, lanes=None, shrink=2, stats=None, device_out=False):
+              unroll=False, lanes=None, shrink=2, stats=None, device_out=False, positron=False):
     """cechain.transport on the device. key: jax.random key; field: a constant 3-vector [T] or a tuple of device
     FieldMaps (device_maps). chunk: iterations per launch; between launches finished lanes are copied out and, while
     starts remain, refilled with new starts (lanes: lane count, a power of two, default all starts at once); then
@@ -388,13 +390,14 @@ def transport(key, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
     unrolled (fewer device launches per iteration on a GPU). Returns cechain.Result (NumPy, float64) with per-lane
     vacuum steps, slab steps and waits (nvac, nslab, nstall). stats (dict): filled with iterations, rounds and
     lane-iterations. device_out (opt-in): the per-lane outputs are gathered on the device and returned as device
-    arrays (same values; the host reads only the lane fates between launches)."""
+    arrays (same values; the host reads only the lane fates between launches). positron (opt-in): carry positrons
+    (charge +1, positron layer tables), as cechain.transport(positron=True)."""
     dt = np.dtype(dtype)
     maps, const = (tuple(field), None) if isinstance(field, (tuple, list)) and field and \
         isinstance(field[0], FM.FieldMap) else ((), np.asarray(field, float))
-    layout, garr = geometry_inputs(geom, dt, bool(msc))
+    layout, garr = geometry_inputs(geom, dt, bool(msc), bool(positron))
     init, run = _build(layout, dt, float(h), float(s_max), bool(msc), bool(layer_field), bool(shell_curvature),
-                       None if z_record is None else float(z_record), unroll, const)
+                       None if z_record is None else float(z_record), unroll, const, bool(positron))
     env = (maps, garr)
     b = geom.beam
     x = np.array(x0, float)

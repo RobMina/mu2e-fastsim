@@ -66,6 +66,7 @@ UNROLL = True    # unroll the samplers' fixed-trip loops inside the chord loop (
                  # read per trip on a GPU; unrolled, the chord compiles once into fewer, larger kernels)
 MERGE_TOL_F32 = 0.02   # [mm] float32: continuation of a gas crossing on the next chord (path rounding ~5e-4 mm at 5 m)
 LIVE, LEFT, STOPPED, CAPPED = -1, 0, 1, 2
+POS_TABLES = ("dedx", "sig_d", "sig_b", "brem_x")   # per-material tables with a positron twin (p_*)
 
 
 class Cfg(NamedTuple):
@@ -90,6 +91,7 @@ class Cfg(NamedTuple):
     bnomc: float
     pstraw: float
     complete_wall: bool = False   # opt-in: the complete outer-minus-gas wall of every crossed straw (fieldwall)
+    positron: bool = False        # opt-in (transport(positron=True)): charge +1 and the positron loss tables
 
 
 def _shell_groups(coax, mi, origin, chord_mm):
@@ -122,15 +124,16 @@ def _shell_groups(coax, mi, origin, chord_mm):
     return out
 
 
-def _material_tables(mats, dt):
-    """Per material on the eslab_jax ln T grid: continuous restricted loss (Moller-Bhabha + Seltzer-Berger below
-    E_CUT), delta and brem cross sections above E_CUT, brem photon inverse CDF; MatConsts; 1/X0."""
+def _material_tables(mats, dt, positron=False):
+    """Per material on the eslab_jax ln T grid: continuous restricted loss (Moller, or Bhabha for positrons, +
+    Seltzer-Berger below E_CUT), delta and brem cross sections above E_CUT, brem photon inverse CDF; MatConsts; 1/X0."""
     lnt, T = SJ._grid()
     cut = fs.E_CUT_MEV
-    dedx = np.stack([eioni.dedx_restricted(m, T, cut) + ebrem.dedx_restricted(m, T, cut) for m in mats])
-    sig_d = np.stack([eioni.xsec_per_mm(m, T, cut) for m in mats])
-    sig_b = np.stack([ebrem.xsec_per_mm(m, T, cut) for m in mats])
-    brem_x = np.stack([SJ._brem_inverse_cdf(m, T, cut, False) for m in mats])
+    pos = bool(positron)
+    dedx = np.stack([eioni.dedx_restricted(m, T, cut, pos) + ebrem.dedx_restricted(m, T, cut, pos) for m in mats])
+    sig_d = np.stack([eioni.xsec_per_mm(m, T, cut, pos) for m in mats])
+    sig_b = np.stack([ebrem.xsec_per_mm(m, T, cut, pos) for m in mats])
+    brem_x = np.stack([SJ._brem_inverse_cdf(m, T, cut, pos) for m in mats])
     cs = [eloss_jax.consts(m) for m in mats]
     mc = eloss_jax.MatConsts(*(jnp.asarray(np.array([getattr(c, f) for c in cs]), dt)
                                for f in eloss_jax.MatConsts._fields))
@@ -192,10 +195,13 @@ class Tracker:
         self.mats = mats
         m_sup = len(sup_names)
         tabs, self.mc = _material_tables(mats, dt)
-        # the deposited eIon in the gas: Moller restricted below the tracker delta cut
+        ptabs, _ = _material_tables(mats, dt, positron=True)      # transport(positron=True): the p_* tables
+        tabs.update({"p_" + k: ptabs[k] for k in POS_TABLES})
+        # the deposited eIon in the gas: Moller (Bhabha) restricted below the tracker delta cut
         lnt, Tg = SJ._grid()
         self.tcut_gas = st.delta_cut_mev(gas)
         tabs["gas_dedx"] = eioni.dedx_restricted(gas, Tg, self.tcut_gas)
+        tabs["p_gas_dedx"] = eioni.dedx_restricted(gas, Tg, self.tcut_gas, True)
         self.gas_mc = eloss_jax.consts(gas)
         groups = _shell_groups(coax, {m: i for i, m in enumerate(sup_names)}, org, chord_mm) if coax is not None else []
         lo, hi, straws_of = crossings.panel_index(geom)
@@ -487,10 +493,12 @@ def _interp(tab, lnt0, dlnt, T, col):
     return tab[col, i] * (1 - w) + tab[col, i + 1] * w
 
 
-def _electron_loss(key, Tb, mc, lnt0, dlnt, p, ln, col, nd=ND, nb=NB):
+def _electron_loss(key, Tb, mc, lnt0, dlnt, p, ln, col, nd=ND, nb=NB, positron=False):
     """fieldsteps.electron_loss for (track, material) pairs: p, ln [m] (ln 0: no loss), col [m] material index.
     Continuous (Urban), deltas and brem photons above E_CUT. Returns the loss [m] and the counts of delta and photon
-    caps reached."""
+    caps reached. positron: the p_* tables and Bhabha delta spectrum (annihilation in flight is not sampled)."""
+    if positron:
+        Tb = dict(Tb, **{k: Tb["p_" + k] for k in POS_TABLES})
     dt = p.dtype
     cut = fs.E_CUT_MEV
     T = jnp.sqrt(p * p + ME * ME) - ME
@@ -515,7 +523,7 @@ def _electron_loss(key, Tb, mc, lnt0, dlnt, p, ln, col, nd=ND, nb=NB):
         cdf = cdf + pmf
     dcap = jnp.sum(dok & (u > cdf))
     Td = jnp.where(dok, T, 4 * cut + 1.0)
-    de = SJ._sample_delta(k[2], jnp.broadcast_to(Td, (nd,) + Td.shape), cut, False, dt,
+    de = SJ._sample_delta(k[2], jnp.broadcast_to(Td, (nd,) + Td.shape), cut, bool(positron), dt,
                           SJ.REJECT_ROUNDS if UNROLL else False)                  # all nd at once
     lost = lost + jnp.sum(jnp.where(cnt[None] > jnp.arange(nd)[:, None], de, 0.0), 0)
     # brem photons along the length, the energy reduced after each one (ebrem.sample_along)
@@ -597,7 +605,7 @@ def _chord(tk_, s, rec, lane, key, it):
     T, groups, env, fn, pwidth, lnt0, dlnt, mc = tr_
     n = s["x"].shape[0]
     dt = s["x"].dtype
-    q = -1.0
+    q = 1.0 if cfg.positron else -1.0
     act = s["status"] == LIVE
     x, u, p = s["x"], s["u"], s["p"]
     key = jax.random.fold_in(key, it)
@@ -662,7 +670,8 @@ def _chord(tk_, s, rec, lane, key, it):
             pcol = jnp.where(pidx < n * Mp, pidx % Mp, 0) + off
             pl = jnp.concatenate([flat, jnp.zeros(1, dt)])[pidx]
             pp = jnp.maximum(jnp.concatenate([p, p[:1]])[jnp.minimum(plane_, n)], 1.0)
-            lp, dc, bc = _electron_loss(jax.random.fold_in(ks[0], kk), T, mc, lnt0, dlnt, pp, pl, pcol, nd, nb)
+            lp, dc, bc = _electron_loss(jax.random.fold_in(ks[0], kk), T, mc, lnt0, dlnt, pp, pl, pcol, nd, nb,
+                                        cfg.positron)
             lost = lost.at[plane_].add(lp, mode="drop")
             dcap = dcap + dc + (nz - jnp.minimum(nz, cap))
             bcap = bcap + bc
@@ -769,7 +778,8 @@ def _rows(T, gas_mc, rec, nrec, key, cfg, lnt0, dlnt, tcut):
     pmag = jnp.linalg.norm(pvec, axis=-1)
     ln = jnp.where(valid, rec["len"], 0.0)
     T0 = jnp.sqrt(p0 * p0 + ME * ME) - ME
-    mean = jnp.interp(jnp.log(jnp.maximum(T0, 1e-30)), lnt0 + dlnt * jnp.arange(SJ.NT, dtype=dt), T["gas_dedx"]) * ln
+    gas_dedx = T["p_gas_dedx"] if cfg.positron else T["gas_dedx"]
+    mean = jnp.interp(jnp.log(jnp.maximum(T0, 1e-30)), lnt0 + dlnt * jnp.arange(SJ.NT, dtype=dt), gas_dedx) * ln
     eion = eloss_jax.sample_loss_electron(key, gas_mc, jnp.where(valid, T0, 1.0), jnp.where(valid, ln, 1.0), tcut,
                                           jnp.where(valid, mean, 0.0))
     eion = jnp.where(valid, eion, 0.0)
@@ -801,13 +811,14 @@ class Result(NamedTuple):
     stats: dict      # cap counters (must be 0 except waits) and loop counts
 
 
-def transport(trk, key, x, p, t, active=None, rounds_it=256, min_bucket=64, shrink=2, stats=None, max_chords=None):
+def transport(trk, key, x, p, t, active=None, rounds_it=256, min_bucket=64, shrink=2, stats=None, max_chords=None,
+              positron=False):
     """Field-on StrawGasSteps of electrons on the device. x [n, 3] (Mu2e frame), p [n, 3] momentum [MeV/c], t [n] [ns]:
     device or host arrays; active [n] bool (default all): tracks to transport (the others get no steps, status 0).
     Between launches of `rounds_it` chords the live lanes are compacted into power-of-two buckets (host reads one
     lane count; the data stay on the device). max_chords (opt-in): stop after about that many chords (a whole number
-    of launches); tracks still live then end with status CAPPED and keep their records. Returns Result with device
-    arrays."""
+    of launches); tracks still live then end with status CAPPED and keep their records. positron (opt-in): the
+    tracks are positrons (charge +1, positron loss tables; compiled separately). Returns Result with device arrays."""
     dt = trk.dt
     x = jnp.asarray(x, dt) - jnp.asarray(trk.origin, dt)
     pv = jnp.asarray(p, dt)
@@ -820,7 +831,7 @@ def transport(trk, key, x, p, t, active=None, rounds_it=256, min_bucket=64, shri
     # the envelope test at the start (tracks already leaving get no chord)
     s["status"] = jnp.where(active & _leaving(trk.T, trk.env, x, u), LEFT, s["status"])
     rec = _records(n, dt)
-    cfg = trk.cfg
+    cfg = trk.cfg._replace(positron=bool(positron))
     kw = dict(cfg=cfg, fn=trk.fn, env=trk.env, pwidth=trk.pwidth, lnt0=trk.lnt0, dlnt=trk.dlnt)
     final = {k: jnp.array(s[k], copy=True) for k in ("x", "u", "p", "t", "path", "chords", "status")}
     lane = jnp.arange(n, dtype=jnp.int32)

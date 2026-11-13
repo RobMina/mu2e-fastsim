@@ -111,3 +111,43 @@ def test_handoff_rows_start_the_field_on_tracker_and_fill_the_injector_table(tmp
     p = tables.read(str(tmp_path / "inj.root"), "particles")
     assert list(s.columns) == H.STEP_COLS and len(s) == len(steps) and (s.sp == 1).all()
     assert len(p) == n and (p.key == 1).all() and (p.pdg == 11).all()
+
+
+def test_transport_pair_appends_the_positron_rows_to_each_event():
+    jnp = pytest.importorskip("jax.numpy")
+    from trkfastsim.sim import fieldsteps_jax as FJ
+    R = FJ.R_CAP
+
+    def leg(rows, tag):
+        n = len(rows)
+        valid = np.zeros((n, R), bool)
+        for i, k in enumerate(rows):
+            valid[i, :k] = True
+        steps = {"valid": jnp.asarray(valid), "t": jnp.asarray(np.where(valid, tag, 0.0))}
+        trk = FJ.Result(steps, {"x": jnp.zeros(n)}, {})
+        return dict(has_entry=jnp.ones(n, bool), x=jnp.zeros((n, 3)), p=jnp.zeros((n, 3)), t=jnp.zeros(n),
+                    nrow=jnp.asarray(rows), nrow_dts=jnp.asarray(rows) - 1, tracker=trk, cechain=None, timing={})
+
+    ch = object.__new__(H.DeviceChain)
+    calls = []
+
+    def fake(births, seed, positron=False):
+        calls.append(positron)
+        return leg([3, 0, R - 2], 2.0) if positron else leg([5, 2, 4], 1.0)
+    ch.transport = fake
+    res = ch.transport_pair("e-", "e+", 7)
+    assert calls == [False, True]
+    v = np.asarray(res["tracker"].steps["valid"])
+    t = np.asarray(res["tracker"].steps["t"])
+    assert list(v.sum(1)) == [8, 2, R]                       # e- rows, then the e+ rows; the third event is capped
+    assert (t[0, :5] == 1.0).all() and (t[0, 5:8] == 2.0).all()
+    assert res["pair"]["dropped"] == 2                      # 4 + (R - 2) rows in an R-slot event
+    assert list(np.asarray(res["nrow"])) == [5, 2, 4]           # the electron's rows feed the response
+    assert list(np.asarray(res["positron"]["nrow"])) == [3, 0, R - 2]
+    assert list(np.asarray(res["nrow_dts"])) == [4 + 2, 1 - 1, 3 + R - 3]   # the dts filter counts both legs
+
+    def bad(births, seed, positron=False):
+        return leg([1, 1], 2.0) if positron else leg([1, 1, 1], 1.0)
+    ch.transport = bad
+    with pytest.raises(ValueError, match="positron births"):
+        ch.transport_pair("e-", "e+", 7)

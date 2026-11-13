@@ -14,6 +14,10 @@ mu2efastsim.eslab (or eslab_jax) in the local frame of the surface, with the fie
 - TSdA (annulus at the DS upstream end), the TS5 collimator (COL5, inside radius only), the TS5 bore and the DS wall
   radius absorb; tracks entering the TS4 bend (upstream end of TS5) are lost.
 
+positron=True carries positrons instead (charge +1 in every helix, eslab positron physics: Bhabha deltas,
+positron bremsstrahlung, annihilation in flight; the shell-curvature field term changes sign), e.g. the e+ of an RPC
+pair.
+
 Not modelled: foil support wires, IPA wires, OPA slots and supports, field variation inside a layer, lateral escape
 through a foil rim or hole within one crossing, re-crossing of a surface inside one helix step (sagitta h^2 / 8R, about
 0.05 mm at h = 10 mm). Secondaries are not transported. Mu2e frame, mm, ns, MeV.
@@ -139,13 +143,13 @@ def _momentum(T):
     return np.sqrt(T * (T + 2 * eioni.ME))
 
 
-def _bisect_radius(geom, x, u, p, B, s_hi, target, n_iter=40):
+def _bisect_radius(geom, x, u, p, B, s_hi, target, n_iter=40, q=-1.0):
     """Path s in [0, s_hi] where the helix reaches radius target(z) (sign change assumed at the ends)."""
     lo = np.zeros(x.shape[0])
     hi = np.array(s_hi, float)
 
     def f(s):
-        xs = ehelix.helix(x, u, p, -1.0, B, s)[0]
+        xs = ehelix.helix(x, u, p, q, B, s)[0]
         return radial(geom, xs) - target(xs[:, 2])
     flo = f(lo)
     for _ in range(n_iter):
@@ -175,27 +179,28 @@ def _frame_z(sign):
     return e1, e2, n
 
 
-def _cross_layer(rng, mat, T, x, u, e1, e2, n, thickness, B=None, z0=None, msc=True, backend="numpy"):
+def _cross_layer(rng, mat, T, x, u, e1, e2, n, thickness, B=None, z0=None, msc=True, backend="numpy",
+                 positron=False):
     """Slab crossing in the local frame (e1, e2, n) with the entry face through x (a track born inside starts at
     depth z0 below x along n), in the per-track constant field B [T] (global frame) or field-free; returns the new
     T, position, direction, stopped flag and path in the layer. backend "jax": eslab_jax on padded power-of-two
-    batches with lane compaction (float64 unless MU2EFS_LAYER_FLOAT=float32)."""
+    batches with lane compaction (float64 unless MU2EFS_LAYER_FLOAT=float32). positron: eslab positron physics."""
     tcut, kcut = CUTS[mat.name]
 
     def loc(v):
         return np.stack([(v * e1).sum(1), (v * e2).sum(1), (v * n).sum(1)], axis=1)
     d, Bl = loc(u), None if B is None else loc(B)
     if backend == "jax":
-        lT, lp, dn, stop, path = _layer_jax(rng, mat, T, d, thickness, tcut, kcut, Bl, z0, msc)
+        lT, lp, dn, stop, path = _layer_jax(rng, mat, T, d, thickness, tcut, kcut, Bl, z0, msc, positron=positron)
     else:
-        r = eslab.electron_slab(rng, mat, T, d, thickness, tcut, kcut, msc=msc, z0=z0, field=Bl)
+        r = eslab.electron_slab(rng, mat, T, d, thickness, tcut, kcut, positron=positron, msc=msc, z0=z0, field=Bl)
         lT, lp, dn, stop, path = r.T, r.position, r.direction, r.stopped, r.path
     xn = x + lp[:, :1] * e1 + lp[:, 1:2] * e2 + lp[:, 2:3] * n      # slab coordinates: origin on the entry face
     un = dn[:, :1] * e1 + dn[:, 1:2] * e2 + dn[:, 2:3] * n
     return lT, xn, un / np.linalg.norm(un, axis=1, keepdims=True), stop | (lT <= 0), path
 
 
-def _layer_jax(rng, mat, T, d, L, tcut, kcut, B, z0, msc, min_bucket=256, chunk=64):
+def _layer_jax(rng, mat, T, d, L, tcut, kcut, B, z0, msc, min_bucket=256, chunk=64, positron=False):
     import os
     import jax
     from mu2efastsim import eslab_jax
@@ -210,7 +215,7 @@ def _layer_jax(rng, mat, T, d, L, tcut, kcut, B, z0, msc, min_bucket=256, chunk=
         out[m:] = fill
         return out.astype(fd)
     key = jax.random.PRNGKey(int(rng.integers(0, 2 ** 31)))
-    r = eslab_jax.electron_slab(key, mat, pad(T, 0.0), pad(d, [0.0, 0.0, 1.0]), L, tcut, kcut, msc=msc,
+    r = eslab_jax.electron_slab(key, mat, pad(T, 0.0), pad(d, [0.0, 0.0, 1.0]), L, tcut, kcut, positron, msc=msc,
                                 z0=None if z0 is None else pad(z0, 0.0), field=None if B is None else pad(B, 0.0),
                                 chunk=chunk, min_bucket=min_bucket)
     g = lambda v: np.asarray(v, float)[:m]
@@ -218,14 +223,16 @@ def _layer_jax(rng, mat, T, d, L, tcut, kcut, B, z0, msc, min_bucket=256, chunk=
 
 
 def transport(rng, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True, layer_field=True, eps=1e-7,
-              wait_fraction=0.05, backend="numpy", z_record=None, shell_curvature=True):
+              wait_fraction=0.05, backend="numpy", z_record=None, shell_curvature=True, positron=False):
     """Carry electrons from (x0, u0, momentum p0 [MeV/c], global time t0) to the tracker entry plane (z_record: also
     keep the state at the first crossing of that plane, e.g. a virtual detector downstream of the target). A start
     inside a foil (BeamGeometry annulus, within its thickness) begins with the crossing from that depth. Tracks that
     reach a layer wait until at most wait_fraction of the live tracks are still in vacuum; the waiting crossings then
     run as one slab call per material (layer_field: the field at the entry point, constant through the layer;
-    shell_curvature: the IPA / OPA curvature is carried into the flat slab as an extra axial field)."""
+    shell_curvature: the IPA / OPA curvature is carried into the flat slab as an extra axial field). positron:
+    carry positrons (charge +1, eslab positron physics) instead of electrons."""
     b = geom.beam
+    q = 1.0 if positron else -1.0
     x = np.array(x0, float)
     u = np.array(u0, float)
     u /= np.linalg.norm(u, axis=1, keepdims=True)
@@ -253,7 +260,8 @@ def transport(rng, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
             B = (np.zeros((idx.size, 3)) if B is None else B.copy())
             B[:, 2] += dBz
         T0 = T[idx]
-        T1, xn, un, stop, path = _cross_layer(rng, mat, T0, entry, u[idx], e1, e2, nn, thick, B, zl, msc, backend)
+        T1, xn, un, stop, path = _cross_layer(rng, mat, T0, entry, u[idx], e1, e2, nn, thick, B, zl, msc, backend,
+                                              positron)
         account(idx, path, T0, T1)
         T[idx], x[idx], u[idx] = T1, xn, un
         cnt[idx] += 1
@@ -279,6 +287,7 @@ def transport(rng, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
             # u_perp^2 / R; for an e- that is an extra axial field (n.nn) u_e2 p / (K R) in the slab frame
             sgn = np.where(outward, 1.0, -1.0)
             dBz = sgn * (u[idx] * e2).sum(1) * _momentum(T[idx]) / (ehelix.K * radial(geom, x[idx]))
+            dBz = -q * dBz                       # the same geometric bend: the opposite field for an e+
         cross(idx, mat, thick, e1, e2, nn, x[idx], None, cnt, dBz)
 
     k0 = G.foil_index(b, x[:, 0], x[:, 1], x[:, 2], tol=1e-3)     # births inside a foil
@@ -308,8 +317,8 @@ def transport(rng, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
         xl, ul, Tl = x[act], u[act], T[act]
         pl = _momentum(Tl)
         B0 = ehelix.field_at(field, xl)
-        Bm = ehelix.field_at(field, ehelix.helix(xl, ul, pl, -1.0, B0, 0.5 * h)[0])
-        xe = ehelix.helix(xl, ul, pl, -1.0, Bm, h)[0]
+        Bm = ehelix.field_at(field, ehelix.helix(xl, ul, pl, q, B0, 0.5 * h)[0])
+        xe = ehelix.helix(xl, ul, pl, q, Bm, h)[0]
         m = act.size
         s_ev = np.full(m, h)
         kind = np.zeros(m, int)          # 0 none, 1 plane, 2 foil, 3 ipa, 4 opa, 5 tsda, 6 upstream, 7 wall, 8 ring
@@ -327,7 +336,7 @@ def transport(rng, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
         sel = (z0 < geom.z_plane) & (z1 >= geom.z_plane)
         if sel.any():
             sv = np.full(m, np.inf)
-            sv[sel] = ehelix.to_plane(xl[sel], ul[sel], pl[sel], -1.0, Bm[sel], geom.z_plane, h)
+            sv[sel] = ehelix.to_plane(xl[sel], ul[sel], pl[sel], q, Bm[sel], geom.z_plane, h)
             take(sel & np.isfinite(sv), sv, 1)
         # foil entry faces
         up = z1 > z0
@@ -340,10 +349,10 @@ def transport(rng, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
         sel = okk & np.where(up, face <= z1, face >= z1)
         if sel.any():
             sv = np.full(m, np.inf)
-            sv[sel] = ehelix.to_plane(xl[sel], ul[sel], pl[sel], -1.0, Bm[sel], face[sel], h)
+            sv[sel] = ehelix.to_plane(xl[sel], ul[sel], pl[sel], q, Bm[sel], face[sel], h)
             fin = sel & np.isfinite(sv)
             if fin.any():
-                xh = ehelix.helix(xl[fin], ul[fin], pl[fin], -1.0, Bm[fin], sv[fin])[0]
+                xh = ehelix.helix(xl[fin], ul[fin], pl[fin], q, Bm[fin], sv[fin])[0]
                 rh = radial(geom, xh)
                 hit = (rh >= b.foil_rin[kc[fin]]) & (rh <= b.foil_rout[kc[fin]])
                 fin[np.flatnonzero(fin)[~hit]] = False
@@ -359,8 +368,8 @@ def transport(rng, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
             sv = np.full(m, np.inf)
             tgt_r = np.where(out, ri, ro)[sel]
             sv[sel] = _bisect_radius(geom, xl[sel], ul[sel], pl[sel], Bm[sel], np.full(sel.sum(), h),
-                                     lambda z, r=tgt_r: r)
-            zh = ehelix.helix(xl[sel], ul[sel], pl[sel], -1.0, Bm[sel], sv[sel])[0][:, 2]
+                                     lambda z, r=tgt_r: r, q=q)
+            zh = ehelix.helix(xl[sel], ul[sel], pl[sel], q, Bm[sel], sv[sel])[0][:, 2]
             ok = (zh >= b.ipa_z0) & (zh <= b.ipa_z1)
             sv[np.flatnonzero(sel)[~ok]] = np.inf
             take(sel & np.isfinite(sv), sv, 3)
@@ -378,8 +387,8 @@ def transport(rng, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
                 sv = np.full(m, np.inf)
                 tgt_r = np.where(out, rri, rro)[sel]
                 sv[sel] = _bisect_radius(geom, xl[sel], ul[sel], pl[sel], Bm[sel], np.full(sel.sum(), h),
-                                         lambda z, r=tgt_r: r)
-                zh = ehelix.helix(xl[sel], ul[sel], pl[sel], -1.0, Bm[sel], sv[sel])[0][:, 2]
+                                         lambda z, r=tgt_r: r, q=q)
+                zh = ehelix.helix(xl[sel], ul[sel], pl[sel], q, Bm[sel], sv[sel])[0][:, 2]
                 ok = np.zeros(zh.size, bool)
                 for za, zb in zr:
                     ok |= (zh >= za) & (zh <= zb)
@@ -394,8 +403,8 @@ def transport(rng, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
             sv = np.full(m, np.inf)
             off = np.where(out, 0.0, geom.opa_t)[sel]
             sv[sel] = _bisect_radius(geom, xl[sel], ul[sel], pl[sel], Bm[sel], np.full(sel.sum(), h),
-                                     lambda z, o=off: opa_rin(geom, z) + o)
-            zh = ehelix.helix(xl[sel], ul[sel], pl[sel], -1.0, Bm[sel], sv[sel])[0][:, 2]
+                                     lambda z, o=off: opa_rin(geom, z) + o, q=q)
+            zh = ehelix.helix(xl[sel], ul[sel], pl[sel], q, Bm[sel], sv[sel])[0][:, 2]
             ok = (zh >= b.opa_z0) & (zh <= b.opa_z1)
             sv[np.flatnonzero(sel)[~ok]] = np.inf
             take(sel & np.isfinite(sv), sv, 4)
@@ -404,24 +413,24 @@ def transport(rng, geom, field, x0, u0, p0, t0, h=10.0, s_max=30000.0, msc=True,
         sel = (z0 > ztsda) & (z1 <= ztsda)
         if sel.any():
             sv = np.full(m, np.inf)
-            sv[sel] = ehelix.to_plane(xl[sel], ul[sel], pl[sel], -1.0, Bm[sel], ztsda, h)
+            sv[sel] = ehelix.to_plane(xl[sel], ul[sel], pl[sel], q, Bm[sel], ztsda, h)
             fin = sel & np.isfinite(sv)
             if fin.any():
-                rh = radial(geom, ehelix.helix(xl[fin], ul[fin], pl[fin], -1.0, Bm[fin], sv[fin])[0])
+                rh = radial(geom, ehelix.helix(xl[fin], ul[fin], pl[fin], q, Bm[fin], sv[fin])[0])
                 fin[np.flatnonzero(fin)[~((rh >= b.tsda_rin) & (rh <= b.tsda_rout))]] = False
                 take(fin, sv, 5)
         kind[(kind == 0) & (z1 < geom.z_up)] = 6           # full step taken, then lost
         kind[(kind == 0) & ((r1 > geom.r_wall) | ((z1 < geom.z_ds) & (r1 > geom.r_ts)))] = 7
         kind[(kind == 0) & (z1 >= geom.coll5_z0) & (z1 <= geom.coll5_z1) & (r1 > geom.coll5_rin)] = 5
 
-        xn, un = ehelix.helix(xl, ul, pl, -1.0, Bm, s_ev)
+        xn, un = ehelix.helix(xl, ul, pl, q, Bm, s_ev)
         if z_record is not None:
             cand = ~rec_ok[act] & ((z0 - z_record) * (xn[:, 2] - z_record) <= 0) & (z0 != z_record)
             if cand.any():
-                sr = ehelix.to_plane(xl[cand], ul[cand], pl[cand], -1.0, Bm[cand], z_record, s_ev[cand])
+                sr = ehelix.to_plane(xl[cand], ul[cand], pl[cand], q, Bm[cand], z_record, s_ev[cand])
                 fin = np.isfinite(sr)
                 ic = np.flatnonzero(cand)[fin]
-                xr, ur = ehelix.helix(xl[ic], ul[ic], pl[ic], -1.0, Bm[ic], sr[fin])
+                xr, ur = ehelix.helix(xl[ic], ul[ic], pl[ic], q, Bm[ic], sr[fin])
                 j = act[ic]
                 rec_ok[j], rec_x[j], rec_u[j], rec_T[j] = True, xr, ur, Tl[ic]
                 rec_t[j] = t[j] + sr[fin] / (C_MM_NS * np.maximum(_beta(Tl[ic]), 1e-6))

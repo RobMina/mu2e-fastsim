@@ -36,7 +36,7 @@ K_NEAREST = 8                # a donor is drawn uniformly among this many neares
 SCALES = dict(tandip=0.05, nactive=1.0, fitcon=0.15, calo=0.25, eop=0.05, ecl=5.0, tbirth=25.0)
 # birth time (the generated electron's time) carries the digitization-window effects of every subsystem (tracker,
 # calorimeter and trigger windows in the microbunch); it is a key wherever the index has it (donor births given)
-USE = {CLASS_Q: ("tandip", "nactive", "fitcon", "calo", "eop", "tbirth"), CLASS_F: ("tandip", "tbirth"),
+USE = {CLASS_Q: ("tandip", "nactive", "fitcon", "calo", "eop", "tbirth"), CLASS_F: ("tandip", "nactive", "tbirth"),
        CLASS_N: ("tbirth", "ecl")}
 
 

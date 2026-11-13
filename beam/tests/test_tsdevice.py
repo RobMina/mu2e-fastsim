@@ -143,6 +143,45 @@ def test_full_gather_bucket_defers_lanes(monkeypatch):
     assert not np.any(fate == dev.UNCONVERGED)
 
 
+def test_material_bucket_runs_only_in_material_lanes(monkeypatch):
+    """Material slots on a gathered bucket, with the every-lane branch when more lanes are in material: the slab
+    ranges out as with every lane (fraction 0.9: the bucket once a tenth has stopped; 0.02: mostly every lane)."""
+    monkeypatch.setattr(dev, "GATHER_FLOOR", 8)
+    settings = dev.Settings(step_mm=7.0, material_step_mm=0.1)
+    runs = {}
+    for frac in (0.0, 0.9, 0.02):
+        monkeypatch.setattr(dev, "MATERIAL_FRACTION", frac)
+        runs[frac] = _run(Tube(slab=20.0), 13, 20.0, n=1000, settings=settings)
+    ref = np.asarray(runs[0.0].path)[np.asarray(runs[0.0].fate) == dev.RANGEOUT]
+    for frac, out in runs.items():
+        fate = np.asarray(out.fate)
+        assert np.all((fate == dev.RANGEOUT) | (fate == dev.MU_DECAY)), frac
+        assert not np.any(fate == dev.UNCONVERGED)
+        path = np.asarray(out.path)[fate == dev.RANGEOUT]
+        assert abs(path.mean() - ref.mean()) < 5 * np.hypot(path.std() / np.sqrt(len(path)), ref.std() / np.sqrt(len(ref)))
+
+
+def test_solid_bucket_is_exact(geometry, monkeypatch):
+    """Generic-solid interval lengths on a candidate bucket equal the every-lane result to rounding, through the
+    bucket and through the every-lane branch."""
+    g = dev.DeviceGeometry(geometry)
+    if not g._matter:
+        pytest.skip("fixture has no generic solid")
+    rng = np.random.default_rng(4)
+    lo = np.array([-500.0, -400.0, geometry.z_start - 100])
+    hi = np.array([4500.0, 400.0, geometry.z_end + 100])
+    a = jnp.asarray(rng.uniform(lo, hi, (4000, 3)))
+    d = jnp.asarray(rng.normal(0, 30, (4000, 3)))
+    monkeypatch.setattr(dev, "GATHER_FLOOR", 4)
+    out = {}
+    for frac in (0.0, 0.5, 0.001):
+        monkeypatch.setattr(dev, "SOLID_FRACTION", frac)
+        out[frac] = np.asarray(jax.jit(g.columns_d)(a, d))
+    assert out[0.0].any()
+    np.testing.assert_allclose(out[0.5], out[0.0], rtol=1e-12, atol=1e-9)    # summation order may differ
+    np.testing.assert_allclose(out[0.001], out[0.0], rtol=1e-12, atol=1e-9)
+
+
 @pytest.mark.slow   # statistical, 4000 pions
 def test_pion_decay_fraction():
     out = _run(Tube(), 211, 100.0, n=4000)
@@ -176,6 +215,47 @@ def test_resident_driver_compacts_and_keeps_rows():
     np.testing.assert_array_equal(np.asarray(out.x), np.arange(30.0).reshape(10, 3))
     np.testing.assert_array_equal(np.asarray(out.steps), 1)
     assert calls == [4, 4, 4]
+
+
+_COMPILES = []
+
+
+def _count_compile(event, duration, **kw):
+    if event == "/jax/core/compile/backend_compile_duration":
+        _COMPILES.append(duration)
+
+
+jax.monitoring.register_event_duration_secs_listener(_count_compile)
+
+
+@jax.jit
+def _die_at_t(key, st):
+    """Toy chunk: a lane finishes once its step count reaches its t (so the live tail follows the data)."""
+    steps = jnp.where(st.fate == dev.LIVE, st.steps + 1, st.steps)
+    return st._replace(steps=steps, fate=jnp.where((st.fate == dev.LIVE) & (steps >= st.t), jnp.int8(dev.DS), st.fate))
+
+
+def _toy_state(lifetimes):
+    n = len(lifetimes)
+    return dev.ts_initial(np.zeros((n, 3)), np.ones((n, 3)), np.asarray(lifetimes, float), np.full(n, 13), 0,
+                          jax.random.PRNGKey(1))
+
+
+def test_warm_ladder_is_exact_and_new_tails_do_not_compile():
+    rng = np.random.default_rng(3)
+    a, b = _toy_state(rng.integers(1, 6, 96)), _toy_state(np.r_[rng.integers(1, 3, 95), 40])
+    assert dev.ladder(16, 4) == [16, 8, 4] and dev.ladder(20, 4) == [20, 16, 8, 4] and dev.ladder(3, 4) == [3]
+    kw = dict(min_bucket=4, pool=16)
+    for st in (a, b):
+        cold, _ = dev.run_resident(_die_at_t, st, dev._ts_live, dev._ts_kill, jax.random.PRNGKey(2), **kw)
+        warm, _ = dev.run_resident(_die_at_t, st, dev._ts_live, dev._ts_kill, jax.random.PRNGKey(2), warm_ladder=True,
+                                   **kw)
+        for x, y in zip(cold, warm):
+            np.testing.assert_array_equal(np.asarray(x), np.asarray(y))
+    c = _toy_state(np.r_[rng.integers(1, 4, 90), [7, 9, 13, 21, 33, 50]])      # a tail through other bucket sizes
+    before = len(_COMPILES)
+    dev.run_resident(_die_at_t, c, dev._ts_live, dev._ts_kill, jax.random.PRNGKey(5), warm_ladder=True, **kw)
+    assert len(_COMPILES) == before
 
 
 def test_load_references_and_stream_split(tmp_path, monkeypatch):

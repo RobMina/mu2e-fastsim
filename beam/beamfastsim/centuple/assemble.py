@@ -69,13 +69,36 @@ def classes(rec):
     return np.where(q, D.CLASS_Q, np.where(f, D.CLASS_F, D.CLASS_N)).astype(np.int8)
 
 
-def calo_match(rec):
-    """Track-cluster match of the fast electron: the leading cluster on the disk of the first contact above E_MATCH."""
+# Stock calorimeter-hit inclusion of the track fit (KinKal MinCaloClusterEnergy 10 MeV, MaxCaloClusterDOCA 100 mm,
+# MaxCaloClusterDt 5 ns): P(trkcalohit | the event has a cluster above 10 MeV) in bins of the leading cluster energy,
+# measured on the stock development EventNtuples (default-selected e- tracks, 21 files, 36,672 events; 0.961 overall).
+CALO_EFF_EDGES = np.array([10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, np.inf])
+CALO_EFF = np.array([0.559, 0.601, 0.682, 0.785, 0.826, 0.934, 0.989, 0.999, 0.997])
+
+
+def calo_match(rec, run=None, subrun=None, event=None, seed=None, rule="stock"):
+    """Track-cluster match of the fast electron: (has, cluster index).
+
+    rule "stock" (default): the leading cluster above E_MATCH on the disk of the first contact, else the leading one on
+    the other disk (stock matches either disk), kept with the stock inclusion efficiency of its energy (CALO_EFF, one
+    draw per event from SeedSequence([seed, 3, run, subrun, event])). rule "contact": the leading cluster above E_MATCH on
+    the contact disk only, always kept (the rule before)."""
     valid, energy, disk = rec["cl_valid"], rec["cl_energy"], rec["cl_disk"]
-    on = valid & (disk == rec["calo_disk"][:, None]) & (energy > E_MATCH) & (rec["calo_kind"][:, None] > 0)
-    j = np.argmax(np.where(on, energy, -1.0), axis=1)
-    has = on.any(axis=1)
-    return has, j
+    big = valid & (energy > E_MATCH)
+    on = big & (disk == rec["calo_disk"][:, None]) & (rec["calo_kind"][:, None] > 0)
+    j_on = np.argmax(np.where(on, energy, -1.0), axis=1)
+    if rule == "contact":
+        return on.any(axis=1), j_on
+    if rule != "stock":
+        raise ValueError("calo_match rule: 'stock' or 'contact'")
+    j_any = np.argmax(np.where(big, energy, -1.0), axis=1)
+    j = np.where(on.any(axis=1), j_on, j_any)
+    has = big.any(axis=1)
+    e = energy[np.arange(len(j)), j]
+    b = np.clip(np.searchsorted(CALO_EFF_EDGES, e, side="right") - 1, 0, len(CALO_EFF) - 1)
+    u = np.array([np.random.default_rng(np.random.SeedSequence([int(seed), 3, int(r), int(s), int(v)])).random()
+                  for r, s, v in zip(run, subrun, event)]) if len(j) else np.zeros(0)
+    return has & (u < CALO_EFF[b]), j
 
 
 def cluster_truth_time(ttrue, ctime, contact_t, valid):
@@ -86,8 +109,20 @@ def cluster_truth_time(ttrue, ctime, contact_t, valid):
     return np.where(valid, tt - MBTIME * kc, 0.0)
 
 
-def build(record, donor_lib, out, *, trigger=None, seed=20261111, trigger_cal=None):
-    """Write plan (npz) for every event of the record. Returns the path and counters."""
+def dts_select(plan, keep, per_event_n):
+    """The plan restricted to the events with keep (per-event arrays: leading length per_event_n; trig_names kept)."""
+    keep = np.asarray(keep, bool)
+    return {k: (v[keep] if k != "trig_names" and np.ndim(v) and len(v) == per_event_n else v) for k, v in plan.items()}
+
+
+def build(record, donor_lib, out, *, trigger=None, seed=20261111, trigger_cal=None, dts_filter=False):
+    """Write plan (npz) for every event of the record. Returns the path and counters.
+
+    dts_filter (opt-in): keep only the events that pass the emulated dts PrimaryFilter (record column `dts_keep`,
+    cetracker.dts_keep). The stock files of a primary dts hold only events whose Geant4 transport passed it; fast
+    events that fail it would otherwise be stored through the donor's MC-truth paths. Use it with births drawn per
+    generated electron (record --stops), which the dts filter selects as it did the stock births. The kept events'
+    entries are those of the unfiltered plan."""
     rec = dict(np.load(record))
     meta = json.loads(str(rec.pop("meta")))
     lib = D.load(donor_lib)
@@ -121,7 +156,7 @@ def build(record, donor_lib, out, *, trigger=None, seed=20261111, trigger_cal=No
     pf_true = rec["front_p"]
     pt_true = np.hypot(pf_true[:, 0], pf_true[:, 1])
     tan_true = pf_true[:, 2] / np.where(pt_true > 0, pt_true, np.nan)
-    has_cl, jcl = calo_match(rec)
+    has_cl, jcl = calo_match(rec, run, sub, evn, seed)
     e_m = np.where(has_cl, rec["cl_energy"][np.arange(n), jcl], np.nan)
     keys = dict(tbirth=rec["birth_t"], tandip_t=tan_true, nactive=rec["trk_nactive"], fitcon=rec["trk_fitcon"], calo=has_cl,
                 eop=e_m / rec["trk_p_reco"],
@@ -190,9 +225,19 @@ def build(record, donor_lib, out, *, trigger=None, seed=20261111, trigger_cal=No
     plan["nsd"] = rec.get("nsd", np.full(n, -1, np.int64))
     plan["pbtime_mc"] = rec.get("pbtime_mc", np.full(n, np.nan))
     plan["pbtime_reco"] = rec.get("pbtime_reco", np.full(n, np.nan))
+    dts = None
+    if dts_filter:
+        if "dts_keep" not in rec:
+            raise ValueError("centuple: --dts-filter needs a record with dts_keep (record from this version on)")
+        keep = rec["dts_keep"].astype(bool)
+        plan = dts_select(plan, keep, n)
+        cls = cls[keep]
+        dts = dict(rule="dts PrimaryFilter, emulated (cetracker.dts_keep)", events=int(n), kept=int(keep.sum()),
+                   dropped=int(n - keep.sum()))
     pmeta = dict(stage="assemble", seed=int(seed), record=meta, trigger=trig_meta, donor=str(donor_lib),
+                 dts_filter=dts,
                  donor_name=str(lib.get("__name__", D.NAME)), covered_paths=cov_paths, covered_missing=missing,
-                 e_match_mev=E_MATCH, donor_files=[str(f) for f in lib["file_names"]],
+                 e_match_mev=E_MATCH, calo_match_rule="stock", donor_files=[str(f) for f in lib["file_names"]],
                  donor_sha256=[str(f) for f in lib["file_sha256"]],
                  classes={c: int((cls == v).sum()) for c, v in (("N", 0), ("F", 1), ("Q", 2))})
     out = Path(out)

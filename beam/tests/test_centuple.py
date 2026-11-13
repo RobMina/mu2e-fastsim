@@ -138,8 +138,25 @@ def test_classes_and_calo_match():
     assert A.classes(rec).tolist() == [D.CLASS_Q, D.CLASS_F, D.CLASS_N]
     rec = dict(cl_valid=np.array([[True, True], [True, False]]), cl_energy=np.array([[5.0, 80.0], [90.0, 0.0]]),
                cl_disk=np.array([[0, 0], [1, 0]]), calo_disk=np.array([0, 0]), calo_kind=np.array([1, 1]))
-    has, j = A.calo_match(rec)
+    has, j = A.calo_match(rec, rule="contact")
     assert has.tolist() == [True, False] and j[0] == 1
+    # stock rule: the other disk counts when the contact disk has none (event 1); kept with the inclusion efficiency
+    has, j = A.calo_match(rec, np.full(2, 1430), np.zeros(2, int), np.arange(2), 7)
+    assert j.tolist() == [1, 0]
+    assert has.tolist() == [True, True]                       # 80 and 90 MeV: efficiency >= 0.989 (these draws pass)
+
+
+def test_calo_match_stock_rule_follows_the_inclusion_efficiency():
+    n = 40000
+    e = np.where(np.arange(n) % 2 == 0, 15.0, 85.0)
+    rec = dict(cl_valid=np.ones((n, 1), bool), cl_energy=e[:, None], cl_disk=np.zeros((n, 1), int),
+               calo_disk=np.zeros(n, int), calo_kind=np.ones(n, int))
+    has, _ = A.calo_match(rec, np.full(n, 1430), np.zeros(n, int), np.arange(n), 3)
+    assert abs(has[e == 15.0].mean() - A.CALO_EFF[0]) < 0.01 and abs(has[e == 85.0].mean() - A.CALO_EFF[7]) < 0.01
+    again, _ = A.calo_match(rec, np.full(n, 1430), np.zeros(n, int), np.arange(n), 3)
+    np.testing.assert_array_equal(again, has)
+    with pytest.raises(ValueError):
+        A.calo_match(rec, rule="nearest")
 
 
 def test_contract_covers_every_reader_and_has_classes():
@@ -214,3 +231,15 @@ def test_cluster_truth_time_folds_like_the_reco_time():
                               np.array([0.0, 0.0, 1129.4 + A.MBTIME]), valid)
     np.testing.assert_allclose(reco - tp[:, 0], [1.6, 1.0, 1.8], atol=1e-9)
     assert np.all(tp[:, 1:] == 0.0)
+
+
+def test_dts_select_keeps_the_per_event_rows_and_the_path_names():
+    n = 4
+    plan = dict(event=np.arange(n), trig=np.ones((n, 2), bool), seg_front_pos=np.zeros((n, 3)),
+                trig_names=np.array(["a", "b", "c", "d"]), pid=np.array([0.1, np.nan, 0.3, 0.4]))
+    keep = np.array([True, False, True, False])
+    got = A.dts_select(plan, keep, n)
+    assert got["event"].tolist() == [0, 2]
+    assert got["trig"].shape == (2, 2) and got["seg_front_pos"].shape == (2, 3)
+    assert got["trig_names"].tolist() == ["a", "b", "c", "d"]     # path names, even when there are n of them
+    assert got["pid"].tolist() == [0.1, 0.3]
