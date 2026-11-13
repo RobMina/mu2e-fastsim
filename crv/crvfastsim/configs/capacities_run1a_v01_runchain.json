@@ -1,7 +1,7 @@
 {
  "format": "crvfastsim-capacities-1",
  "margin": 1.25,
- "census": "runchain_bench --record-capacities, Run 1A training gen files 101-119 (odd), 4 files per pass, 3 fresh passes, seeds 7 and 100, float32 and float64 on A100/A6000-class GPUs: 10 distinct files, 48 file passes; charges: 2 further recording runs (both dtypes, seed 7); coinc_hits: 4 recording runs with batched promotions (both dtypes, seeds 7 and 100), x1.25, H 512 and 1024 at the tier's batch x H",
+ "census": "runchain_bench --record-capacities, Run 1A training gen files 101-119 (odd), 4 files per pass, 3 fresh passes, seeds 7 and 100, float32 and float64 on A100/A6000-class GPUs: 10 distinct files, 48 file passes; charges: 2 further recording runs (both dtypes, seed 7); coinc_hits: 4 recording runs with batched promotions (both dtypes, seeds 7 and 100), x1.25 for H 16-64; H 128 and up at the tier's batch x H (a held-out combined promotion overflowed the H 128 census value)",
  "photon_arrivals": 2692993,
  "photon_block_rows": 131512,
  "photon_buffer": 34646955,
@@ -45,8 +45,8 @@
   "16": 1288,
   "32": 29638,
   "64": 5065,
-  "128": 993,
-  "256": 844,
+  "128": 32768,
+  "256": 8192,
   "512": 2048,
   "1024": 1024
  }

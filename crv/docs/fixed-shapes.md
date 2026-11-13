@@ -43,8 +43,10 @@ up to 8. The substep chunk is clamped to the kernel's chunk limit (2^22), and th
 the chunk length of the resident SiPM loop) is set by `--sipm-photons` (default 2^22), not derived.
 
 The coincidence hit buffers (`coinc_hits`, one per tier group size H: the hits of one device-packed kernel batch,
-first-choice or promotion) are derived the same way. A tier that the census never or barely fills can be given its
-largest possible batch, batch x H (`run1a_v01`: H 512 and 1024), so it never overflows.
+first-choice or promotion) are derived the same way for the tiers with large batches. The tiers whose largest
+possible batch is small (`run1a_v01`: H 128 and up, at most 32,768 hits) get that batch x H, so they never overflow:
+their demand depends on how many groups the chunks of a run promote together, which the census underestimates, and the
+device builds a batch x H array for them anyway.
 
 A call whose demand exceeds its capacity is not truncated. It runs with the bucketed shape: the output is the same,
 but that call compiles. It is counted in `runchain.capacity.overflow`, so a file that is too small shows in the report.
