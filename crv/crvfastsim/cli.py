@@ -182,6 +182,12 @@ def build_parser():
             sp.add_argument("--compile-cache", default=None, metavar="DIR",
                             help="JAX persistent compilation cache directory (crvfastsim.compile_cache): later "
                                  "processes reuse the compiled kernels; default off")
+            cap = sp.add_mutually_exclusive_group()
+            cap.add_argument("--capacities", default=None, metavar="CAPS.json",
+                             help="with --jax and the resident response: fixed device shapes from a capacity file "
+                                  "(crvfastsim.capacity; SiPM and noise draws independent of the shapes)")
+            cap.add_argument("--record-capacities", action="store_true",
+                             help="capacity draws with bucketed shapes; the demand per buffer goes to the result")
             approximations.add_arguments(sp)
         if name == "runchain-merge":
             sp.add_argument("--wall", type=float, default=None, help="node job wall time [s] (default: slowest shard)")
@@ -289,6 +295,14 @@ def main(argv=None):
         print(f"# compile cache: {compile_cache.enable(cache)}", flush=True)
     inputs = kw.pop("inputs")
     outdir = kw.pop("outdir") or f"plots/{cmd}"
+    if cmd == "runchain":
+        caps_file, record = kw.pop("capacities", None), kw.pop("record_capacities", False)
+        if caps_file or record:
+            from .capacity import Capacities
+            if kw.get("resident_response") is False:
+                raise SystemExit("--capacities / --record-capacities need the resident response")
+            kw["resident_response"] = True
+            kw["capacities"] = Capacities.load(caps_file, record=True) if caps_file else Capacities(record=True)
     if cmd == "tier1b-apply" and kw.pop("tier1b_backend", "numpy") == "jax":
         from .analyses import tier1b_device
         return tier1b_device.apply(inputs, outdir, **kw)
