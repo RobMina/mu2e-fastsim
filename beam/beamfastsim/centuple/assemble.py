@@ -78,7 +78,15 @@ def calo_match(rec):
     return has, j
 
 
-def build(record, donor_lib, out, *, trigger=None, seed=20261111):
+def cluster_truth_time(ttrue, ctime, contact_t, valid):
+    """caloclustersmc.tprimary per cluster: the earliest true deposit (the contact time where none), folded by the
+    microbunch as the cluster's reco time is (stock folds the calorimeter MC times like the reco times)."""
+    tt = np.where(np.isfinite(ttrue), ttrue, np.asarray(contact_t, float)[:, None])
+    kc = np.round(np.nan_to_num(tt - ctime) / MBTIME)
+    return np.where(valid, tt - MBTIME * kc, 0.0)
+
+
+def build(record, donor_lib, out, *, trigger=None, seed=20261111, trigger_cal=None):
     """Write plan (npz) for every event of the record. Returns the path and counters."""
     rec = dict(np.load(record))
     meta = json.loads(str(rec.pop("meta")))
@@ -94,6 +102,16 @@ def build(record, donor_lib, out, *, trigger=None, seed=20261111):
         if not (np.array_equal(tz["event"], evn) and np.array_equal(tz["subrun"], sub)):
             raise ValueError("centuple: trigger file events differ from the record's")
         trig = {k[5:]: v.astype(bool) for k, v in tz.items() if k.startswith("trig_")}
+        if trigger_cal is not None:      # opt-in on-spill response of the device paths (trigcal)
+            from . import trigcal
+            names = sorted(trig)
+            raw = np.stack([trig[k] for k in names], 1)
+            new = trigcal.apply(trigcal.load(trigger_cal), names, raw, classes(rec), rec["birth_t"], run, sub, evn,
+                                seed)
+            trig = {k: new[:, j] for j, k in enumerate(names)}
+            trig_meta = dict(trig_meta, trigger_cal=str(trigger_cal),
+                             raw_pass={k: int(raw[:, j].sum()) for j, k in enumerate(names)},
+                             cal_pass={k: int(new[:, j].sum()) for j, k in enumerate(names)})
     missing = [p for p in covered if p not in trig]
     cov_paths = [p for p in covered if p in trig]
     cov = np.zeros(n, bool)
@@ -112,7 +130,8 @@ def build(record, donor_lib, out, *, trigger=None, seed=20261111):
     # trkpid of the electron track: its own draw among class-Q donors with the same match status, nearest in E/p
     _, prow = D.match(lib, np.full(n, D.CLASS_Q, np.int8), np.ones(n, bool), keys, seed, run, sub, evn,
                       use={D.CLASS_Q: ("calo", "eop")}, stream=1)
-    pid = np.where(cls == D.CLASS_Q, lib["pid"][prow], np.nan)
+    track = (cls == D.CLASS_Q) | (cls == D.CLASS_F)     # a fitted e- track (the response layer's observables)
+    pid = np.where(track, lib["pid"][prow], np.nan)
     # rotation and time shift donor -> fast (truth at TT_Front)
     phi_f = np.arctan2(pf_true[:, 1], pf_true[:, 0])
     dphi = np.where(np.isfinite(phi_f) & np.isfinite(lib["phi_t"][drow]), _wrap(phi_f - lib["phi_t"][drow]), 0.0)
@@ -128,7 +147,7 @@ def build(record, donor_lib, out, *, trigger=None, seed=20261111):
                 dt_reco=dt_reco, fold=k_f, pid=pid,
                 nactive=rec["trk_nactive"], fitcon=rec["trk_fitcon"], chi2ndf=rec["trk_chi2ndf"],
                 has_entry=rec["has_entry"], birth_x=rec["birth_x"], birth_p=rec["birth_p"], birth_t=rec["birth_t"])
-    # reco surfaces of class-Q electrons
+    # reco surfaces of the fitted electrons (class Q and F)
     p_true_f = np.linalg.norm(pf_true, axis=1)
     scale = rec["trk_p_reco"] / p_true_f
     dtan = rec["trk_tandip"] - tan_true
@@ -136,7 +155,7 @@ def build(record, donor_lib, out, *, trigger=None, seed=20261111):
     for name in ("front", "mid", "back"):
         found = rec["has_entry"] if name == "front" else rec[name + "_found"]
         x, p, t = reco_state(rec[name + "_x"], rec[name + "_p"], rec[name + "_t"], scale, dtan, dt0)
-        ok = found & (cls == D.CLASS_Q) & np.all(np.isfinite(p), axis=1)
+        ok = found & track & np.all(np.isfinite(p), axis=1)
         plan[f"seg_{name}_ok"] = ok
         plan[f"seg_{name}_pos"], plan[f"seg_{name}_mom"], plan[f"seg_{name}_time"] = x, p, t
         lh = loophelix(x, p, t, rec[name + "_bz"])   # t already folded (dt0), so lh t0 is too
@@ -150,12 +169,18 @@ def build(record, donor_lib, out, *, trigger=None, seed=20261111):
     # calorimeter
     for k in ("valid", "energy", "time", "x", "y", "z", "size", "disk", "split", "edge"):
         plan["cl_" + k] = rec["cl_" + k]
-    # cluster truth: the drawn shower's visible energy, shared by the clusters in proportion to their energy
-    ev_cl = np.where(rec["cl_valid"], rec["cl_energy"], 0.0)
-    tot = ev_cl.sum(axis=1, keepdims=True)
-    plan["cl_etot"] = np.where(tot > 0, rec["calo_etrue"][:, None] * ev_cl / np.where(tot > 0, tot, 1.0), 0.0)
-    plan["cl_tprim"] = np.where(rec["cl_valid"], rec["calo_contact_t"][:, None], 0.0)
-    plan["calo_match"] = has_cl & (cls == D.CLASS_Q)
+    if "cl_etrue" in rec:
+        # cluster truth per crystal: the visible energy of the sampled shower steps in the cluster's hit crystals and
+        # the earliest of their times (inner-edge clusters: the table's visible energy and the contact time)
+        plan["cl_etot"] = np.where(rec["cl_valid"], rec["cl_etrue"], 0.0)
+        plan["cl_tprim"] = cluster_truth_time(rec["cl_ttrue"], rec["cl_time"], rec["calo_contact_t"], rec["cl_valid"])
+    else:
+        # records without it: the drawn shower's visible energy, shared by the clusters in proportion to their energy
+        ev_cl = np.where(rec["cl_valid"], rec["cl_energy"], 0.0)
+        tot = ev_cl.sum(axis=1, keepdims=True)
+        plan["cl_etot"] = np.where(tot > 0, rec["calo_etrue"][:, None] * ev_cl / np.where(tot > 0, tot, 1.0), 0.0)
+        plan["cl_tprim"] = np.where(rec["cl_valid"], rec["calo_contact_t"][:, None], 0.0)
+    plan["calo_match"] = has_cl & track
     plan["calo_match_cluster"] = jcl
     plan["calo_contact_x"], plan["calo_contact_t"] = rec["calo_contact_x"], rec["calo_contact_t"]
     plan["calo_disk"] = rec["calo_disk"]

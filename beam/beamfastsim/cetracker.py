@@ -263,13 +263,17 @@ class DeviceChain:
     None (default: the tracker and albedo transport give nrow), or "default" / an .npz of trkfastsim.recoresp.nrow:
     nrow is drawn from the library given the entry helix and the tracker is not transported (no steps, no digis,
     no deltas; a call with digis and digi_cond is refused; the albedo option has no effect on nrow, the library
-    holds the default chain's rows)."""
+    holds the default chain's rows). track_observables: "quality" (default: the track observables are NaN unless the
+    fit passes the quality) or, opt-in, "fit" (kept for every fitted track; same draws))."""
 
     def __init__(self, offline_root, maps, gdml, geom="Offline/Mu2eG4/geom/geom_2021_PhaseI_v03.txt",
                  response=None, digi_cond=None, dtype="float64", origin=ORIGIN, chord_mm=10.0, lanes=None,
                  ce_unroll=True, ce_shrink=2, digi_chunk=8000, resident_digis=True, complete_outer_wall=False,
                  albedo="default", albedo_species="all", albedo_max_chords=8192, deltas=None, response_config=None,
-                 response_cuts=None, nrow_library=None):
+                 response_cuts=None, nrow_library=None, track_observables="quality"):
+        if track_observables not in ("quality", "fit"):
+            raise ValueError("track_observables: 'quality' or 'fit'")
+        self.track_observables = track_observables
         if nrow_library is not None and (deltas is not None or response is None):
             raise ValueError("nrow_library (sampled rows) has no tracker steps and feeds only the response: it takes "
                              "no deltas, and needs a response")
@@ -517,7 +521,7 @@ class DeviceChain:
         import jax
         from trkfastsim.recoresp import device as RD
         return RD.apply(self.resp, jax.random.fold_in(jax.random.PRNGKey(seed), 2), res["has_entry"], res["nrow"],
-                        res["x"], res["p"], res["t"])
+                        res["x"], res["p"], res["t"], observables=self.track_observables)
 
     def __call__(self, births, seed, digis=True, event_timing=None):
         if digis and self.cond is not None and self.nrow is not None:

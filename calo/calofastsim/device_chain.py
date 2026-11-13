@@ -934,13 +934,18 @@ def clusters(resp: DeviceResponse, hits, n_events, caps: Caps):
     take = lambda v: jnp.take_along_axis(v, order, axis=1)  # noqa: E731
     out = dict(valid=take(exists), energy=take(esum), time=take(ctime), x=take(cog[..., 0]), y=take(cog[..., 1]),
                z=take(cog[..., 2]), size=take(size), disk=take(lead_disk), split=take(has_split | merged))
+    if "etrue" in hits:   # opt-in truth: the member hits' true deposits (sum) and earliest true time (min)
+        etr = pad(hits["etrue"], 0.0, jnp.float64)
+        ttr = pad(hits["ttrue"], jnp.inf, jnp.float64)
+        out["etrue"] = take(jnp.einsum("bhc,bh->bc", f_mem.astype(jnp.float64), etr))
+        out["ttrue"] = take(jnp.min(jnp.where(f_mem, ttr[:, :, None], jnp.inf), axis=1))
     over = dict(event_hits=over_hits, main_rounds=over_main, split_rounds=over_split)
     return out, over
 
 
 # ----------------------------------------------------------------------------------------------- driver
 
-def make_chain(lib: DeviceLibrary, resp: DeviceResponse, caps: Caps = Caps(), digi_response="waveform"):
+def make_chain(lib: DeviceLibrary, resp: DeviceResponse, caps: Caps = Caps(), digi_response="waveform", truth=False):
     """Return ``chain(q, timing, key, uniform=None)``: one jitted call from entrance states to clusters.
 
     ``q``/``timing`` come from :func:`entries_batch` (``caps.events`` rows). The result stays on the device:
@@ -950,6 +955,9 @@ def make_chain(lib: DeviceLibrary, resp: DeviceResponse, caps: Caps = Caps(), di
     ``digi_response``: "waveform" (default: photoelectrons, digis, template fit) or the opt-in approximation
     "parametric" (or a table path): hits drawn per crystal from :mod:`calofastsim.param_response` (:func:`param_hits`);
     no digis.
+    ``truth`` (opt-in) adds per cluster ``etrue``, the sampled steps' visible (Birks) energy in the cluster's hit
+    crystals, and ``ttrue``, the earliest of those steps' times (the stock CaloClusterMC etot / earliest deposit);
+    the other outputs are unchanged.
     """
     import jax
     import jax.numpy as jnp
@@ -957,6 +965,17 @@ def make_chain(lib: DeviceLibrary, resp: DeviceResponse, caps: Caps = Caps(), di
         raise ValueError("the device chain requires caller-enabled JAX x64")
 
     pdt = lib.arrays["centers"].dtype
+
+    def with_truth(hits, q, st, crystal, mapped):
+        if not truth:
+            return hits
+        nc, B = resp.n_crystals, caps.events
+        use = st["valid"] & mapped
+        cell = jnp.where(use, q["event"][st["row"]] * nc + jnp.maximum(crystal, 0), B * nc)
+        e = jnp.zeros(B * nc + 1, jnp.float64).at[cell].add(jnp.where(use, st["energy_birks"], 0.0).astype(jnp.float64))
+        tm = jnp.full(B * nc + 1, jnp.inf, jnp.float64).at[cell].min(jnp.where(use, st["time"], jnp.inf).astype(jnp.float64))
+        hc = jnp.where(hits["ok"], hits["event"] * nc + hits["crystal"], B * nc)
+        return dict(hits, etrue=e[hc], ttrue=tm[hc])
     table = _digi_table(digi_response)
 
     def chain(q, t, key, uniform=None):
@@ -970,7 +989,7 @@ def make_chain(lib: DeviceLibrary, resp: DeviceResponse, caps: Caps = Caps(), di
         if table is not None:
             hits, over_resp, stats = param_hits(resp, table, q["event"][st["row"]], t, st, crystal, depth, mapped,
                                                 k_pe, _smeared_pbt(resp, t, k_pbt), caps)
-            cl, over_cl = clusters(resp, hits, caps.events, caps)
+            cl, over_cl = clusters(resp, with_truth(hits, q, st, crystal, mapped), caps.events, caps)
             over = dict(steps=over_steps, **over_resp, **over_cl)
             stats.update(draws=jnp.sum(donor >= 0), fallback=jnp.sum(fallback & q["valid"]),
                          steps=jnp.sum(st["valid"]), mapped=jnp.sum(mapped), photoelectrons=jnp.float64(0),
@@ -985,7 +1004,7 @@ def make_chain(lib: DeviceLibrary, resp: DeviceResponse, caps: Caps = Caps(), di
             pbt = (pbt.astype(jnp.float64) + resp.pbt_reco_sigma *
                    jax.random.normal(k_pbt, pbt.shape, dtype=jnp.float64)).astype(jnp.float32)
         hits, over_hits, stats = fit_and_hits(resp, t, dg, pbt, caps)
-        cl, over_cl = clusters(resp, hits, caps.events, caps)
+        cl, over_cl = clusters(resp, with_truth(hits, q, st, crystal, mapped), caps.events, caps)
         over = dict(steps=over_steps, photoelectrons=over_pe, hits=over_hits, **over_dg, **over_cl)
         stats.update(draws=jnp.sum(donor >= 0), fallback=jnp.sum(fallback & q["valid"]), steps=jnp.sum(st["valid"]),
                      mapped=jnp.sum(mapped), photoelectrons=jnp.sum(jnp.where(pe_ok, weight, 0.0)),

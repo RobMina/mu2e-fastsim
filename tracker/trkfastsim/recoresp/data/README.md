@@ -52,9 +52,13 @@ record. The `.npz` itself is unchanged.
 
 `ce_loophelix_run1a_onspill_pools.npz` (`"onspill"`, opt-in): the response of the production OnSpill chain (OnSpill
 digitization with the trigger, recoMC OnSpill, EventNtuple `from_mcs-mockdata`; AnalysisMDC2025 v02_02_02 on SimJob
-MDC2025ax, DbService Sim_best v1_5), built with `table --pools --fit-pdg 11 --time-edges ... --plateau 500 1400` from
-the development events (sequencers 001430_00000000..00000600, 19,630 events, every digitized event kept). The fit
-counts e- fits only (the ntuple merges the e+-, mu+- hypotheses). The entry-time turn-on spans the on-spill
-digitization window: no tracks below about 406 ns, the loss of the late electrons (1500-2000 ns) and the partial
-recovery after the microbunch, relative to the 500-1400 ns plateau that feeds the bin tables. With 19,630 events
-(about half on the plateau) 135 of the 198 bins borrow from neighbours. The manifest is embedded (`table.save`).
+MDC2025ax, DbService Sim_best v1_5), built with `table --pools all --fit-pdg 11 --time-edges ... --plateau 500 1400`
+from 21 development files (dts sequencers 001430_00000000..00000600, 00000050..00000750 and 00001400..00001900 by
+100; 59,189 events, every digitized event kept). The fit counts e- fits only (the ntuple merges the e+-, mu+-
+hypotheses). The pools hold every fitted track (`--pools all`), so the quality is decided on the drawn track and a
+fit failing the quality draws a failing fit's residuals (with quality-track pools such fits drew quality residuals:
+too narrow a resolution once their observables are used, `DeviceChain(track_observables="fit")`). The entry-time
+turn-on spans the on-spill digitization window: no tracks below about 406 ns, the loss of the late electrons
+(1500-2000 ns) and the partial recovery after the microbunch, relative to the 500-1400 ns plateau that feeds the bin
+tables (the stock resolution is the same on and off the plateau: sigma68 0.214 / 0.228 MeV/c). 103 of the 198 bins
+borrow from neighbours. The manifest is embedded (`table.save`).
