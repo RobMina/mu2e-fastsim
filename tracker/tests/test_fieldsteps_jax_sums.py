@@ -29,7 +29,7 @@ def _interior():
              ("G4_Al", I3, np.array([0.0, 0.0, 100.0]), 100.0, 110.0, 400.0, np.pi, 0.5 * np.pi),
              ("G4_Cu", I3, np.array([0.0, 0.0, 0.0]), 60.0, 61.0, 600.0, 0.0, 2 * np.pi)]
     interior = S.TrackerInterior.__new__(S.TrackerInterior)
-    interior.shells = Wd.CoaxialShells(tubes, axis_point=[0.0, 0.0, 0.0])
+    interior.shells = S.InteriorColumn(Wd.CoaxialShells(tubes, axis_point=[0.0, 0.0, 0.0]))
     interior.nsub = 8
     return interior
 
