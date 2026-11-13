@@ -21,7 +21,7 @@ dprec.register(__name__)   # JAX creators/samplers here follow MU2EFS_DEVICE_FLO
 PULSE_KEYS = ("found", "pe", "time", "rounds_exhausted", "window_overflow", "input_truncated")
 
 
-def _pulse_dispatch(W, rows, cfg, batch, L):
+def _pulse_dispatch(W, rows, cfg, batch, L, bounded=False):
     import jax.numpy as jnp
     outs = []
     for a in range(0, len(rows), batch):
@@ -32,7 +32,8 @@ def _pulse_dispatch(W, rows, cfg, batch, L):
         d = PJ.reconstruct_dense(jnp.asarray(pad(W["adc"][:, :L], 0)), jnp.asarray(pad(np.minimum(W["n"], L), 0)),
                                  jnp.asarray(pad(W["start"], 0)), jnp.asarray(pad(W["ped"].astype(float), 0.0)),
                                  jnp.asarray(pad(W["area"].astype(float), 1.0)),
-                                 jnp.asarray(pad(W["height"].astype(float), 1.0)), cfg=cfg)
+                                 jnp.asarray(pad(W["height"].astype(float), 1.0)), cfg=cfg,
+                                 **({"bounded": True} if bounded else {}))
         d = {**d, 'input_truncated': pad(W['n'] > L, False)}
         outs.append(({k: d[k] for k in PULSE_KEYS}, n))
     return outs
@@ -64,7 +65,8 @@ def _device_refit(W, g, cfg_np, caps=None):
     d = PJ.reconstruct_dense(jnp.asarray(adc), jnp.asarray(pad(n, 0)), jnp.asarray(pad(W["start"][g], 0)),
                              jnp.asarray(pad(W["ped"][g].astype(float), 0.0)),
                              jnp.asarray(pad(W["area"][g].astype(float), 1.0)),
-                             jnp.asarray(pad(W["height"][g].astype(float), 1.0)), cfg=cfg)
+                             jnp.asarray(pad(W["height"][g].astype(float), 1.0)), cfg=cfg,
+                             **({"bounded": True} if caps is not None else {}))
     d = {k: dprec.host(d[k])[:len(g)] for k in ("found", "pe", "time", "rounds_exhausted", "window_overflow")}
     again = d["rounds_exhausted"] | d["window_overflow"]
     wf, seq = np.nonzero(d["found"] & ~again[:, None])
@@ -124,6 +126,8 @@ def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.Finde
     coinc_finish_s, wall_s). keep_pulses: each chunk output also carries its flat pulses under "pulses" (ev, idx, bar,
     sipm, seq, pe, time; idx is the member index mem_idx refers to). with_pos: clusters carry cl_pos [n, 3].
     device_refit: flagged waveforms are refit on the device at full length first (_device_refit), numpy only after.
+    capacities (crvfastsim.capacity): fixed refit shapes, and both pulse fits with bounded scans (the peak scans stop
+    at the longest waveform, the rounds once no waveform found a pulse: the same pulses).
     add_pulses: callable(events) -> extra pulses (ev, bar, sipm, pe, time, seq) merged before the coincidence finder
     (reco.background: out-of-time light deposits the MC does not simulate)."""
     timers = timers if timers is not None else {}
@@ -144,7 +148,7 @@ def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.Finde
     for k in range(len(chunks) + 2):
         if k < len(chunks):
             t0 = tic()
-            pul[k] = _pulse_dispatch(W, chunks[k], cfg, batch, L)
+            pul[k] = _pulse_dispatch(W, chunks[k], cfg, batch, L, **({"bounded": True} if capacities is not None else {}))
             add("pulse_dispatch_s", t0)
         if 0 <= k - 1 < len(chunks):
             t0 = tic()

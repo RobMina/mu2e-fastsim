@@ -184,3 +184,44 @@ def test_packaged_run1a_file_loads_by_name():
     c = capacity.Capacities.load("run1a_v01")
     assert c.cap("sipm_photons") == 1 << 22 and c.cap("photon_substeps") == 1 << 22
     assert c.cap("synth_samples", 64) and c.cap("steps")
+
+
+def test_device_sorted_charges_equal_host_concatenation():
+    from crvfastsim.capacity import Capacities
+    from crvfastsim.response import resident
+    rng = np.random.default_rng(5)
+    pieces, host = [], []
+    for width, n in ((500, 310), (500, 0), (500, 499), (500, 120)):
+        chan = rng.integers(0, 40, width)
+        time = np.round(rng.uniform(0, 50, width), 1)            # rounded: many equal (chan, time) pairs
+        charge, pe, photon = rng.uniform(size=width), rng.uniform(size=width), rng.integers(0, 10**6, width)
+        pieces.append(((jnp.asarray(chan), jnp.asarray(time), jnp.asarray(charge), jnp.asarray(pe),
+                        jnp.asarray(photon)), n))
+        host.append([x[:n] for x in (chan, time, charge, pe, photon)])
+    ref = [np.concatenate([h[i] for h in host]) for i in range(5)]
+    o = np.lexsort((ref[1], ref[0]))
+    for caps in (Capacities(record=True), Capacities({"format": "crvfastsim-capacities-1", "charges": 2000})):
+        out = resident._sorted_charges(pieces, caps)
+        for i, k in enumerate(("chan", "time", "charge", "pe", "photon")):
+            assert np.array_equal(out[k], ref[i][o]), k
+
+
+def test_host_workers_take_over_futures_submitted_ahead():
+    from crvfastsim import host_workers
+
+    class Pool:
+        def __init__(self):
+            self.calls = []
+
+        def submit(self, fn, *args):
+            self.calls.append(args)
+            return ("future", args)
+
+    p = Pool()
+    host_workers.submit_ahead(p, ["a.root", "b.root"], {"a.root": "GEN_A"}, 8, None)
+    assert p.calls == [(0, "a.root", "GEN_A", 8, None), (1, "b.root", None, 8, None)]
+    assert host_workers.submit(p, 0, "a.root", "GEN_A", 8, None) == ("future", (0, "a.root", "GEN_A", 8, None))
+    assert len(p.calls) == 2                                          # taken over, not submitted again
+    host_workers.submit(p, 1, "b.root", None, 9, None)                # another seed: a new task
+    assert p.calls[-1] == (1, "b.root", None, 9, None)
+    host_workers._AHEAD.clear()
