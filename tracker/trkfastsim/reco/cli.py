@@ -30,7 +30,7 @@ def _ref(paths, pre):
     out = {k: [] for k in cols + ["ev"]}
     off = 0
     for p in paths:
-        a = uproot.open(p)["trkdump/events"].arrays([pre + c for c in cols])
+        a = hitreco.tree(p, "events").arrays([pre + c for c in cols])
         out["ev"].append(np.repeat(np.arange(len(a)) + off, ak.to_numpy(ak.num(a[pre + "sid"]))))
         for c in cols:
             out[c].append(ak.to_numpy(ak.flatten(a[pre + c])))
@@ -136,7 +136,7 @@ def _jax_combo_twin(sh, settings):
 
 
 def _ref_col(paths, name):
-    return np.concatenate([ak.to_numpy(ak.flatten(uproot.open(p)["trkdump/events"][name].array())) for p in paths])
+    return np.concatenate([ak.to_numpy(ak.flatten(hitreco.tree(p, "events")[name].array())) for p in paths])
 
 
 def _ref_tracks(paths):
@@ -145,7 +145,7 @@ def _ref_tracks(paths):
     out = {k: [] for k in cols + ["tc_ev", "sd_ev"]}
     off = 0
     for p in paths:
-        a = uproot.open(p)["trkdump/events"].arrays(cols)
+        a = hitreco.tree(p, "events").arrays(cols)
         out["tc_ev"].append(np.repeat(np.arange(len(a)) + off, ak.to_numpy(ak.num(a.tc_n))))
         out["sd_ev"].append(np.repeat(np.arange(len(a)) + off, ak.to_numpy(ak.num(a.sd_n))))
         for c in cols:
@@ -216,7 +216,7 @@ def vr1b(inputs, outdir, conditions, settings, stock_hits=False, use_jax=False):
 
 
 def _drift_table(path):
-    c = uproot.open(path)["trkdump/conditions"].arrays(["dtgrid", "rdrift", "dvel", "sderr", "uderr"], library="np")
+    c = hitreco.tree(path, "conditions").arrays(["dtgrid", "rdrift", "dvel", "sderr", "uderr"], library="np")
     return {"dt": c["dtgrid"][0], "rdrift": c["rdrift"][0], "dvel": c["dvel"][0], "sderr": c["sderr"][0], "uderr": c["uderr"][0]}
 
 
@@ -242,7 +242,7 @@ def vr2(inputs, outdir, conditions, settings, niter=8, max_tracks=None, use_tot=
     tr_ev, hit_trk, hit_sh, hit_lr, hit_act = [], [], [], [], []
     ev0 = np.searchsorted(sh["ev"], np.arange(d["evkey"].shape[0] + 1), side="left")
     for p in inputs:
-        a = uproot.open(p)["trkdump/events"].arrays(cols)
+        a = hitreco.tree(p, "events").arrays(cols)
         one = (ak.num(a.kl_d0) == 1) & (ak.num(a.sd_a0) == 1)        # one seed and one fit: unambiguous pairing
         ie = np.flatnonzero(ak.to_numpy(one))
         b = a[one]
@@ -362,7 +362,7 @@ def vr3(inputs, outdir, conditions, settings, niter=4):
     r = {k: [] for k in cols + ["ev"]}
     off = 0
     for p in inputs:
-        a = uproot.open(p)["trkdump/events"].arrays(cols)
+        a = hitreco.tree(p, "events").arrays(cols)
         r["ev"].append(np.repeat(np.arange(len(a)) + off, ak.to_numpy(ak.num(a.kl_d0))))
         for c in cols:
             r[c].append(ak.to_numpy(ak.flatten(a[c])))
