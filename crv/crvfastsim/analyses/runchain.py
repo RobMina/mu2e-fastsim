@@ -485,8 +485,10 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
     if workers:   # host stages of the next `workers` files in worker processes (same draws as in process)
         wpool = host_workers.pool(host_ctx, workers, (id(geom), id(world), id(lib), workers))
         gen_of = lambda f: gen_tables.get(f) if gen_tables is not None else None
-        pending = {j: wpool.submit(host_workers.task, j, files[j], gen_of(files[j]), seed, max_events)
-                   for j in range(min(workers, len(files)))}
+        pending = {j: host_workers.submit(wpool, j, files[j], gen_of(files[j]), seed, max_events)
+                   for j in range(len(files))}                  # all queued now: the workers take them in order
+        if kw.get("host_ahead"):   # (files, gen tables, seed) of the next run: queued behind this run's files
+            host_workers.submit_ahead(wpool, *kw["host_ahead"], max_events)
     elif kw.get("prefetch") and len(files) > 1:   # file i+1's host stage runs while the device works on file i
         from concurrent.futures import ThreadPoolExecutor
         pool = ThreadPoolExecutor(max_workers=1)
@@ -498,9 +500,6 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
                 ngen, st, pa, rng, t = pending.pop(i).result()
                 keys = None
                 T["host_wait_s"] = T.get("host_wait_s", 0.0) + time.perf_counter() - a
-                if i + workers < len(files):
-                    pending[i + workers] = wpool.submit(host_workers.task, i + workers, files[i + workers],
-                                                        gen_of(files[i + workers]), seed, max_events)
             elif pool is not None:
                 a = time.perf_counter()
                 ngen, st, pa, rng, t, keys = nxt.result()

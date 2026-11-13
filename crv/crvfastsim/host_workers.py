@@ -16,6 +16,7 @@ import numpy as np
 
 _CTX = None
 _POOLS = {}
+_AHEAD = {}   # (path, seed, file index, max_events) -> future submitted ahead (runchain host_ahead)
 
 
 def numpy_host_stage(gen, rng, ctx, timers):
@@ -72,3 +73,18 @@ def pool(ctx, workers, key):
         _POOLS[key] = p
         atexit.register(p.shutdown)
     return p
+
+
+def submit(p, i, path, gen, seed, max_events):
+    """Future of file i's host stage: the one submitted ahead for the same file, seed and index, or a new one."""
+    fut = _AHEAD.pop((path, int(seed), i, max_events), None)
+    return fut if fut is not None else p.submit(task, i, path, gen, seed, max_events)
+
+
+def submit_ahead(p, files, gen_tables, seed, max_events):
+    """Start the host stages of a later run's files now (the next pass of a stream); its run() takes them over."""
+    for i, f in enumerate(files):
+        key = (f, int(seed), i, max_events)
+        if key not in _AHEAD:
+            gen = gen_tables.get(f) if gen_tables is not None else None
+            _AHEAD[key] = p.submit(task, i, f, gen, seed, max_events)
