@@ -130,6 +130,32 @@ def _fired(r_fired, r_slot, r_root, r_time, r_charge, r_pe, lab_c, pho_c, rank_c
     return (lab_c[first], r_time[idx], r_charge[idx], r_pe[idx], pho_c[jnp.minimum(r_root[idx], n - 1)])
 
 
+@jax.jit
+def _sort_charges(chan, time, charge, pe, photon, n):
+    """The first n entries ordered by (chan, time), stable (np.lexsort's order); the tail after them."""
+    valid = jnp.arange(chan.shape[0]) < n
+    o = jnp.lexsort((jnp.where(valid, time, jnp.inf), jnp.where(valid, chan, I64_MAX)))
+    return chan[o], time[o], charge[o], pe[o], photon[o]
+
+
+def _sorted_charges(pieces, caps):
+    """Fired charges of the SiPM chunks [((chan, time, charge, pe, photon) device arrays, count)] written one after the
+    other into one device buffer of a fixed capacity, sorted by (chan, time) there and downloaded once: the arrays the
+    host path makes (per-chunk downloads, concatenation, np.lexsort), without them."""
+    total = sum(n for _, n in pieces)
+    width = max(p[0].shape[0] for p, _ in pieces)
+    size = caps.size("charges", total + width, _bucket(total) + _bucket(width))
+    bufs, off = [], 0
+    for i in range(5):
+        bufs.append(jnp.zeros(size, pieces[0][0][i].dtype))
+    for f, n in pieces:
+        for i in range(5):
+            bufs[i] = _place(bufs[i], f[i], off)
+        off += n
+    srt = _sort_charges(*bufs, total)
+    return dict(zip(("chan", "time", "charge", "pe", "photon"), (dprec.host(np.asarray(x)[:total]) for x in srt)))
+
+
 def charges(steps, pdg, geom, cond, cfg, rng, key, tabs, pmap, status, event_keys, chan_mult, timers,
             max_photons=1 << 23, caps=None):
     """chain.charges (JAX two-stage path) with resident photons. Returns the same dict of host arrays.
@@ -199,10 +225,19 @@ def charges(steps, pdg, geom, cond, cfg, rng, key, tabs, pmap, status, event_key
         nf = int(r["fired"].sum())
         rank_c = jax.lax.dynamic_slice(rank, (a,), (NB,)) - rank[a]
         f = _fired(r["fired"], r["slot"], r["root"], r["time"], r["charge"], r["pe"], lab_c, pho_c, rank_c, m)
+        if caps is not None:                       # kept on the device: compacted and sorted there (_sorted_charges)
+            outs.append((f, nf))
+            continue
         outs.append(dict(zip(("chan", "time", "charge", "pe", "photon"), (dprec.host(np.asarray(x)[:nf]) for x in f))))
-    out = {k: np.concatenate([o[k] for o in outs]) for k in outs[0]}
-    o = np.lexsort((out["time"], out["chan"]))
-    out = {k: v[o] for k, v in out.items()}
+    if caps is not None and not on_host:
+        out = _sorted_charges(outs, caps)
+    else:
+        outs = [o if isinstance(o, dict) else dict(zip(("chan", "time", "charge", "pe", "photon"),
+                                                       (dprec.host(np.asarray(x)[:o[1]]) for x in o[0])))
+                for o in outs]
+        out = {k: np.concatenate([o[k] for o in outs]) for k in outs[0]}
+        o = np.lexsort((out["time"], out["chan"]))
+        out = {k: v[o] for k, v in out.items()}
     timers["sipm_s"] = timers.get("sipm_s", 0.0) + _time.perf_counter() - t0
     timers["charges"] = timers.get("charges", 0) + len(out["time"])
     timers["resident_host_fallback"] = timers.get("resident_host_fallback", 0) + int(on_host)
