@@ -49,6 +49,9 @@ def main(argv=None):
     p.add_argument("--library")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--prefetch", action="store_true")
+    p.add_argument("--host-workers", type=int, default=0, metavar="N",
+                   help="transport and tier 1b of the next N files in N worker processes (crvfastsim.host_workers; "
+                        "the same draws as in process); replaces --prefetch")
     p.add_argument("--device-refit", action="store_true",
                    help="flagged waveforms refit on the device first (ChainConfig.device_refit)")
     p.add_argument("--resident-response", action=argparse.BooleanOptionalAction, default=None,
@@ -124,7 +127,8 @@ def main(argv=None):
             state["context"] = runchain.prepare(**setup)
         run_files, run_tables, seed = drawn if drawn is not None else (files, gen_tables, a.seed)
         state["result"] = runchain.run(run_files, outdir, seed=seed, prepared=state["context"], gen_tables=run_tables,
-                                       prefetch=a.prefetch, transport_backend="auto", tier1b_backend="auto", **setup,
+                                       prefetch=a.prefetch, host_workers=a.host_workers, transport_backend="auto",
+                                       tier1b_backend="auto", **setup,
                                        **run_kw)
         return None   # the chain hands host arrays between stages: the device is idle when run() returns
     if plan is None:

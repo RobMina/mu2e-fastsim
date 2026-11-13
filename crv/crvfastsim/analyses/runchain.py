@@ -29,7 +29,7 @@ import dataclasses
 from pathlib import Path
 from types import MappingProxyType
 
-from .. import chain, geometry, readout, runconfig, tables, tier1b, tier1b_assets
+from .. import chain, geometry, host_workers, readout, runconfig, tables, tier1b, tier1b_assets
 from ..timewindow import resolve_runchain_window, validate_runchain_merge
 from .. import transport as tr
 from ..response import photons as PH
@@ -413,6 +413,9 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
 
     source = None
     tier1b_options = {"showers": rc.showers, **spec.options}
+    host_ctx = dict(geom=geom, world=world, ab=ab, tagger=tagger, bar_cut=bar_cut, below=below, range_out=range_out,
+                    below_msc=below is not None and (rc.below_msc or bool(kw.get("below_msc"))), lib=lib,
+                    tier1b_options=tier1b_options)
 
     def host_stage(i, f):
         """CPU part of file i (read, transport, tier 1b) with its own rng and timers: the same draws whether it runs
@@ -453,13 +456,16 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
             gen = gen[keep].reset_index(drop=True)
         keys = gen[tables.KEY].drop_duplicates().to_numpy() if benchmark is not None else None
         ngen = int(gen[tables.KEY].drop_duplicates().shape[0])
+        if device_transport is None and device_tier1b is None:   # the NumPy host stage (as in --host-workers)
+            st, pa = host_workers.numpy_host_stage(gen, rng, host_ctx, t)
+            return ngen, st, pa, rng, t, keys
         a = time.perf_counter()
         if device_transport is not None:
             st, pa = run_device_transport(gen, geom, rng, prepared=device_transport)
         else:
             st, pa = tr.transport(gen, geom, rng, stage="C", world=world, absorbers=ab, tagger_bar=tagger,
                                   bar_cut=bar_cut, below=below, range_out=range_out,
-                                  below_msc=below is not None and (rc.below_msc or bool(kw.get("below_msc"))))
+                                  below_msc=host_ctx["below_msc"])
         t["transport_s"] = time.perf_counter() - a
         a = time.perf_counter()
         if device_tier1b is None:
@@ -471,14 +477,31 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         return ngen, st, pa, rng, t, keys
 
     files = list(tables.expand(inputs)) if not native else [f"native:{k}" for k in range(-(-gen_events // gen_chunk))]
-    pool = None
-    if kw.get("prefetch") and len(files) > 1:   # file i+1's host stage runs while the device works on file i
+    pool, workers = None, int(kw.get("host_workers") or 0)
+    if workers and (native or steps_input or benchmark is not None or device_transport is not None
+                    or device_tier1b is not None):
+        raise ValueError("--host-workers runs the NumPy transport and tier 1b of table inputs (no native generator, "
+                         "steps input, detail benchmark or device transport / tier 1b)")
+    if workers:   # host stages of the next `workers` files in worker processes (same draws as in process)
+        wpool = host_workers.pool(host_ctx, workers, (id(geom), id(world), id(lib), workers))
+        gen_of = lambda f: gen_tables.get(f) if gen_tables is not None else None
+        pending = {j: wpool.submit(host_workers.task, j, files[j], gen_of(files[j]), seed, max_events)
+                   for j in range(min(workers, len(files)))}
+    elif kw.get("prefetch") and len(files) > 1:   # file i+1's host stage runs while the device works on file i
         from concurrent.futures import ThreadPoolExecutor
         pool = ThreadPoolExecutor(max_workers=1)
         nxt = pool.submit(host_stage, 0, files[0])
     try:
         for i, f in enumerate(files):
-            if pool is not None:
+            if workers:
+                a = time.perf_counter()
+                ngen, st, pa, rng, t = pending.pop(i).result()
+                keys = None
+                T["host_wait_s"] = T.get("host_wait_s", 0.0) + time.perf_counter() - a
+                if i + workers < len(files):
+                    pending[i + workers] = wpool.submit(host_workers.task, i + workers, files[i + workers],
+                                                        gen_of(files[i + workers]), seed, max_events)
+            elif pool is not None:
                 a = time.perf_counter()
                 ngen, st, pa, rng, t, keys = nxt.result()
                 T["host_wait_s"] = T.get("host_wait_s", 0.0) + time.perf_counter() - a
