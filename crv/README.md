@@ -63,7 +63,8 @@ Docs: [`architecture.md`](docs/architecture.md) (stages, backends, ownership), [
 transport and tier 1b), [`tier1b-default.md`](docs/tier1b-default.md), [`transport-range-out.md`](docs/transport-range-out.md),
 [`fastreco.md`](docs/fastreco.md) (reco goals, V-R thresholds and results),
 [`response-configuration.md`](docs/response-configuration.md), [`e2e-benchmark.md`](docs/e2e-benchmark.md),
-[`fixed-shapes.md`](docs/fixed-shapes.md) (capacity files: no recompiles on new events); opt-in
+[`fixed-shapes.md`](docs/fixed-shapes.md) (capacity files: no recompiles on new events),
+[`host-workers.md`](docs/host-workers.md) (transport and tier 1b in worker processes); opt-in
 features have their own page in `docs/`. [`docs/plan.md`](docs/plan.md) is the original 2026-10-15 plan (historical;
 its goals and thresholds are still the agreed ones).
 

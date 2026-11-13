@@ -204,3 +204,24 @@ def test_device_sorted_charges_equal_host_concatenation():
         out = resident._sorted_charges(pieces, caps)
         for i, k in enumerate(("chan", "time", "charge", "pe", "photon")):
             assert np.array_equal(out[k], ref[i][o]), k
+
+
+def test_host_workers_take_over_futures_submitted_ahead():
+    from crvfastsim import host_workers
+
+    class Pool:
+        def __init__(self):
+            self.calls = []
+
+        def submit(self, fn, *args):
+            self.calls.append(args)
+            return ("future", args)
+
+    p = Pool()
+    host_workers.submit_ahead(p, ["a.root", "b.root"], {"a.root": "GEN_A"}, 8, None)
+    assert p.calls == [(0, "a.root", "GEN_A", 8, None), (1, "b.root", None, 8, None)]
+    assert host_workers.submit(p, 0, "a.root", "GEN_A", 8, None) == ("future", (0, "a.root", "GEN_A", 8, None))
+    assert len(p.calls) == 2                                          # taken over, not submitted again
+    host_workers.submit(p, 1, "b.root", None, 9, None)                # another seed: a new task
+    assert p.calls[-1] == (1, "b.root", None, 9, None)
+    host_workers._AHEAD.clear()
