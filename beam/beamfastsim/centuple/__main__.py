@@ -64,9 +64,10 @@ def cmd_donor(a):
 
 def cmd_assemble(a):
     from . import assemble
-    path, meta = assemble.build(a.record, a.donor, a.out, trigger=a.trigger, seed=a.seed, trigger_cal=a.trigger_cal)
+    path, meta = assemble.build(a.record, a.donor, a.out, trigger=a.trigger, seed=a.seed, trigger_cal=a.trigger_cal,
+                                dts_filter=a.dts_filter)
     print(json.dumps(dict(path=str(path), classes=meta["classes"], covered=len(meta["covered_paths"]),
-                          missing=meta["covered_missing"])))
+                          missing=meta["covered_missing"], dts_filter=meta["dts_filter"])))
 
 
 def cmd_trigcal(a):
@@ -156,7 +157,7 @@ def cmd_point(a):
                          "--conditions", d["conditions"], "--tc-mva", d["tc_mva"], *resp,
                          "--precision", a.dtype], check=True)
     plan, pmeta = assemble.build(out / record.RECORD, d["donor"], out, trigger=out / "centuple_trigger.npz",
-                                 seed=a.seed, trigger_cal=tcal)
+                                 seed=a.seed, trigger_cal=tcal, dts_filter=a.dts_filter)
     files = [os.path.join(a.data, "donor", f) for f in pmeta["donor_files"]]
     env = dict(os.environ, CENTUPLE_PYTHONPATH=str(Path(__file__).resolve().parents[2]))
     here = Path(__file__).resolve().parent
@@ -231,6 +232,8 @@ def main(argv=None):
     s.add_argument("--out", required=True)
     s.add_argument("--seed", type=int, default=20261111)
     s.add_argument("--trigger-cal", help="on-spill response of the device paths (trigcal table .npz); opt-in")
+    s.add_argument("--dts-filter", action="store_true",
+                   help="keep only events passing the emulated dts PrimaryFilter (opt-in; for births per generated)")
     s.set_defaults(fn=cmd_assemble)
     c = sp.add_parser("trigcal", help="on-spill response of the device paths from paired development events")
     c.add_argument("--stock", nargs="+", required=True, help="stock EventNtuples, every digitized event kept")
@@ -263,6 +266,8 @@ def main(argv=None):
     q.add_argument("--offline-root")
     q.add_argument("--maps", nargs=2)
     q.add_argument("--keep", action="store_true")
+    q.add_argument("--dts-filter", action="store_true",
+                   help="store only events passing the emulated dts PrimaryFilter, as the stock dts (opt-in)")
     q.add_argument("--trigger-cal", help="on-spill trigger table (default: the shipped trigcal table; 'none': the "
                                          "off-spill response layer of the data directory)")
     q.set_defaults(fn=cmd_point)
