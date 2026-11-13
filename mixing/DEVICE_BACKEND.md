@@ -144,6 +144,24 @@ files are identical with and without it (CRV float32 and float64, float32 tracke
 On one batch of 256 (A100) the device step falls from 0.45 to 0.42 s (CRV float32) and from 0.49 to 0.46 s (CRV
 float64). The precision provenance records the setting.
 
+## Concurrent graph regions (core `MU2EFS_GRAPH_CONCURRENCY`, on by default)
+
+A batch step is tens of thousands of GPU kernels, most of them a few microseconds long (loop bodies, small
+reductions), and XLA records each command buffer as one chain of them. Core `devloops.py` also appends
+`--xla_gpu_graph_enable_concurrent_region=true` (on by default; `MU2EFS_GRAPH_CONCURRENCY=0` turns it off, before
+JAX starts): kernels that do not depend on each other become parallel branches of the graph and share the GPU. XLA
+keeps its own dependencies, so the results are the same: over full development and held-out passes at batch 256 the
+output files are identical with and without it (CRV float32 and float64, float32 tracker; exact and reuse capacity
+files). It is independent of the device-loop setting.
+
+Rate with it (A100, batch 256, 2,560 events, fresh inputs, full output, two writers; two runs each, alternating on
+one node):
+
+| capacity file | CRV float32 (ev/s) | float64 (ev/s) |
+|---|---|---|
+| exact | 666 / 661 -> 714 / 717 (x1.08) | 612 / 610 -> 657 / 659 (x1.08) |
+| reuse | 1003 / 1010 -> 1130 / 1080 (x1.10) | 866 / 859 -> 902 / 903 (x1.05) |
+
 ## Output compression (opt-in)
 
 ROOT output uses uproot's default compression (ZLIB level 1), and the benchmark tree is added in a second open of the
