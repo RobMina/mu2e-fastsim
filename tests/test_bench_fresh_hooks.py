@@ -248,3 +248,71 @@ def test_mixing_bench_pipeline_writers(tmp_path, writers):
     with pytest.raises(ValueError, match="positive integer"):
         device_bench._run_pipelined(SimpleNamespace(**{**vars(prepared), "args": SimpleNamespace(**{**vars(args), "device_pipeline_writers": 0})}),
                                     backend, tmp_path / "x")
+
+
+def _decide_main(monkeypatch, tmp_path, extra, cpu):
+    """trigger.device.run decide on a fake chain and dump: returns the output JSON and the chain's settings."""
+    from trigger.device import chain as chainmod, menu, run
+    rng = np.random.default_rng(5)
+    n = 37
+    sizes = rng.integers(0, 260, n)
+    keys = [(1, 0, 500 + i) for i in range(n)]
+    ev = {k: [rng.integers(0, 50, m) for m in sizes] for k in run.DIG}
+    ev["pbt"], ev["spill"] = np.zeros(n), np.zeros(n, np.int64)
+    fields = ("sid", "flag", "time", "edep", "x", "y", "z", "wdist", "uvar", "ncombo", "vvar")
+    stock = {p + k: [np.arange(m) for m in sizes] for p in ("s_", "p_") for k in fields}
+    seen = {}
+
+    class Fake:
+        plan, skipped, precision = {}, {}, "float64"
+
+        def __init__(self, *a, compact=False, debug=False, **k):
+            seen.update(compact=compact, debug=debug)
+
+        def decide(self, b):                    # per-event results from the event's own digis only
+            nh = b["valid"].sum(axis=1)
+            seen.setdefault("shapes", []).append(b["valid"].shape)
+            idx = np.where(b["valid"], np.cumsum(b["valid"], axis=1) - 1, -1)   # the stub stock's values
+            hits = {"valid": b["valid"], **{k: idx for k in fields}}
+            return ({"P": (nh + b["event"]) % 3 == 0}, {"a:tc": nh % 2 == 1},
+                    {"sh": hits, "ph": hits} if seen["debug"] else {})
+
+        def finish(self, dec, aux, n_events):  # an event-order counter, as the prescale counter
+            return {"P": dec["P"][:n_events], "Q": np.cumsum(aux["a:tc"][:n_events]) % 2 == 0}
+
+    monkeypatch.setattr(run, "load_dump", lambda path, tree: (keys, ev, stock))
+    monkeypatch.setattr(run, "conditions", lambda path, tree: None)
+    monkeypatch.setattr(menu, "parse_fcl", lambda text: {})
+    monkeypatch.setattr(chainmod, "Chain", Fake)
+    monkeypatch.setattr(run, "on_cpu", lambda: cpu)
+    m = tmp_path / "menu.fcl"
+    m.write_text("")
+    out = tmp_path / f"out_{len(list(tmp_path.iterdir()))}.json"
+    run.main(["decide", "--dump", "d.root", "--menu", str(m), "--tc-mva", "w.xml", "--output", str(out), *extra])
+    return json.loads(out.read_text()), seen
+
+
+def test_trigger_decide_hit_order_and_backend_defaults_give_the_same_decisions(monkeypatch, tmp_path):
+    ref, s = _decide_main(monkeypatch, tmp_path, ["--order", "input", "--batch", "512", "--hmin", "64",
+                                                  "--no-compact", "--check-hits"], cpu=False)
+    assert s["compact"] is False and ref["batching"] == {"order": "input", "batch": 512, "hmin": 64, "compact": False}
+    assert ref["hits"]["straw"]["events_same_count"] == 37 and ref["hits"]["straw"]["exact"]["sid"][0] > 0
+    gpu, s = _decide_main(monkeypatch, tmp_path, ["--check-hits"], cpu=False)
+    assert s["compact"] is False and gpu["batching"] == {"order": "hits", "batch": 512, "hmin": 64, "compact": False}
+    cpu, s = _decide_main(monkeypatch, tmp_path, ["--check-hits"], cpu=True)
+    assert s["compact"] is True and cpu["batching"] == {"order": "hits", "batch": 16, "hmin": 32, "compact": True}
+    assert len(s["shapes"]) == 3 and {e for e, _ in s["shapes"]} == {16}
+    for other in (gpu, cpu):
+        assert other["decisions"] == ref["decisions"] and other["hits"] == ref["hits"]
+    _, s = _decide_main(monkeypatch, tmp_path, ["--no-compact", "--batch", "8"], cpu=True)
+    assert s["compact"] is False and {e for e, _ in s["shapes"]} == {8}
+
+
+def test_trigger_bench_cpu_defaults(monkeypatch):
+    from trigger.device import bench, run
+    for var in ("TRIGGER_DEVICE_BATCH", "TRIGGER_DEVICE_HMIN", "TRIGGER_DEVICE_COMPACT"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(run, "on_cpu", lambda: True)
+    assert bench._cpu() == {"batch": 16, "hmin": 32, "compact": True}
+    monkeypatch.setattr(run, "on_cpu", lambda: False)
+    assert bench._cpu() == {}
