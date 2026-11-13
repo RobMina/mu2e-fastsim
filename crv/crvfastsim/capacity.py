@@ -24,7 +24,8 @@ File format (JSON)::
      "sipm_photons": N,                       # SiPM chunk size (resident path; also its max_photons), set by hand
      "charges": Q,                                                     # fired charges of a file + one chunk's width
      "synth_rows": {"Q": C, ...}, "synth_samples": {"Q": L, ...},     # per power-of-two charges-per-cluster Q
-     "refit_rows": R2, "refit_samples": L2}                            # device refit of flagged waveforms
+     "refit_rows": R2, "refit_samples": L2,                            # device refit of flagged waveforms
+     "coinc_hits": {"H": N, ...}}            # hits of one device-packed coincidence batch, per tier group size H
 """
 import argparse
 import json
@@ -37,7 +38,7 @@ SCALARS = ("steps", "photon_block_rows", "photon_rows", "photon_substeps", "phot
            "sipm_photons", "charges", "refit_rows", "refit_samples")
 FIXED = ("sipm_photons",)   # set by hand (the SiPM chunk size), not derived from demand
 CLAMP = {"photon_substeps": 1 << 22}   # hard per-chunk limits of the kernels (photons_jax max_sub): never above
-PER_Q = ("synth_rows", "synth_samples")
+PER_Q = ("synth_rows", "synth_samples", "coinc_hits")
 
 
 def _p2(n, lo=1):
