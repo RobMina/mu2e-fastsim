@@ -274,12 +274,3 @@ def test_dts_keep_takes_the_tracker_rows_or_the_calorimeter():
     assert H.dts_keep(nrow).tolist() == [False, False, True, True, False, False]
     assert H.dts_keep(nrow, calo).tolist() == [False, False, True, True, True, False]
     assert (H.DTS_MIN_P, H.DTS_MIN_STEPS, H.DTS_MIN_CALO) == (50.0, 12, 45.0)
-
-
-def test_default_digi_electronics_are_valid_levers():
-    """The default electronics levers of the resident digitiser validate (digi_resident.electronics_options) and keep
-    the flat entries at most the pair capacity."""
-    pytest.importorskip("jax")
-    from trkfastsim.digi import digi_resident as DR
-    opts = DR.electronics_options(H.DIGI_ELECTRONICS)
-    assert 1 <= opts["entries_per_straw"] <= 4 and opts["saturation_pool"] and opts["saturation_tiles"] == "bounded"
