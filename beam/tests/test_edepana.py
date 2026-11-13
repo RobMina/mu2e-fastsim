@@ -288,3 +288,11 @@ def test_rmax_is_the_helix_largest_radius_about_the_axis():
     ee = E.EdgeEnergies(tab)
     _, v = ee.draw(np.random.default_rng(0), np.zeros(3, int), np.full(3, 10.0), np.array([420.0, 600.0, 480.0]))
     assert v.tolist() == [20.0, 70.0, 20.0]      # 450-520 is empty: its nearest radius bin (below 450) is used
+
+
+def test_default_batch_follows_the_backend(monkeypatch):
+    jax = pytest.importorskip("jax")
+    monkeypatch.setattr(jax, "default_backend", lambda: "cpu")
+    assert E.default_batch() == E.BATCH_CPU == 5000
+    monkeypatch.setattr(jax, "default_backend", lambda: "gpu")
+    assert E.default_batch() == E.BATCH_GPU == 65536

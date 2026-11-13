@@ -74,7 +74,7 @@ class _Source(FnalSource):
 
 def validate(params: Dict[str, Any], task: str = "beam_point") -> Dict[str, Any]:
     from mu2efastsim.endpoints.parameters import validate as validate_parameters
-    if task == "beam_edep":
+    if task in ("beam_edep", "beam_edep_cpu"):
         return validate_parameters(task, params, kit_task.EDEP_PARAMS, {"dtype": "float64"})
     return validate_parameters(task, params, kit_task.SOB_PARAMS if task == "beam_sob" else kit_task.PARAMS)
 
@@ -411,3 +411,26 @@ class BeamEdepStream(BeamPointStream):
         r["metadata"]["edep_run_record"] = (nts.parent / (nts.name + ".edep.json")).name
         r["files"] = [{"name": nts.name, "uri": nts.resolve().as_uri(), "kind": "root"}]
         return r
+
+
+EDEP_CPU_RESOURCES = Resources(cores=1, mem_gb=kit_task.EDEP_CPU_MEM_GB, gpus=0, gpu_type="",
+                               minutes=kit_task.EDEP_CPU_MINUTES)
+# the CPU preamble of beam_sob (no GPU helper, no nvidia-smi, no GPU check), then beam_edep's steps on the CPU
+EDEP_CPU_BODY = (SOB_BODY[:SOB_BODY.index("B() {")] + EDEP_BODY[EDEP_BODY.index("B() {"):]).replace(
+    'apptainer exec --nv --cleanenv --env "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0},OPENBLAS_NUM_THREADS=1,',
+    'apptainer exec --cleanenv --env "JAX_PLATFORMS=cpu,OMP_NUM_THREADS=1,OPENBLAS_NUM_THREADS=1,MKL_NUM_THREADS=1,'
+    'XLA_FLAGS=--xla_cpu_multi_thread_eigen=false,').replace(
+    "XLA_PYTHON_CLIENT_PREALLOCATE=false,", "").replace(
+    "--procs $(( ${SLURM_CPUS_PER_TASK:-@cores@} - 1 ))", "--procs 1")
+
+
+class BeamEdepCpuStream(BeamEdepStream):
+    """beam_edep_cpu: beam_edep's streamed inputs and point on one CPU core (the CPU partition), JAX single-threaded,
+    float64 by default."""
+    TASK = "beam_edep_cpu"
+    RESOURCES = EDEP_CPU_RESOURCES
+
+    def __init__(self, kit, **kw):
+        super().__init__(kit, **kw)
+        self.BODY = EDEP_CPU_BODY.replace("@zup@", str(kit_task.SOB_Z_UP)).replace(
+            "@cores@", str(EDEP_CPU_RESOURCES.cores))

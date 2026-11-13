@@ -97,6 +97,19 @@ A python -c "import jax, sys; print(jax.devices()); sys.exit(jax.default_backend
 tail -c 300 "$M2FS_OUT/point.txt"
 '''
 
+# Task beam_edep_cpu: beam_edep on ONE CPU core (a grid-slot-sized job, no GPU): the same point, float64 by default (on
+# a CPU float32 is slower), JAX single-threaded, edepana's CPU default batch (5,000 electrons). One Run 1A design point
+# with 100k electrons takes about 1.6 core-hours (beam/docs/edepana.md).
+EDEP_CPU_MINUTES = 240
+EDEP_CPU_MEM_GB = 16
+CPU_ENV = ("JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 "
+           "XLA_FLAGS=--xla_cpu_multi_thread_eigen=false")
+EDEP_CPU_ARGS = EDEP_ARGS.replace("--procs " + str(EDEP_CORES - 1), "--procs 1")
+GPU_CHECK = ('A python -c "import jax, sys; print(jax.devices()); sys.exit(jax.default_backend() != \'gpu\')" '
+             '|| { echo "JAX not on the GPU"; exit 5; }\n')
+EDEP_CPU_BODY = EDEP_BODY.replace(GPU_CHECK, "").replace("XLA_PYTHON_CLIENT_PREALLOCATE=false ", CPU_ENV + " ").replace(
+    EDEP_ARGS, EDEP_CPU_ARGS)
+
 # Task beam_centuple: the fast EventNtuple file of one target geometry (beamfastsim.centuple point): beam stops on the
 # design studies' table, conversion electrons through the device chain with digis and the reco response, the
 # calorimeter (device chain at the disk fronts, the Geant4 inner-edge table at the edge), the device trigger, donor
@@ -145,6 +158,11 @@ def register(tasks, task_cls, resources_cls, fnal_tasks):
                                                           minutes=60),
                                   body=EDEP_BODY, defaults={"dtype": "float64"})
     fnal_tasks.add("beam_edep")
+    tasks["beam_edep_cpu"] = task_cls(params=EDEP_PARAMS, metrics=EDEP_METRICS,
+                                      resources=resources_cls(cores=1, mem_gb=EDEP_CPU_MEM_GB, gpus=0, gpu_type="",
+                                                              minutes=EDEP_CPU_MINUTES),
+                                      body=EDEP_CPU_BODY, defaults={"dtype": "float64"})
+    fnal_tasks.add("beam_edep_cpu")
     tasks["beam_centuple"] = task_cls(params=CENT_PARAMS, metrics=CENT_METRICS,
                                       resources=resources_cls(cores=CENT_CORES, mem_gb=96, gpus=1, gpu_type="a100",
                                                               minutes=90),
@@ -183,8 +201,18 @@ class _UVAEdepDelegate(_UVADelegate):
         return BeamEdepStream(kit)
 
 
+class _UVAEdepCpuDelegate(_UVADelegate):
+    """beam_edep_cpu on a Slurm-over-SSH endpoint: the same inputs streamed in, one CPU core."""
+
+    @staticmethod
+    def make(kit):
+        from .kit_uva import BeamEdepCpuStream
+        return BeamEdepCpuStream(kit)
+
+
 def register_delegate(delegates):
     """beam_point, beam_sob and beam_edep on endpoints without FNAL storage run through kit_uva (inputs streamed)."""
     delegates["beam_point"] = _UVADelegate
     delegates["beam_sob"] = _UVASobDelegate
     delegates["beam_edep"] = _UVAEdepDelegate
+    delegates["beam_edep_cpu"] = _UVAEdepCpuDelegate
