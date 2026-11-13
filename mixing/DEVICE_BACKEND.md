@@ -146,13 +146,25 @@ files are identical with and without it (CRV float32 and float64, float32 tracke
 On one batch of 256 (A100) the device step falls from 0.45 to 0.42 s (CRV float32) and from 0.49 to 0.46 s (CRV
 float64). The precision provenance records the setting.
 
-## Output compression (opt-in)
+## Output compression (ZSTD 1 in the bench by default)
 
-ROOT output uses uproot's default compression (ZLIB level 1), and the benchmark tree is added in a second open of the
-file. `--output-compression zstd1|lz4|none` (stream benchmark) or `"output_compression"` (bench configuration) writes
-every tree in one open with that compression: the decoded trees and branches are the same, but the file bytes differ.
+`stream_benchmark` writes ROOT output with uproot's default compression (ZLIB level 1) and adds the benchmark tree in
+a second open of the file. `--output-compression zstd1|lz4|none` (stream benchmark) or `"output_compression"` (bench
+configuration; **default `zstd1`**, `null` for ZLIB 1) writes every tree in one open with that compression: the
+decoded trees and branches are the same, but the file bytes differ.
 On one real batch of 256 mixed events with full digis, the write takes 0.25 s with ZLIB 1 (5.4 MB), 0.10 s with
 ZSTD 1 (4.9 MB), 0.08 s with LZ4 (7.1 MB) and 0.05 s uncompressed (15.8 MB).
+
+Bench rate, A100, batch 256, 2,560 events, fresh inputs, two writers, concurrent graph regions on; ZLIB 1 against
+ZSTD 1 (and ZSTD 1 against LZ4), two runs each, alternating on one node:
+
+| capacity file | CRV float32 (ev/s) | float64 (ev/s) |
+|---|---|---|
+| exact | 709 / 718 -> 755 / 754 (x1.06) | 660 / 659 -> 693 / 692 (x1.05) |
+| reuse | 1018 / 1012 -> 1197 / 1200 (x1.18) | 932 / 936 -> 1060 / 1057 (x1.13) |
+| reuse, LZ4 against ZSTD 1 | 1228 / 1235 -> 1245 / 1245 (x1.01) | 1063 / 1063 -> 1075 / 1072 (x1.01) |
+
+LZ4 is barely faster and its files are larger, so the bench uses ZSTD 1.
 
 ## Reproducible synthetic integration
 
