@@ -59,6 +59,8 @@ def synth_dense(T, W, n, t_start, keep, tmpl, key, L, zs, precision, noise, min_
                 adc_hi, *, window_start=None, window_end=None, stock_scan=False):
     """Dense waveforms, ADCs and digi starts for C clusters. T, W [C,Q]; n, t_start, keep [C].
     L (samples), zs (digi length) and stock_scan are compile-time; other numeric parameters are data.
+    key: one PRNG key (noise drawn over [C, L]; it changes when C or L does) or one raw key per cluster [C, 2]
+    (cluster c's noise is normal(key[c], (L,)): prefix-stable in L, independent of the other rows).
     Default mode uses an ungated scan. Opt-in stock_scan gates candidate starts inclusively before advancing
     by zs samples. window_start/window_end are scalar times (None = unbounded), used only in stock_scan mode;
     accepted digi tails are not cropped at window_end."""
@@ -71,7 +73,11 @@ def synth_dense(T, W, n, t_start, keep, tmpl, key, L, zs, precision, noise, min_
     contrib = jnp.where(ok, tmpl[jnp.clip(ti, 0, tmpl.shape[0] - 1)] * W[:, :, None], 0.0)
     wave = contrib.sum(1)
     last = jnp.where(ok, jnp.arange(L)[None, None, :] + 1, 0).max((1, 2))
-    wave = wave + noise * jax.random.normal(key, wave.shape) * (jnp.arange(L)[None, :] < last[:, None])
+    if key.ndim == 2:   # one key per cluster [C, 2]: a cluster's noise depends on its key only, not on C, Q or L
+        z = jax.vmap(lambda k: jax.random.normal(k, (L,)))(key)
+    else:
+        z = jax.random.normal(key, wave.shape)
+    wave = wave + noise * z * (jnp.arange(L)[None, :] < last[:, None])
     valid = jnp.arange(L)[None, :] < last[:, None]
     above = (wave > min_voltage) & valid
     pad = jnp.zeros((C, 2), bool)

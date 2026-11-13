@@ -32,7 +32,7 @@ def _take_rows(step, chan, rr, a):
     return step[rr + a], chan[rr + a]
 
 
-def _photon_pieces(steps, pdg, geom, cfg, device_tables, deviation, rng, key):
+def _photon_pieces(steps, pdg, geom, cfg, device_tables, deviation, rng, key, caps=None):
     """photons_jax.make_photons with the arrivals left on the device: [(step, chan, time, count)] in its order."""
     pieces = []
     for L, rows in photons.iter_rows(steps, pdg, geom, cfg, {k: v.L for k, v in device_tables.items()}, deviation, rng):
@@ -49,18 +49,23 @@ def _photon_pieces(steps, pdg, geom, cfg, device_tables, deviation, rng, key):
         k = sub
         for a, b in zip(cuts[:-1], cuts[1:]):
             R = b - a
-            pad = photons_jax._bucket(R) - R
+            RB = photons_jax._bucket(R) if caps is None else caps.size("photon_rows", R, photons_jax._bucket(R))
+            pad = RB - R
             chunk = {n: jnp.asarray(np.pad(rows[n][a:b], ((0, pad), (0, 0)))) for n in ("s", "d")}
             for n in photons_jax.ROW_KEYS:
                 chunk[n] = jnp.asarray(np.pad(photons_jax._row(rows, n)[a:b], (0, pad)))
             chunk["nsub"] = jnp.asarray(np.pad(nsub[a:b], (0, pad)))
-            SB = photons_jax._bucket(int(nsub[a:b].sum()))
+            ns = int(nsub[a:b].sum())
+            SB = photons_jax._bucket(ns) if caps is None else caps.size("photon_substeps", ns, photons_jax._bucket(ns))
             k, ka, kb = jax.random.split(k, 3)
             narr, gbin, t, ri = photons_jax._kernel_a(chunk, ka, dt.edges, dt.prob, SB, dt.nb, dt.const, dt.offsets)
             total = int(narr.sum())
             if total == 0:
                 continue
-            tt, rr, _ = photons_jax._kernel_b(narr, gbin, t, ri, kb, dt.cum, dt.dsum, photons_jax._bucket(total))
+            AB = photons_jax._bucket(total)
+            if caps is not None:
+                AB = caps.size("photon_arrivals", total, AB)
+            tt, rr, _ = photons_jax._kernel_b(narr, gbin, t, ri, kb, dt.cum, dt.dsum, AB)
             s, c = _take_rows(step_d, chan_d, rr, a)
             pieces.append((s, c, tt, total))
     return pieces
@@ -123,8 +128,10 @@ def _fired(r_fired, r_slot, r_root, r_time, r_charge, r_pe, lab_c, pho_c, rank_c
 
 
 def charges(steps, pdg, geom, cond, cfg, rng, key, tabs, pmap, status, event_keys, chan_mult, timers,
-            max_photons=1 << 23):
-    """chain.charges (JAX two-stage path) with resident photons. Returns the same dict of host arrays."""
+            max_photons=1 << 23, caps=None):
+    """chain.charges (JAX two-stage path) with resident photons. Returns the same dict of host arrays.
+    caps (crvfastsim.capacity.Capacities): fixed shapes from a capacity file and SiPM draws per hit section, so the
+    charges do not depend on the shapes (another realization than caps=None)."""
     import time as _time
     from . import sipm as SI
     scfg = cfg.sipm
@@ -133,15 +140,20 @@ def charges(steps, pdg, geom, cond, cfg, rng, key, tabs, pmap, status, event_key
     if scfg.trap0_prob != 0 or scfg.trap1_prob != 0:
         raise NotImplementedError("sipm_jax: trap afterpulses are not in the twin")
     t_end = cfg.window[1]
+    if caps is not None and caps.cap("sipm_photons"):
+        max_photons = caps.cap("sipm_photons")       # SiPM chunks of the fixed size: only a file's last one is short
     t0 = _time.perf_counter()
     k1, k2 = jax.random.split(key)
-    pieces = _photon_pieces(steps, pdg, geom, cfg.response, tabs, cond.deviation, rng, k1)
+    pieces = _photon_pieces(steps, pdg, geom, cfg.response, tabs, cond.deviation, rng, k1, caps)
     empty = {k: np.zeros(0) for k in ("chan", "time", "charge", "pe", "photon")}
     if not pieces:
         timers["photons_s"] = timers.get("photons_s", 0.0) + _time.perf_counter() - t0
         return empty
     total = sum(p[3] for p in pieces)
     size = _bucket(total) + _bucket(min(max(total, 1), max_photons))   # room for every chunk window [a, a + NB)
+    if caps is not None:
+        NBmax = caps.cap("sipm_photons") or _bucket(min(max(total, 1), max_photons))
+        size = caps.size("photon_buffer", total + NBmax, size)
     (s, c, t), n = _concat(pieces, size)
     if int(jnp.max(jnp.where(jnp.arange(size) < n, c, 0))) >= chan_mult:
         raise ValueError(f"channel >= CHAN_MULT {chan_mult}: SiPM labels would overlap the next event")
@@ -164,13 +176,15 @@ def charges(steps, pdg, geom, cond, cfg, rng, key, tabs, pmap, status, event_key
     for a, b in zip(cuts[:-1], cuts[1:]):
         m = b - a
         NB, Ms, Ntot, q_ct = sipm_jax.device_buckets(m, scfg)
+        if caps is not None:
+            NB, Ms, Ntot, q_ct = sipm_jax.device_buckets(m, scfg, NB=caps.size("sipm_photons", m, NB))
         if a + NB > size:   # one SiPM with more than max_photons photons: no room for its window
             raise RuntimeError("resident response: chunk window exceeds the photon buffer")
         slot, time, valid, lab_c, pho_c = _chunk_inputs(lab, tim, pho, rank, a, m, jnp.zeros(NB, bool))
         k2, sub = jax.random.split(k2)
         args = (slot, time, valid, sub, cum, pmap.shape[1], dead_d, q_ct, scfg.overvoltage,
                 scfg.time_constant, scfg.p1, scfg.p2, scfg.capacitance, NB, *Ms, Ntot)
-        r = sipm_jax.run_device_sipm(args, scfg)
+        r = sipm_jax.run_device_sipm(args, scfg, draws="offset" if caps is None else "section")
         if bool(r["overflow"]):
             ch, tm, ph = (np.asarray(x)[:m] for x in (lab_c, time, pho_c))
             outs.append(SI.simulate(ch, dprec.host(tm), ph, pmap, scfg, rng, t_end=t_end))
