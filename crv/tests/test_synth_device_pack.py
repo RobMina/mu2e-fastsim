@@ -24,14 +24,14 @@ def test_gather_tw_equals_pack(seed):
     first = np.flatnonzero(np.r_[True, cid[1:] != cid[:-1]])
     nq = np.bincount(cid)
     qb = cli._p2(nq)
-    dev = (jnp.asarray(t, dtype=jnp.float64), jnp.asarray(q, dtype=jnp.float64))
+    dev = (jnp.asarray(t, dtype=jnp.float64), jnp.asarray(q / cfg.single_pe_reference_charge, dtype=jnp.float64))
     for Qb in np.unique(qb):
         c = np.flatnonzero(qb == Qb)[::2]                                    # every other cluster of this Q
         idx = np.concatenate([np.arange(first[k], first[k] + nq[k]) for k in c])
         pk = WJ.pack(rows[idx], t[idx], q[idx], tdc0, cfg, Q=int(Qb))
         pad = 3
         T, W = WJ.gather_tw(*dev, np.r_[first[c], np.zeros(pad, np.int64)], np.r_[nq[c], np.zeros(pad, np.int64)],
-                            cfg.single_pe_reference_charge, Q=int(Qb))
+                            Q=int(Qb))
         T, W = np.asarray(T), np.asarray(W)
         assert T.dtype == pk["T"].dtype and W.dtype == pk["W"].dtype
         np.testing.assert_array_equal(T[:len(c)], pk["T"])

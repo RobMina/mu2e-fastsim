@@ -687,9 +687,9 @@ def _synth_jax_fixed(WJ, Q, tdc0_row, cfg, caps, noise=0.0, seed=0, budget_gib=S
     shape (counted as capacity overflow). Same digis as _synth_jax_bucketed without noise; with noise another draw.
     Packing on the device: per-cluster start times, lengths and keep flags are computed once for all clusters on the
     host (pack()'s formulas), and each call's [C, Q] time and charge matrices are gathered on the device
-    (waveform_jax.gather_tw) from the sorted charges: the resident response's device buffer when Q holds its
-    download (response.resident.device_charges), else one upload per file. The same arrays as pack(), so the same
-    digis."""
+    (waveform_jax.gather_tw): times from the resident response's device buffer when Q holds its download
+    (response.resident.device_charges), else one upload per file; charge / reference charge divided on the host as
+    pack() does and uploaded once per file. The same arrays as pack(), so the same digis."""
     import jax
     import jax.numpy as jnp
     rows, t, q = Q["row"], Q["time"], Q["charge"]
@@ -716,10 +716,10 @@ def _synth_jax_fixed(WJ, Q, tdc0_row, cfg, caps, noise=0.0, seed=0, budget_gib=S
     est = np.floor((span + cfg.single_pe_max_time) / pulsefit.PERIOD).astype(np.int64)
     from ..response import resident
     dev = resident.device_charges(t)
-    if dev is None:   # not the resident buffer: upload the charges once, padded to a fixed or bucketed size
-        size = caps.size("charges", len(t), int(_p2(len(t))))
-        dev = tuple(jnp.asarray(np.pad(np.asarray(x, np.float64), (0, size - len(t))), dtype=jnp.float64)
-                    for x in (t, q))
+    size = dev[0].shape[0] if dev is not None else caps.size("charges", len(t), int(_p2(len(t))))
+    up = lambda x: jnp.asarray(np.pad(np.asarray(x, np.float64), (0, size - len(x))), dtype=jnp.float64)
+    w = up(q / cfg.single_pe_reference_charge)     # pack()'s division, on the host; uploaded once per file
+    dev_t = dev[0] if dev is not None else up(t)  # the resident buffer's times, or one upload
     for Qb in np.unique(qb):
         Qb = int(Qb)
         in_q = np.flatnonzero(qb == Qb)
@@ -743,7 +743,7 @@ def _synth_jax_fixed(WJ, Q, tdc0_row, cfg, caps, noise=0.0, seed=0, budget_gib=S
                 n = len(c)
                 pad = lambda x, v: np.concatenate([x, np.full((Cp - n,) + x.shape[1:], v, x.dtype)]) if Cp > n else x
                 pk = dict(n=nq[c], t_start=t_start[c], keep=keep[c], tdc0=tdc0[c], chan=cchan[c], est=est[c])
-                T, W = WJ.gather_tw(*dev, pad(first[c], 0), pad(pk["n"], 0), cfg.single_pe_reference_charge, Q=Qb)
+                T, W = WJ.gather_tw(dev_t, w, pad(first[c], 0), pad(pk["n"], 0), Q=Qb)
                 keys = keys_of(root, jnp.asarray(pad(c.astype(np.uint32), 0)))
                 options = dict(stock_scan=True, window_start=window[0], window_end=window[1]) if stock_scan else {}
                 wave, adc, st, last = WJ.synth_dense(T, W, pad(pk["n"], 0), pad(pk["t_start"], 0.0),

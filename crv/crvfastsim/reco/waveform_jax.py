@@ -55,15 +55,16 @@ def pack(chan, time, charge, tdc0_of_chan, cfg=WaveformConfig(), Q=None, L=None)
 
 
 @partial(jax.jit, static_argnames=("Q",))
-def gather_tw(time, charge, first, n, ref, Q):
-    """pack()'s T and W [C, Q] on the device: cluster c's charges are time/charge[first[c] : first[c] + n[c]] of the
-    charges in (chan, time) order (rows with n = 0 are padding). float64 as on the host (W = charge / ref), so the
+def gather_tw(time, w, first, n, Q):
+    """pack()'s T and W [C, Q] on the device: cluster c's charges are entries first[c] : first[c] + n[c] of the
+    charges in (chan, time) order (rows with n = 0 are padding); w = charge / single_pe_reference_charge, divided on
+    the host as pack() does (XLA's float64 division is not NumPy's on every backend). A gather only (float64), so the
     same values; synth_dense casts them to the device float as it does pack()'s arrays."""
     j = jnp.arange(Q)
     ok = j[None, :] < n[:, None]
     idx = jnp.where(ok, first[:, None] + j[None, :], 0)
     T = jnp.where(ok, time.astype(jnp.float64)[idx], jnp.float64(0))
-    W = jnp.where(ok, charge.astype(jnp.float64)[idx] / ref, jnp.float64(0))
+    W = jnp.where(ok, w.astype(jnp.float64)[idx], jnp.float64(0))
     return T, W
 
 
