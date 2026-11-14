@@ -9,6 +9,8 @@ label, grouping into SiPM slots, padding and the fired-hit compaction run as dev
 the stream-overflow retries are those of sipm_jax.simulate, so the charges are the same arrays; a chunk that still
 overflows goes to the numpy port with the same rng, as there. Thermal noise and the fused response are not covered.
 """
+import weakref
+
 import numpy as np
 
 import jax
@@ -153,7 +155,21 @@ def _sorted_charges(pieces, caps):
             bufs[i] = _place(bufs[i], f[i], off)
         off += n
     srt = _sort_charges(*bufs, total)
-    return dict(zip(("chan", "time", "charge", "pe", "photon"), (dprec.host(np.asarray(x)[:total]) for x in srt)))
+    out = dict(zip(("chan", "time", "charge", "pe", "photon"), (dprec.host(np.asarray(x)[:total]) for x in srt)))
+    _LAST[:] = [(weakref.ref(out["time"]), srt[1], srt[2])]
+    return out
+
+
+_LAST = []   # (weak reference to the host time array of the last _sorted_charges, its device time and charge buffers)
+
+
+def device_charges(time):
+    """The device (time, charge) buffers whose first len(time) entries are the host arrays of the last
+    _sorted_charges (same order, same values: the host ones are their download), if `time` is that host time array;
+    else None. The buffers have the fixed capacity size of the charges (the tail is padding)."""
+    if _LAST and _LAST[0][0]() is time:
+        return _LAST[0][1], _LAST[0][2]
+    return None
 
 
 def charges(steps, pdg, geom, cond, cfg, rng, key, tabs, pmap, status, event_keys, chan_mult, timers,
