@@ -129,7 +129,7 @@ def model(args, source, layout):
     cond = crv_inputs.load_conditions(args.truth, args.photon_csv, geom, counters)
     mc, reco, length = crv_inputs.read_timing(source.signal.event_ids, args.truth, args.stock)
     conditions = digicond.Conditions.load(args.tracker_conditions)
-    if "tracker_reuse" in capacity:   # opt-in approximation: donor-frame digi reuse (mixing.device_reuse)
+    if "tracker_reuse" in capacity:   # approximation (W6 default file): donor-frame digi reuse (mixing.device_reuse)
         from . import device_reuse
         from .device_source import pack_source
         data, _ = pack_source(source, layout)
