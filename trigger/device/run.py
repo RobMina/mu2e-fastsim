@@ -1,7 +1,7 @@
 """Device trigger CLI.
 
   python3 -m trigger.device.run decide --dump a/trgdump.root ... --menu replay.fcl --tc-mva TimeCluster.weights.xml \
-        [--response response.json] [--logs a/replay.log ... --prepared DIR] --output result.json [--check-hits]
+        [--response ce|dio|rpc|none|FILE] [--logs a/replay.log ... --prepared DIR] --output result.json [--check-hits]
   python3 -m trigger.device.run response --logs dev/*/replay.log --device dev.json --menu replay.fcl --output response.json
 
 `decide` runs the device chain on the digis in StrawHitTableDumper files (one per replay job, in event order), checks
@@ -10,7 +10,8 @@ pairs the per-path decisions with the stock replay decisions of the same events 
 `response` builds the response layer (decision D1) from development shards only: per path, the stock KalSeedFilter
 pass fraction (passed / visited) over the device's pass fraction of the same cuts on helix quantities, and for the apr paths, whose helix finder (AgnosticHelixFinder)
 the device replaces with its own fit, the ratio of the stock to the device HelixFilter pass fraction (capped at 1).
-Apply it with `decide --response` to held-out shards.
+Build from decide runs with `--response none`. `decide --response` takes a named response (trigger/device/response.py:
+ce and dio, the default, or rpc; the shipped binned files) or a file.
 """
 from __future__ import annotations
 
@@ -34,7 +35,8 @@ from hybrid import pair as pairmod  # noqa: E402
 from trkfastsim.reco import hitreco  # noqa: E402
 
 from . import chain as chainmod, hits, menu  # noqa: E402
-from .response import APR_HELIX_PATHS, binned_rows  # noqa: E402
+from .response import APR_HELIX_PATHS, DEFAULT as RESPONSE_DEFAULT, NAMES as RESPONSE_NAMES, binned_rows  # noqa: E402
+from .response import load as load_response  # noqa: E402
 
 DIG = ("sid", "tdc0", "tdc1", "tot0", "tot1", "pmp")
 STOCK = ("sid", "flag", "time", "edep", "x", "y", "z", "wdist", "uvar", "vvar", "ncombo", "nsh")
@@ -161,6 +163,15 @@ def check_hits(diag, stock, rows, report):
                     r["max_abs"][k] = max(r["max_abs"].get(k, 0.0), float(np.max(np.abs(dv.astype(np.float64) - sv))))
 
 
+def _dev_run(path):
+    """A decide output of a development run; it must have no response layer (decide --response none)."""
+    dev = json.loads(Path(path).read_text())
+    if dev.get("response"):
+        raise SystemExit(f"{path}: decide ran with a response layer ({dev.get('response_spec', 'a file')}); the "
+                         "development runs need --response none")
+    return dev
+
+
 def cmd_response(args):
     cfg = menu.parse_fcl(Path(args.menu).read_text())
     dp = menu.device_paths(cfg)
@@ -173,7 +184,7 @@ def cmd_response(args):
                     t = stock.setdefault(name, {}).setdefault(role, [0, 0])
                     t[0] += mods[name][lbl]["passed"]
                     t[1] += mods[name][lbl]["visited"]
-    dev = json.loads(Path(args.device).read_text())["stages"]
+    dev = _dev_run(args.device)["stages"]
     out = {}
     for name, st in sorted(stock.items()):
         row = {"stock": st}
@@ -205,7 +216,7 @@ def cmd_response_binned(args):
     nb, npb = len(edges) - 1, len(edges_p) - 1
     acc = {}
     for dev_path, logs in zip(args.device, args.logs_sets):
-        dev = json.loads(Path(dev_path).read_text())
+        dev = _dev_run(dev_path)
         ref, _ = pairmod.read_arm([Path(x) for x in sorted(glob.glob(logs))], manifest)
         for key, passed in dev["decisions"].items():
             k = tuple(int(v) for v in key.split("|"))
@@ -230,7 +241,7 @@ def cmd_response_binned(args):
 def cmd_decide(args):
     cfg = menu.parse_fcl(Path(args.menu).read_text())
     cond = conditions(args.dump[0], args.tree)
-    resp = json.loads(Path(args.response).read_text()) if args.response else {}
+    resp = load_response(args.response)
     cpu = CPU_BATCHING if on_cpu() else {}
     batch = args.batch if args.batch is not None else cpu.get("batch", 512)
     hmin = args.hmin if args.hmin is not None else cpu.get("hmin", 64)
@@ -275,7 +286,7 @@ def cmd_decide(args):
             device[key] = {p: bool(v[i]) for p, v in dec.items()}
     result = {"dumps": [str(d) for d in args.dump], "events": len(device), "paths": sorted(ch.plan),
               "precision": ch.precision, "batching": {"order": args.order, "batch": batch, "hmin": hmin,
-                                                      "compact": compact}, "skipped": ch.skipped, "response": resp, "stages": stages, "hits": report,
+                                                      "compact": compact}, "skipped": ch.skipped, "response_spec": args.response, "response": resp, "stages": stages, "hits": report,
               "wall_s_including_compile": t_dev}
     if args.logs:
         manifest = json.loads((Path(args.prepared) / "manifest.json").read_text())
@@ -315,7 +326,7 @@ def main(argv=None):
     k.add_argument("--menu", required=True)
     k.add_argument("--output", required=True)
     rb = sub.add_parser("response-binned", help="opt-in per-path pass probability binned in the time-cluster straw hits")
-    rb.add_argument("--device", nargs="+", required=True, help="decide outputs without a response, on stock digis")
+    rb.add_argument("--device", nargs="+", required=True, help="decide outputs with --response none, on stock digis")
     rb.add_argument("--logs-sets", nargs="+", required=True, help="replay-log glob of each --device run, in order")
     rb.add_argument("--prepared", required=True)
     rb.add_argument("--edges", nargs="+", default=[0, 15, 20, 25, 30, 35, 40, 45, 50, 60, 80, 1000])
@@ -329,7 +340,10 @@ def main(argv=None):
     d.add_argument("--tree", default="trigph")
     d.add_argument("--menu", required=True)
     d.add_argument("--tc-mva", required=True)
-    d.add_argument("--response")
+    d.add_argument("--response", default=RESPONSE_DEFAULT,
+                   help=f"response layer: a named response ({', '.join(RESPONSE_NAMES)}; default {RESPONSE_DEFAULT}: the "
+                        "binned CE/DIO response; rpc for RPC events; none for the development runs of response and "
+                        "response-binned) or a response JSON file")
     d.add_argument("--logs", nargs="*")
     d.add_argument("--prepared")
     d.add_argument("--event-mode", default="OffSpill")

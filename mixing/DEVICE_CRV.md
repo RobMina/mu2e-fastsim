@@ -124,13 +124,14 @@ the full scans, kept as the equality reference:
 On an A100 at batch 256 the CRV stage goes 0.183 -> 0.102 s (float32) and 0.227 -> 0.133 s (float64). Full-pass
 outputs are identical to the full scans (dev and held-out, both dtypes). The Run 1A capacity files also set both.
 
-## Thermal noise on counters with steps (opt-in approximation)
+## Thermal noise on counters with steps (approximation, on in the default file)
 
 `"thermal_counters": "hit"` draws the SiPM thermal noise (dark counts) only on the four SiPMs of each counter that
-has an in-window step in the event; the default `"all"` draws it on every live SiPM. In real mixed batches of 256
+has an in-window step in the event; the code default `"all"` draws it on every live SiPM. The W6 default capacity
+file `run1a_mix1bb_batch256.json` sets `"hit"`; `run1a_mix1bb_batch256_exact.json` keeps `"all"`. In real mixed batches of 256
 (Run 1A pileup) counters without a step carried essentially no output (0 digis and 0 pulses in two batches, one digi in
 a third), but their dark counts were about 94 % of the thermal hits: with the option the thermal hits fall from 451k
-to 27k per batch and the charge clusters from 203k to 36k. The batch-256 capacity files set it, with `thermal` and
+to 27k per batch and the charge clusters from 203k to 36k. The default file sets it, with `thermal` and
 `charge_clusters` sized to 1.25 times the largest demand over full development and held-out passes (28,265 and 37,685)
 and `ct1`/`ct2` halved (full passes run without overflow).
 

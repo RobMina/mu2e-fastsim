@@ -818,13 +818,17 @@ class Result(NamedTuple):
 
 
 def transport(trk, key, x, p, t, active=None, rounds_it=256, min_bucket=64, shrink=2, stats=None, max_chords=None,
-              positron=False):
+              positron=False, rows=None):
     """Field-on StrawGasSteps of electrons on the device. x [n, 3] (Mu2e frame), p [n, 3] momentum [MeV/c], t [n] [ns]:
     device or host arrays; active [n] bool (default all): tracks to transport (the others get no steps, status 0).
     Between launches of `rounds_it` chords the live lanes are compacted into power-of-two buckets (host reads one
     lane count; the data stay on the device). max_chords (opt-in): stop after about that many chords (a whole number
     of launches); tracks still live then end with status CAPPED and keep their records. positron (opt-in): the
-    tracks are positrons (charge +1, positron loss tables; compiled separately). Returns Result with device arrays."""
+    tracks are positrons (charge +1, positron loss tables; compiled separately). rows (opt-in): rows of the record
+    buffer, max(rows, n) (default n). The launch loop compiles per bucket size and buffer rows, so calls whose n
+    varies with the data (the albedo returns) share the compiled loops of one buffer size, e.g. the main call's.
+    Track i records into row i either way; the spare rows stay empty and are cut before the steps are made, so the
+    result is the same. Returns Result with device arrays."""
     dt = trk.dt
     x = jnp.asarray(x, dt) - jnp.asarray(trk.origin, dt)
     pv = jnp.asarray(p, dt)
@@ -836,7 +840,8 @@ def transport(trk, key, x, p, t, active=None, rounds_it=256, min_bucket=64, shri
     s = _state(x, u, pm, t, active)
     # the envelope test at the start (tracks already leaving get no chord)
     s["status"] = jnp.where(active & _leaving(trk.T, trk.env, x, u), LEFT, s["status"])
-    rec = _records(n, dt)
+    nbuf = n if rows is None else max(int(rows), n)
+    rec = _records(nbuf, dt)
     cfg = trk.cfg._replace(positron=bool(positron))
     kw = dict(cfg=cfg, fn=trk.fn, env=trk.env, pwidth=trk.pwidth, lnt0=trk.lnt0, dlnt=trk.dlnt)
     final = {k: jnp.array(s[k], copy=True) for k in ("x", "u", "p", "t", "path", "chords", "status")}
@@ -871,9 +876,11 @@ def transport(trk, key, x, p, t, active=None, rounds_it=256, min_bucket=64, shri
             pad = jnp.arange(mb) >= nlive
             s = {k: v[idx] for k, v in s.items()}
             s["status"] = jnp.where(pad, LEFT, s["status"])           # padding lanes: copies, inert
-            lane = jnp.where(pad, n, lane[idx])                       # n: their record writes are dropped
+            lane = jnp.where(pad, nbuf, lane[idx])                    # nbuf: their record writes are dropped
             bucket = mb
-    # padding lanes write records to row n (out of range: dropped by mode="drop"); finals were written for real lanes
+    # padding lanes write records to row nbuf (out of range: dropped by mode="drop"); finals were written for real lanes
+    if nbuf > n:                                                       # the spare rows hold no records
+        rec = {k: v[:n] for k, v in rec.items()}
     steps = _rows(trk.T, trk.gas_mc, rec, s_nrec_of(rec), jax.random.fold_in(key, 1 << 30), cfg, trk.lnt0, trk.dlnt,
                   trk.tcut_gas)
     org = jnp.asarray(trk.origin, dt)

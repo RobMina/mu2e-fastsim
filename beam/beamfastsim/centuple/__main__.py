@@ -2,7 +2,7 @@
 
   python3 -m beamfastsim.centuple record   --out DIR (--states FILE ... | --stops NPZ --electrons N) [chain inputs]
   python3 -m beamfastsim.centuple trigger  --digis DIR/centuple_digis.npz --menu replay.fcl --conditions trgdump.root
-                                           --tc-mva TimeCluster.weights.xml --response response.json --out DIR
+                                           --tc-mva TimeCluster.weights.xml [--response none|ce|FILE] --out DIR
   python3 -m beamfastsim.centuple donor    --files nts.*.root --covered DIR/centuple_trigger.npz --out donor.npz
   python3 -m beamfastsim.centuple assemble --record DIR/centuple_record.npz --trigger DIR/centuple_trigger.npz
                                            --donor donor.npz --out DIR
@@ -63,8 +63,10 @@ def cmd_donor(a):
 
 
 def cmd_assemble(a):
-    from . import assemble
-    path, meta = assemble.build(a.record, a.donor, a.out, trigger=a.trigger, seed=a.seed, trigger_cal=a.trigger_cal,
+    from . import assemble, trigcal
+    # the on-spill trigger table by default, as point; 'none': the trigger file's decisions unchanged
+    tcal = None if a.trigger_cal == "none" else (a.trigger_cal or str(trigcal.SHIPPED))
+    path, meta = assemble.build(a.record, a.donor, a.out, trigger=a.trigger, seed=a.seed, trigger_cal=tcal,
                                 dts_filter=a.dts_filter)
     print(json.dumps(dict(path=str(path), classes=meta["classes"], covered=len(meta["covered_paths"]),
                           missing=meta["covered_missing"], dts_filter=meta["dts_filter"])))
@@ -87,7 +89,7 @@ def cmd_write(a):
 # fixed names of the point's inputs under --data (the kit task's data directory)
 DATA = dict(library="shower_library.npz", edge="edge_library.npz", gdml="tracker.gdml", calo_response="calo_response",
             digi_cond="digicond_onspill.npz", menu="trigger/replay.fcl", conditions="trigger/trgdump.root",
-            tc_mva="trigger/TimeCluster.weights.xml", trig_response="trigger/response.json", donor="donor/donor.npz")
+            tc_mva="trigger/TimeCluster.weights.xml", donor="donor/donor.npz")
 FILE = "nts.mu2efastsim.centuple.root"
 
 
@@ -150,9 +152,10 @@ def cmd_point(a):
                         gdml=d["gdml"], library=d["library"], calo_response=d["calo_response"], digi_cond=d["digi_cond"], geom=a.geom,
                         dtype=a.dtype, edge_library=d["edge"], response="onspill")
     py = [sys.executable, "-m", "beamfastsim.centuple"]
-    # the on-spill trigger table (trigcal) replaces the off-spill response layer: device decisions without it
+    # the on-spill trigger table (trigcal) replaces the off-spill response layer: device decisions without it;
+    # without the table, the shipped binned CE response
     tcal = None if a.trigger_cal == "none" else (a.trigger_cal or str(trigcal.SHIPPED))
-    resp = [] if tcal else ["--response", d["trig_response"]]
+    resp = ["--response", "none" if tcal else "ce"]
     subprocess.run(py + ["trigger", "--digis", str(out / record.DIGIS), "--out", str(out), "--menu", d["menu"],
                          "--conditions", d["conditions"], "--tc-mva", d["tc_mva"], *resp,
                          "--precision", a.dtype], check=True)
@@ -208,7 +211,11 @@ def main(argv=None):
     t.add_argument("--menu", required=True)
     t.add_argument("--conditions", required=True, help="a trigger dump (trgdump.root) for the hit conditions")
     t.add_argument("--tc-mva", required=True)
-    t.add_argument("--response", help="KalSeedFilter response layer (trigger/device/run.py response)")
+    t.add_argument("--response", default="none",
+                   help="device trigger response layer: a named response of trigger/device/response.py or a response "
+                        "JSON file. Default none: assemble applies the on-spill trigger table (trigcal) by default, "
+                        "which replaces the response layer; ce (the binned CE/DIO response) for decisions used "
+                        "without the table (assemble --trigger-cal none)")
     t.add_argument("--precision", default="float64", choices=("float32", "float64"))
     t.add_argument("--block", type=int, default=1024)
     t.add_argument("--spill", type=int, default=1, help="EventWindowMarker spill type (1 on-spill)")
@@ -232,7 +239,9 @@ def main(argv=None):
     s.add_argument("--donor", required=True)
     s.add_argument("--out", required=True)
     s.add_argument("--seed", type=int, default=20261111)
-    s.add_argument("--trigger-cal", help="on-spill response of the device paths (trigcal table .npz); opt-in")
+    s.add_argument("--trigger-cal", help="on-spill trigger table for the device paths (default: the shipped trigcal "
+                                         "table; 'none': the trigger file's decisions, e.g. with its off-spill "
+                                         "response layer)")
     s.add_argument("--dts-filter", action="store_true",
                    help="keep only events passing the emulated dts PrimaryFilter (opt-in; for births per generated)")
     s.set_defaults(fn=cmd_assemble)
@@ -270,7 +279,7 @@ def main(argv=None):
     q.add_argument("--dts-filter", action="store_true",
                    help="store only events passing the emulated dts PrimaryFilter, as the stock dts (opt-in)")
     q.add_argument("--trigger-cal", help="on-spill trigger table (default: the shipped trigcal table; 'none': the "
-                                         "off-spill response layer of the data directory)")
+                                         "device trigger's binned CE response)")
     q.set_defaults(fn=cmd_point)
     a = p.parse_args(argv)
     a.fn(a)

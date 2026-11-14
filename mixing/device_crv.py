@@ -484,7 +484,7 @@ def prepare(geom, cond, cfg, counters, capacities, tabs, pmap):
     "rows" (digi starts listed from the rows that hold one, and the scatter synthesis' gated scan stops at the longest
     waveform) and `pulse_scan` "bounded" (pulse-fit peak scans stop at the longest reco waveform, rounds stop once no
     waveform found a pulse).
-    Approximation (opt-in): `thermal_counters` "hit" draws SiPM thermal noise (dark counts) only on the four SiPMs of
+    Approximation (on in the W6 default capacity file; the code default stays "all"): `thermal_counters` "hit" draws SiPM thermal noise (dark counts) only on the four SiPMs of
     the counters that have an in-window step in the event, instead of on every SiPM ("all", default). A counter with
     no step then has no thermal hits; with the Run 1A conditions such counters carried no digi in real mixed batches.
     """

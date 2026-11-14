@@ -10,7 +10,27 @@ FILES = sorted((Path(__file__).resolve().parents[1] / "mixing" / "capacities").g
 
 
 def test_capacity_files_exist():
-    assert {path.name for path in FILES} >= {"run1a_mix1bb_batch128.json", "run1a_mix1bb_batch64.json"}
+    assert {path.name for path in FILES} >= {"run1a_mix1bb_batch128.json", "run1a_mix1bb_batch64.json",
+                                             "run1a_mix1bb_batch256.json", "run1a_mix1bb_batch256_exact.json"}
+
+
+def test_batch256_default_and_exact_reference():
+    """The batch-256 default file has both W6 approximations (donor-frame reuse, CRV thermal noise on hit counters);
+    the exact reference has neither and differs from it only there (and in the CRV buffers they resize)."""
+    folder = FILES[0].parent
+    default = json.loads((folder / "run1a_mix1bb_batch256.json").read_text())
+    exact = json.loads((folder / "run1a_mix1bb_batch256_exact.json").read_text())
+    assert "tracker_reuse" in default["response"] and "tracker_reuse" not in exact["response"]
+    assert default["response"]["crv"]["thermal_counters"] == "hit"
+    assert "thermal_counters" not in exact["response"]["crv"]
+    resized = {"thermal", "ct1", "ct2", "charge_clusters", "thermal_counters"}
+    assert {k: v for k, v in default["response"]["crv"].items() if k not in resized} == \
+        {k: v for k, v in exact["response"]["crv"].items() if k not in resized}
+    assert all(default["response"]["crv"][k] < exact["response"]["crv"][k] for k in resized - {"thermal_counters"})
+    for key in ("max_donors", "rows"):
+        assert default[key] == exact[key]
+    assert default["response"]["tracker"] == exact["response"]["tracker"]
+    assert default["response"]["output"] == exact["response"]["output"]
 
 
 @pytest.mark.parametrize("path", FILES, ids=lambda path: path.name)
@@ -27,7 +47,7 @@ def test_capacity_file_contract(path):
         from mixing.device_physics import output_capacities
         output = output_capacities(caps["response"]["output"])
         assert output["tracker_rows"] < tracker.straws * tracker.pairs_per_straw
-    if "tracker_reuse" in caps["response"]:      # opt-in donor-frame reuse: both tracker capacity sets validate
+    if "tracker_reuse" in caps["response"]:      # donor-frame reuse: both tracker capacity sets validate
         from mixing.device_reuse import ReuseCapacities
         reuse = ReuseCapacities(**caps["response"]["tracker_reuse"])
         for part in (reuse.compute, reuse.precompute):
@@ -41,6 +61,6 @@ def test_capacity_file_contract(path):
     assert set(crv) == set(device_crv.CAPACITIES)
     assert all(type(v) is int and v > 0 for v in crv.values())
     expected = {"waveform": "scatter", "digi_starts": "rows", "pulse_scan": "bounded"}
-    if path.name.startswith("run1a_mix1bb_batch256"):   # opt-in approximation in the batch-256 files
+    if path.name == "run1a_mix1bb_batch256.json":   # the W6 default: thermal noise on counters with steps
         expected["thermal_counters"] = "hit"
     assert options == expected

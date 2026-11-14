@@ -82,6 +82,12 @@ def gather_floor():
 # Material-cap shortening cascade: per level, the lanes still over a cap gathered into at most this fraction of the
 # batch (every lane as the fallback); the last level runs the remaining rounds. "" runs every round on every lane.
 SHRINK_MARGIN_F32 = 1e-2
+# float64 shortening margin below a material cap. 1e-3 by default (user-approved 2026-11-13 after validation): with
+# the earlier 1e-6 (as tstransport) most once-shortened float64 steps still landed a rounding above the cap and took
+# further rounds (19 % of the lanes at the second cascade level, against 0.8 % with 1e-3). A capped step is 0.1 %
+# shorter; stops, stage counts, stop shapes and the material path agree with 1e-6 (16 held-out seeds). The earlier
+# behaviour: TSDEV_SHRINK_MARGIN_F64=1e-6 with TSDEV_SHRINK_LEVELS=0.3,0.25,0.00390625.
+SHRINK_MARGIN_F64 = float(os.environ.get("TSDEV_SHRINK_MARGIN_F64", 1e-3))
 CROSS_FRACTION = float(os.environ.get("TSDEV_CROSS_FRACTION", 1 / 64))   # DS-plane lanes re-measured per step
 # lanes whose step chord has material run the material slots (energy loss, scattering) in a gathered bucket of this
 # fraction of the lanes (in-material lanes beyond it wait a step); 0 runs them on every lane, drawing the random numbers
@@ -93,10 +99,10 @@ TS_CHUNK = int(os.environ.get("TSDEV_TS_CHUNK", 256))     # TS steps per residen
 SOLID_FRACTION = float(os.environ.get("TSDEV_SOLID_FRACTION", 0.25))
 # material-cap shortening cascade: bucket fraction per level (one round each, the last level runs the remaining
 # rounds). Sized from the measured pending share per level over full passes (with at least 1.3x margin): level 0
-# about 23 % of the lanes in both dtypes; level 1 under 1 % in float32 but about 19 % in float64 (its 1e-6 margin
-# leaves most once-shortened steps a rounding over the cap); the last level under 0.4 %. A pending lane beyond a
-# bucket waits a step. TSDEV_SHRINK_LEVELS overrides both ("" runs every round on every lane).
-SHRINK_LEVELS_F32, SHRINK_LEVELS_F64 = (0.3, 0.015625, 0.00390625), (0.3, 0.25, 0.00390625)
+# about 23 % of the lanes; level 1 under 1 % (in float64 since the 1e-3 margin; with 1e-6 it was about 19 %, hence
+# its earlier (0.3, 0.25, 1/256)); the last level under 0.4 %. A pending lane beyond a bucket waits a step.
+# TSDEV_SHRINK_LEVELS overrides both ("" runs every round on every lane).
+SHRINK_LEVELS_F32 = SHRINK_LEVELS_F64 = (0.3, 0.015625, 0.00390625)
 _SHRINK_ENV = os.environ.get("TSDEV_SHRINK_LEVELS")
 SHRINK_LEVELS = None if _SHRINK_ENV is None else tuple(float(v) for v in _SHRINK_ENV.split(",") if v)
 
@@ -480,7 +486,7 @@ def make_ts_step(field, geom, s):
     step_cap = s.max_steps
     # step shortening margin below a cap: 1e-6 in float64 (tstransport); float32 chords near |x| ~ 4 m carry ~5e-4 mm
     # of rounding, so a 1e-6 margin would leave lanes just over the cap round after round
-    margin = 1e-6 if jax.config.jax_enable_x64 else SHRINK_MARGIN_F32
+    margin = SHRINK_MARGIN_F64 if jax.config.jax_enable_x64 else SHRINK_MARGIN_F32
     # float32 carries the step end as the increment from the start (positions near |x| ~ 4 m resolve only ~5e-4 mm,
     # so x1 - x0 of a short step is mostly rounding); float64 keeps the end point, as tstransport
     rel = not jax.config.jax_enable_x64
