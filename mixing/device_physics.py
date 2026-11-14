@@ -136,7 +136,8 @@ def model(args, source, layout):
         table = device_reuse.precompute(conditions, capacity["tracker_reuse"], data, float(np.max(length)),
                                         getattr(args, "tracker_seed", 0), rows_capacity=layout.rows["tracker"],
                                         shift=float(np.mean(mc)),
-                                        margin=float(np.max(np.abs(np.asarray(mc) - np.mean(mc)))) + 5.0, log=print)
+                                        margin=float(np.max(np.abs(np.asarray(mc) - np.mean(mc)))) + 5.0, log=print,
+                                        event_shifts=np.asarray(mc))
         tracker = device_reuse.prepare(conditions, capacity["tracker_reuse"], layout.batch_events, table,
                                        data["starts"])
     else:

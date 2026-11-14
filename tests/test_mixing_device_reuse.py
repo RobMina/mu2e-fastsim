@@ -238,6 +238,35 @@ def test_copies_over_periods(conditions, helpers, u, j):
             np.testing.assert_array_equal(table[field][rows], reuse[field][b])
 
 
+def test_copies_at_event_shifts(conditions, helpers):
+    """shifts "events": one copy per distinct event shift; an event takes the copy at its own shift and moves nothing
+    (its reused digis are that copy's setup digis, TDC included)."""
+    c = conditions
+    data, index, frames = _pools(c, helpers)
+    caps = {"compute": CAPS, "precompute": CAPS, "frames_per_batch": 8, "straws": 8, "shifts": "events"}
+    events = np.array([-2., -9., -2., -9.])
+    table = device_reuse.precompute(c, caps, data, 1700., 0, rows_capacity=8, shift=float(np.mean(events)),
+                                    margin=15., event_shifts=events)
+    np.testing.assert_array_equal(table["copy_shifts"], [-9., -2.])
+    assert set(np.unique(table["copy"])) == {0, 1}
+    model = device_reuse.prepare(c, caps, 2, table, data["starts"])
+    collection = _mixed(c, data, index, frames)
+    sid = {us: helpers.DG.unique_straw_to_sid(us) for us in (92, 523)}
+    for pb, copy in ((-9., 0), (-2., 1)):
+        times = {"event_length": np.array([1700., 1690.]), "mc_pbtime": np.array([-2., pb]),
+                 "event_mask": np.ones(2, bool)}
+        reuse, errors = _run(model, collection, times)
+        assert not any(np.any(v) for v in errors.values()), errors
+        for name, us in (("C", 92), ("D", 523)):
+            rows, b = _single_donor_rows(table, reuse, index, sid, name, us, copy=copy)
+            for field in ("adc", "tdc", "tot", "pmp"):
+                np.testing.assert_array_equal(table[field][rows], reuse[field][b], err_msg=f"{pb} {field}")
+    with pytest.raises(ValueError, match="event shifts"):
+        device_reuse.precompute(c, caps, data, 1700., 0, rows_capacity=8, shift=-5.)
+    with pytest.raises(ValueError, match="replaces"):
+        device_reuse.ReuseCapacities(CAPS, CAPS, 8, 8, phases=4, shifts="events")
+
+
 def test_event_jitter(conditions, helpers):
     """event_jitter: a reused digi's TDC takes the event's ROC jitter of its panel (the resident tracker's draw for
     that event and panel) in place of the setup event's."""
