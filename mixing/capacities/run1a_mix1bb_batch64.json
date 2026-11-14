@@ -73,6 +73,9 @@
    "waveform": "scatter",
    "digi_starts": "rows",
    "pulse_scan": "bounded"
+  },
+  "output": {
+   "tracker_rows": 57154
   }
  }
 }

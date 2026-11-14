@@ -61,9 +61,14 @@ NeutralsFlash pools at the stock intensity law.
 - **`electronics_loops: "bounded"`** (batch-256 files): the fine crossing search stops once converged and the
   saturated ADC samples are summed over the response tiles that ran; no size.
 
-- **`output.tracker_rows`** (batch-256 files): the tracker digi rows downloaded per batch, 229,376: 1.39 times the
-  largest demand (164,716 digis in one batch of 256) over full development and held-out passes in float32 and
-  float64. The other rows of the padded table are empty; it changes the time, not the outputs.
+- **`output.tracker_rows`**: the tracker digi rows downloaded per batch. The other rows of the padded table are
+  empty; it changes the time, not the outputs. Each is sized over full development and held-out passes in float32
+  and float64:
+  - batch-256 files: 229,376, 1.39 times the largest demand (164,716 digis in one batch of 256);
+  - batch-128 file: 107,813, 1.25 times the largest demand (86,250 digis in one batch of 128; 88 batches);
+  - batch-64 file: 57,154, 1.25 times the largest demand (45,723 digis in one batch of 64; 172 batches).
+  The batch-64 and batch-128 census ran on CPU (`mixing.device_capacity` with the full padded table as the
+  template's bound, so nothing was dropped).
 - **`tracker_reuse`** (`run1a_mix1bb_batch256.json`, the default; an approximation): `compute` is the tracker for
   the straws still digitised per batch (primary, two or more sources, the streams not reused), 1.25 times their
   demand over a full development pass; `precompute` sizes the setup batches of 8,192 donor frames (`long_steps`,
