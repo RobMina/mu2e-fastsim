@@ -75,3 +75,24 @@ def test_fit_matches_autodiff(pulse, dtype):
     tol_a, tol_t, frac = (1e-6, 1e-5, 0.99) if dtype is None else (2e-3, 0.05, 0.97)
     assert same.mean() >= frac
     assert np.mean((rel[v] < tol_a) & (dt[v] < tol_t)) >= frac
+
+
+@pytest.mark.parametrize("hessian", [None, "analytic"])
+def test_two_pass_refit_equals_single_pass(pulse, hessian):
+    """refit=False keeps the first fit and flags needs_refit; refitting those digis gives the single pass."""
+    rng = np.random.default_rng(3)
+    L, cfg = 96, FitConfig()
+    t0, y, length = _digis(rng, 512, L)
+    x = jnp.asarray(t0)[:, None] + (jnp.arange(L) + 0.5) * cfg.digi_sampling
+    mask = jnp.arange(L)[None, :] < jnp.asarray(length)[:, None]
+    args = (x, jnp.asarray(y), mask, jnp.asarray(length))
+    single = jax.tree_util.tree_map(np.asarray, _compiled(pulse, cfg, L, None, hessian)(*args))
+    first = jax.tree_util.tree_map(np.asarray, _compiled(pulse, cfg, L, None, hessian, refit=False)(*args))
+    need = first.pop("needs_refit")
+    assert 0 < need.sum() < len(need)
+    idx = np.flatnonzero(need)
+    again = jax.tree_util.tree_map(np.asarray, _compiled(pulse, cfg, L, None, hessian)(*(a[idx] for a in args)))
+    for k, v in first.items():
+        v = v.copy()
+        v[idx] = again[k]
+        np.testing.assert_allclose(v, single[k], rtol=1e-12, atol=1e-12, err_msg=k)

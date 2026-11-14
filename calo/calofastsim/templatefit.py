@@ -111,25 +111,30 @@ def fit_digis(t0, samples, length, pulse: PulseCache, cfg: FitConfig = FitConfig
 _CACHE = {}
 
 
-def _compiled(pulse, cfg, L, dtype=None, hessian=None):
+def _compiled(pulse, cfg, L, dtype=None, hessian=None, refit=True):
     """The jitted, vmapped per-digi fit for one pulse cache and configuration, built once and reused.
 
     ``dtype`` None is the default double-precision fit; ``jnp.float32`` fits in single precision (opt-in).
     ``hessian`` None takes the Newton step's gradient and Hessian by autodiff (default); ``"analytic"`` (opt-in) uses
-    their closed form, the same quantities up to roundoff at a fraction of the cost."""
+    their closed form, the same quantities up to roundoff at a fraction of the cost. ``refit=False`` (opt-in) skips
+    the second minimisation of a multi-peak fit whose components fail the selection and returns ``needs_refit``
+    instead: the caller fits those digis again with ``refit=True`` (identical arithmetic per digi), so the second
+    minimisation runs only where it is used."""
     import jax
     if hessian not in (None, "analytic"):
         raise ValueError("hessian must be None or 'analytic'")
     key = (id(pulse), cfg, L) if dtype is None else (id(pulse), cfg, L, dtype)
     if hessian is not None:
         key = key + (hessian,)
+    if not refit:
+        key = key + ("no-refit",)
     if key not in _CACHE:
         evaluate = make_evaluate(pulse, dtype)
         slope = make_evaluate_slope(pulse, dtype) if hessian == "analytic" else None
         K, W = cfg.max_peaks, cfg.window_peak
 
         def one(x, y, mask, n):
-            return _fit_one(x, y, mask, n, evaluate, cfg, K, W, L, dtype, slope)
+            return _fit_one(x, y, mask, n, evaluate, cfg, K, W, L, dtype, slope, refit)
 
         _CACHE[key] = (jax.jit(jax.vmap(one)), pulse)
     return _CACHE[key][0]
@@ -214,7 +219,7 @@ def _grad_hess(evaluate_slope, x, yfull, mask, p, act):
     return jnp.where(on, g, 0.0), jnp.where(on, H, 0.0)
 
 
-def _fit_one(x, y, mask, n, evaluate, cfg, K, W, L, dtype=None, evaluate_slope=None):
+def _fit_one(x, y, mask, n, evaluate, cfg, K, W, L, dtype=None, evaluate_slope=None, do_refit=True):
     import jax
     from jax import lax
     jnp = _jnp()
@@ -328,13 +333,17 @@ def _fit_one(x, y, mask, n, evaluate, cfg, K, W, L, dtype=None, evaluate_slope=N
     keep = active & (amp >= amp_min) & (tim >= xfront) & (tim <= xback) & (aerr <= 1e3) & ~beaten
     multi = jnp.sum(active) > 1
     refit = multi & jnp.any(active & ~keep)
+    needs_refit = refit
+    if not do_refit:          # the caller refits these digis with do_refit=True; this pass keeps the first fit
+        refit = jnp.zeros_like(refit)
     act2 = jnp.where(multi, keep, active)
-    p2 = jnp.where(jnp.concatenate([jnp.ones(1, bool), jnp.repeat(act2, 2)]), p, 0.0)
-    p2, err2, fval2 = minimise(p2, act2)
-    p = jnp.where(refit, p2, p)
-    err = jnp.where(refit, err2, err)
-    fval = jnp.where(refit, fval2, fval)
-    active = jnp.where(refit, act2, active)
+    if do_refit:
+        p2 = jnp.where(jnp.concatenate([jnp.ones(1, bool), jnp.repeat(act2, 2)]), p, 0.0)
+        p2, err2, fval2 = minimise(p2, act2)
+        p = jnp.where(refit, p2, p)
+        err = jnp.where(refit, err2, err)
+        fval = jnp.where(refit, fval2, fval)
+        active = jnp.where(refit, act2, active)
 
     amp, tim = p[1::2], p[2::2]
     valid = active & (amp >= 1.0) & has_peak
@@ -342,6 +351,9 @@ def _fit_one(x, y, mask, n, evaluate, cfg, K, W, L, dtype=None, evaluate_slope=N
     ndf = n - npar
     reported = valid & (tim <= xback)
     chi = jnp.where(ndf > 0, fval / jnp.where(ndf > 0, ndf, 1), 0.0)
-    return {"amp": amp, "amp_err": jnp.sqrt(err[1::2] ** 2 + amp), "peak_time": tim, "time_err": err[2::2],
-            "valid": reported, "chi2": fval, "ndf": ndf, "n_seeded": k,
-            "refit_skipped": has_peak & (ndf > 0) & (chi > cfg.chi_threshold), "baseline": p[0]}
+    out = {"amp": amp, "amp_err": jnp.sqrt(err[1::2] ** 2 + amp), "peak_time": tim, "time_err": err[2::2],
+           "valid": reported, "chi2": fval, "ndf": ndf, "n_seeded": k,
+           "refit_skipped": has_peak & (ndf > 0) & (chi > cfg.chi_threshold), "baseline": p[0]}
+    if not do_refit:
+        out["needs_refit"] = needs_refit
+    return out

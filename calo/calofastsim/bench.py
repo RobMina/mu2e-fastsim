@@ -120,7 +120,7 @@ def bench_prepare(n, seed=None, batch=BATCH):
     return {"batches": pack_batches(_steps(), int(n), batch, seed), "seed": seed, "batch": batch}
 
 
-def conditions(dtype="float64", directory=None, fit_hessian=None):
+def conditions(dtype="float64", directory=None, fit_hessian="analytic"):
     """The calorimeter conditions of ``CALO_BENCH_CONDITIONS`` as a :class:`device_chain.DeviceResponse`."""
     from . import stockio
     from .cluster import Geometry
@@ -134,7 +134,7 @@ def conditions(dtype="float64", directory=None, fit_hessian=None):
                          dtype=np.dtype(dtype), fit_hessian=fit_hessian)
 
 
-def chain(dtype="float64", batch=BATCH, digi_response="waveform", fit_hessian=None, **cap_override):
+def chain(dtype="float64", batch=BATCH, digi_response="waveform", fit_hessian="analytic", **cap_override):
     """The jitted steps chain for this configuration, built once per process."""
     key = (np.dtype(dtype).name, batch, digi_response, fit_hessian, tuple(sorted(cap_override.items())))
     if key not in _CHAINS:
@@ -146,7 +146,8 @@ def chain(dtype="float64", batch=BATCH, digi_response="waveform", fit_hessian=No
     return _CHAINS[key]
 
 
-def bench_steps(prepared, dtype="float64", digi_response="waveform", seed=1, fit_hessian=None, **cap_override):
+def bench_steps(prepared, dtype="float64", digi_response="waveform", seed=1, fit_hessian="analytic",
+                **cap_override):
     """mu2efastsim.bench entry point: every batch of ``prepared`` through the steps chain; returns the per-batch
     clusters and overflow counts (device arrays, which the timer waits on)."""
     import jax
