@@ -113,6 +113,10 @@ def test_reuse_capacities_validated():
     for bad in (0, 65, 2.0):
         with pytest.raises(ValueError, match="phases"):
             device_reuse.ReuseCapacities(CAPS, CAPS, 8, 8, phases=bad)
+    for bad in (0, 17):
+        with pytest.raises(ValueError, match="periods"):
+            device_reuse.ReuseCapacities(CAPS, CAPS, 8, 8, periods=bad)
+    assert device_reuse.ReuseCapacities(CAPS, CAPS, 8, 8, phases=4, periods=2).copies == 8
     with pytest.raises(ValueError, match="event_jitter"):
         device_reuse.ReuseCapacities(CAPS, CAPS, 8, 8, event_jitter=1)
     caps = device_reuse.ReuseCapacities(CAPS, CAPS, 8, 8)
@@ -206,6 +210,30 @@ def test_phase_copies(conditions, helpers, k, m):
         rows, b = _single_donor_rows(table, reuse, index, sid, name, us, copy=k)
         np.testing.assert_array_equal(table["tdc"][rows] + int(np.round(m * P / c.TDCLSB)), reuse["tdc"][b])
         np.testing.assert_allclose(table["t_analog"][rows] + m * P, reuse["t_analog"][b], atol=1e-9)
+        for field in ("adc", "tot", "pmp"):
+            np.testing.assert_array_equal(table[field][rows], reuse[field][b])
+
+
+@pytest.mark.parametrize("u,j", [(0., 4), (-1.2, 3), (3.4, 7), (-4.0, 0), (5.0, 1), (-6.0, 6)])
+def test_copies_over_periods(conditions, helpers, u, j):
+    """phases 4 over periods 2: eight copies at offsets (j - 4) P / 4 in [-P, P); an event at mean + u P/4 takes the
+    nearest copy (|u| < 4) or the one a whole number of 2P away, and the TDC moves by its distance to that copy."""
+    c, K, W, shift = conditions, 4, 2, -5.
+    model, table, data, index, frames = _reuse(c, helpers, shift=shift, phases=K, periods=W)
+    assert set(np.unique(table["copy"])) == set(range(K * W)) and int(table["periods"]) == W
+    P = float(c.ADCPeriod)
+    np.testing.assert_allclose(device_reuse.copy_offsets(c, K, W), P * (np.arange(8) - 4) / 4)
+    collection = _mixed(c, data, index, frames)
+    pb = shift + u * P / K
+    times = {"event_length": np.array([1700., 1690.]), "mc_pbtime": np.array([-2., pb]),
+             "event_mask": np.ones(2, bool)}
+    reuse, errors = _run(model, collection, times)
+    assert not any(np.any(v) for v in errors.values()), errors
+    sid = {us: helpers.DG.unique_straw_to_sid(us) for us in (92, 523)}
+    delta = pb - (shift + (j - 4) * P / K)
+    for name, us in (("C", 92), ("D", 523)):
+        rows, b = _single_donor_rows(table, reuse, index, sid, name, us, copy=j)
+        np.testing.assert_array_equal(table["tdc"][rows] + int(np.round(delta / c.TDCLSB)), reuse["tdc"][b])
         for field in ("adc", "tot", "pmp"):
             np.testing.assert_array_equal(table[field][rows], reuse[field][b])
 
