@@ -2,7 +2,7 @@
 
   python3 -m beamfastsim.centuple record   --out DIR (--states FILE ... | --stops NPZ --electrons N) [chain inputs]
   python3 -m beamfastsim.centuple trigger  --digis DIR/centuple_digis.npz --menu replay.fcl --conditions trgdump.root
-                                           --tc-mva TimeCluster.weights.xml [--response ce|none|FILE] --out DIR
+                                           --tc-mva TimeCluster.weights.xml [--response none|ce|FILE] --out DIR
   python3 -m beamfastsim.centuple donor    --files nts.*.root --covered DIR/centuple_trigger.npz --out donor.npz
   python3 -m beamfastsim.centuple assemble --record DIR/centuple_record.npz --trigger DIR/centuple_trigger.npz
                                            --donor donor.npz --out DIR
@@ -209,10 +209,11 @@ def main(argv=None):
     t.add_argument("--menu", required=True)
     t.add_argument("--conditions", required=True, help="a trigger dump (trgdump.root) for the hit conditions")
     t.add_argument("--tc-mva", required=True)
-    t.add_argument("--response", default="ce",
-                   help="device trigger response layer: a named response of trigger/device/response.py (default ce, "
-                        "the binned CE/DIO response; none for trigcal development runs and assemble --trigger-cal) "
-                        "or a response JSON file")
+    t.add_argument("--response", default="none",
+                   help="device trigger response layer: a named response of trigger/device/response.py or a response "
+                        "JSON file. Default none: assemble applies the on-spill trigger table (trigcal) by default, "
+                        "which replaces the response layer; ce (the binned CE/DIO response) for decisions used "
+                        "without the table (assemble --trigger-cal none)")
     t.add_argument("--precision", default="float64", choices=("float32", "float64"))
     t.add_argument("--block", type=int, default=1024)
     t.add_argument("--spill", type=int, default=1, help="EventWindowMarker spill type (1 on-spill)")

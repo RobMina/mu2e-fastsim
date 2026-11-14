@@ -233,15 +233,16 @@ def test_response_validate_rejects_malformed_rows():
 
 
 def test_response_defaults_per_process(monkeypatch):
-    """The CE chain (centuple trigger) and the generic tools default to the CE/DIO response; rpc and none by name."""
+    """The generic tools default to the CE/DIO response, rpc and none by name; centuple trigger defaults to none,
+    because assemble applies the on-spill trigger table by default, which replaces the response layer."""
     monkeypatch.syspath_prepend(str(ROOT / "beam"))
     from beamfastsim.centuple import __main__ as cm
     seen = []
     monkeypatch.setattr(cm, "cmd_trigger", lambda a: seen.append(a.response))
     base = ["trigger", "--digis", "d.npz", "--out", "o", "--menu", "m.fcl", "--conditions", "c.root", "--tc-mva", "t.xml"]
     cm.main(base)
-    cm.main(base + ["--response", "none"])
-    assert seen == ["ce", "none"]
+    cm.main(base + ["--response", "ce"])
+    assert seen == ["none", "ce"]
     pytest.importorskip("jax")
     pytest.importorskip("trkfastsim")
     from trigger.device import bench, run

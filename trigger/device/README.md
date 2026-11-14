@@ -29,6 +29,9 @@ trigger --response`): the named responses of `response.py`, shipped in `data/`, 
 | `none` | - | no response layer (probability 1) | - |
 
 Paths without a binned row keep the scalar hs/ks factors from CE development shards (`response`) in both files.
+`ce` is the default of `decide` and the bench. `beamfastsim.centuple trigger` defaults to `none`: its `assemble` step
+applies the on-spill trigger table (trigcal) by default, which replaces the response layer; pass `--response ce` for
+decisions used without the table.
 Development runs (inputs of `response`, `response-binned` and trigcal) use `--response none`; `response` and
 `response-binned` refuse a decide output with a response layer.
 
