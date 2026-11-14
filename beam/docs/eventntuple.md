@@ -13,11 +13,11 @@ python3 -m beamfastsim.centuple record  --out DIR --states states.root ... (or -
     --offline-root OFF --maps DSMap.header TSdMap.header --gdml RUN1A.gdml --library SHOWERS.npz \
     --calo-response CALO_RESPONSE_DIR --digi-cond ONSPILL_CONDITIONS.npz --edge-library EDGE_TABLE.npz --dtype float64
 python3 -m beamfastsim.centuple trigger --digis DIR/centuple_digis.npz --menu replay.fcl --conditions trgdump.root \
-    --tc-mva TimeCluster.weights.xml --response response.json --precision float64 --out DIR
+    --tc-mva TimeCluster.weights.xml --precision float64 --out DIR   # no --response: assemble applies the trigger table
 # CPU, NumPy + uproot
 python3 -m beamfastsim.centuple donor    --files nts.dev.*.root --covered DIR/centuple_trigger.npz --out donor.npz
 python3 -m beamfastsim.centuple assemble --record DIR/centuple_record.npz --trigger DIR/centuple_trigger.npz \
-    --donor donor.npz --out DIR [--trigger-cal TRIGCAL.npz]
+    --donor donor.npz --out DIR   # the shipped trigger table; --trigger-cal none: the trigger file's decisions
 # the on-spill trigger table, once, from development events with both arms (trigger run without --response)
 python3 -m beamfastsim.centuple trigcal --stock nts.dev.*.root --records DEV/centuple_record.npz \
     --triggers DEV/centuple_trigger.npz --out trigcal.npz
@@ -60,7 +60,7 @@ simulates. Everything else is the donor's.
 | Branch | Class | How |
 |---|---|---|
 | `evtinfo.run/subrun/event` | exact | identity of the birth (the stock generator event when births come from its files) |
-| `trig_<path>` of the 20 device paths (tpr, apr incl. `apr_TrkDe_80m70p`) | fast | `trigger.device` on the device digis (ports and the KalSeedFilter / AgnosticHelix response layer); with `--trigger-cal`, the device decisions without a response layer and the on-spill table (below) |
+| `trig_<path>` of the 20 device paths (tpr, apr incl. `apr_TrkDe_80m70p`) | fast | `trigger.device` on the device digis: the decisions without a response layer and the on-spill trigger table (below, the default); with `--trigger-cal none`, the ports and the KalSeedFilter / AgnosticHelix response layer of the trigger stage |
 | `trig_cpr_*`, `calo_*`, `Triggerable*`, `mpr_*`, `cst_*`, `minBias_*`, two-track, proton | donor | not on the device (calorimeter-seeded, MC-truth and multi-helix paths) |
 | stored events | fast + donor | the stock stream rule on the combined decisions: `cpr_Trk*_80*`, `apr_Trk*_80*`, `Triggerable{LH,TwoTrack,Calo}Path` |
 | `trk.nactive`, `trk.fitcon`, `trk.chisq` (e- fit) | fast | response-layer draws (table `onspill`: the OnSpill production chain, including its digitization-window turn-on in entry time); chisq = chi2/ndf x ndof |
@@ -87,7 +87,7 @@ The full contract (every leaf the analyses and pyutils read, types, units, frame
 `beamfastsim/centuple/contract.py`. Units and frames are the stock ones: mm, ns, MeV, MeV/c, the detector frame for
 positions, times from the MC proton time.
 
-## On-spill trigger table (`trigcal`, opt-in)
+## On-spill trigger table (`trigcal`, default)
 
 The device paths see the fast device digis; the fast track comes from the response layer, which does not. In stock
 both come from the same hits, so an event with a good offline track nearly always fires the track paths; the fast
@@ -99,13 +99,19 @@ device fail into a pass with probability g = max(0, (T - D) / (1 - D)); one unif
 path, so the paths stay correlated and the device decision still orders the events. Cells with fewer than 50 events
 on a side use the class's time-integrated factors.
 
+`assemble` and `point` apply the shipped table `beamfastsim/centuple/data/trigcal_run1a_onspill.npz` by default.
+`--trigger-cal FILE` takes another table; `--trigger-cal none` keeps the trigger file's decisions. The table needs
+device decisions without a response layer: run `trigger` without `--response`. `assemble` stops with an error when
+the trigger file was made with `--response` and a table is applied. On the held-out files the ce_chain `n_triggered`
+ratio to stock is 0.975 (float64) and 0.965 (float32) with the table.
+
 ## Known limits
 
 * Tracker: no delta rays or conversions in the fast transport; active hits drawn from the response tables.
 * Calorimeter: the inner edge from a Geant4 table; a known radius disagreement near the inner edge.
-* Trigger: without `--trigger-cal` the device response layer is the off-spill CE calibration; with it, the paths
-  follow stock per class and birth time, but not in variables the table does not bin (momentum, hits). Calorimeter
-  and MC paths are the donor's. The trigger stage subtracts the per-event proton bunch time estimate of the record.
+* Trigger: with the table (default) the paths follow stock per class and birth time, but not in variables the table
+  does not bin (momentum, hits); with `--trigger-cal none` the device response layer is the off-spill CE calibration.
+  Calorimeter and MC paths are the donor's. The trigger stage subtracts the per-event proton bunch time estimate of the record.
 * Response: the tables count the electron's own Geant4 rows and draw the fit from stock reco of the same digitization
   mode; `record` uses `onspill` (ce_chain's OnSpill chain), built from 19,630 development events.
 * Calorimeter cluster truth counts every sampled step in the cluster's crystals (no per-hit time window); records

@@ -1,4 +1,8 @@
-"""On-spill response of the device trigger paths, per event class and birth time (opt-in, ``assemble --trigger-cal``).
+"""On-spill response of the device trigger paths, per event class and birth time.
+
+``assemble`` and ``point`` apply the shipped table (``SHIPPED``) by default; ``--trigger-cal none`` keeps the device
+decisions as the trigger stage made them, ``--trigger-cal FILE`` uses another table. The trigger stage must run
+without a response layer (no ``--response``) for the table to apply.
 
 The device trigger (``trigger.device``) decides the tracker paths from the fast device digis, while the fast track
 comes from the tracker response layer, which does not see those digis. In stock both come from the same hits: an
