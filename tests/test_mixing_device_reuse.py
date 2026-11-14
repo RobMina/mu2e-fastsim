@@ -244,3 +244,55 @@ def test_setup_jitter_is_the_trackers(conditions, helpers):
     np.testing.assert_array_equal(table["frame"], table0["frame"])
     expected = table0["tdc"] + np.round(table["jitter"] / c.TDCLSB).astype(np.int64)[:, None]
     assert np.max(np.abs(table["tdc"] - expected)) <= 1
+
+
+def test_dead_time_applied_per_event(conditions, helpers):
+    """The setup digitises without the digital dead time; each event applies it straw by straw. A donor frame with
+    two pulses 200 ns apart on one straw (inside the dead time): the setup keeps both, the event keeps the first, as
+    the resident tracker does for the same frame in the event."""
+    c = conditions
+    assert c.deadTimeDigital > 200.
+    two = [helpers._step(c, 700, t=650.), helpers._step(c, 700, t=850.)]
+    frames = {"P": [helpers._step(c, 520, t=700.)], "A": two}
+    pools = [["P"], ["A"], [], [], []]
+    order = [name for pool in pools for name in pool]
+    rows = [step for name in order for step in frames[name]]
+    columns = {k: np.r_[np.array([r[k] for r in rows]), np.zeros(1, np.asarray(rows[0][k]).dtype)] for k in rows[0]}
+    counts = [len(frames[name]) for name in order]
+    data = {"sizes": np.array([len(p) for p in pools]), "collections": {"tracker": {
+        "offsets": np.r_[0, np.cumsum(counts)], "columns": columns}}}
+    data["starts"] = np.r_[0, np.cumsum(data["sizes"])[:-1]]
+    caps = {"compute": CAPS, "precompute": CAPS, "frames_per_batch": 8, "straws": 8}
+    table = device_reuse.precompute(c, caps, data, 1700., 0, rows_capacity=8, shift=-5., margin=15.)
+    sid = helpers.DG.unique_straw_to_sid(700)
+    rows_a = (table["frame"] == 1) & (table["sid"] == sid)
+    assert rows_a.sum() == 2                       # no dead time in the setup
+    assert np.all(np.diff(table["dtime"][rows_a]) > 150.)
+    model = device_reuse.prepare(c, caps, 2, table, data["starts"])
+    st = frames["P"] + two
+    capacity = 8
+    pad = capacity - len(st)
+    collection = {"columns": {k: np.r_[np.array([r[k] for r in st]), np.zeros(pad, np.asarray(st[0][k]).dtype)]
+                              for k in st[0]},
+                  "mask": np.arange(capacity) < len(st), "event": np.r_[[0, 1, 1], np.zeros(pad, np.int64)],
+                  "occurrence": np.r_[[-1, 1, 1], np.full(pad, -1)]}
+    times = {"event_length": np.array([1700., 1700.]), "mc_pbtime": np.array([-2., -5.]),
+             "event_mask": np.ones(2, bool)}
+    exact, _ = _run(prepare(c, CAPS, 2), collection, times)
+    reuse, errors = _run(model, collection, times)
+    assert not any(np.any(v) for v in errors.values()), errors
+    a, b = (exact["ev"] == 1) & (exact["sid"] == sid), (reuse["ev"] == 1) & (reuse["sid"] == sid)
+    assert a.sum() == 1 and b.sum() == 1, (a.sum(), b.sum())
+    first = np.argmin(table["dtime"][rows_a])
+    np.testing.assert_array_equal(reuse["tdc"][b][0], table["tdc"][rows_a][first])
+
+
+def test_dead_time_clock(conditions):
+    c = conditions
+    sid = np.array([(3 << 10) | (2 << 7) | 17])
+    tdc = np.array([[1000, 1200]])
+    t = device_reuse.dead_time_clock(c, sid, tdc)
+    assert t.shape == (1,)
+    lo = 1200 * c.TDCLSB - c.electronicsTimeDelay
+    if c.overrideDbTimeOffsets:
+        assert lo <= t[0] < lo + c.TDCLSB

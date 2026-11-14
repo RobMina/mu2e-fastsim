@@ -22,6 +22,11 @@ Two capacity keys undo most of the freezing at the same per-batch cost:
   ADCPeriod / (2K) of the event's own phase, consistent with its TDC, instead of at the mean shift's phase.
 - `event_jitter` (default false): the reused TDCs take the event's per-panel ROC jitter (the draw the resident tracker
   gives every straw of that panel in the event) in place of the setup event's.
+
+The digital dead time is applied per event, as the tracker does: the setup digitises without it (a setup digi in the
+widened margin would otherwise block the straw's next digis for the dead time, although the event's window then drops
+it), stores each digi's dead-time clock (the later end's time before the straw time offsets), and each event keeps,
+straw by straw in time order, the in-window digis that start at least the dead time after the last kept one.
 """
 from types import SimpleNamespace
 
@@ -68,6 +73,24 @@ def _sid(columns):
     return columns["sid"].astype(jnp.int64)
 
 
+def without_digital_dead_time(c):
+    """Conditions with no digital dead time (the setup keeps every in-window digi; apply restores the dead time)."""
+    from trkfastsim.digi.digicond import Conditions
+    s = dict(c.s)
+    s["deadTimeDigital"] = 0.0
+    return Conditions(s, c.a)
+
+
+def dead_time_clock(c, sid, tdc):
+    """A digi's dead-time clock (digi_jax `dtime`, the later end's time before the straw time offsets), from its TDCs
+    (to a fraction of the TDC LSB)."""
+    us = (((sid >> 10) * 6 + ((sid >> 7) & 7)) * 96 + (sid & 127)).astype(np.int64)
+    t = (np.asarray(tdc, np.float64) + 0.5) * float(c.TDCLSB) - float(c.electronicsTimeDelay)
+    if not c.overrideDbTimeOffsets:
+        t = t + np.asarray(c.time_offsets, np.float64)[us]
+    return t.max(1)
+
+
 def widened(c, margin):
     """Conditions with the digitisation window (and so the step and crossing windows) widened by `margin` ns on each
     side: the setup keeps the digis that a mixed event's time shift moves into the real window."""
@@ -109,7 +132,8 @@ def precompute(c, capacities, data, length, seed, *, rows_capacity, shift=0.0, m
 
     data: pack_source output (host arrays; the signal pool first, then the four donor pools). Returns the reuse
     table sorted by (frame, copy, sid, analog time): frame (global pool index), copy, sid, tdc [n, 2], tot [n, 2],
-    adc [n, S], pmp, t_analog [n, 2], jitter (the setup event's ROC jitter of the digi's panel, ns)."""
+    adc [n, S], pmp, t_analog [n, 2], jitter (the setup event's ROC jitter of the digi's panel, ns), dtime (the
+    dead-time clock, ns). The setup applies no digital dead time."""
     import time
     import jax
     from . import device_tracker
@@ -117,7 +141,7 @@ def precompute(c, capacities, data, length, seed, *, rows_capacity, shift=0.0, m
     F, K = caps.frames_per_batch, caps.phases
     if K > 1:
         margin = float(margin) + float(c.ADCPeriod)
-    model = device_tracker.prepare(widened(c, margin) if margin else c, caps.precompute, F)
+    model = device_tracker.prepare(without_digital_dead_time(widened(c, margin) if margin else c), caps.precompute, F)
     jitter_fn = jax.jit(lambda k: jitter_table(k, F))
     assets = jax.device_put(model.assets)
     fn = jax.jit(model.apply_with_usage)
@@ -165,7 +189,8 @@ def precompute(c, capacities, data, length, seed, *, rows_capacity, shift=0.0, m
                           "adc": np.asarray(out["adc"])[m], "pmp": np.asarray(out["pmp"])[m],
                           "t_analog": np.asarray(out["t_analog"])[m],
                           "jitter": np.asarray(jax.device_get(jitter_fn(bkey)), np.float64)[oev, _panel(osid)]
-                          * float(c.eventWindowMarkerROCJitter)})
+                          * float(c.eventWindowMarkerROCJitter),
+                          "dtime": dead_time_clock(c, osid, np.asarray(out["tdc"])[m])})
     table = {name: np.concatenate([p[name] for p in parts]) for name in parts[0]}
     order = np.lexsort((table["t_analog"][:, 0], table["sid"], table["copy"], table["frame"]))
     table = {name: value[order] for name, value in table.items()}
@@ -195,7 +220,9 @@ def prepare(c, capacities, batch_events, table, starts):
     key = ((table["frame"].astype(np.int64) * K + copies) << 16) | table["sid"].astype(np.int64)
     if np.any(np.diff(key) < 0):
         raise ValueError("reuse table must be sorted by (frame, copy, sid)")
-    names = ("tdc", "tot", "adc", "pmp", "t_analog") + (("jitter",) if caps.event_jitter else ())
+    if "dtime" not in table:
+        raise ValueError("reuse table without the dead-time clock (made before the per-event dead time)")
+    names = ("tdc", "tot", "adc", "pmp", "t_analog", "dtime") + (("jitter",) if caps.event_jitter else ())
     if caps.event_jitter and "jitter" not in table:
         raise ValueError("tracker_reuse event_jitter needs a reuse table with the setup jitter")
     stored = {k: table[k] for k in names}
@@ -259,7 +286,16 @@ def prepare(c, capacities, batch_events, table, starts):
         upper = end_tdc if c.onspill else ewend[:, None]
         ok_norm = jnp.all((tdc > start_tdc) & (tdc < upper), 1)
         ok_all = jnp.all((tdc > 0) & (tdc < ewend[:, None]), 1)
-        keep = valid & jnp.where(readall, ok_all, ok_norm) & timing["event_mask"][evc]
+        inwin = (valid & jnp.where(readall, ok_all, ok_norm) & timing["event_mask"][evc]).reshape(R, pairs)
+        # the digital dead time, straw by straw in time order (as digi_jax: only kept digis start it)
+        clock = (T["dtime"][slot] + moved).reshape(R, pairs)
+        ready = jnp.full(R, -9e9)
+        kept = []
+        for i in range(pairs):
+            k_i = inwin[:, i] & (clock[:, i] >= ready)
+            ready = jnp.where(k_i, clock[:, i] + c.deadTimeDigital, ready)
+            kept.append(k_i)
+        keep = jnp.stack(kept, 1).reshape(-1)
         reused = {"adc": T["adc"][slot].astype(out["adc"].dtype), "tdc": tdc.astype(out["tdc"].dtype),
                   "tot": T["tot"][slot].astype(out["tot"].dtype), "pmp": T["pmp"][slot].astype(out["pmp"].dtype),
                   "t_analog": (T["t_analog"][slot] + shift[:, None]).astype(out["t_analog"].dtype),
