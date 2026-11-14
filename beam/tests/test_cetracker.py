@@ -187,6 +187,90 @@ def test_births_from_starts_number_interleaved_shards_in_row_order():
     assert list(h.event) == [1, 2] and list(h.x) == list(src["x"][[1, 3]])
 
 
+def _pair_file(n, shards=None):
+    """An RPC generator file: electron rows plus positron_p / positron_u (rpcstudy starts / rpcspec layout)."""
+    rng = np.random.default_rng(9)
+    d = {k: rng.normal(size=n) for k in ("x", "y", "z", "px", "py", "pz")}
+    d["time"] = rng.uniform(500.0, 1500.0, n)
+    d["pdg"] = np.full(n, 11, np.int32)
+    u = rng.normal(size=(n, 3))
+    d["positron_u"] = u / np.linalg.norm(u, axis=1)[:, None]
+    d["positron_p"] = rng.uniform(10.0, 90.0, n)
+    if shards is not None:
+        d["shard"] = np.asarray(shards)
+    return d
+
+
+def test_positron_births_pair_the_electron_rows_of_an_rpc_file():
+    src = _pair_file(6, shards=[4, 4, 5, 5, 5, 6])
+    assert H.has_pairs(src) and not H.has_pairs(_gen_file(3, [None]))
+    g, gp = H.births_from_starts(src), H.positron_births_from_starts(src)
+    assert (gp.pdg == -11).all() and (g.pdg == 11).all()
+    for k in H.KEY + ["x", "y", "z", "t"]:
+        np.testing.assert_array_equal(gp[k], g[k])
+    for j, k in enumerate(("px", "py", "pz")):
+        np.testing.assert_array_equal(gp[k], src["positron_p"] * src["positron_u"][:, j])
+    h = H.positron_births_from_starts(src, shards=(5, 5))
+    assert list(h.event) == [1, 2, 3] and list(h.x) == list(src["x"][2:5])
+    with pytest.raises(ValueError, match="positron columns"):
+        H.positron_births_from_starts(_gen_file(3, [None]))
+
+
+def test_bench_prepare_starts_takes_consecutive_rows_and_both_legs(tmp_path, monkeypatch):
+    src = _pair_file(10)
+    np.savez(tmp_path / "rpc.npz", **src)
+    monkeypatch.setenv("CETRACKER_STARTS", str(tmp_path / "rpc.npz"))
+    g, gp, n, seed = H.bench_prepare_starts(4)
+    assert (n, seed) == (4, None) and list(g.event) == [1, 2, 3, 4] and len(gp) == 4
+    np.testing.assert_array_equal(gp.px, src["positron_p"][:4] * src["positron_u"][:4, 0])
+    g, gp, n, seed = H.bench_prepare_starts(4, seed=2)          # rows 8, 9, 0, 1
+    assert seed == 2 and list(g.event) == [9, 10, 1, 2] and list(gp.event) == [9, 10, 1, 2]
+    np.savez(tmp_path / "dio.npz", **_gen_file(5, [None]))
+    monkeypatch.setenv("CETRACKER_STARTS", str(tmp_path / "dio.npz"))
+    g, gp, n, seed = H.bench_prepare_starts(3)
+    assert gp is None and len(g) == 3
+
+
+def test_run_takes_a_births_frame_as_births_not_as_a_stop_table(monkeypatch):
+    """A births DataFrame (births_from_starts) has x, y, z, t columns too: run() must not draw CE births from it."""
+    seen = {}
+
+    class Chain:
+        def __init__(self, **kw):
+            pass
+
+        def births(self, stops, n, seed):
+            raise AssertionError("a births frame was read as a stop table")
+
+        def __call__(self, births, seed, digis=True, event_timing=None, positrons=None):
+            seen.update(births=births, positrons=positrons)
+            return {}
+    monkeypatch.setattr(H, "DeviceChain", Chain)
+    monkeypatch.setattr(H, "_CHAIN", {})
+    src = _pair_file(3)
+    g, gp = H.births_from_starts(src), H.positron_births_from_starts(src)
+    H.run(g, 1, positrons=gp)
+    assert seen["births"] is g and seen["positrons"] is gp
+
+
+def test_bench_run_starts_runs_pairs_unless_rpc_legs_electron(monkeypatch):
+    seen = []
+
+    def fake_run(births, seed, *, digis=True, positrons=None, **kw):
+        seen.append((seed, positrons, kw))
+        return {"track": None, "nrow": np.zeros(len(births)), "tracker": None}
+    monkeypatch.setattr(H, "run", fake_run)
+    g, gp = H.births_from_starts(_pair_file(3)), H.positron_births_from_starts(_pair_file(3))
+    H.bench_run_starts((g, gp, 3, 5), seed=1, offline_root="o")
+    assert seen[-1][0] == 5 and seen[-1][1] is gp and seen[-1][2] == {"offline_root": "o"}
+    H.bench_run_starts((g, gp, 3, None), seed=1, rpc_legs="electron")
+    assert seen[-1][0] == 1 and seen[-1][1] is None
+    H.bench_run_starts((g, None, 3, None))                        # DIO: no positron leg
+    assert seen[-1][1] is None
+    with pytest.raises(ValueError, match="rpc_legs"):
+        H.bench_run_starts((g, gp, 3, None), rpc_legs="positron")
+
+
 @pytest.mark.parametrize("args", [["t.root", "--starts", "s.npz"], ["--stops", "x.npz", "--starts", "s.npz"],
                                   [], ["t.root", "--shards", "0", "1"]])
 def test_cli_starts_argument_rules(args, capsys, tmp_path):

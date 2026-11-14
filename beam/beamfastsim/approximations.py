@@ -73,10 +73,22 @@ _TRACKER_FIXED = {
                            "secondaries (stock: Geant4 in the target geometry)",
 }
 
-W2 = Workflow("W2-W4", "stops or DIO/RPC electrons to tracker steps, digis and observables", _TRACKER,
+_RPC_LEGS = Approximation(
+    "rpc_legs", "W4 RPC internal-conversion events: both leptons of the pair through the chain (default: the "
+    "positron leg with charge +1 and positron physics, its straw steps merged into the event before digitisation), "
+    "or the electron only; DIO and CE births have no positron and are not affected",
+    levels=("pair", "electron"), default="pair", sets={"electron": {"rpc_legs": "electron"}}, fidelity="pair",
+    alternative=NONE,
+    stock="Geant4 transports both leptons of the pair; the pair is the closer model (the electron alone gives about "
+          "half the triggered RPC yield)",
+    switch="bench entry cetracker:bench_run_starts(rpc_legs=); run(positrons=) / DeviceChain.transport_pair (the "
+           "cetracker CLI writes the electron only)")
+
+W2 = Workflow("W2-W4", "stops or DIO/RPC electrons to tracker steps, digis and observables", _TRACKER + (_RPC_LEGS,),
               fixed={**_TRACKER_FIXED,
-                     "rpc_internal_electron_only": "W4: internal conversion only, the positron dropped (stock: "
-                                                   "external RPC with photon transport and both leptons)"},
+                     "rpc_internal_conversion_only": "W4: internal conversion pairs only; no external RPC (stock: "
+                                                     "external RPC, the photon transported and converted in "
+                                                     "material, both leptons)"},
               aliases=("W2", "W3", "W4"))
 
 WORKFLOWS = {"W1": W1, "W2-W4": W2}

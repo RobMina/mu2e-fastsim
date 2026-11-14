@@ -28,11 +28,14 @@ observables, every stage on one device. The track observables come from the reco
 event to the device entry state and the number of step rows. Digitisation (optional) runs the device digitiser
 (trkfastsim.digi.digi_jax), whose host packing reads the steps once.
 
-Pair events (opt-in, `positrons=`): a second leg of positron births, one per electron birth of the same event (e.g.
-the e+ e- pair of an RPC internal conversion), runs through the same stages with charge +1 (cechain_jax and
-fieldsteps_jax positron=True: positron loss and scattering tables), its own albedo and deltas; its straw steps are
-appended to the event's rows before digitisation. The track observables stay those of the electron (the reco
-response is the electron's). starts(paths, pdg=-11) reads the positron births from the dumper tables.
+Pair events (`positrons=`): a second leg of positron births, one per electron birth of the same event (e.g. the e+ e-
+pair of an RPC internal conversion), runs through the same stages with charge +1 (cechain_jax and fieldsteps_jax
+positron=True: positron loss and scattering tables), its own albedo and deltas; its straw steps are appended to the
+event's rows before digitisation. The track observables stay those of the electron (the reco response is the
+electron's). starts(paths, pdg=-11) reads the positron births from the dumper tables, positron_births_from_starts
+from an RPC generator file. For W4 (RPC) pairs are the default: the generator-file bench entry (bench_prepare_starts,
+bench_run_starts) transports both legs of every RPC pair; approximation `rpc_legs=electron` keeps the electron only.
+The cetracker CLI writes the electron's injector table and records `rpc_legs` as electron for an RPC file.
 """
 import json
 import time
@@ -106,14 +109,17 @@ def births_from_stops(rng, stops, keys):
     return g
 
 
-def births_from_starts(src, shards=None):
-    """Births from a generator file in the cechain reference format (x, y, z [mm, Mu2e frame], px, py, pz [MeV/c],
-    time [ns]): the starts `beamfastsim.diospec starts` writes (DIO), or the output of `beamfastsim.rpcspec` (RPC, the
-    electron of each pair; the positron is not transported). One event per row, so every row is a generated electron.
+PAIR_COLUMNS = ("positron_p", "positron_u")    # the positron of each pair in an RPC generator file (rpcspec, rpcstudy)
+RPC_LEGS = ("pair", "electron")                 # W4 approximation rpc_legs: both leptons (default) or the electron only
 
-    Event identities: run 0, subrun = the row's shard (`shard` column, e.g. diospec or rpcstudy) or 0, event = 1, 2,
-    ... within the subrun in row order. Rows keep their order.
-    shards: optional (first, last) inclusive range of diospec shards to keep."""
+
+def has_pairs(src):
+    """True when a generator file carries the positron of each pair (RPC internal conversion, rpcspec / rpcstudy)."""
+    return all(k in src for k in PAIR_COLUMNS)
+
+
+def _starts_frame(src, shards, momentum, pdg):
+    """Births of one leg of a generator file; momentum(src) gives (px, py, pz) after the column checks."""
     for k in ("x", "y", "z", "px", "py", "pz", "time"):
         if k not in src:
             raise ValueError(f"generator file has no column {k!r} (cechain reference format expected)")
@@ -130,11 +136,37 @@ def births_from_starts(src, shards=None):
     event = np.empty(n, np.int64)
     event[order] = np.arange(n) - np.searchsorted(sub[order], sub[order], side="left") + 1
     g = pd.DataFrame({"run": np.zeros(n, np.uint64), "subrun": sub.astype(np.uint64),
-                      "event": event.astype(np.uint64), "pdg": PDG_E})
-    for k in ("x", "y", "z", "px", "py", "pz"):
+                      "event": event.astype(np.uint64), "pdg": pdg})
+    for k in ("x", "y", "z"):
         g[k] = np.asarray(src[k], float)
+    for k, v in zip(("px", "py", "pz"), momentum(src)):
+        g[k] = np.asarray(v, float)
     g["t"] = np.asarray(src["time"], float)
     return g[keep].reset_index(drop=True)
+
+
+def births_from_starts(src, shards=None):
+    """Births from a generator file in the cechain reference format (x, y, z [mm, Mu2e frame], px, py, pz [MeV/c],
+    time [ns]): the starts `beamfastsim.diospec starts` writes (DIO), or the output of `beamfastsim.rpcspec` /
+    `rpcstudy starts` (RPC: the electron of each pair; positron_births_from_starts gives the positron). One event per
+    row, so every row is a generated electron.
+
+    Event identities: run 0, subrun = the row's shard (`shard` column, e.g. diospec or rpcstudy) or 0, event = 1, 2,
+    ... within the subrun in row order. Rows keep their order.
+    shards: optional (first, last) inclusive range of diospec shards to keep."""
+    return _starts_frame(src, shards, lambda s: [s[k] for k in ("px", "py", "pz")], PDG_E)
+
+
+def positron_births_from_starts(src, shards=None):
+    """The positron of each pair of an RPC generator file (columns positron_p [MeV/c] and positron_u, the unit
+    direction): one row per electron row of births_from_starts(src, shards), with the same event identities, position
+    and time, and pdg -11. The positron leg of DeviceChain.transport_pair / run(positrons=)."""
+    if not has_pairs(src):
+        raise ValueError(f"generator file has no positron columns {PAIR_COLUMNS} (RPC pairs expected)")
+    def momentum(s):
+        pp, pu = np.asarray(s["positron_p"]), np.asarray(s["positron_u"])
+        return [pp * pu[:, j] for j in range(3)]
+    return _starts_frame(src, shards, momentum, PDG_POSITRON)
 
 
 def handoff(keys, result, plane_fate=cechain.PLANE):
@@ -645,14 +677,16 @@ DIGI_ELECTRONICS = {"entries_per_straw": 1.25, "saturation_rows": "auto", "satur
 
 def run(stops_or_births, seed, *, n=None, digis=True, event_timing=None, positrons=None, **chain_kw):
     """One batch through DeviceChain (built once per process and configuration): stops_or_births is a stop table
-    (dict/npz with x, y, z, t; then n births are drawn) or births (x, u, p, t). positrons (opt-in): positron births
-    (x, u, p, t), one per electron birth (pair events, DeviceChain.transport_pair). Returns DeviceChain's dict."""
+    (dict/npz with x, y, z, t; then n births are drawn) or births ((x, u, p, t), or a DataFrame with KEY + STATE
+    columns such as births_from_starts gives). positrons: positron births in the same form, one per electron birth
+    (pair events, DeviceChain.transport_pair; the W4 default for RPC). Returns DeviceChain's dict."""
     key = tuple(sorted((k, tuple(v) if isinstance(v, (list, tuple)) else tuple(sorted(v.items())) if isinstance(v, dict)
                         else v) for k, v in chain_kw.items()))
     if key not in _CHAIN:
         _CHAIN[key] = DeviceChain(**chain_kw)
     ch = _CHAIN[key]
-    if hasattr(stops_or_births, "keys") or hasattr(stops_or_births, "files"):
+    if not isinstance(stops_or_births, pd.DataFrame) and (hasattr(stops_or_births, "keys")
+                                                          or hasattr(stops_or_births, "files")):
         if positrons is not None:
             raise ValueError("run: positrons need electron births, not a stop table")
         births = ch.births(stops_or_births, int(n), seed)
@@ -673,15 +707,49 @@ def bench_prepare(n, seed=None):
     return DeviceChain.births(stops, int(n), int(seed)), int(n), int(seed)
 
 
-def bench_run(prepared, seed=1, digis=True, **chain_kw):
+def bench_run(prepared, seed=1, digis=True, rpc_legs="pair", **chain_kw):
     """mu2efastsim.bench entry point: n births drawn from the stops (or the births bench_prepare drew for its seed,
-    which then replaces `seed`), then the whole device chain. Returns the device outputs the timer waits on."""
+    which then replaces `seed`), then the whole device chain. Returns the device outputs the timer waits on.
+    rpc_legs (W4 approximation) has no effect here: CE births from stops have no positron."""
+    if rpc_legs not in RPC_LEGS:
+        raise ValueError(f"rpc_legs must be one of {RPC_LEGS}, not {rpc_legs!r}")
     if len(prepared) == 3:
         births, n, seed = prepared
         res = run(births, seed, digis=digis, **chain_kw)
     else:
         stops, n = prepared
         res = run(stops, seed, n=n, digis=digis, **chain_kw)
+    return dict(track=res.get("track"), nrow=res["nrow"],
+                steps_len=None if res["tracker"] is None else res["tracker"].steps["len"],
+                digis=None if "digis" not in res else res["digis"]["adc"])
+
+
+def bench_prepare_starts(n, seed=None):
+    """mu2efastsim.bench --prepare for generator-file births (W3 DIO, W4 RPC): the file named by $CETRACKER_STARTS,
+    n consecutive rows (births_from_starts; for an RPC file also positron_births_from_starts), outside the clock.
+    Without a seed rows 0..n-1; with a seed (--fresh-inputs passes S+i before every pass) the n rows from seed*n on,
+    wrapping at the end of the file, and bench_run_starts uses that seed for the chain.
+    Returns (births, positrons or None, n, seed or None)."""
+    import os
+    with np.load(os.environ["CETRACKER_STARTS"], allow_pickle=False) as src:
+        g = births_from_starts(src)
+        gp = positron_births_from_starts(src) if has_pairs(src) else None
+    rows = (int(seed or 0) * int(n) + np.arange(int(n))) % len(g)
+    take = lambda f: None if f is None else f.iloc[rows].reset_index(drop=True)
+    return take(g), take(gp), int(n), None if seed is None else int(seed)
+
+
+def bench_run_starts(prepared, seed=1, digis=True, rpc_legs="pair", **chain_kw):
+    """mu2efastsim.bench entry point for generator-file births (bench_prepare_starts): the whole device chain on the
+    prepared births. An RPC file runs pair events (both legs, transport_pair) unless rpc_legs="electron" (W4
+    approximation rpc_legs); a DIO file has no positrons and runs the electrons. Returns the device outputs the timer
+    waits on."""
+    if rpc_legs not in RPC_LEGS:
+        raise ValueError(f"rpc_legs must be one of {RPC_LEGS}, not {rpc_legs!r}")
+    births, positrons, n, s = prepared
+    if s is not None:
+        seed = s
+    res = run(births, seed, digis=digis, positrons=positrons if rpc_legs == "pair" else None, **chain_kw)
     return dict(track=res.get("track"), nrow=res["nrow"],
                 steps_len=None if res["tracker"] is None else res["tracker"].steps["len"],
                 digis=None if "digis" not in res else res["digis"]["adc"])
@@ -709,7 +777,12 @@ def main(argv=None):
     ap.add_argument("--stops", help="stop table npz (x, y, z, t): fresh unfiltered CE births, one per event of the "
                                     "tables, which then only carry the event identities")
     ap.add_argument("--starts", help="generator file in the cechain reference format instead of tables: DIO "
-                                     "(diospec starts) or RPC (rpcspec) electrons, one event per row")
+                                     "(diospec starts) or RPC (rpcspec) electrons, one event per row (the CLI writes "
+                                     "the electron's injector table; RPC pairs run through bench_run_starts or "
+                                     "run(positrons=))")
+    ap.add_argument("--rpc-legs", choices=RPC_LEGS, default="pair",
+                    help="W4 approximation rpc_legs; the CLI writes the electron's injector table either way and "
+                         "records electron for an RPC file")
     ap.add_argument("--shards", nargs=2, type=int, metavar=("FIRST", "LAST"),
                     help="with --starts: keep these diospec shards (inclusive)")
     ap.add_argument("--complete-outer-wall", action="store_true",
@@ -747,6 +820,9 @@ def main(argv=None):
         paths = [a.starts]
         with np.load(a.starts, allow_pickle=False) as src:
             g = births_from_starts(src, a.shards)
+            if has_pairs(src) and a.rpc_legs == "pair":
+                selection.set_effective("rpc_legs", "electron", "the cetracker CLI writes the electron's injector "
+                                        "table; pair events run through bench_run_starts or run(positrons=)")
     else:
         paths = tables.expand(a.tables)
         g = starts(paths)
