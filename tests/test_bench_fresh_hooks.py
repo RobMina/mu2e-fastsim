@@ -162,6 +162,13 @@ def test_trigger_hit_order_gives_the_input_order_results(monkeypatch):
             nh = b["valid"].sum(axis=1)
             return {"p": np.where(b["valid_event"], nh * 100000 + b["event"], -1)}, {"a:tc": b["event"] % 3 == 0}, {}
 
+        def decide_packed(self, b):                                # the chain's packed interface: (key, arrays)
+            d, a, _ = self.decide(b)
+            return b["valid"].shape, (d, a)
+
+        def unpack(self, key, arrays):
+            return arrays
+
         def finish(self, dec, aux, n_events):
             return {"p": dec["p"][:n_events], "count": np.cumsum(aux["a:tc"][:n_events])}
 
@@ -282,6 +289,13 @@ def _decide_main(monkeypatch, tmp_path, extra, cpu):
             return ({"P": (nh + b["event"]) % 3 == 0}, {"a:tc": nh % 2 == 1},
                     {"sh": hits, "ph": hits} if seen["debug"] else {})
 
+        def decide_packed(self, b):             # the chain's packed interface: (key, arrays)
+            d, a, _ = self.decide(b)
+            return b["valid"].shape, (d, a)
+
+        def unpack(self, key, arrays):
+            return arrays
+
         def finish(self, dec, aux, n_events):  # an event-order counter, as the prescale counter
             return {"P": dec["P"][:n_events], "Q": np.cumsum(aux["a:tc"][:n_events]) % 2 == 0}
 
@@ -300,12 +314,15 @@ def _decide_main(monkeypatch, tmp_path, extra, cpu):
 def test_trigger_decide_hit_order_and_backend_defaults_give_the_same_decisions(monkeypatch, tmp_path):
     ref, s = _decide_main(monkeypatch, tmp_path, ["--order", "input", "--batch", "512", "--hmin", "64",
                                                   "--no-compact", "--check-hits"], cpu=False)
-    assert s["compact"] is False and ref["batching"] == {"order": "input", "batch": 512, "hmin": 64, "compact": False}
+    assert s["compact"] is False and ref["batching"] == {"order": "input", "batch": 512, "hmin": 64, "compact": False,
+                                                                 "pairs": True}
     assert ref["hits"]["straw"]["events_same_count"] == 37 and ref["hits"]["straw"]["exact"]["sid"][0] > 0
     gpu, s = _decide_main(monkeypatch, tmp_path, ["--check-hits"], cpu=False)
-    assert s["compact"] is False and gpu["batching"] == {"order": "hits", "batch": 512, "hmin": 64, "compact": False}
+    assert s["compact"] is False and gpu["batching"] == {"order": "hits", "batch": 512, "hmin": 64, "compact": False,
+                                                                 "pairs": True}
     cpu, s = _decide_main(monkeypatch, tmp_path, ["--check-hits"], cpu=True)
-    assert s["compact"] is True and cpu["batching"] == {"order": "hits", "batch": 16, "hmin": 32, "compact": True}
+    assert s["compact"] is True and cpu["batching"] == {"order": "hits", "batch": 16, "hmin": 32, "compact": True,
+                                                                 "pairs": True}
     assert len(s["shapes"]) == 3 and {e for e, _ in s["shapes"]} == {16}
     for other in (gpu, cpu):
         assert other["decisions"] == ref["decisions"] and other["hits"] == ref["hits"]
