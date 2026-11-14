@@ -2,7 +2,7 @@
 
     TRIGGER_DEVICE_DUMPS=a.root,b.root TRIGGER_DEVICE_MENU=replay.fcl TRIGGER_DEVICE_MVA=TimeCluster.weights.xml \
     [TRIGGER_DEVICE_RESPONSE=ce|dio|rpc|none|response.json] [TRIGGER_DEVICE_BATCH=1024] [TRIGGER_DEVICE_PRECISION=float32] \
-    [TRIGGER_DEVICE_ORDER=hits|input] [TRIGGER_DEVICE_HMIN=64] [TRIGGER_DEVICE_COMPACT=0|1] \
+    [TRIGGER_DEVICE_ORDER=hits|input] [TRIGGER_DEVICE_HMIN=64] [TRIGGER_DEVICE_COMPACT=0|1] [TRIGGER_DEVICE_PAIRS=0|1] \
     python3 -m mu2efastsim.bench trigger.device.bench:step --prepare trigger.device.bench:load --events N \
         --dtype float64 (or float32, matching TRIGGER_DEVICE_PRECISION) --workflow trigger --boundary "StrawDigis -> tracker trigger path decisions" --out bench.json
 
@@ -34,14 +34,16 @@ _DUMPS = {}
 
 def _chain(dumps, tree):
     compact = os.environ.get("TRIGGER_DEVICE_COMPACT", "1" if _cpu().get("compact") else "0") == "1"
+    pairs = os.environ.get("TRIGGER_DEVICE_PAIRS", "0") == "1"
     key = (dumps[0], tree, os.environ["TRIGGER_DEVICE_MENU"], os.environ["TRIGGER_DEVICE_MVA"],
-           _response(), os.environ.get("TRIGGER_DEVICE_PRECISION", "float64"), compact)
+           _response(), os.environ.get("TRIGGER_DEVICE_PRECISION", "float64"), compact, pairs)
     if key not in _CHAINS:
         cfg = menu.parse_fcl(Path(os.environ["TRIGGER_DEVICE_MENU"]).read_text())
         cond = run.conditions(dumps[0], tree)
         resp = response.load(_response())
         _CHAINS[key] = chainmod.Chain(cfg, cond, os.environ["TRIGGER_DEVICE_MVA"], response=resp,
-                                      precision=os.environ.get("TRIGGER_DEVICE_PRECISION", "float64"), compact=compact)
+                                      precision=os.environ.get("TRIGGER_DEVICE_PRECISION", "float64"), compact=compact,
+                                      pairs=pairs)
     return _CHAINS[key]
 
 

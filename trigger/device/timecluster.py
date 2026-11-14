@@ -257,6 +257,48 @@ def time_clusters_multi(ph, ss, net):
     return [{k: v[i] for k, v in out.items()} for i in range(len(ss))]
 
 
+def time_clusters_multi_pairs(ph, ss, net, K):
+    """time_clusters_multi with the cluster refinement run only on the (producer, event, slot) pairs that have a peak
+    candidate, gathered up to K pairs; when a batch has more than K candidates, the batched full path runs instead.
+    Each candidate's cluster is the same computation as in time_clusters; slots without a candidate get valid False,
+    nsh 0, t0 0, t0err 0 and no members (time_clusters gives them valid False too, and every consumer reads clusters
+    through `valid`)."""
+    base = {k: v for k, v in ss[0].items() if k != "pitch"}
+    if any({k: v for k, v in s_.items() if k != "pitch"} != base for s_ in ss):
+        raise ValueError("time_clusters_multi_pairs: settings differ in more than the pitch")
+    den = jnp.asarray([s_["pitch"] * C_LIGHT for s_ in ss])
+    s0 = ss[0]
+    ev, members, oks = jax.vmap(lambda d: candidates(ph, {**s0, "tof_den": d}))(den)   # [P, E, ...]
+    P, E, C = oks.shape
+
+    def full():
+        def one(ev_p, mem_p, ok_p):
+            def per_event(ev_e, mem_e, ok_e):
+                keep, nsh, t0, t0err, mem = jax.vmap(lambda m, o: _cluster(ev_e, m, o, s0, net))(mem_e, ok_e)
+                return {"valid": keep, "nsh": nsh, "t0": t0, "t0err": t0err, "members": mem}
+            return jax.vmap(per_event)(ev_p, mem_p, ok_p)
+        return jax.vmap(one)(ev, members, oks)
+
+    def pairs():
+        flat = jnp.nonzero(oks.reshape(-1), size=K, fill_value=P * E * C)[0]
+        use = flat < P * E * C
+        f = jnp.minimum(flat, P * E * C - 1)
+        p, e, c = f // (E * C), (f // C) % E, f % C
+        evp = {k: v[p, e] for k, v in ev.items()}
+        keep, nsh, t0, t0err, mem = jax.vmap(lambda ev_, m, o: _cluster(ev_, m, o, s0, net))(
+            evp, members[p, e, c], oks[p, e, c] & use)
+        dst = jnp.where(use, flat, P * E * C)
+
+        def put(v, fill):
+            out = jnp.full((P * E * C + 1,) + v.shape[1:], fill, v.dtype).at[dst].set(v)
+            return out[:P * E * C].reshape((P, E, C) + v.shape[1:])
+        return {"valid": put(keep & use, False), "nsh": put(nsh, 0), "t0": put(t0, 0), "t0err": put(t0err, 0),
+                "members": put(mem & use[:, None], False)}
+
+    out = jax.lax.cond(jnp.sum(oks) <= K, pairs, full)
+    return [{k: v[i] for k, v in out.items()} for i in range(P)]
+
+
 def candidates(ph, s):
     """Stage 1 of the compacted time clusters: per-event arrays and the candidate clusters [E, NTC] (members, oks)."""
     return jax.vmap(lambda h: _peaks(h, s))(_hits(ph))

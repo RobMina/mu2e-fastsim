@@ -208,6 +208,34 @@ def helices_multi(ph, tcs, s, fz, bkg_mask=0):
     return [{k: v[i] for k, v in out.items()} for i in range(len(tcs))]
 
 
+def helices_multi_pairs(ph, tcs, s, fz, K, bkg_mask=0):
+    """helices_multi on the valid (cluster set, event, slot) clusters only, gathered up to K; when a batch has more
+    than K valid clusters, the batched full path runs instead. The same fit per cluster; clusters that are not valid
+    get ok False and zero quantities (helices gives them ok False too; every consumer reads helices through `ok`)."""
+    mem = jnp.stack([tc["members"] for tc in tcs])
+    val = jnp.stack([tc["valid"] for tc in tcs])
+    P, E, C = val.shape
+    hit, usable = _helix_hits(ph, bkg_mask)
+
+    def full():
+        return jax.vmap(lambda m, v: helices(ph, {"members": m, "valid": v}, s, fz, bkg_mask))(mem, val)
+
+    def pairs():
+        flat = jnp.nonzero(val.reshape(-1), size=K, fill_value=P * E * C)[0]
+        use = flat < P * E * C
+        f = jnp.minimum(flat, P * E * C - 1)
+        p, e, c = f // (E * C), (f // C) % E, f % C
+        best = jax.vmap(_per_cluster(s, fz))({k: v[e] for k, v in hit.items()}, usable[e], mem[p, e, c],
+                                            val[p, e, c] & use)
+        dst = jnp.where(use, flat, P * E * C)
+        out = {k: jnp.zeros(P * E * C + 1, v.dtype).at[dst].set(v)[:P * E * C].reshape(P, E, C) for k, v in best.items()}
+        out["ok"] = out["ok"] & val
+        return out
+
+    out = jax.lax.cond(jnp.sum(val) <= K, pairs, full)
+    return [{k: v[i] for k, v in out.items()} for i in range(P)]
+
+
 def helices_pairs(ph, tc, s, fz, K, bkg_mask=0):
     """helices on the first K valid (event, cluster) pairs of tc only (K >= their count: the caller reads it), the
     same fit per cluster, scattered back to [E, NTC]. Clusters that are not valid get ok False and zero quantities

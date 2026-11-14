@@ -28,7 +28,7 @@ def pair_bucket(n, total):
 
 class Chain:
     def __init__(self, cfg, cond, tc_mva_path, response=None, path_names=None, salt=20261107, debug=False,
-                 precision="float64", compact=False):
+                 precision="float64", compact=False, pairs=False):
         if precision not in PRECISIONS:
             raise ValueError(f"precision must be one of {PRECISIONS}")
         # float32: every device array, including the stock double-precision intermediates of the hit ports, in
@@ -72,6 +72,10 @@ class Chain:
         # that have a candidate / a valid cluster, in three device calls with one host read of the counts between
         # them; the same computation per cluster as the one-call path, and the same decisions
         self.compact = bool(compact)
+        # pairs (one-call path): cluster refinement and helix fits only on the (producer, event, slot) pairs with a
+        # candidate / a valid cluster, up to one pair per event and producer, else the full batched path; the same
+        # decisions
+        self.pairs = bool(pairs)
         self._fn = jax.jit(self._decide)
         self._fa = jax.jit(self._stage_candidates)
         self._fr = jax.jit(self._refine_one, static_argnames=("lbl", "k"))
@@ -100,16 +104,20 @@ class Chain:
     def _decide(self, batch):
         sh = hits.straw_hits(batch, self.cond_dev, self.sh, self.tot_bins)
         ph = hits.panel_hits(sh, self.ph)
+        E = batch["valid"].shape[0]
         tcs = {}
         for group in self._tc_groups():              # producers that differ only in pitch share one batched call
-            for lbl, tc in zip(group, timecluster.time_clusters_multi(
-                    ph, [timecluster.settings(self.mods[lbl]) for lbl in group], self.net)):
-                tcs[lbl] = tc
+            ss = [timecluster.settings(self.mods[lbl]) for lbl in group]
+            res = (timecluster.time_clusters_multi_pairs(ph, ss, self.net, K=E * len(group)) if self.pairs else
+                   timecluster.time_clusters_multi(ph, ss, self.net))
+            tcs.update(zip(group, res))
         hxs = {}
         for group in self._helix_groups():           # helix finders with the same settings share one batched call
             s = helix.settings(self.mods[group[0][1]])
-            for key, hx in zip(group, helix.helices_multi(ph, [tcs[key[0]] for key in group], s, self.fz)):
-                hxs[key] = hx
+            sets = [tcs[key[0]] for key in group]
+            res = (helix.helices_multi_pairs(ph, sets, s, self.fz, K=E * len(group)) if self.pairs else
+                   helix.helices_multi(ph, sets, s, self.fz))
+            hxs.update(zip(group, res))
         return self._paths(batch, sh, ph, tcs, hxs)
 
     def _tc_groups(self):
