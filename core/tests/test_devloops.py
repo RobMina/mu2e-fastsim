@@ -189,3 +189,11 @@ def test_bench_graph_concurrency_flag(tmp_path):
     assert r.returncode == 0, r.stderr[-2000:]
     gc = json.loads(r.stdout.strip().splitlines()[-1])
     assert gc["dropped_for"] == "W2" and gc["xla_gpu_graph_enable_concurrent_region"] is None
+
+
+@pytest.mark.parametrize("flags, both", [(f"{LOOPS} {CONC}", True), (LOOPS, False), (CONC, False), ("", False),
+                                         ("--xla_gpu_enable_command_buffer=FUSION", False)])
+def test_loops_with_concurrency(monkeypatch, flags, both):
+    from mu2efastsim import devloops
+    monkeypatch.setenv("XLA_FLAGS", flags)
+    assert devloops.loops_with_concurrency() is both

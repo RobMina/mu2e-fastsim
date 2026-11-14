@@ -167,6 +167,12 @@ def _concurrency_on():
     return (_value(CONCURRENCY_FLAG) or "").lower() in ("true", "1")
 
 
+def loops_with_concurrency():
+    """Whether XLA_FLAGS has device loops and concurrent graph regions both on (the combination that hangs the CE
+    chain's transport loop on a GPU); callers that never ran select can check it before compiling that loop."""
+    return _loops_on() and _concurrency_on()
+
+
 def _set(on):
     _put(FLAG, VALUE, on)
 

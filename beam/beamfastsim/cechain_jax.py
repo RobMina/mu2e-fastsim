@@ -21,6 +21,7 @@ Statistically equivalent to the NumPy chain, not identical per seed. Computes in
 field maps and tables are cast to it. Mu2e frame, mm, ns, MeV.
 """
 import time
+import warnings
 from functools import partial
 
 import numpy as np
@@ -29,6 +30,7 @@ import jax
 import jax.numpy as jnp
 from jax import lax
 
+from mu2efastsim import devloops
 from mu2efastsim import eslab_jax as SJ
 
 from . import cechain as C
@@ -115,6 +117,18 @@ def _lane_tables(layout, g):
     return SJ.LaneTables(tab, mc_type(*g["lt_mc"]), *g["lt_rows"])
 
 
+def _run_options():
+    """Compiler options of the transport loop. With device loops and concurrent graph regions both on in XLA_FLAGS
+    (a process that set them itself instead of selecting a CE-chain workflow, devloops.select), the loop waits
+    forever on its iteration count on a GPU, so it then compiles without command buffers (same results; the rest
+    of the process keeps its flags). Otherwise no options."""
+    if jax.default_backend() != "gpu" or not devloops.loops_with_concurrency():
+        return None
+    warnings.warn("cechain_jax: device loops and concurrent graph regions are both on (XLA_FLAGS); the transport "
+                  "loop compiles without command buffers, since it hangs with both", RuntimeWarning, stacklevel=3)
+    return {"xla_gpu_enable_command_buffer": ""}
+
+
 def _build(layout, dt, h, s_max, msc, layer_field, shell_curvature, z_record, unroll, const_field, positron=False):
     """init and run of the chain for one layout (geometry_inputs) and policy; the geometry is an argument, so every
     geometry of the same layout shares the compiled functions. Both take env = (field maps, geometry arrays)."""
@@ -132,7 +146,7 @@ def _build(layout, dt, h, s_max, msc, layer_field, shell_curvature, z_record, un
         maps, g = env
         return make(g)[0](maps, x, u, T, t, k0, zl)
 
-    @partial(jax.jit, static_argnames=("m_cand", "m_slab"))
+    @partial(jax.jit, static_argnames=("m_cand", "m_slab"), compiler_options=_run_options())
     def run(env, key, st, n_it, m_cand, m_slab):
         maps, g = env
         step = make(g)[1]
