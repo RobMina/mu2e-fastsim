@@ -13,6 +13,28 @@ What it freezes, per donor frame: the threshold, TDC and ADC noise draws, the RO
 (the waveform does not move against the 20 ns ADC clock when the event shifts the frame). The setup window is widened
 by the largest shift, so a digi that an event's shift moves into the real window is kept. Validate against stock
 before use.
+
+Two capacity keys undo most of the freezing at the same per-batch cost:
+- `phases` K (default 1) and `periods` W (default 1): each frame is digitised N = K * W times, at the mean shift plus
+  (j - N // 2) * ADCPeriod / K (j < N: K copies per ADC period over W periods, offsets in [-W P/2, W P/2), each copy
+  with its own draws). An event takes, for each reused straw, the copy whose shift is nearest its own modulo W ADC
+  periods, and shifts that copy's TDC and analog times by the difference: within P / 2K for an event within W P/2 of
+  the mean shift, otherwise a whole number of periods more. The event applies its window start (the step-time cut and
+  where the threshold search starts) at its own time, so a shift of the copy also moves those cuts against the
+  frame's pulses: the copies should cover the events' spread of shifts.
+- `shifts: "events"` (instead of the phase grid): one copy at each distinct time shift of the signal events (Run 1A:
+  five mc_pbtime values, 5 ns apart). Every event then takes the copy at its own shift and moves nothing: its reused
+  digis are the frame's digis at that shift, with the setup's draws. Even a constant 0.17 ns between an event's shift
+  and its copy (the grid around the mean) showed in the TDC phase against the ADC waveform.
+  A whole-period shift leaves the samples against the pulse unchanged, so the waveform is sampled within
+  ADCPeriod / (2K) of the event's own phase, consistent with its TDC, instead of at the mean shift's phase.
+- `event_jitter` (default false): the reused TDCs take the event's per-panel ROC jitter (the draw the resident tracker
+  gives every straw of that panel in the event) in place of the setup event's.
+
+The digital dead time is applied per event, as the tracker does: the setup digitises without it (a setup digi in the
+widened margin would otherwise block the straw's next digis for the dead time, although the event's window then drops
+it), stores each digi's dead-time clock (the later end's time before the straw time offsets), and each event keeps,
+straw by straw in time order, the in-window digis that start at least the dead time after the last kept one.
 """
 from types import SimpleNamespace
 
@@ -26,7 +48,8 @@ class ReuseCapacities(SimpleNamespace):
     batches of donor frames; frames_per_batch: donor frames per setup batch; straws: reused straws per mixed batch;
     streams: the donor streams whose frames are reused (the others are digitised per batch: a small pool drawn many
     times per pass would repeat identical digis)."""
-    def __init__(self, compute, precompute, frames_per_batch, straws, precompute_rows=None, streams=None):
+    def __init__(self, compute, precompute, frames_per_batch, straws, precompute_rows=None, streams=None, phases=1,
+                 event_jitter=False, periods=1, shifts=None):
         from .sampling import STREAMS
         streams = list(STREAMS) if streams is None else list(streams)
         if not streams or set(streams) - set(STREAMS):
@@ -37,8 +60,36 @@ class ReuseCapacities(SimpleNamespace):
             raise ValueError("tracker_reuse straws must be a positive integer")
         if precompute_rows is not None and (type(precompute_rows) is not int or precompute_rows < 1):
             raise ValueError("tracker_reuse precompute_rows must be a positive integer")
+        if type(phases) is not int or not 1 <= phases <= 64:
+            raise ValueError("tracker_reuse phases must be an integer in [1, 64]")
+        if type(periods) is not int or not 1 <= periods <= 16:
+            raise ValueError("tracker_reuse periods must be an integer in [1, 16]")
+        if shifts not in (None, "events"):
+            raise ValueError("tracker_reuse shifts must be \"events\" or absent")
+        if shifts == "events" and (phases != 1 or periods != 1):
+            raise ValueError("tracker_reuse shifts \"events\" replaces phases and periods")
+        if type(event_jitter) is not bool:
+            raise ValueError("tracker_reuse event_jitter must be true or false")
         super().__init__(compute=compute, precompute=precompute, frames_per_batch=frames_per_batch, straws=straws,
-                         precompute_rows=precompute_rows, streams=streams)
+                         precompute_rows=precompute_rows, streams=streams, phases=phases, event_jitter=event_jitter,
+                         periods=periods, shifts=shifts)
+
+    @property
+    def copies(self):
+        """Setup copies per frame on the phase grid: phases * periods (with shifts "events": the distinct event
+        shifts, known at precompute)."""
+        return self.phases * self.periods
+
+    def copy_shifts(self, c, shift, event_shifts=None):
+        """Setup time shift of each copy: the distinct event shifts (shifts "events"), else the phase grid."""
+        if self.shifts == "events":
+            if event_shifts is None or not len(event_shifts):
+                raise ValueError("tracker_reuse shifts \"events\" needs the signal events' time shifts")
+            values = np.unique(np.asarray(event_shifts, np.float64))
+            if len(values) > 64:
+                raise ValueError(f"tracker_reuse shifts \"events\": {len(values)} distinct event shifts (at most 64)")
+            return values
+        return copy_shifts(c, shift, self.phases, self.periods)
 
     def reused_pools(self):
         """Pool indices (1-4, after the signal pool 0) of the reused streams."""
@@ -54,12 +105,32 @@ def _sid(columns):
     return columns["sid"].astype(jnp.int64)
 
 
-def widened(c, margin):
-    """Conditions with the digitisation window (and so the step and crossing windows) widened by `margin` ns on each
-    side: the setup keeps the digis that a mixed event's time shift moves into the real window."""
+def without_digital_dead_time(c):
+    """Conditions with no digital dead time (the setup keeps every in-window digi; apply restores the dead time)."""
     from trkfastsim.digi.digicond import Conditions
     s = dict(c.s)
-    s["digitizationStart"] -= margin
+    s["deadTimeDigital"] = 0.0
+    return Conditions(s, c.a)
+
+
+def dead_time_clock(c, sid, tdc):
+    """A digi's dead-time clock (digi_jax `dtime`, the later end's time before the straw time offsets), from its TDCs
+    (to a fraction of the TDC LSB)."""
+    us = (((sid >> 10) * 6 + ((sid >> 7) & 7)) * 96 + (sid & 127)).astype(np.int64)
+    t = (np.asarray(tdc, np.float64) + 0.5) * float(c.TDCLSB) - float(c.electronicsTimeDelay)
+    if not c.overrideDbTimeOffsets:
+        t = t + np.asarray(c.time_offsets, np.float64)[us]
+    return t.max(1)
+
+
+def widened(c, margin):
+    """Conditions with the digitisation TDC window widened by `margin` ns on each side (and its end time): the setup
+    keeps the digis that a mixed event's time shift moves into the real window. The window start time is kept: it
+    also sets the step-time cut (start - steptimebuf) and where the threshold-crossing search starts (start -
+    flashBuffer), which the event applies at its own time; widening them would let early digis see pulses that the
+    event drops."""
+    from trkfastsim.digi.digicond import Conditions
+    s = dict(c.s)
     s["digitizationEnd"] += margin
     ticks = int(np.ceil(margin / c.TDCLSB))
     s["digitizationStartTDC"] = int(c.digitizationStartTDC) - ticks
@@ -67,20 +138,55 @@ def widened(c, margin):
     return Conditions(s, c.a)
 
 
-def precompute(c, capacities, data, length, seed, *, rows_capacity, shift=0.0, margin=0.0, log=None):
-    """Digitise every donor frame with tracker steps once, as its own event at the time shift `shift` (the mean
-    mc_pbtime of the signal events; each mixed event then moves the digis by its own mc_pbtime - shift), with the
-    digitisation window widened by `margin` ns (the real window is applied after each event's shift).
+def copy_offsets(c, phases, periods=1):
+    """Setup time offset of each copy from the mean shift: (j - N // 2) * ADCPeriod / K for j < N = K * W, in
+    [-W P/2, W P/2)."""
+    n = phases * periods
+    return float(c.ADCPeriod) * (np.arange(n) - n // 2) / phases
+
+
+def copy_shifts(c, shift, phases, periods=1):
+    """Setup time shift of each copy: the mean shift plus its offset (copy_offsets)."""
+    return float(shift) + copy_offsets(c, phases, periods)
+
+
+def jitter_table(key, batch_events):
+    """The resident tracker's unit ROC jitter draws [event, panel] for apply key `key` (as device_tracker.pack)."""
+    import jax.numpy as jnp
+    from jax import lax, random
+    from trkfastsim.digi import digi_jax as dj
+    nblocks = (batch_events + dj.JITTER_BATCH - 1) // dj.JITTER_BATCH
+    return lax.map(lambda block: dj._jitter_block(random.fold_in(random.fold_in(key, 2), block)),
+                   jnp.arange(nblocks, dtype=jnp.int64)).reshape(-1, 216)
+
+
+def _panel(sid):
+    return (sid >> 10) * 6 + ((sid >> 7) & 7)
+
+
+def precompute(c, capacities, data, length, seed, *, rows_capacity, shift=0.0, margin=0.0, log=None,
+               event_shifts=None):
+    """Digitise every donor frame with tracker steps once per copy (capacities `phases`; one by default), as its own
+    event at the time shift `shift` (the mean mc_pbtime of the signal events) plus the copy's fraction of an ADC
+    period; each mixed event then moves the digis of its copy by its own mc_pbtime less the copy's shift. The
+    digitisation window is widened by `margin` ns (plus one ADC period with several copies); the real window is
+    applied after each event's shift.
 
     data: pack_source output (host arrays; the signal pool first, then the four donor pools). Returns the reuse
-    table sorted by (frame, sid, analog time): frame (global pool index), sid, tdc [n, 2], tot [n, 2], adc [n, S],
-    pmp, t_analog [n, 2]."""
+    table sorted by (frame, copy, sid, analog time): frame (global pool index), copy, sid, tdc [n, 2], tot [n, 2],
+    adc [n, S], pmp, t_analog [n, 2], jitter (the setup event's ROC jitter of the digi's panel, ns), dtime (the
+    dead-time clock, ns), copy_shifts (each copy's setup shift). The setup applies no digital dead time.
+    event_shifts: the signal events' mc_pbtime (needed for capacities shifts "events")."""
     import time
     import jax
     from . import device_tracker
     caps = ReuseCapacities(**capacities)
-    F = caps.frames_per_batch
-    model = device_tracker.prepare(widened(c, margin) if margin else c, caps.precompute, F)
+    shifts = caps.copy_shifts(c, shift, event_shifts)
+    F, K = caps.frames_per_batch, len(shifts)
+    if caps.shifts is None and K > 1:   # an event's copy is within W P/2 of the copies' range (W P/2 of the mean)
+        margin = float(margin) + float(c.ADCPeriod) * caps.periods / 2
+    model = device_tracker.prepare(without_digital_dead_time(widened(c, margin) if margin else c), caps.precompute, F)
+    jitter_fn = jax.jit(lambda k: jitter_table(k, F))
     assets = jax.device_put(model.assets)
     fn = jax.jit(model.apply_with_usage)
     trk = data["collections"]["tracker"]
@@ -99,34 +205,45 @@ def precompute(c, capacities, data, length, seed, *, rows_capacity, shift=0.0, m
         stop = start + int(np.searchsorted(cum, budget, side="right"))
         batches.append((start, stop))
         start = stop
-    timing = {"mc_pbtime": np.full(F, float(shift)), "event_length": np.full(F, float(length) + margin), "event_mask": np.ones(F, bool)}
-    key = jax.random.PRNGKey(int(seed))
+    base = jax.random.PRNGKey(int(seed))
     parts, t0 = [], time.perf_counter()
-    for b, (lo, hi) in enumerate(batches):
-        fr = frames[lo:hi]
-        src = np.concatenate([np.arange(offsets[f], offsets[f + 1]) for f in fr])
-        ev = np.repeat(np.arange(len(fr)), nrows[lo:hi])
-        pad = budget - len(src)
-        sentinel = len(next(iter(columns.values()))) - 1
-        rows = np.r_[src, np.full(pad, sentinel)]
-        collection = {"columns": {name: values[rows] for name, values in columns.items()},
-                      "mask": np.arange(budget) < len(src), "event": np.r_[ev, np.zeros(pad, ev.dtype)]}
-        out, errors, _ = jax.device_get(fn(collection, timing, assets, jax.random.fold_in(key, b)))
-        bad = [name for name, flag in errors.items() if np.any(flag)]
-        if bad:
-            raise RuntimeError(f"donor reuse precompute batch {b}: capacity or input errors {bad}")
-        m = np.asarray(out["mask"])
-        parts.append({"frame": fr[np.asarray(out["ev"])[m]], "sid": np.asarray(out["sid"])[m],
-                      "tdc": np.asarray(out["tdc"])[m], "tot": np.asarray(out["tot"])[m],
-                      "adc": np.asarray(out["adc"])[m], "pmp": np.asarray(out["pmp"])[m],
-                      "t_analog": np.asarray(out["t_analog"])[m]})
+    for k, copy_shift in enumerate(shifts):
+        timing = {"mc_pbtime": np.full(F, copy_shift), "event_length": np.full(F, float(length) + margin),
+                  "event_mask": np.ones(F, bool)}
+        key = base if k == 0 else jax.random.fold_in(base, 1000003 + k)   # copy 0: the single-copy draws
+        for b, (lo, hi) in enumerate(batches):
+            fr = frames[lo:hi]
+            src = np.concatenate([np.arange(offsets[f], offsets[f + 1]) for f in fr])
+            ev = np.repeat(np.arange(len(fr)), nrows[lo:hi])
+            pad = budget - len(src)
+            sentinel = len(next(iter(columns.values()))) - 1
+            rows = np.r_[src, np.full(pad, sentinel)]
+            collection = {"columns": {name: values[rows] for name, values in columns.items()},
+                          "mask": np.arange(budget) < len(src), "event": np.r_[ev, np.zeros(pad, ev.dtype)]}
+            bkey = jax.random.fold_in(key, b)
+            out, errors, _ = jax.device_get(fn(collection, timing, assets, bkey))
+            bad = [name for name, flag in errors.items() if np.any(flag)]
+            if bad:
+                raise RuntimeError(f"donor reuse precompute copy {k} batch {b}: capacity or input errors {bad}")
+            m = np.asarray(out["mask"])
+            oev, osid = np.asarray(out["ev"])[m].astype(np.int64), np.asarray(out["sid"])[m].astype(np.int64)
+            parts.append({"frame": fr[oev], "copy": np.full(m.sum(), k, np.int64), "sid": osid,
+                          "tdc": np.asarray(out["tdc"])[m], "tot": np.asarray(out["tot"])[m],
+                          "adc": np.asarray(out["adc"])[m], "pmp": np.asarray(out["pmp"])[m],
+                          "t_analog": np.asarray(out["t_analog"])[m],
+                          "jitter": np.asarray(jax.device_get(jitter_fn(bkey)), np.float64)[oev, _panel(osid)]
+                          * float(c.eventWindowMarkerROCJitter),
+                          "dtime": dead_time_clock(c, osid, np.asarray(out["tdc"])[m])})
     table = {name: np.concatenate([p[name] for p in parts]) for name in parts[0]}
-    order = np.lexsort((table["t_analog"][:, 0], table["sid"], table["frame"]))
+    order = np.lexsort((table["t_analog"][:, 0], table["sid"], table["copy"], table["frame"]))
     table = {name: value[order] for name, value in table.items()}
     table["shift"] = np.float64(shift)
+    table["phases"] = np.int64(caps.phases)
+    table["periods"] = np.int64(caps.periods)
+    table["copy_shifts"] = np.asarray(shifts, np.float64)
     if log is not None:
-        log(f"donor reuse precompute: {len(frames)} frames in {len(batches)} batches, {len(order)} digis, "
-            f"{time.perf_counter() - t0:.1f} s")
+        log(f"donor reuse precompute: {len(frames)} frames x {K} copies in {len(batches) * K} batches, "
+            f"{len(order)} digis, {time.perf_counter() - t0:.1f} s")
     return table
 
 
@@ -141,12 +258,26 @@ def prepare(c, capacities, batch_events, table, starts):
     pairs = compute.capacities.pairs_per_straw
     R = caps.straws
     sentinel = np.iinfo(np.int64).max
-    key = (table["frame"].astype(np.int64) << 16) | table["sid"].astype(np.int64)
+    K = int(table.get("phases", 1))
+    copy_at = np.asarray(table.get("copy_shifts", [table.get("shift", 0.0)]), np.float64)
+    N = len(copy_at)
+    if K != caps.phases or (caps.shifts is None and N != caps.copies):
+        raise ValueError(f"reuse table has {N} copies per frame ({K} per period), the capacities ask for "
+                         f"{caps.copies} ({caps.phases})")
+    copies = table["copy"].astype(np.int64) if "copy" in table else np.zeros(len(table["sid"]), np.int64)
+    key = ((table["frame"].astype(np.int64) * N + copies) << 16) | table["sid"].astype(np.int64)
     if np.any(np.diff(key) < 0):
-        raise ValueError("reuse table must be sorted by (frame, sid)")
-    assets = {"compute": compute.assets, "table": {"key": key, **{k: v for k, v in table.items() if k in
-                                                                   ("tdc", "tot", "adc", "pmp", "t_analog")}},
+        raise ValueError("reuse table must be sorted by (frame, copy, sid)")
+    if "dtime" not in table:
+        raise ValueError("reuse table without the dead-time clock (made before the per-event dead time)")
+    names = ("tdc", "tot", "adc", "pmp", "t_analog", "dtime") + (("jitter",) if caps.event_jitter else ())
+    if caps.event_jitter and "jitter" not in table:
+        raise ValueError("tracker_reuse event_jitter needs a reuse table with the setup jitter")
+    stored = {k: table[k] for k in names}
+    stored["adc"] = np.asarray(stored["adc"]).astype(np.int16)   # 0..maxADC: exact, a quarter of the memory
+    assets = {"compute": compute.assets, "table": {"key": key, **stored},
               "all_planes": np.asarray(c.allPlanes, np.int64), "shift": np.float64(table.get("shift", 0.0)),
+              "copy_shifts": copy_at,
               "starts": np.asarray(starts, np.int64),
               "reused": np.isin(np.arange(len(starts)), caps.reused_pools())}
     start_tdc, end_tdc = int(c.digitizationStartTDC), int(c.digitizationEndTDC)
@@ -179,7 +310,17 @@ def prepare(c, capacities, batch_events, table, starts):
         rstraw, rframe = straw_s[pos], code_s[pos] - 1
         rev, rsid = rstraw // 65536, rstraw % 65536
         T = assets["table"]
-        tkey = (rframe << 16) | rsid
+        revc = jnp.clip(rev, 0, batch_events - 1)
+        if caps.shifts == "events":   # the copy at the event's own shift (the nearest one)
+            cs = assets["copy_shifts"]
+            s = timing["mc_pbtime"][revc]
+            hi_i = jnp.clip(jnp.searchsorted(cs, s), 1, max(N - 1, 1)) if N > 1 else jnp.zeros_like(revc)
+            lo_i = jnp.maximum(hi_i - 1, 0)
+            rcopy = jnp.where(jnp.abs(cs[hi_i] - s) < jnp.abs(s - cs[lo_i]), hi_i, lo_i).astype(jnp.int64)
+        else:   # the copy whose setup shift is nearest the event's, modulo the copies' periods
+            rshift = timing["mc_pbtime"][revc] - assets["shift"]
+            rcopy = jnp.mod(jnp.round(rshift * K / c.ADCPeriod).astype(jnp.int64) + N // 2, N)
+        tkey = ((rframe * N + rcopy) << 16) | rsid
         tlo = jnp.searchsorted(T["key"], tkey, side="left")
         thi = jnp.searchsorted(T["key"], tkey, side="right")
         slot = tlo[:, None] + jnp.arange(pairs)
@@ -188,15 +329,29 @@ def prepare(c, capacities, batch_events, table, starts):
         valid = valid.reshape(-1)
         rev_p, rsid_p = jnp.repeat(rev, pairs), jnp.repeat(rsid, pairs)
         evc = jnp.clip(rev_p, 0, batch_events - 1)
-        shift = timing["mc_pbtime"][evc] - assets["shift"]   # relative to the precompute's time shift
-        tdc = T["tdc"][slot] + jnp.round(shift / c.TDCLSB).astype(jnp.int64)[:, None]
+        # relative to the copy's setup shift
+        shift = timing["mc_pbtime"][evc] - assets["copy_shifts"][jnp.repeat(rcopy, pairs)]
+        moved = shift
+        if caps.event_jitter:   # the event's ROC jitter of the panel in place of the setup event's
+            jit = jitter_table(key, batch_events)[evc, _panel(rsid_p)].astype(jnp.float64) * c.eventWindowMarkerROCJitter
+            moved = shift + jit - T["jitter"][slot]
+        tdc = T["tdc"][slot] + jnp.round(moved / c.TDCLSB).astype(jnp.int64)[:, None]
         tdc = jnp.clip(tdc, 0, c.maxTDC)
         readall = ((rsid_p & 127) >= c.allStraw) & jnp.isin(rsid_p >> 10, assets["all_planes"])
         ewend = jnp.clip(jnp.floor(timing["event_length"][evc] / c.TDCLSB), 0, c.maxTDC).astype(jnp.int64)
         upper = end_tdc if c.onspill else ewend[:, None]
         ok_norm = jnp.all((tdc > start_tdc) & (tdc < upper), 1)
         ok_all = jnp.all((tdc > 0) & (tdc < ewend[:, None]), 1)
-        keep = valid & jnp.where(readall, ok_all, ok_norm) & timing["event_mask"][evc]
+        inwin = (valid & jnp.where(readall, ok_all, ok_norm) & timing["event_mask"][evc]).reshape(R, pairs)
+        # the digital dead time, straw by straw in time order (as digi_jax: only kept digis start it)
+        clock = (T["dtime"][slot] + moved).reshape(R, pairs)
+        ready = jnp.full(R, -9e9)
+        kept = []
+        for i in range(pairs):
+            k_i = inwin[:, i] & (clock[:, i] >= ready)
+            ready = jnp.where(k_i, clock[:, i] + c.deadTimeDigital, ready)
+            kept.append(k_i)
+        keep = jnp.stack(kept, 1).reshape(-1)
         reused = {"adc": T["adc"][slot].astype(out["adc"].dtype), "tdc": tdc.astype(out["tdc"].dtype),
                   "tot": T["tot"][slot].astype(out["tot"].dtype), "pmp": T["pmp"][slot].astype(out["pmp"].dtype),
                   "t_analog": (T["t_analog"][slot] + shift[:, None]).astype(out["t_analog"].dtype),

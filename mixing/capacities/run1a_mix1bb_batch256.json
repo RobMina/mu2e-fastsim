@@ -172,7 +172,9 @@
    "streams": [
     "MuStopPileup",
     "MuBeamFlash"
-   ]
+   ],
+   "event_jitter": true,
+   "shifts": "events"
   },
   "output": {
    "tracker_rows": 229376
