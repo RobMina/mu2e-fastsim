@@ -124,6 +124,18 @@ the full scans, kept as the equality reference:
 On an A100 at batch 256 the CRV stage goes 0.183 -> 0.102 s (float32) and 0.227 -> 0.133 s (float64). Full-pass
 outputs are identical to the full scans (dev and held-out, both dtypes). The Run 1A capacity files also set both.
 
+## Coincidence slot-count tiers (CPU default)
+
+`coinc_jax.find_dense(..., k_tiers=...)` runs the coincidence combination check at the smallest slot count per
+(side, layer) that holds the call's busiest (side, layer), chosen with `lax.switch` from `coinc_jax.K_TIERS`
+(4, 8, 16, 32) and the capacity `coinc_combinations`, instead of always at that capacity. The combination tensors are
+[G, 2, K, K, K(, K)] (at K = 64 and 256 events, about 1 GB each in float64) whatever the occupancy. Any slot count
+that holds every filtered hit gives the same widened distances: the further slots are empty, so their combinations
+fail and add -inf to each maximum. The device backend passes the tiers on the CPU backend (`device_crv.COINC_K_TIERS`:
+None = CPU only, () = off); a GPU keeps the single K. Clusters identical (synthetic events with and without showers,
+uniform and per-sector cuts, both dtypes); W6 outputs identical in both dtypes. One core, same node, exact capacity
+file: W6 x1.02 (float64) / x1.05 (float32), peak memory 19.0 -> 11.9 GB (float64) and 13.0 -> 11.3 GB (float32).
+
 ## Thermal noise on counters with steps (approximation, on in the default file)
 
 `"thermal_counters": "hit"` draws the SiPM thermal noise (dark counts) only on the four SiPMs of each counter that
