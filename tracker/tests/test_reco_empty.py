@@ -58,3 +58,11 @@ def test_dumper_trees_are_found_under_trkdump_or_one_module_directory(tmp_path):
     for bad in ("two.root", "none.root"):
         with pytest.raises(KeyError):
             hitreco.tree(tmp_path / bad)
+
+
+def test_tot_energy_bin_follows_the_stock_size_t_cast():
+    """Truncation toward zero, a negative quotient of -1 or below to the last bin (the size_t wrap), else clamped."""
+    from trkfastsim.reco import hitreco
+    e = np.array([-0.0061, -0.0012, -0.0005, -0.0004, 0.0, 0.0007, 0.0024, 0.01], np.float32)
+    assert hitreco.tot_energy_bin(e, 0.0005, 5).tolist() == [4, 4, 4, 0, 0, 1, 4, 4]
+

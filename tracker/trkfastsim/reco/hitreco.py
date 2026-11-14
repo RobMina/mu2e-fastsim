@@ -22,6 +22,8 @@ EBIN = 0.1                # eBinWidth (keV grid of eHalfPVScale/tdCentralRes/tdR
 SH_SETTINGS = {
     "mc":   dict(minT=0.0, maxT=100.0e3, minE=0.0, maxE=1.0, minR=300.0, maxR=800.0),
     "data": dict(minT=0.0, maxT=256000.0, minE=0.0, maxE=1.0, minR=300.0, maxR=800.0),
+    # recoMC/OnSpill.fcl (Run 1A mixed events)
+    "onspill": dict(minT=400.0, maxT=1710.0, minE=1.0e-4, maxE=5.0e-3, minR=350.0, maxR=750.0),
 }
 
 
@@ -36,6 +38,14 @@ def tree(path, name="events"):
     if len(hits) != 1:
         raise KeyError(f"{path}: no single StrawHitTableDumper {name} tree (found {hits})")
     return f[hits[0]]
+
+
+def tot_energy_bin(energy, width, nbins):
+    """StrawResponse::TOTdriftTime's energy bin min(nbins - 1, size_t(edep / width)): the cast truncates toward zero,
+    and a quotient of -1 or below (an energy below the pedestal, with pileup) wraps to a huge size_t, so it takes the
+    last bin."""
+    q = (np.asarray(energy) / width).astype(np.int64)
+    return np.where(q < 0, int(nbins) - 1, np.minimum(int(nbins) - 1, q))
 
 
 def unique_panel(sid):
@@ -159,7 +169,7 @@ def straw_hits(d, cond, settings="mc"):
     rho = np.hypot(x, y)
     ntb, wtb, neb, web = cond["tot_bins"]
     tbin = np.minimum(int(ntb) - 1, (tot_sel / wtb).astype(np.int64))
-    ebin = np.minimum(int(neb) - 1, (energy / web).astype(np.int64))
+    ebin = tot_energy_bin(energy, web, neb)
     dtime = cond["totdtime"][tbin * int(neb) + ebin]                     # probed TOTdriftTime already includes its -0.1 ns
     tres = cond["totderror"][tbin * int(neb) + ebin]
     t_early = np.where(eend == 1, t_hv, t_cal).astype(np.float64)
