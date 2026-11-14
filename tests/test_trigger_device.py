@@ -621,3 +621,17 @@ def test_offspill_panel_hits_reuse_or_recombine():
         np.testing.assert_array_equal(np.asarray(got["valid"]), v)
         for k in ref:
             np.testing.assert_array_equal(np.asarray(got[k])[v], np.asarray(ref[k])[v], err_msg=f"spill {spill} {k}")
+
+
+def test_draw_keys_ignore_paths_without_draws():
+    """The response-layer draw key of a tpr/apr path is its index among the tpr/apr paths in name order, so adding
+    paths of other families (disabled, digi, lumi, cst) leaves every draw, and so every decision, unchanged."""
+    from trigger.device import chain
+    fake = type("F", (), {})()
+    fake.plan = {"apr_TC": {"family": "apr"}, "apr_proton": {"family": "disabled"}, "cst_TimeCluster": {"family": "cst"},
+                 "lumiStream": {"family": "lumi"}, "minBias_SDCount": {"family": "digi"},
+                 "tpr_TrkDe_80m70p": {"family": "tpr"}, "apr_Hlx_30": {"family": "apr"}}
+    idx = {n: i for i, n in enumerate(sorted(n for n, p in fake.plan.items() if p["family"] in ("tpr", "apr")))}
+    assert idx == {"apr_Hlx_30": 0, "apr_TC": 1, "tpr_TrkDe_80m70p": 2}
+    src = open(chain.__file__).read()
+    assert 'if p["family"] in ("tpr", "apr")' in src and "k = self.draw_index.get(name)" in src

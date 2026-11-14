@@ -117,6 +117,10 @@ class Chain:
             self.ph_off = hits.ph_settings(ph_m)
             self.sh_off = hits.sh_settings(self.mods[ph_m["ComboHitCollection"].split(":")[0]])
         self.lumi = any(p["family"] == "lumi" for p in self.plan.values())
+        # response-layer draw keys: a path's index among the tpr/apr paths in name order (the keys before the other
+        # families joined the plan, so their draws are unchanged); a family added later that draws takes its own range
+        self.draw_index = {n: i for i, n in enumerate(sorted(n for n, p in self.plan.items()
+                                                              if p["family"] in ("tpr", "apr")))}
         # compact (opt-in, for CPUs): time-cluster refinement and helix fits run only on the (event, cluster) pairs
         # that have a candidate / a valid cluster, in three device calls with one host read of the counts between
         # them; the same computation per cluster as the one-call path, and the same decisions
@@ -294,7 +298,8 @@ class Chain:
         tc_nsh = {lbl: jnp.max(jnp.where(tc["valid"], tc["nsh"], 0), axis=1) for lbl, tc in tcs.items()}
         if self.lumi:                            # the LumiStreamFilter counter runs on the host, per subrun
             aux["run"], aux["subrun"] = batch["run"], batch["subrun"]
-        for k, (name, p) in enumerate(sorted(self.plan.items())):
+        for name, p in sorted(self.plan.items()):
+            k = self.draw_index.get(name)              # None for the families without draws
             ok = batch["valid_event"] & paths.prescale_pass(ev, batch["spill"], p["ps"])
             if p["family"] in ("disabled", "digi", "lumi"):
                 for role, lbl, fc in p["filters"]:
