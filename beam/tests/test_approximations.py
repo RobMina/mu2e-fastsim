@@ -231,7 +231,7 @@ def test_records_are_json_and_list_the_fixed_approximations():
             r = w.select(preset).record()
             json.dumps(r)
             assert r["fixed"] == sorted(w.fixed)
-    assert BA.W2.select("fidelity").record()["no_stock_path"] == ["calo_albedo", "straw_wall", "tracker_rows"]
+    assert BA.W2.select("fidelity").record()["no_stock_path"] == ["calo_albedo", "rpc_legs", "straw_wall", "tracker_rows"]
 
 
 def test_fidelity_preset_without_a_response_sets_only_the_wall():
