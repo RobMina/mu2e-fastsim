@@ -232,16 +232,22 @@ class DeviceResponse:
     noise_size: int
     n_crystals: int
     dtype: str = "float64"
+    fit_hessian: str | None = None   # template fit Newton step: None = autodiff, "analytic" = closed form
 
 
 def pack_response(sim, pulse: PulseCache, noise_wf, table: PropagationTable, geom: Geometry, *, adc2mev=None,
                   ro_cfg=ReadoutConfig(), digi_cfg=DigiConfig(), fit_cfg=FitConfig(), cluster_cfg=ClusterConfig(),
-                  add_noise=True, max_chi2=2.0, time4merge=6.0, pbt_reco_sigma=0.5, dtype=np.float64):
+                  add_noise=True, max_chi2=2.0, time4merge=6.0, pbt_reco_sigma=0.5, dtype=np.float64,
+                  fit_hessian=None):
     """Calorimeter conditions as device arrays (``sim`` from :func:`calofastsim.stockio.load_sim_crystal`).
 
     ``dtype`` is the precision of the waveform, noise, template fit and cluster sums (the source uses double).
-    Time folding, photoelectron times, keys and reco digi weighting keep the source types."""
+    Time folding, photoelectron times, keys and reco digi weighting keep the source types. ``fit_hessian`` picks the
+    template fit's Newton gradient and Hessian (:func:`calofastsim.templatefit._compiled`): None (autodiff) or
+    "analytic" (closed form; the same quantities up to roundoff)."""
     import jax.numpy as jnp
+    if fit_hessian not in (None, "analytic"):
+        raise ValueError("fit_hessian must be None or 'analytic'")
     n = geom.disk.size
     sipm = np.arange(2 * n)
     c, i = sipm // 2, sipm % 2
@@ -258,7 +264,8 @@ def pack_response(sim, pulse: PulseCache, noise_wf, table: PropagationTable, geo
     out = {k: jnp.asarray(v) for k, v in a.items()}
     out["dz"] = float(table.dz)
     return DeviceResponse(out, pulse, ro_cfg, digi_cfg, fit_cfg, cluster_cfg, float(max_chi2), float(time4merge),
-                          float(pbt_reco_sigma), bool(add_noise), int(noise.size), int(n), np.dtype(dtype).name)
+                          float(pbt_reco_sigma), bool(add_noise), int(noise.size), int(n), np.dtype(dtype).name,
+                          fit_hessian)
 
 
 def entries_batch(entries, timing, event_row, n_events):
@@ -664,7 +671,7 @@ def fit_and_hits(resp: DeviceResponse, t, dg, pbt_reco, caps: Caps):
     x = dg["t0"].astype(fdt)[:, None] + (idx + 0.5) * cfg.digi_sampling
     mask = idx[None, :] < dg["length"][:, None]
     with jax.ensure_compile_time_eval():   # the cached fit must not close over this trace
-        fitter = _compiled(resp.pulse, cfg, L, None if fdt == jnp.float64 else fdt)
+        fitter = _compiled(resp.pulse, cfg, L, None if fdt == jnp.float64 else fdt, resp.fit_hessian)
     fit = fitter(x, dg["samples"].astype(fdt), mask, dg["length"])
     ftime = fit["peak_time"] - resp.pulse.delta_t - 0.5 * resp.pulse.digi_step * N_STEPS
     chi_ok = (fit["chi2"] / jnp.maximum(fit["ndf"], 1).astype(jnp.float32)) <= resp.max_chi2
