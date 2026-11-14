@@ -56,6 +56,54 @@ def helix_pass(h, cfg):
     return jnp.where(h["helicity"] > 0, pos, jnp.where(h["helicity"] < 0, neg, False))
 
 
+SPILL = {"OffSpill": 0, "OnSpill": 1}           # EventWindowMarker::SpillType
+
+
+def prescale_pass(events, spill, factors):
+    """PrescaleEvent: in the event's mode (the EventWindowMarker spill type), pass when the event number is a multiple
+    of the mode's factor; a factor <= 0, or a mode the module does not configure, rejects (stateless in stock)."""
+    ok = jnp.zeros(events.shape, bool)
+    for mode, f in factors.items():
+        if f > 0:
+            ok = ok | ((spill == SPILL[mode]) & (events % f == 0))
+    return ok
+
+
+def digi_pass(nsd, cfg):
+    """DigiFilter on the straw digi count (useStrawDigi only; useCaloDigi is not on the device)."""
+    if cfg.get("useCaloDigi", False) or not cfg.get("useStrawDigi", False):
+        raise ValueError("device DigiFilter supports useStrawDigi true, useCaloDigi false")
+    return (nsd >= int(cfg["minNStrawDigi"])) & (nsd <= int(cfg["maxNStrawDigi"]))
+
+
+def lumi_stream(reached, run, subrun, cfg):
+    """Host: LumiStreamFilter over the events of one job in processing order. It counts the events that reach it,
+    passes when the count reaches a multiple of eventFreq (then restarts the count) and, with passFirst, the first
+    event of every subrun; the count and the first-event flag restart at each subrun's end. Data are not read."""
+    reached = np.asarray(reached, bool)
+    n = reached.size
+    out = np.zeros(n, bool)
+    if n == 0:
+        return out
+    freq, first = int(cfg.get("eventFreq", 0)), bool(cfg.get("passFirst", False))
+    if int(cfg.get("duplications", 0)) != 0:
+        raise ValueError("device LumiStreamFilter supports duplications 0")
+    run, subrun = np.asarray(run), np.asarray(subrun)
+    newsub = np.ones(n, bool)
+    newsub[1:] = (run[1:] != run[:-1]) | (subrun[1:] != subrun[:-1])
+    seg = np.cumsum(newsub) - 1
+    count = np.zeros(n, np.int64)                  # events that reached the filter in the subrun, up to this one
+    for s in np.unique(seg):                       # a few subruns per job
+        m = seg == s
+        count[m] = np.cumsum(reached[m])
+    if freq > 0:                                   # the count restarts at every pass: a pass at each multiple
+        out |= reached & (count % freq == 0)
+    if first:
+        firsts = reached & (count == 1)
+        out |= firsts
+    return out
+
+
 def draw(events, salt):
     """Reproducible uniform draw per event number."""
     key = jax.random.PRNGKey(salt)

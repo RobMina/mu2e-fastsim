@@ -125,21 +125,72 @@ def straw_hits(p, c, s, tot_bins):
     tres = c["totderror"][tbin * int(neb) + ebin]
     t_early = jnp.where(eend == 1, t_hv, t_cal).astype(F64)
     time = (t_early - ptime - dtime).astype(F32)
-    off = (p["spill"] == SPILL_OFF)[:, None]
-    minT, maxT = jnp.where(off, s["minTOff"], s["minT"]), jnp.where(off, s["maxTOff"], s["maxT"])
-    flag = jnp.zeros(sid.shape, jnp.uint32)
-    for bit, ok in ((FLAG["dead"], c["dead"][us] > 0), (FLAG["noisy"], c["noisy"][us] > 0),
-                    (FLAG["energysel"], (energy <= s["maxE"]) & (energy >= s["minE"])),
-                    (FLAG["radsel"], (rho >= s["minR"]) & (rho <= s["maxR"])),
-                    (FLAG["timesel"], (time >= minT) & (time <= maxT)), (FLAG["tdiv"], ~trunc)):
-        flag = flag | jnp.where(ok, jnp.uint32(1 << bit), jnp.uint32(0))
-    flag = jnp.where(valid, flag, jnp.uint32(0))
+    flag = _sh_flag(valid, p["spill"], c["dead"][us] > 0, c["noisy"][us] > 0, energy, rho, time, ~trunc, s)
     rout = c["strawOuterRadius"]
     return {"valid": valid, "spill": p["spill"], "sid": sid, "upanel": (sid >> 10) * 6 + ((sid & 0x380) >> 7), "straw": sid & 0x7F,
             "time": time, "et0": t_cal, "et1": t_hv, "edep": energy, "wdist": wdist.astype(F32),
             "uvar": (wres * wres).astype(F32), "vvar": jnp.full(sid.shape, rout * rout / 3.0).astype(F32),
             "timevar": (tres * tres).astype(F32), "x": x, "y": y, "z": z, "udx": c["dirx"][us].astype(F32),
             "udy": c["diry"][us].astype(F32), "flag": flag}
+
+
+def _sh_flag(valid, spill, dead, noisy, energy, rho, time, tdiv, s):
+    """StrawHitReco's flag bits of a hit under settings s (the selections are flags only: FilterHits false)."""
+    off = (spill == SPILL_OFF)[:, None]
+    minT, maxT = jnp.where(off, s["minTOff"], s["minT"]), jnp.where(off, s["maxTOff"], s["maxT"])
+    flag = jnp.zeros(valid.shape, jnp.uint32)
+    for bit, ok in ((FLAG["dead"], dead), (FLAG["noisy"], noisy),
+                    (FLAG["energysel"], (energy <= s["maxE"]) & (energy >= s["minE"])),
+                    (FLAG["radsel"], (rho >= s["minR"]) & (rho <= s["maxR"])),
+                    (FLAG["timesel"], (time >= minT) & (time <= maxT)), (FLAG["tdiv"], tdiv)):
+        flag = flag | jnp.where(ok, jnp.uint32(1 << bit), jnp.uint32(0))
+    return jnp.where(valid, flag, jnp.uint32(0))
+
+
+def reflag_straw_hits(h, s):
+    """The straw hits of `straw_hits` under other StrawHitReco settings s: the same hits and columns (one hit per digi),
+    new selection flags (dead, noisy and time-division bits carried over)."""
+    bit = lambda b: ((h["flag"] >> FLAG[b]) & 1) == 1
+    rho = jnp.hypot(h["x"], h["y"])
+    return {**h, "flag": _sh_flag(h["valid"], h["spill"], bit("dead"), bit("noisy"), h["edep"], rho, h["time"],
+                                  bit("tdiv"), s)}
+
+
+def _good(h, s):
+    """Hits CombineStrawHits combines and writes (TestFlag on): every selection bit, no mask bit, not dead."""
+    return h["valid"] & ((h["flag"] & s["sel"]) == s["sel"]) & ((h["flag"] & s["mask"]) == 0) & \
+        ((h["flag"] & (1 << FLAG["dead"])) == 0)
+
+
+def _ph_flag(ncombo, time, edep, x, y, tdiv, spill, s):
+    off = (spill == SPILL_OFF)[:, None]
+    minT, maxT = jnp.where(off, s["minTOff"], s["minT"]), jnp.where(off, s["maxTOff"], s["maxT"])
+    r2 = x.astype(F64) ** 2 + y.astype(F64) ** 2
+    flag = jnp.uint32(1 << FLAG["panelcombo"]) | jnp.where(tdiv, jnp.uint32(1 << FLAG["tdiv"]), jnp.uint32(0))
+    for bit, ok in ((FLAG["nhitsel"], (ncombo >= s["minN"]) & (ncombo <= s["maxN"])),
+                    (FLAG["timesel"], (time >= minT) & (time <= maxT)),
+                    (FLAG["energysel"], (edep >= s["minE"]) & (edep <= s["maxE"])),
+                    (FLAG["radsel"], (r2 >= s["minR"] ** 2) & (r2 <= s["maxR"] ** 2))):
+        flag = flag | jnp.where(ok, jnp.uint32(1 << bit), jnp.uint32(0))
+    return flag
+
+
+COMBINE_CUTS = ("maxdt", "maxds", "maxwdchi", "uerr", "checkWres")   # what forms and fits a combo besides `good`
+
+
+def panel_hits_other(sh, ph, s, sh2, s2):
+    """CombineStrawHits under other settings s2 on the re-flagged straw hits sh2 (`reflag_straw_hits`), given the
+    combos ph = panel_hits(sh, s). When the combine cuts are the same and no hit of the batch changes whether it is
+    combined (`_good`), the combos are those of ph and only their flags change; otherwise the full combine runs on
+    sh2. lax.cond picks per batch, so the result is the stock one either way."""
+    if any(s[k] != s2[k] for k in COMBINE_CUTS):
+        return panel_hits(sh2, s2)
+
+    def reuse():
+        tdiv = ((ph["flag"] >> FLAG["tdiv"]) & 1) == 1
+        return {**ph, "flag": _ph_flag(ph["ncombo"], ph["time"], ph["edep"], ph["x"], ph["y"], tdiv, sh["spill"], s2)}
+
+    return jax.lax.cond(jnp.all(_good(sh, s) == _good(sh2, s2)), reuse, lambda: panel_hits(sh2, s2))
 
 
 def _group(h, s):
@@ -152,8 +203,7 @@ def _group(h, s):
     iterations as the longest run of the batch instead of the hit-axis width."""
     E, H = h["valid"].shape
     valid = h["valid"]
-    good = valid & ((h["flag"] & s["sel"]) == s["sel"]) & ((h["flag"] & s["mask"]) == 0) & \
-        ((h["flag"] & (1 << FLAG["dead"])) == 0)
+    good = _good(h, s)
     jpos = jnp.broadcast_to(jnp.arange(H)[None, :], (E, H))
     up = h["upanel"]
     cont = jnp.concatenate([jnp.zeros((E, 1), bool), (up[:, 1:] == up[:, :-1]) & valid[:, 1:] & valid[:, :-1]], axis=1)
@@ -225,16 +275,7 @@ def panel_hits(h, s):
            "vvar": pick("vvar", acc(f64("vvar")) / nsh).astype(F32),
            "udx": h["udx"], "udy": h["udy"], "sid": h["sid"]}
     tdiv = jnp.sum(jnp.where(mem, ((h["flag"] >> FLAG["tdiv"]) & 1)[:, None, :], 0), axis=2) == ncombo
-    off = (h["spill"] == SPILL_OFF)[:, None]
-    minT, maxT = jnp.where(off, s["minTOff"], s["minT"]), jnp.where(off, s["maxTOff"], s["maxT"])
-    r2 = out["x"].astype(F64) ** 2 + out["y"].astype(F64) ** 2
-    flag = jnp.uint32(1 << FLAG["panelcombo"]) | jnp.where(tdiv, jnp.uint32(1 << FLAG["tdiv"]), jnp.uint32(0))
-    for bit, ok in ((FLAG["nhitsel"], (ncombo >= s["minN"]) & (ncombo <= s["maxN"])),
-                    (FLAG["timesel"], (out["time"] >= minT) & (out["time"] <= maxT)),
-                    (FLAG["energysel"], (out["edep"] >= s["minE"]) & (out["edep"] <= s["maxE"])),
-                    (FLAG["radsel"], (r2 >= s["minR"] ** 2) & (r2 <= s["maxR"] ** 2))):
-        flag = flag | jnp.where(ok, jnp.uint32(1 << bit), jnp.uint32(0))
-    out["flag"] = flag
+    out["flag"] = _ph_flag(ncombo, out["time"], out["edep"], out["x"], out["y"], tdiv, h["spill"], s)
     # compact seeds to the front, keeping seed order (= stock output order)
     order = jnp.argsort(jnp.where(is_seed, jpos, H + jpos), axis=1)
     out = {k: jnp.take_along_axis(v, order, axis=1) for k, v in out.items()}

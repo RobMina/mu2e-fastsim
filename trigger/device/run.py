@@ -90,6 +90,8 @@ def batches(keys, ev, size, hmin=64):
                 b[k] = np.concatenate([v, pad])
         b["valid_event"] = np.arange(E) < n
         b["event"] = np.array([k[2] for k in keys[sl]] + [0] * (E - n), np.int64)
+        b["run"] = np.array([k[0] for k in keys[sl]] + [0] * (E - n), np.int64)
+        b["subrun"] = np.array([k[1] for k in keys[sl]] + [0] * (E - n), np.int64)
         yield lo, n, b
 
 
@@ -134,11 +136,12 @@ def on_cpu():
     return jax.default_backend() == "cpu"
 
 
-def check_hits(diag, stock, rows, report):
+def check_hits(diag, stock, rows, report, keys=("sh", "ph"), tags=("straw", "panel")):
     """Device straw/panel hits vs the stock TrigMakeSH/TrigMakePH of the same events (rows: each block event's input
-    index)."""
+    index); keys/tags pick another pair of device hit sets (the off-spill sh_offsp/ph_offsp against the
+    TrigOffSpMakeSH/PH dumper tree)."""
     n = len(rows)
-    for tag, d, pre in (("straw", diag["sh"], "s_"), ("panel", diag["ph"], "p_")):
+    for tag, d, pre in ((tags[0], diag[keys[0]], "s_"), (tags[1], diag[keys[1]], "p_")):
         r = report.setdefault(tag, {"events": 0, "events_same_count": 0, "hits": 0, "exact": {}, "max_abs": {}})
         valid = np.asarray(d["valid"])[:n]
         for i in range(n):
@@ -149,7 +152,7 @@ def check_hits(diag, stock, rows, report):
                 continue
             r["events_same_count"] += 1
             r["hits"] += ns
-            for k in ("sid", "flag", "time", "edep", "x", "y", "z", "wdist", "uvar") + (("ncombo", "vvar") if tag == "panel" else ()):
+            for k in ("sid", "flag", "time", "edep", "x", "y", "z", "wdist", "uvar") + (("ncombo", "vvar") if tag.startswith("panel") else ()):
                 dv = np.asarray(d[k])[i][m]
                 sv = np.asarray(stock[pre + k][rows[i]])
                 if k == "flag":
@@ -253,6 +256,11 @@ def cmd_decide(args):
     t_dev = 0.0
     for dump in args.dump:
         keys, ev, stock = load_dump(dump, args.tree)
+        stock_off = None
+        if args.check_hits and args.offspill_tree:
+            keys_off, _, stock_off = load_dump(dump, args.offspill_tree)
+            if keys_off != keys:
+                raise ValueError(f"{dump}: the {args.offspill_tree} tree has other events than {args.tree}")
         outs, auxs, rows_all = [], [], []
         blocks = (sorted_batches(keys, ev, batch, hmin=hmin) if args.order == "hits" else
                   ((np.arange(lo, lo + n), n, b) for lo, n, b in batches(keys, ev, batch, hmin)))
@@ -271,6 +279,8 @@ def cmd_decide(args):
             rows_all.append(rows)
             if args.check_hits:
                 check_hits(diag, stock, rows, report)
+                if stock_off is not None and "sh_offsp" in diag:
+                    check_hits(diag, stock_off, rows, report, ("sh_offsp", "ph_offsp"), ("straw_offspill", "panel_offspill"))
         dec, aux = unsort(rows_all, outs), unsort(rows_all, auxs)   # event order (prescale counter)
         dec = ch.finish(dec, aux, len(keys))
         for i, key in enumerate(keys):            # time-cluster straw hits per path (binned response variable)
@@ -366,6 +376,8 @@ def main(argv=None):
                    help="one-call path: cluster refinement and helix fits on the gathered candidate pairs (default; "
                         "--no-pairs: the full batched path; the same decisions)")
     d.add_argument("--check-hits", action="store_true")
+    d.add_argument("--offspill-tree", help="with --check-hits: dumper tree of TrigOffSpMakeSH/PH (e.g. w8offsp) to check "
+                                            "the cst paths' off-spill hits against")
     d.add_argument("--output", required=True)
     from mu2efastsim import approximations
     from ..approximations import WORKFLOW

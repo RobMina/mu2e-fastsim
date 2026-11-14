@@ -468,3 +468,157 @@ def test_packed_results_unpack_to_the_same_arrays():
             np.testing.assert_array_equal(got[k], np.asarray(v))
     ev = jnp.arange(200_000)
     assert float(jnp.max(paths.draw(ev, 7))) < 1.0
+
+
+def _stc_reference(times, nsh, tstep, twin, minnsh):
+    """The stock SimpleTimeCluster::findClusters walk at the trigger settings (useTimeStep, no time window in the
+    walk, TestFlag false, no non-noise bits), one event: the nStrawHits of every cluster it writes."""
+    order = sorted(range(len(times)), key=lambda i: (times[i], i))
+    t = [float(times[i]) for i in order]
+    n = [int(nsh[i]) for i in order]
+    out, end = [], 0
+    for start in range(len(t)):
+        count = n[start]
+        if end >= len(t):
+            break
+        if start < end:
+            continue
+        if start > end:
+            end = start
+        st = t[start]
+        while True:
+            end += 1
+            if end >= len(t):
+                break
+            et = t[end]
+            count += n[end]
+            if et - t[end - 1] > tstep:
+                break
+        if end < len(t):
+            count -= n[end]
+        end -= 1
+        if t[end] - st > twin:
+            continue
+        if count >= minnsh:
+            out.append(count)
+    return sorted(out)
+
+
+def test_simple_time_clusters_match_the_stock_walk():
+    """simpletc.clusters: the same clusters (by straw-hit count) as the stock walk, including the second cluster at
+    the last hit of a run and the runs dropped for their time span."""
+    pytest.importorskip("jax")
+    import jax.numpy as jnp
+    from trigger.device import simpletc
+    rng = np.random.default_rng(11)
+    E, H = 40, 48
+    nv = rng.integers(0, H + 1, E)
+    valid = np.arange(H)[None, :] < nv[:, None]
+    # clumps of hits 0-15 ns apart, clumps 0-60 ns apart: runs of many sizes and spans around the 100 ns window
+    t = np.cumsum(np.where(rng.random((E, H)) < 0.25, rng.uniform(15, 60, (E, H)), rng.uniform(0, 15, (E, H))), axis=1)
+    perm = np.argsort(rng.random((E, H)), axis=1)                  # hits in arbitrary (not time) order
+    t = np.take_along_axis(np.where(valid, t + 500, 0.0), perm, axis=1).astype(np.float32)
+    valid = np.take_along_axis(valid, perm, axis=1)
+    ncombo = rng.integers(1, 9, (E, H))
+    s = simpletc.settings({"TestFlag": False, "useTimeStep": True, "useTimeWindow": False, "TimeStep": 20,
+                           "TimeWindow": 100, "minNStrawHits": 2, "minNPanels": 1})
+    got = simpletc.clusters({"valid": jnp.asarray(valid), "time": jnp.asarray(t), "ncombo": jnp.asarray(ncombo)}, s)
+    gv, gn = np.asarray(got["valid"]), np.asarray(got["nsh"])
+    tested = 0
+    for e in range(E):
+        m = valid[e]
+        ref = _stc_reference(t[e][m], ncombo[e][m], 20.0, 100.0, 2)
+        assert sorted(gn[e][gv[e]].tolist()) == ref, e
+        tested += len(ref)
+    assert tested > 100
+    with pytest.raises(ValueError):
+        simpletc.settings({"TestFlag": True, "useTimeStep": True, "TimeStep": 20, "TimeWindow": 100, "minNStrawHits": 2})
+
+
+def _lumi_reference(reached, run, subrun, freq, first):
+    out, count, first_flag, prev = [], 0, True, None
+    for r, ru, su in zip(reached, run, subrun):
+        if prev is not None and (ru, su) != prev:      # endSubRun: the counter and the first-event flag restart
+            count, first_flag = 0, True
+        prev = (ru, su)
+        if not r:
+            out.append(False)
+            continue
+        count += 1
+        ret = freq > 0 and count % freq == 0
+        if ret:
+            count = 0
+        ret = ret or (first and first_flag)
+        first_flag = False
+        out.append(ret)
+    return out
+
+
+def test_prescale_digi_and_lumi_filters():
+    """PrescaleEvent (event number modulo the factor of the event's mode), DigiFilter on the straw digi count, and the
+    host LumiStreamFilter counter against a per-event reference of the stock filter."""
+    pytest.importorskip("jax")
+    import jax.numpy as jnp
+    from trigger.device import paths
+    ev = np.arange(1, 4001)
+    spill = np.where(ev % 7 == 0, 1, 0)
+    got = np.asarray(paths.prescale_pass(jnp.asarray(ev), jnp.asarray(spill), {"OffSpill": 10, "OnSpill": -1}))
+    np.testing.assert_array_equal(got, (spill == 0) & (ev % 10 == 0))
+    assert not np.asarray(paths.prescale_pass(jnp.asarray(ev), jnp.asarray(spill), {"OnSpill": 1}))[spill == 0].any()
+    nsd = np.arange(0, 30)
+    cfg = {"useStrawDigi": True, "useCaloDigi": False, "minNStrawDigi": 8, "maxNStrawDigi": 20}
+    np.testing.assert_array_equal(np.asarray(paths.digi_pass(jnp.asarray(nsd), cfg)), (nsd >= 8) & (nsd <= 20))
+    rng = np.random.default_rng(5)
+    reached = rng.random(3000) < 0.8
+    subrun = np.repeat([3, 4, 9, 4], [700, 1300, 2, 998])
+    run = np.full(3000, 1430)
+    for freq, first in ((7, True), (10000, True), (5, False), (0, True)):
+        np.testing.assert_array_equal(paths.lumi_stream(reached, run, subrun, {"eventFreq": freq, "passFirst": first}),
+                                      _lumi_reference(reached, run, subrun, freq, first))
+
+
+def test_offspill_panel_hits_reuse_or_recombine():
+    """hits.panel_hits_other: the CombineStrawHits result under other settings, whether the combos are reused (no hit
+    changes whether it is combined) or recombined (the on-spill time window differs), bit for bit against a full
+    combine of the re-flagged straw hits."""
+    pytest.importorskip("jax")
+    pytest.importorskip("trkfastsim")
+    import jax
+    import jax.numpy as jnp
+    from trigger.device import hits
+    rng = np.random.default_rng(13)
+    E, H = 16, 32
+    n = rng.integers(0, H + 1, E)
+    valid = np.arange(H)[None, :] < n[:, None]
+    panel = np.sort(rng.integers(0, 4, (E, H)), axis=1)
+    sid = np.where(valid, (panel << 7) | rng.integers(0, 12, (E, H)), 0)
+    sid = np.take_along_axis(sid, np.argsort(np.where(valid, sid, 1 << 20), axis=1, kind="stable"), axis=1)
+    f32 = lambda a: np.asarray(a, np.float32)
+    tdiv = np.where(rng.random((E, H)) < 0.8, 1 << hits.FLAG["tdiv"], 0)
+    base = {"valid": valid, "spill": np.zeros(E, np.int64), "sid": sid, "upanel": (sid >> 10) * 6 + ((sid & 0x380) >> 7),
+            "straw": sid & 0x7F, "time": f32(rng.uniform(0, 2000, (E, H))), "edep": f32(rng.uniform(0, 0.008, (E, H))),
+            "wdist": f32(rng.normal(0, 80, (E, H))), "uvar": f32(np.full((E, H), 900.0)), "vvar": f32(np.full((E, H), 2.0)),
+            "timevar": f32(rng.uniform(4, 30, (E, H))), "x": f32(rng.uniform(-800, 800, (E, H))),
+            "y": f32(rng.uniform(-800, 800, (E, H))), "z": f32(rng.uniform(-1500, 1500, (E, H))),
+            "udx": f32(np.full((E, H), 0.6)), "udy": f32(np.full((E, H), 0.8)), "flag": np.where(valid, tdiv, 0).astype(np.uint32)}
+    win = {"minTOff": 0.0, "maxTOff": 100000.0, "fittype": 5}
+    s_sh = {"minT": 400.0, "maxT": 1710.0, "minE": 0.0001, "maxE": 0.005, "minR": 350.0, "maxR": 750.0, **win}
+    s_sh2 = {"minT": 0.0, "maxT": 100000.0, "minE": 0.0, "maxE": 1.0, "minR": 0.0, "maxR": 800.0, **win}
+    cuts = {"maxdt": 45.0, "maxds": 3, "maxwdchi": 5.0, "uerr": 10.0, "checkWres": True, "minN": 1, "maxN": 8,
+            "sel": 1 << hits.FLAG["timesel"], "mask": 1 << hits.FLAG["dead"], "minTOff": 0.0, "maxTOff": 100000.0}
+    s_ph = {**cuts, "minT": 410.0, "maxT": 1700.0, "minE": 0.0001, "maxE": 0.005, "minR": 380.0, "maxR": 700.0}
+    s_ph2 = {**cuts, "minT": 0.0, "maxT": 100000.0, "minE": 0.0, "maxE": 1.0, "minR": 0.0, "maxR": 800.0}
+    for spill in (0, 1):                         # off-spill: the combos are reused; on-spill: recombined
+        b = {k: jnp.asarray(v) for k, v in {**base, "spill": np.full(E, spill, np.int64)}.items()}
+        sh = hits.reflag_straw_hits(b, s_sh)
+        sh2 = hits.reflag_straw_hits(b, s_sh2)
+        ph = hits.panel_hits(sh, s_ph)
+        got = jax.jit(lambda a, p, c: hits.panel_hits_other(a, p, s_ph, c, s_ph2))(sh, ph, sh2)
+        ref = hits.panel_hits(sh2, s_ph2)
+        same = bool(jnp.all(hits._good(sh, s_ph) == hits._good(sh2, s_ph2)))
+        assert same == (spill == 0)
+        v = np.asarray(ref["valid"])
+        np.testing.assert_array_equal(np.asarray(got["valid"]), v)
+        for k in ref:
+            np.testing.assert_array_equal(np.asarray(got[k])[v], np.asarray(ref[k])[v], err_msg=f"spill {spill} {k}")
+
