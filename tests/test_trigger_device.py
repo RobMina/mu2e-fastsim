@@ -337,3 +337,107 @@ def test_compact_clusters_and_helices_match_the_one_call_path():
     for key in hf:
         np.testing.assert_array_equal(np.asarray(hc[key])[ok], np.asarray(hf[key])[ok])
     assert [chain.pair_bucket(n, 64) for n in (0, 16, 17, 32, 33, 64)] == [16, 16, 32, 32, 64, 64]
+
+
+def test_pair_paths_match_the_batched_multi_path():
+    """chain pairs path (the default): cluster refinement and helix fits on the gathered (producer, event, slot) pairs
+    give the same clusters as the batched multi path and the same helices as the per-set fit, bit for bit where a
+    consumer reads them, both when the pairs fit in K and when they do not (then the full batched path runs in the
+    same call). The batched helices_multi (pairs off) fuses differently: its helix quantities agree with the per-set
+    fit to rounding (float64: 1 ulp in the momentum)."""
+    pytest.importorskip("jax")
+    import jax
+    import jax.numpy as jnp
+    from trigger.device import helix, timecluster
+    rng = np.random.default_rng(3)
+    net = {"act": "sigmoid", "norm": False, "offset": np.zeros(7, np.float32), "scale": np.ones(7, np.float32),
+           "layers": [rng.normal(0, 0.3, (8, 4)).astype(np.float32), rng.normal(0, 0.3, (5, 1)).astype(np.float32)]}
+    s = {"tmin": 400.0, "tmax": 1800.0, "tbin": 10.0, "ymin": 3.0, "npeak": 1, "maxdt": 30.0, "minnhits": 5,
+         "maxdphi": 2.0, "minkeep": 0.1, "minadd": 0.9, "pitch": 0.6, "prefilter": True, "refine": True,
+         "recover": True}
+    ss = [s, {**s, "pitch": -0.63}]
+    hs = {"maxrpull": 5.0, "maxdr": 100.0, "maxchisq": 25.0, "cradres": 20.0, "cperpres": 12.0, "minnsh": 5,
+          "lmin": 30.0, "lmax": 1000.0, "lstep": 10.0, "minR": 100.0, "maxR": 600.0, "minCR": 0.0, "maxCR": 700.0,
+          "minabsl": 10.0, "maxabsl": 700.0, "helicities": (-1, 1)}
+    fz = np.linspace(-1500, 1500, 72)
+    ph = {k: jnp.asarray(v) for k, v in _synthetic_panel_hits().items()}
+    ref = jax.jit(lambda p: timecluster.time_clusters_multi(p, ss, net))(ph)
+    E, C = ref[0]["valid"].shape
+    assert sum(int(np.asarray(r["valid"]).sum()) for r in ref) > 1
+    href = [jax.jit(lambda p, t: helix.helices(p, t, hs, fz))(ph, r) for r in ref]      # per-set fit
+    hmulti = jax.jit(lambda p, t: helix.helices_multi(p, t, hs, fz))(ph, ref)
+    for r, m in zip(href, hmulti):
+        ok = np.asarray(r["ok"])
+        np.testing.assert_array_equal(np.asarray(m["ok"]), ok)
+        for key in r:
+            np.testing.assert_allclose(np.asarray(m[key])[ok], np.asarray(r[key])[ok], rtol=1e-12, atol=0)
+    for K in (len(ss) * E * C, 1):               # pairs branch; more candidates than K: the full branch
+        got = jax.jit(lambda p: timecluster.time_clusters_multi_pairs(p, ss, net, K))(ph)
+        for r, g in zip(ref, got):
+            v = np.asarray(r["valid"])
+            assert v.any()
+            np.testing.assert_array_equal(np.asarray(g["valid"]), v)
+            for key in ("nsh", "t0", "t0err", "members"):
+                np.testing.assert_array_equal(np.asarray(g[key])[v], np.asarray(r[key])[v])
+        hgot = jax.jit(lambda p, t: helix.helices_multi_pairs(p, t, hs, fz, K))(ph, got)
+        for r, g in zip(href, hgot):
+            ok = np.asarray(r["ok"])
+            np.testing.assert_array_equal(np.asarray(g["ok"]), ok)
+            for key in r:
+                np.testing.assert_array_equal(np.asarray(g[key])[ok], np.asarray(r[key])[ok])
+
+
+def _group_reference(h, s, maxn=8):
+    """The stock CombineStrawHits loop (TestFlag on), one event at a time, hit by hit: owner seed per hit."""
+    E, H = h["valid"].shape
+    owner = np.full((E, H), -1)
+    dead = 1 << 23
+    for e in range(E):
+        n = int(h["valid"][e].sum())
+        good = [((h["flag"][e, i] & s["sel"]) == s["sel"]) and not (h["flag"][e, i] & (s["mask"] | dead)) for i in range(n)]
+        used = [False] * n
+        for i in range(n):
+            if used[i]:
+                continue
+            used[i] = True
+            if not good[i]:
+                continue
+            owner[e, i], k = i, 1
+            for j in range(i + 1, n):
+                if used[j]:
+                    continue
+                if h["upanel"][e, j] != h["upanel"][e, i]:
+                    break
+                if abs(int(h["straw"][e, j]) - int(h["straw"][e, i])) > s["maxds"] or not good[j]:
+                    continue
+                if abs(h["time"][e, i] - h["time"][e, j]) > s["maxdt"]:
+                    continue
+                if abs(h["wdist"][e, i] - h["wdist"][e, j]) / np.sqrt(h["uvar"][e, i] + h["uvar"][e, j]) > s["maxwdchi"]:
+                    continue
+                if k >= maxn:
+                    continue
+                used[j], owner[e, j], k = True, i, k + 1
+    return owner
+
+
+def test_panel_group_matches_per_hit_loop():
+    pytest.importorskip("jax")
+    pytest.importorskip("trkfastsim")
+    import jax.numpy as jnp
+    from trigger.device import hits
+    rng = np.random.default_rng(7)
+    E, H = 12, 32
+    n = rng.integers(0, H + 1, E)
+    valid = np.arange(H)[None, :] < n[:, None]
+    panel = np.sort(rng.integers(0, 4, (E, H)), axis=1)                     # few panels: long runs
+    straw = rng.integers(0, 12, (E, H))
+    sid = np.where(valid, (panel << 7) | straw, 0)
+    order = np.argsort(np.where(valid, sid, 1 << 20), axis=1, kind="stable")
+    sid = np.take_along_axis(sid, order, axis=1)
+    flag = np.where(rng.random((E, H)) < 0.9, 1 << 3, 0).astype(np.uint32)
+    h = {"valid": valid, "upanel": (sid >> 10) * 6 + ((sid & 0x380) >> 7), "straw": sid & 0x7F, "flag": flag,
+         "time": rng.normal(100, 30, (E, H)).astype(np.float32), "wdist": rng.normal(0, 80, (E, H)).astype(np.float32),
+         "uvar": np.full((E, H), 900.0, np.float32)}
+    s = {"sel": 1 << 3, "mask": 0, "maxds": 3, "maxdt": 45.0, "maxwdchi": 5.0}
+    got = np.asarray(hits._group({k: jnp.asarray(v) for k, v in h.items()}, s))
+    np.testing.assert_array_equal(np.where(valid, got, -1), _group_reference(h, s))
