@@ -1,6 +1,23 @@
 # calofastsim data
 
-## digi_response_run1a.npz
+## digi_response_run1a_v2.npz (shipped, "default")
+
+Table of the opt-in parametric digi response (`calofastsim.param_response`, approximation W7
+`digi_response=parametric`; schema 2, library version 2).
+
+- **What changed from v1.** Each (event, crystal) cell is the crystal's main deposit: the energy and energy-weighted
+  time of the steps within 6 ns of the cell's energy-weighted median step time (`cells(core_window=6.0)`, stored in
+  the table as `core_window`). A late deposit no longer shifts the cell time; with v1 such crystals' hits fell
+  outside the 2 ns cluster window and about 1 % of events got an extra cluster above 10 MeV.
+- **How it was built.** As v1 (the stages of `make_steps_chain`, float64, production response, reco bunch-time smear
+  off) on the same ten training files, with the analytic Newton step of the template fit: 28,265 events, 312,247
+  cells, 112,893 with a hit, no overflow. The pools are those cells with `core_window` 6 ns
+  (`build(..., core_window=6.0)`, seed 1).
+- **Disjoint from the evaluation.** The held-out files (001430_00001000-1400) were not used.
+- **Manifest.** Embedded in the `.npz` and written next to it (`digi_response_run1a_v2.manifest.json`); provenance
+  in `param_response.SHIPPED_V2`.
+
+## digi_response_run1a.npz ("v1")
 
 Table of the opt-in parametric digi response (`calofastsim.param_response`, approximation W7
 `digi_response=parametric`; schema 2).
