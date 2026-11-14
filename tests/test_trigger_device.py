@@ -441,3 +441,30 @@ def test_panel_group_matches_per_hit_loop():
     s = {"sel": 1 << 3, "mask": 0, "maxds": 3, "maxdt": 45.0, "maxwdchi": 5.0}
     got = np.asarray(hits._group({k: jnp.asarray(v) for k, v in h.items()}, s))
     np.testing.assert_array_equal(np.where(valid, got, -1), _group_reference(h, s))
+
+
+def test_packed_results_unpack_to_the_same_arrays():
+    """chain.pack / unpack: decisions and stage arrays of mixed dtypes and shapes, stacked on the device under jit,
+    come back on the host as the same dicts, bit for bit; and the KalSeedFilter draw at pass probability 1 is
+    skipped because a uniform draw in [0, 1) is always below 1."""
+    pytest.importorskip("jax")
+    import jax
+    import jax.numpy as jnp
+    from trigger.device import chain, paths
+    rng = np.random.default_rng(4)
+    E, C = 16, 4
+    out = {f"p{i}": jnp.asarray(rng.random(E) < 0.5) for i in range(3)}
+    aux = {"p0:tc": jnp.asarray(rng.random(E) < 0.5), "p0:tcnsh": jnp.asarray(rng.integers(0, 50, E)),
+           "p0:help": jnp.asarray(rng.normal(100, 5, E)), "p0:hsmask": jnp.asarray(rng.random((E, C)) < 0.5),
+           "p0:fcent": jnp.asarray(rng.normal(0, 1, (E, C))), "p1:fcent": jnp.asarray(rng.normal(0, 1, (E, C)))}
+    layout = chain.pack_layout(out, aux)
+    assert len(layout) == 5                      # bool, int, float [E]; bool, float [E, C]
+    arrs = jax.device_get(jax.jit(lambda o, a: chain.pack(o, a, layout))(out, aux))
+    o2, a2 = chain.unpack(arrs, layout)
+    assert sorted(o2) == sorted(out) and sorted(a2) == sorted(aux)
+    for src, got in ((out, o2), (aux, a2)):
+        for k, v in src.items():
+            assert got[k].dtype == v.dtype
+            np.testing.assert_array_equal(got[k], np.asarray(v))
+    ev = jnp.arange(200_000)
+    assert float(jnp.max(paths.draw(ev, 7))) < 1.0

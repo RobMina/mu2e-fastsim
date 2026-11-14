@@ -83,7 +83,8 @@ def kalseed_pass(h, cfg, helix_mask_mom, eff, events, salt):
         ok &= (h["d0"] > float(c["minD0"])) & (h["d0"] < float(c["maxD0"]))
         ok &= h["nsh"] >= int(c["minNStrawHits"])
         out = out | ok
-    return jnp.any(out, axis=1) & (draw(events, salt) < eff)
+    hit = jnp.any(out, axis=1)
+    return hit & (draw(events, salt) < eff) if eff < 1.0 else hit     # a uniform draw in [0, 1) is always < 1
 
 
 def ipa_prescale(n_calls, fcent, par):

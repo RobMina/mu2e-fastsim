@@ -2,7 +2,9 @@
 
 `Chain(menu_cfg, conditions, tc_mva, precision="float64"|"float32")` compiles once per padded batch shape; `Chain.decide(batch)` returns per-path
 decisions [E] for every tracker path it evaluates, all on the device; only the stateful D0-phi prescale counter is
-applied on the host afterwards (`Chain.finish`).
+applied on the host afterwards (`Chain.finish`). `Chain.decide_packed(batch)` returns the same decisions and stage
+arrays stacked into one device array per dtype and shape (a few host copies per batch instead of one per array);
+`Chain.unpack` turns them back into the dicts of `decide` on the host.
 """
 from __future__ import annotations
 
@@ -15,6 +17,33 @@ from . import helix, hits, menu, mva, paths, timecluster
 HELIX_TYPES = ("RobustHelixFinder", "AgnosticHelixFinder")
 KSF_TYPES = ("LoopHelixFit", "KinKalSeedFit", "LoopHelixDeFit")
 PRECISIONS = ("float64", "float32")
+
+
+def pack_layout(out, aux):
+    """Static layout of `pack`: [((dtype, shape), [(dict, name), ...]), ...], groups in sorted order, names sorted
+    within a group ("out" before "aux"). Needs only shapes and dtypes (works on tracers)."""
+    groups = {}
+    for d, tree in (("out", out), ("aux", aux)):
+        for k in sorted(tree):
+            v = tree[k]
+            groups.setdefault((str(v.dtype), tuple(v.shape)), []).append((d, k))
+    return [(g, groups[g]) for g in sorted(groups)]
+
+
+def pack(out, aux, layout):
+    """The arrays of `out` and `aux` stacked into one array per layout group (on the device: a stack copies values,
+    so the host gets the same bits)."""
+    trees = {"out": out, "aux": aux}
+    return [jnp.stack([trees[d][k] for d, k in names]) for _, names in layout]
+
+
+def unpack(packed, layout):
+    """Host: the dicts (out, aux) back from `pack`'s arrays (one row per name)."""
+    trees = {"out": {}, "aux": {}}
+    for arr, (_, names) in zip(packed, layout):
+        for i, (d, k) in enumerate(names):
+            trees[d][k] = arr[i]
+    return trees["out"], trees["aux"]
 
 
 def pair_bucket(n, total):
@@ -82,6 +111,11 @@ class Chain:
         self._fr = jax.jit(self._refine_one, static_argnames=("lbl", "k"))
         self._fh = jax.jit(self._helix_one, static_argnames=("key", "k"))
         self._fp = jax.jit(self._paths)
+        # packed results: the layout is recorded when a batch shape is traced (it depends only on the plan and the
+        # batch shape), so the host can unpack the arrays of every later call with that shape
+        self._layouts = {}
+        self._fnp = jax.jit(self._decide_packed)
+        self._fpp = jax.jit(self._paths_packed)
 
     def _tc_label(self, p):
         """Device time-cluster settings: the path's TimeClusterFinder, or the matching-pitch one for TZClusterFinder."""
@@ -152,7 +186,19 @@ class Chain:
     def _helix_one(self, ph, tc, key, k):
         return helix.helices_pairs(ph, tc, helix.settings(self.mods[key[1]]), self.fz, k)
 
-    def _decide_compact(self, batch):
+    def _packed(self, batch, res):
+        out, aux, _ = res
+        layout = pack_layout(out, aux)
+        self._layouts[tuple(batch["valid"].shape)] = layout      # trace time
+        return pack(out, aux, layout)
+
+    def _decide_packed(self, batch):
+        return self._packed(batch, self._decide(batch))
+
+    def _paths_packed(self, batch, sh, ph, tcs, hxs):
+        return self._packed(batch, self._paths(batch, sh, ph, tcs, hxs))
+
+    def _decide_compact(self, batch, packed=False):
         """The compact path (one jitted call per stage and producer; compiles add up over producers instead of
         multiplying): candidates, the counts to the host, refined clusters on the candidate pairs, the valid counts to
         the host, helices on the valid pairs, then the path decisions."""
@@ -165,7 +211,7 @@ class Chain:
         nv = jax.device_get(nv)
         hxs = {key: self._fh(ph, tcs[key[0]], key=key, k=pair_bucket(int(nv[key[0]]), slots))
                for key in self._helix_keys()}
-        return self._fp(batch, sh, ph, tcs, hxs)
+        return (self._fpp if packed else self._fp)(batch, sh, ph, tcs, hxs)
 
     def warmup(self, batch):
         """Compact path: compile every pair capacity of every stage for the shapes of `batch` (a packed block; its
@@ -185,7 +231,7 @@ class Chain:
         for key in self._helix_keys():
             for k in ks:
                 hxs[key] = self._fh(ph, tcs[key[0]], key=key, k=k)
-        jax.block_until_ready(self._fp(b, sh, ph, tcs, hxs))
+        jax.block_until_ready(self._fpp(b, sh, ph, tcs, hxs))
 
     def _paths(self, batch, sh, ph, tcs, hxs):
         out, aux = {}, {}
@@ -248,6 +294,17 @@ class Chain:
     def decide(self, batch):
         b = {k: jnp.asarray(v) for k, v in batch.items()}
         return self._decide_compact(b) if self.compact else self._fn(b)
+
+    def decide_packed(self, batch):
+        """decide's decisions and stage arrays (no diagnostics), stacked on the device into one array per dtype and
+        shape. Returns (key, arrays); after a device_get, `unpack(key, arrays)` gives decide's (out, aux) on the
+        host, the same bits."""
+        b = {k: jnp.asarray(v) for k, v in batch.items()}
+        arrays = self._decide_compact(b, packed=True) if self.compact else self._fnp(b)
+        return tuple(b["valid"].shape), arrays
+
+    def unpack(self, key, arrays):
+        return unpack(arrays, self._layouts[key])
 
     def finish(self, decisions, aux, n_events):
         """Host: the stateful D0-phi prescale of HelixFilter, counting invocations in event order."""

@@ -258,8 +258,12 @@ def cmd_decide(args):
                   ((np.arange(lo, lo + n), n, b) for lo, n, b in batches(keys, ev, batch, hmin)))
         for rows, n, b in blocks:
             t0 = time.perf_counter()
-            out, aux, diag = ch.decide(b)
-            out, aux = jax.device_get((out, aux))        # one host transfer per block
+            if args.check_hits:                          # diagnostics: the unpacked device results
+                out, aux, diag = ch.decide(b)
+                out, aux = jax.device_get((out, aux))
+            else:                                        # a few stacked arrays, one host transfer per block
+                key, arrs = ch.decide_packed(b)
+                out, aux = ch.unpack(key, jax.device_get(arrs))
             out = {k: np.asarray(v)[:n] for k, v in out.items()}
             t_dev += time.perf_counter() - t0
             outs.append(out)
