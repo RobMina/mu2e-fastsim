@@ -445,13 +445,14 @@ def _saturated_steps(c, helpers):
     return helpers._steps(rows, ev=[0, 0, 1, 1, 2, 2, 0, 1])   # 8 straws: the test models' capacity
 
 
+# The flat digitisation's defaults (saturation chunks of one row per straw in float64, tier pool, bounded tiles), the
+# 'auto' pool (per launch in float64), narrow and with an end tier, and with every launch run at the straws' positions.
 SATURATION_POOL_CAPS = (
-    dict(digit_entries_per_straw=2, flat_saturation_pool="tier"),
-    dict(digit_entries_per_straw=2, flat_saturation_rows="auto", flat_saturation_pool="tier"),
-    dict(end_tiers=[(8, 512)], digit_entries_per_straw=2.5, flat_saturation_pool="tier"),
-    dict(digit_entries_per_straw=2, flat_saturation_pool="tier", flat_saturation_tiles="bounded"),
-    dict(end_tiers=[(8, 512)], digit_entries_per_straw=2.5, flat_saturation_rows="auto", flat_saturation_pool="tier",
-         flat_saturation_tiles="bounded"),
+    dict(digit_entries_per_straw=2),
+    dict(digit_entries_per_straw=2, flat_saturation_pool="auto"),
+    dict(end_tiers=[(8, 512)], digit_entries_per_straw=2.5),
+    dict(end_tiers=[(8, 512)], digit_entries_per_straw=2.5, flat_saturation_pool="auto"),
+    dict(end_tiers=[(8, 512)], digit_entries_per_straw=2.5, electronics_launches="all", narrow_tier="positions"),
 )
 
 
@@ -470,9 +471,7 @@ def test_flat_digit_entries_equal_pair_loop(wide, helpers, onspill):
     assert not any(ae.values()), ae
     assert len(a["sid"]) > 0 and np.bincount(a["sid"]).max() >= 2
     for caps in (Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2),
-                 Capacities(64, 1024, 8, 4, 8, 2, end_tiers=[(4, 512)], digit_entries_per_straw=2.5),
-                 Capacities(64, 1024, 8, 4, 8, 2, end_tiers=[(4, 512)], digit_entries_per_straw=2.5,
-                            flat_saturation_rows="auto")):
+                 Capacities(64, 1024, 8, 4, 8, 2, end_tiers=[(4, 512)], digit_entries_per_straw=2.5)):
         b, be = evaluate(prepare(c, caps, 3), collection(st, 8), times)
         assert not any(be.values()), be
         for name in a:
@@ -483,15 +482,16 @@ def test_flat_digit_entries_equal_pair_loop(wide, helpers, onspill):
     for bad in (0, 9, "1"):
         with pytest.raises(ValueError, match="digit_entries_per_straw"):
             Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=bad)
-    with pytest.raises(ValueError, match="flat_saturation_rows"):
-        Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2, flat_saturation_rows="half")
+    for bad in ("half", "lanes"):   # 'lanes' (two rows per straw in float64 too) was removed: 'auto' is exact
+        with pytest.raises(ValueError, match="flat_saturation_rows"):
+            Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2, flat_saturation_rows=bad)
 
 
 @pytest.mark.pr_params("True")   # onspill is the mixing mode
 @pytest.mark.parametrize("onspill", [False, True])
-def test_flat_saturation_pool_equals_per_launch(wide, helpers, onspill):
-    """flat_saturation_pool 'tier' saturates the ends of all launches of a kernel shape together: the same digis as
-    per-launch saturation and as the pair loop, narrow and with end tiers."""
+def test_flat_saturation_pool_equals_pair_loop(wide, helpers, onspill):
+    """The tier saturation pool (the default; the ends of all launches of a kernel shape saturated together, bounded
+    tiles) and the 'auto' pool (per launch in float64) give the pair loop's digis, narrow and with end tiers."""
     c, model = wide(onspill)
     st = _saturated_steps(c, helpers)
     times = timing([1700., 1675., 1695.] if onspill else [100000.] * 3, [10., -5., 20.])
@@ -499,32 +499,43 @@ def test_flat_saturation_pool_equals_per_launch(wide, helpers, onspill):
     assert not any(ae.values()), {k for k, v in ae.items() if v}
     assert len(a["sid"]) > 0 and np.any(a["pmp"] > 0)
     for kw in SATURATION_POOL_CAPS:
-        base = {k: v for k, v in kw.items() if k != "flat_saturation_pool"}
-        for caps in (_pool_caps(base), _pool_caps(kw)):
-            b, be = evaluate(prepare(c, caps, 3), collection(st, 16), times)
-            assert not any(be.values()), {k for k, v in be.items() if v}
-            for name in a:
-                np.testing.assert_array_equal(a[name], b[name], err_msg=f"{kw} {name}")
+        b, be = evaluate(prepare(c, _pool_caps(kw), 3), collection(st, 16), times)
+        assert not any(be.values()), {k for k, v in be.items() if v}
+        for name in a:
+            np.testing.assert_array_equal(a[name], b[name], err_msg=f"{kw} {name}")
 
 
 def test_flat_saturation_pool_options():
-    with pytest.raises(ValueError, match="flat_saturation_tiles"):
-        Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2, flat_saturation_tiles="half")
-    assert Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2, flat_saturation_pool="tier",
-                      flat_saturation_tiles="bounded").flat_kernel(2) == {"entries": 4, "saturation_pool": True,
-                                                                         "saturation_tiles": "bounded"}
-    # without the pool the tile bound has nothing to act on
-    assert Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2,
-                      flat_saturation_tiles="bounded").flat_kernel(2) == {"entries": 4}
-    with pytest.raises(ValueError, match="flat_saturation_pool"):
-        Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2, flat_saturation_pool="batch")
+    for bad in ("half", "all"):   # 'all' (every response tile) was removed: 'bounded' is exact
+        with pytest.raises(ValueError, match="flat_saturation_tiles"):
+            Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2, flat_saturation_tiles=bad)
+    for bad in ("batch", "launch"):   # 'launch' (per-launch saturation) was removed: 'tier' is exact
+        with pytest.raises(ValueError, match="flat_saturation_pool"):
+            Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2, flat_saturation_pool=bad)
     with pytest.raises(ValueError, match="flat digitisation"):
         Capacities(64, 1024, 8, 512, 8, 2, flat_saturation_pool="tier")
-    assert Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2,
-                      flat_saturation_pool="tier").flat_kernel(2) == {"entries": 4, "saturation_pool": True}
+    pooled = {"entries": 4, "saturation_rows": "auto", "saturation_pool": True, "saturation_tiles": "bounded"}
+    assert Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2).flat_kernel(2) == pooled
     # 'auto' pools in float32 only (this process is float64; the float32 file checks the other side)
     assert Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2,
-                      flat_saturation_pool="auto").flat_kernel(2) == {"entries": 4}
+                      flat_saturation_pool="auto").flat_kernel(2) == {"entries": 4, "saturation_rows": "auto"}
+    assert Capacities(64, 1024, 8, 512, 8, 2).flat_kernel(2) == {}
+
+
+def test_layout_defaults():
+    """The exact layout keys default where their prerequisites hold; a configuration without them is unchanged, and
+    the explicit settings give the same capacities as the defaults."""
+    plain = Capacities(64, 1024, 8, 512, 8, 2)
+    assert (plain.electronics_launches, plain.narrow_tier) == ("live", None)
+    assert (plain.flat_saturation_rows, plain.flat_saturation_pool, plain.flat_saturation_tiles) == (None,) * 3
+    assert plain.electronics_loops is None   # not exact (float32 rounding): opt-in
+    tiered = dict(end_tiers=[(8, 512)], digit_entries_per_straw=2.5)
+    default = Capacities(64, 1024, 8, 8, 8, 2, **tiered)
+    explicit = Capacities(64, 1024, 8, 8, 8, 2, **tiered, flat_saturation_rows="auto", flat_saturation_pool="tier",
+                          flat_saturation_tiles="bounded", electronics_launches="live", narrow_tier="compact")
+    assert default == explicit and default.narrow_tier == "compact" and default.electronics_loops is None
+    reference = Capacities(64, 1024, 8, 8, 8, 2, **tiered, electronics_launches="all", narrow_tier="positions")
+    assert (reference.electronics_launches, reference.narrow_tier) == ("all", "positions")
 
 
 @pytest.mark.pr_params("True")   # onspill is the mixing mode
@@ -549,21 +560,22 @@ def test_packed_sort_equals_lexsort(wide, helpers, onspill):
 @pytest.mark.pr_params("True")   # onspill is the mixing mode
 @pytest.mark.parametrize("onspill", [False, True])
 def test_live_launches_equal_all_launches(wide, helpers, onspill):
-    """electronics_launches 'live' (empty launches skipped) and narrow_tier 'compact' give the wide model's digis,
-    with the pair loop, the flat digitisation and the tier saturation pool; launches of 2 straws, so some are empty."""
+    """electronics_launches 'live' (empty launches skipped) and narrow_tier 'compact' (both the defaults) give the
+    digis of every launch run with the narrow straws at their positions (the 'all' / 'positions' reference), with the
+    pair loop, the flat digitisation and the tier saturation pool; launches of 2 straws, so some are empty."""
     c, model = wide(onspill)
     st = _flat_cluster_steps(c, helpers)
     times = timing([1700., 1675., 1695.] if onspill else [100000.] * 3, [10., -5., 20.])
-    a, ae = evaluate(model, collection(st, 8), times)
+    a, ae = evaluate(prepare(c, Capacities(64, 1024, 8, 512, 8, 2, electronics_launches="all"), 3), collection(st, 8),
+                     times)
     assert not any(ae.values()) and len(a["sid"]) > 0, ae
     tiers = dict(end_tiers=[(8, 16), (4, 512)])
-    flat = dict(digit_entries_per_straw=2.5, flat_saturation_pool="tier", flat_saturation_tiles="bounded")
-    for kw in (dict(electronics_launches="live"), dict(tiers, electronics_launches="live"),
-               dict(tiers, electronics_launches="live", narrow_tier="compact"),
-               dict(tiers, electronics_launches="live", narrow_tier="compact", **flat),
-               dict(tiers, narrow_tier="compact")):
-        caps = Capacities(64, 1024, 8, 4 if "end_tiers" in kw else 512, 8, 2, **kw)
-        b, be = evaluate(prepare(c, caps, 3), collection(st, 8), times)
+    flat = dict(digit_entries_per_straw=2.5)
+    for kw in (None, dict(tiers), dict(tiers, narrow_tier="positions"), dict(tiers, electronics_launches="all"),
+               dict(tiers, electronics_launches="all", narrow_tier="positions"), dict(tiers, **flat),
+               dict(tiers, electronics_launches="all", narrow_tier="positions", **flat)):
+        tested = model if kw is None else prepare(c, Capacities(64, 1024, 8, 4, 8, 2, **kw), 3)   # None: defaults
+        b, be = evaluate(tested, collection(st, 8), times)
         assert not any(be.values()), (kw, be)
         for name in a:
             np.testing.assert_array_equal(a[name], b[name], err_msg=f"{name} {kw}")
@@ -585,7 +597,7 @@ def test_bounded_electronics_loops(wide, helpers, onspill):
     times = timing([1700., 1675., 1695.] if onspill else [100000.] * 3, [10., -5., 20.])
     a, ae = evaluate(model, collection(st, 16), times)
     assert not any(ae.values()) and len(a["sid"]) > 0 and np.any(a["pmp"] > 0), ae
-    for kw in SATURATION_POOL_CAPS + (dict(digit_entries_per_straw=2),):
+    for kw in SATURATION_POOL_CAPS:
         b, be = evaluate(prepare(c, _pool_caps({**kw, "electronics_loops": "bounded"}), 3), collection(st, 16), times)
         assert not any(be.values()), (kw, be)
         for name in a:
