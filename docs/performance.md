@@ -134,6 +134,14 @@ The device steps gain 12-27 % in steady state but cost about 10 s more per proce
 loads from the persistent compilation cache in about 7 s and takes about a minute to compile without one), so at 11
 shards per process the whole job is 3-10 % slower; they pay off from about 20-25 shards per process.
 
+**Two processes per GPU** (default of the UVA node and array launchers since 2026-11-14, `PER_GPU=2`): one process
+keeps an A100 busy for less than half of each pass (host work and serialized launches), and a second process on
+the same GPU fills much of that gap. The two processes are independent (own inputs and seeds), so each one's
+output is what it would be alone. On an A100-SXM4-80GB, `mu2efastsim.bench` W5 refit row (`--fresh-inputs`,
+warm passes), one process then two processes in the same job, median of three jobs: float32 18,260 to 26,240
+generated events/s per GPU (+44 %), float64 15,210 to 20,640 (+36 %). A 20-pass run of two processes in each
+dtype had no device errors.
+
 Without gen tables, `runchain --jax` generates its primaries with device CRY (the CRY table is in the image; accepted
 rate against the stock tables 1.00014 +- 0.00063 on 5 M events). From the image, 550,000 accepted events in 11 passes
 of 50,000 against the 11 gen-table shards in the same job, warm cache: MIG slice whole job 5,650-6,570 events/s (gen
