@@ -204,25 +204,38 @@ how XLA fuses the float64 kernel, which moved 150k cluster times by 1-2 float32 
 `run1a_mix1bb_batch256.json` has it; `run1a_mix1bb_batch256_exact.json` is the same file without it (and without the
 CRV thermal approximation), the exact reference.
 About 92 % of the hit straws of a mixed event see steps of one donor frame only.
-- **Setup:** every donor frame of the reused streams (MuStopPileup and MuBeamFlash) is digitised once, as an event of
-  its own, at the signal events' mean `mc_pbtime`, with the digitisation window widened by the largest event shift
-  plus 5 ns. In the Run 1A pools: 250k frames, 1.36 M digis, 30-130 s on one GPU.
-- **Per batch:** a straw hit by a single donor frame of a reused stream takes that frame's setup digis. The TDC is
-  shifted by the event's `mc_pbtime` less the mean, and the real window is applied after the shift; TOT, ADC
-  waveform and PMP are kept. All other straws (the primary's, those with two or more sources, and every straw of
-  EleBeamFlash and NeutralsFlash) go through the resident tracker with a smaller capacity set (`compute`). They get
-  exactly the tracker's digis, with the same keys.
-- **What it freezes:** per donor frame, the cluster and noise draws and the ADC sampling phase. A frame drawn twice
-  gives the same digis, so the small EleBeamFlash pool (about 1,200 frames, drawn about 60 times per pass) and
-  NeutralsFlash (4 times) are not reused. With them, TDC, ADC and PMP shapes moved 2-8x past the stock floor.
+- **Setup:** every donor frame of the reused streams (MuStopPileup and MuBeamFlash) is digitised once per distinct
+  `mc_pbtime` of the signal events (`shifts: "events"`; 5 values 5 ns apart in Run 1A), as an event of its own with
+  that time shift. The digital dead time is left out there and applied per event. In the Run 1A pools: 250k frames
+  x 5 copies, 6.7 M digis, 70-80 s on one GPU.
+- **Per batch:** a straw hit by a single donor frame of a reused stream takes the digis of that frame's copy at the
+  event's own `mc_pbtime`, so no digi is moved by the event's time shift and TDC, TOT, ADC waveform and PMP stay
+  consistent (a sample with more than 64 distinct shifts is refused). With `event_jitter` the TDC takes the event's
+  ROC jitter instead of the setup's (moves the TDC only, by about 0.7 ns rms). The digitisation window and the
+  digital dead time (against the event's other digis on that straw) are applied per event. All other straws (the
+  primary's, those with two or more sources, and every straw of EleBeamFlash and NeutralsFlash) go through the
+  resident tracker with a smaller capacity set (`compute`). They get exactly the tracker's digis, with the same keys.
+- **What it freezes:** per donor frame and time shift, the cluster and noise draws. A frame drawn twice gives the
+  same digis, so the small EleBeamFlash pool (about 1,200 frames, drawn about 60 times per pass) and NeutralsFlash
+  (4 times) are not reused. With them, TDC, ADC and PMP shapes moved 2-8x past the stock floor.
+- **Why one copy per event shift.** One copy at the mean shift, moved per event, keeps the ADC sampling phase of the
+  setup: the ADC peak index per TDC phase was off by chi2/ndf about 1,800 against stock. A grid of copies around the
+  mean (`phases`, `periods`) left a constant 0.17 ns offset between the grid and the discrete event shifts (peak
+  index per TDC phase chi2/ndf 5-6). `phases` and `periods` stay available for samples with a continuous spread of
+  shifts.
 - **Validation** (held-out subrun 1194, three pileup realizations, float32 and float64, against the stock mixed
-  sample with two reseeded stock samples as the floor):
-  - Totals and per-plane shapes pass the declared criterion in all six arms. Reuse and exact digitisation give the
-    same totals per realization (0.995 / 1.008 / 0.986 vs stock); reuse keeps 99.96-99.99 % of the exact digis
-    (paired).
-  - TDC, ADC-sample, ADC-peak and PMP shapes are within the exact arms' spread. The ADC peak index
-    (chi2/ndf 1.6-2.7 vs 0.9-2.0 exact) shows the frozen phase.
-- **Rate** (A100-SXM4-80GB, batch 256, pipelined output, same node): float32 410 -> 544 ev/s, float64 393 -> 536 ev/s.
+  sample with two reseeded stock samples as the floor; control: exact digitisation with another tracker seed):
+  - ADC peak index per TDC-phase quarter vs stock: chi2/ndf 0.87-0.99 (float32) and 1.09-1.20 (float64), within
+    the exact and control arms (0.78-1.11 and 0.86-1.23). The mean peak index vs TDC phase matches exact with no
+    shift (chi2 84/80 and 66/80; control 112/80 and 104/80).
+  - TDC1-TDC0 vs stock: 0.73-1.21 (float32), 0.95-1.27 (float64) against 0.85-1.27 and 0.90-1.16 for exact and
+    control.
+  - Per-plane shapes chi2/ndf below 0.7; digi totals equal to exact in the same realization (0.9998-1.0003,
+    +-0.0002).
+- **Rate** (A100-SXM4-80GB, batch 256, fresh inputs, full output, median of 3 runs on one node): exact file 725.9
+  (float32) / 654.2 (float64) ev/s; reuse with one copy 1209.2 / 1052.9; reuse with a copy per event shift (the
+  default) 1218.7 (x1.68) / 1051.4 (x1.61). The copies cost setup (warm 112-118 s against 66-68 s for one copy and
+  35-37 s exact) and host memory (12.0 GB peak against 8.7 and 5.9 GB), not rate.
 
 ## float32
 
