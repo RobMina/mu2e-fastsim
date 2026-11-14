@@ -152,7 +152,7 @@ def check_hits(diag, stock, rows, report, keys=("sh", "ph"), tags=("straw", "pan
                 continue
             r["events_same_count"] += 1
             r["hits"] += ns
-            for k in ("sid", "flag", "time", "edep", "x", "y", "z", "wdist", "uvar") + (("ncombo", "vvar") if tag == "panel" else ()):
+            for k in ("sid", "flag", "time", "edep", "x", "y", "z", "wdist", "uvar") + (("ncombo", "vvar") if tag.startswith("panel") else ()):
                 dv = np.asarray(d[k])[i][m]
                 sv = np.asarray(stock[pre + k][rows[i]])
                 if k == "flag":
