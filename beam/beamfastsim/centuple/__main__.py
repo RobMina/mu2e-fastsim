@@ -63,8 +63,10 @@ def cmd_donor(a):
 
 
 def cmd_assemble(a):
-    from . import assemble
-    path, meta = assemble.build(a.record, a.donor, a.out, trigger=a.trigger, seed=a.seed, trigger_cal=a.trigger_cal,
+    from . import assemble, trigcal
+    # the on-spill trigger table by default, as point; 'none': the trigger file's decisions unchanged
+    tcal = None if a.trigger_cal == "none" else (a.trigger_cal or str(trigcal.SHIPPED))
+    path, meta = assemble.build(a.record, a.donor, a.out, trigger=a.trigger, seed=a.seed, trigger_cal=tcal,
                                 dts_filter=a.dts_filter)
     print(json.dumps(dict(path=str(path), classes=meta["classes"], covered=len(meta["covered_paths"]),
                           missing=meta["covered_missing"], dts_filter=meta["dts_filter"])))
@@ -232,7 +234,9 @@ def main(argv=None):
     s.add_argument("--donor", required=True)
     s.add_argument("--out", required=True)
     s.add_argument("--seed", type=int, default=20261111)
-    s.add_argument("--trigger-cal", help="on-spill response of the device paths (trigcal table .npz); opt-in")
+    s.add_argument("--trigger-cal", help="on-spill trigger table for the device paths (default: the shipped trigcal "
+                                         "table; 'none': the trigger file's decisions, e.g. with its off-spill "
+                                         "response layer)")
     s.add_argument("--dts-filter", action="store_true",
                    help="keep only events passing the emulated dts PrimaryFilter (opt-in; for births per generated)")
     s.set_defaults(fn=cmd_assemble)
