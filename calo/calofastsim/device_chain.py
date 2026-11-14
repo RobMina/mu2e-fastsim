@@ -47,7 +47,7 @@ OVERFLOW_NAMES = ("steps", "photoelectrons", "rows", "outliers", "digis", "digi_
                   "main_rounds", "split_rounds")
 TF32_EXACT = "default"   # matmul precision for products TF32 computes exactly (0/1 operands, integer sums)
 # XLA options of the chain's jit: no command buffers. With XLA's loop and conditional command buffers on (the
-# mu2efastsim.devloops default, --xla_gpu_enable_command_buffer=+CONDITIONAL,+WHILE) the clustering's nested device
+# mu2efastsim.devloops setting where on, --xla_gpu_enable_command_buffer=+CONDITIONAL,+WHILE) the clustering's nested device
 # loops gave wrong clusters on A100 GPUs, in about a quarter of the events of a batch and differently from run to
 # run; compiled without command buffers they match the CPU result (float64 identical). Set per jit, so other programs
 # keep the process setting.

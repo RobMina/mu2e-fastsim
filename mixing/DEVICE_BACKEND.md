@@ -138,7 +138,7 @@ Per-batch metrics then report `wait_transfer_and_write_s` instead of separate de
 The batch step runs many short device loops (tracker electronics crossings and saturation, CRV SiPM and pulse
 fits). By default XLA runs each `lax.while_loop` and `lax.cond` from the host, one predicate read-back per
 iteration. Core `devloops.py` makes XLA run them inside its GPU command buffers. It is chosen per workflow
-(`MU2EFS_DEVICE_LOOPS=auto`, the default: on for `--workflow mixing` / W6; `MU2EFS_DEVICE_LOOPS=0` or the bench's
+(`MU2EFS_DEVICE_LOOPS=auto`, the default: on for W6, selected by `Backend` and by the bench's `--workflow mixing` / `W6`; `MU2EFS_DEVICE_LOOPS=0` or the bench's
 `--device-loops off` turns it off, before JAX starts, so it is an environment or command-line setting, not a
 configuration key).
 It changes the launches, not the computation: over full development and held-out passes at batch 256 the output
@@ -146,15 +146,16 @@ files are identical with and without it (CRV float32 and float64, float32 tracke
 On one batch of 256 (A100) the device step falls from 0.45 to 0.42 s (CRV float32) and from 0.49 to 0.46 s (CRV
 float64). The precision provenance records the setting.
 
-## Concurrent graph regions (core `MU2EFS_GRAPH_CONCURRENCY`, on by default)
+## Concurrent graph regions (core `MU2EFS_GRAPH_CONCURRENCY`, on for this workflow)
 
 A batch step is tens of thousands of GPU kernels, most of them a few microseconds long (loop bodies, small
 reductions), and XLA records each command buffer as one chain of them. Core `devloops.py` also appends
-`--xla_gpu_graph_enable_concurrent_region=true` (on by default; `MU2EFS_GRAPH_CONCURRENCY=0` turns it off, before
+`--xla_gpu_graph_enable_concurrent_region=true` (chosen per workflow like device loops: on for W6, off for the
+workflows where it is not measured faster; `MU2EFS_GRAPH_CONCURRENCY=0` or the bench's `--graph-concurrency off` turns it off, before
 JAX starts): kernels that do not depend on each other become parallel branches of the graph and share the GPU. XLA
 keeps its own dependencies, so the results are the same: over full development and held-out passes at batch 256 the
 output files are identical with and without it (CRV float32 and float64, float32 tracker; exact and reuse capacity
-files). It is independent of the device-loop setting for mixing (W2, whose CE chain hangs with both, drops it when its device loops are on).
+files).
 
 Rate with it (A100, batch 256, 2,560 events, fresh inputs, full output, two writers; two runs each, alternating on
 one node):

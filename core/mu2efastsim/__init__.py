@@ -14,9 +14,9 @@ repository. Definitions live once in these modules, documented in ``README.md``:
     plots      shared plotting helpers + write_json
 
 Importing the package applies the GPU determinism setting (determinism.py, MU2EFS_DEVICE_DETERMINISTIC) and the
-device-loop setting (devloops.py, MU2EFS_DEVICE_LOOPS; a workflow's entry point then picks its own with
-devloops.select) and the concurrent-region setting (devloops.py, MU2EFS_GRAPH_CONCURRENCY, on by default) before any
-JAX backend exists.
+command-buffer settings (devloops.py: device loops, MU2EFS_DEVICE_LOOPS, and concurrent graph regions,
+MU2EFS_GRAPH_CONCURRENCY; only forced values at import, and a workflow's entry point then picks the faster setting of
+each with devloops.select) before any JAX backend exists.
 """
 from . import determinism as _determinism
 from . import devloops as _devloops
