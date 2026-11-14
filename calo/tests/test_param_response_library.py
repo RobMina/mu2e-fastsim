@@ -48,7 +48,7 @@ def test_v1_sidecar_is_reproducible(tmp_path):
 def test_shipped_v2_table_and_manifest():
     tab = PR.load("default")
     assert PR.resolve("default") == PR.resolve("v2") == PR.DEFAULT
-    assert PR.core_window(tab) == PR.CORE_WINDOW and PR.to_device(tab).core_window == PR.CORE_WINDOW
+    assert PR.core_window(tab) == PR.CORE_WINDOW and PR.core_window(PR.load("v1")) is None
     m = LS.load(PR.DEFAULT).manifest
     side = json.loads(LS.sidecar_path(PR.DEFAULT).read_text())
     assert m == side and m["name"] == PR.LIBRARY and m["version"] == 2
