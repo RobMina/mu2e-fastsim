@@ -68,6 +68,14 @@ reconstruction.
 - **Digitiser overflow.** A JAX chunk with a straw beyond the device digitiser's cluster capacity is digitised by
   NumPy, seeded from the chunk key (`stats["numpy_fallback_chunks"]`); before, the chain stopped (1 table in 80 at
   float64).
+- **Gas-gain gamma draws on CPU (default there, identical).** `digi_jax.GAMMA_SPLIT` (None: on with the CPU
+  backend). The charge kernel draws `_gamma(k1, aval)` for every cluster of a block; `jax.random.gamma` gives each
+  element its own key and runs one vmapped rejection loop until the slowest lane of the call accepts (with 128 blocks
+  per launch, 524k lanes). `_gamma_bits` makes the same per-element keys and runs JAX's per-element sampler only on the
+  lanes the gain keeps (ne < nGainGauss), in chunks of `GAMMA_CHUNK` (1,024), and hands them to the kernel as integer
+  bits (a float32-mode kernel takes them unrounded). The draw dtype is read from `_gamma`. Gains identical to the
+  in-kernel draws (tested with typed and raw keys, in float64 and float32 mode); W2 with digis and W6 outputs identical
+  in both dtypes. One core, same node: W6 x1.09 (float64) / x1.17 (float32).
 - **Other step options (opt-in, not used).** `steps_jax.SLICE_ROUNDS >= N_SLICES_MAX` (slab loss in one device call
   per material), `steps_jax.SLAB_UNROLL` (slices per loop iteration) and `world_jax.SYNC_FREE_PAIRS` (no host count
   per world material) remove host synchronisations but were not faster on an MIG slice, with or without the unrolled
