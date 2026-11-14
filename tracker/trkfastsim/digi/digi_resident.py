@@ -40,6 +40,15 @@ BIG = np.int64(2) ** 62
 ASYNC_BATCHES = True       # waveform batches without host reads (False: digi_jax's per-batch loop; same digis)
 FALLBACKS = [0]            # chunks that fell back to the per-batch loop (a batch failed or saturated at pair_cap 4)
 ENTRY_FALLBACKS = [0]      # of them, chunks whose flat digitisation needed more entries than its capacity
+# Fewer, larger device calls with the same keys (the draws do not depend on the grouping): charge blocks per call
+# (digi_jax: CHARGE_BLOCKS), sampling lanes per multi-step class call (digi_clusters_jax: MAX_SAMPLE_LANES), and the
+# panel-jitter blocks of a call in one vectorised draw (JITTER_VMAP; False: one call per block, as digi_jax).
+CHARGE_BLOCKS_PER_CALL = 128 if DJ.GPU else 4
+SAMPLE_LANES = 4 * DC.MAX_SAMPLE_LANES if DJ.GPU else DC.MAX_SAMPLE_LANES
+JITTER_VMAP = True
+# with the saturation pool, two device calls per electronics launch (pack + electronics; slice + ADC + append)
+# instead of four or five (the same jitted functions composed; False: one call each)
+FUSED_LAUNCHES = True
 ELECTRONICS = ("entries_per_straw", "saturation_rows", "saturation_pool", "saturation_tiles")
 
 
@@ -222,7 +231,7 @@ def make_clusters(key, c, st, idx, nidx):
             if not nsel:
                 continue
             cap_used = cap if cap == CLASSES[0] else _b(ncmax, 128)
-            lanes = max(1, DC.MAX_SAMPLE_LANES // cap_used)
+            lanes = max(1, SAMPLE_LANES // cap_used)
             mm_all = _compact(sel, _b(nsel))
             for s0 in range(0, nsel, lanes):
                 nm = min(lanes, nsel - s0)
@@ -465,6 +474,13 @@ def _waveforms_async(c, plan, key3, tabs, gt, charge, wd, cs, straw, straw_ev, s
         kern = DJ._electronics_kernel(c, cap, 4, batch) if elec is None else parts.run   # default: unchanged
         pooled = elec is not None and elec["saturation_pool"]
         launches = []
+        if pooled and FUSED_LAUNCHES:
+            pack_run, finish_append = _fused(c, cap, batch, tuple(sorted(elec.items())), onspill, timed)
+            for i in range(nbt):
+                launches.append(pack_run(key3, whichs, nbs_d, jnp.int64(i), tabs, gt, charge, wd, cs, straw, *tv))
+            buf, acc = _pool_append(parts, launches, finish_append, c, buf, acc, size, straw_ev, straw_sid)
+            nbatch += nbt
+            continue
         for i in range(nbt):
             args, targs, which, nref = _pack_at(whichs, nbs_d, i, cap, batch, onspill, timed, tabs, gt, charge, wd,
                                                 cs, straw, *tv)
@@ -476,6 +492,52 @@ def _waveforms_async(c, plan, key3, tabs, gt, charge, wd, cs, straw, straw_ev, s
             buf, acc = _append_launch(c, buf, acc, size, launch, straw_ev, straw_sid, batch)
             nbatch += 1
     return buf, acc, nbatch
+
+
+@lru_cache(maxsize=64)
+def _fused(c, cap, batch, elec_items, onspill, timed):
+    """The two per-launch calls of the pooled path: pack_run (_pack_at + the electronics kernel) and finish_append
+    (this launch's rows of the pooled volts, pool_finish's ADC and PMP, _append_acc)."""
+    parts = _parts(c, cap, batch, dict(elec_items))
+
+    @jax.jit
+    def pack_run(key3, whichs, nbs, i, tabs, gt, charge, wd, cs, straw, tdc_all, tdc_dead, ewl):
+        args, targs, which, nref = _pack_at(whichs, nbs, i, cap, batch, onspill, timed, tabs, gt, charge, wd, cs,
+                                            straw, tdc_all, tdc_dead, ewl)
+        return parts.run(key3, *args, **targs), which, nref
+
+    @partial(jax.jit, donate_argnames=("buf",))
+    def finish_append(buf, acc, volts, first, overflow, result, which, nref, straw_ev, straw_sid):
+        p = result["pool"]
+        v = jax.lax.dynamic_slice_in_dim(volts, first, p["volts"].shape[0])
+        adc, pmp = parts.pool_finish(v, p["noise"], p["row"], p["kk"], p["us"])
+        r = {k: x for k, x in result.items() if k != "pool"}
+        r.update(adc=adc, pmp=pmp, sat_overflow=r["sat_overflow"] | overflow)
+        return _append_acc(buf, acc, r, which, straw_ev, straw_sid, nref, 4, batch)
+    return pack_run, finish_append
+
+
+def _pool_append(parts, launches, finish_append, c, buf, acc, size, straw_ev, straw_sid):
+    """_pool_bucket and the appends of the fused path: pool_saturate over the bucket (the same padded pool), then one
+    finish_append call per launch."""
+    pools = [r["pool"] for r, _, _ in launches]
+    pad = [jax.tree_util.tree_map(jnp.zeros_like, pools[0])] * (_b(len(pools), 1) - len(pools))
+    cat = lambda *x: jnp.concatenate(x)
+    full = pools + pad
+    lanes = jax.tree_util.tree_map(cat, *[p["lanes"] for p in full])
+    volts, overflow = parts.pool_saturate(lanes, cat(*[p["times"] for p in full]), cat(*[p["sat"] for p in full]),
+                                          cat(*[p["volts"] for p in full]))
+    first = 0
+    for result, which, nref in launches:
+        if buf is None:
+            shape = {**result, "adc": jnp.zeros(1, jnp.int64), "pmp": jnp.zeros(1, jnp.int64)}
+            buf = _buffers(c, shape, size)
+            z = jnp.int64(0)
+            acc = {"offset": z, "failed": jnp.bool_(False), "sat": jnp.bool_(False), "pairs": z, "nan_ends": z,
+                   "saturated_ends": z, "entry": jnp.bool_(False), "entries_milli": z}
+        buf, acc = finish_append(buf, acc, volts, jnp.int64(first), overflow, result, which, nref, straw_ev, straw_sid)
+        first += result["pool"]["volts"].shape[0]
+    return buf, acc
 
 
 def _append_launch(c, buf, acc, size, launch, straw_ev, straw_sid, batch):
@@ -561,9 +623,18 @@ def _waveforms_sync(c, plan, key3, tabs, gt, charge, wd, cs, straw, straw_ev, st
 def _jitter(key, straw_ev, panel, nev, scale):
     """digi_jax._panel_jitter: the same (JITTER_BATCH, NUPANELS) blocks, gathered on the device."""
     nb = (nev + DJ.JITTER_BATCH - 1) // DJ.JITTER_BATCH
-    blocks = jnp.stack([DJ._jitter_block(random.fold_in(key, b)) for b in range(nb)])
+    if JITTER_VMAP:
+        blocks = _jitter_blocks(key, nb)
+    else:
+        blocks = jnp.stack([DJ._jitter_block(random.fold_in(key, b)) for b in range(nb)])
     e = jnp.clip(straw_ev, 0, nev - 1)
     return blocks[e // DJ.JITTER_BATCH, e % DJ.JITTER_BATCH, panel] * scale
+
+
+@partial(jax.jit, static_argnames=("nb",))
+def _jitter_blocks(key, nb):
+    """digi_jax._jitter_block of blocks 0..nb-1 (key folded with the block index) in one vectorised call."""
+    return jax.vmap(lambda b: DJ._jitter_block(random.fold_in(key, b)))(jnp.arange(nb, dtype=jnp.uint32))
 
 
 def pad_steps(st, nstep):
@@ -611,8 +682,8 @@ def digitize(st, nev, c, key, stats=None, *, event_timing=None, nstep=None, padd
     ctime = time[cs]
     if df.SINGLE:   # digi_jax float32: positions relative to the straw middle, times to whole COMMON_PERIODs (float64)
         pos, ctime, cref = _relative_clusters(_straw_mid(c), us, cs, pos, ctime)
-    group = DJ.CHARGE_BLOCK * DJ.CHARGE_BLOCKS
-    kern = DJ._charge_blocks_kernel(c)
+    group = DJ.CHARGE_BLOCK * CHARGE_BLOCKS_PER_CALL
+    kern = DJ._charge_blocks_kernel(c, CHARGE_BLOCKS_PER_CALL)
     gt_l, ch_l, wd_l = [], [], []
     usc = us[cs]
     padg = (-tb) % group
