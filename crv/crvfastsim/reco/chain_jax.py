@@ -1,9 +1,11 @@
 """Pulses -> coincidences on the device in one pipelined pass (the R1 measurement).
 
 Events are processed in chunks. For chunk k the jitted pulse reco is launched (asynchronously); meanwhile the host
-collects chunk k-1's pulses, builds the coincidence-finder input (find_async: split, pack, launch) and finishes chunk
-k-2 (collects clusters, promotions, numpy fallback). On a GPU the host work of one chunk overlaps the device work of
-the next; on CPU the stages simply run in turn. Waveforms longer than the kernel input, whose fit used all kernel
+collects chunk k-1's pulses, builds the coincidence-finder input (find_async: split, pack, launch) and collects chunk
+k-2's first-choice clusters (coinc_jax.collect). The promotions of all chunks run together after the last chunk
+(coinc_jax.complete_all: one call per tier level instead of one per chunk; the same clusters), then the numpy
+fallback. On a GPU the host work of one chunk overlaps the device work of the next; on CPU the stages simply run in
+turn. Waveforms longer than the kernel input, whose fit used all kernel
 rounds or overflowed its window go to full-length numpy pulse reco (as in reco-vr2jax).
 """
 import dataclasses
@@ -117,6 +119,11 @@ def _pulse_collect(outs, W, rows, cfg_np, device_refit=False, counts=None, caps=
     return rows[wf], seq, pe, tm, nredo
 
 
+def _deferrable(h):
+    """A find_async handle whose promotions can wait for the other chunks (coinc_jax.collect / complete_all)."""
+    return isinstance(h, dict) and "jobs" in h and hasattr(CJ, "collect")
+
+
 def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.FinderConfig(), timers=None,
         keep_pulses=False, with_pos=False, add_pulses=None, pulse_cfg=None, device_refit=False, capacities=None):
     """W: waveforms sorted by (ev, channel, time) with pulsefit inputs and ev, bar, sipm; optional "toff" (per-waveform
@@ -141,7 +148,7 @@ def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.Finde
     edges = np.searchsorted(W["ev"], ue[np.linspace(0, len(ue), n_chunks + 1).astype(int)[:-1]])
     edges = np.r_[edges, len(W["ev"])]
     chunks = [np.arange(edges[i], edges[i + 1]) for i in range(n_chunks) if edges[i + 1] > edges[i]]
-    pul, coin, outs, kept = {}, {}, [], {}
+    pul, coin, outs, kept, pulses = {}, {}, [], {}, {}
     tic = lambda: _time.perf_counter()
     add = lambda k, t0: timers.__setitem__(k, timers.get(k, 0.0) + tic() - t0)
     t_all = tic()
@@ -182,10 +189,21 @@ def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.Finde
                 kept[k - 1] = dict(ev=ev, idx=idx, bar=bar, sipm=sipm, seq=seq, pe=pe, time=tm)
         if 0 <= k - 2 < len(chunks):
             t0 = tic()
-            outs.append(CJ.finish(coin.pop(k - 2)))
+            h = coin.pop(k - 2)
+            if _deferrable(h):   # first-choice tiers now; promotions of all chunks together after the loop
+                outs.append(CJ.collect(h))
+            else:
+                outs.append(CJ.finish(h))
             if keep_pulses:
-                outs[-1]["pulses"] = kept.pop(k - 2)
+                pulses[len(outs) - 1] = kept.pop(k - 2)
             add("coinc_finish_s", t0)
+    t0 = tic()
+    deferred = [i for i, o in enumerate(outs) if not isinstance(o, dict)]
+    for i, o in zip(deferred, CJ.complete_all([outs[i] for i in deferred]) if deferred else []):
+        outs[i] = o
+    for i, p in pulses.items():
+        outs[i]["pulses"] = p
+    add("coinc_finish_s", t0)
     timers["wall_s"] = tic() - t_all
     timers["events"] = int(len(ue))
     timers["waveforms"] = int(len(W["ev"]))

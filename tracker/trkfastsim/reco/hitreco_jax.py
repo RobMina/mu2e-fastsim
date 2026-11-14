@@ -102,7 +102,8 @@ def _straw_hits(p, c, s, npre, tot_bins):
     rho = jnp.hypot(x, y)
     ntb, wtb, neb, web = tot_bins
     tbin = jnp.minimum(int(ntb) - 1, (tot_sel / F32(wtb)).astype(jnp.int64))
-    ebin = jnp.minimum(int(neb) - 1, (energy / F32(web)).astype(jnp.int64))
+    q = (energy / F32(web)).astype(jnp.int64)          # as hitreco: a negative quotient wraps to the last bin
+    ebin = jnp.where(q < 0, int(neb) - 1, jnp.minimum(int(neb) - 1, q))
     dtime = c["totdtime"][tbin * int(neb) + ebin]
     tres = c["totderror"][tbin * int(neb) + ebin]
     t_early = jnp.where(eend == 1, t_hv, t_cal).astype(F64)

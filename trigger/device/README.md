@@ -42,6 +42,26 @@ Each `apr_(Trk|Hlx)` path (`--paths`) gets one pass probability, binned in the s
 cluster (`--edges`) and the momentum of the best device helix (`--edges-p`); it replaces that path's hs/ks factors.
 Every other path keeps its row from `--base`, so its decisions are unchanged. Without the file the default is unchanged.
 
+**Per-process response (RPC).** The response from CE shards does not carry over to RPC events. In RPC events the stock
+helix and seed-fit stages lose 9–19 % of the events whose device helix passes, against 2–3 % in CE events, at
+the same helix momentum, hit count and time-cluster time, and at the helix stage for e- and e+ alike. The cause is not yet
+found (not the DeltaFinder flags, not MergeHelices). Build an RPC response from RPC development shards instead, with
+every tpr/apr track and helix path binned and momentum rows for the RPC spectrum, and pass it only when simulating RPC:
+
+```bash
+python3 -m trigger.device.run response-binned --device rpc_dev.json --logs-sets "rpc_dev/*/replay.log" \
+    --prepared PREPARED --paths "^(tpr|apr)_(Trk|Hlx)" --edges 0 15 20 25 30 35 40 50 60 80 1000 \
+    --edges-p 0 70 80 90 100 110 1e6 --min-count 100 --base response.json --output response_rpc.json
+```
+
+Validation on Run 1A production RPC files (5 development, 5 held-out with 31,177 events; stock digis, paired with
+the stock replay): within 2 % or 2 sigma on 17/19 tested paths in float64 and 18/19 in float32, against 4/19 and 3/19
+with the CE response (misses: `apr_Hlx_30` -4 %, and in float64 `tpr_TrkDe_50_D0200` +3 %). On fast e- e+ pair digis
+per generated capture (250,000 captures, the stock files' count), the tpr and apr track paths are 0.98–1.00 of the
+stock replay in float64 and 0.96–0.99 in float32 (±0.027), against 1.04–1.30 with the CE response; `apr_Hlx_*`
+0.94–0.96. The union over paths stays about 5 % low under either response: on the device the apr paths use the tpr helix
+fit, so they fire on the same events as tpr; in stock they partly fire on others.
+
 Inputs: `trgdump.root` from `StrawHitTableDumper` (tracker package) run in the replay job on the trigger's own
 collections (`StrawHitTag: TrigMakeSH`, `PanelHitTag: TrigMakePH`, tree `trigph` (`--tree` for another name)), which also gives the stock hits for
 `--check-hits`; `replay.fcl`, `manifest.json` and `inventory.json` from `trigger/replay.py`; the `TimeCluster.weights.xml`
@@ -57,15 +77,18 @@ JAX's x64 flag is process-wide, so a process runs one precision. float32 also se
 `jax_default_matmul_precision` to `highest`, so the helix matmuls do not run on TF32 tensor cores. The time-cluster MVA
 is float32 in both precisions, as stock, and asks for `precision="highest"` itself.
 
-### Batching and CPU settings (bench)
+### Batching and CPU settings
 
 `trigger/device/bench.py` batches events by digi count (`TRIGGER_DEVICE_ORDER=hits`, the default; `input` keeps the
 dumps' order in each batch): every block pads its hit axis only to its own largest event, and the per-event results
 are put back in event order before the prescale counter, so the decisions are the same bit for bit. The hit-axis
 floor is `TRIGGER_DEVICE_HMIN` (default 64, as `hits.pack_events`).
 
-On a CPU (one core per process, as a grid slot) use small batches and the compact cluster path:
-`TRIGGER_DEVICE_BATCH=16 TRIGGER_DEVICE_HMIN=32 TRIGGER_DEVICE_COMPACT=1` (`run.py decide --compact`). The compact path
+`run.py decide` batches the same way (`--order hits`, the default; `--order input` keeps the dumps' order).
+
+On a CPU backend (one core per process, as a grid slot) both use small batches and the compact cluster path by default
+(`run.CPU_BATCHING`: batch 16, hit-axis floor 32, compact on; override with `TRIGGER_DEVICE_BATCH`, `TRIGGER_DEVICE_HMIN`,
+`TRIGGER_DEVICE_COMPACT=0|1`, or `decide --batch`, `--hmin`, `--no-compact`). The compact path
 refines time clusters and fits helices only on the occupied (event, cluster) pairs (about a quarter of the
 `NTC` slots), in per-producer device calls with a host read of the counts between them; pair capacities are 1/4, 1/2 or
 all of the batch's cluster slots, and the bench compiles them all in its first pass (setup), so later passes compile

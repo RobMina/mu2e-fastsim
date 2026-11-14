@@ -14,6 +14,8 @@ PH_SETTINGS = {
                  minR=300.0, maxR=750.0, minN=1, maxN=8, checkWres=True, unsorted=False),
     "data": dict(maxdt=45.0, maxwdchi=5.0, maxds=3, uerr=10.0, minT=0.0, maxT=256000.0, minE=0.0, maxE=1.0,
                  minR=300.0, maxR=750.0, minN=1, maxN=8, checkWres=True, unsorted=True),
+    "onspill": dict(maxdt=45.0, maxwdchi=5.0, maxds=3, uerr=10.0, minT=410.0, maxT=1700.0, minE=1.0e-4, maxE=5.0e-3,
+                    minR=380.0, maxR=700.0, minN=1, maxN=8, checkWres=True, unsorted=False),
 }
 SEL = (1 << FLAG["energysel"]) | (1 << FLAG["timesel"]) | (1 << FLAG["radsel"])
 

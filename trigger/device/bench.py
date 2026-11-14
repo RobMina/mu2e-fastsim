@@ -2,11 +2,12 @@
 
     TRIGGER_DEVICE_DUMPS=a.root,b.root TRIGGER_DEVICE_MENU=replay.fcl TRIGGER_DEVICE_MVA=TimeCluster.weights.xml \
     [TRIGGER_DEVICE_RESPONSE=response.json] [TRIGGER_DEVICE_BATCH=1024] [TRIGGER_DEVICE_PRECISION=float32] \
-    [TRIGGER_DEVICE_ORDER=hits|input] [TRIGGER_DEVICE_HMIN=64] [TRIGGER_DEVICE_COMPACT=1] \
+    [TRIGGER_DEVICE_ORDER=hits|input] [TRIGGER_DEVICE_HMIN=64] [TRIGGER_DEVICE_COMPACT=0|1] \
     python3 -m mu2efastsim.bench trigger.device.bench:step --prepare trigger.device.bench:load --events N \
         --dtype float64 (or float32, matching TRIGGER_DEVICE_PRECISION) --workflow trigger --boundary "StrawDigis -> tracker trigger path decisions" --out bench.json
 
-`load(N)` reads the first N events' digis into host memory and packs them into dense event blocks (not timed).
+Batch, hit-axis floor and compact path default to run.CPU_BATCHING on a CPU backend (16, 32, on) and to 1024, 64, off
+otherwise; the variables override them. `load(N)` reads the first N events' digis into host memory and packs them into dense event blocks (not timed).
 `load(N, seed=S)` (the timer's `--fresh-inputs`, called before every pass) takes the disjoint slice of events
 [S x N, (S + 1) x N) of the dumps read in order, so each seed gets its own events; it raises if the dumps hold fewer
 than (S + 1) x N events. The chain and the read dumps are kept for later calls in the process (built once, as in a
@@ -31,7 +32,7 @@ _DUMPS = {}
 
 
 def _chain(dumps, tree):
-    compact = os.environ.get("TRIGGER_DEVICE_COMPACT", "0") == "1"
+    compact = os.environ.get("TRIGGER_DEVICE_COMPACT", "1" if _cpu().get("compact") else "0") == "1"
     key = (dumps[0], tree, os.environ["TRIGGER_DEVICE_MENU"], os.environ["TRIGGER_DEVICE_MVA"],
            os.environ.get("TRIGGER_DEVICE_RESPONSE"), os.environ.get("TRIGGER_DEVICE_PRECISION", "float64"), compact)
     if key not in _CHAINS:
@@ -42,6 +43,11 @@ def _chain(dumps, tree):
         _CHAINS[key] = chainmod.Chain(cfg, cond, os.environ["TRIGGER_DEVICE_MVA"], response=resp,
                                       precision=os.environ.get("TRIGGER_DEVICE_PRECISION", "float64"), compact=compact)
     return _CHAINS[key]
+
+
+def _cpu():
+    """run.CPU_BATCHING on a CPU backend (the TRIGGER_DEVICE_* variables override it), else {}."""
+    return run.CPU_BATCHING if run.on_cpu() else {}
 
 
 def _order():
@@ -69,8 +75,8 @@ def load(n, seed=None):
     dumps = os.environ["TRIGGER_DEVICE_DUMPS"].split(",")
     tree = os.environ.get("TRIGGER_DEVICE_TREE", "trigph")
     ch = _chain(dumps, tree)
-    size = int(os.environ.get("TRIGGER_DEVICE_BATCH", "1024"))
-    hmin = int(os.environ.get("TRIGGER_DEVICE_HMIN", "64"))
+    size = int(os.environ.get("TRIGGER_DEVICE_BATCH", _cpu().get("batch", 1024)))
+    hmin = int(os.environ.get("TRIGGER_DEVICE_HMIN", _cpu().get("hmin", 64)))
     skip = 0 if seed is None else seed * n           # events of the dumps (in order) before this slice
     blocks, left = [], n
     for d in dumps:
