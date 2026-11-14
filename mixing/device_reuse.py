@@ -15,9 +15,10 @@ by the largest shift, so a digi that an event's shift moves into the real window
 before use.
 
 Two capacity keys undo most of the freezing at the same per-batch cost:
-- `phases` K (default 1): each frame is digitised K times, at the mean shift plus k * ADCPeriod / K (k < K, each copy
-  with its own draws). An event takes, for each reused straw, the copy whose shift is nearest its own modulo one ADC
-  period, and shifts that copy's TDC and analog times by the difference (up to one period plus the event's spread).
+- `phases` K (default 1): each frame is digitised K times, at the mean shift plus (k - K // 2) * ADCPeriod / K
+  (k < K, offsets in [-P/2, P/2), each copy with its own draws). An event takes, for each reused straw, the copy
+  whose shift is nearest its own modulo one ADC period, and shifts that copy's TDC and analog times by the difference
+  (within P / 2K for an event within P/2 of the mean shift).
   A whole-period shift leaves the samples against the pulse unchanged, so the waveform is sampled within
   ADCPeriod / (2K) of the event's own phase, consistent with its TDC, instead of at the mean shift's phase.
 - `event_jitter` (default false): the reused TDCs take the event's per-panel ROC jitter (the draw the resident tracker
@@ -92,11 +93,13 @@ def dead_time_clock(c, sid, tdc):
 
 
 def widened(c, margin):
-    """Conditions with the digitisation window (and so the step and crossing windows) widened by `margin` ns on each
-    side: the setup keeps the digis that a mixed event's time shift moves into the real window."""
+    """Conditions with the digitisation TDC window widened by `margin` ns on each side (and its end time): the setup
+    keeps the digis that a mixed event's time shift moves into the real window. The window start time is kept: it
+    also sets the step-time cut (start - steptimebuf) and where the threshold-crossing search starts (start -
+    flashBuffer), which the event applies at its own time; widening them would let early digis see pulses that the
+    event drops."""
     from trkfastsim.digi.digicond import Conditions
     s = dict(c.s)
-    s["digitizationStart"] -= margin
     s["digitizationEnd"] += margin
     ticks = int(np.ceil(margin / c.TDCLSB))
     s["digitizationStartTDC"] = int(c.digitizationStartTDC) - ticks
@@ -104,9 +107,14 @@ def widened(c, margin):
     return Conditions(s, c.a)
 
 
+def copy_offsets(c, phases):
+    """Setup time offset of each copy from the mean shift: (k - K // 2) * ADCPeriod / K, in [-P/2, P/2)."""
+    return float(c.ADCPeriod) * (np.arange(phases) - phases // 2) / phases
+
+
 def copy_shifts(c, shift, phases):
-    """Setup time shift of each copy: shift + k * ADCPeriod / phases."""
-    return float(shift) + float(c.ADCPeriod) * np.arange(phases) / phases
+    """Setup time shift of each copy: the mean shift plus its offset (copy_offsets)."""
+    return float(shift) + copy_offsets(c, phases)
 
 
 def jitter_table(key, batch_events):
@@ -140,7 +148,7 @@ def precompute(c, capacities, data, length, seed, *, rows_capacity, shift=0.0, m
     caps = ReuseCapacities(**capacities)
     F, K = caps.frames_per_batch, caps.phases
     if K > 1:
-        margin = float(margin) + float(c.ADCPeriod)
+        margin = float(margin) + float(c.ADCPeriod) / 2   # an event's copy is within P/2 of the event's shift
     model = device_tracker.prepare(without_digital_dead_time(widened(c, margin) if margin else c), caps.precompute, F)
     jitter_fn = jax.jit(lambda k: jitter_table(k, F))
     assets = jax.device_put(model.assets)
@@ -263,7 +271,7 @@ def prepare(c, capacities, batch_events, table, starts):
         T = assets["table"]
         # the copy whose setup shift is nearest the event's, modulo one ADC period
         rshift = timing["mc_pbtime"][jnp.clip(rev, 0, batch_events - 1)] - assets["shift"]
-        rcopy = jnp.mod(jnp.round(rshift * K / c.ADCPeriod).astype(jnp.int64), K)
+        rcopy = jnp.mod(jnp.round(rshift * K / c.ADCPeriod).astype(jnp.int64) + K // 2, K)
         tkey = ((rframe * K + rcopy) << 16) | rsid
         tlo = jnp.searchsorted(T["key"], tkey, side="left")
         thi = jnp.searchsorted(T["key"], tkey, side="right")
@@ -274,7 +282,7 @@ def prepare(c, capacities, batch_events, table, starts):
         rev_p, rsid_p = jnp.repeat(rev, pairs), jnp.repeat(rsid, pairs)
         evc = jnp.clip(rev_p, 0, batch_events - 1)
         # relative to the copy's setup shift
-        shift = timing["mc_pbtime"][evc] - assets["shift"] - jnp.repeat(rcopy, pairs) * (c.ADCPeriod / K)
+        shift = timing["mc_pbtime"][evc] - assets["shift"] - (jnp.repeat(rcopy, pairs) - K // 2) * (c.ADCPeriod / K)
         moved = shift
         if caps.event_jitter:   # the event's ROC jitter of the panel in place of the setup event's
             jit = jitter_table(key, batch_events)[evc, _panel(rsid_p)].astype(jnp.float64) * c.eventWindowMarkerROCJitter

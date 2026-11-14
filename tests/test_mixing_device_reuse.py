@@ -121,11 +121,12 @@ def test_reuse_capacities_validated():
 
 def test_widened_window(conditions):
     w = device_reuse.widened(conditions, 10.)
-    assert w.digitizationStart == conditions.digitizationStart - 10 and w.digitizationEnd == conditions.digitizationEnd + 10
+    # the start time (step-time cut, crossing-search start) is kept; the TDC window and the end are widened
+    assert w.digitizationStart == conditions.digitizationStart and w.digitizationEnd == conditions.digitizationEnd + 10
     ticks = int(np.ceil(10. / conditions.TDCLSB))
     assert w.digitizationStartTDC == conditions.digitizationStartTDC - ticks
     assert w.digitizationEndTDC == conditions.digitizationEndTDC + ticks
-    assert conditions.digitizationStart != w.digitizationStart   # the input is not modified
+    assert conditions.digitizationEnd != w.digitizationEnd   # the input is not modified
 
 
 def test_straws_digitised_per_batch_equal_the_tracker(conditions, helpers):
@@ -180,16 +181,16 @@ def _single_donor_rows(table, reuse, index, sid, name, us, copy=0):
 
 @pytest.mark.parametrize("k,m", [(0, 0), (1, 0), (3, -1), (2, 1)])
 def test_phase_copies(conditions, helpers, k, m):
-    """With phases K each frame is digitised K times, at shift + k P / K; an event at shift + k P / K + m P takes
+    """With phases K each frame is digitised K times, at shift + (k - K // 2) P / K; an event at that shift + m P takes
     copy k, its TDC moved by m whole ADC periods and its waveform, TOT and PMP unchanged. The primary and two-source
     straws stay the tracker's digis."""
     c, K, shift = conditions, 4, -5.
     model, table, data, index, frames = _reuse(c, helpers, shift=shift, phases=K)
     assert int(table["phases"]) == K and set(np.unique(table["copy"])) == set(range(K))
     P = float(c.ADCPeriod)
-    np.testing.assert_allclose(device_reuse.copy_shifts(c, shift, K), shift + P * np.arange(K) / K)
+    np.testing.assert_allclose(device_reuse.copy_shifts(c, shift, K), shift + P * (np.arange(K) - K // 2) / K)
     collection = _mixed(c, data, index, frames)
-    pb = shift + k * P / K + m * P
+    pb = shift + (k - K // 2) * P / K + m * P
     times = {"event_length": np.array([1700., 1690.]), "mc_pbtime": np.array([-2., pb]),
              "event_mask": np.ones(2, bool)}
     exact, _ = _run(prepare(c, CAPS, 2), collection, times)
