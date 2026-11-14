@@ -16,10 +16,10 @@ from test_digi import cond, _step, _steps  # noqa: E402,F401
 
 
 
-def _random_steps(c, rng, nev=6, per_event=40):
+def _random_steps(c, rng, nev=6, per_event=40, nstraws=30):
     """Several events, repeated straws (several passages per straw), minion and plain ionisation, early and late times."""
     rows, ev = [], []
-    straws = rng.choice(np.arange(500, 900), size=30, replace=False)
+    straws = rng.choice(np.arange(500, 900), size=nstraws, replace=False)
     for e in range(nev):
         for _ in range(per_event):
             us = int(rng.choice(straws))
@@ -108,16 +108,14 @@ def test_a_failed_batch_falls_back_to_the_per_batch_loop(cond, monkeypatch):
 
 
 def test_short_last_batches_and_padded_batch_rows_give_the_same_digis(cond, monkeypatch):
-    """Few sampling lanes and small waveform batches: the cluster sampling runs several sub-batches with a short last
-    one (all at one size), and the waveform buckets several batches whose rows are padded to a power of two. The same
-    digis as digi_jax, and _pack_at sees only power-of-two batch-row counts."""
-    from trkfastsim.digi import digi_clusters_jax as DCJ
+    """Few sampling lanes and many straws: the cluster sampling runs several sub-batches with a short last one (all at
+    one size), and the waveform buckets hold several batches whose rows are padded to a power of two. The same digis
+    as digi_jax, and _pack_at sees only power-of-two batch-row counts."""
     c = cond
-    st = _random_steps(c, np.random.default_rng(2), nev=5, per_event=37)
+    st = _random_steps(c, np.random.default_rng(2), nev=4, per_event=150, nstraws=300)
     key = jax.random.key(7)
-    monkeypatch.setattr(DCJ, "MAX_SAMPLE_LANES", 64 * 5)    # 5 lanes per sub-batch of the first class
-    monkeypatch.setattr(DJ, "BATCH", 3)                      # several waveform batches per bucket
-    a = DJ.digitize(st, 5, c, key)
+    a = DJ.digitize(st, 4, c, key)
+    monkeypatch.setattr(DR, "SAMPLE_LANES", 64 * 16, raising=False)    # 16 lanes per sub-batch of the first class
     rows = []
     orig = DR._pack_at
 
@@ -125,8 +123,13 @@ def test_short_last_batches_and_padded_batch_rows_give_the_same_digis(cond, monk
         rows.append(int(whichs.shape[0]))
         return orig(whichs, *args, **kw)
     monkeypatch.setattr(DR, "_pack_at", spy)
-    b = DR.digitize({k: jax.numpy.asarray(v) for k, v in st.items()}, 5, c, key)
-    assert len(a["ev"]) > 20
+    try:
+        b = DR.digitize({k: jax.numpy.asarray(v) for k, v in st.items()}, 4, c, key)
+    finally:
+        # this test's kernel shapes are its own: free them, since every compiled executable holds memory maps and the
+        # module's later tests compile many more (a process has about 65k maps)
+        jax.clear_caches()
+    assert len(a["ev"]) > 100
     _same(a, b)
     assert max(rows) > 2 and all(r & (r - 1) == 0 for r in rows), rows
 
@@ -214,7 +217,7 @@ def test_float32_digis_equal_digi_jax(tmp_path):
                         "-k", "offspill or padded or without_host_reads or levers", "-m", "not slow"],
                        cwd=tmp_path, env=env, capture_output=True, text=True)
     assert r.returncode == 0, r.stdout[-3000:] + r.stderr[-2000:]
-    assert "4 passed" in r.stdout, r.stdout[-2000:]
+    assert "5 passed" in r.stdout, r.stdout[-2000:]   # with the short-last-batch / padded-rows test
 
 
 def test_fewer_device_calls_give_the_same_digis(cond, monkeypatch):
