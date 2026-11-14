@@ -9,8 +9,8 @@ NeutralsFlash pools at the stock intensity law.
 |---|---|---|
 | `run1a_mix1bb_batch128.json` | 128 events | a full 40-80 GB GPU (electronics groups of 8,192 straws) |
 | `run1a_mix1bb_batch64.json` | 64 events | a 24 GB GPU slice (groups of 4,096 straws) |
-| `run1a_mix1bb_batch256.json` | 256 events | a 32-80 GB GPU (groups of 8,192 straws); SiPM cross-talk candidate buffers `ct1`-`ct3` at 1/8 of the earlier generous sizes |
-| `run1a_mix1bb_batch256_reuse.json` | 256 events | as batch 256, with the opt-in donor-frame digi reuse (an approximation; see [../DEVICE_TRACKER.md](../DEVICE_TRACKER.md)) |
+| `run1a_mix1bb_batch256.json` | 256 events | **the W6 default**: a 32-80 GB GPU (groups of 8,192 straws), with the two W6 approximations, donor-frame digi reuse ([../DEVICE_TRACKER.md](../DEVICE_TRACKER.md)) and CRV thermal noise on counters with steps ([../DEVICE_CRV.md](../DEVICE_CRV.md)) |
+| `run1a_mix1bb_batch256_exact.json` | 256 events | the exact reference for the default: the same file without either approximation (every straw digitised per batch, thermal noise on every counter, CRV buffers at their earlier sizes) |
 
 ## How they were made
 
@@ -22,7 +22,7 @@ NeutralsFlash pools at the stock intensity law.
   - 16 charge blocks per launch (128 in the batch-256 files: 12 launches instead of 92 per batch);
   - scatter CRV waveforms.
 - The two widest end tiers keep at least 256 and 16 straws, above their measured demand.
-- `run1a_mix1bb_batch256.json` comes from its own census: 42 batches of 256 events, margin 1.25. Its SiPM cross-talk
+- The batch-256 files come from their own census: 42 batches of 256 events, margin 1.25. Their SiPM cross-talk
   candidate buffers `ct1`-`ct3` have no demand counter. They were cut 8x from the generous sizes and checked over
   full development and held-out passes; a further 4x overflowed. As with every buffer, an overflow rejects the batch.
 
@@ -51,16 +51,18 @@ NeutralsFlash pools at the stock intensity law.
   straw skipped. They have no size and change the time, not the digis; with them the largest per-launch
   digitisation demand is 0.93-0.95 entries per straw, inside `digit_entries_per_straw`.
 
-- **CRV `thermal_counters: "hit"`** (batch-256 files; opt-in approximation, see [../DEVICE_CRV.md](../DEVICE_CRV.md)):
-  thermal noise only on counters with steps; `thermal` 35,332 and `charge_clusters` 47,107 are 1.25 times the largest
-  demand over full development and held-out passes in float32 and float64; `ct1` and `ct2` halved.
+- **CRV `thermal_counters: "hit"`** (`run1a_mix1bb_batch256.json`, the default; an approximation, see
+  [../DEVICE_CRV.md](../DEVICE_CRV.md)): thermal noise only on counters with steps; `thermal` 35,332 and
+  `charge_clusters` 47,107 are 1.25 times the largest demand over full development and held-out passes in float32 and
+  float64; `ct1` and `ct2` halved. The exact file keeps the earlier sizes (`thermal` 565,032, `charge_clusters`
+  257,030, `ct1` 196,608, `ct2` 49,152) and the code default `"all"`.
 - **`electronics_loops: "bounded"`** (batch-256 files): the fine crossing search stops once converged and the
   saturated ADC samples are summed over the response tiles that ran; no size.
 
 - **`output.tracker_rows`** (batch-256 files): the tracker digi rows downloaded per batch, 229,376: 1.39 times the
   largest demand (164,716 digis in one batch of 256) over full development and held-out passes in float32 and
   float64. The other rows of the padded table are empty; it changes the time, not the outputs.
-- **`tracker_reuse`** (`run1a_mix1bb_batch256_reuse.json` only; opt-in approximation): `compute` is the tracker for
+- **`tracker_reuse`** (`run1a_mix1bb_batch256.json`, the default; an approximation): `compute` is the tracker for
   the straws still digitised per batch (primary, two or more sources, the streams not reused), 1.25 times their
   demand over a full development pass; `precompute` sizes the setup batches of 8,192 donor frames (`long_steps`,
   `minion_steps`, `flat_clusters` and `drift_clusters` raised; setup only); `straws` holds the reused straws per

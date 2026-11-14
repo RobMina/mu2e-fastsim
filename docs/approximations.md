@@ -170,6 +170,11 @@ behaviour and any stock-art route outside the chain's levels:
   - The stock-art input for the transport and the secondaries is Geant4 CrvSteps through `--steps-input`.
 - **W6, W8.** These have no switchable approximation yet. The stock alternatives are the native art mixers (W6) and
   the stock trigger replay on the same digis (W8).
+- **W6 device approximations set by the capacity file.** The default Run 1A file
+  (`mixing/capacities/run1a_mix1bb_batch256.json`) has two: donor-frame digi reuse for the tracker (`tracker_reuse`,
+  [mixing/DEVICE_TRACKER.md](../mixing/DEVICE_TRACKER.md)) and CRV thermal noise only on counters with steps
+  (`thermal_counters: "hit"`, [mixing/DEVICE_CRV.md](../mixing/DEVICE_CRV.md)). `run1a_mix1bb_batch256_exact.json` is
+  the same file without either. The run records the capacity file it used.
 - **W7.** `digi_response=parametric` (opt-in, the `fast` preset) draws each (event, crystal) hit from a table of the
   full chain's outcome per bin of visible energy (`calofastsim.param_response`) instead of photoelectrons, waveforms,
   digis and the template fit: steps -> hits + clusters, no digis. On the held-out CE files (14,218 events, the same

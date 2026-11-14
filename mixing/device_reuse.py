@@ -1,4 +1,5 @@
-"""Opt-in donor-frame digi reuse for the resident tracker (an approximation; off by default).
+"""Donor-frame digi reuse for the resident tracker (an approximation; on in the W6 default capacity file
+`run1a_mix1bb_batch256.json`, off in `run1a_mix1bb_batch256_exact.json` and the batch-64/128 files).
 
 Most hit straws of a mixed event see steps of one donor frame only. With reuse, every donor frame of the pools is
 digitised once at setup, as an event of its own at the signal events' mean time shift (mc_pbtime). A mixed batch
@@ -215,4 +216,4 @@ def prepare(c, capacities, batch_events, table, starts):
 
     return SimpleNamespace(assets=assets, apply=apply_plain, apply_with_usage=apply, capacities=caps,
                            compute=compute,
-                           metadata={**compute.metadata, "approximation": "donor-frame digi reuse (opt-in)"})
+                           metadata={**compute.metadata, "approximation": "donor-frame digi reuse"})
