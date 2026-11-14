@@ -110,3 +110,46 @@ def test_waveform_is_the_default():
     for f in (dc.make_chain, dc.make_steps_chain):
         assert inspect.signature(f).parameters["digi_response"].default == "waveform"
     assert dc._digi_table("waveform") is None and dc._digi_table(None) is None
+
+
+def test_core_window_cells_follow_the_main_deposit(tmp_path):
+    """cells(core_window=W): energy and time of the steps within W of the cell's energy-weighted median time."""
+    rng = np.random.default_rng(3)
+    n = 3000
+    ev = rng.integers(0, 40, n)
+    cr = rng.integers(0, 30, n)
+    e = rng.exponential(2.0, n)
+    t = rng.normal(500.0, 0.5, n) + np.where(rng.random(n) < 0.08, rng.uniform(-60, 120, n), 0.0)   # stray deposits
+    keep = rng.random(n) < 0.95
+    W = 6.0
+    ok, cev, ccr, E, T, over = (np.asarray(a) for a in PR.cells(
+        jnp.asarray(ev), jnp.asarray(cr), jnp.asarray(e), jnp.asarray(t), jnp.asarray(keep), 30, 2000, core_window=W))
+    assert int(over) == 0
+    key = ev * 30 + cr
+    for k in np.unique(key[keep]):
+        m = keep & (key == k)
+        o = np.argsort(t[m], kind="stable")
+        ts, es = t[m][o], e[m][o]
+        med = ts[np.flatnonzero(np.cumsum(es) >= 0.5 * es.sum())[0]]
+        core = np.abs(ts - med) <= W
+        j = np.flatnonzero(ok & (cev * 30 + ccr == k))
+        assert len(j) == 1
+        np.testing.assert_allclose(E[j[0]], es[core].sum(), rtol=1e-12)
+        np.testing.assert_allclose(T[j[0]], (es[core] * ts[core]).sum() / es[core].sum(), rtol=1e-12)
+    # without a window: all steps (the shipped tables' definition)
+    ok0, _, _, E0, _, _ = (np.asarray(a) for a in PR.cells(
+        jnp.asarray(ev), jnp.asarray(cr), jnp.asarray(e), jnp.asarray(t), jnp.asarray(keep), 30, 2000))
+    np.testing.assert_allclose(np.sort(E0[ok0]), np.sort(np.bincount(np.unique(key[keep], return_inverse=True)[1],
+                                                                     e[keep])), rtol=1e-12)
+    assert np.all(E[ok] <= E0[ok0] + 1e-12)
+
+
+def test_table_carries_its_cell_definition(tmp_path):
+    e = np.geomspace(0.02, 200, 400)
+    v = np.full(e.size, -1000.0)
+    v[::40] = 10.0
+    tab = PR.build(e, e > 1, np.full(e.size, 0.9), np.full(e.size, 1.0), v, core_window=6.0)
+    PR.save(tmp_path / "c.npz", tab)
+    assert PR.to_device(PR.load(tmp_path / "c.npz")).core_window == 6.0
+    assert PR.to_device(PR.load("v1")).core_window is None
+    assert PR.to_device(PR.load("default")).core_window == PR.CORE_WINDOW

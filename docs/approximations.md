@@ -185,9 +185,14 @@ behaviour and any stock-art route outside the chain's levels:
   the same file without either. The run records the capacity file it used.
 - **W7.** `digi_response=parametric` (opt-in, the `fast` preset) draws each (event, crystal) hit from a table of the
   full chain's outcome per bin of visible energy (`calofastsim.param_response`) instead of photoelectrons, waveforms,
-  digis and the template fit: steps -> hits + clusters, no digis. On the held-out CE files (14,218 events, the same
-  steps, timing and keys, against the waveform response): leading-cluster peak ratio 0.9988 +- 0.0018, width
-  +0.03 MeV, yield above 10 MeV 1.0018 +- 0.0006, energy chi2 28/41, x / y / radius chi2 3/52, 3/50, 2/11, leading
-  time paired difference 0.01 +- 0.01 ns. Clusters above 10 MeV per event come out 1.2 % high (0.728 against 0.719,
-  chi2 17/5): the table draws each crystal on its own, without the time structure of its deposits. The stock
-  alternative of the other approximations is stock steps through `make_steps_chain`.
+  digis and the template fit: steps -> hits + clusters, no digis. The shipped table (v2) keys each crystal on its main
+  deposit: the energy and energy-weighted time of the steps within 6 ns of the crystal's energy-weighted median step
+  time. On the held-out CE files (14,218 events, the same steps and timing, against the stock calorimeter reco;
+  float32 and float64 give the same numbers, the table's draws have fixed dtypes): leading-cluster peak ratio
+  0.9989 +- 0.0018, width +0.05 +- 0.14 MeV, yield above 10 MeV 0.9996 +- 0.0006, clusters above 10 MeV per event
+  chi2 4/4, energy chi2 65/46, x / y / radius chi2 28/51, 43/49, 11/13, paired leading energy -0.16 +- 0.03 MeV. The
+  first table (`digi_response="v1"`) used all the deposits of a crystal: a late deposit moved the crystal's time, the
+  drawn hit fell outside the 2 ns cluster window, and about 1 % of events got an extra single-crystal cluster above
+  10 MeV (chi2 153/4). The table cannot carry the second hit of a cell (deposits more than `time4merge` apart) or
+  hits without a deposit (noise alone). The stock alternative of the other approximations is stock steps through
+  `make_steps_chain`.

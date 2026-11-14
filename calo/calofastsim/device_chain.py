@@ -742,7 +742,8 @@ def param_hits(resp: DeviceResponse, table, ev, t, st, crystal, depth, mapped, k
     keep = mapped & accepted
     energy = rj.corrected_energy(st["energy_g4"], st["energy_birks"], depth, t["crystal_length"][ev], a["lru"][cr],
                                  birks=cfg.birks, longitudinal=cfg.lru)
-    ok, cev, ccr, E, T, over_cells = PR.cells(ev, cr, energy, hit_t, keep, resp.n_crystals, caps.rows)
+    ok, cev, ccr, E, T, over_cells = PR.cells(ev, cr, energy, hit_t, keep, resp.n_crystals, caps.rows,
+                                              core_window=table.core_window)
     hit, e, th = PR.draw(table, key, ok, E, T, T - window_end(cfg, t)[cev])
     # the table's times carry no reco bunch-time smear: subtract this event's (pbt_reco - pbtime)
     shift = pbt_reco.astype(jnp.float64) - t["pbtime"].astype(jnp.float32).astype(jnp.float64)
