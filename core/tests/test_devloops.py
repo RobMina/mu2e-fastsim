@@ -78,7 +78,7 @@ def test_provenance_records_both():
 # --- select: the per-workflow table ---------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("workflow, loops, conc", [
-    ("W1", True, False), ("W2", False, False), ("W3", False, False), ("W4", False, False), ("W5", False, False),
+    ("W1", True, False), ("W2", False, True), ("W3", False, True), ("W4", False, True), ("W5", False, False),
     ("W6", True, True), ("mixing", True, True), ("W7", False, False), ("W8", False, False),
     ("other", False, False), (None, False, False)])
 def test_auto_follows_the_workflow(workflow, loops, conc):
@@ -103,7 +103,7 @@ def test_the_first_select_stands_unless_forced():
     out = probe(['("W8", "on")', '("W8")'])
     assert out["loops"]["requested"] is True and out["loops"]["decided_by"] == "flag"
     out = probe(['("W2")', '("mixing")'])
-    assert toks(out) == [] and out["loops"]["workflow"] == "W2" and out["conc"]["workflow"] == "W2"
+    assert toks(out) == [CONC] and out["loops"]["workflow"] == "W2" and out["conc"]["workflow"] == "W2"
     out = probe(['("W6")', '("W6", None, "off")'])
     assert toks(out) == [LOOPS] and out["conc"]["decided_by"] == "flag"
 
@@ -140,7 +140,7 @@ def test_ce_chain_with_loops_drops_concurrency_with_a_warning(workflow, calls, e
 
 
 def test_ce_chain_concurrency_alone_is_allowed():
-    out = probe(['("W2", None, "on")'])
+    out = probe(['("W2", None, "on")'], MU2EFS_GRAPH_CONCURRENCY="0")
     assert toks(out) == [CONC] and "dropped_for" not in out["conc"] and out["warnings"] == []
 
 
@@ -162,7 +162,7 @@ def test_late_ce_chain_select_with_both_on_warns_of_the_hang():
 
 # --- entry points ---------------------------------------------------------------------------------------------------
 
-@pytest.mark.parametrize("workflow, loops, conc", [("W2", None, None), ("W6", "+CONDITIONAL,+WHILE", "true"),
+@pytest.mark.parametrize("workflow, loops, conc", [("W2", None, "true"), ("W6", "+CONDITIONAL,+WHILE", "true"),
                                                    ("W8", None, None)])
 def test_bench_selects_for_its_workflow(tmp_path, workflow, loops, conc):
     (tmp_path / "toyloops.py").write_text("def step(n):\n    return n\n")

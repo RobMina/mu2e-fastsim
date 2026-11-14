@@ -150,8 +150,8 @@ float64). The precision provenance records the setting.
 
 A batch step is tens of thousands of GPU kernels, most of them a few microseconds long (loop bodies, small
 reductions), and XLA records each command buffer as one chain of them. Core `devloops.py` also appends
-`--xla_gpu_graph_enable_concurrent_region=true` (chosen per workflow like device loops: on for W6, off for the
-workflows where it is not measured faster; `MU2EFS_GRAPH_CONCURRENCY=0` or the bench's `--graph-concurrency off` turns it off, before
+`--xla_gpu_graph_enable_concurrent_region=true` (chosen per workflow like device loops: on for W6 and the CE
+chain, off for the workflows where it is not measured faster; `MU2EFS_GRAPH_CONCURRENCY=0` or the bench's `--graph-concurrency off` turns it off, before
 JAX starts): kernels that do not depend on each other become parallel branches of the graph and share the GPU. XLA
 keeps its own dependencies, so the results are the same: over full development and held-out passes at batch 256 the
 output files are identical with and without it (CRV float32 and float64, float32 tracker; exact and reuse capacity

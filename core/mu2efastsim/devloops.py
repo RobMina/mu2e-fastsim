@@ -19,20 +19,21 @@ same-job A100-80 rates (warm events/s over 2 warm passes, cold compile cache):
 
     workflow   loops on / off, f64 | f32               loops   concurrency
     W1         624 / 608 | 869 / 844 (+3 %)              on      off
-    W2         76 / 101 | 35 / 42 (5,000 / pass);        off     off
-               200k / pass: 1,865 / 2,087 | 2,036 / 2,424
-    W3, W4     W2's CE chain                             off     off
+    W2         76 / 101 | 35 / 42 (5,000 / pass);        off     on (loops off, 200k / pass, compiles
+               200k / pass: 1,865 / 2,087 | 2,036 / 2,424        excluded: concurrency on / off
+                                                                 2,427 / 2,251 | 3,234 / 2,918, +7..+11 %)
+    W3, W4     W2's CE chain                             off     on
     W5 plain   2,810 / 2,989 | 2,762 / 2,823 (-2..-6 %)   off     off
     W5 refit   3,119 / 3,132 | 3,040 / 3,045 (~0)        off     off  (same "W5" entry)
     W6         279 / 260 | 295 / 272 (+7..+8 %)          on      on (x1.03-1.07, output files identical)
     W7         3,551 / 3,557 | 5,459 / 5,460 (0)         off     off
     W8         7,013 / 7,848 | 7,509 / 8,600 (-11..-13 %) off     off
 
-Concurrency is on only where it is measured faster and its outputs were checked (W6). A workflow not in the table, and
-a process that names none, gets both off. The CE chain (W2, W3, W4: the transport while loop in cechain_jax.run) hangs
-on A100 GPUs with device loops and concurrency both on, in both dtypes, while either alone completes: for those
-workflows the combination cannot be selected (CE_CHAIN): when device loops are on, by any override, concurrency is
-turned off with a warning.
+Concurrency is on only where it is measured faster and its outputs were checked (W6, and the CE chain W2-W4 with its
+loops off). A workflow not in the table, and a process that names none, gets both off. The CE chain (W2, W3, W4: the
+transport while loop in cechain_jax.run) hangs on A100 GPUs with device loops and concurrency both on, in both
+dtypes, while either alone completes: for those workflows the combination cannot be selected (CE_CHAIN): when device
+loops are on, by any override, concurrency is turned off with a warning.
 
 Overrides, per setting: select's `loops` / `concurrency` argument (an entry point's --device-loops /
 --graph-concurrency on|off), then MU2EFS_DEVICE_LOOPS / MU2EFS_GRAPH_CONCURRENCY = 1 or 0, then the table. A value
@@ -60,9 +61,9 @@ CONCURRENCY_VALUE = "true"
 # Unlisted workflows and None: both off.
 WORKFLOWS = {
     "W1": (True, False),
-    "W2": (False, False),
-    "W3": (False, False),
-    "W4": (False, False),
+    "W2": (False, True),
+    "W3": (False, True),
+    "W4": (False, True),
     "W5": (False, False),
     "W6": (True, True),
     "mixing": (True, True),
