@@ -143,15 +143,18 @@ def _charge_kernel(c):
 
 
 @lru_cache(maxsize=8)
-def _charge_blocks_kernel(c):
+def _charge_blocks_kernel(c, blocks=None):
+    """The charge kernel over `blocks` (default CHARGE_BLOCKS) CHARGE_BLOCK-cluster blocks per call; each block's key
+    is folded with its first cluster's global index, so the grouping of blocks into calls leaves the draws unchanged."""
     charge = _charge_kernel(c)
+    nb = _c("CHARGE_BLOCKS") if blocks is None else int(blocks)
 
     @df.jit
     def run(key, first, us, pos, ne, time):
-        offsets = first + jnp.arange(_c("CHARGE_BLOCKS"), dtype=jnp.int64) * CHARGE_BLOCK
+        offsets = first + jnp.arange(nb, dtype=jnp.int64) * CHARGE_BLOCK
         keys = jax.vmap(lambda offset: random.fold_in(random.fold_in(key, 1), offset))(offsets)
-        args = (us.reshape(_c("CHARGE_BLOCKS"), CHARGE_BLOCK), pos.reshape(_c("CHARGE_BLOCKS"), CHARGE_BLOCK, 3),
-                ne.reshape(_c("CHARGE_BLOCKS"), CHARGE_BLOCK), time.reshape(_c("CHARGE_BLOCKS"), CHARGE_BLOCK))
+        args = (us.reshape(nb, CHARGE_BLOCK), pos.reshape(nb, CHARGE_BLOCK, 3),
+                ne.reshape(nb, CHARGE_BLOCK), time.reshape(nb, CHARGE_BLOCK))
         result = jax.vmap(charge)(keys, *args)
         return tuple(a.reshape((-1,) + a.shape[2:]) for a in result)
     return run
