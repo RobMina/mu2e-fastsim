@@ -201,3 +201,27 @@ def test_positron_loss_tables_are_bhabha_and_the_full_transport_runs():
     ee = np.asarray(e.steps["eion"])[np.asarray(e.steps["valid"])]
     ep = np.asarray(p.steps["eion"])[np.asarray(p.steps["valid"])]
     assert abs(ep.mean() - ee.mean()) < 0.1 * ee.mean()
+
+
+def test_spare_record_rows_change_nothing_and_share_the_compiled_loops():
+    """rows: a record buffer larger than the call gives the same steps and finals, and calls of several sizes that
+    share it compile one launch loop per bucket size instead of one per bucket size and call size."""
+    B = np.array([0.0, 0.0, 1.0])
+    _, _, trk = _setup(B)
+    rng = np.random.default_rng(31)
+    kw = dict(rounds_it=8, min_bucket=4)
+    o, d = _lines(50, rng)
+    p = d * rng.uniform(40.0, 105.0, 50)[:, None]
+    a = FJ.transport(trk, jax.random.PRNGKey(6), o, p, np.zeros(50), **kw)
+    b = FJ.transport(trk, jax.random.PRNGKey(6), o, p, np.zeros(50), rows=87, **kw)
+    for part in ("steps", "final"):
+        for k, v in getattr(a, part).items():
+            assert np.array_equal(np.asarray(v), np.asarray(getattr(b, part)[k])), (part, k)
+    calls = [(n, *_lines(n, rng)) for n in (64, 32, 16)]
+    compiled = {}
+    for rows in (None, 64):
+        jax.clear_caches()
+        for n, o, d in calls:
+            FJ.transport(trk, jax.random.PRNGKey(n), o, d * 105.0, np.zeros(n), rows=rows, **kw)
+        compiled[rows] = FJ._run._cache_size()
+    assert compiled[64] <= 5 < compiled[None]         # buckets 64, 32, 16, 8, 4 once, against once per call size

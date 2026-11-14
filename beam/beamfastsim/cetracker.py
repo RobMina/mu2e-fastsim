@@ -489,12 +489,15 @@ class DeviceChain:
         size = max(64, 1 << int(np.ceil(np.log2(stats["total"]))))
         rr = self.alb.returns(g, phi, te, jnp.arange(g.shape[0]), size)
         act = (rr["valid"] & ~rr["isce"]) if positron else rr["valid"]
+        # record buffer of the batch's rows (or more): the return transport, whose size follows the return count,
+        # then runs the compiled loops of the batch's own tracker call instead of compiling a ladder per count
+        rows = g.shape[0]
         ret = FJ.transport(self.trk, jax.random.fold_in(key, 1), rr["x"], rr["p"], rr["t"], active=act,
-                           max_chords=self.alb_max_chords)
+                           max_chords=self.alb_max_chords, rows=rows)
         if positron:                               # the positron's own returns: charge +1, merged lane by lane
             own = rr["valid"] & rr["isce"]
             rp = FJ.transport(self.trk, jax.random.fold_in(key, 2), rr["x"], rr["p"], rr["t"], active=own,
-                              max_chords=self.alb_max_chords, positron=True)
+                              max_chords=self.alb_max_chords, positron=True, rows=rows)
             pick = lambda a, b: jnp.where(own.reshape((-1,) + (1,) * (a.ndim - 1)), a, b)
             ret = ret._replace(steps={k: pick(rp.steps[k], v) for k, v in ret.steps.items()},
                                final={k: pick(rp.final[k], v) for k, v in ret.final.items()})
