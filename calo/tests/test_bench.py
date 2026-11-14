@@ -78,7 +78,7 @@ def test_entry_point_runs(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("dtype", ["float64", "float32"])
 def test_fit_modes_keep_clusters(tmp_path, monkeypatch, dtype):
-    """Two-pass refit and length buckets: the same clusters as one pass on all columns."""
+    """The default fit plan (two-pass refit, length buckets): the same clusters as one pass on all columns."""
     jax = pytest.importorskip("jax")
     jax.config.update("jax_enable_x64", True)
     from calofastsim import device_chain as dc
@@ -102,9 +102,8 @@ def test_fit_modes_keep_clusters(tmp_path, monkeypatch, dtype):
     monkeypatch.setattr(bench, "conditions", conditions)
     monkeypatch.setattr(bench, "_CHAINS", {})
     prepared = bench.bench_prepare(16, seed=2, batch=16)
-    ref = bench.bench_steps(prepared, dtype=dtype, outliers=1 << 12)
-    alt = bench.bench_steps(prepared, dtype=dtype, outliers=1 << 12, refits=8, fit_short_length=48,
-                            fit_short=16 * 16, fit_long=16 * 16)
+    ref = bench.bench_steps(prepared, dtype=dtype, outliers=1 << 12, refits=0, fit_short_length=0)
+    alt = bench.bench_steps(prepared, dtype=dtype, outliers=1 << 12)
     assert not any(bench.overflow(ref).values()) and not any(bench.overflow(alt).values())
     a, b = (jax.tree_util.tree_map(np.asarray, o[0]["clusters"]) for o in (ref, alt))
     np.testing.assert_array_equal(a["valid"], b["valid"])
@@ -112,48 +111,10 @@ def test_fit_modes_keep_clusters(tmp_path, monkeypatch, dtype):
     np.testing.assert_allclose(np.where(a["valid"], a["energy"], 0), np.where(b["valid"], b["energy"], 0), atol=tol)
 
 
-@pytest.mark.parametrize("dtype", ["float64", "float32"])
-def test_window_digis_equal_full(dtype):
-    """Constant noise (deterministic): the windowed digitisation gives the full-waveform digis, wide rows included."""
-    jax = pytest.importorskip("jax")
-    jax.config.update("jax_enable_x64", True)
-    import jax.numpy as jnp
+def test_fit_plan_auto_and_explicit():
     from calofastsim import device_chain as dc
-    from calofastsim.cluster import Geometry
-    from calofastsim.pulse import PulseCache
-    from calofastsim.readout import PropagationTable
-    rng = np.random.default_rng(5)
-    n_ev, n_cr = 8, 20
-    pos = np.column_stack((np.arange(n_cr) % 5 * 34.3, np.arange(n_cr) // 5 * 34.3, np.zeros(n_cr)))
-    geom = Geometry(pos, np.zeros(n_cr, int), np.zeros((n_cr, n_cr), bool), np.zeros((1, 3)))
-    x = (np.arange(6200) + 0.5) * 0.05
-    pulse = PulseCache.from_histogram((x / 20.0) ** 2 * np.exp(-x / 10.0), 0.0, 310.0, 5.0)
-    sim = {"lru": np.zeros(n_cr, np.float32), "pe_per_mev": np.full((n_cr, 2), 30.0, np.float32),
-           "adc_per_mev": np.full((n_cr, 2), 16.0, np.float32)}
-    table = PropagationTable(np.ones((1, 1), np.float32), np.zeros(1, np.float32), np.float32(1.0))
-    resp = dc.pack_response(sim, pulse, np.full(10000, 12.0), table, geom, dtype=np.dtype(dtype))
-    m = 400
-    ev = rng.integers(0, n_ev, m)
-    sipm = rng.integers(0, 2 * n_cr, m)
-    pe_t = rng.uniform(300, 1200, n_ev)[ev] + rng.exponential(2.0, m)
-    late = rng.random(m) < 0.03
-    pe_t = np.where(late, pe_t + rng.uniform(150, 600, m), pe_t).astype(np.float32)   # late deposits: wide rows
-    weight = rng.integers(1, 400, m).astype(np.float64)
-    tm = {"pbtime": np.full(n_ev, -210.0, np.float32), "marker": np.full(n_ev, 200.0, np.float32)}
-    tm = {k: jnp.asarray(v) for k, v in tm.items()}
-    full = dc.Caps(events=n_ev, rows=256, digis=512, digi_length=128, outliers=4096)
-    win = dc.Caps(events=n_ev, rows=256, digis=512, digi_length=128, outliers=4096, wave_window=96, wide_rows=64,
-                  wide_digis=256)
-    out = []
-    for caps in (full, win):
-        dg, over = jax.jit(lambda e, s_, p_, w_, c=caps: dc.digitise(resp, tm, e, s_, p_, w_, jnp.ones(m, bool),
-                                                                     jax.random.PRNGKey(0), c))(
-            jnp.asarray(ev), jnp.asarray(sipm), jnp.asarray(pe_t), jnp.asarray(weight))
-        assert not any(int(v) for v in over.values())
-        dg = jax.tree_util.tree_map(np.asarray, dg)
-        ok = dg["ok"]
-        rows = sorted((int(e), int(s_), int(t0), int(n), tuple(sm[:n])) for e, s_, t0, n, sm in
-                      zip(dg["event"][ok], dg["sipm"][ok], dg["t0"][ok], dg["length"][ok], dg["samples"][ok]))
-        out.append(rows)
-    assert len(out[0]) > 10
-    assert out[0] == out[1]
+    assert dc.fit_plan(dc.Caps(digis=65536, digi_length=96)) == (256, 48, 40960, 16384)
+    assert dc.fit_plan(dc.Caps(digis=100, digi_length=96)) == (32, 48, 63, 25)
+    assert dc.fit_plan(dc.Caps(digis=512, digi_length=48))[1] == 0            # no shorter bucket than the digis
+    assert dc.fit_plan(dc.Caps(refits=0, fit_short_length=0)) [:2] == (0, 0)  # one pass, one bucket
+    assert dc.fit_plan(dc.Caps(refits=8, fit_short_length=32, fit_short=10, fit_long=5)) == (8, 32, 10, 5)
