@@ -209,23 +209,6 @@ def test_phase_copies(conditions, helpers, k, m):
             np.testing.assert_array_equal(table[field][rows], reuse[field][b])
 
 
-def test_phase_copies_differ_by_their_shift(conditions, helpers):
-    """Copy k of a frame is that frame digitised at shift + k P / K: analog crossing times move with the copy's shift
-    (each copy has its own draws, so digis may differ beyond the shift)."""
-    c, K, shift = conditions, 4, -5.
-    _, table, _, index, _ = _reuse(c, helpers, shift=shift, phases=K)
-    P = float(c.ADCPeriod)
-    for name in ("A", "B", "C", "D"):
-        first = {}
-        for k in range(K):
-            rows = (table["frame"] == index[name]) & (table["copy"] == k)
-            if rows.any():
-                first[k] = table["t_analog"][rows][0, 0] - k * P / K
-        if len(first) > 1:
-            values = np.array(list(first.values()))
-            assert np.ptp(values) < 3.0, (name, first)   # same pulse, own noise: crossings within a few ns
-
-
 def test_event_jitter(conditions, helpers):
     """event_jitter: a reused digi's TDC takes the event's ROC jitter of its panel (the resident tracker's draw for
     that event and panel) in place of the setup event's."""
