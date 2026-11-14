@@ -341,8 +341,10 @@ def test_compact_clusters_and_helices_match_the_one_call_path():
 
 def test_pair_paths_match_the_batched_multi_path():
     """chain pairs path (the default): cluster refinement and helix fits on the gathered (producer, event, slot) pairs
-    give the same clusters and helices, where a consumer reads them, as the batched multi path, both when the pairs
-    fit in K and when they do not (then the full batched path runs)."""
+    give the same clusters as the batched multi path and the same helices as the per-set fit, bit for bit where a
+    consumer reads them, both when the pairs fit in K and when they do not (then the full batched path runs in the
+    same call). The batched helices_multi (pairs off) fuses differently: its helix quantities agree with the per-set
+    fit to rounding (float64: 1 ulp in the momentum)."""
     pytest.importorskip("jax")
     import jax
     import jax.numpy as jnp
@@ -362,7 +364,13 @@ def test_pair_paths_match_the_batched_multi_path():
     ref = jax.jit(lambda p: timecluster.time_clusters_multi(p, ss, net))(ph)
     E, C = ref[0]["valid"].shape
     assert sum(int(np.asarray(r["valid"]).sum()) for r in ref) > 1
-    href = jax.jit(lambda p, t: helix.helices_multi(p, t, hs, fz))(ph, ref)
+    href = [jax.jit(lambda p, t: helix.helices(p, t, hs, fz))(ph, r) for r in ref]      # per-set fit
+    hmulti = jax.jit(lambda p, t: helix.helices_multi(p, t, hs, fz))(ph, ref)
+    for r, m in zip(href, hmulti):
+        ok = np.asarray(r["ok"])
+        np.testing.assert_array_equal(np.asarray(m["ok"]), ok)
+        for key in r:
+            np.testing.assert_allclose(np.asarray(m[key])[ok], np.asarray(r[key])[ok], rtol=1e-12, atol=0)
     for K in (len(ss) * E * C, 1):               # pairs branch; more candidates than K: the full branch
         got = jax.jit(lambda p: timecluster.time_clusters_multi_pairs(p, ss, net, K))(ph)
         for r, g in zip(ref, got):
