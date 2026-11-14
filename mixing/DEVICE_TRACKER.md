@@ -112,25 +112,28 @@ padding.
   of its present (straw, pair) entries, at most `ceil(f x B)`, with the pair loop's per-straw, per-stage, per-pair
   keys and arithmetic.
 - The digital dead time is applied afterwards, per straw in pair order, as the loop does.
-- Saturated ends are compacted into chunks of 2 x B rows, the loop's own row count, which keeps the float32 response
-  sums bit-identical. A chunk with no saturated end is skipped.
-- `flat_saturation_rows: "auto"` uses chunks of B rows in float64. About 40 % of the 2 x B rows are live in a real
-  batch, so this halves the padded saturation work. Over full development and held-out passes it is
-  bit-identical in float64, but not in float32: the float32 response sums depend on the reduction shapes, and B
-  rows changed a few ADC counts. So float32 keeps 2 x B. The default (`"lanes"`) keeps 2 x B in both dtypes.
-- `flat_saturation_pool: "tier"` saturates the ends of all launches of one kernel shape (the narrow launches, then
-  each end tier) together, in chunks of the same row count. Each chunk computes as a per-launch chunk does, so the
-  digis are the same in both dtypes; but a launch's partly filled chunk is filled by the next launch's ends, so
-  fewer chunks run. In a real batch of 256, the 34 narrow launches run 26 chunks one launch at a time and 7 pooled
-  (float32).
-  The launches' saturated-end data stay on the device between the two steps (a few hundred MB at batch 256).
-  `"auto"` pools in float32 only: in float64, `flat_saturation_rows: "auto"` already halves the chunks, and pooling
-  measured 2 % slower there.
-- `flat_saturation_tiles: "bounded"` (with the pool) orders the pooled saturated ends by their live response tiles
-  and runs each chunk's tile loop only as far as its ends need. A tile past every end's last response step holds
-  zeros either way, so the digis are the same. Real saturated ends need about 80 of the 326 response steps (90 %
-  need at most 2 of the 6 tiles), so the tile work falls to x0.65 (float32) and x0.51 (float64). With it, pooling
-  pays in float64 too; the Run 1A capacity files set `flat_saturation_pool: "tier"` and `"bounded"`.
+- Saturated ends are compacted into chunks of rows; a chunk with no saturated end is skipped. Three layout choices
+  are the defaults with the flat digitisation. Each gives the same digis in both dtypes; the keys are kept so that
+  existing capacity files still load, and only the values below are accepted.
+- `flat_saturation_rows: "auto"` (default): chunks of B rows in float64 and the loop's own 2 x B rows in float32.
+  About 40 % of the 2 x B rows are live in a real batch, so B rows halve the padded saturation work. Over full
+  development and held-out passes B rows are bit-identical in float64, but not in float32: the float32 response
+  sums depend on the reduction shapes, and B rows changed a few ADC counts. So float32 keeps 2 x B. (The former
+  `"lanes"`, 2 x B in float64 too, was removed.)
+- `flat_saturation_pool: "tier"` (default) saturates the ends of all launches of one kernel shape (the narrow
+  launches, then each end tier) together, in chunks of the same row count. Each chunk computes as a per-launch chunk
+  does, so the digis are the same in both dtypes; but a launch's partly filled chunk is filled by the next launch's
+  ends, so fewer chunks run. In a real batch of 256, the 34 narrow launches run 26 chunks one launch at a time and 7
+  pooled (float32). The launches' saturated-end data stay on the device between the two steps (a few hundred MB at
+  batch 256). `"auto"` pools in float32 only and saturates per launch in float64 (before bounded tiles, pooling
+  measured 2 % slower there). (The former `"launch"`, per launch in both dtypes, was removed.)
+- `flat_saturation_tiles: "bounded"` (default, with the pool) orders the pooled saturated ends by their live response
+  tiles and runs each chunk's tile loop only as far as its ends need. A tile past every end's last response step
+  holds zeros either way, so the digis are the same. Real saturated ends need about 80 of the 326 response steps
+  (90 % need at most 2 of the 6 tiles), so the tile work falls to x0.65 (float32) and x0.51 (float64). With it,
+  pooling pays in float64 too. (The former `"all"`, every tile, was removed.)
+- The pair loop (no `digit_entries_per_straw`) is the reference for all three: the tests compare the flat
+  digitisation with these defaults, and with the `"auto"` pool, to its digis in float32 and float64.
 - Overflow flag: `digit_entries_per_straw`. The demand counter `digit_entries_per_straw_milli` is the largest
   per-launch entry count over B, in thousandths (batch metrics are integers).
 
@@ -149,23 +152,26 @@ Times follow `lax.sort`'s float order (-0 equal to +0, NaNs last), so the orders
 the lexsorts. Labels must fit in 32 bits (batch_events x 131,072 < 2**32). Measured on one batch of 256 mixed events
 (A100): tracker 0.36 s -> 0.24 s at an occupancy-only output, 0.91 s -> 0.80 s for full digis.
 
-## Electronics launches (opt-in)
+## Electronics launches
 
 Each end tier runs its electronics kernel over the tier's padded straws in launches of `electronics_batch` straws
-(a tier smaller than that is one launch). In the narrow tier the live straws sit at their positions among all the
-batch's straws, so a real batch of 256 fills 26 of its 34 launches to about 77 % and leaves 8 empty.
+(a tier smaller than that is one launch). With `narrow_tier: "positions"` the narrow tier's live straws sit at their
+positions among all the batch's straws, so a real batch of 256 fills 26 of its 34 launches to about 77 % and leaves
+8 empty.
 
-- `electronics_launches: "live"` skips a launch with no live straw; its rows are empty (mask False). The
-  electronics draws are keyed per straw, so the other launches do not change.
-- `narrow_tier: "compact"` (with `end_tiers`) puts the narrow tier's live straws first, as the end tiers already
-  are, so its launches are full and the rest are skipped: 20 launches instead of 26 in that batch. The largest
-  per-launch digitisation demand stays at 0.93-0.95 entries per straw, so `digit_entries_per_straw` 1.182 is
+- `electronics_launches: "live"` (the default) skips a launch with no live straw; its rows are empty (mask False).
+  The electronics draws are keyed per straw, so the other launches do not change.
+- `narrow_tier: "compact"` (the default with `end_tiers`) puts the narrow tier's live straws first, as the end tiers
+  already are, so its launches are full and the rest are skipped: 20 launches instead of 26 in that batch. The
+  largest per-launch digitisation demand stays at 0.93-0.95 entries per straw, so `digit_entries_per_straw` 1.182 is
   unchanged.
+- `electronics_launches: "all"` and `narrow_tier: "positions"` keep the earlier layout as the tests' reference
+  (each is one line): the pair loop runs the same launches, so it cannot serve as the reference here.
 
-Both change the time, not the digis. Over full development and held-out passes at batch 256, with the device-loop
-setting on (core `MU2EFS_DEVICE_LOOPS`, the W6 default), the output files are identical to those without the two keys and
-without device loops for CRV float32 and
-float64 with the float64 tracker, and for the float32 tracker. Measured on one batch of 256 (A100): tracker apply
+`"live"` and `"compact"` change the time, not the digis. Over full development and held-out passes at batch 256,
+with the device-loop setting on (core `MU2EFS_DEVICE_LOOPS`, the W6 default), the output files are identical to
+those with `"all"` and `"positions"` and without device loops, for CRV float32 and float64 with the float64 tracker,
+and for the float32 tracker. Measured on one batch of 256 (A100): tracker apply
 0.351 -> 0.340 s (float64), 0.366 -> 0.360 s (float32). Launches of 4,096, 16,384, 32,768 or 65,536 straws were
 slower, and above 8,192 they change float32 ADC counts (the saturation chunks follow the launch size).
 

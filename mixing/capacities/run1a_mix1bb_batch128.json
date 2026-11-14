@@ -47,7 +47,9 @@
    "pack_sort": "packed",
    "flat_saturation_rows": "auto",
    "flat_saturation_pool": "tier",
-   "flat_saturation_tiles": "bounded"
+   "flat_saturation_tiles": "bounded",
+   "electronics_launches": "live",
+   "narrow_tier": "compact"
   },
   "crv": {
    "substeps": 163157,

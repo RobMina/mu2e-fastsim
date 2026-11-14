@@ -27,6 +27,7 @@ class Capacities:
     minion_unroll: int = None
     minion_search: str = None
     digit_entries_per_straw: float = None
+    # Layout keys that change the time, not the digis; None takes the default where its prerequisite holds.
     flat_saturation_rows: str = None
     flat_saturation_pool: str = None
     flat_saturation_tiles: str = None
@@ -35,10 +36,21 @@ class Capacities:
     narrow_tier: str = None
     electronics_loops: str = None
 
+    # Defaults (bit-identical digis in both dtypes): empty electronics launches skipped; with end_tiers, the narrow
+    # tier's live straws first; with the flat digitisation (digit_entries_per_straw), saturation chunks of one row per
+    # straw in float64, the tier saturation pool and bounded saturation tiles. electronics_loops stays opt-in.
+    FLAT_DEFAULTS = {"flat_saturation_rows": "auto", "flat_saturation_pool": "tier", "flat_saturation_tiles": "bounded"}
+
     def __post_init__(self):
+        defaults = {"electronics_launches": "live", **(self.FLAT_DEFAULTS if self.digit_entries_per_straw is not None
+                                                        else {})}
+        if self.end_tiers is not None:
+            defaults["narrow_tier"] = "compact"
+        for name, value in defaults.items():
+            if getattr(self, name) is None:
+                object.__setattr__(self, name, value)
         optional = ("long_steps", "clusters_per_long_step", "end_tiers", "charge_blocks_per_launch", "flat_clusters",
-                    "minion_steps", "minion_unroll", "minion_search", "pack_sort", "electronics_launches",
-                    "narrow_tier", "electronics_loops")
+                    "minion_steps", "minion_unroll", "minion_search", "pack_sort", "narrow_tier", "electronics_loops")
         for name, value in vars(self).items():
             if name == "end_tiers" or (name in optional and value is None):
                 continue
@@ -47,32 +59,32 @@ class Capacities:
                     raise ValueError("tracker minion_search must be 'scan' or 'compare_all'")
                 continue
             if name == "flat_saturation_tiles":
-                if value is not None and value not in ("all", "bounded"):
-                    raise ValueError("tracker flat_saturation_tiles must be 'all' or 'bounded'")
+                if value is not None and value != "bounded":
+                    raise ValueError("tracker flat_saturation_tiles must be 'bounded' (the default)")
                 continue
             if name == "flat_saturation_pool":
-                if value is not None and value not in ("launch", "tier", "auto"):
-                    raise ValueError("tracker flat_saturation_pool must be 'launch', 'tier' or 'auto'")
+                if value is not None and value not in ("tier", "auto"):
+                    raise ValueError("tracker flat_saturation_pool must be 'tier' (the default) or 'auto'")
                 continue
             if name == "flat_saturation_rows":
-                if value is not None and value not in ("lanes", "auto"):
-                    raise ValueError("tracker flat_saturation_rows must be 'lanes' or 'auto'")
+                if value is not None and value != "auto":
+                    raise ValueError("tracker flat_saturation_rows must be 'auto' (the default)")
                 continue
             if name == "digit_entries_per_straw":
                 if value is not None and (type(value) not in (int, float) or not 0 < value <= self.pairs_per_straw):
                     raise ValueError("tracker digit_entries_per_straw must be in (0, pairs_per_straw]")
                 continue
             if name == "electronics_launches":
-                if value not in ("all", "live"):
-                    raise ValueError("tracker electronics_launches must be 'all' or 'live'")
+                if value not in ("live", "all"):
+                    raise ValueError("tracker electronics_launches must be 'live' (the default) or 'all' (reference)")
                 continue
             if name == "electronics_loops":
                 if value not in ("fixed", "bounded"):
                     raise ValueError("tracker electronics_loops must be 'fixed' or 'bounded'")
                 continue
             if name == "narrow_tier":
-                if value not in ("positions", "compact"):
-                    raise ValueError("tracker narrow_tier must be 'positions' or 'compact'")
+                if value not in ("compact", "positions"):
+                    raise ValueError("tracker narrow_tier must be 'compact' (the default) or 'positions' (reference)")
                 continue
             if name == "pack_sort":
                 if value not in ("lexsort", "packed"):
@@ -121,16 +133,14 @@ class Capacities:
         entries = self.digit_entries(batch)
         if entries is None:
             return {}
-        rows = {} if self.flat_saturation_rows in (None, "lanes") else {"saturation_rows": "auto"}
-        pool = {"saturation_pool": True} if self.saturation_pool() else {}
-        if pool and self.flat_saturation_tiles == "bounded":
-            pool["saturation_tiles"] = "bounded"
+        # saturation chunks of one row per straw in float64 (the loop's two in float32: digi_jax._saturation_rows)
+        pool = {"saturation_pool": True, "saturation_tiles": "bounded"} if self.saturation_pool() else {}
         loops = {"bounded_loops": True} if self.electronics_loops == "bounded" else {}
-        return {"entries": entries, **rows, **pool, **loops}
+        return {"entries": entries, "saturation_rows": "auto", **pool, **loops}
 
     def saturation_pool(self):
-        """Tier saturation pool on: 'tier', or 'auto' in float32 (in float64, where flat_saturation_rows 'auto' already
-        halves the chunks, pooling measured 2 % slower)."""
+        """Tier saturation pool on: 'tier' (the default), or 'auto' in float32 only (per launch in float64, where
+        pooling without bounded tiles measured 2 % slower)."""
         if self.flat_saturation_pool == "auto":
             from trkfastsim import devfloat
             return bool(devfloat.SINGLE)
@@ -581,9 +591,10 @@ def prepare(c, capacities, batch_events):
                         "clusters_per_end": jnp.any(counts > cap.clusters_per_end)}
 
     def launches(block, groups):
-        """The electronics launches of one kernel shape in sequence. electronics_launches "live" skips a launch with no
-        live straw (the straw-keyed draws of the others do not depend on it); its rows are empty (mask False)."""
-        if cap.electronics_launches != "live":
+        """The electronics launches of one kernel shape in sequence. electronics_launches "live" (the default) skips a
+        launch with no live straw (the straw-keyed draws of the others do not depend on it); its rows are empty (mask
+        False). "all" runs every launch: the reference that test_live_launches_equal_all_launches compares with."""
+        if cap.electronics_launches == "all":
             return lax.map(block, groups)
         shapes = jax.eval_shape(block, tuple(g[0] for g in groups))
         empty = lambda _: jax.tree_util.tree_map(lambda x: jnp.zeros(x.shape, x.dtype), shapes)
@@ -672,7 +683,7 @@ def prepare(c, capacities, batch_events):
         edges = [cap.clusters_per_end] + [width for _, width in cap.end_tiers]
         tier = jnp.searchsorted(jnp.array(edges), busiest, side="left")   # 0 = narrow, k = end_tiers[k-1]
         narrow = live & (tier == 0)
-        if cap.narrow_tier == "compact":   # the narrow straws first, so their launches are full and the rest empty
+        if cap.narrow_tier == "compact":   # default: the narrow straws first, so their launches are full, the rest empty
             packed = [gather(jnp.nonzero(narrow, size=cap.straws, fill_value=0)[0],
                              jnp.arange(cap.straws) < narrow.sum(), cap.clusters_per_end)]
         else:
