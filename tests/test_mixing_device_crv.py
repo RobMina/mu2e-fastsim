@@ -482,23 +482,28 @@ def test_thermal_counters_hit_only_on_counters_with_steps(setup):
         adapter(setup, capacity(thermal_counters="some"))
 
 
-def test_exact_restructure_options_match_default(setup):
-    """digi_starts="rows" and pulse_scan="bounded" give the same kept digis, pulses and clusters as the defaults.
+@pytest.mark.parametrize("waveform", ["scatter", "dense"])
+def test_exact_restructure_defaults_match_the_full_scans(setup, waveform):
+    """digi_starts="rows" and pulse_scan="bounded" (the defaults) give the same kept digis, pulses and clusters as the
+    full scans ("dense"), with either waveform synthesis.
 
     photons 256: the float32 draws (MU2EFS_DEVICE_FLOAT=float32) need more than the helper's 128."""
     collection, timing = inputs()
     timing["event_mask"][1] = False
     outs = {}
-    for name, options in (("default", {}), ("exact", {"digi_starts": "rows", "pulse_scan": "bounded"})):
-        model = adapter(setup, capacity(waveform="scatter", photons=256, **options))
+    for name, options in (("full", {"digi_starts": "dense", "pulse_scan": "dense"}), ("default", {}),
+                          ("explicit", {"digi_starts": "rows", "pulse_scan": "bounded"})):
+        model = adapter(setup, capacity(waveform=waveform, photons=256, **options))
+        assert (model.digi_mode, model.pulse_mode) == (("dense", "dense") if name == "full" else ("rows", "bounded"))
         out, errors = run(model.apply, collection, timing, model.assets, jax.random.key(23))
         assert not any(errors.values()), [k for k, v in errors.items() if v]
         outs[name] = out
-    for table, cols in outs["default"].items():
-        mask = cols["mask"]
-        assert mask.sum() > 0, table
-        np.testing.assert_array_equal(outs["exact"][table]["mask"], mask, err_msg=table)
-        for col, value in cols.items():
-            np.testing.assert_array_equal(outs["exact"][table][col][mask], value[mask], err_msg=f"{table}/{col}")
+    for other in ("default", "explicit"):
+        for table, cols in outs["full"].items():
+            mask = cols["mask"]
+            assert mask.sum() > 0, table
+            np.testing.assert_array_equal(outs[other][table]["mask"], mask, err_msg=table)
+            for col, value in cols.items():
+                np.testing.assert_array_equal(outs[other][table][col][mask], value[mask], err_msg=f"{table}/{col}")
     with pytest.raises(ValueError, match="digi_starts"):
         adapter(setup, capacity(digi_starts="sparse"))

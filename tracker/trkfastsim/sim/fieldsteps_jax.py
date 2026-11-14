@@ -480,8 +480,10 @@ def _support(T, cfg, groups, x, c, L):
         sector = ~full & (ln[..., None] > 0)
         frac = jnp.where(sector, jnp.mean(ins, -1), 1.0)
         val = jnp.where(dp >= 0, ln[..., None] * frac, 0.0)                     # padded shells: dp = -1
-        rows = jnp.broadcast_to(jnp.arange(n)[:, None, None, None], val.shape)
-        out = out.at[rows.ravel(), mat.ravel()].add(val.ravel())
+        # per-material sums as a reduction, not a float scatter-add: on a GPU the scatter-add sums duplicate (row,
+        # material) entries in a run-dependent order, which made the transport differ between identical runs
+        hit = mat[..., None] == jnp.arange(cfg.m_sup, dtype=mat.dtype)          # [n, 2, zcap, smax, m_sup]
+        out = out + jnp.sum(jnp.where(hit, val[..., None], 0.0), axis=(1, 2, 3))
     return out, over
 
 
@@ -672,7 +674,9 @@ def _chord(tk_, s, rec, lane, key, it):
             pp = jnp.maximum(jnp.concatenate([p, p[:1]])[jnp.minimum(plane_, n)], 1.0)
             lp, dc, bc = _electron_loss(jax.random.fold_in(ks[0], kk), T, mc, lnt0, dlnt, pp, pl, pcol, nd, nb,
                                         cfg.positron)
-            lost = lost.at[plane_].add(lp, mode="drop")
+            # per-lane sum in a fixed order (pidx are distinct; the fill index n * Mp is dropped), not a float
+            # scatter-add, whose order on a GPU changes from run to run
+            lost = lost + jnp.zeros(n * Mp, dt).at[pidx].set(lp, mode="drop").reshape(n, Mp).sum(1)
             dcap = dcap + dc + (nz - jnp.minimum(nz, cap))
             bcap = bcap + bc
     else:
@@ -717,7 +721,9 @@ def _chord(tk_, s, rec, lane, key, it):
                    ("p1", jnp.broadcast_to(p[:, None], slot.shape)), ("len", sp["gas"]), ("t", tin)):
         rec[f] = rec[f].at[row, wslot].set(val, mode="drop")
     last = jnp.where(cont & (s["nrec"] - 1 < R), s["nrec"] - 1, R)
-    rec["len"] = rec["len"].at[lane, last].add(sp["gas"][:, 0], mode="drop")
+    # one target per lane: written as gather + add + set (the same sum; no float scatter-add in the kernel)
+    rec["len"] = rec["len"].at[lane, last].set(rec["len"][lane, jnp.minimum(last, R - 1)] + sp["gas"][:, 0],
+                                               mode="drop")
     rec["pos1"] = rec["pos1"].at[lane, last].set(pos1[:, 0], mode="drop")
     rec["d1"] = rec["d1"].at[lane, last].set(c, mode="drop")
     rec["p1"] = rec["p1"].at[lane, last].set(p, mode="drop")
