@@ -4,7 +4,8 @@ import warnings
 
 import pytest
 
-from beamfastsim import cechain_jax as CJ
+pytest.importorskip("jax")
+from beamfastsim import cechain_jax as CJ  # noqa: E402
 
 LOOPS = "--xla_gpu_enable_command_buffer=+CONDITIONAL,+WHILE"
 CONC = "--xla_gpu_graph_enable_concurrent_region=true"
