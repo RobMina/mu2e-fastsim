@@ -61,6 +61,26 @@ def make_evaluate(pulse: PulseCache, dtype=None):
     return evaluate
 
 
+def make_evaluate_slope(pulse: PulseCache, dtype=None):
+    """``evaluate`` of :func:`make_evaluate` plus its derivative in ``dt`` (the interpolation slope, zero outside the
+    cache), as autodiff of ``evaluate`` gives it: the piecewise-linear cache has no second derivative."""
+    jnp = _jnp()
+    vec = jnp.asarray(pulse.pulse_vec) if dtype is None else jnp.asarray(pulse.pulse_vec, dtype)
+    step, delta, n = pulse.digi_step, pulse.delta_t, pulse.pulse_vec.size
+
+    def evaluate_slope(dt):
+        t = dt + delta
+        ibin = N_STEPS + jnp.trunc(t * N_STEPS / step / N_STEPS).astype(jnp.int64)
+        ok = (ibin >= 0) & (ibin < n - 1)
+        ib = jnp.clip(ibin, 0, n - 2)
+        t0bin = (ib - N_STEPS) * step if dtype is None else (ib - N_STEPS).astype(dtype) * jnp.asarray(step, dtype)
+        slope = (vec[ib + 1] - vec[ib]) / step
+        val = slope * (t - t0bin) + vec[ib]
+        return jnp.where(ok, val, 0.0), jnp.where(ok, slope, 0.0)
+
+    return evaluate_slope
+
+
 def fit_digis(t0, samples, length, pulse: PulseCache, cfg: FitConfig = FitConfig()):
     """Fit padded digis. Returns per-digi, per-slot arrays ``amp, amp_err, time (t0 convention), time_err, valid``
     plus ``chi2``, ``ndf`` and ``refit_skipped``. ``time`` is ``fromPeakToT0(peak time)``, before the PBT offset."""
@@ -91,18 +111,30 @@ def fit_digis(t0, samples, length, pulse: PulseCache, cfg: FitConfig = FitConfig
 _CACHE = {}
 
 
-def _compiled(pulse, cfg, L, dtype=None):
+def _compiled(pulse, cfg, L, dtype=None, hessian=None, refit=True):
     """The jitted, vmapped per-digi fit for one pulse cache and configuration, built once and reused.
 
-    ``dtype`` None is the default double-precision fit; ``jnp.float32`` fits in single precision (opt-in)."""
+    ``dtype`` None is the default double-precision fit; ``jnp.float32`` fits in single precision (opt-in).
+    ``hessian`` None takes the Newton step's gradient and Hessian by autodiff (default); ``"analytic"`` (opt-in) uses
+    their closed form, the same quantities up to roundoff at a fraction of the cost. ``refit=False`` (opt-in) skips
+    the second minimisation of a multi-peak fit whose components fail the selection and returns ``needs_refit``
+    instead: the caller fits those digis again with ``refit=True`` (identical arithmetic per digi), so the second
+    minimisation runs only where it is used."""
     import jax
+    if hessian not in (None, "analytic"):
+        raise ValueError("hessian must be None or 'analytic'")
     key = (id(pulse), cfg, L) if dtype is None else (id(pulse), cfg, L, dtype)
+    if hessian is not None:
+        key = key + (hessian,)
+    if not refit:
+        key = key + ("no-refit",)
     if key not in _CACHE:
         evaluate = make_evaluate(pulse, dtype)
+        slope = make_evaluate_slope(pulse, dtype) if hessian == "analytic" else None
         K, W = cfg.max_peaks, cfg.window_peak
 
         def one(x, y, mask, n):
-            return _fit_one(x, y, mask, n, evaluate, cfg, K, W, L, dtype)
+            return _fit_one(x, y, mask, n, evaluate, cfg, K, W, L, dtype, slope, refit)
 
         _CACHE[key] = (jax.jit(jax.vmap(one)), pulse)
     return _CACHE[key][0]
@@ -160,7 +192,34 @@ def _model(evaluate, x, par, active):
     return par[0] + jnp.sum(jnp.where(active[:, None], pulses, 0.0), axis=0)
 
 
-def _fit_one(x, y, mask, n, evaluate, cfg, K, W, L, dtype=None):
+def _grad_hess(evaluate_slope, x, yfull, mask, p, act):
+    """Closed-form gradient and Hessian of the objective sum (y - f)^2 / b of :func:`_fit_one`, f = b + sum_k A_k
+    p(x - t_k): the model's second derivatives are d2f/dA_k dt_k = -p'(x - t_k) (p'' = 0 for the linear cache)."""
+    jnp = _jnp()
+    b, amp, tim = p[0], p[1::2], p[2::2]
+    e, s = evaluate_slope(x[None, :] - tim[:, None])
+    a = act[:, None]
+    f = b + jnp.sum(jnp.where(a, amp[:, None] * e, 0.0), axis=0)
+    r = jnp.where(mask, yfull - f, 0.0)
+    S = jnp.sum(r * r)
+    m = mask.astype(r.dtype)
+    ja = jnp.where(a, e, 0.0) * m
+    jt = jnp.where(a, -amp[:, None] * s, 0.0) * m
+    J = jnp.concatenate([m[None, :], jnp.stack([ja, jt], axis=1).reshape(-1, x.shape[0])], axis=0)   # (1+2K, L)
+    gS = -2.0 * (J @ r)
+    HS = 2.0 * (J @ J.T)
+    cross = 2.0 * jnp.sum(jnp.where(a, s, 0.0) * r[None, :], axis=1)          # 2 sum_i r_i a_k p'_ki
+    ia = 1 + 2 * jnp.arange(amp.shape[0])
+    HS = HS.at[ia, ia + 1].add(cross).at[ia + 1, ia].add(cross)
+    on = jnp.abs(b) > 1e-5
+    bb = jnp.where(b == 0, 1.0, b)
+    eb = jnp.zeros_like(p).at[0].set(1.0)
+    g = gS / bb - eb * (S / (bb * bb))
+    H = (HS / bb - (jnp.outer(eb, gS) + jnp.outer(gS, eb)) / (bb * bb) + 2.0 * jnp.outer(eb, eb) * S / (bb * bb * bb))
+    return jnp.where(on, g, 0.0), jnp.where(on, H, 0.0)
+
+
+def _fit_one(x, y, mask, n, evaluate, cfg, K, W, L, dtype=None, evaluate_slope=None, do_refit=True):
     import jax
     from jax import lax
     jnp = _jnp()
@@ -233,13 +292,20 @@ def _fit_one(x, y, mask, n, evaluate, cfg, K, W, L, dtype=None):
 
     def minimise(p, act):
         free = jnp.concatenate([jnp.ones(1, bool), jnp.repeat(act, 2)])
-        grad = jax.grad(objective)
-        hess = jax.hessian(objective)
+        if evaluate_slope is None:
+            grad = jax.grad(objective)
+            hess = jax.hessian(objective)
+
+            def grad_hess(p, act):
+                return grad(p, act), hess(p, act)
+        else:
+            def grad_hess(p, act):
+                return _grad_hess(evaluate_slope, x, yfull, mask, p, act)
 
         def body(_, state):
             p, lam, fval = state
-            g = jnp.where(free, grad(p, act), 0.0)
-            h = hess(p, act)
+            g0, h = grad_hess(p, act)
+            g = jnp.where(free, g0, 0.0)
             h = jnp.where(free[:, None] & free[None, :], h, 0.0) + jnp.diag(jnp.where(free, 0.0, 1.0))
             step = -jnp.linalg.solve(h + lam * jnp.diag(jnp.abs(jnp.diag(h)) + 1e-9), g)
             step = jnp.clip(step, -cap(p), cap(p))
@@ -250,7 +316,7 @@ def _fit_one(x, y, mask, n, evaluate, cfg, K, W, L, dtype=None):
 
         lam0 = cfg.damping if dtype is None else jnp.asarray(cfg.damping, dtype)
         p, _, fval = lax.fori_loop(0, cfg.iterations, body, (p, lam0, objective(p, act)))
-        h = hess(p, act)
+        h = grad_hess(p, act)[1]
         h = jnp.where(free[:, None] & free[None, :], h, 0.0) + jnp.diag(jnp.where(free, 0.0, 1.0))
         cov = 2.0 * jnp.linalg.inv(h)
         err = jnp.sqrt(jnp.abs(jnp.diag(cov)))
@@ -267,13 +333,17 @@ def _fit_one(x, y, mask, n, evaluate, cfg, K, W, L, dtype=None):
     keep = active & (amp >= amp_min) & (tim >= xfront) & (tim <= xback) & (aerr <= 1e3) & ~beaten
     multi = jnp.sum(active) > 1
     refit = multi & jnp.any(active & ~keep)
+    needs_refit = refit
+    if not do_refit:          # the caller refits these digis with do_refit=True; this pass keeps the first fit
+        refit = jnp.zeros_like(refit)
     act2 = jnp.where(multi, keep, active)
-    p2 = jnp.where(jnp.concatenate([jnp.ones(1, bool), jnp.repeat(act2, 2)]), p, 0.0)
-    p2, err2, fval2 = minimise(p2, act2)
-    p = jnp.where(refit, p2, p)
-    err = jnp.where(refit, err2, err)
-    fval = jnp.where(refit, fval2, fval)
-    active = jnp.where(refit, act2, active)
+    if do_refit:
+        p2 = jnp.where(jnp.concatenate([jnp.ones(1, bool), jnp.repeat(act2, 2)]), p, 0.0)
+        p2, err2, fval2 = minimise(p2, act2)
+        p = jnp.where(refit, p2, p)
+        err = jnp.where(refit, err2, err)
+        fval = jnp.where(refit, fval2, fval)
+        active = jnp.where(refit, act2, active)
 
     amp, tim = p[1::2], p[2::2]
     valid = active & (amp >= 1.0) & has_peak
@@ -281,6 +351,9 @@ def _fit_one(x, y, mask, n, evaluate, cfg, K, W, L, dtype=None):
     ndf = n - npar
     reported = valid & (tim <= xback)
     chi = jnp.where(ndf > 0, fval / jnp.where(ndf > 0, ndf, 1), 0.0)
-    return {"amp": amp, "amp_err": jnp.sqrt(err[1::2] ** 2 + amp), "peak_time": tim, "time_err": err[2::2],
-            "valid": reported, "chi2": fval, "ndf": ndf, "n_seeded": k,
-            "refit_skipped": has_peak & (ndf > 0) & (chi > cfg.chi_threshold), "baseline": p[0]}
+    out = {"amp": amp, "amp_err": jnp.sqrt(err[1::2] ** 2 + amp), "peak_time": tim, "time_err": err[2::2],
+           "valid": reported, "chi2": fval, "ndf": ndf, "n_seeded": k,
+           "refit_skipped": has_peak & (ndf > 0) & (chi > cfg.chi_threshold), "baseline": p[0]}
+    if not do_refit:
+        out["needs_refit"] = needs_refit
+    return out

@@ -44,7 +44,7 @@ __all__ = ["Caps", "COMPILER_OPTIONS", "pack_library", "pack_response", "make_ch
            "entries_batch", "steps_batch", "flat_clusters", "OVERFLOW_NAMES"]
 
 OVERFLOW_NAMES = ("steps", "photoelectrons", "rows", "outliers", "digis", "digi_length", "hits", "event_hits",
-                  "main_rounds", "split_rounds")
+                  "main_rounds", "split_rounds", "refits", "fit_buckets")
 TF32_EXACT = "default"   # matmul precision for products TF32 computes exactly (0/1 operands, integer sums)
 # XLA options of the chain's jit: no command buffers. With XLA's loop and conditional command buffers on (the
 # mu2efastsim.devloops setting where on, --xla_gpu_enable_command_buffer=+CONDITIONAL,+WHILE) the clustering's nested device
@@ -76,6 +76,15 @@ class Caps:
     window: int = 8              # samples per row histogrammed for the pulse matmul
     outliers: int = 1 << 18      # photoelectrons outside a row's window (scattered one by one)
     recluster: bool = True       # events with more main or split clusters than ``rounds``: cluster again (clusters)
+    refits: int = 0              # > 0: fit every digi without the multi-peak refit, then fit again only the digis
+    #                              that need it (at most this many per batch); 0: one pass with the refit for all
+    fit_short_length: int = 0    # > 0: fit digis up to this length on that many columns (bucket), the rest on all
+    fit_short: int = 0           # capacity of the short bucket (digis per batch)
+    fit_long: int = 0            # capacity of the long bucket
+    wave_window: int = 0         # > 0: waveform samples per row (window from the row's first photoelectron), the rest
+    #                              of the waveform is zero; 0: the full digitisation window for every row
+    wide_rows: int = 0           # rows whose signal does not fit the window: digitised on the full waveform
+    wide_digis: int = 0          # digis of those rows (capacity, added to ``digis``)
 
 
 # ----------------------------------------------------------------------------------------------- host packing
@@ -232,16 +241,22 @@ class DeviceResponse:
     noise_size: int
     n_crystals: int
     dtype: str = "float64"
+    fit_hessian: str | None = "analytic"   # template fit Newton step: "analytic" = closed form, None = autodiff
 
 
 def pack_response(sim, pulse: PulseCache, noise_wf, table: PropagationTable, geom: Geometry, *, adc2mev=None,
                   ro_cfg=ReadoutConfig(), digi_cfg=DigiConfig(), fit_cfg=FitConfig(), cluster_cfg=ClusterConfig(),
-                  add_noise=True, max_chi2=2.0, time4merge=6.0, pbt_reco_sigma=0.5, dtype=np.float64):
+                  add_noise=True, max_chi2=2.0, time4merge=6.0, pbt_reco_sigma=0.5, dtype=np.float64,
+                  fit_hessian="analytic"):
     """Calorimeter conditions as device arrays (``sim`` from :func:`calofastsim.stockio.load_sim_crystal`).
 
     ``dtype`` is the precision of the waveform, noise, template fit and cluster sums (the source uses double).
-    Time folding, photoelectron times, keys and reco digi weighting keep the source types."""
+    Time folding, photoelectron times, keys and reco digi weighting keep the source types. ``fit_hessian`` picks the
+    template fit's Newton gradient and Hessian (:func:`calofastsim.templatefit._compiled`): "analytic" (default: the
+    closed form, the same quantities as autodiff up to roundoff and faster on GPUs) or None (autodiff)."""
     import jax.numpy as jnp
+    if fit_hessian not in (None, "analytic"):
+        raise ValueError("fit_hessian must be None or 'analytic'")
     n = geom.disk.size
     sipm = np.arange(2 * n)
     c, i = sipm // 2, sipm % 2
@@ -258,7 +273,8 @@ def pack_response(sim, pulse: PulseCache, noise_wf, table: PropagationTable, geo
     out = {k: jnp.asarray(v) for k, v in a.items()}
     out["dz"] = float(table.dz)
     return DeviceResponse(out, pulse, ro_cfg, digi_cfg, fit_cfg, cluster_cfg, float(max_chi2), float(time4merge),
-                          float(pbt_reco_sigma), bool(add_noise), int(noise.size), int(n), np.dtype(dtype).name)
+                          float(pbt_reco_sigma), bool(add_noise), int(noise.size), int(n), np.dtype(dtype).name,
+                          fit_hessian)
 
 
 def entries_batch(entries, timing, event_row, n_events):
@@ -508,16 +524,20 @@ def photoelectrons(resp: DeviceResponse, q, t, st, crystal, depth, mapped, key, 
     return ev[s], group_sipm[g], (t32[s] + dt).astype(jnp.float32), jnp.ones(n_pe), valid, jnp.maximum(total - n_pe, 0)
 
 
-def _waveforms(resp: DeviceResponse, row, time32, weight, n_rows, window, outlier_cap):
+def _waveforms(resp: DeviceResponse, row, time32, weight, n_rows, window, outlier_cap, size=None, shift=None):
     """Waveforms (n_rows, size), float64, as digi_device: each PE adds ``pulse_vec[first + 100 k]`` at sample
     ``start + k``. PEs within ``window`` samples of their row's earliest start are histogrammed by (sample offset,
     fine phase) and convolved with the pulse table in one matmul; the rest (late or pre-window PEs) are compacted
-    (at most ``outlier_cap``) and scattered per PE. Only the summation order differs from the per-PE scatter."""
+    (at most ``outlier_cap``) and scattered per PE. Only the summation order differs from the per-PE scatter.
+
+    ``size``/``shift`` (opt-in): each row holds only ``size`` samples starting at its global sample ``shift[row]``
+    (a window that must contain the row's signal; see :func:`digitise`)."""
     import jax.numpy as jnp
     from jax import lax
     cfg = resp.digi_cfg
     pulse = resp.pulse
-    size, nshape = cfg.waveform_size, pulse.n_bin_shape
+    nshape = pulse.n_bin_shape
+    size = cfg.waveform_size if size is None else size
     vec = resp.arrays["pulse_vec"]
     fdt = jnp.dtype(resp.dtype)
     weight = weight.astype(fdt)
@@ -537,6 +557,9 @@ def _waveforms(resp: DeviceResponse, row, time32, weight, n_rows, window, outlie
     A = jnp.matmul(H.reshape(n_rows * window, N_STEPS), V, precision=_physics(H, V)).reshape(n_rows, window, nshape)
     width = size + window + nshape
     wave = jnp.zeros((n_rows, width), fdt)
+    if shift is not None:                    # window coordinates: samples counted from the row's window origin
+        start = start - shift[row]
+        s0 = jnp.where(s0 < big, s0 - shift, big)
     base = jnp.where(s0 < big, s0, size)[:, None]
     for d in range(window):
         cols = jnp.minimum(base + d + jnp.arange(nshape)[None, :], width - 1)
@@ -563,8 +586,34 @@ def _waveforms(resp: DeviceResponse, row, time32, weight, n_rows, window, outlie
     return flat_wave.reshape(n_rows, width)[:, :size], jnp.maximum(n_out - outlier_cap, 0)
 
 
-def _digi_post(resp: DeviceResponse, wave, key):
-    """digi_device's noise, ADC and peak search on given waveforms (same code path, factored)."""
+def _first_peaks_window(wf, cfg, offset, size_g):
+    """digi.first_peaks on window rows whose sample 0 is global sample ``offset[row]``: the peak range
+    [nBinsPeak + bufferDigi, size - nBinsPeak) is checked in global samples (the window holds the whole signal, so the
+    samples outside it are zero and below every threshold)."""
+    import jax.numpy as jnp
+    from jax import lax
+    n, size = wf.shape
+    nb = cfg.n_bins_peak
+    thr = wf >= cfg.min_peak_adc
+    pad = jnp.concatenate([jnp.full((n, nb), -1, dtype=wf.dtype), wf, jnp.full((n, nb), -1, dtype=wf.dtype)], axis=1)
+    cand = thr
+    for d in range(1, nb + 1):
+        cand = cand & (wf > pad[:, nb - d:nb - d + size]) & (wf >= pad[:, nb + d:nb + d + size])
+    pos = jnp.arange(size)
+    pos_g = offset[:, None] + pos[None, :]
+    cand = cand & (pos_g >= nb + cfg.buffer_digi) & (pos_g + nb < size_g)
+    prev = jnp.concatenate([jnp.zeros((n, 1), dtype=bool), thr[:, :-1]], axis=1)
+    run_start = thr & ~prev
+    csum = jnp.cumsum(cand.astype(jnp.int64), axis=1)
+    base = lax.cummax(jnp.where(run_start, csum - cand.astype(jnp.int64), 0), axis=1)
+    first = cand & ((csum - base) == 1)
+    run_end = lax.cummin(jnp.where(~thr, pos, size), axis=1, reverse=True)
+    return first, run_end
+
+
+def _digi_post(resp: DeviceResponse, wave, key, window_origin=None):
+    """digi_device's noise, ADC and peak search on given waveforms (same code path, factored). ``window_origin``
+    (opt-in): window rows (:func:`_waveforms` ``shift``), peaks bounded in global samples."""
     import jax
     import jax.numpy as jnp
     from jax import lax
@@ -588,7 +637,10 @@ def _digi_post(resp: DeviceResponse, wave, key):
     if resp.add_noise:
         wave = wave + jnp.where(cover, a["noise"][jnp.clip(idx, 0, noise_size - 1)], 0.0)
     wf = adc_waveform(wave, a["pedestal"], cfg, backend="jax")
-    peaks, run_end = first_peaks(wf, cfg, backend="jax")
+    if window_origin is None:
+        peaks, run_end = first_peaks(wf, cfg, backend="jax")
+    else:
+        peaks, run_end = _first_peaks_window(wf, cfg, window_origin, cfg.waveform_size)
     stored = jnp.minimum(jnp.trunc(wave), cfg.max_adc).astype(jnp.int32)
     return stored, peaks, run_end.astype(jnp.int32)
 
@@ -596,7 +648,6 @@ def _digi_post(resp: DeviceResponse, wave, key):
 def digitise(resp: DeviceResponse, t, ev, sipm, pe_t, weight, valid, key, caps: Caps):
     """Waveforms, noise, ADC and peaks (digi_device kernel) on (event, SiPM) rows; then digis in flat capacity."""
     import jax.numpy as jnp
-    from jax import lax
     a = resp.arrays
     cfg = resp.digi_cfg
     f32 = jnp.float32
@@ -614,41 +665,125 @@ def digitise(resp: DeviceResponse, t, ev, sipm, pe_t, weight, valid, key, caps: 
     tt = (tt + cfg.start_time_buffer).astype(f32)
     tt = jnp.where(row_ok, tt, f32(-1e6))
     w = jnp.where(row_ok, weight * a["adc_per_pe"][sipm], 0.0).astype(jnp.dtype(resp.dtype))
+    if caps.wave_window:
+        return _digitise_window(resp, t, ukey, row, tt, w, key, caps, distinct)
     wave, over_out = _waveforms(resp, row, tt, w, caps.rows, caps.window, caps.outliers)
     stored, peaks, run_end = _digi_post(resp, wave, key)
-    # digi extraction (digi.extract_digis): merge peaks whose buffered start overlaps the previous stop
-    size = stored.shape[1]
+    dg, n_digi, too_long = _extract_digis(resp, t, stored, peaks, run_end, None, ukey, caps.digis, caps.digi_length)
+    overflow = dict(rows=jnp.maximum(distinct - caps.rows, 0), outliers=over_out,
+                    digis=jnp.maximum(n_digi - caps.digis, 0), digi_length=too_long)
+    return dg, overflow
+
+
+def _extract_digis(resp: DeviceResponse, t, stored, peaks, run_end, offset, row_key, D, L):
+    """digi.extract_digis on device rows: merge peaks whose buffered start overlaps the previous stop, then cut the
+    samples (at most ``D`` digis, ``L`` samples each). ``offset``: per-row global sample of column 0 (None: 0).
+    ``row_key``: event * nSiPM + SiPM of each row. Returns the digi dict, the digi count and the over-long count."""
+    import jax.numpy as jnp
+    from jax import lax
+    cfg = resp.digi_cfg
+    f32 = jnp.float32
+    nsipm = 2 * resp.n_crystals
+    n_rows, size = stored.shape
     pos = jnp.arange(size)
     m = jnp.where(peaks, run_end, -1)
-    excl = jnp.concatenate([jnp.full((caps.rows, 1), -1, m.dtype), lax.cummax(m, axis=1)[:, :-1]], axis=1)
+    excl = jnp.concatenate([jnp.full((n_rows, 1), -1, m.dtype), lax.cummax(m, axis=1)[:, :-1]], axis=1)
     new = peaks & ((pos - cfg.buffer_digi)[None, :] > excl)
     flat_new = new.reshape(-1)
     d_of = jnp.cumsum(flat_new) - 1
     n_digi = d_of[-1] + 1
-    D = caps.digis
     sink = jnp.where(peaks.reshape(-1) & (d_of < D), d_of, D)
     first = jnp.where(flat_new & (d_of < D), d_of, D)
-    rr = jnp.broadcast_to(jnp.arange(caps.rows)[:, None], peaks.shape).reshape(-1)
+    rr = jnp.broadcast_to(jnp.arange(n_rows)[:, None], peaks.shape).reshape(-1)
     pp = jnp.broadcast_to(pos[None, :], peaks.shape).reshape(-1)
     d_row = jnp.zeros(D + 1, jnp.int64).at[first].set(rr)[:D]
-    d_start = jnp.zeros(D + 1, jnp.int64).at[first].set(pp - cfg.buffer_digi)[:D]
+    d_start = jnp.zeros(D + 1, jnp.int64).at[first].set(pp - cfg.buffer_digi)[:D]          # column of the row
     d_stop = jnp.zeros(D + 1, jnp.int64).at[sink].max(run_end.reshape(-1).astype(jnp.int64))[:D]
     d_ok = jnp.arange(D) < n_digi
     length = jnp.where(d_ok, d_stop - d_start, 0)
-    L = caps.digi_length
     too_long = jnp.sum(length > L)
     length = jnp.minimum(length, L)
-    u_row = ukey[d_row]
+    u_row = row_key[d_row]
     d_event = jnp.where(d_ok, u_row // nsipm, 0)
     d_sipm = jnp.where(d_ok, u_row % nsipm, 0)
     marker = t["marker"][d_event].astype(f32)
-    t0 = jnp.trunc(d_start.astype(f32) * f32(cfg.digi_sampling) + f32(cfg.digitization_start) - marker
+    g_start = d_start if offset is None else d_start + offset[d_row]                        # global sample
+    t0 = jnp.trunc(g_start.astype(f32) * f32(cfg.digi_sampling) + f32(cfg.digitization_start) - marker
                    - cfg.start_time_buffer).astype(jnp.int64)
     kk = jnp.arange(L)
     col = jnp.clip(d_start[:, None] + kk[None, :], 0, size - 1)
     samples = jnp.where(kk[None, :] < length[:, None], stored[d_row[:, None], col], 0)
-    overflow = dict(rows=jnp.maximum(distinct - caps.rows, 0), outliers=over_out, digis=jnp.maximum(n_digi - D, 0), digi_length=too_long)
-    return dict(ok=d_ok, event=d_event, sipm=d_sipm, t0=t0, samples=samples, length=length), overflow
+    return dict(ok=d_ok, event=d_event, sipm=d_sipm, t0=t0, samples=samples, length=length), n_digi, too_long
+
+
+def _digitise_window(resp: DeviceResponse, t, ukey, row, tt, w, key, caps: Caps, distinct):
+    """digitise with ``caps.wave_window`` samples per row (opt-in): each row's window starts bufferDigi + nBinsPeak
+    samples before its first photoelectron and holds its signal; rows whose photoelectrons spread past the window
+    (late deposits) are digitised on the full waveform, compacted (at most ``caps.wide_rows``). The digis are those
+    of the full-waveform path; only the noise offsets come from other random numbers (same distribution)."""
+    import jax
+    import jax.numpy as jnp
+    cfg = resp.digi_cfg
+    R, Ww, size = caps.rows, caps.wave_window, cfg.waveform_size
+    nshape = resp.pulse.n_bin_shape
+    big = jnp.iinfo(jnp.int64).max
+    start = jnp.trunc(tt / jnp.float32(cfg.digi_sampling)).astype(jnp.int64)
+    keep = start >= 0
+    s0 = jnp.full(R, big, jnp.int64).at[row].min(jnp.where(keep, start, big))
+    s1 = jnp.full(R, -1, jnp.int64).at[row].max(jnp.where(keep, start, -1))
+    used = s1 >= 0
+    ws = jnp.where(used, jnp.clip(s0 - (cfg.buffer_digi + cfg.n_bins_peak), 0, max(size - Ww, 0)), 0)
+    wide = used & (jnp.minimum(s1 + nshape, size) > ws + Ww)
+    k_n, k_w = jax.random.split(key)
+    narrow_pe = keep & ~wide[row]
+    wave_n, over_n = _waveforms(resp, row, jnp.where(narrow_pe, tt, jnp.float32(-1e6)), w, R, caps.window,
+                                caps.outliers, size=Ww, shift=ws)
+    stored_n, peaks_n, run_end_n = _digi_post(resp, wave_n, k_n, window_origin=ws)
+    dn, nd_n, long_n = _extract_digis(resp, t, stored_n, peaks_n, run_end_n, ws, ukey, caps.digis, caps.digi_length)
+    Rw = caps.wide_rows
+    wpos = jnp.cumsum(wide) - 1
+    n_wide = jnp.sum(wide)
+    wslot = jnp.where(wide & (wpos < Rw), wpos, Rw)
+    wide_pe = keep & (wslot[row] < Rw)
+    wave_w, over_w = _waveforms(resp, jnp.where(wide_pe, wslot[row], 0), jnp.where(wide_pe, tt, jnp.float32(-1e6)),
+                                w, Rw, caps.window, caps.outliers)
+    stored_w, peaks_w, run_end_w = _digi_post(resp, wave_w, k_w)
+    wrow = jnp.zeros(Rw + 1, jnp.int64).at[wslot].set(jnp.arange(R))[:Rw]
+    peaks_w = peaks_w & (jnp.arange(Rw) < n_wide)[:, None]
+    dw, nd_w, long_w = _extract_digis(resp, t, stored_w, peaks_w, run_end_w, None, ukey[wrow], caps.wide_digis,
+                                      caps.digi_length)
+    dg = {k: jnp.concatenate([dn[k], dw[k]]) for k in dn}
+    overflow = dict(rows=jnp.maximum(distinct - R, 0) + jnp.maximum(n_wide - Rw, 0), outliers=over_n + over_w,
+                    digis=jnp.maximum(nd_n - caps.digis, 0) + jnp.maximum(nd_w - caps.wide_digis, 0),
+                    digi_length=long_n + long_w)
+    return dg, overflow
+
+
+def _fit_digis(resp: DeviceResponse, cfg, caps: Caps, fit_dt, x, y, mask, length, ok, L):
+    """Template fit of padded digis (columns ``L``): one pass with the refit, or (``caps.refits``) every digi without
+    the refit and again, with it, only the digis that need it. Returns the fit dict and the refit overflow."""
+    import jax
+    import jax.numpy as jnp
+    from .templatefit import _compiled
+    if not caps.refits:
+        with jax.ensure_compile_time_eval():   # the cached fit must not close over this trace
+            fitter = _compiled(resp.pulse, cfg, L, fit_dt, resp.fit_hessian)
+        return fitter(x, y, mask, length), jnp.int64(0)
+    # the refit minimisation only where it is used: the same arithmetic per digi as the single pass
+    with jax.ensure_compile_time_eval():
+        first = _compiled(resp.pulse, cfg, L, fit_dt, resp.fit_hessian, refit=False)
+        full = _compiled(resp.pulse, cfg, L, fit_dt, resp.fit_hessian)
+    fit = first(x, y, mask, length)
+    need = fit.pop("needs_refit") & ok
+    R = caps.refits
+    pos = jnp.cumsum(need) - 1
+    n_need = jnp.sum(need)
+    D0 = need.shape[0]
+    sel = jnp.zeros(R + 1, jnp.int64).at[jnp.where(need & (pos < R), pos, R)].set(jnp.arange(D0))[:R]
+    live = jnp.arange(R) < n_need
+    again = full(x[sel], y[sel], mask[sel], length[sel])
+    dest = jnp.where(live, sel, D0)
+    return {k: v.at[dest].set(again[k], mode="drop") for k, v in fit.items()}, jnp.maximum(n_need - R, 0)
 
 
 def fit_and_hits(resp: DeviceResponse, t, dg, pbt_reco, caps: Caps):
@@ -656,16 +791,38 @@ def fit_and_hits(resp: DeviceResponse, t, dg, pbt_reco, caps: Caps):
     import jax
     import jax.numpy as jnp
     from .response_jax import weighted_reco_digis
-    from .templatefit import _compiled
     cfg = resp.fit_cfg
     L = caps.digi_length
     idx = jnp.arange(L)
     fdt = jnp.dtype(resp.dtype)
     x = dg["t0"].astype(fdt)[:, None] + (idx + 0.5) * cfg.digi_sampling
     mask = idx[None, :] < dg["length"][:, None]
-    with jax.ensure_compile_time_eval():   # the cached fit must not close over this trace
-        fitter = _compiled(resp.pulse, cfg, L, None if fdt == jnp.float64 else fdt)
-    fit = fitter(x, dg["samples"].astype(fdt), mask, dg["length"])
+    fit_dt = None if fdt == jnp.float64 else fdt
+    y = dg["samples"].astype(fdt)
+    over_bucket = jnp.int64(0)
+    if not caps.fit_short_length:
+        fit, over_refit = _fit_digis(resp, cfg, caps, fit_dt, x, y, mask, dg["length"], dg["ok"], L)
+    else:
+        # two length buckets: digis of at most fit_short_length samples are fitted on that many columns (the fit only
+        # reads samples below a digi's length), the rest on all digi_length; results written back in digi order
+        Ls = caps.fit_short_length
+        short = dg["ok"] & (dg["length"] <= Ls)
+        long_ = dg["ok"] & ~short
+        D0 = short.shape[0]
+        fit, over_refit = None, jnp.int64(0)
+        for sel_b, cap_b, Lb in ((short, caps.fit_short, Ls), (long_, caps.fit_long, L)):
+            pos = jnp.cumsum(sel_b) - 1
+            idx = jnp.zeros(cap_b + 1, jnp.int64).at[jnp.where(sel_b & (pos < cap_b), pos, cap_b)].set(
+                jnp.arange(D0))[:cap_b]
+            live = jnp.arange(cap_b) < jnp.sum(sel_b)
+            fb, ob = _fit_digis(resp, cfg, caps, fit_dt, x[idx, :Lb], y[idx, :Lb], mask[idx, :Lb],
+                                jnp.where(live, dg["length"][idx], 0), live, Lb)
+            dest = jnp.where(live, idx, D0)
+            if fit is None:
+                fit = {k: jnp.zeros((D0,) + v.shape[1:], v.dtype) for k, v in fb.items()}
+            fit = {k: v.at[dest].set(fb[k], mode="drop") for k, v in fit.items()}
+            over_refit = over_refit + ob
+            over_bucket = over_bucket + jnp.maximum(jnp.sum(sel_b) - cap_b, 0)
     ftime = fit["peak_time"] - resp.pulse.delta_t - 0.5 * resp.pulse.digi_step * N_STEPS
     chi_ok = (fit["chi2"] / jnp.maximum(fit["ndf"], 1).astype(jnp.float32)) <= resp.max_chi2
     sel = fit["valid"] & chi_ok[:, None] & dg["ok"][:, None]
@@ -720,7 +877,8 @@ def fit_and_hits(resp: DeviceResponse, t, dg, pbt_reco, caps: Caps):
     hits = dict(ok=h_ok, event=jnp.where(h_ok, ck[fi] // resp.n_crystals, 0),
                 crystal=jnp.where(h_ok, ck[fi] % resp.n_crystals, 0), nsipm=nsipm,
                 t=h_t[:H], t_err=h_terr[:H], e=h_e[:H], e_err=h_eerr[:H])
-    stats = dict(n_reco=jnp.sum(sel), n_nonfinite=n_nonfinite, n_refit_skipped=jnp.sum(fit["refit_skipped"] & dg["ok"]))
+    stats = dict(n_reco=jnp.sum(sel), n_nonfinite=n_nonfinite, n_refit_skipped=jnp.sum(fit["refit_skipped"] & dg["ok"]),
+                 refits=over_refit, fit_buckets=over_bucket)
     return hits, jnp.maximum(n_hits - H, 0), stats
 
 
@@ -760,7 +918,8 @@ def param_hits(resp: DeviceResponse, table, ev, t, st, crystal, depth, mapped, k
                 t_err=jnp.where(h_ok, f32(1), f32(0)), e=jnp.where(h_ok, e[sel], f32(0)),
                 e_err=jnp.where(h_ok, f32(1), f32(0)))
     over = dict(photoelectrons=jnp.int64(0), rows=over_cells, outliers=jnp.int64(0), digis=jnp.int64(0),
-                digi_length=jnp.int64(0), hits=jnp.maximum(n_hits - H, 0))
+                digi_length=jnp.int64(0), hits=jnp.maximum(n_hits - H, 0), refits=jnp.int64(0),
+                fit_buckets=jnp.int64(0))
     stats = dict(n_reco=jnp.int64(0), n_nonfinite=jnp.int64(0), n_refit_skipped=jnp.int64(0), cells=jnp.sum(ok))
     return hits, over, stats
 
@@ -1048,7 +1207,8 @@ def make_chain(lib: DeviceLibrary, resp: DeviceResponse, caps: Caps = Caps(), di
                    jax.random.normal(k_pbt, pbt.shape, dtype=jnp.float64)).astype(jnp.float32)
         hits, over_hits, stats = fit_and_hits(resp, t, dg, pbt, caps)
         cl, over_cl = clusters(resp, with_truth(hits, q, st, crystal, mapped), caps.events, caps)
-        over = dict(steps=over_steps, photoelectrons=over_pe, hits=over_hits, **over_dg, **over_cl)
+        over = dict(steps=over_steps, photoelectrons=over_pe, hits=over_hits, refits=stats.pop("refits"),
+                    fit_buckets=stats.pop("fit_buckets"), **over_dg, **over_cl)
         stats.update(draws=jnp.sum(donor >= 0), fallback=jnp.sum(fallback & q["valid"]), steps=jnp.sum(st["valid"]),
                      mapped=jnp.sum(mapped), photoelectrons=jnp.sum(jnp.where(pe_ok, weight, 0.0)),
                      digis=jnp.sum(dg["ok"]), hits=jnp.sum(hits["ok"]))
@@ -1096,7 +1256,8 @@ def make_steps_chain(resp: DeviceResponse, caps: Caps = Caps(), digi_response="w
                    jax.random.normal(k_pbt, pbt.shape, dtype=jnp.float64)).astype(jnp.float32)
         hits, over_hits, stats = fit_and_hits(resp, t, dg, pbt, caps)
         cl, over_cl = clusters(resp, hits, caps.events, caps)
-        over = dict(steps=jnp.int64(0), photoelectrons=over_pe, hits=over_hits, **over_dg, **over_cl)
+        over = dict(steps=jnp.int64(0), photoelectrons=over_pe, hits=over_hits, refits=stats.pop("refits"),
+                    fit_buckets=stats.pop("fit_buckets"), **over_dg, **over_cl)
         stats.update(steps=jnp.sum(ok), photoelectrons=jnp.sum(jnp.where(pe_ok, weight, 0.0)),
                      digis=jnp.sum(dg["ok"]), hits=jnp.sum(hits["ok"]))
         return dict(clusters=cl, overflow=jnp.stack([jnp.asarray(over[k], jnp.int64) for k in OVERFLOW_NAMES]),
