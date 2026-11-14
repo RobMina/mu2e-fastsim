@@ -27,7 +27,23 @@ else:
     df.register(__name__)
 
 __all__ = ["make_clusters", "cluster_gain", "wire_coordinates"]
-BATCH_SIZE = 4096 if jax is not None and jax.default_backend() == "gpu" else 128
+# BATCH_SIZE (4096 on a GPU backend, else 128) is resolved on first use, not at import, so importing this module does
+# not create a JAX backend; setting it on the module overrides it.
+
+
+def __getattr__(name):
+    if name != "BATCH_SIZE":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = 4096 if jax is not None and jax.default_backend() == "gpu" else 128
+    globals()[name] = value
+    return value
+
+
+def _batch_size():
+    g = globals()
+    return g["BATCH_SIZE"] if "BATCH_SIZE" in g else __getattr__("BATCH_SIZE")
+
+
 MAX_SAMPLE_LANES = 262144
 MAX_CLUSTER_BUCKET = 4096
 MAX_DRIFT_CLUSTERS = 4_000_000
@@ -202,12 +218,12 @@ def _sample_flat(key, step, slot, eion, nc, minion, p0, p1, sdir, width, eaverag
 
 
 def _sample_batch(capacity):
-    return max(1, min(BATCH_SIZE, MAX_SAMPLE_LANES // capacity))
+    return max(1, min(_batch_size(), MAX_SAMPLE_LANES // capacity))
 
 
 def _pad(a, batch=None):
     """Zero-pad the leading dimension to the fixed device lane count."""
-    batch = BATCH_SIZE if batch is None else batch
+    batch = _batch_size() if batch is None else batch
     return np.pad(a, ((0, batch - len(a)),) + ((0, 0),) * (a.ndim - 1))
 
 
@@ -250,8 +266,8 @@ def make_clusters(key, c, st, idx):
     p0 = np.stack([st[k][idx] for k in ("x0", "y0", "z0")], axis=1).astype(np.float64)
     p1 = np.stack([st[k][idx] for k in ("x1", "y1", "z1")], axis=1).astype(np.float64)
     nc, single_ne = np.empty(len(idx), np.int64), np.empty(len(idx), np.int64)
-    for start in range(0, len(idx), BATCH_SIZE):
-        sl = slice(start, start + BATCH_SIZE)
+    for start in range(0, len(idx), _batch_size()):
+        sl = slice(start, start + _batch_size())
         counts, electrons = _counts(key, _pad(idx[sl]), _pad(eion[sl]), _pad(length[sl]),
                                     _pad(single[sl]), _pad(minion[sl]), c.meanFreePath,
                                     c.EAverage, energies[0], c.maxnclu)

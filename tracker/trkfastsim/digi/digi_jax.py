@@ -19,14 +19,31 @@ df.register(__name__)   # follows the core device float when TRKFASTSIM_DEVICE_F
 
 jax.config.update("jax_enable_x64", True)
 
-GPU = jax.default_backend() == "gpu"
-BATCH = 2048 if GPU else 32
 MAX_ROW_CLUSTERS = 4096
-WAVEFORM_CLUSTER_LANES = 262144 if GPU else 2048
-SATURATION_TILE = 64 if GPU else 16
 JITTER_BATCH = 128
 CHARGE_BLOCK = 4096
-CHARGE_BLOCKS = 16 if GPU else 1
+# Sizes that depend on the backend: GPU, BATCH, WAVEFORM_CLUSTER_LANES, SATURATION_TILE, CHARGE_BLOCKS (GPU value,
+# CPU value). They are resolved on first use, not at import, so importing this module does not create a JAX backend
+# (a workflow's mu2efastsim.devloops.select must come before that). Setting one on the module overrides it.
+_BACKEND_SIZES = {"BATCH": (2048, 32), "WAVEFORM_CLUSTER_LANES": (262144, 2048), "SATURATION_TILE": (64, 16),
+                  "CHARGE_BLOCKS": (16, 1)}
+
+
+def __getattr__(name):
+    if name == "GPU":
+        value = jax.default_backend() == "gpu"
+    elif name in _BACKEND_SIZES:
+        value = _BACKEND_SIZES[name][0 if _c("GPU") else 1]
+    else:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    globals()[name] = value
+    return value
+
+
+def _c(name):
+    """A backend-dependent size: the module's value (resolved on first use, or set by the caller)."""
+    g = globals()
+    return g[name] if name in g else __getattr__(name)
 
 
 @df.jit
@@ -45,7 +62,7 @@ def _panel_jitter(key, events, panels, scale):
 
 
 def _waveform_batch(cap):
-    return max(1, min(BATCH, WAVEFORM_CLUSTER_LANES // cap))
+    return max(1, min(_c("BATCH"), _c("WAVEFORM_CLUSTER_LANES") // cap))
 
 
 def _empty(c):
@@ -126,15 +143,18 @@ def _charge_kernel(c):
 
 
 @lru_cache(maxsize=8)
-def _charge_blocks_kernel(c):
+def _charge_blocks_kernel(c, blocks=None):
+    """The charge kernel over `blocks` (default CHARGE_BLOCKS) CHARGE_BLOCK-cluster blocks per call; each block's key
+    is folded with its first cluster's global index, so the grouping of blocks into calls leaves the draws unchanged."""
     charge = _charge_kernel(c)
+    nb = _c("CHARGE_BLOCKS") if blocks is None else int(blocks)
 
     @df.jit
     def run(key, first, us, pos, ne, time):
-        offsets = first + jnp.arange(CHARGE_BLOCKS, dtype=jnp.int64) * CHARGE_BLOCK
+        offsets = first + jnp.arange(nb, dtype=jnp.int64) * CHARGE_BLOCK
         keys = jax.vmap(lambda offset: random.fold_in(random.fold_in(key, 1), offset))(offsets)
-        args = (us.reshape(CHARGE_BLOCKS, CHARGE_BLOCK), pos.reshape(CHARGE_BLOCKS, CHARGE_BLOCK, 3),
-                ne.reshape(CHARGE_BLOCKS, CHARGE_BLOCK), time.reshape(CHARGE_BLOCKS, CHARGE_BLOCK))
+        args = (us.reshape(nb, CHARGE_BLOCK), pos.reshape(nb, CHARGE_BLOCK, 3),
+                ne.reshape(nb, CHARGE_BLOCK), time.reshape(nb, CHARGE_BLOCK))
         result = jax.vmap(charge)(keys, *args)
         return tuple(a.reshape((-1,) + a.shape[2:]) for a in result)
     return run
@@ -193,7 +213,7 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
     sat_steps = int(np.ceil((c.ttrunc + c.nADCSamples * c.ADCPeriod + 2 * LB) / dts)) + 2
     ticks = jnp.arange(1, c.maxTOT)
     adc_k = jnp.arange(c.nADCSamples)
-    padded_steps = ((sat_steps + SATURATION_TILE - 1) // SATURATION_TILE) * SATURATION_TILE
+    padded_steps = ((sat_steps + _c("SATURATION_TILE") - 1) // _c("SATURATION_TILE")) * _c("SATURATION_TILE")
 
     def count_lanes(L, tlim, inclusive=False):
         cmp = L["t"] <= tlim[:, None] if inclusive else L["t"] < tlim[:, None]
@@ -222,7 +242,7 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
         v *= (L["dv_a"] if path == "adc" else L["dv_t"])[:, None]
         return v
 
-    ntiles = padded_steps // SATURATION_TILE
+    ntiles = padded_steps // _c("SATURATION_TILE")
 
     def saturation_steps(S, times):
         """First contributing cluster i0, response origin t0 and live response steps nstep of the end rows S."""
@@ -241,8 +261,8 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
         n_ = S["n"]
         i0, t0, nstep = saturation_steps(S, times)
         def tile(k, response):
-            offset = k * SATURATION_TILE
-            tick = offset + jnp.arange(SATURATION_TILE)
+            offset = k * _c("SATURATION_TILE")
+            tick = offset + jnp.arange(_c("SATURATION_TILE"))
             tq = t0[:, None] + dts * tick[None, :].astype(df.FLOAT)
             values = volt_lanes(S, tq, "sat", cmin=i0, lattice=c.saturationSampleFactor,
                                 lattice_origin=t0, lattice_offset=offset)
@@ -256,9 +276,10 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
             resp = jnp.minimum(resp, c.saturationVoltage)
 
             def sample_tile(k, acc):
-                offset = k * SATURATION_TILE
-                tick = offset + jnp.arange(SATURATION_TILE)
-                r = jnp.where(tick[None, :] < sat_steps, lax.dynamic_slice_in_dim(resp, offset, SATURATION_TILE, 1), 0)
+                offset = k * _c("SATURATION_TILE")
+                tick = offset + jnp.arange(_c("SATURATION_TILE"))
+                r = jnp.where(tick[None, :] < sat_steps,
+                              lax.dynamic_slice_in_dim(resp, offset, _c("SATURATION_TILE"), 1), 0)
                 tq = t0[:, None] + dts * tick[None, :].astype(df.FLOAT)
                 ii = jnp.clip(jnp.trunc((times[:, :, None] - tq[:, None, :]) * sr + rb / 2.), 0, rb - 1).astype(jnp.int32)
                 return acc + jnp.sum(r[:, None, :] * cond["resp_imp"][ii], 2)
@@ -313,7 +334,7 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
         chunks = -(-n_rows // srows)
         if saturation_tiles == "bounded":
             # saturated ends by live response tiles, most first: each chunk runs up to its first row's tiles
-            need = jnp.minimum(-(-saturation_steps(lanes, times)[2] // SATURATION_TILE), ntiles)
+            need = jnp.minimum(-(-saturation_steps(lanes, times)[2] // _c("SATURATION_TILE")), ntiles)
             order = jnp.argsort(jnp.where(sat, ntiles - need, ntiles + 1), stable=True)
             sidx = jnp.zeros(chunks * srows, order.dtype).at[:n_rows].set(order)
             bound = lambda k: need[sidx[k * srows]]
@@ -536,15 +557,16 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
                     t0 = at(t, i0) - LB
                     nstep = jnp.maximum(0, jnp.ceil((times[:, -1] - t0) / dts).astype(jnp.int32))
                     def tile(k, response):
-                        offset = k * SATURATION_TILE
-                        tick = offset + jnp.arange(SATURATION_TILE)
+                        offset = k * _c("SATURATION_TILE")
+                        tick = offset + jnp.arange(_c("SATURATION_TILE"))
                         tq = t0[:, None] + dts * tick[None, :].astype(df.FLOAT)
                         values = volt(tq, "sat", cmin=i0, lattice=c.saturationSampleFactor,
                                       lattice_origin=t0, lattice_offset=offset)
                         values = jnp.where(tick[None, :] < nstep[:, None], values, 0)
                         return lax.dynamic_update_slice(response, values, (0, offset))
-                    padded_steps = ((sat_steps + SATURATION_TILE - 1) // SATURATION_TILE) * SATURATION_TILE
-                    resp = lax.fori_loop(0, padded_steps // SATURATION_TILE, tile, jnp.zeros((R, padded_steps)))
+                    tile_n = _c("SATURATION_TILE")
+                    padded_steps = ((sat_steps + tile_n - 1) // tile_n) * tile_n
+                    resp = lax.fori_loop(0, padded_steps // _c("SATURATION_TILE"), tile, jnp.zeros((R, padded_steps)))
                     resp = jnp.minimum(resp[:, :sat_steps], c.saturationVoltage)
                     tq = t0[:, None] + dts * jnp.arange(sat_steps)[None, :].astype(df.FLOAT)
                     scale = c.saturationSampleFactor * dv_a / dv_t
@@ -712,7 +734,7 @@ def digitize(st, nev, c, key, stats=None, *, event_timing=None):
         cref = df.COMMON_PERIOD * np.floor(ctime / df.COMMON_PERIOD)
         ctime = ctime - cref
     charge_blocks = []
-    group_size = CHARGE_BLOCK * CHARGE_BLOCKS
+    group_size = CHARGE_BLOCK * _c("CHARGE_BLOCKS")
     for first in range(0, len(cs), group_size):
         last = min(first + group_size, len(cs))
         size = last - first

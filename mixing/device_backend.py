@@ -68,7 +68,9 @@ class Backend:
     source_factory = Source
 
     def __init__(self, args, source):
+        from mu2efastsim import devloops
         from .stream_benchmark import factory
+        devloops.select("W6")         # the W6 command-buffer settings (loops, concurrency), if no JAX backend exists yet
         import jax
         import jax.numpy as jnp
 

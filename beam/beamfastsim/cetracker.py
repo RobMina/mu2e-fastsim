@@ -321,7 +321,7 @@ class DeviceChain:
             raise ValueError("nrow_library (sampled rows) has no tracker steps and feeds only the response: it takes "
                              "no deltas, and needs a response")
         from mu2efastsim import devloops
-        devloops.select("W2")                      # the W2 device-loop setting, if no JAX backend exists yet
+        devloops.select("W2")                      # the W2 command-buffer settings, if no JAX backend exists yet
         import jax  # noqa: F401  (device backend)
         from mu2efastsim import ehelix
         from trkfastsim.sim import fieldsteps_jax as FJ

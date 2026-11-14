@@ -191,3 +191,25 @@ def test_float32_digis_equal_digi_jax(tmp_path):
                        cwd=tmp_path, env=env, capture_output=True, text=True)
     assert r.returncode == 0, r.stdout[-3000:] + r.stderr[-2000:]
     assert "4 passed" in r.stdout, r.stdout[-2000:]
+
+
+def test_fewer_device_calls_give_the_same_digis(cond, monkeypatch):
+    """Charge blocks per call, sampling lanes per class call, vectorised jitter and fused electronics launches group
+    the same draws into fewer device calls: every grouping gives the one-call-per-block digis bit for bit."""
+    c = cond
+    st = _random_steps(c, np.random.default_rng(1))
+    st["eion"] = st["eion"] * np.where(np.arange(len(st["eion"])) % 7 == 0, 40.0, 1.0)
+    st = {k: jax.numpy.asarray(v) for k, v in st.items()}
+    key = jax.random.key(5)
+    opts = LEVERS["pool_tiles"]          # the saturation pool: fused launches apply
+    old = dict(CHARGE_BLOCKS_PER_CALL=1, SAMPLE_LANES=128, JITTER_VMAP=False, FUSED_LAUNCHES=False)
+    for name, value in old.items():
+        monkeypatch.setattr(DR, name, value, raising=False)
+    a = DR.digitize(st, 6, c, key, electronics=opts)
+    assert len(a["ev"]) > 20
+    for change in ({"CHARGE_BLOCKS_PER_CALL": 4}, {"SAMPLE_LANES": 1024}, {"JITTER_VMAP": True},
+                   {"FUSED_LAUNCHES": True},
+                   {"CHARGE_BLOCKS_PER_CALL": 4, "SAMPLE_LANES": 1024, "JITTER_VMAP": True, "FUSED_LAUNCHES": True}):
+        for name, value in {**old, **change}.items():
+            monkeypatch.setattr(DR, name, value, raising=False)
+        _same(a, DR.digitize(st, 6, c, key, electronics=opts))
