@@ -15,9 +15,10 @@ WORKFLOW = Workflow(
     (),
     fixed={
         "compact_helix_fit": "compact device helix fit in place of RobustHelixFinder/AgnosticHelixFinder; " + REPLAY,
-        "kalseed_response": "KalSeedFilter as cuts plus a per-path pass probability (decide --response; without it "
-                            "probability 1; opt-in rows binned in time-cluster hits and helix momentum for the apr "
-                            "helix paths from run response-binned); " + REPLAY,
+        "kalseed_response": "KalSeedFilter as cuts plus a per-path pass probability, per process (decide --response "
+                            "ce, dio, rpc, none or a file; default ce): the shipped binned response, rows in time-cluster hits "
+                            "and helix momentum (CE/DIO: the apr helix paths; RPC: every tpr/apr track and helix path), "
+                            "scalar factors from CE for the other paths; none: probability 1; " + REPLAY,
         "exact_weighted_median": "time clusters use the exact weighted median where stock uses the P2 estimate; "
                                  + REPLAY,
         "tracker_path_subset": "20 single-helix tracker paths of 52 on the device; the replay runs all 52",

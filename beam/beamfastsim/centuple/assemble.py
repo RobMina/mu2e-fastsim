@@ -113,6 +113,10 @@ def dts_select(plan, keep, per_event_n):
 def build(record, donor_lib, out, *, trigger=None, seed=20261111, trigger_cal=None, dts_filter=False):
     """Write plan (npz) for every event of the record. Returns the path and counters.
 
+    trigger_cal: the on-spill trigger table (trigcal) applied to the device decisions of the trigger file, which must
+    come from a trigger stage without a response layer. The CLI passes the shipped table by default (``--trigger-cal
+    none``: off); here None keeps the trigger file's decisions.
+
     dts_filter (opt-in): keep only the events that pass the emulated dts PrimaryFilter (record column `dts_keep`,
     cetracker.dts_keep). The stock files of a primary dts hold only events whose Geant4 transport passed it; fast
     events that fail it would otherwise be stored through the donor's MC-truth paths. Use it with births drawn per
@@ -132,8 +136,12 @@ def build(record, donor_lib, out, *, trigger=None, seed=20261111, trigger_cal=No
         if not (np.array_equal(tz["event"], evn) and np.array_equal(tz["subrun"], sub)):
             raise ValueError("centuple: trigger file events differ from the record's")
         trig = {k[5:]: v.astype(bool) for k, v in tz.items() if k.startswith("trig_")}
-        if trigger_cal is not None:      # opt-in on-spill response of the device paths (trigcal)
+        if trigger_cal is not None:      # on-spill response of the device paths (trigcal)
             from . import trigcal
+            if str(trig_meta.get("response")) not in ("None", ""):
+                raise ValueError("centuple: the trigger table needs device decisions without a response layer "
+                                 f"(trigger file made with --response {trig_meta['response']}); run the trigger "
+                                 "stage without --response, or assemble with --trigger-cal none")
             names = sorted(trig)
             raw = np.stack([trig[k] for k in names], 1)
             new = trigcal.apply(trigcal.load(trigger_cal), names, raw, classes(rec), rec["birth_t"], run, sub, evn,

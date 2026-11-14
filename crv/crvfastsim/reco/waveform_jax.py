@@ -54,6 +54,20 @@ def pack(chan, time, charge, tdc0_of_chan, cfg=WaveformConfig(), Q=None, L=None)
     return dict(T=T, W=W, n=nq, t_start=t_start, tdc0=tdc0, keep=keep, chan=cchan, est=est, L=L, tmpl=tmpl)
 
 
+@partial(jax.jit, static_argnames=("Q",))
+def gather_tw(time, w, first, n, Q):
+    """pack()'s T and W [C, Q] on the device: cluster c's charges are entries first[c] : first[c] + n[c] of the
+    charges in (chan, time) order (rows with n = 0 are padding); w = charge / single_pe_reference_charge, divided on
+    the host as pack() does (XLA's float64 division is not NumPy's on every backend). A gather only (float64), so the
+    same values; synth_dense casts them to the device float as it does pack()'s arrays."""
+    j = jnp.arange(Q)
+    ok = j[None, :] < n[:, None]
+    idx = jnp.where(ok, first[:, None] + j[None, :], 0)
+    T = jnp.where(ok, time.astype(jnp.float64)[idx], jnp.float64(0))
+    W = jnp.where(ok, w.astype(jnp.float64)[idx], jnp.float64(0))
+    return T, W
+
+
 @partial(dprec.jit, static_argnames=("L", "zs", "stock_scan"))
 def synth_dense(T, W, n, t_start, keep, tmpl, key, L, zs, precision, noise, min_voltage, adc_conv, pedestal, adc_lo,
                 adc_hi, *, window_start=None, window_end=None, stock_scan=False):

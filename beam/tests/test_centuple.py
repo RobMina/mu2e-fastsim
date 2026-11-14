@@ -217,6 +217,32 @@ def test_shipped_trigcal_table_loads_and_is_bounded():
         assert np.all((lib[k] >= 0) & (lib[k] <= 1))
 
 
+@pytest.mark.parametrize("arg, want", [(None, "shipped"), ("none", None), ("other.npz", "other.npz")])
+def test_assemble_cli_applies_the_shipped_trigger_table_by_default(monkeypatch, capsys, arg, want):
+    from beamfastsim.centuple import __main__ as M, trigcal
+    seen = {}
+
+    def build(record, donor, out, **kw):
+        seen.update(kw)
+        return "plan.npz", dict(classes={}, covered_paths=[], covered_missing=[], dts_filter=None)
+
+    monkeypatch.setattr(A, "build", build)
+    argv = ["assemble", "--record", "r.npz", "--trigger", "t.npz", "--donor", "d.npz", "--out", "o"]
+    M.main(argv + (["--trigger-cal", arg] if arg else []))
+    assert seen["trigger_cal"] == (str(trigcal.SHIPPED) if want == "shipped" else want)
+    assert json.loads(capsys.readouterr().out)["path"] == "plan.npz"
+
+
+def test_assemble_refuses_the_trigger_table_on_response_layer_decisions(tmp_path, monkeypatch):
+    ev = np.arange(3)
+    np.savez(tmp_path / "rec.npz", meta=json.dumps({}), run=np.full(3, 1430), subrun=np.zeros(3, int), event=ev)
+    np.savez(tmp_path / "trg.npz", meta=json.dumps(dict(response="response.json")), run=np.full(3, 1430),
+             subrun=np.zeros(3, int), event=ev, trig_a=np.ones(3, bool))
+    monkeypatch.setattr(D, "load", lambda path: dict(covered_paths=np.array(["a"])))
+    with pytest.raises(ValueError, match="without a response layer"):
+        A.build(tmp_path / "rec.npz", "donor.npz", tmp_path, trigger=tmp_path / "trg.npz", trigger_cal="t.npz")
+
+
 def test_cluster_truth_time_folds_like_the_reco_time():
     n, m = 3, R.MAX_CLUSTERS
     valid = np.zeros((n, m), bool)

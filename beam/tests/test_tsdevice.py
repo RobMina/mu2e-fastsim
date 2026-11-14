@@ -277,6 +277,16 @@ def test_cache_every_compile_only_with_a_cache_dir(monkeypatch, tmp_path):
         jax.config.update("jax_persistent_cache_min_entry_size_bytes", keep[2])
 
 
+def test_float64_shortening_defaults(monkeypatch):
+    """Float64 defaults: margin 1e-3 and the float32 cascade buckets; the earlier behaviour stays reachable."""
+    import os
+    if "TSDEV_SHRINK_MARGIN_F64" not in os.environ:
+        assert dev.SHRINK_MARGIN_F64 == 1e-3
+    assert dev.SHRINK_LEVELS_F64 == dev.SHRINK_LEVELS_F32 == (0.3, 0.015625, 0.00390625)
+    monkeypatch.setattr(dev, "SHRINK_LEVELS", (0.3, 0.25, 0.00390625))
+    assert dev.shrink_levels() == (0.3, 0.25, 0.00390625)
+
+
 def test_load_references_and_stream_split(tmp_path, monkeypatch):
     paths = []
     for i, n in enumerate((3, 5)):
