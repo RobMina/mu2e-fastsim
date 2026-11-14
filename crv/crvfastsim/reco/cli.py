@@ -684,7 +684,12 @@ def _synth_jax_fixed(WJ, Q, tdc0_row, cfg, caps, noise=0.0, seed=0, budget_gib=S
     data's own, so the sum over charges is the bucketed one); per Q one capacity of rows and samples from the file,
     so new events bring no new shapes. Noise from one key per cluster (fold_in(seed key, cluster index)): a cluster's
     noise does not depend on how clusters are grouped or padded. Clusters beyond the file's samples take the bucketed
-    shape (counted as capacity overflow). Same digis as _synth_jax_bucketed without noise; with noise another draw."""
+    shape (counted as capacity overflow). Same digis as _synth_jax_bucketed without noise; with noise another draw.
+    Packing on the device: per-cluster start times, lengths and keep flags are computed once for all clusters on the
+    host (pack()'s formulas), and each call's [C, Q] time and charge matrices are gathered on the device
+    (waveform_jax.gather_tw): times from the resident response's device buffer when Q holds its download
+    (response.resident.device_charges), else one upload per file; charge / reference charge divided on the host as
+    pack() does and uploaded once per file. The same arrays as pack(), so the same digis."""
     import jax
     import jax.numpy as jnp
     rows, t, q = Q["row"], Q["time"], Q["charge"]
@@ -701,6 +706,20 @@ def _synth_jax_fixed(WJ, Q, tdc0_row, cfg, caps, noise=0.0, seed=0, budget_gib=S
     root = jax.random.PRNGKey(seed)
     keys_of = _cluster_keys()
     parts = []
+    # pack()'s per-cluster quantities, once for all clusters (pack computes them per call from the same charges)
+    tmpl = waveform.single_pe_template(cfg.single_pe_file, cfg.single_pe_precision, cfg.single_pe_stretch,
+                                       cfg.single_pe_max_time)
+    cchan = rows[first]
+    tdc0 = tdc0_row(cchan) if callable(tdc0_row) else np.asarray(tdc0_row)[cchan]
+    t_start = np.ceil((t[first] - pulsefit.PERIOD - tdc0) / pulsefit.PERIOD) * pulsefit.PERIOD + tdc0
+    keep = nq * tmpl.max() >= cfg.min_voltage
+    est = np.floor((span + cfg.single_pe_max_time) / pulsefit.PERIOD).astype(np.int64)
+    from ..response import resident
+    dev = resident.device_charges(t)
+    size = dev[0].shape[0] if dev is not None else caps.size("charges", len(t), int(_p2(len(t))))
+    up = lambda x: jnp.asarray(np.pad(np.asarray(x, np.float64), (0, size - len(x))), dtype=jnp.float64)
+    w = up(q / cfg.single_pe_reference_charge)     # pack()'s division, on the host; uploaded once per file
+    dev_t = dev[0] if dev is not None else up(t)  # the resident buffer's times, or one upload
     for Qb in np.unique(qb):
         Qb = int(Qb)
         in_q = np.flatnonzero(qb == Qb)
@@ -721,18 +740,17 @@ def _synth_jax_fixed(WJ, Q, tdc0_row, cfg, caps, noise=0.0, seed=0, budget_gib=S
             Cp = min(Cp, mem) if Cp is not None else min(int(_p2(len(cl))), mem)
             for a in range(0, len(cl), Cp):
                 c = cl[a:a + Cp]
-                lens = nq[c]
-                idx = np.repeat(first[c] - np.r_[0, np.cumsum(lens)[:-1]], lens) + np.arange(lens.sum())
-                pk = WJ.pack(rows[idx], t[idx], q[idx], tdc0_row, cfg, Q=Qb, L=Lb)
-                n = len(pk["n"])
+                n = len(c)
                 pad = lambda x, v: np.concatenate([x, np.full((Cp - n,) + x.shape[1:], v, x.dtype)]) if Cp > n else x
+                pk = dict(n=nq[c], t_start=t_start[c], keep=keep[c], tdc0=tdc0[c], chan=cchan[c], est=est[c])
+                T, W = WJ.gather_tw(dev_t, w, pad(first[c], 0), pad(pk["n"], 0), Q=Qb)
                 keys = keys_of(root, jnp.asarray(pad(c.astype(np.uint32), 0)))
                 options = dict(stock_scan=True, window_start=window[0], window_end=window[1]) if stock_scan else {}
-                wave, adc, st, last = WJ.synth_dense(pad(pk["T"], 0.0), pad(pk["W"], 0.0), pad(pk["n"], 0),
-                                                     pad(pk["t_start"], 0.0), pad(pk["keep"], False), pk["tmpl"],
-                                                     keys, Lb, cfg.samples_zs, cfg.single_pe_precision, noise,
-                                                     cfg.min_voltage, cfg.adc_conversion, cfg.pedestal, cfg.min_adc,
-                                                     cfg.max_adc, **options)
+                wave, adc, st, last = WJ.synth_dense(T, W, pad(pk["n"], 0), pad(pk["t_start"], 0.0),
+                                                     pad(pk["keep"], False), tmpl, keys, Lb, cfg.samples_zs,
+                                                     cfg.single_pe_precision, noise, cfg.min_voltage,
+                                                     cfg.adc_conversion, cfg.pedestal, cfg.min_adc, cfg.max_adc,
+                                                     **options)
                 parts.append(WJ.to_digis(pk, np.asarray(wave)[:n], np.asarray(adc)[:n], np.asarray(st)[:n],
                                          np.asarray(last)[:n], cfg, window))
     out = {k: np.concatenate([p[k] for p in parts]) for k in parts[0]}

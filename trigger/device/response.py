@@ -1,12 +1,74 @@
-"""Opt-in binned response of the device trigger: per path one pass probability (stock passes / device passes of the
-events in a bin, capped at 1), binned in the straw hits of the event's best time cluster and, for paths with a helix
-stage, the momentum of the event's best device helix. Rows are built by `run response-binned` and read by `chain.Chain`
-(row key "final")."""
+"""Response layer of the device trigger: per path pass probabilities applied after the device's own cuts.
+
+Binned rows: per path one pass probability (stock passes / device passes of the events in a bin, capped at 1), binned
+in the straw hits of the event's best time cluster and, for paths with a helix stage, the momentum of the event's best
+device helix. Rows are built by `run response-binned` and read by `chain.Chain` (row key "final"); paths without a
+binned row keep their scalar hs/ks factors.
+
+Named responses (`load`): the binned response of each process, shipped in `data/`. "ce" and "dio" are one file, built
+from CE and DIO development shards (binned rows for the apr helix paths); "rpc" is built from RPC development shards
+(binned rows for every tpr/apr track and helix path). Every other path keeps the scalar factors from CE shards. "none"
+is no response layer (probability 1: the development runs of `response`, `response-binned` and trigcal). Any other
+value is read as a path to a response JSON file.
+"""
 from __future__ import annotations
+
+import json
+from pathlib import Path
 
 import numpy as np
 
 APR_HELIX_PATHS = r"^apr_(Trk|Hlx)"   # default binned paths: apr paths with a helix stage (AgnosticHelixFinder not ported)
+
+DATA = Path(__file__).resolve().parent / "data"
+NAMED = {"ce": "response_ce_dio.json", "dio": "response_ce_dio.json", "rpc": "response_rpc.json"}
+NONE = "none"
+DEFAULT = "ce"            # the default where the process is not given: the CE chain's response (also DIO's)
+NAMES = (*NAMED, NONE)
+
+
+def path(spec):
+    """File of a named response or a path; None for "none" (or None)."""
+    if spec is None or spec == NONE:
+        return None
+    return DATA / NAMED[spec] if spec in NAMED else Path(spec)
+
+
+def load(spec=DEFAULT):
+    """Response rows {path: row} of a named response ("ce", "dio", "rpc", "none") or a JSON file; checked by
+    `validate`. "none" (or None) gives {}: no response layer."""
+    p = path(spec)
+    if p is None:
+        return {}
+    if not p.is_file():
+        raise FileNotFoundError(f"trigger response {spec!r}: no such file (named responses: {', '.join(NAMES)})")
+    return validate(json.loads(p.read_text()))
+
+
+def validate(resp):
+    """Check the rows' form: hs/ks factors and binned factors in [0, 1], increasing edges, factor shapes matching the
+    edges (hits per row; with edges_p one row per momentum bin). Returns resp."""
+    if not isinstance(resp, dict):
+        raise ValueError("trigger response: a JSON object {path: row} expected")
+    for name, row in resp.items():
+        for k in ("hs", "ks"):
+            if k in row and not 0.0 <= float(row[k]) <= 1.0:
+                raise ValueError(f"trigger response {name}: {k} = {row[k]} not in [0, 1]")
+        fin = row.get("final")
+        if fin is None:
+            continue
+        e = np.asarray(fin["edges"], float)
+        f = np.asarray(fin["f"], float)
+        shape = (len(e) - 1,)
+        if "edges_p" in fin:
+            ep = np.asarray(fin["edges_p"], float)
+            if np.any(np.diff(ep) <= 0):
+                raise ValueError(f"trigger response {name}: edges_p not increasing")
+            shape = (len(ep) - 1,) + shape
+        if np.any(np.diff(e) <= 0) or f.shape != shape or not np.all((f >= 0) & (f <= 1)):
+            raise ValueError(f"trigger response {name}: binned row malformed (edges increasing, f of shape {shape} "
+                             f"in [0, 1] expected; f shape {f.shape})")
+    return resp
 
 
 def _merge(cnt, edges, min_count):

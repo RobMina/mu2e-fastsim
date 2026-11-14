@@ -55,9 +55,10 @@ COVERAGE = [
     ("evtinfomc.nprotons/pbtime", "int/float per event", "donor", "stock CE: nprotons 1"),
     ("primary[0] (SimInfo)", "vector<SimInfo>", "fast", "birth position, momentum, time of the CE; rest donor"),
     ("trig_<20 device paths>", "bool per event", "fast",
-     "trigger.device on device digis (tpr, apr incl. apr_TrkDe_80m70p): ports + KalSeedFilter / AgnosticHelix "
-     "response layer from off-spill CE replays; on-spill digis; opt-in (assemble --trigger-cal) the decisions "
-     "without a response layer and the on-spill table per class and birth time (trigcal)"),
+     "trigger.device on on-spill device digis (tpr, apr incl. apr_TrkDe_80m70p); by default (assemble/point "
+     "--trigger-cal: the shipped table) the decisions without a response layer and the on-spill table per class and "
+     "birth time (trigcal); with --trigger-cal none the ports + KalSeedFilter / AgnosticHelix response layer from "
+     "off-spill CE replays"),
     ("trig_cpr_*, calo_*, Triggerable*, mpr_*, cst_*, minBias_*, apr_TwoTrk*, apr_proton", "bool per event", "donor",
      "the matched stock event's decision (class, covered-trigger bit, track and calorimeter keys): the calorimeter-"
      "seeded and MC paths are not on the device"),
@@ -113,8 +114,8 @@ KNOWN_GAPS = [
     "response layer: active hits drawn from tables (chi2/ndf 49-53 / 34-35 on the deck binning: a miss)",
     "calorimeter: inner-edge contacts from a Geant4 table, cluster-radius disagreement near 380-460 mm",
     "DIO tail above 100 MeV/c: held-out excess (not exercised by CE)",
-    "device trigger: response layer calibrated on off-spill CE replays (opt-in on-spill table per class and birth "
-    "time); calorimeter and MC paths from donors",
+    "device trigger: the on-spill table per class and birth time (trigcal, default; not binned in momentum or hits; "
+    "--trigger-cal none: the off-spill CE response layer); calorimeter and MC paths from donors",
 ]
 
 

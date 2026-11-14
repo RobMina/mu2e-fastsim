@@ -130,7 +130,7 @@ behaviour and any stock-art route outside the chain's levels:
 | W7 | `direct_front_entries_only` (no switch) | always on | - | no level | only direct disk-front entries get a response; stock CaloShowerSteps through device_chain.make_steps_chain / steps_batch (exact on stock steps) | - |
 | W7 | `template_fit_single_pass` (no switch) | always on | - | no level | Newton template fit without the second pass for chi2/ndf > 1 (stock: TMinuit with the refit) | - |
 | W8 | `compact_helix_fit` (no switch) | always on | - | no level | compact device helix fit in place of RobustHelixFinder/AgnosticHelixFinder; stock trigger replay on the same digis (trigger/replay.py --straw-digi-tag, trigger/hybrid pairing) | - |
-| W8 | `kalseed_response` (no switch) | always on | - | no level | KalSeedFilter as cuts plus a per-path pass probability (decide --response; without it probability 1; opt-in rows binned in time-cluster hits and helix momentum for the apr helix paths from run response-binned); stock trigger replay on the same digis (trigger/replay.py --straw-digi-tag, trigger/hybrid pairing) | - |
+| W8 | `kalseed_response` (no switch) | always on | - | no level | KalSeedFilter as cuts plus a per-path pass probability, per process (decide --response ce, dio, rpc, none or a file; default ce): the shipped binned response, rows in time-cluster hits and helix momentum (CE/DIO: the apr helix paths; RPC: every tpr/apr track and helix path), scalar factors from CE for the other paths; none: probability 1; stock trigger replay on the same digis (trigger/replay.py --straw-digi-tag, trigger/hybrid pairing) | - |
 | W8 | `exact_weighted_median` (no switch) | always on | - | no level | time clusters use the exact weighted median where stock uses the P2 estimate; stock trigger replay on the same digis (trigger/replay.py --straw-digi-tag, trigger/hybrid pairing) | - |
 | W8 | `tracker_path_subset` (no switch) | always on | - | no level | 20 single-helix tracker paths of 52 on the device; the replay runs all 52 | - |
 | W8 | `no_delta_finder` (no switch) | always on | - | no level | DeltaFinder skipped (exact without pileup); stock trigger replay on the same digis (trigger/replay.py --straw-digi-tag, trigger/hybrid pairing) | - |
@@ -170,6 +170,11 @@ behaviour and any stock-art route outside the chain's levels:
   - The stock-art input for the transport and the secondaries is Geant4 CrvSteps through `--steps-input`.
 - **W6, W8.** These have no switchable approximation yet. The stock alternatives are the native art mixers (W6) and
   the stock trigger replay on the same digis (W8).
+- **W6 device approximations set by the capacity file.** The default Run 1A file
+  (`mixing/capacities/run1a_mix1bb_batch256.json`) has two: donor-frame digi reuse for the tracker (`tracker_reuse`,
+  [mixing/DEVICE_TRACKER.md](../mixing/DEVICE_TRACKER.md)) and CRV thermal noise only on counters with steps
+  (`thermal_counters: "hit"`, [mixing/DEVICE_CRV.md](../mixing/DEVICE_CRV.md)). `run1a_mix1bb_batch256_exact.json` is
+  the same file without either. The run records the capacity file it used.
 - **W7.** `digi_response=parametric` (opt-in, the `fast` preset) draws each (event, crystal) hit from a table of the
   full chain's outcome per bin of visible energy (`calofastsim.param_response`) instead of photoelectrons, waveforms,
   digis and the template fit: steps -> hits + clusters, no digis. On the held-out CE files (14,218 events, the same

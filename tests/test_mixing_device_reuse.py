@@ -1,4 +1,4 @@
-"""Donor-frame digi reuse (mixing.device_reuse, an opt-in approximation): which straws are reused, and that the
+"""Donor-frame digi reuse (mixing.device_reuse, an approximation): which straws are reused, and that the
 straws digitised per batch are exactly the resident tracker's."""
 import importlib.util
 import sys

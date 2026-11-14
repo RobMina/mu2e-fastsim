@@ -198,9 +198,11 @@ fewer, wider launches pay: on one batch of 256 (A100), tracker apply 0.336 / 0.3
 files use 128. Skipping launches without a live cluster (a `lax.cond` per launch) was tried and dropped: it changes
 how XLA fuses the float64 kernel, which moved 150k cluster times by 1-2 float32 ulps and then some digis.
 
-## Donor-frame digi reuse (opt-in approximation)
+## Donor-frame digi reuse (approximation, on in the default file)
 
-`mixing.device_reuse`, enabled by a `tracker_reuse` block in the capacity file (`run1a_mix1bb_batch256_reuse.json`).
+`mixing.device_reuse`, enabled by a `tracker_reuse` block in the capacity file. The W6 default file
+`run1a_mix1bb_batch256.json` has it; `run1a_mix1bb_batch256_exact.json` is the same file without it (and without the
+CRV thermal approximation), the exact reference.
 About 92 % of the hit straws of a mixed event see steps of one donor frame only.
 - **Setup:** every donor frame of the reused streams (MuStopPileup and MuBeamFlash) is digitised once, as an event of
   its own, at the signal events' mean `mc_pbtime`, with the digitisation window widened by the largest event shift
