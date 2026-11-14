@@ -20,6 +20,9 @@ CAPACITIES = ("substeps", "photons", "thermal", "ct1", "ct2", "ct3", "pixel_shor
               "coinc_hits", "coinc_combinations")
 OPTIONS = {"waveform": ("dense", "scatter"), "digi_starts": ("dense", "rows"), "pulse_scan": ("dense", "bounded"),
            "thermal_counters": ("all", "hit")}
+# the default of each option: the exact restructures (digi_starts "rows", pulse_scan "bounded") are on, "dense" stays
+# selectable as their equality reference; waveform "dense" and thermal_counters "all" (no approximation) as before
+DEFAULTS = {"waveform": "dense", "digi_starts": "rows", "pulse_scan": "bounded", "thermal_counters": "all"}
 STEP_FLOATS = ("edep", "x0", "y0", "z0", "x1", "y1", "z1", "px0", "py0", "pz0", "p1", "len")
 PERIOD = 1695.0
 
@@ -123,8 +126,8 @@ class Adapter:
     nfeb: int
     pmap_ncol: int
     waveform: str = "dense"
-    digi_mode: str = "dense"
-    pulse_mode: str = "dense"
+    digi_mode: str = "rows"
+    pulse_mode: str = "bounded"
     thermal_mode: str = "all"
     kind: str = "physics"
     support: tuple = ("crv_digis", "crv_reco")
@@ -477,9 +480,10 @@ def prepare(geom, cond, cfg, counters, capacities, tabs, pmap):
 
     `capacities` may also carry the option `waveform`: "dense" (default, the shared
     `synth_dense` kernel) or "scatter" (`_synth_scatter`; `charges_per_cluster` is then unused).
-    Exact restructures, same results: `digi_starts` "rows" (digi starts listed from the rows that hold one, and the
-    scatter synthesis' gated scan stops at the longest waveform) and `pulse_scan` "bounded" (pulse-fit peak scans stop
-    at the longest reco waveform, rounds stop once no waveform found a pulse).
+    Exact restructures, same results, on by default ("dense": the full scans, their equality reference): `digi_starts`
+    "rows" (digi starts listed from the rows that hold one, and the scatter synthesis' gated scan stops at the longest
+    waveform) and `pulse_scan` "bounded" (pulse-fit peak scans stop at the longest reco waveform, rounds stop once no
+    waveform found a pulse).
     Approximation (opt-in): `thermal_counters` "hit" draws SiPM thermal noise (dark counts) only on the four SiPMs of
     the counters that have an in-window step in the event, instead of on every SiPM ("all", default). A counter with
     no step then has no thermal hits; with the Run 1A conditions such counters carried no digi in real mixed batches.
@@ -488,7 +492,7 @@ def prepare(geom, cond, cfg, counters, capacities, tabs, pmap):
         raise ValueError("JAX_ENABLE_X64=1 is required")
     cfg = deepcopy(cfg)
     capacities = dict(capacities)
-    options = {name: capacities.pop(name, choices[0]) for name, choices in OPTIONS.items()}
+    options = {name: capacities.pop(name, DEFAULTS[name]) for name in OPTIONS}
     for name, value in options.items():
         if value not in OPTIONS[name]:
             raise ValueError(f"CRV option {name} must be one of {OPTIONS[name]}")
