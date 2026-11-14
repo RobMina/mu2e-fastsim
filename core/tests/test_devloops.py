@@ -79,7 +79,7 @@ def test_provenance_records_both():
 
 @pytest.mark.parametrize("workflow, loops, conc", [
     ("W1", True, False), ("W2", False, True), ("W3", False, True), ("W4", False, True), ("W5", False, False),
-    ("W6", True, True), ("mixing", True, True), ("W7", False, False), ("W8", False, False),
+    ("W6", True, True), ("mixing", True, True), ("W7", False, False), ("W8", True, False),
     ("other", False, False), (None, False, False)])
 def test_auto_follows_the_workflow(workflow, loops, conc):
     out = probe([f"({workflow!r})"], XLA_FLAGS="--a=1")
@@ -93,7 +93,7 @@ def test_auto_follows_the_workflow(workflow, loops, conc):
 @pytest.mark.parametrize("env, arg, on", [("1", None, True), ("0", None, False), ("auto", "on", True),
                                           ("auto", "off", False), ("0", "on", True), ("1", "off", False)])
 def test_explicit_setting_and_argument_override_the_workflow(env, arg, on):
-    workflow = "W8" if on else "W6"           # the opposite of the workflow's own choice for both settings
+    workflow = "W7" if on else "W6"           # the opposite of the workflow's own choice for both settings
     out = probe([f"({workflow!r}, {arg!r}, {arg!r})"], MU2EFS_DEVICE_LOOPS=env, MU2EFS_GRAPH_CONCURRENCY=env)
     assert (LOOPS in toks(out)) is on and (CONC in toks(out)) is on
     assert out["loops"]["decided_by"] == out["conc"]["decided_by"] == ("flag" if arg else "setting")
@@ -163,7 +163,7 @@ def test_late_ce_chain_select_with_both_on_warns_of_the_hang():
 # --- entry points ---------------------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("workflow, loops, conc", [("W2", None, "true"), ("W6", "+CONDITIONAL,+WHILE", "true"),
-                                                   ("W8", None, None)])
+                                                   ("W8", "+CONDITIONAL,+WHILE", None)])
 def test_bench_selects_for_its_workflow(tmp_path, workflow, loops, conc):
     (tmp_path / "toyloops.py").write_text("def step(n):\n    return n\n")
     out_json = tmp_path / "b.json"
