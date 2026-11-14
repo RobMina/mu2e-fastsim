@@ -143,31 +143,51 @@ def straw_hits(p, c, s, tot_bins):
 
 
 def _group(h, s):
-    """Stock CombineStrawHits greedy loop over the event's hits, vectorised over events: owner seed per hit."""
+    """Stock CombineStrawHits greedy loop, vectorised over events and over panel runs: owner seed per hit.
+
+    The stock loop takes the event's hits in order; each unused hit seeds a combo and absorbs later unused good hits
+    of the same panel until the first hit of another panel (input sorted by panel), so the panel runs of an event are
+    independent of each other. Iteration i therefore handles, in every run of every event at once, the hit at
+    position i of the run as the seed: the same seeds, candidates, cuts and order as the per-hit loop, in as many
+    iterations as the longest run of the batch instead of the hit-axis width."""
     E, H = h["valid"].shape
-    good = h["valid"] & ((h["flag"] & s["sel"]) == s["sel"]) & ((h["flag"] & s["mask"]) == 0) & \
+    valid = h["valid"]
+    good = valid & ((h["flag"] & s["sel"]) == s["sel"]) & ((h["flag"] & s["mask"]) == 0) & \
         ((h["flag"] & (1 << FLAG["dead"])) == 0)
-    jpos = jnp.arange(H)[None, :]
+    jpos = jnp.broadcast_to(jnp.arange(H)[None, :], (E, H))
+    up = h["upanel"]
+    cont = jnp.concatenate([jnp.zeros((E, 1), bool), (up[:, 1:] == up[:, :-1]) & valid[:, 1:] & valid[:, :-1]], axis=1)
+    newrun = valid & ~cont
+    rs = jax.lax.cummax(jnp.where(newrun, jpos, 0), axis=1)          # first hit of the hit's run
+    pos = jnp.where(valid, jpos - rs, -1)                             # position of the hit in its run
+    nrun = jnp.max(pos) + 1
+    rid = jnp.cumsum(newrun, axis=1)                                  # run number in the event (1, 2, ...)
 
-    def body(i, state):
-        used, owner = state
-        col = lambda k: jnp.take(h[k], i, axis=1)[:, None]
-        seed = h["valid"][:, i] & ~used[:, i]
-        gseed = seed & good[:, i]
-        same = (h["upanel"] == col("upanel")) & h["valid"]
-        # the stock loop breaks at the first hit of another panel (input sorted by panel)
-        run = jnp.cumprod(jnp.where(jpos > i, same, True), axis=1).astype(bool)
-        ok = (jpos > i) & run & ~used & good & gseed[:, None]
-        ok &= jnp.abs(h["straw"] - col("straw")) <= s["maxds"]
-        ok &= jnp.abs(col("time") - h["time"]) <= s["maxdt"]
-        ok &= (jnp.abs(col("wdist") - h["wdist"]) / jnp.sqrt(col("uvar") + h["uvar"])) <= s["maxwdchi"]
-        take = ok & (jnp.cumsum(ok, axis=1) <= MAXNCOMBO - 1)
-        used = used.at[:, i].set(used[:, i] | seed) | take
-        owner = jnp.where(take, i, owner)
-        owner = owner.at[:, i].set(jnp.where(gseed, i, owner[:, i]))
-        return used, owner
+    def cond(state):
+        return state[0] < nrun
 
-    _, owner = jax.lax.fori_loop(0, H, body, (jnp.zeros((E, H), bool), jnp.full((E, H), -1, jnp.int64)))
+    def body(state):
+        i, used, owner = state
+        sidx = rs + i                                                 # the seed of each hit's run in this iteration
+        sc = jnp.minimum(sidx, H - 1)
+        g = lambda a: jnp.take_along_axis(a, sc, axis=1)
+        in_run = (sidx < H) & g(valid) & (g(rid) == rid)
+        gseed = in_run & ~g(used) & g(good)                           # the run's seed is unused and good
+        seed = valid & (pos == i) & ~used
+        ok = valid & (pos > i) & ~used & good & gseed
+        ok &= jnp.abs(h["straw"] - g(h["straw"])) <= s["maxds"]
+        ok &= jnp.abs(g(h["time"]) - h["time"]) <= s["maxdt"]
+        ok &= (jnp.abs(g(h["wdist"]) - h["wdist"]) / jnp.sqrt(g(h["uvar"]) + h["uvar"])) <= s["maxwdchi"]
+        cs = jnp.cumsum(ok, axis=1)
+        before = jnp.take_along_axis(cs - ok, rs, axis=1)              # candidates of the run before its first hit
+        take = ok & (cs - before <= MAXNCOMBO - 1)
+        used = used | seed | take
+        owner = jnp.where(take, sidx, owner)
+        owner = jnp.where(seed & good, jpos, owner)
+        return i + 1, used, owner
+
+    _, _, owner = jax.lax.while_loop(cond, body, (jnp.zeros((), nrun.dtype), jnp.zeros((E, H), bool),
+                                                  jnp.full((E, H), -1, jnp.int64)))
     return owner
 
 
