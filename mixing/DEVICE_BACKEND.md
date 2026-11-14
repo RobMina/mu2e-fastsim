@@ -154,7 +154,7 @@ reductions), and XLA records each command buffer as one chain of them. Core `dev
 JAX starts): kernels that do not depend on each other become parallel branches of the graph and share the GPU. XLA
 keeps its own dependencies, so the results are the same: over full development and held-out passes at batch 256 the
 output files are identical with and without it (CRV float32 and float64, float32 tracker; exact and reuse capacity
-files). It is independent of the device-loop setting.
+files). It is independent of the device-loop setting for mixing (W2, whose CE chain hangs with both, drops it when its device loops are on).
 
 Rate with it (A100, batch 256, 2,560 events, fresh inputs, full output, two writers; two runs each, alternating on
 one node):

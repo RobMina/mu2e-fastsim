@@ -177,3 +177,48 @@ def test_provenance_records_concurrency():
     out = probe(code="import json\nfrom mu2efastsim import precision\n"
                      "print(json.dumps(precision.provenance()['graph_concurrency']))", MU2EFS_GRAPH_CONCURRENCY="1")
     assert out["requested"] is True and out["xla_gpu_graph_enable_concurrent_region"] == "true"
+
+
+def guard_probe(calls, jax_first=False, **env):
+    code = ("import json, os, warnings, mu2efastsim\nfrom mu2efastsim import devloops as d\n"
+            + ("import jax\njax.devices()\n" if jax_first else "") +
+            "with warnings.catch_warnings(record=True) as w:\n    warnings.simplefilter('always')\n"
+            + "".join(f"    d.select{c}\n" for c in calls) +
+            "print(json.dumps({'flags': os.environ.get('XLA_FLAGS'), 'conc': d.concurrency_state(),\n"
+            "                  'warnings': [str(x.message) for x in w]}))")
+    return probe(code=code, **env)
+
+
+@pytest.mark.parametrize("calls, env", [(['("W2", "on")'], {}), (['("W2")'], {"MU2EFS_DEVICE_LOOPS": "1"}),
+                                        (['("W2")', '("W2", "on")'], {})])
+def test_w2_with_device_loops_drops_concurrency(calls, env):
+    out = guard_probe(calls, MU2EFS_GRAPH_CONCURRENCY="", **env)      # the default (unset): no warning
+    assert out["flags"] == LOOPS and out["warnings"] == []
+    assert out["conc"]["dropped_for"] == "W2" and out["conc"]["xla_gpu_graph_enable_concurrent_region"] is None
+
+
+def test_explicit_concurrency_is_dropped_with_a_warning_for_w2_with_loops():
+    out = guard_probe(['("W2", "on")'], MU2EFS_GRAPH_CONCURRENCY="1")
+    assert out["flags"] == LOOPS and any("hangs with both" in m for m in out["warnings"])
+
+
+@pytest.mark.parametrize("calls", [['("W2")'], ['("mixing")'], ['("W6", "on")'], ['("W5")']])
+def test_concurrency_stays_without_the_combination(calls):
+    out = guard_probe(calls, MU2EFS_GRAPH_CONCURRENCY="1")
+    assert CONC in out["flags"].split() and "dropped_for" not in out["conc"] and out["warnings"] == []
+
+
+def test_user_loop_value_also_drops_concurrency_for_w2():
+    out = guard_probe(['("W2")'], XLA_FLAGS="--xla_gpu_enable_command_buffer=FUSION,+WHILE", MU2EFS_GRAPH_CONCURRENCY="")
+    assert out["flags"] == "--xla_gpu_enable_command_buffer=FUSION,+WHILE" and out["conc"]["dropped_for"] == "W2"
+
+
+def test_user_concurrency_value_stays_for_w2_with_loops():
+    out = guard_probe(['("W2", "on")'], XLA_FLAGS=CONC, MU2EFS_GRAPH_CONCURRENCY="1")
+    assert out["flags"] == f"{CONC} {LOOPS}" and out["conc"]["flag_source"] == "user"
+
+
+def test_late_w2_select_with_both_on_warns_of_the_hang():
+    pytest.importorskip("jax")
+    out = guard_probe(['("W2")'], jax_first=True, JAX_PLATFORMS="cpu", MU2EFS_GRAPH_CONCURRENCY="1")
+    assert any("which hangs" in m for m in out["warnings"]) and CONC in out["flags"].split()

@@ -32,7 +32,14 @@ on, `apply()` also appends `--xla_gpu_graph_enable_concurrent_region=true`: kern
 become parallel branches of the CUDA graph, so many small kernels (a W6 batch step launches tens of thousands, most of
 them a few microseconds long) share the GPU. XLA keeps its own dependencies, so the results do not change (W6 mixing
 outputs identical with and without it over full passes, every capacity file and dtype). A value the user already put
-in XLA_FLAGS for this flag is left alone; `concurrency_state()` is its provenance record. Standard library only.
+in XLA_FLAGS for this flag is left alone; `concurrency_state()` is its provenance record.
+
+Concurrent regions together with device loops hang some chains: the W2 CE chain (transport while loop in
+cechain_jax.run) waits forever on a device value on A100 GPUs with both on, in both dtypes, while either one alone
+completes. NO_CONCURRENCY_WITH_LOOPS lists those workflows: when `select` leaves device loops on for one of them (forced
+with --device-loops on or MU2EFS_DEVICE_LOOPS=1, or a user value of the loop flag), it also removes the appended
+concurrent-region flag (warned when MU2EFS_GRAPH_CONCURRENCY was set explicitly; a user value in XLA_FLAGS is left
+alone). Their defaults (W2: loops off) keep concurrency. Standard library only.
 """
 import os
 import warnings
@@ -43,6 +50,8 @@ FLAG = "--xla_gpu_enable_command_buffer"
 VALUE = "+CONDITIONAL,+WHILE"
 # device loops per workflow in auto mode (measured on A100 GPUs, same card, in sequence); unlisted workflows: on
 WORKFLOWS = {"W2": False, "W6": True, "mixing": True}
+# workflows whose chains hang with device loops and concurrent graph regions both on (A100): select drops concurrency
+NO_CONCURRENCY_WITH_LOOPS = {"W2"}
 CONCURRENCY_FLAG = "--xla_gpu_graph_enable_concurrent_region"
 CONCURRENCY_VALUE = "true"
 _STATE = {}
@@ -125,6 +134,30 @@ def concurrency_state():
     return s
 
 
+def _loops_in_flags():
+    """Whether XLA_FLAGS records loops or conditionals in command buffers (our token or a user value)."""
+    for tok in _flags().split():
+        if tok.startswith(FLAG + "="):
+            value = tok.partition("=")[2].upper()
+            return "WHILE" in value or "CONDITIONAL" in value
+    return False
+
+
+def _guard_concurrency(workflow):
+    """Before the first backend: drop the appended concurrent-region flag when device loops stay on for a workflow in
+    NO_CONCURRENCY_WITH_LOOPS (it hangs). A user value of the concurrency flag is left alone."""
+    tok = CONCURRENCY_FLAG + "=" + CONCURRENCY_VALUE
+    if workflow not in NO_CONCURRENCY_WITH_LOOPS or not _loops_in_flags() or tok not in _flags().split():
+        return
+    if _CONCURRENCY.get("flag_source") == "user":
+        return
+    if os.environ.get("MU2EFS_GRAPH_CONCURRENCY", "").strip():
+        warnings.warn(f"concurrent graph regions are off for {workflow} with device loops on (the chain hangs with "
+                      "both); MU2EFS_GRAPH_CONCURRENCY is ignored", RuntimeWarning, stacklevel=3)
+    os.environ["XLA_FLAGS"] = " ".join(p for p in _flags().split() if p != tok)
+    _CONCURRENCY.update(flag_source="none", dropped_for=workflow)
+
+
 def apply():
     """Append the device-loop flag to XLA_FLAGS unless the setting is off, and the concurrent-region flag unless
     MU2EFS_GRAPH_CONCURRENCY is off (once per process)."""
@@ -144,7 +177,8 @@ def apply():
 def select(workflow=None, loops=None):
     """The workflow's device-loop setting (wanted), before the first JAX backend: adds or removes the flag apply()
     appended. Returns the state. The first select of a process decides; a later one changes it only with an explicit
-    loops (on/off). After a backend exists nothing changes (late; a warning if it would have)."""
+    loops (on/off). After a backend exists nothing changes (late; a warning if it would have). A workflow in
+    NO_CONCURRENCY_WITH_LOOPS that keeps device loops also loses the appended concurrent-region flag."""
     apply()
     if loops in (None, "auto") and "decided_by" in _STATE:      # an earlier select (e.g. the entry point's) stands
         return dict(_STATE)
@@ -152,16 +186,24 @@ def select(workflow=None, loops=None):
     src = "flag" if loops not in (None, "auto") else ("setting" if setting() != "auto" else "workflow")
     if _STATE["flag_source"] == "user":
         _STATE.update(workflow=workflow)
+        if not _backend_started():
+            _guard_concurrency(workflow)
         return dict(_STATE)
-    current = (FLAG + "=" + VALUE) in _flags().split()
     if _backend_started():
+        current = _loops_in_flags()
         if on != current:
             warnings.warn(f"device loops for {workflow or 'this workflow'} would be {'on' if on else 'off'}, but a "
                           "JAX backend already exists: they stay as they are in this process (select before any "
                           "JAX computation)", RuntimeWarning, stacklevel=2)
+        if (workflow in NO_CONCURRENCY_WITH_LOOPS and current
+                and (CONCURRENCY_FLAG + "=" + CONCURRENCY_VALUE) in _flags().split()):
+            warnings.warn(f"{workflow} runs with device loops and concurrent graph regions both on, which hangs: "
+                          "select before any JAX computation, or set MU2EFS_GRAPH_CONCURRENCY=0",
+                          RuntimeWarning, stacklevel=2)
         _STATE.update(workflow=workflow, late=on != current)
         return dict(_STATE)
     _set(on)
+    _guard_concurrency(workflow)
     _STATE.update(workflow=workflow, requested=on, flag_source="setting" if on else "none", decided_by=src,
                   late=False)
     return dict(_STATE)
