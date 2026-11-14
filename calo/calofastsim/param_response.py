@@ -17,11 +17,15 @@ second hit of a cell (deposits more than ``time4merge`` apart) and hits without 
     ok, ev, crystal, E, T, over = cells(...); hit, e, t = draw(tb, key, ok, E, T, v)   # device
     (device_chain.make_steps_chain / make_chain with digi_response= run these)
 
-The shipped table (``DEFAULT``) is built from the full device chain with the production response (CAL1: Sim_crystal,
-CsI pulse, readout noise, propagation table) on the CAL2 training CE files; data/README.md records the inputs.
+The shipped table (``DEFAULT``, named "default" or "v2") is built from the full device chain with the production
+response (CAL1: Sim_crystal, CsI pulse, readout noise, propagation table) on the CAL2 training CE files, with cells
+of the main deposit (``core_window`` 6 ns, :func:`cells`): a crystal's late or early deposits no longer shift its
+time, so its hit stays in time with its cluster. The first table ("v1", ``DEFAULT_V1``) used all the deposits of
+the cell; it gave about 1 % of events an extra cluster above 10 MeV (a crystal split off in time).
+data/README.md records the inputs of both.
 
 The table is a library of the shared core (mu2efastsim.library, core/docs/libraries.md): save() embeds a manifest,
-the frozen shipped file has the sidecar data/digi_response_run1a.manifest.json, load() checks the manifest, the
+the frozen v1 file has the sidecar data/digi_response_run1a.manifest.json, load() checks the manifest, the
 arrays and their content hash, and domain_counts() counts the energies clipped to the end bins, the cells of empty
 energy bins (they borrow the nearest filled bin) and the cells past the last v edge.
 """
@@ -35,8 +39,10 @@ from mu2efastsim.library import store as LS
 from mu2efastsim.library.domain import DomainCounter
 
 SCHEMA = 2
-DEFAULT = Path(__file__).with_name("data") / "digi_response_run1a.npz"
-NAMED = {"default": DEFAULT}
+DEFAULT_V1 = Path(__file__).with_name("data") / "digi_response_run1a.npz"
+DEFAULT = Path(__file__).with_name("data") / "digi_response_run1a_v2.npz"
+NAMED = {"default": DEFAULT, "v2": DEFAULT, "v1": DEFAULT_V1}
+CORE_WINDOW = 6.0                           # ns, the cell definition of the shipped table (cells(core_window=))
 E_EDGES = np.geomspace(0.01, 300.0, 61)       # MeV; below the first edge -> first bin, above the last -> last bin
 POOL_MAX = 4000
 V_EDGES = np.arange(-200.0, 40.01, 2.0)     # ns, T - window end: cells below the first edge are inside the window
@@ -51,12 +57,13 @@ def resolve(table):
 
 
 def build(energy, has_hit, ratio, dt, v, *, e_edges=E_EDGES, v_edges=V_EDGES, pool_max=POOL_MAX, seed=1,
-          reference=""):
+          reference="", core_window=None):
     """Table from training cells (host arrays, one row per (event, crystal) cell with E > 0): visible energy, whether
     the full chain gave the cell a hit, hit energy / E, hit time - T (NaN without a hit) and v = T - window end. The
     pools take the cells with v below the first v edge; each energy bin keeps at most pool_max cells (a uniform
     subsample). The survival curve is the hit fraction per v bin over the inside hit fraction, cells above
-    SURVIVAL_E_MIN; an empty v bin takes the value of the nearest filled bin."""
+    SURVIVAL_E_MIN; an empty v bin takes the value of the nearest filled bin. ``core_window``: the cell definition
+    the training cells were made with (:func:`cells`); it is stored, and the draw uses the same one."""
     energy, has_hit, v = np.asarray(energy, float), np.asarray(has_hit, bool), np.asarray(v, float)
     ratio, dt = np.where(has_hit, ratio, 0.0), np.where(has_hit, dt, 0.0)
     inside = v < v_edges[0]
@@ -99,7 +106,7 @@ def build(energy, has_hit, ratio, dt, v, *, e_edges=E_EDGES, v_edges=V_EDGES, po
                 has_hit=has_hit[rows], ratio=ratio[rows].astype(np.float32), dt=dt[rows].astype(np.float32),
                 v_edges=np.asarray(v_edges, float), survival=surv, survival_count=vcount,
                 n_training=np.int64(len(inside)), n_inside=np.int64(inside.sum()), empty_bins=empty,
-                reference=np.str_(reference))
+                reference=np.str_(reference), core_window=np.float64(np.nan if core_window is None else core_window))
 
 
 def axes(tab):
@@ -112,7 +119,7 @@ def axes(tab):
                                 "edge: inside the window (survival 1), above the last: the last bin"))
 
 
-# Provenance of the shipped table (data/README.md and the build record of PR #168)
+# Provenance of the v1 table (data/README.md and the build record of PR #168)
 SHIPPED = dict(
     version=1,
     source=dict(description="CaloShowerSteps of ten CeEndpoint training files through the full device chain "
@@ -142,6 +149,41 @@ SHIPPED = dict(
                            "yield and shapes on held-out CE events, float32 and float64; the cluster count above "
                            "10 MeV misses (chi2 17/5); no declared criterion recorded"),
     legacy=dict(schema=SCHEMA, format="npz without a manifest (PR #168)"),
+    unrecorded=dict(config_hash="no build configuration manifest"),
+)
+
+
+# Provenance of the shipped v2 table (data/README.md); built by build(..., core_window=CORE_WINDOW) and save(...,
+# sidecar=True, **SHIPPED_V2) from the training cells below
+SHIPPED_V2 = dict(
+    version=2,
+    source=dict(description="CaloShowerSteps of ten CeEndpoint training files through the full device chain "
+                            "(photoelectrons, digitisation, template fit with the analytic Newton step, hits), "
+                            "float64, production response; 28,265 events, 312,247 cells, 112,893 with a hit; cells "
+                            "of the main deposit (core_window 6 ns)",
+                samples=[dict(dataset="dts.mu2e.CeEndpoint.MDC2025ba (CaloLibraryDumper tables)",
+                              selection="001430_00000001, 101, ..., 901", events=28265)]),
+    generator=dict(name="calofastsim device chain (make_steps_chain stages) with the production response",
+                   release="calofastsim with the analytic fit default and cells(core_window=)", physics_list=None,
+                   configuration="Sim_crystal.txt, CsI-waveform-2020-02-12, ReadoutNoise, CsI-propag-2020-07-29, "
+                                 "calo_geometry_run1430; adc2mev stockio.adc_to_mev; PE statistics, travel time and "
+                                 "noise on; reco bunch-time smear off; caps per event: steps 80, photoelectrons "
+                                 "9000, rows 48, digis 48, hits 32; digi_length 96, event_hits 64, rounds 8; batches "
+                                 "of 1,024 events, no overflow"),
+    release=dict(repository="RobMina/mu2e-fastsim", commit="branch calo-param-coretime",
+                 entry_point="calofastsim.param_response.build (defaults: E_EDGES, V_EDGES, SURVIVAL_E_MIN 3 MeV, "
+                             "POOL_MAX 4000, seed 1; core_window 6 ns)"),
+    seeds=dict(build="numpy default_rng(1) (pool subsampling)",
+               chain="jax.random.PRNGKey(4000 + batch), split into (k_pe, k_digi, unused)",
+               timing="calofastsim.bench.pack_batches(seed=77000): start offset and pbtime (-220 to -200 ns in 5 ns "
+                      "steps) from numpy default_rng(77000); mbtime 1695 ns, event length 1700 ns, marker 200, "
+                      "crystal length 200, on-spill"),
+    geometry=dict(tag="Run 1A calorimeter (calo_geometry_run1430)", hash=None),
+    split=dict(training="CeEndpoint MDC2025ba 001430_00000001, 101, ..., 901",
+               held_out="001430_00001000-1400", rule="disjoint files"),
+    validation=dict(status="tested, not closed",
+                    record="docs/approximations.md (W7 digi_response=parametric): held-out CE events against the "
+                           "stock calorimeter reco, float32 and float64; clusters above 10 MeV per event chi2 4/4"),
     unrecorded=dict(config_hash="no build configuration manifest"),
 )
 
@@ -186,13 +228,14 @@ def manifest_fields(tab, **provenance):
     return fields
 
 
-def save(path, tab, **provenance):
-    """Write a table with its manifest (provenance: manifest fields, see :func:`manifest_fields`)."""
-    return LS.save(Path(path), tab, manifest_fields(tab, **provenance))
+def save(path, tab, *, sidecar=False, **provenance):
+    """Write a table with its manifest (provenance: manifest fields, see :func:`manifest_fields`); ``sidecar`` also
+    writes the manifest next to it."""
+    return LS.save(Path(path), tab, manifest_fields(tab, **provenance), sidecar=sidecar)
 
 
-def write_shipped_manifest(path=DEFAULT):
-    """(Re)write the sidecar manifest of the frozen shipped table from SHIPPED; the .npz is not touched."""
+def write_shipped_manifest(path=DEFAULT_V1):
+    """(Re)write the sidecar manifest of the frozen v1 table from SHIPPED; the .npz is not touched."""
     return LS.write_sidecar(path, manifest_fields(LS.load_arrays(path), **SHIPPED))
 
 
@@ -228,6 +271,7 @@ class DeviceTable(NamedTuple):
     dt: object
     v_edges: object
     survival: object
+    core_window: object = None      # the cell definition of the table (cells(core_window=)); None: all steps
 
 
 def to_device(tab):
@@ -235,12 +279,24 @@ def to_device(tab):
     return DeviceTable(jnp.asarray(np.log(tab["e_edges"]), jnp.float64), jnp.asarray(tab["start"], jnp.int32),
                        jnp.asarray(tab["count"], jnp.int32), jnp.asarray(tab["has_hit"], bool),
                        jnp.asarray(tab["ratio"], jnp.float32), jnp.asarray(tab["dt"], jnp.float32),
-                       jnp.asarray(tab["v_edges"], jnp.float64), jnp.asarray(tab["survival"], jnp.float64))
+                       jnp.asarray(tab["v_edges"], jnp.float64), jnp.asarray(tab["survival"], jnp.float64),
+                       core_window(tab))
 
 
-def cells(ev, crystal, energy, time, keep, n_crystals, n_cells):
+def core_window(tab):
+    """The table's cell definition: None (all steps of the cell; tables without the field) or the window in ns."""
+    w = float(tab["core_window"]) if "core_window" in tab else float("nan")
+    return None if np.isnan(w) else w
+
+
+def cells(ev, crystal, energy, time, keep, n_crystals, n_cells, core_window=None):
     """Per-cell sums of the kept steps on the device: (ok, event, crystal, E, T, overflow); the cell slots are
-    sorted by (event, crystal), at most n_cells."""
+    sorted by (event, crystal), at most n_cells.
+
+    ``core_window=None``: E and T are the energy and energy-weighted time of all the cell's steps. With a window
+    (ns), they are those of the steps within ``core_window`` of the cell's energy-weighted median step time (the
+    cell's main deposit, the one the template fit's highest-energy hit follows); later or earlier deposits of the
+    cell are left out."""
     import jax
     import jax.numpy as jnp
     big = jnp.iinfo(jnp.int64).max
@@ -251,11 +307,33 @@ def cells(ev, crystal, energy, time, keep, n_crystals, n_cells):
     e = energy.astype(jnp.float64)
     E = jax.ops.segment_sum(jnp.where(found, e, 0.0), slot, num_segments=n_cells)
     ET = jax.ops.segment_sum(jnp.where(found, e * time, 0.0), slot, num_segments=n_cells)
+    if core_window is not None:
+        E, ET = _core_sums(slot, found, e, time, E, n_cells, core_window)
     ok = (ukey != big) & (E > 0)
     T = jnp.where(ok, ET / jnp.where(E > 0, E, 1.0), 0.0)
     distinct = jnp.sum((jnp.sort(k) != big) & jnp.concatenate([jnp.ones(1, bool), jnp.sort(k)[1:] != jnp.sort(k)[:-1]]))
     return ok, jnp.where(ok, ukey // n_crystals, 0), jnp.where(ok, ukey % n_crystals, 0), E, T, \
         jnp.maximum(distinct - n_cells, 0)
+
+
+def _core_sums(slot, found, e, time, E, n_cells, window):
+    """Energy and energy x time of the steps within ``window`` of their cell's energy-weighted median time."""
+    import jax
+    import jax.numpy as jnp
+    t = time.astype(jnp.float64)
+    s_key = jnp.where(found, slot, n_cells)
+    order = jnp.lexsort((t, s_key))
+    ss, es, ts = s_key[order], jnp.where(found, e, 0.0)[order], t[order]
+    seg = jnp.minimum(ss, n_cells - 1)
+    cum = jnp.cumsum(es)
+    base = jax.ops.segment_min(jnp.where(ss < n_cells, cum - es, jnp.inf), seg, num_segments=n_cells)
+    within = cum - base[seg]
+    at_med = (ss < n_cells) & (within >= 0.5 * E[seg])
+    t_med = jax.ops.segment_min(jnp.where(at_med, ts, jnp.inf), seg, num_segments=n_cells)
+    core = found & (jnp.abs(t - t_med[jnp.minimum(slot, n_cells - 1)]) <= window)
+    Ec = jax.ops.segment_sum(jnp.where(core, e, 0.0), slot, num_segments=n_cells)
+    ETc = jax.ops.segment_sum(jnp.where(core, e * t, 0.0), slot, num_segments=n_cells)
+    return Ec, ETc
 
 
 def draw(tb: DeviceTable, key, ok, E, T, v):

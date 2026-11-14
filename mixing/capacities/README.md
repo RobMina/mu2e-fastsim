@@ -45,11 +45,13 @@ NeutralsFlash pools at the stock intensity law.
   float32 only); exact in both dtypes; it has no size.
 - **`flat_saturation_tiles: "bounded"`**: with the pool, each saturation chunk runs only the response tiles its ends
   need (exact); it has no size.
+- These three are the code defaults with the flat digitisation; the files keep them explicit.
 
-- **`electronics_launches: "live"` and `narrow_tier: "compact"`** (batch-256 files; see
+- **`electronics_launches: "live"` and `narrow_tier: "compact"`** (all four files; see
   [../DEVICE_TRACKER.md](../DEVICE_TRACKER.md)): the narrow tier's live straws first and launches without a live
   straw skipped. They have no size and change the time, not the digis; with them the largest per-launch
-  digitisation demand is 0.93-0.95 entries per straw, inside `digit_entries_per_straw`.
+  digitisation demand is 0.93-0.95 entries per straw, inside `digit_entries_per_straw`. Both are the code defaults
+  (`"compact"` with `end_tiers`); the files keep them explicit.
 
 - **CRV `thermal_counters: "hit"`** (`run1a_mix1bb_batch256.json`, the default; an approximation, see
   [../DEVICE_CRV.md](../DEVICE_CRV.md)): thermal noise only on counters with steps; `thermal` 35,332 and
@@ -59,9 +61,14 @@ NeutralsFlash pools at the stock intensity law.
 - **`electronics_loops: "bounded"`** (batch-256 files): the fine crossing search stops once converged and the
   saturated ADC samples are summed over the response tiles that ran; no size.
 
-- **`output.tracker_rows`** (batch-256 files): the tracker digi rows downloaded per batch, 229,376: 1.39 times the
-  largest demand (164,716 digis in one batch of 256) over full development and held-out passes in float32 and
-  float64. The other rows of the padded table are empty; it changes the time, not the outputs.
+- **`output.tracker_rows`**: the tracker digi rows downloaded per batch. The other rows of the padded table are
+  empty; it changes the time, not the outputs. Each is sized over full development and held-out passes in float32
+  and float64:
+  - batch-256 files: 229,376, 1.39 times the largest demand (164,716 digis in one batch of 256);
+  - batch-128 file: 107,813, 1.25 times the largest demand (86,250 digis in one batch of 128; 88 batches);
+  - batch-64 file: 57,154, 1.25 times the largest demand (45,723 digis in one batch of 64; 172 batches).
+  The batch-64 and batch-128 census ran on CPU (`mixing.device_capacity` with the full padded table as the
+  template's bound, so nothing was dropped).
 - **`tracker_reuse`** (`run1a_mix1bb_batch256.json`, the default; an approximation): `compute` is the tracker for
   the straws still digitised per batch (primary, two or more sources, the streams not reused), 1.25 times their
   demand over a full development pass; `precompute` sizes the setup batches of 8,192 donor frames (`long_steps`,

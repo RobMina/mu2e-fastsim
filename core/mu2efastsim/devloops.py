@@ -19,9 +19,10 @@ same-job A100-80 rates (warm events/s over 2 warm passes, cold compile cache):
 
     workflow   loops on / off, f64 | f32               loops   concurrency
     W1         624 / 608 | 869 / 844 (+3 %)              on      off
-    W2         76 / 101 | 35 / 42 (5,000 / pass);        off     on (loops off, 200k / pass, compiles
-               200k / pass: 1,865 / 2,087 | 2,036 / 2,424        excluded: concurrency on / off
-                                                                 2,427 / 2,251 | 3,234 / 2,918, +7..+11 %)
+    W2         76 / 101 | 35 / 42 (5,000 / pass);        off     on (loops off, 200k / pass with digis,
+               200k / pass: 1,865 / 2,087 | 2,036 / 2,424        same build and GPU, compiles excluded:
+                                                                 concurrency on / off 2,750 / 2,560 |
+                                                                 3,844 / 3,438, +7..+12 %)
     W3, W4     W2's CE chain                             off     on
     W5 plain   2,810 / 2,989 | 2,762 / 2,823 (-2..-6 %)   off     off
     W5 refit   3,119 / 3,132 | 3,040 / 3,045 (~0)        off     off  (same "W5" entry)

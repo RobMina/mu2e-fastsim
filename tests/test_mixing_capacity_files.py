@@ -35,14 +35,25 @@ def test_batch256_default_and_exact_reference():
     assert default["response"]["output"] == exact["response"]["output"]
 
 
+LAYOUT_DEFAULTS = ("flat_saturation_rows", "flat_saturation_pool", "flat_saturation_tiles", "electronics_launches",
+                   "narrow_tier")
+
+
+def _without_layout_defaults(tracker):
+    """The tracker capacities without the exact layout keys, which then take their code defaults."""
+    return {k: v for k, v in tracker.items() if k not in LAYOUT_DEFAULTS}
+
+
 @pytest.mark.parametrize("path", FILES, ids=lambda path: path.name)
 def test_capacity_file_contract(path):
+    """Every file validates, and its explicit exact layout keys are the code defaults."""
     caps = json.loads(path.read_text())
     assert set(caps) == {"max_donors", "rows", "response"}
     assert set(caps["rows"]) == {"particles", "gen", "tracker", "crv"}
     assert all(type(v) is int and v > 0 for v in [caps["max_donors"], *caps["rows"].values()])
     tracker = Capacities(**caps["response"]["tracker"])
     assert tracker.end_tiers and tracker.charge_blocks_per_launch
+    assert tracker == Capacities(**_without_layout_defaults(caps["response"]["tracker"]))
     assert tracker.straws % tracker.electronics_batch == 0
     assert set(caps["response"]) - {"tracker_reuse", "output"} == {"tracker", "crv"}
     if "output" in caps["response"]:             # terminal output sizes (device_physics.output_capacities)
@@ -55,6 +66,7 @@ def test_capacity_file_contract(path):
         for part in (reuse.compute, reuse.precompute):
             sized = Capacities(**part)
             assert sized.straws % sized.electronics_batch == 0
+            assert sized == Capacities(**_without_layout_defaults(part))
     pytest.importorskip("jax")
     pytest.importorskip("crvfastsim")
     from mixing import device_crv

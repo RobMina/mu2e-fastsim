@@ -23,12 +23,55 @@ def test_declarations_load_by_workflow_and_alias():
 
 
 def test_w2_levels_are_device_chain_keywords():
+    """Every level's argument is a DeviceChain keyword, except rpc_legs, which the bench entries take themselves."""
     import inspect
     params = inspect.signature(H.DeviceChain.__init__).parameters
+    entry = set(inspect.signature(H.bench_run_starts).parameters) & set(inspect.signature(H.bench_run).parameters)
     for a in BA.W2.approximations:
         for level in a.levels:
             for key in a.sets.get(level, {}):
-                assert key in params, (a.name, key)
+                assert key in params or (key == "rpc_legs" and key in entry), (a.name, key)
+
+
+def test_rpc_legs_defaults_to_pairs_and_electron_reaches_the_bench_entries():
+    a = BA.W2.get("rpc_legs")
+    assert a.default == "pair" and a.fidelity == "pair" and a.fast is None
+    assert "rpc_internal_electron_only" not in BA.W2.fixed and "rpc_internal_conversion_only" in BA.W2.fixed
+    for preset in A.PRESETS:
+        assert "rpc_legs" not in BA.W2.select(preset).arguments()
+    assert BA.W2.select(overrides={"rpc_legs": "electron"}).arguments() == {"rpc_legs": "electron"}
+
+
+def test_cetracker_cli_records_electron_for_an_rpc_pair_file(monkeypatch, tmp_path):
+    """The CLI writes the electron's injector table: for an RPC pair file its record says rpc_legs electron."""
+    rng = np.random.default_rng(2)
+    n = 4
+    src = {k: rng.normal(size=n) for k in ("x", "y", "z", "px", "py", "pz")}
+    u = rng.normal(size=(n, 3))
+    src.update(time=rng.uniform(500.0, 900.0, n), pdg=np.full(n, 11, np.int32), positron_p=rng.uniform(20, 80, n),
+               positron_u=u / np.linalg.norm(u, axis=1)[:, None])
+    np.savez(tmp_path / "rpc.npz", **src)
+    seen = {}
+    monkeypatch.setattr(H.cechain, "from_offline", lambda geom, root: None)
+
+    def chain(*args, **kw):
+        raise Reached
+    monkeypatch.setattr(H, "DeviceChain", chain)
+    real = A.Selection.set_effective
+
+    def spy(self, name, level, reason):
+        seen[name] = level
+        return real(self, name, level, reason)
+    monkeypatch.setattr(A.Selection, "set_effective", spy)
+    argv = ["--starts", str(tmp_path / "rpc.npz"), "--outdir", str(tmp_path / "o"), "--gdml", "g", "--maps", "m",
+            "--offline-root", "o", "--backend", "device", "--tracker", "device"]
+    with pytest.raises(Reached):
+        H.main(argv)
+    assert seen.get("rpc_legs") == "electron"
+    seen.clear()
+    with pytest.raises(Reached):
+        H.main(argv + ["--approx", "rpc_legs=electron"])
+    assert "rpc_legs" not in seen
 
 
 def _cetracker_main(monkeypatch, tmp_path, extra):
@@ -188,7 +231,7 @@ def test_records_are_json_and_list_the_fixed_approximations():
             r = w.select(preset).record()
             json.dumps(r)
             assert r["fixed"] == sorted(w.fixed)
-    assert BA.W2.select("fidelity").record()["no_stock_path"] == ["calo_albedo", "straw_wall", "tracker_rows"]
+    assert BA.W2.select("fidelity").record()["no_stock_path"] == ["calo_albedo", "rpc_legs", "straw_wall", "tracker_rows"]
 
 
 def test_fidelity_preset_without_a_response_sets_only_the_wall():
