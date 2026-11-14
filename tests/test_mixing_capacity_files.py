@@ -22,6 +22,8 @@ def test_batch256_default_and_exact_reference():
     exact = json.loads((folder / "run1a_mix1bb_batch256_exact.json").read_text())
     assert "tracker_reuse" in default["response"] and "tracker_reuse" not in exact["response"]
     assert default["response"]["crv"]["thermal_counters"] == "hit"
+    reuse = default["response"]["tracker_reuse"]
+    assert reuse["shifts"] == "events" and reuse["event_jitter"] is True
     assert "thermal_counters" not in exact["response"]["crv"]
     resized = {"thermal", "ct1", "ct2", "charge_clusters", "thermal_counters"}
     assert {k: v for k, v in default["response"]["crv"].items() if k not in resized} == \
