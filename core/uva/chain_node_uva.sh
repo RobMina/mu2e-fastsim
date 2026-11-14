@@ -8,12 +8,16 @@
 #SBATCH --mem=900G
 #SBATCH -t 01:00:00
 # UVA production template: the fast CRV chain (runchain: transport -> tier 1b -> photons -> SiPM -> waveforms ->
-# pulses -> coincidences) on a whole 8 x A100-80 node, one process per GPU, response AND reco on the GPU (unlike
-# Aurora, where reco ran on the CPU), 16 cores per process. Code: the SIF's Python stack with a fresh git clone of
-# the umbrella at $REF (the SIF may predate runchain --emit), PYTHONPATH pointing at it.
+# pulses -> coincidences) on a whole 8 x A100-80 node, PER_GPU processes per GPU (default 2), response AND reco on the
+# GPU (unlike Aurora, where reco ran on the CPU), the node's cores split evenly between the processes. One process
+# keeps an A100 busy for less than half of each pass (host work and serialized launches); two processes sharing it
+# (time-slicing) give 36-44 % more events per GPU; each process's output is unchanged. PER_GPU=1 restores one process
+# per GPU. Code: the SIF's Python stack with a fresh git clone of the umbrella at $REF (the SIF may predate runchain
+# --emit), PYTHONPATH pointing at it.
 # Inputs (CRY gen tables, tier-1b library, CRVCalib/CRVPhoton CSVs, GDML) are streamed by kpp_stream_uva.sh into
 # node tmpfs; the v6_0 lookup tables come from CVMFS into tmpfs; all deleted on exit (cleanup.txt). Per-shard JSONs
 # and the merge go back to the GPVM. usage (laptop, UVA network):
+# NPROC is the number of GPUs used (process i runs on GPU i / PER_GPU and reads gen files i*RUNS .. i*RUNS+RUNS-1).
 #   JOB=chain_node_uva.sh EXPORTS=NPROC=8,RUNS=4 kpp_stream_uva.sh "$FASTSIMKIT_FNAL_HOST" mu2e/fastsim_uva <files...>
 # Tier 1b (crvfastsim.tier1b_assets): T1B=strict_v5 (the only set); stream that set's
 # library.root, topology sidecar and
@@ -23,7 +27,9 @@
 # Site settings come from the environment (site.env.example): FASTSIMKIT_SCRATCH (work area on the cluster), the
 # account at submission (sbatch -A "$FASTSIMKIT_SLURM_ACCOUNT"), and the log path (sbatch -o "$FASTSIMKIT_SCRATCH/kpp/slurm-%j.out").
 F=${M2FS_UVA:-${FASTSIMKIT_SCRATCH:?set FASTSIMKIT_SCRATCH (work area on the cluster scratch; sbatch --export=ALL,FASTSIMKIT_SCRATCH=...)}}
-SIF=${SIF:-$F/mu2efastsim.sif}; NP=${NPROC:-8}; MAXEV=${MAXEV:-}; REF=${REF:-main}
+SIF=${SIF:-$F/mu2efastsim.sif}; NP=${NPROC:-8}; PG=${PER_GPU:-2}; MAXEV=${MAXEV:-}; REF=${REF:-main}
+[[ "$PG" =~ ^[1-9][0-9]*$ ]] || { echo "PER_GPU must be a positive integer"; exit 2; }
+NT=$((NP*PG))   # processes
 umask 077
 O=$F/kpp/chain_$(date +%Y%m%d_%H%M%S)_${SLURM_JOB_ID:-none}; mkdir -p $O
 exec > >(tee "$O/run.log") 2>&1
@@ -45,7 +51,7 @@ JENV="MU2EFS_DEVICE_FLOAT=$DF"; JB=()
 [ -n "$JC" ] && { mkdir -p "$JC"; JC=$(readlink -f "$JC"); JENV="$JENV,JAX_COMPILATION_CACHE_DIR=$JC,JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0"; JB=(-B "$JC"); }
 A() { apptainer exec --nv --cleanenv --env "PYTHONPATH=$CR/crv:$CR/core:$CR/tracker,CRVFS_LOOKUP_DIR=$L,CRVFS_DATA=$L,$JENV,$1" \
       -B $L -B $OR -B $CR "${JB[@]}" --pwd $CR "$SIF" "${@:2}"; }
-echo "host=$(hostname) job=${SLURM_JOB_ID:-none} out=$O nproc=$NP maxev=${MAXEV:-all} sif=$SIF device_float=$DF jax_cache=${JC:-off}"
+echo "host=$(hostname) job=${SLURM_JOB_ID:-none} out=$O gpus=$NP per_gpu=$PG processes=$NT maxev=${MAXEV:-all} sif=$SIF device_float=$DF jax_cache=${JC:-off}"
 git -C $CODE log -1 --format="umbrella %h %s" | cut -c1-120; git -C $CODE submodule status | cut -c1-60
 nvidia-smi -L | head -8
 A CUDA_VISIBLE_DEVICES=0 python -c "import jax, sys, crvfastsim, os; print(jax.devices(), os.path.dirname(crvfastsim.__file__)); sys.exit(jax.default_backend() != 'gpu')" \
@@ -72,23 +78,23 @@ esac
 for f in $T1BF; do
   [ -f $L/$f ] || { echo "tier-1b set $T1B: $f not streamed"; exit 3; }; done; TIER1B="--tier1b $T1B --tier1b-dir $L"
 echo "tier 1b: $TIER1B"
-CPP=$(( ${SLURM_CPUS_ON_NODE:-128} / NP ))
+CPP=$(( ${SLURM_CPUS_ON_NODE:-128} / NT ))
 for FPP in ${RUNS:-1}; do
   R=$O/fpp$FPP; mkdir -p $R
   t0=$(date +%s.%N); pids=()
-  for i in $(seq 0 $((NP-1))); do
+  for i in $(seq 0 $((NT-1))); do
     fl=(); for k in $(seq 0 $((FPP-1))); do fl+=(${GEN[$(((i*FPP+k) % ${#GEN[@]}))]}); done
     PIN=""   # one process: the Slurm cgroup already holds the job's cores (a fixed list fails on a shared node)
-    [ $NP -gt 1 ] && PIN="taskset -c $((i*CPP))-$((i*CPP+CPP-1))"   # whole-node jobs only: split the node's cores
-    ( A CUDA_VISIBLE_DEVICES=$i,XLA_PYTHON_CLIENT_PREALLOCATE=false,JAX_ENABLE_X64=1 \
+    [ $NP -gt 1 ] && [ $CPP -ge 1 ] && PIN="taskset -c $((i*CPP))-$((i*CPP+CPP-1))"   # whole-node jobs only: split the node's cores
+    ( A CUDA_VISIBLE_DEVICES=$((i/PG)),XLA_PYTHON_CLIENT_PREALLOCATE=false,JAX_ENABLE_X64=1 \
         $PIN python -m crvfastsim runchain "${fl[@]}" $TIER1B --calib $CAL \
         ${DEV:+--deviation $DEV} --gdml $GD --jax --seed $((${SEED_BASE:-20261021}+i)) ${MAXEV:+--max-events $MAXEV} \
         --emit $R/shard_$i.json --outdir $R/p$i ) > $R/p$i.txt 2>&1 & pids+=($!)
   done
   rc=0; for p in "${pids[@]}"; do wait $p || rc=$((rc+1)); done
   WALL=$(awk -v a=$t0 -v b=$(date +%s.%N) 'BEGIN{printf "%.1f", b-a}')
-  echo "== pass files/process=$FPP: processes $NP, failed $rc, wall ${WALL} s"
-  for i in $(seq 0 $((NP-1))); do [ -f $R/shard_$i.json ] || { echo "-- p$i failed:"; grep -m3 -E "Error|Fatal|die:|Traceback" $R/p$i.txt | cut -c1-250; }; done
+  echo "== pass files/process=$FPP: processes $NT ($NP GPUs x $PG), failed $rc, wall ${WALL} s"
+  for i in $(seq 0 $((NT-1))); do [ -f $R/shard_$i.json ] || { echo "-- p$i failed:"; grep -m3 -E "Error|Fatal|die:|Traceback" $R/p$i.txt | cut -c1-250; }; done
   A CUDA_VISIBLE_DEVICES= python -m crvfastsim runchain-merge "$R/shard_*.json" --wall $WALL --outdir $R/merge 2>&1 | \
     grep -E '"(shards|generated_events|events_with_steps|wall_s|slowest_shard_wall_s|accepted_events_per_node_hour)"'
 done

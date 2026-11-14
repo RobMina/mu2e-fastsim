@@ -1,18 +1,19 @@
 #!/bin/bash
 # Run from the laptop on the UVA network. The fast CRV chain as N independent small Slurm jobs (default: 1 GPU, 16
 # cores each, any A100) instead of one whole node, so each job clears the queue on its own. Each job is
-# chain_node_uva.sh with NPROC=1; job k gets gen files k*FPP .. k*FPP+FPP-1 (cycled). One umbrella checkout at $REF is
+# chain_node_uva.sh with NPROC=1 (one GPU) and PER_GPU processes sharing it (default 2: 36-44 % more events per GPU
+# than one process); job k gets gen files k*FPP*PER_GPU .. (k+1)*FPP*PER_GPU-1 (cycled), FPP per process. One umbrella checkout at $REF is
 # prepared on the login node and shared (CODE_READY=1). Inputs are streamed GPVM -> laptop -> each job's node tmpfs
 # when it starts (srun --overlap), never stored on UVA; outputs (stats only) go back to the GPVM and are removed.
 # Then throughput_uva.py: accepted events per GPU-hour, per SU, and per hour of campaign wall time.
-# usage: [N=8] [FPP=4] [GRES=gpu:a100:1] [CONSTRAINT=a100] [CPUS=16] [MEM=110G] [WALL=00:45:00] [REF=main] \
+# usage: [N=8] [FPP=4] [PER_GPU=2] [GRES=gpu:a100:1] [CONSTRAINT=a100] [CPUS=16] [MEM=110G] [WALL=00:45:00] [REF=main] \
 #        [T1B=strict_v5] [MU2EFS_DEVICE_FLOAT=float32|float64] chain_array_uva.sh [gpvm]
 #        (T1B: tier-1b asset set, crvfastsim.tier1b_assets; device float of the jobs, default float32)
 # Site settings (site.env.example): FASTSIMKIT_FNAL_HOST, FASTSIMKIT_SLURM_HOST, FASTSIMKIT_SLURM_ACCOUNT, FASTSIMKIT_SCRATCH,
 # the FNAL input dir (FASTSIMKIT_FNAL_DATA) and M2FS_CODE (umbrella checkout on the FNAL host, for throughput_uva.py).
 set -uo pipefail
 G=${1:-${FASTSIMKIT_FNAL_HOST:?set FASTSIMKIT_FNAL_HOST (FNAL host that holds the inputs) or pass it as the first argument}}
-N=${N:-8}; FPP=${FPP:-4}; GRES=${GRES:-gpu:a100:1}; CONSTRAINT=${CONSTRAINT:-a100}; CPUS=${CPUS:-16}
+N=${N:-8}; FPP=${FPP:-4}; PG=${PER_GPU:-2}; GRES=${GRES:-gpu:a100:1}; CONSTRAINT=${CONSTRAINT:-a100}; CPUS=${CPUS:-16}
 MEM=${MEM:-110G}; WALL=${WALL:-00:45:00}; REF=${REF:-main}; MAXEV=${MAXEV:-}; CRV_REF=${CRV_REF:-}   # CRV_REF: a crv branch to test
 U=${UVA_HOST:-${FASTSIMKIT_SLURM_HOST:?set FASTSIMKIT_SLURM_HOST (ssh host of the Slurm cluster)}}
 F=${FASTSIMKIT_SCRATCH:?set FASTSIMKIT_SCRATCH (work area on the cluster scratch)}; JD=mu2e/fastsim_uva
@@ -33,7 +34,7 @@ TAG=array_$(date +%Y%m%d_%H%M%S)
 LOG=${LOGDIR:-$HOME/.mu2efastsim/chain_array}/$TAG; mkdir -p "$LOG"
 DEST=$D/reco_ref/checks_uva/$TAG
 CODE=$F/chain_code_$REF${CRV_REF:+_crv-$CRV_REF}
-echo "tag $TAG: N=$N FPP=$FPP tier1b=$T1B gres=$GRES constraint=$CONSTRAINT cpus=$CPUS mem=$MEM wall=$WALL ref=$REF crv=${CRV_REF:-pinned}; log $LOG"
+echo "tag $TAG: N=$N FPP=$FPP per_gpu=$PG tier1b=$T1B gres=$GRES constraint=$CONSTRAINT cpus=$CPUS mem=$MEM wall=$WALL ref=$REF crv=${CRV_REF:-pinned}; log $LOG"
 
 # one checkout for all jobs (login node: git only, no compute)
 ssh "$U" "set -e; if [ -d $CODE/.git ]; then git -C $CODE fetch -q origin; git -C $CODE checkout -q $REF; git -C $CODE reset -q --hard origin/$REF; \
@@ -45,7 +46,7 @@ ssh "$U" "set -e; if [ -d $CODE/.git ]; then git -C $CODE fetch -q origin; git -
 JIDS=()
 for k in $(seq 0 $((N-1))); do
   J=$(ssh "$U" "cd $JD && sbatch --parsable -A $ACCT -o $F/kpp/slurm-%j.out -J m2fs_arr$k --gres=$GRES -C $CONSTRAINT -c $CPUS --mem=$MEM -t $WALL \
-      --export='ALL,FASTSIMKIT_SCRATCH=$F,MU2EFS_DEVICE_FLOAT=${MU2EFS_DEVICE_FLOAT:-float32},NPROC=1,RUNS=$FPP,SEED_BASE=$((20261021 + 1000*k)),CODE_DIR=$CODE,CODE_READY=1,T1B=$T1B${MAXEV:+,MAXEV=$MAXEV}' chain_node_uva.sh" </dev/null)
+      --export='ALL,FASTSIMKIT_SCRATCH=$F,MU2EFS_DEVICE_FLOAT=${MU2EFS_DEVICE_FLOAT:-float32},NPROC=1,PER_GPU=$PG,RUNS=$FPP,SEED_BASE=$((20261021 + 1000*k)),CODE_DIR=$CODE,CODE_READY=1,T1B=$T1B${MAXEV:+,MAXEV=$MAXEV}' chain_node_uva.sh" </dev/null)
   JIDS+=("${J%%;*}"); echo "job $k -> ${J%%;*}"
 done
 printf "%s\n" "${JIDS[@]}" > "$LOG/jobids.txt"
@@ -59,7 +60,7 @@ stream_one() {   # $1 job index, $2 job id: wait for the inbox, stream this job'
   done
   read -r HOST L O <<<"$INBOX"; echo "[$JID] node $HOST"
   files=("${COMMON[@]}")
-  for i in $(seq 0 $((FPP-1))); do files+=("$(printf "$D/g4ref_v1_tables/gen.001400_%08d.root" $(( (k*FPP+i) % NGEN + 1 )))"); done
+  for i in $(seq 0 $((FPP*PG-1))); do files+=("$(printf "$D/g4ref_v1_tables/gen.001400_%08d.root" $(( (k*FPP*PG+i) % NGEN + 1 )))"); done
   for SRC in "${files[@]}"; do
     local N1 SUM; N1=$(basename "$SRC"); SUM=$(ssh "$G" "md5sum $SRC" </dev/null | cut -c1-32)
     ssh "$G" "cat $SRC" </dev/null | ssh "$U" "srun --jobid=$JID --overlap -N1 -n1 --mem=0 -w $HOST sh -c 'cat > $L/$N1 && md5sum $L/$N1'" \
@@ -102,6 +103,6 @@ open(f"{log}/jobs.tsv", "w").write("\n".join(rows) + "\n")
 print(f"{len(rows) - 1} jobs with accounting -> {log}/jobs.tsv")
 EOF
 scp -q "$LOG/jobs.tsv" "$G:$DEST/jobs.tsv"
-ssh "$G" "cd $DEST && python3 $CODE_FNAL/core/uva/throughput_uva.py jobs.tsv */fpp$FPP/shard_0.json --out throughput.json" </dev/null \
+ssh "$G" "cd $DEST && python3 $CODE_FNAL/core/uva/throughput_uva.py jobs.tsv */fpp$FPP/shard_*.json --out throughput.json" </dev/null \
   | tee "$LOG/throughput.txt"
 echo "outputs in $G:$DEST"
