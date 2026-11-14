@@ -94,10 +94,10 @@ def _run(model, collection, times, seed=3):
     return {name: np.asarray(v)[np.asarray(out["mask"])] for name, v in out.items() if name != "mask"}, errors
 
 
-def _reuse(c, helpers, streams=None, shift=-5.):
+def _reuse(c, helpers, streams=None, shift=-5., **extra):
     data, index, frames = _pools(c, helpers)
     caps = {"compute": CAPS, "precompute": CAPS, "frames_per_batch": 8, "straws": 8,
-            **({"streams": streams} if streams else {})}
+            **({"streams": streams} if streams else {}), **extra}
     table = device_reuse.precompute(c, caps, data, 1700., 0, rows_capacity=8, shift=shift, margin=15.)
     return device_reuse.prepare(c, caps, 2, table, data["starts"]), table, data, index, frames
 
@@ -110,6 +110,13 @@ def test_reuse_capacities_validated():
     with pytest.raises(ValueError, match="streams"):
         device_reuse.ReuseCapacities(CAPS, CAPS, 8, 8, streams=["Cosmics"])
     assert device_reuse.ReuseCapacities(CAPS, CAPS, 8, 8, streams=["MuBeamFlash"]).reused_pools() == [3]
+    for bad in (0, 65, 2.0):
+        with pytest.raises(ValueError, match="phases"):
+            device_reuse.ReuseCapacities(CAPS, CAPS, 8, 8, phases=bad)
+    with pytest.raises(ValueError, match="event_jitter"):
+        device_reuse.ReuseCapacities(CAPS, CAPS, 8, 8, event_jitter=1)
+    caps = device_reuse.ReuseCapacities(CAPS, CAPS, 8, 8)
+    assert caps.phases == 1 and caps.event_jitter is False
 
 
 def test_widened_window(conditions):
@@ -162,3 +169,95 @@ def test_streams_not_reused_are_digitised_per_batch(conditions, helpers):
     reuse, _ = _run(model, collection, times)
     for name in ("ev", "sid", "adc", "tdc", "tot", "pmp"):
         np.testing.assert_array_equal(exact[name], reuse[name], err_msg=name)
+
+
+def _single_donor_rows(table, reuse, index, sid, name, us, copy=0):
+    rows = (table["frame"] == index[name]) & (table["sid"] == sid[us]) & (table["copy"] == copy)
+    b = (reuse["ev"] == 1) & (reuse["sid"] == sid[us])
+    assert rows.sum() > 0 and rows.sum() == b.sum(), (us, rows.sum(), b.sum())
+    return rows, b
+
+
+@pytest.mark.parametrize("k,m", [(0, 0), (1, 0), (3, -1), (2, 1)])
+def test_phase_copies(conditions, helpers, k, m):
+    """With phases K each frame is digitised K times, at shift + k P / K; an event at shift + k P / K + m P takes
+    copy k, its TDC moved by m whole ADC periods and its waveform, TOT and PMP unchanged. The primary and two-source
+    straws stay the tracker's digis."""
+    c, K, shift = conditions, 4, -5.
+    model, table, data, index, frames = _reuse(c, helpers, shift=shift, phases=K)
+    assert int(table["phases"]) == K and set(np.unique(table["copy"])) == set(range(K))
+    P = float(c.ADCPeriod)
+    np.testing.assert_allclose(device_reuse.copy_shifts(c, shift, K), shift + P * np.arange(K) / K)
+    collection = _mixed(c, data, index, frames)
+    pb = shift + k * P / K + m * P
+    times = {"event_length": np.array([1700., 1690.]), "mc_pbtime": np.array([-2., pb]),
+             "event_mask": np.ones(2, bool)}
+    exact, _ = _run(prepare(c, CAPS, 2), collection, times)
+    reuse, errors = _run(model, collection, times)
+    assert not any(np.any(v) for v in errors.values()), errors
+    sid = {us: helpers.DG.unique_straw_to_sid(us) for us in (520, 1000, 92, 523)}
+    for us in (520, 1000):
+        a, b = (exact["ev"] == 0) & (exact["sid"] == sid[us]), (reuse["ev"] == 0) & (reuse["sid"] == sid[us])
+        assert a.sum() > 0 and a.sum() == b.sum()
+        for name in ("adc", "tdc", "tot", "pmp"):
+            np.testing.assert_array_equal(exact[name][a], reuse[name][b], err_msg=f"{us} {name}")
+    for name, us in (("C", 92), ("D", 523)):
+        rows, b = _single_donor_rows(table, reuse, index, sid, name, us, copy=k)
+        np.testing.assert_array_equal(table["tdc"][rows] + int(np.round(m * P / c.TDCLSB)), reuse["tdc"][b])
+        np.testing.assert_allclose(table["t_analog"][rows] + m * P, reuse["t_analog"][b], atol=1e-9)
+        for field in ("adc", "tot", "pmp"):
+            np.testing.assert_array_equal(table[field][rows], reuse[field][b])
+
+
+def test_phase_copies_differ_by_their_shift(conditions, helpers):
+    """Copy k of a frame is that frame digitised at shift + k P / K: analog crossing times move with the copy's shift
+    (each copy has its own draws, so digis may differ beyond the shift)."""
+    c, K, shift = conditions, 4, -5.
+    _, table, _, index, _ = _reuse(c, helpers, shift=shift, phases=K)
+    P = float(c.ADCPeriod)
+    for name in ("A", "B", "C", "D"):
+        first = {}
+        for k in range(K):
+            rows = (table["frame"] == index[name]) & (table["copy"] == k)
+            if rows.any():
+                first[k] = table["t_analog"][rows][0, 0] - k * P / K
+        if len(first) > 1:
+            values = np.array(list(first.values()))
+            assert np.ptp(values) < 3.0, (name, first)   # same pulse, own noise: crossings within a few ns
+
+
+def test_event_jitter(conditions, helpers):
+    """event_jitter: a reused digi's TDC takes the event's ROC jitter of its panel (the resident tracker's draw for
+    that event and panel) in place of the setup event's."""
+    c = conditions
+    model, table, data, index, frames = _reuse(c, helpers, event_jitter=True)
+    collection = _mixed(c, data, index, frames)
+    times = {"event_length": np.array([1700., 1690.]), "mc_pbtime": np.array([-2., -9.]),
+             "event_mask": np.ones(2, bool)}
+    reuse, errors = _run(model, collection, times, seed=3)
+    assert not any(np.any(v) for v in errors.values()), errors
+    jt = np.asarray(jax.device_get(jax.jit(lambda k: device_reuse.jitter_table(k, 2))(jax.random.key(3))))
+    sid = {us: helpers.DG.unique_straw_to_sid(us) for us in (92, 523)}
+    for name, us in (("C", 92), ("D", 523)):
+        rows, b = _single_donor_rows(table, reuse, index, sid, name, us)
+        panel = (sid[us] >> 10) * 6 + ((sid[us] >> 7) & 7)
+        moved = -9. - table["shift"] + jt[1, panel] * c.eventWindowMarkerROCJitter - table["jitter"][rows]
+        np.testing.assert_array_equal(table["tdc"][rows] + np.round(moved / c.TDCLSB).astype(np.int64)[:, None],
+                                      reuse["tdc"][b])
+    assert np.all(np.abs(table["jitter"]) < 10 * c.eventWindowMarkerROCJitter + 1e-12)
+
+
+def test_setup_jitter_is_the_trackers(conditions, helpers):
+    """The stored setup jitter is the resident tracker's draw for the setup event and panel: with the jitter scale
+    set to zero the setup TDCs move by exactly the stored jitter (to the TDC rounding)."""
+    from trkfastsim.digi.digicond import Conditions
+    c = conditions
+    s = dict(c.s)
+    s["eventWindowMarkerROCJitter"] = 0.
+    flat = Conditions(s, c.a)
+    _, table, _, _, _ = _reuse(c, helpers)
+    _, table0, _, _, _ = _reuse(flat, helpers)
+    assert np.all(table0["jitter"] == 0)
+    np.testing.assert_array_equal(table["frame"], table0["frame"])
+    expected = table0["tdc"] + np.round(table["jitter"] / c.TDCLSB).astype(np.int64)[:, None]
+    assert np.max(np.abs(table["tdc"] - expected)) <= 1
