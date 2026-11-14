@@ -394,11 +394,14 @@ def main(argv=None):
     p.add_argument("--device-loops", choices=("auto", "on", "off"), default="auto",
                    help="XLA device-side loops (mu2efastsim.devloops): auto (default) picks the faster setting for "
                         "--workflow; on or off forces it")
+    p.add_argument("--graph-concurrency", choices=("auto", "on", "off"), default="auto",
+                   help="XLA concurrent graph regions (mu2efastsim.devloops): auto (default) follows --workflow; on or "
+                        "off forces it (never on together with device loops for the CE chain, W2-W4)")
     p.add_argument("--out", type=Path, help="write the report JSON here")
     approx_mod.add_arguments(p)
     a = p.parse_args(argv)
     from . import devloops
-    devloops.select(a.workflow, a.device_loops)     # before the entry point's module creates a JAX backend
+    devloops.select(a.workflow, a.device_loops, a.graph_concurrency)    # before the entry point creates a backend
     kwargs = json.loads(a.kwargs)
     if not isinstance(kwargs, dict):
         p.error("--kwargs must be a JSON object")

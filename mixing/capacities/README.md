@@ -66,7 +66,9 @@ NeutralsFlash pools at the stock intensity law.
   the straws still digitised per batch (primary, two or more sources, the streams not reused), 1.25 times their
   demand over a full development pass; `precompute` sizes the setup batches of 8,192 donor frames (`long_steps`,
   `minion_steps`, `flat_clusters` and `drift_clusters` raised; setup only); `straws` holds the reused straws per
-  batch; `streams` lists the reused donor streams.
+  batch; `streams` lists the reused donor streams; `shifts: "events"` digitises one setup copy per distinct event
+  time shift of the signal events (5 in Run 1A), so a reused digi is never moved in time; `event_jitter` gives a
+  reused digi its event's ROC jitter.
 
 ## When a batch does not fit
 

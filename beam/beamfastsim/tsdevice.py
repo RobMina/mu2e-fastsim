@@ -1071,8 +1071,10 @@ def load_chain(gdml, field_config, offline_root, maps, ds_geom_file, ds_offline_
                settings=Settings(), ds_prm=dst.Params(), pool=None, dtype="float64"):
     """Device chain from the TS GDML, the TS field configuration and maps, the DS geometry and the DS field map
     (with a persistent compilation cache configured, every compile is cached: cache_every_compile)."""
+    from mu2efastsim import devloops
     from . import fieldmap
     from .tsgeometry import Geometry
+    devloops.select("W1")                      # the W1 command-buffer settings, if no JAX backend exists yet
     cache_every_compile()
     set_dtype(dtype)
     tsg = DeviceGeometry(Geometry(gdml))
