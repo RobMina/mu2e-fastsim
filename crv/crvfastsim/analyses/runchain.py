@@ -355,6 +355,7 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
     if benchmark is not None:
         benchmark.setup(rc, cfg, gdml_path, spec, calib, deviation)
     t0 = time.perf_counter()
+    audit_bg = None
     if prepared is None:
         payload, T = _load_setup(rc, cfg, gdml_path, gdml, spec, calib, deviation, jax, kw.get("below_margin"))
         if benchmark is None:
@@ -364,7 +365,13 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
         if signature != prepared.signature:
             raise ValueError("prepared context does not match requested configuration/assets")
         a = time.perf_counter()
-        prepared.audit()
+        if os.environ.get("CRVFS_X_AUDIT_BG") == "1":   # experiment: start audit beside the run, joined before output
+            from concurrent.futures import ThreadPoolExecutor as _TPE
+            _apool = _TPE(max_workers=1)
+            audit_bg = _apool.submit(prepared.audit)
+            _apool.shutdown(wait=False)
+        else:
+            prepared.audit()
         payload = prepared.payload
         T = {"setup_s": 0.0, "geometry_conditions_config_s": 0.0, "context_reused": True,
              "context_audit_s": time.perf_counter() - a}
@@ -546,6 +553,8 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
             source.__exit__(None, None, None)
     if prepared is not None:
         a = time.perf_counter()
+        if audit_bg is not None:
+            audit_bg.result()
         prepared.audit()
         T["context_audit_s"] += time.perf_counter() - a
     if save_reco:

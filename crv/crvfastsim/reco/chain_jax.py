@@ -9,6 +9,7 @@ turn. Waveforms longer than the kernel input, whose fit used all kernel
 rounds or overflowed its window go to full-length numpy pulse reco (as in reco-vr2jax).
 """
 import dataclasses
+import os as _os
 import time as _time
 
 import numpy as np
@@ -149,19 +150,30 @@ def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.Finde
     edges = np.r_[edges, len(W["ev"])]
     chunks = [np.arange(edges[i], edges[i + 1]) for i in range(n_chunks) if edges[i + 1] > edges[i]]
     pul, coin, outs, kept, pulses = {}, {}, [], {}, {}
+    xpool = [None]
     tic = lambda: _time.perf_counter()
     add = lambda k, t0: timers.__setitem__(k, timers.get(k, 0.0) + tic() - t0)
     t_all = tic()
     for k in range(len(chunks) + 2):
         if k < len(chunks):
             t0 = tic()
-            pul[k] = _pulse_dispatch(W, chunks[k], cfg, batch, L, **({"bounded": True} if capacities is not None else {}))
+            xd = _os.environ.get("CRVFS_X_DISPATCH", "bounded")   # experiment: bounded | static | thread
+            bkw = {"bounded": True} if capacities is not None and xd != "static" else {}
+            if xd == "thread":
+                if xpool[0] is None:
+                    from concurrent.futures import ThreadPoolExecutor as _TPE
+                    xpool[0] = _TPE(max_workers=1)
+                pul[k] = xpool[0].submit(_pulse_dispatch, W, chunks[k], cfg, batch, L, **bkw)
+            else:
+                pul[k] = _pulse_dispatch(W, chunks[k], cfg, batch, L, **bkw)
             add("pulse_dispatch_s", t0)
         if 0 <= k - 1 < len(chunks):
             t0 = tic()
-            wrow, seq, pe, tm, nredo = (_pulse_collect(pul.pop(k - 1), W, chunks[k - 1], cfg_np, True, timers,
+            pk = pul.pop(k - 1)
+            pk = pk.result() if hasattr(pk, "result") else pk
+            wrow, seq, pe, tm, nredo = (_pulse_collect(pk, W, chunks[k - 1], cfg_np, True, timers,
                                                        capacities)
-                                        if device_refit else _pulse_collect(pul.pop(k - 1), W, chunks[k - 1], cfg_np))
+                                        if device_refit else _pulse_collect(pk, W, chunks[k - 1], cfg_np))
             if cfg_np.ignore_channels:
                 keep = (status[W['bar'][wrow] * 4 + W['sipm'][wrow]] & 0b010) == 0
                 wrow, seq, pe, tm = wrow[keep], seq[keep], pe[keep], tm[keep]
@@ -204,6 +216,8 @@ def run(W, G, status, n_chunks=8, rounds=3, batch=65536, L=12, coinc_cfg=C.Finde
     for i, p in pulses.items():
         outs[i]["pulses"] = p
     add("coinc_finish_s", t0)
+    if xpool[0] is not None:
+        xpool[0].shutdown(wait=False)
     timers["wall_s"] = tic() - t_all
     timers["events"] = int(len(ue))
     timers["waveforms"] = int(len(W["ev"]))
