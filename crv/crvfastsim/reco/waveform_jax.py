@@ -54,6 +54,19 @@ def pack(chan, time, charge, tdc0_of_chan, cfg=WaveformConfig(), Q=None, L=None)
     return dict(T=T, W=W, n=nq, t_start=t_start, tdc0=tdc0, keep=keep, chan=cchan, est=est, L=L, tmpl=tmpl)
 
 
+@partial(jax.jit, static_argnames=("Q",))
+def gather_tw(time, charge, first, n, ref, Q):
+    """pack()'s T and W [C, Q] on the device: cluster c's charges are time/charge[first[c] : first[c] + n[c]] of the
+    charges in (chan, time) order (rows with n = 0 are padding). float64 as on the host (W = charge / ref), so the
+    same values; synth_dense casts them to the device float as it does pack()'s arrays."""
+    j = jnp.arange(Q)
+    ok = j[None, :] < n[:, None]
+    idx = jnp.where(ok, first[:, None] + j[None, :], 0)
+    T = jnp.where(ok, time.astype(jnp.float64)[idx], jnp.float64(0))
+    W = jnp.where(ok, charge.astype(jnp.float64)[idx] / ref, jnp.float64(0))
+    return T, W
+
+
 @partial(dprec.jit, static_argnames=("L", "zs", "stock_scan"))
 def synth_dense(T, W, n, t_start, keep, tmpl, key, L, zs, precision, noise, min_voltage, adc_conv, pedestal, adc_lo,
                 adc_hi, *, window_start=None, window_end=None, stock_scan=False):
