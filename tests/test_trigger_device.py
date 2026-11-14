@@ -198,6 +198,76 @@ def test_binned_rows_added_to_scalar_base():
             if sel.search(p)] == ["apr_TrkDe_70", "apr_Hlx_30", "apr_TrkUe_80m70p"]
 
 
+def test_named_responses_resolve_and_the_shipped_files_validate(tmp_path):
+    import re
+    from trigger.device import response
+    assert response.path("ce") == response.path("dio") == response.DATA / "response_ce_dio.json"
+    assert response.path("rpc") == response.DATA / "response_rpc.json"
+    assert response.path("none") is None and response.load("none") == {} and response.load(None) == {}
+    assert response.DEFAULT == "ce" and set(response.NAMES) == {"ce", "dio", "rpc", "none"}
+    ce, rpc = response.load("ce"), response.load("rpc")
+    binned = {n: sorted(p for p, r in d.items() if "final" in r) for n, d in (("ce", ce), ("rpc", rpc))}
+    assert binned["ce"] == sorted(p for p in ce if re.search(response.APR_HELIX_PATHS, p)) and len(binned["ce"]) == 12
+    assert binned["rpc"] == sorted(p for p in rpc if re.search(r"^(tpr|apr)_(Trk|Hlx)", p)) and len(binned["rpc"]) == 19
+    # both files share the scalar rows (from CE development shards) of the paths they do not bin
+    assert all(ce[p] == rpc[p] for p in ce if p not in binned["rpc"]) and set(ce) == set(rpc)
+    f = tmp_path / "r.json"
+    f.write_text('{"tpr_X": {"ks": 0.9}}')
+    assert response.load(str(f)) == {"tpr_X": {"ks": 0.9}}
+    with pytest.raises(FileNotFoundError, match="named responses"):
+        response.load(str(tmp_path / "missing.json"))
+
+
+def test_response_validate_rejects_malformed_rows():
+    from trigger.device import response
+    good = {"final": {"edges": [0, 20, 1000], "edges_p": [0, 90, 1e6], "f": [[0.5, 1.0], [0.9, 0.8]]}}
+    assert response.validate({"a": good}) == {"a": good}
+    bad = [{"ks": 1.2},
+           {"final": {"edges": [0, 20, 1000], "f": [0.5]}},                                   # wrong length
+           {"final": {"edges": [0, 20, 1000], "edges_p": [0, 90, 1e6], "f": [0.5, 1.0]}},     # rows missing
+           {"final": {"edges": [0, 1000, 20], "f": [0.5, 1.0]}},                              # edges not increasing
+           {"final": {"edges": [0, 20, 1000], "f": [0.5, 1.5]}}]                              # above 1
+    for row in bad:
+        with pytest.raises(ValueError):
+            response.validate({"a": row})
+
+
+def test_response_defaults_per_process(monkeypatch):
+    """The CE chain (centuple trigger) and the generic tools default to the CE/DIO response; rpc and none by name."""
+    monkeypatch.syspath_prepend(str(ROOT / "beam"))
+    from beamfastsim.centuple import __main__ as cm
+    seen = []
+    monkeypatch.setattr(cm, "cmd_trigger", lambda a: seen.append(a.response))
+    base = ["trigger", "--digis", "d.npz", "--out", "o", "--menu", "m.fcl", "--conditions", "c.root", "--tc-mva", "t.xml"]
+    cm.main(base)
+    cm.main(base + ["--response", "none"])
+    assert seen == ["ce", "none"]
+    pytest.importorskip("jax")
+    pytest.importorskip("trkfastsim")
+    from trigger.device import bench, run
+    monkeypatch.setattr(run, "cmd_decide", lambda a: seen.append(a.response))
+    run.main(["decide", "--dump", "a.root", "--menu", "m.fcl", "--tc-mva", "t.xml", "--output", "o.json"])
+    run.main(["decide", "--dump", "a.root", "--menu", "m.fcl", "--tc-mva", "t.xml", "--output", "o.json",
+              "--response", "rpc"])
+    assert seen[2:] == ["ce", "rpc"]
+    monkeypatch.delenv("TRIGGER_DEVICE_RESPONSE", raising=False)
+    assert bench._response() == "ce"
+    monkeypatch.setenv("TRIGGER_DEVICE_RESPONSE", "rpc")
+    assert bench._response() == "rpc"
+
+
+def test_development_runs_refuse_a_response_layer(tmp_path):
+    pytest.importorskip("jax")
+    pytest.importorskip("trkfastsim")
+    from trigger.device import run
+    f = tmp_path / "dev.json"
+    f.write_text('{"response": {"tpr_X": {"ks": 0.9}}, "response_spec": "ce", "stages": {}}')
+    with pytest.raises(SystemExit, match="--response none"):
+        run._dev_run(f)
+    f.write_text('{"response": {}, "response_spec": "none", "stages": {}}')
+    assert run._dev_run(f)["stages"] == {}
+
+
 def _synthetic_panel_hits(E=6, H=48, seed=5):
     """Events with 0-3 helix-like hit groups at different times, padded to H; per-event panel-hit columns."""
     rng = np.random.default_rng(seed)

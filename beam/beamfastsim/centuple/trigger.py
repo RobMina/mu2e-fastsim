@@ -1,7 +1,8 @@
 """Stage 2 (GPU, own process): device digis -> tracker trigger path decisions (trigger.device), per event.
 
 The device trigger evaluates the tpr/apr paths of a prepared menu (``trigger/replay.py``) from the StrawDigis, with
-the KalSeedFilter response layer (``trigger/device/run.py response``). It sets JAX's process-wide x64 flag from its
+the response layer of ``trigger/device/response.py`` (default "ce": the binned CE/DIO response; "none" for the
+development runs of trigcal and for assemble --trigger-cal, which replaces it). It sets JAX's process-wide x64 flag from its
 precision, so it runs in a process of its own after the record stage. The D0-phi prescale counter of HelixFilter
 runs on the host per subrun (one counter sequence per input file, as stock).
 
@@ -24,16 +25,16 @@ TRIGGER = "centuple_trigger.npz"
 # overrides it with one value for every event.
 
 
-def decide(digis_path, menu, conditions, tc_mva, response, precision="float64", block=1024, spill=1,
+def decide(digis_path, menu, conditions, tc_mva, response="ce", precision="float64", block=1024, spill=1,
            conditions_tree="w8ph", pbt=None):
     """Decisions {path: bool[n]} for every event of a record's digis file, and the meta record."""
-    from trigger.device import chain as C, digis as D, menu as M, run as R
+    from trigger.device import chain as C, digis as D, menu as M, response as RS, run as R
     f = np.load(digis_path)
     run, sub, evn = (np.asarray(f[k], np.int64) for k in ("run", "subrun", "event"))
     n = evn.size
     dg = {k: f[k] for k in ("ev", "sid", "tdc", "tot", "pmp")}
     cfg = M.parse_fcl(Path(menu).read_text())
-    resp = json.loads(Path(response).read_text()) if response else None
+    resp = RS.load(response)
     tc = C.Chain(cfg, R.conditions(conditions, conditions_tree), tc_mva, response=resp, precision=precision)
     tic = time.perf_counter()
     decs, auxs = [], []

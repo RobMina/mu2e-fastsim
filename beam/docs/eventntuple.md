@@ -13,12 +13,12 @@ python3 -m beamfastsim.centuple record  --out DIR --states states.root ... (or -
     --offline-root OFF --maps DSMap.header TSdMap.header --gdml RUN1A.gdml --library SHOWERS.npz \
     --calo-response CALO_RESPONSE_DIR --digi-cond ONSPILL_CONDITIONS.npz --edge-library EDGE_TABLE.npz --dtype float64
 python3 -m beamfastsim.centuple trigger --digis DIR/centuple_digis.npz --menu replay.fcl --conditions trgdump.root \
-    --tc-mva TimeCluster.weights.xml --response response.json --precision float64 --out DIR
+    --tc-mva TimeCluster.weights.xml --precision float64 --out DIR   # --response ce (default); none with assemble --trigger-cal
 # CPU, NumPy + uproot
 python3 -m beamfastsim.centuple donor    --files nts.dev.*.root --covered DIR/centuple_trigger.npz --out donor.npz
 python3 -m beamfastsim.centuple assemble --record DIR/centuple_record.npz --trigger DIR/centuple_trigger.npz \
     --donor donor.npz --out DIR [--trigger-cal TRIGCAL.npz]
-# the on-spill trigger table, once, from development events with both arms (trigger run without --response)
+# the on-spill trigger table, once, from development events with both arms (trigger run with --response none)
 python3 -m beamfastsim.centuple trigcal --stock nts.dev.*.root --records DEV/centuple_record.npz \
     --triggers DEV/centuple_trigger.npz --out trigcal.npz
 # CPU, the Mu2e environment of the stock release (PyROOT, libeventntuple_dict)
