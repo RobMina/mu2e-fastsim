@@ -139,9 +139,10 @@ def step(data):
             decs.append((nb, d))
             auxs.append((nb, a))
             ns += nb
-        jax.block_until_ready([d for _, d in decs])
-        dec = [{k: np.asarray(v)[:nb] for k, v in d.items()} for nb, d in decs]
-        aux = [{k: np.asarray(v)[:nb] for k, v in a.items()} for nb, a in auxs]
+        # one host transfer of every block's decisions and stage arrays (not one blocking copy per array)
+        dh, ah = jax.device_get(([d for _, d in decs], [a for _, a in auxs]))
+        dec = [{k: np.asarray(v)[:nb] for k, v in d.items()} for (nb, _), d in zip(decs, dh)]
+        aux = [{k: np.asarray(v)[:nb] for k, v in a.items()} for (nb, _), a in zip(auxs, ah)]
         if file_blocks[0][2] is not None:            # hit-sorted blocks: back to event order (prescale counter)
             rows = [r for _, _, r in file_blocks]
             dec, aux = run.unsort(rows, dec), run.unsort(rows, aux)

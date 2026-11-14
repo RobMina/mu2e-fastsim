@@ -54,7 +54,10 @@ def _peaks(hit, s):
     candidate clusters: members [NTC, H], oks [NTC] (a peak was made for the slot)."""
     valid = hit["valid"]
     nsh_i = jnp.where(valid, hit["nsh"], 0).astype(F64)
-    cht = (hit["time"].astype(F64) - hit["z"].astype(F64) / (s["pitch"] * C_LIGHT)).astype(F32)
+    # the time-of-flight denominator is pitch x c in double precision (a Python float, or the same value as an array
+    # when producers that differ only in pitch share one batched call: time_clusters_multi)
+    den = s["tof_den"] if "tof_den" in s else s["pitch"] * C_LIGHT
+    cht = (hit["time"].astype(F64) - hit["z"].astype(F64) / den).astype(F32)
     nbins = int(round((s["tmax"] - s["tmin"]) / s["tbin"]))
     width = (s["tmax"] - s["tmin"]) / nbins
     b = jnp.floor((cht.astype(F64) - s["tmin"]) / width).astype(jnp.int64) + 1          # TH1 bin, 1..nbins
@@ -82,8 +85,16 @@ def _peaks(hit, s):
         oks = jnp.where(make, oks.at[ntc].set(True), oks)
         return (used, ntc + make, t0s, oks), None
 
-    (_, _, t0s, oks), _ = jax.lax.scan(peak, (jnp.zeros(nbins + 2, bool), 0, jnp.zeros(NTC, F32), jnp.zeros(NTC, bool)),
-                                       jnp.arange(NCAND))
+    # candidates with content >= Ymin come first (top_k order) and the rest never make a peak: stop after them
+    ncand = jnp.sum(cand_ok)
+
+    def peak_while(state):
+        k, st = state
+        return k + 1, peak(st, k)[0]
+
+    _, (_, _, t0s, oks) = jax.lax.while_loop(
+        lambda state: state[0] < ncand, peak_while,
+        (jnp.zeros((), ncand.dtype), (jnp.zeros(nbins + 2, bool), 0, jnp.zeros(NTC, F32), jnp.zeros(NTC, bool))))
     t0err0 = F32(s["tbin"] * 0.5)
     dt = jnp.abs(cht[:, None] - t0s[None, :])                                           # [H, NTC]
     elig = oks[None, :] & (dt < s["maxdt"] + t0err0)
@@ -183,16 +194,29 @@ def _cluster(ev, m0, ok0, s, net):
                 def rc_body(st):
                     c, _ = st
                     pphi = jnp.arctan2(c[4][1], c[4][0])
+                    dphi_all = jnp.abs(_dphi(phi_h, pphi))
+                    idx = jnp.arange(H)
 
-                    def step(i, st2):
-                        c, changed = st2
-                        dti = jnp.abs(cht[i] - c[2])
-                        dphi = jnp.abs(_dphi(phi_h[i], pphi))
+                    # The stock pass visits hits 0..H-1 in order and adds a hit when it passes the cuts with the
+                    # cluster as it is at that moment. A hit that fails the time or azimuth window (or is invalid or
+                    # already a member) is not added whatever its MVA, so each iteration jumps to the next hit at or
+                    # after `start` that passes those cuts with the current cluster and evaluates the MVA there, with
+                    # the same single-row call as the per-hit loop: the same adds, in the same order and state.
+                    def step(st2):
+                        c, start, changed = st2
+                        dti_all = jnp.abs(cht - c[2])
+                        cheap = valid & ~c[0] & (dti_all < s["maxdt"] + c[3]) & (dphi_all < s["maxdphi"]) & (idx >= start)
+                        any_ = jnp.any(cheap)
+                        i = jnp.argmax(cheap)
+                        dti, dphi = jnp.abs(cht[i] - c[2]), jnp.abs(_dphi(phi_h[i], pphi))
                         x = jnp.concatenate([jnp.stack([dti, dphi]), feats_static[i]])
                         v = mva.evaluate(net, x[None, :])[0]
-                        go = valid[i] & ~c[0][i] & (dti < s["maxdt"] + c[3]) & (dphi < s["maxdphi"]) & (v > s["minadd"])
-                        return jax.lax.cond(go, lambda: add(c, i), lambda: c), changed | go
-                    return jax.lax.fori_loop(0, H, step, (c, False))
+                        go = any_ & (v > s["minadd"])
+                        c = jax.lax.cond(go, lambda: add(c, i), lambda: c)
+                        return c, jnp.where(any_, i + 1, H), changed | go
+                    c, _, changed = jax.lax.while_loop(lambda st2: st2[1] < H, step,
+                                                       (c, jnp.zeros((), idx.dtype), False))
+                    return c, changed
                 c, _ = jax.lax.while_loop(rc_cond, rc_body, (c, True))
             return c
 
@@ -219,6 +243,18 @@ def _hits(ph):
 def time_clusters(ph, s, net):
     """Panel hits [E, H] (hits.panel_hits) -> clusters per event [E, NTC]."""
     return jax.vmap(lambda h: _one_event(h, s, net))(_hits(ph))
+
+
+def time_clusters_multi(ph, ss, net):
+    """time_clusters for several producers whose settings differ only in AveragePitch (stock TrigTimeClusterFinder and
+    TrigTimeClusterFinderUe), in one batched call: each producer's clusters are the same computation as its own
+    time_clusters call, and the producers share the loops' iterations. Returns one cluster dict per settings dict."""
+    base = {k: v for k, v in ss[0].items() if k != "pitch"}
+    if any({k: v for k, v in s_.items() if k != "pitch"} != base for s_ in ss):
+        raise ValueError("time_clusters_multi: settings differ in more than the pitch")
+    den = jnp.asarray([s_["pitch"] * C_LIGHT for s_ in ss])          # double-precision products, rounded once
+    out = jax.vmap(lambda d: time_clusters(ph, {**ss[0], "tof_den": d}, net))(den)
+    return [{k: v[i] for k, v in out.items()} for i in range(len(ss))]
 
 
 def candidates(ph, s):

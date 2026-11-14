@@ -101,7 +101,7 @@ def _fit(hit, m0, s, lam_sign, fz):
         new = (cx + step[0], cy + step[1], R + step[2])
         return tuple(jnp.where(good, n, o) for n, o in zip(new, (cx, cy, R))), None
 
-    (cx, cy, R), _ = jax.lax.scan(gn, (cx, cy, R), None, length=8)
+    (cx, cy, R), _ = jax.lax.scan(gn, (cx, cy, R), None, length=8, unroll=True)
     selxy, pull, _ = xy_select(cx, cy, R)
     nxy = jnp.sum(selxy)
     chi2xy = jnp.sum(jnp.where(selxy, pull ** 2, 0.0)) / jnp.maximum(nxy, 1e-10)
@@ -132,7 +132,7 @@ def _fit(hit, m0, s, lam_sign, fz):
         fz_new = (Sp - invl_new * Sz) / jnp.where(ok, S, 1.0)
         return (jnp.where(ok, fz_new, fz0), jnp.where(ok, invl_new, invl)), None
 
-    (fz0, invl), _ = jax.lax.scan(line, (fz0, 1.0 / lam), None, length=3)
+    (fz0, invl), _ = jax.lax.scan(line, (fz0, 1.0 / lam), None, length=3, unroll=True)
     lam = 1.0 / invl
 
     # final ZPhi pass (RobustHelixFinder): per face the best non-outlier hit by chisq
@@ -197,6 +197,15 @@ def helices(ph, tc, s, fz, bkg_mask=0):
     hit, usable = _helix_hits(ph, bkg_mask)
     per_event = jax.vmap(_per_cluster(s, fz), in_axes=(None, None, 0, 0))
     return jax.vmap(per_event)(hit, usable, tc["members"], tc["valid"])
+
+
+def helices_multi(ph, tcs, s, fz, bkg_mask=0):
+    """helices of several cluster sets with the same helix settings (stock TrigHelixFinder on TrigTimeClusterFinder and
+    TrigHelixFinderUe on TrigTimeClusterFinderUe), in one batched call: the same fit per cluster."""
+    mem = jnp.stack([tc["members"] for tc in tcs])
+    val = jnp.stack([tc["valid"] for tc in tcs])
+    out = jax.vmap(lambda m, v: helices(ph, {"members": m, "valid": v}, s, fz, bkg_mask))(mem, val)
+    return [{k: v[i] for k, v in out.items()} for i in range(len(tcs))]
 
 
 def helices_pairs(ph, tc, s, fz, K, bkg_mask=0):

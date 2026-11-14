@@ -100,11 +100,33 @@ class Chain:
     def _decide(self, batch):
         sh = hits.straw_hits(batch, self.cond_dev, self.sh, self.tot_bins)
         ph = hits.panel_hits(sh, self.ph)
-        tcs = {lbl: timecluster.time_clusters(ph, timecluster.settings(self.mods[lbl]), self.net)
-               for lbl in self._tc_labels()}
-        hxs = {key: helix.helices(ph, tcs[key[0]], helix.settings(self.mods[key[1]]), self.fz)
-               for key in self._helix_keys()}
+        tcs = {}
+        for group in self._tc_groups():              # producers that differ only in pitch share one batched call
+            for lbl, tc in zip(group, timecluster.time_clusters_multi(
+                    ph, [timecluster.settings(self.mods[lbl]) for lbl in group], self.net)):
+                tcs[lbl] = tc
+        hxs = {}
+        for group in self._helix_groups():           # helix finders with the same settings share one batched call
+            s = helix.settings(self.mods[group[0][1]])
+            for key, hx in zip(group, helix.helices_multi(ph, [tcs[key[0]] for key in group], s, self.fz)):
+                hxs[key] = hx
         return self._paths(batch, sh, ph, tcs, hxs)
+
+    def _tc_groups(self):
+        """Time-cluster producers grouped by their settings apart from the pitch, in label order."""
+        groups = {}
+        for lbl in self._tc_labels():
+            s = timecluster.settings(self.mods[lbl])
+            groups.setdefault(tuple(sorted((k, v) for k, v in s.items() if k != "pitch")), []).append(lbl)
+        return list(groups.values())
+
+    def _helix_groups(self):
+        """(time-cluster producer, helix finder) keys grouped by identical helix settings, in key order."""
+        groups = {}
+        for key in self._helix_keys():
+            s = helix.settings(self.mods[key[1]])
+            groups.setdefault(tuple(sorted(s.items())), []).append(key)
+        return list(groups.values())
 
     # compact path: candidates -> (host: counts) -> refined clusters on candidate pairs -> (host: counts) -> helices on
     # valid pairs and the path decisions

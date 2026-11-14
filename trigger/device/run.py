@@ -25,6 +25,7 @@ import tempfile
 import time
 
 import awkward as ak
+import jax
 import numpy as np
 import uproot
 
@@ -258,6 +259,7 @@ def cmd_decide(args):
         for rows, n, b in blocks:
             t0 = time.perf_counter()
             out, aux, diag = ch.decide(b)
+            out, aux = jax.device_get((out, aux))        # one host transfer per block
             out = {k: np.asarray(v)[:n] for k, v in out.items()}
             t_dev += time.perf_counter() - t0
             outs.append(out)
