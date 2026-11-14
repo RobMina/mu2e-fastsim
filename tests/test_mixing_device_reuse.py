@@ -261,7 +261,7 @@ def test_copies_at_event_shifts(conditions, helpers):
             rows, b = _single_donor_rows(table, reuse, index, sid, name, us, copy=copy)
             for field in ("adc", "tdc", "tot", "pmp"):
                 np.testing.assert_array_equal(table[field][rows], reuse[field][b], err_msg=f"{pb} {field}")
-    with pytest.raises(ValueError, match="event shifts"):
+    with pytest.raises(ValueError, match="time shifts"):
         device_reuse.precompute(c, caps, data, 1700., 0, rows_capacity=8, shift=-5.)
     with pytest.raises(ValueError, match="replaces"):
         device_reuse.ReuseCapacities(CAPS, CAPS, 8, 8, phases=4, shifts="events")
