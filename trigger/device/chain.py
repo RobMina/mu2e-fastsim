@@ -12,7 +12,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from . import helix, hits, menu, mva, paths, timecluster
+from . import helix, hits, menu, mva, paths, simpletc, timecluster
 
 HELIX_TYPES = ("RobustHelixFinder", "AgnosticHelixFinder")
 KSF_TYPES = ("LoopHelixFit", "KinKalSeedFit", "LoopHelixDeFit")
@@ -83,20 +83,40 @@ class Chain:
         self.sh = hits.sh_settings(self.mods["TrigMakeSH"])
         self.ph = hits.ph_settings(self.mods["TrigMakePH"])
         self.plan, self.skipped = {}, {}
-        for name, p in self.dpaths.items():
-            if p["family"] == "cst":
-                continue                         # cosmic SimpleTimeCluster paths: not on the device yet
-            labels = phys[name]
-            tcl = self._tc_label(p)
-            hel = next((lbl for lbl in labels if self.mods.get(lbl, {}).get("module_type") in HELIX_TYPES), None)
-            has_hs = any(role == "hs" for role, _, _ in p["filters"])
-            if (has_hs and hel is None) or "proton" in name or p["unsupported"] or p["min_helices"] > 1:
-                self.skipped[name] = p["unsupported"] or ["proton, multi-helix finder or minNHelices > 1"]
-                continue                         # e.g. MultiHelixFilter (several helices per cluster): not on the device
-            hcfg_label = self._helix_label(hel) if hel else None
-            ksf = next((lbl for lbl in labels if lbl.startswith("Trig") and "KSF" in lbl and "MC" not in lbl), None)
-            self.plan[name] = {"tc": tcl, "helix": hcfg_label, "ksf": ksf, "filters": p["filters"],
-                               "family": p["family"], "min_helices": p["min_helices"]}
+        self.opaths = menu.other_paths(cfg, path_names)
+        self.stc = {}                            # SimpleTimeCluster label -> settings (cst paths)
+        for entry in phys["trigger_paths"]:
+            name = entry.split(":", 1)[-1]
+            if path_names and name not in path_names:
+                continue
+            ps = menu.prescale_factors(cfg, name)
+            if ps is not None and all(f <= 0 for f in ps.values()):
+                # PrescaleEvent first and disabled in every mode it configures (e.g. apr_proton): stock rejects every
+                # event before any other filter
+                self.plan[name] = {"family": "disabled", "ps": ps, "filters": []}
+            elif ps is None:
+                self.skipped[name] = ["first filter is not a PrescaleEvent"]
+            elif name in self.dpaths:
+                self._plan_tracker(name, self.dpaths[name], ps)
+            elif name in self.opaths:
+                o = self.opaths[name]
+                if o["family"] is None:
+                    self.skipped[name] = o["unsupported"]
+                    continue
+                self.plan[name] = {"family": o["family"], "ps": ps,
+                                   "filters": [(t_, lbl, cf) for t_, lbl, cf in o["filters"] if t_ != "PrescaleEvent"]}
+            else:
+                self.skipped[name] = ["no TimeClusterFilter with a device time-cluster producer"]
+        # off-spill hit reconstruction (cst paths): the TrigOffSpMakeSH/PH settings on the same digis
+        self.sh_off = self.ph_off = None
+        if self.stc:
+            ph_lbl = {self.mods[lbl]["ComboHitCollection"].split(":")[0] for lbl in self.stc}
+            if len(ph_lbl) != 1:
+                raise ValueError(f"cst paths read several ComboHit collections: {sorted(ph_lbl)}")
+            ph_m = self.mods[ph_lbl.pop()]
+            self.ph_off = hits.ph_settings(ph_m)
+            self.sh_off = hits.sh_settings(self.mods[ph_m["ComboHitCollection"].split(":")[0]])
+        self.lumi = any(p["family"] == "lumi" for p in self.plan.values())
         # compact (opt-in, for CPUs): time-cluster refinement and helix fits run only on the (event, cluster) pairs
         # that have a candidate / a valid cluster, in three device calls with one host read of the counts between
         # them; the same computation per cluster as the one-call path, and the same decisions
@@ -117,6 +137,33 @@ class Chain:
         self._fnp = jax.jit(self._decide_packed)
         self._fpp = jax.jit(self._paths_packed)
 
+    def _plan_tracker(self, name, p, ps):
+        """Plan entry of a path with a TimeClusterFilter (tpr, apr, cst), or the reason it is skipped."""
+        phys = self.cfg["physics"]
+        if p["family"] == "cst":
+            if p["unsupported"]:                 # cst_CosmicTrackSeed: LineFinder + CosmicSeedFilter, not on the device yet
+                self.skipped[name] = p["unsupported"]
+                return
+            try:
+                self.stc[p["tc_producer"]] = simpletc.settings(self.mods[p["tc_producer"]])
+            except ValueError as e:
+                self.skipped[name] = [str(e)]
+                return
+            self.plan[name] = {"tc": p["tc_producer"], "helix": None, "ksf": None, "filters": p["filters"],
+                               "family": "cst", "min_helices": 1, "ps": ps}
+            return
+        labels = phys[name]
+        tcl = self._tc_label(p)
+        hel = next((lbl for lbl in labels if self.mods.get(lbl, {}).get("module_type") in HELIX_TYPES), None)
+        has_hs = any(role == "hs" for role, _, _ in p["filters"])
+        if (has_hs and hel is None) or "proton" in name or p["unsupported"] or p["min_helices"] > 1:
+            self.skipped[name] = p["unsupported"] or ["proton, multi-helix finder or minNHelices > 1"]
+            return                               # e.g. MultiHelixFilter (several helices per cluster): not on the device
+        hcfg_label = self._helix_label(hel) if hel else None
+        ksf = next((lbl for lbl in labels if lbl.startswith("Trig") and "KSF" in lbl and "MC" not in lbl), None)
+        self.plan[name] = {"tc": tcl, "helix": hcfg_label, "ksf": ksf, "filters": p["filters"],
+                           "family": p["family"], "min_helices": p["min_helices"], "ps": ps}
+
     def _tc_label(self, p):
         """Device time-cluster settings: the path's TimeClusterFinder, or the matching-pitch one for TZClusterFinder."""
         m = self.mods[p["tc_producer"]]
@@ -131,10 +178,11 @@ class Chain:
         return "TrigHelixFinder"
 
     def _tc_labels(self):
-        return sorted({p["tc"] for p in self.plan.values()})
+        """TimeClusterFinder settings the tpr/apr paths use (cst clusters come from SimpleTimeCluster)."""
+        return sorted({p["tc"] for p in self.plan.values() if p["family"] in ("tpr", "apr")})
 
     def _helix_keys(self):
-        return sorted({(p["tc"], p["helix"]) for p in self.plan.values() if p["helix"]})
+        return sorted({(p["tc"], p["helix"]) for p in self.plan.values() if p.get("helix")})
 
     def _decide(self, batch):
         sh = hits.straw_hits(batch, self.cond_dev, self.sh, self.tot_bins)
@@ -236,15 +284,32 @@ class Chain:
     def _paths(self, batch, sh, ph, tcs, hxs):
         out, aux = {}, {}
         ev = batch["event"]
+        diag_off = {}
+        if self.stc:                             # cst paths: off-spill hits and SimpleTimeCluster clusters
+            sh2 = hits.reflag_straw_hits(sh, self.sh_off)
+            ph2 = hits.panel_hits_other(sh, ph, self.ph, sh2, self.ph_off)
+            tcs = {**tcs, **{lbl: simpletc.clusters(ph2, s) for lbl, s in self.stc.items()}}
+            diag_off = {"sh_offsp": sh2, "ph_offsp": ph2}
+        nsd = jnp.sum(batch["valid"], axis=1)    # straw digis of the event (DigiFilter)
         tc_nsh = {lbl: jnp.max(jnp.where(tc["valid"], tc["nsh"], 0), axis=1) for lbl, tc in tcs.items()}
+        if self.lumi:                            # the LumiStreamFilter counter runs on the host, per subrun
+            aux["run"], aux["subrun"] = batch["run"], batch["subrun"]
         for k, (name, p) in enumerate(sorted(self.plan.items())):
+            ok = batch["valid_event"] & paths.prescale_pass(ev, batch["spill"], p["ps"])
+            if p["family"] in ("disabled", "digi", "lumi"):
+                for role, lbl, fc in p["filters"]:
+                    if role == "DigiFilter":
+                        ok = ok & paths.digi_pass(nsd, fc)
+                out[name] = ok if p["family"] != "disabled" else jnp.zeros_like(ok)
+                continue
             tc = tcs[p["tc"]]
-            ok = batch["valid_event"]
             hx = hxs.get((p["tc"], p["helix"]))
             hs_mask = None
             binned = self.response.get(name, {}).get("final")
             for role, lbl, fc in p["filters"]:
-                if role == "tc":
+                if role == "sd":
+                    ok = ok & paths.digi_pass(nsd, fc)
+                elif role == "tc":
                     if p["family"] == "apr":   # TZClusterFinder makes no cluster below clusterThresh straw hits
                         thr = int(self.mods[self.dpaths[name]["tc_producer"]].get("clusterThresh", 0))
                         fc = {**fc, "minNStrawHits": max(int(fc["minNStrawHits"]), thr)}
@@ -288,7 +353,7 @@ class Chain:
             if hs_mask is not None:
                 aux[name + ":hsmask"] = hs_mask
                 aux[name + ":fcent"] = hx["fcent"]
-        diag = {"sh": sh, "ph": ph, "tc": tcs, "hx": hxs} if self.debug else {}
+        diag = {"sh": sh, "ph": ph, "tc": tcs, "hx": hxs, **diag_off} if self.debug else {}
         return out, aux, diag
 
     def decide(self, batch):
@@ -310,6 +375,11 @@ class Chain:
         """Host: the stateful D0-phi prescale of HelixFilter, counting invocations in event order."""
         out = {k: np.asarray(v)[:n_events] for k, v in decisions.items()}
         for name, p in self.plan.items():
+            if p["family"] == "lumi":            # LumiStreamFilter: event counter per subrun, in event order
+                fc = next(cf for t_, _, cf in p["filters"] if t_ == "LumiStreamFilter")
+                out[name] = paths.lumi_stream(out[name], np.asarray(aux["run"])[:n_events],
+                                              np.asarray(aux["subrun"])[:n_events], fc)
+                continue
             for role, lbl, fc in p["filters"]:
                 if role != "hs":
                     continue
