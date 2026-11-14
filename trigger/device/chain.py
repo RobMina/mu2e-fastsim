@@ -28,7 +28,7 @@ def pair_bucket(n, total):
 
 class Chain:
     def __init__(self, cfg, cond, tc_mva_path, response=None, path_names=None, salt=20261107, debug=False,
-                 precision="float64", compact=False, pairs=False):
+                 precision="float64", compact=False, pairs=True):
         if precision not in PRECISIONS:
             raise ValueError(f"precision must be one of {PRECISIONS}")
         # float32: every device array, including the stock double-precision intermediates of the hit ports, in
@@ -72,9 +72,10 @@ class Chain:
         # that have a candidate / a valid cluster, in three device calls with one host read of the counts between
         # them; the same computation per cluster as the one-call path, and the same decisions
         self.compact = bool(compact)
-        # pairs (one-call path): cluster refinement and helix fits only on the (producer, event, slot) pairs with a
-        # candidate / a valid cluster, up to one pair per event and producer, else the full batched path; the same
-        # decisions
+        # pairs (one-call path, the default): cluster refinement and helix fits only on the (producer, event, slot)
+        # pairs with a candidate / a valid cluster, up to one pair per event and producer, else the full batched path
+        # in the same call; the same decisions, and the faster one-call variant (A100 A/B, both dtypes). pairs=False
+        # keeps the full batched path (for comparisons). The compact path has its own pair gathering and ignores it.
         self.pairs = bool(pairs)
         self._fn = jax.jit(self._decide)
         self._fa = jax.jit(self._stage_candidates)

@@ -123,3 +123,30 @@ refines time clusters and fits helices only on the occupied (event, cluster) pai
 all of the batch's cluster slots, and the bench compiles them all in its first pass (setup), so later passes compile
 nothing. Same per-cluster computation and the same decisions as the one-call path; on a GPU keep the one-call path
 (the host reads would stall the device). Process memory at these settings is 2.7 GB (float32) / 3.5 GB (float64).
+
+### One-call path on a GPU
+
+The one-call path (the GPU default) keeps the number of sequential loop iterations per batch low, because each
+iteration of a device loop is a host round trip when device loops are off (the W8 setting):
+
+- Panel hits combine over the run position of the hits in their panel, not hit by hit.
+- Time-cluster recovery jumps straight to the next hit that passes the time and phi window, and evaluates the hit MVA
+  there.
+- The peak scan stops at the last candidate.
+- Producers that differ only in pitch (`TrigTimeClusterFinder`, `TrigTimeClusterFinderUe`), and helix finders with the
+  same settings, run in one batched call.
+- The helix scans are unrolled.
+- Cluster refinement and helix fits run only on the gathered (producer, event, slot) pairs with a candidate or a valid
+  cluster (pairs, the default; `TRIGGER_DEVICE_PAIRS=0` or `decide --no-pairs` keeps the full batched path). A batch
+  with more pairs than one per event and producer takes the full batched path in the same call.
+
+All of these give the same decisions bit for bit. Warm rate on an NVIDIA A100-SXM4-80GB, 13,000 fresh events per pass,
+batch 1024, median of 3 runs interleaved in one job:
+
+| | float32 (events/s) | float64 (events/s) |
+|---|---|---|
+| before these changes | 8,731 | 8,019 |
+| fewer loop iterations | 23,179 | 20,553 |
+| plus pairs (default) | 29,185 | 27,852 |
+
+Setup with a warm compile cache is 13 s (float32) / 14 s (float64) with pairs, and 9 s / 8 s without.

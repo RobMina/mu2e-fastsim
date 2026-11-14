@@ -9,7 +9,8 @@
 TRIGGER_DEVICE_RESPONSE is a named response of trigger/device/response.py (default ce, the binned CE/DIO response;
 rpc for RPC events; none for no response layer) or a response JSON file.
 Batch, hit-axis floor and compact path default to run.CPU_BATCHING on a CPU backend (16, 32, on) and to 1024, 64, off
-otherwise; the variables override them. `load(N)` reads the first N events' digis into host memory and packs them into dense event blocks (not timed).
+otherwise; the variables override them. TRIGGER_DEVICE_PAIRS (default 1) runs cluster refinement and helix
+fits of the one-call path on the gathered candidate pairs (0: the full batched path; the same decisions). `load(N)` reads the first N events' digis into host memory and packs them into dense event blocks (not timed).
 `load(N, seed=S)` (the timer's `--fresh-inputs`, called before every pass) takes the disjoint slice of events
 [S x N, (S + 1) x N) of the dumps read in order, so each seed gets its own events; it raises if the dumps hold fewer
 than (S + 1) x N events. The chain and the read dumps are kept for later calls in the process (built once, as in a
@@ -34,7 +35,7 @@ _DUMPS = {}
 
 def _chain(dumps, tree):
     compact = os.environ.get("TRIGGER_DEVICE_COMPACT", "1" if _cpu().get("compact") else "0") == "1"
-    pairs = os.environ.get("TRIGGER_DEVICE_PAIRS", "0") == "1"
+    pairs = os.environ.get("TRIGGER_DEVICE_PAIRS", "1") == "1"
     key = (dumps[0], tree, os.environ["TRIGGER_DEVICE_MENU"], os.environ["TRIGGER_DEVICE_MVA"],
            _response(), os.environ.get("TRIGGER_DEVICE_PRECISION", "float64"), compact, pairs)
     if key not in _CHAINS:

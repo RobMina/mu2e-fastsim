@@ -339,6 +339,46 @@ def test_compact_clusters_and_helices_match_the_one_call_path():
     assert [chain.pair_bucket(n, 64) for n in (0, 16, 17, 32, 33, 64)] == [16, 16, 32, 32, 64, 64]
 
 
+def test_pair_paths_match_the_batched_multi_path():
+    """chain pairs path (the default): cluster refinement and helix fits on the gathered (producer, event, slot) pairs
+    give the same clusters and helices, where a consumer reads them, as the batched multi path, both when the pairs
+    fit in K and when they do not (then the full batched path runs)."""
+    pytest.importorskip("jax")
+    import jax
+    import jax.numpy as jnp
+    from trigger.device import helix, timecluster
+    rng = np.random.default_rng(3)
+    net = {"act": "sigmoid", "norm": False, "offset": np.zeros(7, np.float32), "scale": np.ones(7, np.float32),
+           "layers": [rng.normal(0, 0.3, (8, 4)).astype(np.float32), rng.normal(0, 0.3, (5, 1)).astype(np.float32)]}
+    s = {"tmin": 400.0, "tmax": 1800.0, "tbin": 10.0, "ymin": 3.0, "npeak": 1, "maxdt": 30.0, "minnhits": 5,
+         "maxdphi": 2.0, "minkeep": 0.1, "minadd": 0.9, "pitch": 0.6, "prefilter": True, "refine": True,
+         "recover": True}
+    ss = [s, {**s, "pitch": -0.63}]
+    hs = {"maxrpull": 5.0, "maxdr": 100.0, "maxchisq": 25.0, "cradres": 20.0, "cperpres": 12.0, "minnsh": 5,
+          "lmin": 30.0, "lmax": 1000.0, "lstep": 10.0, "minR": 100.0, "maxR": 600.0, "minCR": 0.0, "maxCR": 700.0,
+          "minabsl": 10.0, "maxabsl": 700.0, "helicities": (-1, 1)}
+    fz = np.linspace(-1500, 1500, 72)
+    ph = {k: jnp.asarray(v) for k, v in _synthetic_panel_hits().items()}
+    ref = jax.jit(lambda p: timecluster.time_clusters_multi(p, ss, net))(ph)
+    E, C = ref[0]["valid"].shape
+    assert sum(int(np.asarray(r["valid"]).sum()) for r in ref) > 1
+    href = jax.jit(lambda p, t: helix.helices_multi(p, t, hs, fz))(ph, ref)
+    for K in (len(ss) * E * C, 1):               # pairs branch; more candidates than K: the full branch
+        got = jax.jit(lambda p: timecluster.time_clusters_multi_pairs(p, ss, net, K))(ph)
+        for r, g in zip(ref, got):
+            v = np.asarray(r["valid"])
+            assert v.any()
+            np.testing.assert_array_equal(np.asarray(g["valid"]), v)
+            for key in ("nsh", "t0", "t0err", "members"):
+                np.testing.assert_array_equal(np.asarray(g[key])[v], np.asarray(r[key])[v])
+        hgot = jax.jit(lambda p, t: helix.helices_multi_pairs(p, t, hs, fz, K))(ph, got)
+        for r, g in zip(href, hgot):
+            ok = np.asarray(r["ok"])
+            np.testing.assert_array_equal(np.asarray(g["ok"]), ok)
+            for key in r:
+                np.testing.assert_array_equal(np.asarray(g[key])[ok], np.asarray(r[key])[ok])
+
+
 def _group_reference(h, s, maxn=8):
     """The stock CombineStrawHits loop (TestFlag on), one event at a time, hit by hit: owner seed per hit."""
     E, H = h["valid"].shape

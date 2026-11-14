@@ -248,7 +248,7 @@ def cmd_decide(args):
     hmin = args.hmin if args.hmin is not None else cpu.get("hmin", 64)
     compact = args.compact if args.compact is not None else cpu.get("compact", False)
     ch = chainmod.Chain(cfg, cond, args.tc_mva, response=resp, debug=args.check_hits, precision=args.precision,
-                        compact=compact)
+                        compact=compact, pairs=args.pairs)
     report, device, stages, stage_flags, path_vars = {}, {}, {}, {}, {}
     t_dev = 0.0
     for dump in args.dump:
@@ -288,7 +288,7 @@ def cmd_decide(args):
             device[key] = {p: bool(v[i]) for p, v in dec.items()}
     result = {"dumps": [str(d) for d in args.dump], "events": len(device), "paths": sorted(ch.plan),
               "precision": ch.precision, "batching": {"order": args.order, "batch": batch, "hmin": hmin,
-                                                      "compact": compact}, "skipped": ch.skipped, "response_spec": args.response, "response": resp, "stages": stages, "hits": report,
+                                                      "compact": compact, "pairs": ch.pairs}, "skipped": ch.skipped, "response_spec": args.response, "response": resp, "stages": stages, "hits": report,
               "wall_s_including_compile": t_dev}
     if args.logs:
         manifest = json.loads((Path(args.prepared) / "manifest.json").read_text())
@@ -358,6 +358,9 @@ def main(argv=None):
     d.add_argument("--compact", action=argparse.BooleanOptionalAction, default=None,
                    help="time-cluster refinement and helix fits on the occupied (event, cluster) pairs only (three "
                         "device calls per batch; the same decisions; default on a CPU, off on a GPU)")
+    d.add_argument("--pairs", action=argparse.BooleanOptionalAction, default=True,
+                   help="one-call path: cluster refinement and helix fits on the gathered candidate pairs (default; "
+                        "--no-pairs: the full batched path; the same decisions)")
     d.add_argument("--check-hits", action="store_true")
     d.add_argument("--output", required=True)
     from mu2efastsim import approximations
