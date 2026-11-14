@@ -107,6 +107,30 @@ def test_a_failed_batch_falls_back_to_the_per_batch_loop(cond, monkeypatch):
     _same(a, DR.digitize(st, 6, c, key))
 
 
+def test_short_last_batches_and_padded_batch_rows_give_the_same_digis(cond, monkeypatch):
+    """Few sampling lanes and small waveform batches: the cluster sampling runs several sub-batches with a short last
+    one (all at one size), and the waveform buckets several batches whose rows are padded to a power of two. The same
+    digis as digi_jax, and _pack_at sees only power-of-two batch-row counts."""
+    from trkfastsim.digi import digi_clusters_jax as DCJ
+    c = cond
+    st = _random_steps(c, np.random.default_rng(2), nev=5, per_event=37)
+    key = jax.random.key(7)
+    monkeypatch.setattr(DCJ, "MAX_SAMPLE_LANES", 64 * 5)    # 5 lanes per sub-batch of the first class
+    monkeypatch.setattr(DJ, "BATCH", 3)                      # several waveform batches per bucket
+    a = DJ.digitize(st, 5, c, key)
+    rows = []
+    orig = DR._pack_at
+
+    def spy(whichs, *args, **kw):
+        rows.append(int(whichs.shape[0]))
+        return orig(whichs, *args, **kw)
+    monkeypatch.setattr(DR, "_pack_at", spy)
+    b = DR.digitize({k: jax.numpy.asarray(v) for k, v in st.items()}, 5, c, key)
+    assert len(a["ev"]) > 20
+    _same(a, b)
+    assert max(rows) > 2 and all(r & (r - 1) == 0 for r in rows), rows
+
+
 LEVERS = {"flat": {"entries_per_straw": 4},
           "flat_rows": {"entries_per_straw": 4, "saturation_rows": "auto"},
           "pool": {"entries_per_straw": 4, "saturation_pool": True},
