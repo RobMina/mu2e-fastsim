@@ -622,3 +622,84 @@ def test_offspill_panel_hits_reuse_or_recombine():
         for k in ref:
             np.testing.assert_array_equal(np.asarray(got[k])[v], np.asarray(ref[k])[v], err_msg=f"spill {spill} {k}")
 
+
+
+MPR_CFG = {"CaloClusterMinE": 30, "CaloClusterWeight": 5, "ClusteringMinBin": 30, "ClusteringPhiBin": 0.1,
+           "DPDZStep": 25, "FitCircleStrategy": "ChiSquared", "Helicities": [-1, 1], "MaxChi2Hit": 50,
+           "MaxDPDZSlope": 350, "MaxDPhiHelFit": 0.7, "MaxDPhiHelInit": 1, "MaxDTHelFit": 25, "MaxRadCircle": 350,
+           "MinDPDZSlope": 150, "MinDRCircle": 40, "MinDXY2Circle": 1600, "MinDZTrk": 1500, "MinRadCircle": 150,
+           "MinStrawHits": 10, "NMaxTrkIter": 3, "TargetCon": False, "TargetRadius": 150, "maxEDepAvg": 2.5e-3}
+
+
+def _mpr_cluster(rng, L, helices):
+    """Synthetic time cluster in panel order: hits on `helices` (cx, cy, R, lambda, fz0) at the plane faces, plus noise."""
+    zf = np.linspace(-1500, 1500, 72)
+    rows = []
+    for cx, cy, R, lam, fz0 in helices:
+        for z in zf:
+            if rng.random() < 0.35:
+                continue
+            ph = fz0 + z / lam
+            rows.append((cx + R * np.cos(ph) + rng.normal(0, 2), cy + R * np.sin(ph) + rng.normal(0, 2), z,
+                         600 + z / 250 + rng.normal(0, 3)))
+    for _ in range(rng.integers(0, 6)):
+        rows.append((rng.uniform(-600, 600), rng.uniform(-600, 600), rng.choice(zf), rng.uniform(500, 1600)))
+    rows = rows[:L]
+    n = len(rows)
+    x, y, z, t = (np.array([r[k] for r in rows], np.float32) for k in range(4))
+    plane = np.searchsorted(zf, z) // 2
+    panel = ((np.arctan2(y, x) + np.pi) / (np.pi / 3)).astype(int) % 6
+    upanel = plane * 6 + panel
+    o = np.lexsort((np.arange(n), upanel))
+    pad = lambda a, v: np.concatenate([a[o], np.full(L - n, v, a.dtype)])
+    ang = rng.uniform(0, np.pi, n)
+    h = {"x": pad(x, 0), "y": pad(y, 0), "z": pad(z, 0), "time": pad(t, 0),
+         "nsh": pad(rng.integers(1, 4, n).astype(np.int32), 0), "uvar": pad(rng.uniform(100, 900, n).astype(np.float32), 1),
+         "vvar": pad(rng.uniform(2, 30, n).astype(np.float32), 1), "udx": pad(np.cos(ang).astype(np.float32), 1),
+         "udy": pad(np.sin(ang).astype(np.float32), 0), "edep": pad(rng.uniform(5e-4, 2e-3, n).astype(np.float32), 0),
+         "upanel": pad(upanel.astype(np.int32), 1 << 20)}
+    return h, np.arange(L) < n
+
+
+def test_mpr_cluster_matches_the_stock_walk():
+    """mpr._cluster (the RobustMultiHelixFinder port on one time cluster) against a literal float32 transcription of
+    the stock findHelicesInTC: per track iteration, kept or not, helicity, straw hits, hit set and the circle and
+    slope parameters, bit for bit."""
+    pytest.importorskip("jax")
+    import jax
+    import jax.numpy as jnp
+    sys_path = str(Path(__file__).parent)
+    if sys_path not in sys.path:
+        sys.path.insert(0, sys_path)
+    import mpr_reference as ref
+    from trigger.device import mpr
+    s = mpr.settings(MPR_CFG)
+    rng = np.random.default_rng(21)
+    L = 48
+    cases = []
+    for c in range(12):
+        hel = 1 if c % 2 else -1
+        hx = [(rng.uniform(-150, 150), rng.uniform(-150, 150), rng.uniform(200, 320), hel * rng.uniform(170, 300),
+               rng.uniform(0, 6))]
+        if c % 4 == 3:                                                  # a second track in the cluster
+            hx.append((rng.uniform(-150, 150), rng.uniform(-150, 150), rng.uniform(200, 320), -hel * 220.0, 1.0))
+        cases.append(_mpr_cluster(rng, L, hx))
+    hs = {k: jnp.asarray(np.stack([c[0][k] for c in cases])) for k in cases[0][0]}
+    ms = jnp.asarray(np.stack([c[1] for c in cases]))
+    got = jax.jit(jax.vmap(lambda h, m: mpr._cluster(h, m, s)))(hs, ms)
+    got = jax.tree.map(np.asarray, got)
+    kept = 0
+    for c, (h, m) in enumerate(cases):
+        want = ref.find_helices_in_tc(h, list(np.flatnonzero(m)), s)
+        want += [None] * (s["niter"] - len(want))
+        for it, w in enumerate(want):
+            assert bool(got["ok"][c, it]) == (w is not None), (c, it)
+            if w is None:
+                continue
+            kept += 1
+            assert int(got["hel"][c, it]) == w["hel"] and int(got["nsh"][c, it]) == w["nsh"], (c, it)
+            assert sorted(np.flatnonzero(got["mask"][c, it]).tolist()) == w["hits"], (c, it)
+            for k in ("x", "y", "r", "fa", "fb"):
+                gk = {"x": "cx", "y": "cy"}.get(k, k)
+                assert np.float32(got[gk][c, it]) == np.float32(w[k]), (c, it, k, got[gk][c, it], w[k])
+    assert kept >= 6
