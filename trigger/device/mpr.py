@@ -184,7 +184,7 @@ def _stubs(h, proc, first_panel, cx, cy, r, s):
     nxt_start = jnp.concatenate([start[..., 1:], jnp.ones(ok.shape[:-1] + (1,), bool)], axis=-1)
     fin = _seg_scan(run, nxt_start, lambda a, b: a, reverse=True)
     stub = ok & (fin[1] == pos)
-    nsh = jnp.sum(jnp.where(stub, h["nsh"], 0), axis=-1)
+    nsh = jnp.sum(jnp.where(stub, h["nsh"], 0), axis=-1).astype(jnp.int32)
     later_first = start & (gid >= 2)
     s1 = _seq_sum(chisq, later_first)
     ng = gid[..., -1]
@@ -224,7 +224,7 @@ def _circle(h, proc, s):
         stub, nsh, tot = _stubs(h, proc, first_panel, cx, cy, r, s)
         # the stock loop replaces the best when nsh > best or (nsh == best and chi2 sum <= best): the result is the
         # last triplet (in loop order) with the most straw hits and, among them, the smallest sum
-        n_i = jnp.max(jnp.where(okt, nsh, -1))
+        n_i = jnp.max(jnp.where(okt, nsh, -1)).astype(jnp.int32)
         c_i = jnp.min(jnp.where(okt & (nsh == n_i), tot, BIG))
         last = jnp.max(jnp.where(okt & (nsh == n_i) & (tot == c_i), flat, -1))
         take = (last >= 0) & ((n_i > bn) | ((n_i == bn) & ~(c_i > bc)))
