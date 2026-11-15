@@ -136,16 +136,18 @@ def step(data):
     _warmup(ch, blocks)
     out = []
     for file_blocks in blocks:                       # one file = one prescale-counter sequence
-        decs, auxs, ns = [], [], 0
+        res, ns = [], 0
         for nb, b, _ in file_blocks:
-            d, a, _ = ch.decide(b)
-            decs.append((nb, d))
-            auxs.append((nb, a))
+            res.append((nb,) + ch.decide_packed(b))
             ns += nb
-        # one host transfer of every block's decisions and stage arrays (not one blocking copy per array)
-        dh, ah = jax.device_get(([d for _, d in decs], [a for _, a in auxs]))
-        dec = [{k: np.asarray(v)[:nb] for k, v in d.items()} for (nb, _), d in zip(decs, dh)]
-        aux = [{k: np.asarray(v)[:nb] for k, v in a.items()} for (nb, _), a in zip(auxs, ah)]
+        # one host transfer of every block's results, stacked on the device into a few arrays per block (one copy
+        # per array otherwise: about 180 per block)
+        host = jax.device_get([arrs for _, _, arrs in res])
+        dec, aux = [], []
+        for (nb, key, _), arrs in zip(res, host):
+            d, a = ch.unpack(key, arrs)
+            dec.append({k: np.asarray(v)[:nb] for k, v in d.items()})
+            aux.append({k: np.asarray(v)[:nb] for k, v in a.items()})
         if file_blocks[0][2] is not None:            # hit-sorted blocks: back to event order (prescale counter)
             rows = [r for _, _, r in file_blocks]
             dec, aux = run.unsort(rows, dec), run.unsort(rows, aux)

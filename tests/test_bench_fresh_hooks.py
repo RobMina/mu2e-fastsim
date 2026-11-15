@@ -162,6 +162,13 @@ def test_trigger_hit_order_gives_the_input_order_results(monkeypatch):
             nh = b["valid"].sum(axis=1)
             return {"p": np.where(b["valid_event"], nh * 100000 + b["event"], -1)}, {"a:tc": b["event"] % 3 == 0}, {}
 
+        def decide_packed(self, b):                                # the chain's packed interface: (key, arrays)
+            d, a, _ = self.decide(b)
+            return b["valid"].shape, (d, a)
+
+        def unpack(self, key, arrays):
+            return arrays
+
         def finish(self, dec, aux, n_events):
             return {"p": dec["p"][:n_events], "count": np.cumsum(aux["a:tc"][:n_events])}
 
@@ -281,6 +288,13 @@ def _decide_main(monkeypatch, tmp_path, extra, cpu):
             hits = {"valid": b["valid"], **{k: idx for k in fields}}
             return ({"P": (nh + b["event"]) % 3 == 0}, {"a:tc": nh % 2 == 1},
                     {"sh": hits, "ph": hits} if seen["debug"] else {})
+
+        def decide_packed(self, b):             # the chain's packed interface: (key, arrays)
+            d, a, _ = self.decide(b)
+            return b["valid"].shape, (d, a)
+
+        def unpack(self, key, arrays):
+            return arrays
 
         def finish(self, dec, aux, n_events):  # an event-order counter, as the prescale counter
             return {"P": dec["P"][:n_events], "Q": np.cumsum(aux["a:tc"][:n_events]) % 2 == 0}

@@ -20,12 +20,13 @@ def check_sorted(ev, sid):
         raise ValueError("digis must be ordered by event, then StrawId (stock StrawDigi order)")
 
 
-def blocks(dg, nev, size, events=None, pbt=None, spill=0, nh=None):
+def blocks(dg, nev, size, events=None, pbt=None, spill=0, nh=None, run=None, subrun=None):
     """Yield (first event, events in block, block) for `chain.Chain.decide`, `size` events per block.
 
     events: event numbers (keys the response-layer draws), default 0..nev-1. pbt: proton bunch time per event
     (default 0, the off-spill and the device digitiser's on-spill default). spill: EventWindowMarker spill type
-    (0 off-spill, 1 on-spill) for every event."""
+    (0 off-spill, 1 on-spill) for every event. run, subrun: per event (default 0; the LumiStreamFilter counter restarts
+    at every subrun)."""
     ev = np.asarray(dg["ev"], np.int64)
     sid = np.asarray(dg["sid"], np.int64)
     check_sorted(ev, sid)
@@ -57,4 +58,8 @@ def blocks(dg, nev, size, events=None, pbt=None, spill=0, nh=None):
         b["valid_event"] = np.arange(size) < n
         b["event"] = np.zeros(size, np.int64)
         b["event"][:n] = events[lo:hi]
+        for k, v in (("run", run), ("subrun", subrun)):
+            b[k] = np.zeros(size, np.int64)
+            if v is not None:
+                b[k][:n] = np.asarray(v, np.int64)[lo:hi]
         yield lo, n, b
