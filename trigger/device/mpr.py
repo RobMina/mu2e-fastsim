@@ -121,13 +121,17 @@ def _first_strict_max(v, mask, start):
     return jnp.where(jnp.any(hit), jnp.argmax(hit), -1)
 
 
+def _cummax(x):
+    return jax.lax.cummax(x, axis=x.ndim - 1)
+
+
 def _seg_scan(vals, flags, fn, reverse=False):
     """Segmented inclusive scan along the last axis: `flags` start a new segment (end one, when reverse)."""
     def comb(a, b):
         av, af = a
         bv, bf = b
         return jax.tree.map(lambda x, y: jnp.where(bf, y, x), fn(av, bv), bv), af | bf
-    out, _ = jax.lax.associative_scan(comb, (vals, flags), axis=-1, reverse=reverse)
+    out, _ = jax.lax.associative_scan(comb, (vals, flags), axis=flags.ndim - 1, reverse=reverse)
     return out
 
 
@@ -167,7 +171,7 @@ def _stubs(h, proc, first_panel, cx, cy, r, s):
     pos = jnp.broadcast_to(jnp.arange(H), ok.shape)
     pan = jnp.broadcast_to(h["upanel"], ok.shape)
     nth = jnp.cumsum(ok, axis=-1)
-    prev = jnp.concatenate([jnp.full(ok.shape[:-1] + (1,), -1), jax.lax.cummax(jnp.where(ok, pos, -1), axis=-1)[..., :-1]],
+    prev = jnp.concatenate([jnp.full(ok.shape[:-1] + (1,), -1), _cummax(jnp.where(ok, pos, -1))[..., :-1]],
                            axis=-1)
     prev_pan = jnp.where(nth == 2, first_panel, jnp.take_along_axis(pan, jnp.maximum(prev, 0), axis=-1))
     start = ok & ((nth == 1) | (pan != prev_pan))
