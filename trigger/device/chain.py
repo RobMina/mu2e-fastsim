@@ -12,11 +12,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from . import helix, hits, menu, mva, paths, simpletc, timecluster
+from . import helix, hits, menu, mpr, mva, paths, simpletc, timecluster
 
 HELIX_TYPES = ("RobustHelixFinder", "AgnosticHelixFinder")
 KSF_TYPES = ("LoopHelixFit", "KinKalSeedFit", "LoopHelixDeFit")
 PRECISIONS = ("float64", "float32")
+MPR_DRAW_BASE = 500           # response-draw keys of the mpr paths (the tpr/apr paths use 0, 1, ...)
 
 
 def pack_layout(out, aux):
@@ -85,6 +86,7 @@ class Chain:
         self.plan, self.skipped = {}, {}
         self.opaths = menu.other_paths(cfg, path_names)
         self.stc = {}                            # SimpleTimeCluster label -> settings (cst paths)
+        self.mprs = {}                           # RobustMultiHelixFinder label -> (finder, merge) settings (mpr paths)
         for entry in phys["trigger_paths"]:
             name = entry.split(":", 1)[-1]
             if path_names and name not in path_names:
@@ -121,6 +123,8 @@ class Chain:
         # families joined the plan, so their draws are unchanged); a family added later that draws takes its own range
         self.draw_index = {n: i for i, n in enumerate(sorted(n for n, p in self.plan.items()
                                                               if p["family"] in ("tpr", "apr")))}
+        self.draw_index.update({n: MPR_DRAW_BASE + i for i, n in enumerate(sorted(n for n, p in self.plan.items()
+                                                                                   if p["family"] == "mpr"))})
         # compact (opt-in, for CPUs): time-cluster refinement and helix fits run only on the (event, cluster) pairs
         # that have a candidate / a valid cluster, in three device calls with one host read of the counts between
         # them; the same computation per cluster as the one-call path, and the same decisions
@@ -158,6 +162,23 @@ class Chain:
             return
         labels = phys[name]
         tcl = self._tc_label(p)
+        mlbl = next((lbl for lbl in labels if self.mods.get(lbl, {}).get("module_type") == "RobustMultiHelixFinder"),
+                    None)
+        if mlbl is not None:                     # mpr: RobustMultiHelixFinder + MergeHelices (mpr.py)
+            merger = next((lbl for lbl in labels if self.mods.get(lbl, {}).get("module_type") == "MergeHelices"), None)
+            fins = self.mods[merger]["HelixFinders"] if merger else []
+            if fins != [f"{mlbl}:Positive", f"{mlbl}:Negative"] or self.mods[mlbl]["TimeClusterCollection"] != tcl:
+                self.skipped[name] = [f"mpr layout not supported: {merger} {fins}"]
+                return
+            try:
+                self.mprs[mlbl] = (mpr.settings(self.mods[mlbl]), mpr.merge_settings(self.mods[merger]))
+            except ValueError as e:
+                self.skipped[name] = [str(e)]
+                return
+            ksf = next((lbl for lbl in labels if lbl.startswith("Trig") and "KSF" in lbl and "MC" not in lbl), None)
+            self.plan[name] = {"tc": tcl, "helix": None, "mpr": mlbl, "ksf": ksf, "filters": p["filters"],
+                               "family": "mpr", "min_helices": p["min_helices"], "ps": ps}
+            return
         hel = next((lbl for lbl in labels if self.mods.get(lbl, {}).get("module_type") in HELIX_TYPES), None)
         has_hs = any(role == "hs" for role, _, _ in p["filters"])
         if (has_hs and hel is None) or "proton" in name or p["unsupported"] or p["min_helices"] > 1:
@@ -183,7 +204,7 @@ class Chain:
 
     def _tc_labels(self):
         """TimeClusterFinder settings the tpr/apr paths use (cst clusters come from SimpleTimeCluster)."""
-        return sorted({p["tc"] for p in self.plan.values() if p["family"] in ("tpr", "apr")})
+        return sorted({p["tc"] for p in self.plan.values() if p["family"] in ("tpr", "apr", "mpr")})
 
     def _helix_keys(self):
         return sorted({(p["tc"], p["helix"]) for p in self.plan.values() if p.get("helix")})
@@ -294,6 +315,11 @@ class Chain:
             ph2 = hits.panel_hits_other(sh, ph, self.ph, sh2, self.ph_off)
             tcs = {**tcs, **{lbl: simpletc.clusters(ph2, s) for lbl, s in self.stc.items()}}
             diag_off = {"sh_offsp": sh2, "ph_offsp": ph2}
+        if self.mprs:                            # mpr paths: RobustMultiHelixFinder + MergeHelices on their clusters
+            hxs = dict(hxs)
+            for lbl, (sm, mm) in self.mprs.items():
+                tcl = self.mods[lbl]["TimeClusterCollection"]
+                hxs[("mpr", lbl)] = mpr.helices(ph, tcs[tcl], sm, mm, self.fz)
         nsd = jnp.sum(batch["valid"], axis=1)    # straw digis of the event (DigiFilter)
         tc_nsh = {lbl: jnp.max(jnp.where(tc["valid"], tc["nsh"], 0), axis=1) for lbl, tc in tcs.items()}
         if self.lumi:                            # the LumiStreamFilter counter runs on the host, per subrun
@@ -308,7 +334,9 @@ class Chain:
                 out[name] = ok if p["family"] != "disabled" else jnp.zeros_like(ok)
                 continue
             tc = tcs[p["tc"]]
-            hx = hxs.get((p["tc"], p["helix"]))
+            hx = hxs.get(("mpr", p["mpr"]) if p["family"] == "mpr" else (p["tc"], p["helix"]))
+            if p["family"] == "mpr":
+                aux[name + ":overflow"] = hx["overflow"]           # time clusters with more hits than the finder's slots
             hs_mask = None
             binned = self.response.get(name, {}).get("final")
             for role, lbl, fc in p["filters"]:

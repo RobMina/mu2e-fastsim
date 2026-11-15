@@ -502,31 +502,21 @@ def _merge(h, ok, mask, chi, ms):
     return alive
 
 
-def event_helices(h, members, tc_valid, s, ms, fz, ft):
-    """One event: panel hits h (each [H], panel order), time clusters [C, H] -> merged helix seeds [M] with the
-    HelixFilter / KalSeedFilter quantities (M = C x NMaxTrkIter x helicities)."""
-    mem = members & tc_valid[:, None]
-    H = mem.shape[1]
-    L = min(H, CLUSTER_HITS)
-    idx = jnp.argsort(~mem, axis=1, stable=True)[:, :L]                           # each cluster's hits, panel order
-    hc = jax.tree.map(lambda a: a[idx], h)                                         # [C, L]
-    vc = jnp.take_along_axis(mem, idx, axis=1)
-    per = jax.vmap(lambda hh, vv: _cluster(hh, vv, s))(hc, vc)
+def _event(h, per, idx, s, ms, fz, ft):
+    """One event: panel hits h (each [H], panel order) and the finder results of its clusters `per` [C, niter, ...]
+    on the cluster slots idx [C, L] -> merged helix seeds [M] with the HelixFilter / KalSeedFilter quantities."""
+    H = h["x"].shape[0]
     gmask = jax.vmap(lambda m, ix: jnp.zeros(m.shape[:-1] + (H,), bool).at[:, ix].set(m))(per["mask"], idx)
-    per = {**per, "mask": gmask}
-    flat = jax.tree.map(lambda a: a.reshape((-1,) + a.shape[2:]), per)            # (cluster, iteration) order
-    overflow = jnp.sum(jnp.sum(mem, axis=1) > L)
+    flat = jax.tree.map(lambda a: a.reshape((-1,) + a.shape[2:]), {**per, "mask": gmask})   # (cluster, iteration)
     keep = {hel: _dedupe(flat["ok"], flat["hel"], flat["mask"], hel) for hel in (1, -1)}
     # MergeHelices list: the Positive collection, then the Negative one
-    order = [(1, keep[1]), (-1, keep[-1])]
-    sel = jnp.concatenate([k for _, k in order])
+    sel = jnp.concatenate([keep[1], keep[-1]])
     cat = jax.tree.map(lambda a: jnp.concatenate([a, a]), flat)
     rh = _robust(cat)
     chixy, chizphi = _merge_chi2(h, rh, cat["mask"] & sel[:, None], ms, ft)
     alive = _merge(h, sel, cat["mask"] & sel[:, None], chixy.astype(F32) + chizphi.astype(F32), ms)
     mask = cat["mask"] & alive[:, None]
     nsh = jnp.sum(jnp.where(mask, h["nsh"][None, :], 0), axis=1)
-    H = mask.shape[1]
     zf = h["z"][jnp.argmax(mask, axis=1)]
     zl = h["z"][H - 1 - jnp.argmax(mask[:, ::-1], axis=1)]
     lam, R = rh["lambda"], rh["R"]
@@ -538,7 +528,8 @@ def event_helices(h, members, tc_valid, s, ms, fz, ft):
     rf = jnp.sqrt(px * px + py * py)
     from .helix import TRACKER_RIN, TRACKER_ROUT, MM2MEV
     expected = np.float32(1e-6) + jnp.sum(~(rf < TRACKER_RIN) & ~(rf > TRACKER_ROUT), axis=1).astype(F32)
-    return {"overflow": overflow, "ok": alive, "helicity": jnp.concatenate([jnp.ones(flat["ok"].shape[0]), -jnp.ones(flat["ok"].shape[0])]),
+    n = flat["ok"].shape[0]
+    return {"ok": alive, "helicity": jnp.concatenate([jnp.ones(n, F32), -jnp.ones(n, F32)]),
             "R": R, "rcent": rh["rcent"], "fcent": rh["fcent"], "lambda": lam,
             "p": MM2MEV * jnp.sqrt(R * R + lam * lam), "pt": MM2MEV * R, "d0": rh["rcent"] - R,
             "chi2xy": chixy.astype(F32), "chi2zphi": chizphi.astype(F32), "nsh": nsh.astype(F32), "nloops": nloops,
@@ -546,8 +537,9 @@ def event_helices(h, members, tc_valid, s, ms, fz, ft):
 
 
 def helices(ph, tc, s, ms, fz):
-    """Panel hits [E, H] + time clusters [E, C] -> merged mpr helix seeds [E, M] (process float type for the merge
-    chi2 sums, double in stock)."""
+    """Panel hits [E, H] + time clusters [E, C] -> merged mpr helix seeds [E, M] and `overflow` [E] (time clusters
+    with more hits than CLUSTER_HITS: their finder result would be truncated, so they are counted). The finder runs
+    on the valid clusters only, gathered up to one per event, else on every cluster in the same call."""
     ft = jnp.float64 if jax.config.jax_enable_x64 else jnp.float32
     upanel = (ph["sid"] >> 10) * 6 + ((ph["sid"] & 0x380) >> 7)
     order = jnp.argsort(jnp.where(ph["valid"], upanel, 1 << 30), axis=1, stable=True)
@@ -555,6 +547,33 @@ def helices(ph, tc, s, ms, fz):
     h = {"x": take(ph["x"]), "y": take(ph["y"]), "z": take(ph["z"]), "time": take(ph["time"]),
          "nsh": take(ph["ncombo"]).astype(jnp.int32), "uvar": take(ph["uvar"]), "vvar": take(ph["vvar"]),
          "udx": take(ph["udx"]), "udy": take(ph["udy"]), "edep": take(ph["edep"]), "upanel": take(upanel)}
-    h = {k: (v.astype(F32) if k not in ("nsh", "upanel") else v) for k, v in h.items()}
-    members = jnp.take_along_axis(tc["members"], order[:, None, :], axis=2) & take(ph["valid"])[:, None, :]
-    return jax.vmap(lambda hh, mm, vv: event_helices(hh, mm, vv, s, ms, fz, ft))(h, members, tc["valid"])
+    h = {k: (v.astype(F32) if k not in ("nsh", "upanel") else v.astype(jnp.int32)) for k, v in h.items()}
+    mem = jnp.take_along_axis(tc["members"], order[:, None, :], axis=2) & take(ph["valid"])[:, None, :] & \
+        tc["valid"][:, :, None]
+    E, C, H = mem.shape
+    L = min(H, CLUSTER_HITS)
+    idx = jnp.argsort(~mem, axis=2, stable=True)[:, :, :L]                       # each cluster's hits, panel order
+    hc = jax.tree.map(lambda a: jax.vmap(lambda v, ix: v[ix])(a, idx), h)         # [E, C, L]
+    vc = jnp.take_along_axis(mem, idx, axis=2)
+    overflow = jnp.sum(jnp.sum(mem, axis=2) > L, axis=1)
+    run = jax.vmap(lambda hh, vv: _cluster(hh, vv, s))
+    flat_h = jax.tree.map(lambda a: a.reshape((E * C, L)), hc)
+    flat_v = vc.reshape(E * C, L)
+    use = jnp.any(flat_v, axis=1)
+    K = E
+
+    def gathered():
+        sel = jnp.nonzero(use, size=K, fill_value=E * C)[0]
+        ok = sel < E * C
+        si = jnp.minimum(sel, E * C - 1)
+        r = run(jax.tree.map(lambda a: a[si], flat_h), flat_v[si] & ok[:, None])
+        empty = jax.tree.map(lambda a: jnp.zeros((E * C,) + a.shape[1:], a.dtype), r)
+        return jax.tree.map(lambda e, a: e.at[jnp.where(ok, si, E * C)].set(a, mode="drop"), empty, r)
+
+    def full():
+        return run(flat_h, flat_v)
+
+    per = jax.lax.cond(jnp.sum(use) <= K, gathered, full)
+    per = jax.tree.map(lambda a: a.reshape((E, C) + a.shape[1:]), per)
+    out = jax.vmap(lambda hh, pp, ix: _event(hh, pp, ix, s, ms, fz, ft))(h, per, idx)
+    return {**out, "overflow": overflow}
