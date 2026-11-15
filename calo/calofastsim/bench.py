@@ -1,6 +1,8 @@
 """Shared-timer entry points for the calorimeter device chain (``python3 -m mu2efastsim.bench``).
 
-Boundary: stock CaloShowerSteps -> calorimeter digis, hits and clusters (:func:`device_chain.make_steps_chain`).
+Boundary: stock CaloShowerSteps -> calorimeter hits and clusters (:func:`device_chain.make_steps_chain`) with the
+default crystal response (``digi_response="parametric"``, hits drawn per crystal, no digis); ``digi_response=
+"waveform"`` runs photoelectrons, digis and the template fit (digis, hits and clusters).
 
 Inputs come from environment variables, so no path is built into the code:
 
@@ -134,7 +136,7 @@ def conditions(dtype="float64", directory=None, fit_hessian="analytic"):
                          dtype=np.dtype(dtype), fit_hessian=fit_hessian)
 
 
-def chain(dtype="float64", batch=BATCH, digi_response="waveform", fit_hessian="analytic", **cap_override):
+def chain(dtype="float64", batch=BATCH, digi_response="parametric", fit_hessian="analytic", **cap_override):
     """The jitted steps chain for this configuration, built once per process."""
     key = (np.dtype(dtype).name, batch, digi_response, fit_hessian, tuple(sorted(cap_override.items())))
     if key not in _CHAINS:
@@ -146,7 +148,7 @@ def chain(dtype="float64", batch=BATCH, digi_response="waveform", fit_hessian="a
     return _CHAINS[key]
 
 
-def bench_steps(prepared, dtype="float64", digi_response="waveform", seed=1, fit_hessian="analytic",
+def bench_steps(prepared, dtype="float64", digi_response="parametric", seed=1, fit_hessian="analytic",
                 **cap_override):
     """mu2efastsim.bench entry point: every batch of ``prepared`` through the steps chain; returns the per-batch
     clusters and overflow counts (device arrays, which the timer waits on)."""

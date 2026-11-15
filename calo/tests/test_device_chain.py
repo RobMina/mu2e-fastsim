@@ -242,7 +242,7 @@ def test_full_chain_runs_and_conserves_scale(library):
     caps = dc.Caps(events=64, steps=2048, photoelectrons=1 << 19, rows=1024, digis=1024, digi_length=96,
                    hits=1024, event_hits=48, rounds=6)
     q, t = dc.entries_batch(query, _timing(60), np.arange(60), caps.events)
-    chain = dc.make_chain(lib, resp, caps)
+    chain = dc.make_chain(lib, resp, caps, digi_response="waveform")
     out = dc.run(chain, q, t, jax.random.PRNGKey(7))
     cl = dc.flat_clusters(out["clusters"])
     assert out["stats"]["draws"] == 60 and out["stats"]["mapped"] > 0
@@ -270,8 +270,8 @@ def test_cluster_truth_opt_in(library):
     caps = dc.Caps(events=48, steps=2048, photoelectrons=1 << 19, rows=1024, digis=1024, digi_length=96,
                    hits=1024, event_hits=48, rounds=6)
     q, t = dc.entries_batch(query, _timing(40), np.arange(40), caps.events)
-    base = dc.run(dc.make_chain(lib, resp, caps), q, t, jax.random.PRNGKey(3))
-    tru = dc.run(dc.make_chain(lib, resp, caps, truth=True), q, t, jax.random.PRNGKey(3))
+    base = dc.run(dc.make_chain(lib, resp, caps, digi_response="waveform"), q, t, jax.random.PRNGKey(3))
+    tru = dc.run(dc.make_chain(lib, resp, caps, digi_response="waveform", truth=True), q, t, jax.random.PRNGKey(3))
     for k, v in base["clusters"].items():
         np.testing.assert_array_equal(tru["clusters"][k], v)
     cl = tru["clusters"]
@@ -297,7 +297,8 @@ def test_more_cluster_rounds_leave_the_clusters_unchanged(library):
         caps = dc.Caps(events=48, steps=2048, photoelectrons=1 << 19, rows=1024, digis=1024, digi_length=96,
                        hits=1024, event_hits=48, rounds=r)
         q, t = dc.entries_batch(query, _timing(40), np.arange(40), caps.events)
-        out[r] = dc.run(dc.make_chain(lib, resp, caps, truth=True), q, t, jax.random.PRNGKey(3))
+        out[r] = dc.run(dc.make_chain(lib, resp, caps, digi_response="waveform", truth=True), q, t,
+                        jax.random.PRNGKey(3))
     a, b = out[6]["clusters"], out[10]["clusters"]
     assert not b["valid"][:, 6:].any()
     for k in a:
@@ -359,7 +360,7 @@ def test_float32_fit_and_clusters_close_to_double():
     for dtype in (np.float64, np.float32):
         resp = dc.pack_response(_sim(len(disk)), pulse, np.full(10000, 12.0), table, geom, ro_cfg=ro,
                                 pbt_reco_sigma=0.0, dtype=dtype)
-        chain = dc.make_steps_chain(resp, caps)
+        chain = dc.make_steps_chain(resp, caps, digi_response="waveform")
         out[dtype] = dc.run(chain, dc.steps_batch(steps, caps.steps), t, jax.random.PRNGKey(0))
         if dtype is np.float32:
             from calofastsim.templatefit import _compiled
@@ -473,7 +474,7 @@ def test_chains_compile_without_command_buffers(monkeypatch):
     caps = dc.Caps(events=4, steps=64, photoelectrons=4096, rows=64, digis=64, digi_length=64, hits=64, event_hits=16,
                    rounds=4)
     monkeypatch.setattr(jax, "jit", spy)
-    chain = dc.make_steps_chain(resp, caps)
+    chain = dc.make_steps_chain(resp, caps, digi_response="waveform")
     monkeypatch.setattr(jax, "jit", real)
     assert seen == [dc.COMPILER_OPTIONS] and dc.COMPILER_OPTIONS == {"xla_gpu_enable_command_buffer": ""}
     t = dc.entries_batch({k: np.zeros((0, 3) if k in ("position", "direction") else 0) for k in
