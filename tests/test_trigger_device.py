@@ -663,8 +663,8 @@ def _mpr_cluster(rng, L, helices):
 
 def test_mpr_cluster_matches_the_stock_walk():
     """mpr._cluster (the RobustMultiHelixFinder port on one time cluster) against a literal float32 transcription of
-    the stock findHelicesInTC: per track iteration, kept or not, helicity, straw hits, hit set and the circle and
-    slope parameters, bit for bit."""
+    the stock findHelicesInTC: per track iteration, kept or not, helicity, straw hits and hit set equal; the circle
+    and slope parameters to float rounding (XLA may fuse multiply-adds that the stock build rounds separately)."""
     pytest.importorskip("jax")
     import jax
     import jax.numpy as jnp
@@ -688,7 +688,7 @@ def test_mpr_cluster_matches_the_stock_walk():
     ms = jnp.asarray(np.stack([c[1] for c in cases]))
     got = jax.jit(jax.vmap(lambda h, m: mpr._cluster(h, m, s)))(hs, ms)
     got = jax.tree.map(np.asarray, got)
-    kept = 0
+    kept = same = floats = 0
     for c, (h, m) in enumerate(cases):
         want = ref.find_helices_in_tc(h, list(np.flatnonzero(m)), s)
         want += [None] * (s["niter"] - len(want))
@@ -701,5 +701,9 @@ def test_mpr_cluster_matches_the_stock_walk():
             assert sorted(np.flatnonzero(got["mask"][c, it]).tolist()) == w["hits"], (c, it)
             for k in ("x", "y", "r", "fa", "fb"):
                 gk = {"x": "cx", "y": "cy"}.get(k, k)
-                assert np.float32(got[gk][c, it]) == np.float32(w[k]), (c, it, k, got[gk][c, it], w[k])
+                g, r = np.float32(got[gk][c, it]), np.float32(w[k])
+                same += int(g == r)
+                floats += 1
+                np.testing.assert_allclose(g, r, rtol=2e-5, atol=1e-3, err_msg=f"{c} {it} {k}")
+    print(f"mpr reference: {kept} helices, discrete results equal; {same}/{floats} floats bit-identical")
     assert kept >= 6
