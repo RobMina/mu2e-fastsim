@@ -65,6 +65,13 @@ reconstruction.
 - **Minion electron fill (device chain default, identical).** `digi_clusters_jax.MINION_UNROLL` (16 loop bodies per
   device iteration; the extra bodies past a lane's end are identity) and `SEARCH_METHOD="compare_all"` (searchsorted
   without a device loop): all seven stage digests unchanged on 20 tables.
+- **Poisson cluster counts on CPU (default there, identical).** `digi_clusters_jax.POISSON_SPLIT` (None: on with the
+  CPU backend). `jax.random.poisson` under `vmap` runs both of its algorithms (Knuth below a mean of 10, transformed
+  rejection from 10) on every lane, each loop until the slowest lane of the call is done. A lane's draw depends only on
+  its key and mean, so the lanes are sorted by mean and run in chunks of `POISSON_CHUNK` (2,048), each chunk with only
+  the algorithm(s) it uses. Draws equal to `vmap(jax.random.poisson)` bit for bit (tested around the boundary, at 0,
+  NaN and large means, with typed and raw keys); W2 with digis and W6 outputs identical in both dtypes. One core, same
+  node, against the vmapped call: W6 x1.23 (float64) / x1.11 (float32), W2 with digis x1.09 / x1.02.
 - **Digitiser overflow.** A JAX chunk with a straw beyond the device digitiser's cluster capacity is digitised by
   NumPy, seeded from the chunk key (`stats["numpy_fallback_chunks"]`); before, the chain stopped (1 table in 80 at
   float64).

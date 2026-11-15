@@ -84,10 +84,73 @@ def _uniform(keys):
     return jax.vmap(lambda k: df.draw(random.uniform, k, ()))(keys)
 
 
+# Poisson counts with one key per lane. jax.random.poisson draws a lane with Knuth's algorithm below a mean of 10 and
+# with transformed rejection from 10, and under vmap it runs both algorithms on every lane, each while loop until the
+# slowest lane of the call is done. A lane's draw depends only on its key and mean (a vmapped while loop stops
+# updating a lane at that lane's own end), so POISSON_SPLIT sorts the lanes by mean and runs them in chunks of
+# POISSON_CHUNK lanes, each chunk with only the algorithm(s) its lanes use: the same draws, bit for bit, in less work
+# where the lanes run one after another (CPU). None: on with the CPU backend; True / False force it (read when a
+# kernel is traced: set it before the first call).
+POISSON_SPLIT = None
+POISSON_CHUNK = 2048
+
+
+def _poisson_parts():
+    """jax.random's per-algorithm Poisson samplers (key, lam, shape, dtype, max_iters), or None if this JAX has no
+    such private functions (then the split is off: the draws are jax.random.poisson's either way)."""
+    try:
+        from jax._src.random import core as jr
+    except ImportError:
+        import jax._src.random as jr
+    knuth, rejection = getattr(jr, "_poisson_knuth", None), getattr(jr, "_poisson_rejection", None)
+    return None if knuth is None or rejection is None else (knuth, rejection)
+
+
+def _poisson_split_on():
+    on = POISSON_SPLIT if POISSON_SPLIT is not None else jax.default_backend() == "cpu"
+    return bool(on) and _poisson_parts() is not None
+
+
 def _poisson(keys, mean):
     if df.DRAW64:
         mean = mean.astype(np.float64)
-    return jax.vmap(lambda k, m: random.poisson(k, m, dtype=jnp.int64))(keys, mean)
+    if mean.ndim != 1 or mean.shape[0] == 0 or not _poisson_split_on():
+        return jax.vmap(lambda k, m: random.poisson(k, m, dtype=jnp.int64))(keys, mean)
+    return _poisson_chunks(keys, mean, POISSON_CHUNK)
+
+
+def _poisson_chunks(keys, mean, chunk):
+    """vmap(random.poisson(k, m, dtype=int64)) over lanes, by chunks of lanes sorted by mean (see POISSON_SPLIT)."""
+    knuth, rejection = _poisson_parts()
+    if not jnp.issubdtype(keys.dtype, jax.dtypes.prng_key):
+        keys = random.wrap_key_data(keys)                # raw uint32 keys, wrapped as jax.random.poisson does
+    dtype = np.dtype(np.int64)
+    max_iters = dtype.type(np.iinfo(dtype).max)          # as jax.random.poisson
+    lam = mean.astype(jnp.float32)                       # jax.random.poisson draws with a float32 mean
+    n = lam.shape[0]
+    chunk = min(int(chunk), n)
+    nch = -(-n // chunk)
+    order = jnp.argsort(jnp.where(jnp.isnan(lam), -1.0, lam), stable=True)
+    lane = jnp.arange(nch * chunk)
+    src = jnp.where(lane < n, jnp.concatenate([order, jnp.zeros(nch * chunk - n, order.dtype)]), 0)
+    ks = keys[src].reshape((nch, chunk) + keys.shape[1:])
+    ls = jnp.where(lane < n, lam[src], 0.0).reshape(nch, chunk)       # padding lanes: mean 0, no draw
+    zero = jnp.zeros(chunk, jnp.int64)
+
+    def one(args):
+        k, m = args
+        use_knuth = jnp.isnan(m) | (m < 10)
+        a = lax.cond(jnp.any(use_knuth & (m != 0)),
+                     lambda: jax.vmap(lambda kk, mm: knuth(kk, mm, (), dtype, max_iters))(k, jnp.where(use_knuth, m, 0.0)),
+                     lambda: zero)
+        b = lax.cond(jnp.any(~use_knuth),
+                     lambda: jax.vmap(lambda kk, mm: rejection(kk, mm, (), dtype, max_iters))(
+                         k, jnp.where(use_knuth, jnp.float32(1e5), m)),
+                     lambda: zero)
+        return jnp.where(m == 0, 0, jnp.where(use_knuth, a, b)).astype(jnp.int64)
+
+    out = lax.map(one, (ks, ls)).reshape(-1)[:n]
+    return jnp.zeros(n, jnp.int64).at[order].set(out)
 
 
 @_jit
@@ -188,7 +251,9 @@ def _sample(key, idx, eion, nc, minion, p0, p1, sdir, width, eaverage, energies,
     electron_keys = jax.vmap(lambda ks: _fold(ks, 1))(slot_keys)
     means = jnp.broadcast_to(jnp.where(minion, 0.0, eion / (jnp.maximum(nc, 1).astype(eion.dtype) * eaverage))[:, None],
                              nc.shape + (capacity,))
-    ne = jnp.maximum(jax.vmap(_poisson)(electron_keys, means), 1)
+    # one flat call (an outer vmap would turn the split's per-chunk branches back into selects): the same per-lane draws
+    flat_keys = electron_keys.reshape((-1,) + electron_keys.shape[means.ndim:])
+    ne = jnp.maximum(_poisson(flat_keys, means.reshape(-1)).reshape(means.shape), 1)
     mine, _ = _minion_clusters(keys, energies, probabilities, eion, jnp.where(minion, nc, 0), capacity, unroll, method)
     ne = jnp.where(minion[:, None], mine, ne)
     return pos, ne
