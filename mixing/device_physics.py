@@ -130,14 +130,17 @@ def model(args, source, layout):
     mc, reco, length = crv_inputs.read_timing(source.signal.event_ids, args.truth, args.stock)
     conditions = digicond.Conditions.load(args.tracker_conditions)
     if "tracker_reuse" in capacity:   # approximation (W6 default file): donor-frame digi reuse (mixing.device_reuse)
-        from . import device_reuse
+        from . import device_reuse, device_reuse_table
         from .device_source import pack_source
         data, _ = pack_source(source, layout)
-        table = device_reuse.precompute(conditions, capacity["tracker_reuse"], data, float(np.max(length)),
-                                        getattr(args, "tracker_seed", 0), rows_capacity=layout.rows["tracker"],
-                                        shift=float(np.mean(mc)),
-                                        margin=float(np.max(np.abs(np.asarray(mc) - np.mean(mc)))) + 5.0, log=print,
-                                        event_shifts=np.asarray(mc))
+        # `reuse_table`: a saved table (mixing.device_reuse_table), loaded if present, else computed and saved there
+        # (for the events' shifts plus `reuse_table_shifts`)
+        path = getattr(args, "reuse_table", None)
+        table = device_reuse_table.obtain(None if path is None else Path(path), conditions,
+                                          capacity["tracker_reuse"], data, float(np.max(length)),
+                                          getattr(args, "tracker_seed", 0), rows_capacity=layout.rows["tracker"],
+                                          event_shifts=np.asarray(mc),
+                                          extra_shifts=getattr(args, "reuse_table_shifts", None) or (), log=print)
         tracker = device_reuse.prepare(conditions, capacity["tracker_reuse"], layout.batch_events, table,
                                        data["starts"])
     else:
