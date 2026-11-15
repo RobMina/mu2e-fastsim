@@ -78,6 +78,81 @@ def _gamma(key, a):
     return random.gamma(key, a)
 
 
+# Gas-gain gamma draws. The charge kernel draws _gamma(k1, aval) for every cluster of a block and the gain keeps it only
+# below nGainGauss electrons. jax.random.gamma gives each element its own key (split from k1) and runs a vmapped
+# Marsaglia-Tsang rejection loop until the slowest lane of the whole call accepts (with groups of blocks per launch,
+# hundreds of thousands of lanes). GAMMA_SPLIT draws the same per-element keys and runs JAX's per-element sampler
+# only on the kept lanes, in chunks of GAMMA_CHUNK lanes, each loop ending at its own slowest lane: a lane's draw
+# depends only on its key and shape (a vmapped while loop stops updating a lane at that lane's end), so the gains are
+# the same bit for bit, in less work where the lanes run one after another (CPU). None: on with the CPU backend;
+# True / False force it (read when a kernel is traced: set it before the first call).
+GAMMA_SPLIT = None
+GAMMA_CHUNK = 1024
+
+
+def _gamma_one():
+    """jax.random's per-element gamma sampler (key, alpha, log_space), or None if this JAX has none (split off)."""
+    try:
+        from jax._src.random import core as jr
+    except ImportError:
+        import jax._src.random as jr
+    return getattr(jr, "_gamma_one", None)
+
+
+def _gamma_split_on():
+    on = GAMMA_SPLIT if GAMMA_SPLIT is not None else not _c("GPU")
+    return bool(on) and _gamma_one() is not None
+
+
+def _gamma_dtypes():
+    """(draw dtype, result dtype, bits dtype) of _gamma, read from _gamma itself (the samplers of this module follow
+    the device float): float64 draws rounded to the device float with DRAW64, else draws in the result dtype."""
+    result = np.dtype(jax.eval_shape(lambda a: _gamma(random.key(0), a), jax.ShapeDtypeStruct((1,), df.FLOAT)).dtype)
+    draw = np.dtype(np.float64) if df.DRAW64 else result
+    return draw, result, np.dtype(f"uint{8 * result.itemsize}")
+
+
+def _aval(c, ne):
+    """The Polya shape of each cluster's gain (the charge kernel's aval)."""
+    nef = ne.astype(df.FLOAT)
+    return jnp.where(ne == 1, c.polyaA, nef * (c.polyaA + 1) - 1).astype(df.FLOAT)
+
+
+def _gamma_bits(c, keys, ne, chunk=None):
+    """_gamma(random.split(key, 3)[0], aval) of blocks of clusters, on the lanes the gain keeps (ne < nGainGauss; the
+    other lanes hold 0), as the integer bits of _gamma's result so that a float32-mode kernel takes them unrounded.
+    keys [B] block keys (raw uint32 [B, 2] or typed), ne [B, L] -> [B, L] (see GAMMA_SPLIT)."""
+    gamma_one = _gamma_one()
+    draw, result, bits = _gamma_dtypes()
+    k1 = jax.vmap(lambda k: random.split(k, 3)[0])(keys)
+    if not jnp.issubdtype(k1.dtype, jax.dtypes.prng_key):
+        k1 = random.wrap_key_data(k1)                    # raw keys, wrapped as jax.random.gamma does
+    B, L = ne.shape
+    lanes = jax.vmap(lambda k: random.split(k, L))(k1).reshape(-1)   # jax.random.gamma's per-element keys
+    alpha = _aval(c, ne).astype(draw).reshape(-1)
+    use = (ne < c.nGainGauss).reshape(-1)
+    n = B * L
+    u = use.astype(jnp.int64)
+    nuse = u.sum()
+    at = jnp.where(use, jnp.cumsum(u) - 1, nuse + jnp.cumsum(1 - u) - 1)      # kept lanes first, each group in order
+    order = jnp.zeros(n, jnp.int64).at[at].set(jnp.arange(n, dtype=jnp.int64))
+    chunk = min(int(GAMMA_CHUNK if chunk is None else chunk), n)
+    nch = -(-n // chunk)
+    lane = jnp.arange(nch * chunk)
+    src = jnp.where(lane < n, jnp.concatenate([order, jnp.zeros(nch * chunk - n, jnp.int64)]), 0)
+    kept = (use[src] & (lane < n)).reshape(nch, chunk)
+    zero = jnp.zeros(chunk, draw)
+
+    def one(args):
+        k, a, m = args
+        return lax.cond(jnp.any(m), lambda: jax.vmap(lambda kk, aa: gamma_one(kk, aa, log_space=False))(k, a),
+                        lambda: zero)
+
+    out = lax.map(one, (lanes[src].reshape(nch, chunk), alpha[src].reshape(nch, chunk), kept)).reshape(-1)[:n]
+    g = jnp.where(use, jnp.zeros(n, draw).at[order].set(out), 0).astype(result)
+    return lax.bitcast_convert_type(g, bits).reshape(B, L)
+
+
 def _relative_geometry(c):
     """float32 mode: cluster positions are relative to their straw's middle, so the wire middles are too."""
     a = dict(c.a)
@@ -110,11 +185,13 @@ def _charge_kernel(c):
     pdir = jnp.asarray(df.dev(pdir))
 
     @df.jit
-    def run(key, us, pos, ne, time):
+    def run(key, us, pos, ne, time, gamma_bits=None):
+        """gamma_bits: the block's _gamma_bits (GAMMA_SPLIT), else the gains' gamma draws are made here."""
         k1, k2, k3 = random.split(key, 3)
         nef = ne.astype(df.FLOAT)
-        aval = jnp.where(ne == 1, c.polyaA, nef * (c.polyaA + 1) - 1).astype(df.FLOAT)
-        gain = jnp.where(ne < c.nGainGauss, _gamma(k1, aval) / aval,
+        aval = _aval(c, ne)
+        gam = _gamma(k1, aval) if gamma_bits is None else lax.bitcast_convert_type(gamma_bits, _gamma_dtypes()[1])
+        gain = jnp.where(ne < c.nGainGauss, gam / aval,
                          1 + c.gainRMSSlope / jnp.sqrt(nef) * df.draw(random.normal, k2, ne.shape))
         charge = (c.Qe * nef * c.gasGain * gain).astype(jnp.float32)
         d = pos - a["straw_mid"][us]
@@ -155,7 +232,10 @@ def _charge_blocks_kernel(c, blocks=None):
         keys = jax.vmap(lambda offset: random.fold_in(random.fold_in(key, 1), offset))(offsets)
         args = (us.reshape(nb, CHARGE_BLOCK), pos.reshape(nb, CHARGE_BLOCK, 3),
                 ne.reshape(nb, CHARGE_BLOCK), time.reshape(nb, CHARGE_BLOCK))
-        result = jax.vmap(charge)(keys, *args)
+        if _gamma_split_on():
+            result = jax.vmap(charge)(keys, *args, _gamma_bits(c, keys, args[2]))
+        else:
+            result = jax.vmap(charge)(keys, *args)
         return tuple(a.reshape((-1,) + a.shape[2:]) for a in result)
     return run
 
