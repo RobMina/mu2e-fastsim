@@ -3,9 +3,11 @@
 per hour of campaign wall time (first start to last end), from each job's runchain --emit shard and its Slurm and
 MAM accounting. Stats only: counts and timings, no event data.
 
-    throughput_uva.py jobs.tsv shard_<jobid>.json [...] --out throughput.json
+    throughput_uva.py jobs.tsv <jobid>/.../shard_<i>.json [...] --out throughput.json
 jobs.tsv columns: jobid, start (epoch s), end (epoch s), elapsed_s, gpus, gpu_type, node, su, input_wait_s
-(the job id is taken from a /<jobid>/ path component of each shard, or from its file name)
+(the job id is taken from a /<jobid>/ path component of each shard, or from its file name). A job that ran several
+processes (PER_GPU > 1) has one shard per process: their events add up, the process wall and setup are the
+slowest process's, and the steady rate is the sum of the processes' steady rates.
 """
 import argparse
 import csv
@@ -20,21 +22,24 @@ def load_jobs(path):
 
 
 def summarise(jobs, shards):
-    rows = []
+    by_job = {}
     for path in shards:
         m = re.search(r"(?:^|/)(\d{6,})/", path) or re.search(r"(\d{6,})", os.path.basename(path))
-        jid = m.group(1)
-        s = json.load(open(path))
+        by_job.setdefault(m.group(1), []).append(json.load(open(path)))
+    rows = []
+    for jid, ss in by_job.items():
         j = jobs[jid]
-        T = s["timers"]
-        acc = int(T.get("events_with_steps", 0))
+        accs = [int(s["timers"].get("events_with_steps", 0)) for s in ss]
+        walls = [float(s["wall_s"]) for s in ss]
+        setups = [float(s["timers"].get("setup_s", 0.0)) for s in ss]
+        acc = sum(accs)
         el, gpus, su = float(j["elapsed_s"]), int(j["gpus"]), float(j["su"])
-        work = sum(v for k, v in T.items() if k.endswith("_s") and k not in ("setup_s", "wall_s"))
-        rows.append({"jobid": jid, "node": j["node"], "gpu_type": j["gpu_type"], "gpus": gpus,
-                     "generated": int(s["generated_events"]), "accepted": acc, "elapsed_s": el,
-                     "process_wall_s": float(s["wall_s"]), "setup_s": float(T.get("setup_s", 0.0)), "su": su,
+        steady = sum(a / max(w - t, 1e-9) for a, w, t in zip(accs, walls, setups))
+        rows.append({"jobid": jid, "node": j["node"], "gpu_type": j["gpu_type"], "gpus": gpus, "processes": len(ss),
+                     "generated": sum(int(s["generated_events"]) for s in ss), "accepted": acc, "elapsed_s": el,
+                     "process_wall_s": max(walls), "setup_s": max(setups), "su": su,
                      "accepted_per_gpu_hour": 3600.0 * acc / (el * gpus), "accepted_per_su": acc / su if su else None,
-                     "accepted_per_gpu_hour_steady": 3600.0 * acc / max(float(s["wall_s"]) - float(T.get("setup_s", 0.0)), 1e-9) / gpus,
+                     "accepted_per_gpu_hour_steady": 3600.0 * steady / gpus,
                      "input_wait_s": float(j.get("input_wait_s") or 0.0),
                      "accepted_per_su_without_input_wait": acc / (su * (el - float(j.get("input_wait_s") or 0.0)) / el)
                      if su and el > float(j.get("input_wait_s") or 0.0) else None,

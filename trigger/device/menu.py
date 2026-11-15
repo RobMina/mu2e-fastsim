@@ -129,6 +129,46 @@ def device_paths(cfg, names=None):
     return out
 
 
+def prescale_factors(cfg, path):
+    """PrescaleEvent factors of a path by event mode, {"OffSpill": f, "OnSpill": f} for the modes it configures (a
+    mode it does not configure rejects, as stock), or None when its first filter is not a PrescaleEvent."""
+    phys = cfg['physics']
+    filters = [lbl for lbl in phys.get(path, []) if lbl in phys.get('filters', {})]
+    if not filters or phys['filters'][filters[0]].get('module_type') != 'PrescaleEvent':
+        return None
+    return {row['eventMode']: int(row['prescale']) for row in phys['filters'][filters[0]].get('eventModeConfig', [])}
+
+
+def other_paths(cfg, names=None):
+    """Trigger paths without a TimeClusterFilter: {path: {'family': digi|lumi|None, 'filters': [(type, label, cfg)]}}.
+
+    digi: PrescaleEvent and DigiFilter on straw digis only; lumi: PrescaleEvent and LumiStreamFilter; None: anything
+    else (calorimeter filters, DigiFilter on calo digis), with the reason in 'unsupported'."""
+    phys = cfg['physics']
+    filt = phys.get('filters', {})
+    out = {}
+    for entry in phys['trigger_paths']:
+        path = entry.split(':', 1)[-1]
+        if names and path not in names:
+            continue
+        labels = phys.get(path, [])
+        fl = [(filt[lbl].get('module_type'), lbl, filt[lbl]) for lbl in labels if lbl in filt]
+        types = {t for t, _, _ in fl}
+        if 'TimeClusterFilter' in types:
+            continue
+        rest = types - {'PrescaleEvent', 'MergeTriggerInfo'}
+        family, why = None, sorted(rest)
+        if rest == {'DigiFilter'}:
+            if all(c.get('useStrawDigi', False) and not c.get('useCaloDigi', False) for t, _, c in fl if t == 'DigiFilter'):
+                family, why = 'digi', []
+            else:
+                why = ['DigiFilter on calo digis']
+        elif rest == {'LumiStreamFilter'}:
+            family, why = 'lumi', []
+        out[path] = {'family': family, 'filters': fl, 'unsupported': why}
+    return out
+
+
 def prescales(cfg, path, event_mode):
     """PrescaleEvent factor of a path in an event mode (OnSpill/OffSpill); -1 means disabled."""
     phys = cfg['physics']

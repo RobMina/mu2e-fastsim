@@ -112,10 +112,11 @@ behaviour and any stock-art route outside the chain's levels:
 | W2-W4 | `calo_albedo`: tracker returns from the calorimeter (backscatter): sampled from a Geant4-built library, or none; the NumPy tracker has no albedo | library, none | none | library | none: Geant4 transport through the calorimeter; no stock path in the chain (the library is built from it) | cetracker --albedo (device tracker); DeviceChain(albedo=) |
 | W2-W4 | `straw_wall`: straw wall material: counted only on chords that cross the gas (default), or the complete outer-minus-gas wall with wall-only chords | gas_chords, complete | gas_chords | complete | none: Geant4 straw walls; the complete wall is the closer model | cetracker --complete-outer-wall; DeviceChain(complete_outer_wall=) |
 | W2-W4 | `tracker_rows`: the response layer's StrawGasStep rows per track (nrow): from the tracker and albedo transport (default), or drawn from a library of the default chain's rows per (|p|, tan dip, r_max) cell of the entry helix, without the tracker transport (track observables only: no steps, digis or delta rays) | transported, sampled | transported | transported | none: Geant4 tracker steps; the transported rows are the closer model (the library is built from them) | DeviceChain(nrow_library=); bench entry cetracker:bench_run (not the cetracker CLI, which writes steps) |
+| W2-W4 | `rpc_legs`: W4 RPC internal-conversion events: both leptons of the pair through the chain (default: the positron leg with charge +1 and positron physics, its straw steps merged into the event before digitisation), or the electron only; DIO and CE births have no positron and are not affected | pair, electron | pair | pair | none: Geant4 transports both leptons of the pair; the pair is the closer model (the electron alone gives about half the triggered RPC yield) | bench entry cetracker:bench_run_starts(rpc_legs=); run(positrons=) / DeviceChain.transport_pair (the cetracker CLI writes the electron only) |
 | W2-W4 | `primary_only_steps` (no switch) | always on | - | no level | no delta rays, conversions or other secondaries in the tracker besides the albedo (DeviceChain(deltas=) takes a Geant4 delta-ray library .npz, opt-in; no level until the library ships); stock StrawGasSteps from the production reco are the stock-art path | - |
 | W2-W4 | `reco_response` (no switch) | always on | - | no level | no track fit: efficiency and residuals drawn from stock LoopHelix tables (default: measured on the full Geant4 events, with the empirical joint draw; CE-only tables by name, DeviceChain(response="ceonly")); stock art: the injector (fasttrk_field.root) through StrawGasStepsFromTable, stock digis and LoopHelix | - |
 | W2-W4 | `target_slab_physics` (no switch) | always on | - | no level | flat slabs, constant field per layer, shell curvature as an axial field, no secondaries (stock: Geant4 in the target geometry) | - |
-| W2-W4 | `rpc_internal_electron_only` (no switch) | always on | - | no level | W4: internal conversion only, the positron dropped (stock: external RPC with photon transport and both leptons) | - |
+| W2-W4 | `rpc_internal_conversion_only` (no switch) | always on | - | no level | W4: internal conversion pairs only; no external RPC (stock: external RPC, the photon transported and converted in material, both leptons) | - |
 | W5 | `muon_eloss`: stage-C muon energy loss: the run configuration's model (range-out with sub-stepped bars where range_out is set) or one bar loss at the entry momentum | run_config, entry_momentum | run_config | run_config | stock art: Geant4 CrvSteps from art through runchain --steps-input (response and reco only) | runchain --legacy-transport |
 | W5 | `below_msc`: run configurations with a below-plane world (Run 1A, 1B, 2): straight lines below the MSC plane, or multiple scattering bar to bar (NumPy transport) | straight, scattered | straight | scattered | stock art: Geant4 CrvSteps from art through runchain --steps-input (response and reco only) | runchain --below-msc |
 | W5 | `pulse_fit`: with --jax: 12-sample, 3-round device pulse fit, flagged waveforms refit at full length; full_length runs the NumPy response, which fits every waveform at full length | short_window, full_length | short_window | full_length | exact port: full-length pulse fit port (reco.pulsefit.reconstruct_full; stock Minuit oracle reco.stockfit) | runchain --jax (absent: NumPy response, full-length fit) |
@@ -146,7 +147,14 @@ behaviour and any stock-art route outside the chain's levels:
   and 1.002 +- 0.015 (float32), DS-entering muons 0.999 +- 0.009 in both, foil, stop time, stop radius and
   DS-entrance momentum shapes consistent, with 2.7x fewer steps per lane. The other step sizes and caps are numeric
   settings (`tsdevice --step`, `Settings`), not approximation levels.
-- **W2-W4.** One declaration serves the stops (W2), DIO (W3) and RPC (W4) electrons of `cetracker`.
+- **W2-W4.** One declaration serves the stops (W2), DIO (W3) and RPC (W4) births of `cetracker`.
+  - `rpc_legs=pair` (the default) transports both leptons of an RPC internal-conversion pair: the positron leg runs
+    with charge +1 and positron physics, and its straw steps join the event before digitisation. `electron` keeps the
+    electron only. On the 10 production RPC files (62,642 events), the device trigger on fast pair digis passes
+    0.949 (float64) and 0.972 (float32) of what it passes on stock digis; the electron alone gives 0.451. Per
+    generated capture (250,000 pairs) the ratio is 0.987 / 0.975 +- 0.023. The generator-file bench entry
+    (`cetracker:bench_prepare_starts`, `bench_run_starts`) runs pairs for an RPC file; DIO and CE births have no
+    positron. The `cetracker` CLI writes the electron's injector table and records `electron` for an RPC file.
   - The albedo levels act on the device tracker; the NumPy tracker has none.
   - `straw_wall=complete` is the existing opt-in complete outer wall.
   - `tracker_rows=sampled` (opt-in, by name only) draws each track's rows (`nrow`, read by the response layer only
@@ -177,9 +185,14 @@ behaviour and any stock-art route outside the chain's levels:
   the same file without either. The run records the capacity file it used.
 - **W7.** `digi_response=parametric` (opt-in, the `fast` preset) draws each (event, crystal) hit from a table of the
   full chain's outcome per bin of visible energy (`calofastsim.param_response`) instead of photoelectrons, waveforms,
-  digis and the template fit: steps -> hits + clusters, no digis. On the held-out CE files (14,218 events, the same
-  steps, timing and keys, against the waveform response): leading-cluster peak ratio 0.9988 +- 0.0018, width
-  +0.03 MeV, yield above 10 MeV 1.0018 +- 0.0006, energy chi2 28/41, x / y / radius chi2 3/52, 3/50, 2/11, leading
-  time paired difference 0.01 +- 0.01 ns. Clusters above 10 MeV per event come out 1.2 % high (0.728 against 0.719,
-  chi2 17/5): the table draws each crystal on its own, without the time structure of its deposits. The stock
-  alternative of the other approximations is stock steps through `make_steps_chain`.
+  digis and the template fit: steps -> hits + clusters, no digis. The shipped table (v2) keys each crystal on its main
+  deposit: the energy and energy-weighted time of the steps within 6 ns of the crystal's energy-weighted median step
+  time. On the held-out CE files (14,218 events, the same steps and timing, against the stock calorimeter reco;
+  float32 and float64 give the same numbers, the table's draws have fixed dtypes): leading-cluster peak ratio
+  0.9989 +- 0.0018, width +0.05 +- 0.14 MeV, yield above 10 MeV 0.9996 +- 0.0006, clusters above 10 MeV per event
+  chi2 4/4, energy chi2 65/46, x / y / radius chi2 28/51, 43/49, 11/13, paired leading energy -0.16 +- 0.03 MeV. The
+  first table (`digi_response="v1"`) used all the deposits of a crystal: a late deposit moved the crystal's time, the
+  drawn hit fell outside the 2 ns cluster window, and about 1 % of events got an extra single-crystal cluster above
+  10 MeV (chi2 153/4). The table cannot carry the second hit of a cell (deposits more than `time4merge` apart) or
+  hits without a deposit (noise alone). The stock alternative of the other approximations is stock steps through
+  `make_steps_chain`.

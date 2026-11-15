@@ -18,10 +18,14 @@ have no effect on CPU backends. Which is faster depends on the workflow, so in a
 same-job A100-80 rates (warm events/s over 2 warm passes, cold compile cache):
 
     workflow   loops on / off, f64 | f32               loops   concurrency
-    W1         624 / 608 | 869 / 844 (+3 %)              on      off
-    W2         76 / 101 | 35 / 42 (5,000 / pass);        off     on (loops off, 200k / pass, compiles
-               200k / pass: 1,865 / 2,087 | 2,036 / 2,424        excluded: concurrency on / off
-                                                                 2,427 / 2,251 | 3,234 / 2,918, +7..+11 %)
+    W1         624 / 608 | 869 / 844 (+3 %)              on      on (loops on, 1.01M fresh inputs / pass, pool
+                                                                 262,144, current tsdevice: concurrency on / off
+                                                                 14,196 / 11,294 | 21,924 / 16,853, +26..+30 %;
+                                                                 stops and every output bit-identical)
+    W2         76 / 101 | 35 / 42 (5,000 / pass);        off     on (loops off, 200k / pass with digis,
+               200k / pass: 1,865 / 2,087 | 2,036 / 2,424        same build and GPU, compiles excluded:
+                                                                 concurrency on / off 2,750 / 2,560 |
+                                                                 3,844 / 3,438, +7..+12 %)
     W3, W4     W2's CE chain                             off     on
     W5 plain   2,810 / 2,989 | 2,762 / 2,823 (-2..-6 %)   off     off
     W5 refit   3,119 / 3,132 | 3,040 / 3,045 (~0)        off     off  (same "W5" entry)
@@ -31,8 +35,8 @@ same-job A100-80 rates (warm events/s over 2 warm passes, cold compile cache):
                packed results; decisions on / off identical, 819,000 per dtype; 13,000 / pass; before them,
                7,013 / 7,848 | 7,509 / 8,600, -11..-13 %)
 
-Concurrency is on only where it is measured faster and its outputs were checked (W6, and the CE chain W2-W4 with its
-loops off). A workflow not in the table, and a process that names none, gets both off. The CE chain (W2, W3, W4: the
+Concurrency is on only where it is measured faster and its outputs were checked (W1, W6, and the CE chain W2-W4 with
+its loops off). A workflow not in the table, and a process that names none, gets both off. The CE chain (W2, W3, W4: the
 transport while loop in cechain_jax.run) hangs on A100 GPUs with device loops and concurrency both on, in both
 dtypes, while either alone completes: for those workflows the combination cannot be selected (CE_CHAIN): when device
 loops are on, by any override, concurrency is turned off with a warning.
@@ -62,7 +66,7 @@ CONCURRENCY_VALUE = "true"
 # auto mode, per workflow: (device loops, concurrent graph regions); measured numbers in the module docstring.
 # Unlisted workflows and None: both off.
 WORKFLOWS = {
-    "W1": (True, False),
+    "W1": (True, True),
     "W2": (False, True),
     "W3": (False, True),
     "W4": (False, True),

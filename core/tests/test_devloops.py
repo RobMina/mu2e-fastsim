@@ -78,7 +78,7 @@ def test_provenance_records_both():
 # --- select: the per-workflow table ---------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("workflow, loops, conc", [
-    ("W1", True, False), ("W2", False, True), ("W3", False, True), ("W4", False, True), ("W5", False, False),
+    ("W1", True, True), ("W2", False, True), ("W3", False, True), ("W4", False, True), ("W5", False, False),
     ("W6", True, True), ("mixing", True, True), ("W7", False, False), ("W8", True, False),
     ("other", False, False), (None, False, False)])
 def test_auto_follows_the_workflow(workflow, loops, conc):

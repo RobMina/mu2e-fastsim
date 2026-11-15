@@ -99,19 +99,15 @@ def test_float32_flat_digit_entries_equal_pair_loop(cond, helpers):
     a, ae = evaluate(prepare(c, Capacities(64, 1024, 8, 512, 8, 2), 3), collection(st, 8), times)
     b, be = evaluate(prepare(c, Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2), 3),
                      collection(st, 8), times)
-    d, de = evaluate(prepare(c, Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2,
-                                           flat_saturation_rows="auto"), 3), collection(st, 8), times)
-    assert not any(de.values()), de
-    for name in a:
-        np.testing.assert_array_equal(a[name], d[name], err_msg=name)
     assert not any(ae.values()) and not any(be.values()), (ae, be)
     assert len(a["sid"]) > 0
     for name in a:
         np.testing.assert_array_equal(a[name], b[name], err_msg=name)
 
 
-def test_float32_flat_saturation_pool_equals_per_launch(cond, helpers):
-    """float32: the tier saturation pool keeps the per-launch chunk shape (2 x batch rows), so the same digis."""
+def test_float32_flat_saturation_pool_equals_pair_loop(cond, helpers):
+    """float32: the tier saturation pool (the default) keeps the pair loop's chunk shape (2 x batch rows), so the
+    pair loop's digis."""
     from trkfastsim.digi.digicond import Conditions
     from test_mixing_device_tracker import _saturated_steps, _pool_caps, SATURATION_POOL_CAPS
     c = Conditions(cond.s, cond.a)
@@ -121,19 +117,19 @@ def test_float32_flat_saturation_pool_equals_per_launch(cond, helpers):
     a, ae = evaluate(prepare(c, Capacities(64, 1024, 8, 512, 8, 2), 3), collection(st, 16), times)
     assert not any(ae.values()) and len(a["sid"]) > 0 and np.any(a["pmp"] > 0), {k for k, v in ae.items() if v}
     for kw in SATURATION_POOL_CAPS:
-        base = {k: v for k, v in kw.items() if k != "flat_saturation_pool"}
-        for caps in (_pool_caps(base), _pool_caps(kw)):
-            b, be = evaluate(prepare(c, caps, 3), collection(st, 16), times)
-            assert not any(be.values()), {k for k, v in be.items() if v}
-            for name in a:
-                np.testing.assert_array_equal(a[name], b[name], err_msg=f"{kw} {name}")
+        b, be = evaluate(prepare(c, _pool_caps(kw), 3), collection(st, 16), times)
+        assert not any(be.values()), {k for k, v in be.items() if v}
+        for name in a:
+            np.testing.assert_array_equal(a[name], b[name], err_msg=f"{kw} {name}")
 
 
 def test_float32_auto_saturation_pool_on():
     """flat_saturation_pool 'auto' pools the saturated ends in float32."""
     assert df.SINGLE
     assert Capacities(64, 1024, 8, 512, 8, 2, digit_entries_per_straw=2,
-                      flat_saturation_pool="auto").flat_kernel(2) == {"entries": 4, "saturation_pool": True}
+                      flat_saturation_pool="auto").flat_kernel(2) == {"entries": 4, "saturation_rows": "auto",
+                                                                      "saturation_pool": True,
+                                                                      "saturation_tiles": "bounded"}
 
 
 def test_float32_auto_saturation_rows_keep_two_per_straw():
