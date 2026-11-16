@@ -126,8 +126,9 @@ nothing. Same per-cluster computation and the same decisions as the one-call pat
 
 ### One-call path on a GPU
 
-The one-call path (the GPU default) keeps the number of sequential loop iterations per batch low, because each
-iteration of a device loop is a host round trip when device loops are off (the W8 setting):
+The one-call path (the GPU default) keeps the number of sequential loop iterations per batch low. With device loops
+off, each iteration is a host round trip; W8 runs with device loops on (`mu2efastsim.devloops`), which keeps the loops
+on the GPU, and the fewer iterations still help there:
 
 - Panel hits combine over the run position of the hits in their panel, not hit by hit.
 - Time-cluster recovery jumps straight to the next hit that passes the time and phi window, and evaluates the hit MVA
@@ -150,3 +151,16 @@ batch 1024, median of 3 runs interleaved in one job:
 | plus pairs (default) | 29,185 | 27,852 |
 
 Setup with a warm compile cache is 13 s (float32) / 14 s (float64) with pairs, and 9 s / 8 s without.
+
+The results of a batch are then stacked on the device into a few arrays (`Chain.decide_packed`), so they reach the
+host in 4 copies instead of about 170, and W8 turns device loops on. Second job, same settings, its own control:
+
+| | float32 (events/s) | float64 (events/s) |
+|---|---|---|
+| before these changes | 8,740 | 7,994 |
+| fewer loop iterations and pairs, device loops on | 31,241 | 28,948 |
+| plus packed results, device loops off | 39,594 | 35,383 |
+| plus packed results, device loops on (default) | 44,148 | 39,137 |
+
+Device loops on and off give the same decisions on the GPU, bit for bit, and the same as the CPU: 39,000 events x 21
+paths in each dtype.

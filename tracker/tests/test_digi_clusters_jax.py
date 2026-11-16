@@ -252,3 +252,47 @@ def test_cluster_gain_distributions_and_unclipped_tail(cond):
     actual = DJ.cluster_gain(jax.random.key(8), c, np.full(8192, c.nGainGauss))
     assert np.any(actual < 0)
     assert DJ.cluster_gain(jax.random.key(1), c, np.empty(0, np.int64)).shape == (0,)
+
+
+def test_poisson_split_equals_vmapped_jax_poisson():
+    """POISSON_SPLIT (lanes sorted by mean, run in chunks with only the algorithm(s) they use) gives
+    vmap(jax.random.poisson)'s draws bit for bit: zero, small, around the Knuth / rejection boundary at 10 (float64
+    means that round to 10.0f included), large and NaN means, typed and raw keys, float64 and float32 means, any chunk."""
+    assert DJ._poisson_parts() is not None      # this JAX has the per-algorithm samplers: the split is not off
+    rng = np.random.default_rng(3)
+    mean = np.concatenate([np.zeros(37), rng.uniform(0, 1, 300), rng.uniform(1, 9.99, 300),
+                           [9.999999, 10.0, 10.000001, 10 - 1e-9, 10 + 1e-9], rng.uniform(10, 40, 200),
+                           [1e3, 1e5, 3e6, np.nan]])
+    rng.shuffle(mean)
+    ref = jax.jit(jax.vmap(lambda k, m: jax.random.poisson(k, m, dtype=jnp.int64)))
+    split = jax.jit(DJ._poisson_chunks, static_argnums=2)
+    for keys in (jax.random.split(jax.random.key(11), len(mean)), jax.random.split(jax.random.PRNGKey(11), len(mean))):
+        for dt in (np.float64, np.float32):
+            m = jnp.asarray(mean.astype(dt))
+            want = np.asarray(ref(keys, m))
+            assert (want > 10).sum() > 100 and (want == 0).sum() > 37
+            for chunk in (1, 7, 64, 2048):
+                np.testing.assert_array_equal(np.asarray(split(keys, m, chunk)), want)
+
+
+def test_poisson_split_gives_the_same_clusters(cond, monkeypatch):
+    """make_clusters with the Poisson split on and off: the same clusters, positions and electron counts, with cluster
+    and electron means on both sides of the Knuth / rejection boundary."""
+    c = cond
+    n = 600
+    rng = np.random.default_rng(5)
+    st = _table(c, n, eion=2e-3)
+    st["eion"] = 10 ** rng.uniform(-4.5, -2.0, n)
+    st["len"] = c.meanFreePath * rng.uniform(0.1, 30.0, n)
+    st["shape"][::3] = 3
+    st["ion"][::2] = 1
+    st["width"][:] = 0.3
+    key = jax.random.key(9)
+    out = {}
+    for on in (False, True):
+        monkeypatch.setattr(DJ, "POISSON_SPLIT", on)
+        jax.clear_caches()                       # the setting is read when a kernel is traced
+        out[on] = DJ.make_clusters(key, c, st, np.arange(n))
+    assert len(out[True][2]) > n and np.asarray(out[True][2]).max() > 10
+    for x, y in zip(out[False], out[True]):
+        np.testing.assert_array_equal(np.asarray(x), np.asarray(y))

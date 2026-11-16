@@ -1084,7 +1084,8 @@ def _with_cluster_stats(stats, over_cl):
     return dict(stats, recluster=over_cl["recluster"], cluster_slots=over_cl["cluster_slots"])
 
 
-def make_chain(lib: DeviceLibrary, resp: DeviceResponse, caps: Caps = Caps(), digi_response="waveform", truth=False):
+def make_chain(lib: DeviceLibrary, resp: DeviceResponse, caps: Caps = Caps(), digi_response="parametric",
+               truth=False):
     """Return ``chain(q, timing, key, uniform=None)``: one jitted call from entrance states to clusters.
 
     ``q``/``timing`` come from :func:`entries_batch` (``caps.events`` rows). The result stays on the device:
@@ -1092,9 +1093,10 @@ def make_chain(lib: DeviceLibrary, resp: DeviceResponse, caps: Caps = Caps(), di
     :data:`OVERFLOW_NAMES`) and ``stats`` (counts of draws, mapped steps, photoelectrons, digis, hits, and the
     events clustered again, ``recluster`` / ``cluster_slots``: :func:`clusters`).
     ``uniform`` (per query, in [0,1)) replaces the library draw's random numbers, for tests.
-    ``digi_response``: "waveform" (default: photoelectrons, digis, template fit) or the opt-in approximation
-    "parametric" (or a table path): hits drawn per crystal from :mod:`calofastsim.param_response` (:func:`param_hits`);
-    no digis.
+    ``digi_response``: "parametric" (default, an approximation: hits drawn per crystal from the shipped table of
+    :mod:`calofastsim.param_response`, :func:`param_hits`; no digis), a table name ("v1", "v2") or path, or
+    "waveform" (photoelectrons, waveforms, digis and the template fit: the closer model of stock, the approximation's
+    fidelity level).
     ``truth`` (opt-in) adds per cluster ``etrue``, the sampled steps' visible (Birks) energy in the cluster's hit
     crystals, and ``ttrue``, the earliest of those steps' times (the stock CaloClusterMC etot / earliest deposit);
     the other outputs are unchanged.
@@ -1156,12 +1158,13 @@ def make_chain(lib: DeviceLibrary, resp: DeviceResponse, caps: Caps = Caps(), di
     return jax.jit(chain, compiler_options=COMPILER_OPTIONS)
 
 
-def make_steps_chain(resp: DeviceResponse, caps: Caps = Caps(), digi_response="waveform"):
+def make_steps_chain(resp: DeviceResponse, caps: Caps = Caps(), digi_response="parametric"):
     """Return ``chain(steps, timing, key)``: saved CaloShowerSteps -> clusters (the stock calo digi + reco stage).
 
     ``steps`` from :func:`steps_batch`: batch-local ``event``, ``crystal`` (-1 = padding), ``energy_g4``,
     ``energy_birks``, ``time``, ``z_local``; same result layout as :func:`make_chain`. ``digi_response`` as
-    :func:`make_chain` (the opt-in "parametric" draws hits per crystal: steps -> hits + clusters, no digis).
+    :func:`make_chain` (the default "parametric" draws hits per crystal: steps -> hits + clusters, no digis;
+    "waveform" makes digis).
     """
     import jax
     import jax.numpy as jnp

@@ -102,8 +102,9 @@ def test_fit_modes_keep_clusters(tmp_path, monkeypatch, dtype):
     monkeypatch.setattr(bench, "conditions", conditions)
     monkeypatch.setattr(bench, "_CHAINS", {})
     prepared = bench.bench_prepare(16, seed=2, batch=16)
-    ref = bench.bench_steps(prepared, dtype=dtype, outliers=1 << 12, refits=0, fit_short_length=0)
-    alt = bench.bench_steps(prepared, dtype=dtype, outliers=1 << 12)
+    ref = bench.bench_steps(prepared, dtype=dtype, digi_response="waveform", outliers=1 << 12, refits=0,
+                            fit_short_length=0)
+    alt = bench.bench_steps(prepared, dtype=dtype, digi_response="waveform", outliers=1 << 12)
     assert not any(bench.overflow(ref).values()) and not any(bench.overflow(alt).values())
     a, b = (jax.tree_util.tree_map(np.asarray, o[0]["clusters"]) for o in (ref, alt))
     np.testing.assert_array_equal(a["valid"], b["valid"])
