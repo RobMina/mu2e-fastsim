@@ -25,6 +25,13 @@ NeutralsFlash pools at the stock intensity law.
 - The batch-256 files come from their own census: 42 batches of 256 events, margin 1.25. Their SiPM cross-talk
   candidate buffers `ct1`-`ct3` have no demand counter. They were cut 8x from the generous sizes and checked over
   full development and held-out passes; a further 4x overflowed. As with every buffer, an overflow rejects the batch.
+- **`crv.coinc_hits` and `crv.coinc_tiers`** (CRV pulses per event and sector type, all four files): 96 in the
+  main buffer, then tiers of 16 events x 192 and 4 events x 384 (`mixing/DEVICE_CRV.md`), sized for production
+  rather than by the 1.25 margin. The demand is the per-event pulse count of the T1 and T2 sectors (one sector type)
+  and it has an exponential tail: over 200,000 mixed events (two 10^5-event runs) the largest was 186 against the
+  former single buffer of 187, and one batch of a third run needed 188. A fit above the 99th percentile (86 pulses;
+  scale 16 pulses) gives about 1.4 events per batch of 256 above 96, 0.003 above 192, and P(more than 384) about
+  1e-10 per event: under 0.01 expected overflows in 10^8 events (about 17 per 10^6 events with the single 187).
 
 - **Flat cluster sampling** (`flat_clusters`, `minion_steps`, `minion_search: "compare_all"`, `minion_unroll: 4`;
   see [../DEVICE_TRACKER.md](../DEVICE_TRACKER.md)) is sized the same way: 1.25 times the largest demand over full

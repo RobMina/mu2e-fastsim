@@ -14,6 +14,15 @@ def test_capacity_files_exist():
                                              "run1a_mix1bb_batch256.json", "run1a_mix1bb_batch256_exact.json"}
 
 
+def test_run1a_crv_coincidence_hits_sized_for_production():
+    """CRV pulses per event and sector type have an exponential tail: every Run 1A file takes 96 per event in the
+    main hit buffer and up to 384 in its coinc_tiers (README: under 0.01 expected overflows in 1e8 events)."""
+    for name in ("run1a_mix1bb_batch64.json", "run1a_mix1bb_batch128.json", "run1a_mix1bb_batch256.json",
+                 "run1a_mix1bb_batch256_exact.json"):
+        crv = json.loads((FILES[0].parent / name).read_text())["response"]["crv"]
+        assert crv["coinc_hits"] == 96 and crv["coinc_tiers"] == [[16, 192], [4, 384]], name
+
+
 def test_batch256_default_and_exact_reference():
     """The batch-256 default file has both W6 approximations (donor-frame reuse, CRV thermal noise on hit counters);
     the exact reference has neither and differs from it only there (and in the CRV buffers they resize)."""
@@ -72,6 +81,10 @@ def test_capacity_file_contract(path):
     from mixing import device_crv
     crv = dict(caps["response"]["crv"])
     options = {name: crv.pop(name) for name in list(crv) if name in device_crv.OPTIONS}
+    tiers = crv.pop("coinc_tiers", None)     # optional wider coincidence hit rows: [[events, hits], ...]
+    if tiers is not None:
+        widths = [crv["coinc_hits"]] + [hits for _, hits in tiers]
+        assert all(type(v) is int and v > 0 for t in tiers for v in t) and widths == sorted(set(widths))
     assert set(crv) == set(device_crv.CAPACITIES)
     assert all(type(v) is int and v > 0 for v in crv.values())
     expected = {"waveform": "scatter", "digi_starts": "rows", "pulse_scan": "bounded"}
