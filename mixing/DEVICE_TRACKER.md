@@ -242,6 +242,13 @@ About 92 % of the hit straws of a mixed event see steps of one donor frame only.
   (float32) / 654.2 (float64) ev/s; reuse with one copy 1209.2 / 1052.9; reuse with a copy per event shift (the
   default) 1218.7 (x1.68) / 1051.4 (x1.61). The copies cost setup (warm 112-118 s against 66-68 s for one copy and
   35-37 s exact) and host memory (12.0 GB peak against 8.7 and 5.9 GB), not rate.
+- **Saved table** (`mixing.device_reuse_table`): the setup table can be made once and loaded by every job, which
+  matters on a CPU core (hours of setup for the Run 1A pools). `python3 -m mixing.device_reuse_table build CONFIG OUT
+  --shifts ...` makes it for the configuration's event shifts plus the listed ones (the production's union); a job
+  with `reuse_table: OUT` in its configuration loads it (and computes and saves it if the file is missing). The table
+  is keyed by the tracker seed, the reused pools' content, the conditions, the setup capacities and the tracker
+  float, and refuses a job with another key, a shift it has no copy for, or longer events. A shared table repeats
+  each donor frame's setup draws over the whole production, as one job of that size does.
 
 ## float32
 
