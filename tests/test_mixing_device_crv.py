@@ -278,6 +278,45 @@ def test_coincidence_packing_matches_independent_numpy(setup):
         np.testing.assert_array_equal(np.asarray(out[name])[keep], np.asarray(out_wide[name])[keep_wide], err_msg=name)
 
 
+def _pulses_per_event(events):
+    """Pulses on the four bars (both SiPMs) per event: hits[e] pulses in event e, 4 ns apart, 12 PE each."""
+    ev, bar, sipm, idx, time = [], [], [], [], []
+    for e, n in enumerate(events):
+        for j in range(n):
+            ev.append(e); bar.append(j % 4); sipm.append((j // 4) % 2); idx.append(j); time.append(300. + 400. * e + 2. * j)
+    n = len(ev) + 1     # one dead entry
+    return dict(mask=np.r_[np.ones(len(ev), bool), False], ev=np.r_[ev, 0], bar=np.r_[bar, 0], sipm=np.r_[sipm, 0],
+                seq=np.zeros(n, int), idx=np.r_[idx, 0], time=np.r_[time, 0.], pe=np.full(n, 12.))
+
+
+def test_coincidence_tiers_equal_one_wide_buffer(setup):
+    """coinc_tiers: events with more hits than coinc_hits take a wider row of a tier; the clusters are those of one
+    buffer wide enough for every event (same events, order and values to rounding), and both overflows are flagged."""
+    events = [3, 7, 0, 5, 2, 8]
+    _, timing = inputs(events=len(events))
+    pulses = _pulses_per_event(events)
+    wide = adapter(setup, capacity(coinc_hits=16))
+    tiered = adapter(setup, capacity(coinc_hits=4, coinc_tiers=[[2, 6], [2, 8]]))
+    assert tiered.metadata["coinc_tiers"] == [[2, 6], [2, 8]]
+    a, ea = run(wide.clusters, pulses, timing, wide.assets)
+    b, eb = run(tiered.clusters, pulses, timing, tiered.assets)
+    assert not any(ea.values()) and not any(eb.values()), (ea, eb)
+    ka, kb = np.flatnonzero(a["mask"]), np.flatnonzero(b["mask"])
+    assert len(ka) == len(kb) and len(ka) > 0
+    for name in ("ev", "sectortype", "poscalc"):
+        np.testing.assert_array_equal(np.asarray(a[name])[ka], np.asarray(b[name])[kb], err_msg=name)
+    for name in ("pe", "time", "x", "y", "z"):
+        np.testing.assert_allclose(np.asarray(a[name])[ka], np.asarray(b[name])[kb], rtol=1e-6, atol=1e-6, err_msg=name)
+    assert set(np.asarray(b["ev"])[kb]) >= {1, 3, 5}     # events in tiers 1 and 2 have clusters
+    _, errors = run(tiered.clusters, _pulses_per_event([7, 7, 7]), inputs(events=3)[1], tiered.assets)
+    assert errors["crv_coinc_tier_events"] and not errors["crv_coinc_hits"]     # three events for two rows
+    _, errors = run(tiered.clusters, _pulses_per_event([9]), inputs(events=1)[1], tiered.assets)
+    assert errors["crv_coinc_hits"]                                               # more hits than the widest tier
+    for bad in ([[2, 4]], [[2, 8], [2, 6]], [[0, 8]], [8]):
+        with pytest.raises(ValueError, match="coinc_tiers"):
+            adapter(setup, capacity(coinc_hits=4, coinc_tiers=bad))
+
+
 @pytest.mark.slow   # its own full-apply compile (thermal_rate=0)
 def test_empty_and_malformed_live_lanes(setup):
     cfg = replace(setup[2], sipm=replace(setup[2].sipm, thermal_rate=0.))
