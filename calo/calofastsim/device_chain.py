@@ -845,9 +845,9 @@ def param_hits(resp: DeviceResponse, table, ev, t, st, crystal, depth, mapped, k
     th = (th.astype(jnp.float64) - shift[cev]).astype(jnp.float32)
     # compact the hits (cell order: event, crystal) into the hit capacity, as fit_and_hits leaves them
     n = hit.shape[0]
-    order = jnp.argsort(jnp.where(hit, jnp.arange(n), n))
     H = caps.hits
-    sel = order[:H] if n >= H else jnp.concatenate([order, jnp.full(H - n, n - 1, order.dtype)])
+    pos = jnp.cumsum(hit) - 1
+    sel = jnp.zeros(H + 1, jnp.int64).at[jnp.where(hit & (pos < H), pos, H)].set(jnp.arange(n))[:H]
     n_hits = jnp.sum(hit)
     h_ok = jnp.arange(H) < jnp.minimum(n_hits, H)
     f32 = jnp.float32
