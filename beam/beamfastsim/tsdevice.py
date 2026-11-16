@@ -97,6 +97,26 @@ TS_CHUNK = int(os.environ.get("TSDEV_TS_CHUNK", 256))     # TS steps per residen
 # generic (non-tube) solids: the lanes whose chord box meets the box of any of them compute their interval lengths
 # in a gathered bucket of this fraction of the lanes (every lane when more are candidates); 0 computes every lane
 SOLID_FRACTION = float(os.environ.get("TSDEV_SOLID_FRACTION", 0.25))
+# The step layout of the drain tail: once the live lanes fit TAIL_LANES, a step is bound by its number of kernels, not
+# by its lanes, so the gathered buckets that pay off at full pool (generic-solid candidates, the DS-plane step) cost
+# more than they save there. Those chunks run with tail_layout() instead; TSDEV_TAIL_LANES=0 keeps one layout
+# throughout. Per-lane arithmetic is that of the every-lane path and the random numbers drawn are the same (full chain
+# bit-identical on both Run 1A cohorts in float64).
+TAIL_LANES = int(os.environ.get("TSDEV_TAIL_LANES", 8192))
+
+
+class Layout(NamedTuple):
+    """Gathered-bucket fractions of a step; None keeps the module default (SOLID_FRACTION, CROSS_FRACTION)."""
+    solid_fraction: object = None
+    cross_fraction: object = None
+
+
+def tail_layout():
+    """The drain-tail layout: generic-solid lengths on every lane, both dtypes (per step at 2,048 / 8,192 live lanes on
+    an A100-80: float32 -12 % / -9 %, float64 -8 % / -4 %). The DS-plane step on every lane as well would save another
+    5 % per float32 tail step but changes float32 results beyond rounding (the every-lane plane step rounds
+    differently), so it stays gathered."""
+    return Layout(0.0, None)
 # material-cap shortening cascade: bucket fraction per level (one round each, the last level runs the remaining
 # rounds). Sized from the measured pending share per level over full passes (with at least 1.3x margin): level 0
 # about 23 % of the lanes; level 1 under 1 % (in float64 since the 1e-3 margin; with 1e-6 it was about 19 %, hence
@@ -266,19 +286,21 @@ class DeviceGeometry:
         mask = _contains(s, p.reshape(-1, 3)).reshape(mid.shape)
         return length * jnp.sum(jnp.where(valid & mask, nxt - c, 0.0), axis=1)
 
-    def columns(self, x0, x1):
-        """(N, M) straight-chord material lengths: analytic for the plain tubes, sort-free intervals otherwise."""
-        return self.columns_d(x0, x1 - x0)
+    def columns(self, x0, x1, solid_fraction=None):
+        """(N, M) straight-chord material lengths: analytic for the plain tubes, sort-free intervals otherwise.
+        solid_fraction: the generic-solid candidate bucket (None: SOLID_FRACTION; 0: every lane)."""
+        return self.columns_d(x0, x1 - x0, solid_fraction)
 
-    def columns_d(self, x0, delta):
+    def columns_d(self, x0, delta, solid_fraction=None):
         """columns() of the chord from x0 along the increment delta (exact in float32, where x1 - x0 is not)."""
+        sf = SOLID_FRACTION if solid_fraction is None else solid_fraction
         length = jnp.linalg.norm(delta, axis=1)
         out = jnp.zeros((x0.shape[0], len(self.names)))
         if self._tubes is not None:
             out = out + self._tube_columns(x0, delta, length)
         n = x0.shape[0]
-        kb = n if SOLID_FRACTION <= 0 or not self._matter else \
-            min(n, max(gather_floor(), int(np.ceil(n * SOLID_FRACTION))))
+        kb = n if sf <= 0 or not self._matter else \
+            min(n, max(gather_floor(), int(np.ceil(n * sf))))
         local, cands = [], []
         for s, R, t, m, lo, hi in self._matter:
             o, d = _mm(x0 - t, R), _mm(delta, R)
@@ -466,21 +488,27 @@ def _highland_var(p, x_prev, x_new, mass):
     return (13.6 ** 2 / (beta2 * p * p)) * jnp.maximum(g(x_new) - g(x_prev), 0.0)
 
 
-def _first_round(field, geom, x0, u, kq, b0, live, h, xn, un, ok, cols, sc, it=0, margin=1e-6, relative=False):
+def _first_round(field, geom, x0, u, kq, b0, live, h, xn, un, ok, cols, sc, it=0, margin=1e-6, relative=False,
+                 solid_fraction=None):
     """One round of the material-cap shortening (the shrink loop body at round `it`). relative: xn holds the
-    increment from x0 (float32)."""
+    increment from x0 (float32). solid_fraction: as DeviceGeometry.columns."""
     changed = live & (sc < 1)
     shrink = sc * (1 - margin)
     h = jnp.where(changed, h * jnp.where(it >= 5, jnp.minimum(0.5, shrink), shrink), h)
     xn2, un2, ok2 = _rk4(field, x0, u, kq, h, b0, relative)
     pick = changed[:, None]
-    c2 = geom.columns_d(x0, xn2) if relative else geom.columns(x0, xn2)
+    kw = {} if solid_fraction is None else {"solid_fraction": solid_fraction}
+    c2 = geom.columns_d(x0, xn2, **kw) if relative else geom.columns(x0, xn2, **kw)
     return (h, jnp.where(pick, xn2, xn), jnp.where(pick, un2, un), jnp.where(changed, ok2, ok),
             jnp.where(pick, c2, cols), None)
 
 
-def make_ts_step(field, geom, s):
-    """One TS step for every lane (finished lanes are inert): (key, TSState) -> TSState."""
+def make_ts_step(field, geom, s, layout=Layout()):
+    """One TS step for every lane (finished lanes are inert): (key, TSState) -> TSState. layout: the gathered-bucket
+    fractions (Layout; the module defaults when its fields are None)."""
+    sf = layout.solid_fraction
+    cross_fraction = CROSS_FRACTION if layout.cross_fraction is None else layout.cross_fraction
+    ckw = {} if sf is None else {"solid_fraction": sf}
     # float32 (x64 off): DS-plane endpoints are tested this far upstream of the closed envelope face; 0 in float64
     plane_tol = 0.0 if jax.config.jax_enable_x64 else PLANE_TOL_F32
     step_cap = s.max_steps
@@ -492,7 +520,7 @@ def make_ts_step(field, geom, s):
     rel = not jax.config.jax_enable_x64
 
     def cols_of(x0, e):
-        return geom.columns_d(x0, e) if rel else geom.columns(x0, e)
+        return geom.columns_d(x0, e, **ckw) if rel else geom.columns(x0, e, **ckw)
     M = len(geom.names)
     x0_mm = jnp.asarray(geom.x0)
     const_tab = [jnp.asarray(np.array([getattr(c, f) for c in geom.consts], float))
@@ -590,7 +618,7 @@ def make_ts_step(field, geom, s):
             def run(x0, u_, kq_, b0_, live_, dedx_, kin_, h_, xn_, un_, ok_, cols_):
                 if rounds == 1:
                     return _first_round(field, geom, x0, u_, kq_, b0_, live_, h_, xn_, un_, ok_, cols_,
-                                        jnp.where(live_, scale_on(cols_, dedx_, kin_), 1.0), it0, margin, rel)[:5]
+                                        jnp.where(live_, scale_on(cols_, dedx_, kin_), 1.0), it0, margin, rel, sf)[:5]
                 return shrink_loop(x0, u_, kq_, b0_, live_, dedx_, kin_, h_, xn_, un_, ok_, cols_, it0)[:5]
 
             if k2 >= n_lanes:
@@ -625,7 +653,7 @@ def make_ts_step(field, geom, s):
             dz = (6 * f2 - 6 * fr) * z0 + (3 * f2 - 4 * fr + 1) * hz0 + (6 * fr - 6 * f2) * z1 + (3 * f2 - 2 * fr) * hz1
             fr = jnp.clip(fr + (geom.z_end - z) / jnp.where(jnp.abs(dz) > 1e-12, dz, 1e-12), 0.0, 1.0)
         hc = jnp.where(cross, h * fr, h)
-        kc = min(n_lanes, max(gather_floor(), int(np.ceil(n_lanes * CROSS_FRACTION))))
+        kc = min(n_lanes, max(gather_floor(), int(np.ceil(n_lanes * cross_fraction))))
         if kc >= n_lanes:
             xc, uc, okc = _rk4(field, st.x, u, kq, hc, b0, rel)
             pick = cross[:, None]
@@ -837,11 +865,20 @@ def ladder(size, min_bucket):
     return sorted(set(out), reverse=True)
 
 
-def _warm(run_chunk, state, live_of, kill, key, size, min_bucket, result):
+def _chunk_for(run_chunk, tail):
+    """The chunk function of a bucket size: tail = (lanes, chunk function) for buckets of at most `lanes` lanes."""
+    if tail is None:
+        return lambda m: run_chunk
+    lanes, tail_chunk = tail
+    return lambda m: tail_chunk if m <= lanes else run_chunk
+
+
+def _warm(run_chunk, state, live_of, kill, key, size, min_bucket, result, tail=None):
     """Compile every bucket size of the ladder once, on killed lanes (no result changes: their rows are out of
     range), so that new inputs whose tails reach other sizes never compile during a run."""
     n = state[0].shape[0]
-    sig = (run_chunk, live_of, kill, n, size, min_bucket,
+    chunk_of = _chunk_for(run_chunk, tail)
+    sig = (run_chunk, tail, live_of, kill, n, size, min_bucket,
            tuple((a.shape[1:], str(a.dtype)) for a in jax.tree_util.tree_leaves(state)))
     if sig in _WARMED:
         return result
@@ -850,7 +887,7 @@ def _warm(run_chunk, state, live_of, kill, key, size, min_bucket, result):
     for i, s in enumerate(sizes):
         cur = _tree(lambda a: a[:s], dead)
         rows = jnp.where(jnp.ones(s, bool), n, jnp.arange(s))
-        cur = run_chunk(jax.random.fold_in(key, i), cur)
+        cur = chunk_of(s)(jax.random.fold_in(key, i), cur)
         result = _scatter(result, rows, cur)
         live = live_of(cur)
         int(jnp.sum(live))
@@ -861,7 +898,7 @@ def _warm(run_chunk, state, live_of, kill, key, size, min_bucket, result):
 
 
 def run_resident(run_chunk, state, live_of, kill, key, max_chunks=100000, min_bucket=1024, pool=None,
-                 strict=True, warm_ladder=False):
+                 strict=True, warm_ladder=False, tail=None):
     """Run a jitted chunk function (key, state) -> state over every lane of `state`, all on the device.
 
     A pool of `pool` lanes (default: all) runs at a time; after each chunk finished lanes are replaced by the next
@@ -871,20 +908,24 @@ def run_resident(run_chunk, state, live_of, kill, key, max_chunks=100000, min_bu
 
     warm_ladder: compile every bucket size of the ladder before the first chunk (once per chunk function, input
     size and pool), so the run never compiles on new data; kill and live_of must then be stable functions (they
-    key the compile cache). The results are the same either way."""
+    key the compile cache). The results are the same either way.
+
+    tail: (lanes, chunk function) run instead of run_chunk on buckets of at most `lanes` lanes (same signature; e.g.
+    the same physics with a layout for few lanes)."""
     n = state[0].shape[0]
     size = n if pool is None or pool >= n else int(pool)
     result = _tree(jnp.copy, state)
     if warm_ladder:
         result = _warm(run_chunk, state, live_of, kill, jax.random.fold_in(key, -1 & 0x7FFFFFFF), size, min_bucket,
-                       result)
+                       result, tail)
+    chunk_of = _chunk_for(run_chunk, tail)
     rows = jnp.arange(size)
     cur = _tree(lambda a: a[:size], state)
     nxt, lane_chunks = size, 0
     progress = os.environ.get("TSDEV_PROGRESS")
     t0 = time.perf_counter()
     for it in range(max_chunks):
-        cur = run_chunk(jax.random.fold_in(key, it), cur)
+        cur = chunk_of(rows.shape[0])(jax.random.fold_in(key, it), cur)
         lane_chunks += rows.shape[0]
         result = _scatter(result, rows, cur)
         live = live_of(cur)
@@ -909,15 +950,15 @@ def run_resident(run_chunk, state, live_of, kill, key, max_chunks=100000, min_bu
     return result, lane_chunks
 
 
-def make_ts_chunk(field, geom, s, chunk=256):
+def make_ts_chunk(field, geom, s, chunk=256, layout=Layout()):
     """(key, TSState) -> TSState running up to `chunk` steps (STEPS_PER_ITERATION per loop iteration). The field
     grid is an argument of the jitted function, not a closed-over constant: the executables stay small, compile
-    faster and load quickly from the persistent compilation cache."""
+    faster and load quickly from the persistent compilation cache. layout: as make_ts_step."""
     iterations = max(1, chunk // STEPS_PER_ITERATION)
 
     @jax.jit
     def run_grid(key, st, grid):
-        step = make_ts_step(field.with_grid(grid) if grid is not None else field, geom, s)
+        step = make_ts_step(field.with_grid(grid) if grid is not None else field, geom, s, layout)
 
         def cond(c):
             i, st = c
@@ -945,12 +986,12 @@ def ts_initial(x, p, t, pdg, n_materials, key):
                    jnp.zeros(n), jnp.zeros(n, jnp.int32))
 
 
-def transport_ts(ts_chunk, geom, x, p, t, pdg, key, min_bucket=None, pool=None):
+def transport_ts(ts_chunk, geom, x, p, t, pdg, key, min_bucket=None, pool=None, tail=None):
     k0, k1 = jax.random.split(key)
     st = ts_initial(x, p, t, pdg, len(geom.names), k0)
     return run_resident(ts_chunk, st, _ts_live, _ts_kill, k1,
                         min_bucket=default_min_bucket() if min_bucket is None else min_bucket, pool=pool,
-                        warm_ladder=WARM_LADDER)[0]
+                        warm_ladder=WARM_LADDER, tail=tail)[0]
 
 
 def _ts_live(s):
@@ -1002,14 +1043,18 @@ class Chain(NamedTuple):
     ds_chunk: object
     ds_prm: object
     pool: object = None
+    ts_tail: object = None      # (lanes, chunk function) for the drain tail, or None
 
 
 def build_chain(ts_field, ts_geom, ds_fm, ds_geom, settings=Settings(), ds_prm=dst.Params(), ts_chunk=256,
                 pool=None):
     """Compile-ready chain from device field/geometry objects (DeviceField, DeviceGeometry, DS FieldMap on device,
-    DS BeamGeometry). pool: TS lanes in flight (default: all inputs at once)."""
+    DS BeamGeometry). pool: TS lanes in flight (default: all inputs at once). Buckets of at most TAIL_LANES lanes run
+    the tail_layout() chunk."""
+    tail = (TAIL_LANES, make_ts_chunk(ts_field, ts_geom, settings, ts_chunk, tail_layout())) if TAIL_LANES > 0 \
+        else None
     return Chain(make_ts_chunk(ts_field, ts_geom, settings, ts_chunk), ts_geom,
-                 make_ds_chunk(ds_fm, ds_geom, ds_prm), ds_prm, pool)
+                 make_ds_chunk(ds_fm, ds_geom, ds_prm), ds_prm, pool, tail)
 
 
 def run_chain(chain, x, p, t, pdg, seed=20261107):
@@ -1017,7 +1062,7 @@ def run_chain(chain, x, p, t, pdg, seed=20261107):
     (fate 9 and foil -1 for lanes that did not enter the DS as muons). Target stops: DS fate == 1."""
     key = jax.random.PRNGKey(seed)
     k_ts, k_ds = jax.random.split(key)
-    ts = transport_ts(chain.ts_chunk, chain.ts_geom, x, p, t, pdg, k_ts, pool=chain.pool)
+    ts = transport_ts(chain.ts_chunk, chain.ts_geom, x, p, t, pdg, k_ts, pool=chain.pool, tail=chain.ts_tail)
     enter = (ts.fate == DS) & (jnp.abs(ts.pdg) == 13)
     ds = transport_ds(chain.ds_chunk, chain.ds_prm, ts.x, ts.p, ts.t, _charge(ts.pdg),
                       jnp.where(enter, ts.remaining, _INF), enter, k_ds)

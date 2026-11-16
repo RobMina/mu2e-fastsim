@@ -88,13 +88,18 @@ rejected. They are static allocation bounds, not physics cuts.
 | `digis` | Total digis in batch |
 | `reco_waveforms`, `reco_samples` | Concatenated reconstruction waveforms and sample length |
 | `pulse_rounds` | Pulse-fit rounds per waveform; a pulse in the last round is fatal |
-| `coinc_hits` | Hits per event and sector type |
+| `coinc_hits` | Hits per event and sector type (with `coinc_tiers`: in the main buffer) |
+| `coinc_tiers` | Optional `[[events, hits], ...]`, hits increasing: wider rows for the few events with more hits than `coinc_hits` |
 | `coinc_combinations` | Filtered hit slots per side/layer in the coincidence kernel |
 
 Pulse-output capacity is `reco_waveforms*pulse_rounds`; cluster-output capacity is
-`batch_events*sector_types*coinc_hits`. Total SiPM candidate-buffer length is
+`sector_types*(batch_events*coinc_hits + sum of events*hits over coinc_tiers)`. Total SiPM candidate-buffer length is
 `optical_blocks*photons + thermal + ct1 + ct2 + ct3`. Coincidence memory can grow as
-the fourth power of `coinc_combinations`; charge waveform intermediates scale with
+the fourth power of `coinc_combinations`, and the coincidence finder is pairwise in the hits of a row: with
+`coinc_tiers` each event takes the smallest row that holds its hits of the sector type (the main buffer, then each
+tier in turn), so a few wide rows replace one wide buffer for every event. The clusters are those of one buffer wide
+enough for every event, in the same (event, hit) order, to rounding (the finder's sums run over the row width). An
+event with more hits than the widest tier, or more events than a tier's rows, rejects the batch; charge waveform intermediates scale with
 `charge_clusters*charges_per_cluster*waveform_samples`. **The tiny test capacities
 are not production recommendations.** No capacity overflow is accepted as a
 truncated event. The fixed three-generation SiPM model is inherited from the
