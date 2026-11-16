@@ -68,7 +68,7 @@
    "reco_waveforms": 2841,
    "reco_samples": 192,
    "pulse_rounds": 8,
-   "coinc_hits": 184,
+   "coinc_hits": 384,
    "coinc_combinations": 64,
    "waveform": "scatter",
    "digi_starts": "rows",

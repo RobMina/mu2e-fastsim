@@ -270,6 +270,12 @@ def test_coincidence_packing_matches_independent_numpy(setup):
     small = adapter(setup, capacity(coinc_hits=2, coinc_combinations=1))
     _, errors = run(small.clusters, pulses, timing, small.assets)
     assert errors["crv_coinc_hits"]
+    wide = adapter(setup, capacity(coinc_hits=48))   # a larger hit buffer: the same clusters, nothing else
+    out_wide, errors = run(wide.clusters, pulses, timing, wide.assets)
+    assert not any(errors.values())
+    keep, keep_wide = np.flatnonzero(out["mask"]), np.flatnonzero(out_wide["mask"])
+    for name in ("ev", "sectortype", "pe", "time", "poscalc", "x", "y", "z"):
+        np.testing.assert_array_equal(np.asarray(out[name])[keep], np.asarray(out_wide[name])[keep_wide], err_msg=name)
 
 
 @pytest.mark.slow   # its own full-apply compile (thermal_rate=0)

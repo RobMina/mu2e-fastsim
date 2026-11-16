@@ -14,6 +14,15 @@ def test_capacity_files_exist():
                                              "run1a_mix1bb_batch256.json", "run1a_mix1bb_batch256_exact.json"}
 
 
+def test_run1a_crv_coincidence_hits_sized_for_production():
+    """crv.coinc_hits (pulses per event and sector type) has an exponential tail: every Run 1A file holds 384
+    (README: under 0.01 expected overflows in 1e8 events)."""
+    for name in ("run1a_mix1bb_batch64.json", "run1a_mix1bb_batch128.json", "run1a_mix1bb_batch256.json",
+                 "run1a_mix1bb_batch256_exact.json"):
+        caps = json.loads((FILES[0].parent / name).read_text())
+        assert caps["response"]["crv"]["coinc_hits"] >= 384, name
+
+
 def test_batch256_default_and_exact_reference():
     """The batch-256 default file has both W6 approximations (donor-frame reuse, CRV thermal noise on hit counters);
     the exact reference has neither and differs from it only there (and in the CRV buffers they resize)."""
