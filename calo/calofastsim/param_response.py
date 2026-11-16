@@ -296,44 +296,47 @@ def cells(ev, crystal, energy, time, keep, n_crystals, n_cells, core_window=None
     ``core_window=None``: E and T are the energy and energy-weighted time of all the cell's steps. With a window
     (ns), they are those of the steps within ``core_window`` of the cell's energy-weighted median step time (the
     cell's main deposit, the one the template fit's highest-energy hit follows); later or earlier deposits of the
-    cell are left out."""
+    cell are left out.
+
+    One sort of the steps by (cell key, time) gives the cells (contiguous segments), their count and the median;
+    the sums run over the sorted segments."""
     import jax
     import jax.numpy as jnp
     big = jnp.iinfo(jnp.int64).max
     k = jnp.where(keep, ev.astype(jnp.int64) * n_crystals + crystal.astype(jnp.int64), big)
-    ukey = jnp.unique(k, size=n_cells, fill_value=big)
-    slot = jnp.clip(jnp.searchsorted(ukey, k), 0, n_cells - 1)
-    found = keep & (ukey[slot] == k)
-    e = energy.astype(jnp.float64)
-    E = jax.ops.segment_sum(jnp.where(found, e, 0.0), slot, num_segments=n_cells)
-    ET = jax.ops.segment_sum(jnp.where(found, e * time, 0.0), slot, num_segments=n_cells)
-    if core_window is not None:
-        E, ET = _core_sums(slot, found, e, time, E, n_cells, core_window)
+    t = time.astype(jnp.float64)
+    order = jnp.argsort(k, stable=True) if core_window is None else jnp.lexsort((t, k))
+    ks, es, ts = k[order], energy.astype(jnp.float64)[order], t[order]
+    valid = ks != big
+    new = valid & jnp.concatenate([jnp.ones(1, bool), ks[1:] != ks[:-1]])
+    seg = jnp.cumsum(new) - 1                         # cell rank of each sorted step
+    distinct = jnp.sum(new)
+    found = valid & (seg < n_cells)
+    sg = jnp.where(found, seg, n_cells)               # non-decreasing: found steps first, in cell order
+    ukey = jnp.full(n_cells + 1, big, jnp.int64).at[jnp.where(new & found, seg, n_cells)].set(ks)[:n_cells]
+
+    def ssum(v):
+        return jax.ops.segment_sum(v, sg, num_segments=n_cells + 1, indices_are_sorted=True)[:n_cells]
+
+    ef = jnp.where(found, es, 0.0)
+    E = ssum(ef)
+    if core_window is None:
+        ET = ssum(ef * ts)
+    else:
+        # the energy-weighted median: the first step (in time) where the cell's cumulative energy reaches half
+        sc = jnp.minimum(sg, n_cells - 1)
+        cum = jnp.cumsum(ef)
+        base = jax.ops.segment_min(jnp.where(found, cum - ef, jnp.inf), sg, num_segments=n_cells + 1,
+                                   indices_are_sorted=True)[:n_cells]
+        at_med = found & (cum - base[sc] >= 0.5 * E[sc])
+        t_med = jax.ops.segment_min(jnp.where(at_med, ts, jnp.inf), sg, num_segments=n_cells + 1,
+                                    indices_are_sorted=True)[:n_cells]
+        ec = jnp.where(found & (jnp.abs(ts - t_med[sc]) <= core_window), ef, 0.0)
+        E, ET = ssum(ec), ssum(ec * ts)
     ok = (ukey != big) & (E > 0)
     T = jnp.where(ok, ET / jnp.where(E > 0, E, 1.0), 0.0)
-    distinct = jnp.sum((jnp.sort(k) != big) & jnp.concatenate([jnp.ones(1, bool), jnp.sort(k)[1:] != jnp.sort(k)[:-1]]))
     return ok, jnp.where(ok, ukey // n_crystals, 0), jnp.where(ok, ukey % n_crystals, 0), E, T, \
         jnp.maximum(distinct - n_cells, 0)
-
-
-def _core_sums(slot, found, e, time, E, n_cells, window):
-    """Energy and energy x time of the steps within ``window`` of their cell's energy-weighted median time."""
-    import jax
-    import jax.numpy as jnp
-    t = time.astype(jnp.float64)
-    s_key = jnp.where(found, slot, n_cells)
-    order = jnp.lexsort((t, s_key))
-    ss, es, ts = s_key[order], jnp.where(found, e, 0.0)[order], t[order]
-    seg = jnp.minimum(ss, n_cells - 1)
-    cum = jnp.cumsum(es)
-    base = jax.ops.segment_min(jnp.where(ss < n_cells, cum - es, jnp.inf), seg, num_segments=n_cells)
-    within = cum - base[seg]
-    at_med = (ss < n_cells) & (within >= 0.5 * E[seg])
-    t_med = jax.ops.segment_min(jnp.where(at_med, ts, jnp.inf), seg, num_segments=n_cells)
-    core = found & (jnp.abs(t - t_med[jnp.minimum(slot, n_cells - 1)]) <= window)
-    Ec = jax.ops.segment_sum(jnp.where(core, e, 0.0), slot, num_segments=n_cells)
-    ETc = jax.ops.segment_sum(jnp.where(core, e * t, 0.0), slot, num_segments=n_cells)
-    return Ec, ETc
 
 
 def draw(tb: DeviceTable, key, ok, E, T, v):
