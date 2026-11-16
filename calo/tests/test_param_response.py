@@ -105,10 +105,11 @@ def test_survival_curve_cuts_hits_past_the_window_end(tmp_path):
     np.testing.assert_allclose(e[hit], 45.0, rtol=1e-6)
 
 
-def test_waveform_is_the_default():
+def test_parametric_v2_is_the_default_and_waveform_is_selectable():
     import inspect
     for f in (dc.make_chain, dc.make_steps_chain):
-        assert inspect.signature(f).parameters["digi_response"].default == "waveform"
+        assert inspect.signature(f).parameters["digi_response"].default == "parametric"
+    assert dc._digi_table("parametric").core_window == PR.CORE_WINDOW          # the shipped v2 table
     assert dc._digi_table("waveform") is None and dc._digi_table(None) is None
 
 

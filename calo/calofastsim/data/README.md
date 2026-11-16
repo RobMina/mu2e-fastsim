@@ -2,7 +2,7 @@
 
 ## digi_response_run1a_v2.npz (shipped, "default")
 
-Table of the opt-in parametric digi response (`calofastsim.param_response`, approximation W7
+Table of the parametric digi response, the W7 default (`calofastsim.param_response`, approximation W7
 `digi_response=parametric`; schema 2, library version 2).
 
 - **What changed from v1.** Each (event, crystal) cell is the crystal's main deposit: the energy and energy-weighted
@@ -19,7 +19,7 @@ Table of the opt-in parametric digi response (`calofastsim.param_response`, appr
 
 ## digi_response_run1a.npz ("v1")
 
-Table of the opt-in parametric digi response (`calofastsim.param_response`, approximation W7
+Table of the parametric digi response (`calofastsim.param_response`, approximation W7
 `digi_response=parametric`; schema 2).
 
 - **What it holds.** Per bin of visible crystal energy (60 log bins, 0.01-300 MeV), a pool of at most 4,000 outcomes

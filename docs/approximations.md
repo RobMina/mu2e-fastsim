@@ -125,7 +125,7 @@ behaviour and any stock-art route outside the chain's levels:
 | W6 | `finite_donor_pools` (no switch) | always on | - | no level | donor frames read in order and reused when the pool wraps; native art mixing (fcl/four_stream_response.fcl) | - |
 | W6 | `independent_sampler_draws` (no switch) | always on | - | no level | one shared intensity and four conditional Poissons from the JAX RNG, no event replay; stock seeded replay: fcl/four_stream_fast_inputs.fcl | - |
 | W6 | `tracker_crv_only` (no switch) | always on | - | no level | calorimeter and trigger not mixed; native art mixing (fcl/four_stream_response.fcl) | - |
-| W7 | `digi_response`: crystal hits: photoelectrons, waveforms, digis and the template fit (default), or drawn per (event, crystal) from a table of the full chain's outcome (hit, energy ratio, time offset) per bin of visible energy, without digis (calofastsim.param_response) | waveform, parametric | parametric | waveform | none: stock CaloDigiMaker and CaloRecoDigiMaker; the waveform response is the closer model (the table is built from it) | device_chain.make_chain / make_steps_chain(digi_response=) |
+| W7 | `digi_response`: crystal hits: drawn per (event, crystal) from a table of the full chain's outcome (hit, energy ratio, time offset) per bin of the main deposit's visible energy, without digis (calofastsim.param_response, default), or photoelectrons, waveforms, digis and the template fit | parametric, waveform | parametric | waveform | none: stock CaloDigiMaker and CaloRecoDigiMaker; the waveform response is the closer model (the table is built from it) | device_chain.make_chain / make_steps_chain(digi_response=) |
 | W7 | `shower_library` (no switch) | always on | - | no level | whole-shower library at the disk front, one of the K entries nearest in entry radius; stock CaloShowerSteps through device_chain.make_steps_chain / steps_batch (exact on stock steps) | - |
 | W7 | `crystal_placement` (no switch) | always on | - | no level | library shower moved onto the crystal grid at the query position; stock CaloShowerSteps through device_chain.make_steps_chain / steps_batch (exact on stock steps) | - |
 | W7 | `direct_front_entries_only` (no switch) | always on | - | no level | only direct disk-front entries get a response; stock CaloShowerSteps through device_chain.make_steps_chain / steps_batch (exact on stock steps) | - |
@@ -183,16 +183,22 @@ behaviour and any stock-art route outside the chain's levels:
   [mixing/DEVICE_TRACKER.md](../mixing/DEVICE_TRACKER.md)) and CRV thermal noise only on counters with steps
   (`thermal_counters: "hit"`, [mixing/DEVICE_CRV.md](../mixing/DEVICE_CRV.md)). `run1a_mix1bb_batch256_exact.json` is
   the same file without either. The run records the capacity file it used.
-- **W7.** `digi_response=parametric` (opt-in, the `fast` preset) draws each (event, crystal) hit from a table of the
-  full chain's outcome per bin of visible energy (`calofastsim.param_response`) instead of photoelectrons, waveforms,
-  digis and the template fit: steps -> hits + clusters, no digis. The shipped table (v2) keys each crystal on its main
-  deposit: the energy and energy-weighted time of the steps within 6 ns of the crystal's energy-weighted median step
-  time. On the held-out CE files (14,218 events, the same steps and timing, against the stock calorimeter reco;
-  float32 and float64 give the same numbers, the table's draws have fixed dtypes): leading-cluster peak ratio
-  0.9989 +- 0.0018, width +0.05 +- 0.14 MeV, yield above 10 MeV 0.9996 +- 0.0006, clusters above 10 MeV per event
-  chi2 4/4, energy chi2 65/46, x / y / radius chi2 28/51, 43/49, 11/13, paired leading energy -0.16 +- 0.03 MeV. The
-  first table (`digi_response="v1"`) used all the deposits of a crystal: a late deposit moved the crystal's time, the
-  drawn hit fell outside the 2 ns cluster window, and about 1 % of events got an extra single-crystal cluster above
-  10 MeV (chi2 153/4). The table cannot carry the second hit of a cell (deposits more than `time4merge` apart) or
-  hits without a deposit (noise alone). The stock alternative of the other approximations is stock steps through
-  `make_steps_chain`.
+- **W7.** `digi_response` defaults to `parametric`, an approximation: each (event, crystal) hit is drawn from a
+  table of the full chain's outcome per bin of visible energy (`calofastsim.param_response`, shipped table v2)
+  instead of photoelectrons, waveforms, digis and the template fit: steps -> hits + clusters, no digis.
+  `digi_response="waveform"` (the `fidelity` preset) runs the full response and makes digis. The table keys each
+  crystal on its main deposit: the energy and energy-weighted time of the steps within 6 ns of the crystal's
+  energy-weighted median step time.
+  - **Speed** (one A100-SXM4-80GB, stock CaloShowerSteps of CE events -> clusters, fresh inputs, medians of 3):
+    parametric 396,933 ev/s (float32) and 401,636 ev/s (float64), against the waveform response's 22,075 and 19,159
+    ev/s: 18x and 21x faster; 611x and 618x the stock calorimeter digi + reco stage (650 ev/s per grid slot).
+  - **Fidelity cost against stock** (held-out CE files, 14,218 events, the same steps and timing, against the stock
+    calorimeter reco; float32 and float64 give the same numbers, the table's draws have fixed dtypes): energy shape
+    chi2 65/46 (waveform response 43/45) and leading-cluster energy -0.16 +- 0.03 MeV (paired, about 0.2 %);
+    everything else agrees: leading-cluster peak ratio 0.9989 +- 0.0018, width +0.05 +- 0.14 MeV, yield above
+    10 MeV 0.9996 +- 0.0006, clusters above 10 MeV per event chi2 4/4, x / y / radius chi2 28/51, 43/49, 11/13.
+  - The first table (`digi_response="v1"`) used all the deposits of a crystal: a late deposit moved the crystal's
+    time, the drawn hit fell outside the 2 ns cluster window, and about 1 % of events got an extra single-crystal
+    cluster above 10 MeV (chi2 153/4). The table cannot carry the second hit of a cell (deposits more than
+    `time4merge` apart) or hits without a deposit (noise alone). The stock alternative of the other approximations
+    is stock steps through `make_steps_chain`.
