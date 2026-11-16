@@ -27,6 +27,17 @@ STEP_FLOATS = ("edep", "x0", "y0", "z0", "x1", "y1", "z1", "px0", "py0", "pz0", 
 PERIOD = 1695.0
 
 
+# Combination slot counts of the coincidence finder (coinc_jax.find_dense k_tiers; the same clusters): None uses
+# coinc_jax.K_TIERS on the CPU backend and the single capacity K on a GPU; () keeps the single K everywhere.
+COINC_K_TIERS = None
+
+
+def _coinc_k_tiers():
+    if COINC_K_TIERS is not None:
+        return tuple(COINC_K_TIERS) or None
+    return CJ.K_TIERS if jax.default_backend() == "cpu" else None
+
+
 def _fold(t):
     r = jnp.fmod(t, PERIOD)
     return jnp.where(r < 0, r + PERIOD, r)
@@ -430,7 +441,8 @@ class Adapter:
                 for name in ("t", "x", "y"):
                     args[name] = jnp.where(args["valid"], args[name] - args[name][:, :1], args[name])
             result = CJ.find_dense(**args, tp=a["types"][ti]["tp"], cu=a["types"][ti]["cu"],
-                                   ld=ld, ns=ns, uniform=uniform, K=self.capacities["coinc_combinations"])
+                                   ld=ld, ns=ns, uniform=uniform, K=self.capacities["coinc_combinations"],
+                                   k_tiers=_coinc_k_tiers())
             hit_over |= jnp.any(counts > H)
             hits_used = jnp.maximum(hits_used, jnp.max(counts))
             comb_over |= jnp.any(result["overflow"])

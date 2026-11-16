@@ -124,3 +124,45 @@ def test_flat_entries_equal_pair_loop(cond):
         np.testing.assert_array_equal(flat[name][keep], loop[name][keep], err_msg=name)
     short = jax.device_get(DJ._electronics_kernel(cond, 4, 4, 2, entries=1)(key, *args))
     assert short["entry_overflow"]
+
+
+def test_gamma_split_equals_the_kernel_gamma(cond):
+    """GAMMA_SPLIT's draws (_gamma_bits) are the charge kernel's _gamma(split(key, 3)[0], aval) bit for bit on every
+    lane the gain keeps (ne < nGainGauss; the others hold 0), with typed and raw block keys and any chunk size."""
+    import jax.numpy as jnp
+    c = cond
+    assert DJ._gamma_one() is not None          # this JAX has the per-element sampler: the split is not off
+    rng = np.random.default_rng(4)
+    B, L = 3, 512
+    ne = rng.integers(0, 2 * c.nGainGauss, (B, L))
+    ne[0, :5] = [0, 1, c.nGainGauss - 1, c.nGainGauss, 1]
+    ne = jnp.asarray(ne)
+    keep = np.asarray(ne < c.nGainGauss)
+    result = DJ._gamma_dtypes()[1]
+    bits = jax.jit(DJ._gamma_bits, static_argnums=(0, 3))
+    for keys in (jax.random.split(jax.random.key(6), B), jax.random.key_data(jax.random.split(jax.random.key(6), B))):
+        want = np.asarray(jax.vmap(lambda k, n: DJ._gamma(jax.random.split(k, 3)[0], DJ._aval(c, n)))(keys, ne))
+        for chunk in (1, 7, 1024):
+            got = np.asarray(jax.lax.bitcast_convert_type(bits(c, keys, ne, chunk), result))
+            np.testing.assert_array_equal(got[keep], want[keep])
+            assert np.all(got[~keep] == 0)
+
+
+def test_gamma_split_gives_the_same_charges(cond, monkeypatch):
+    """The charge-block kernel with GAMMA_SPLIT on and off: the same arrival times, charges and wire distances."""
+    import jax.numpy as jnp
+    c = cond
+    rng = np.random.default_rng(8)
+    n = 2 * DJ.CHARGE_BLOCK
+    us = rng.integers(500, 900, n)
+    pos = np.asarray(c.straw_mid)[us] + rng.normal(0, 1.0, (n, 3))
+    ne = rng.integers(1, 2 * c.nGainGauss, n)
+    time = rng.uniform(300, 1600, n)
+    out = {}
+    for on in (False, True):
+        monkeypatch.setattr(DJ, "GAMMA_SPLIT", on)
+        jax.clear_caches()                       # the setting is read when a kernel is traced
+        kern = DJ._charge_blocks_kernel.__wrapped__(c, 2)
+        out[on] = kern(jax.random.key(3), jnp.int64(0), *map(jnp.asarray, DJ.df.dev((us, pos, ne, time))))
+    for x, y in zip(out[False], out[True]):
+        np.testing.assert_array_equal(np.asarray(x), np.asarray(y))

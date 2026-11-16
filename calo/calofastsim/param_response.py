@@ -1,5 +1,5 @@
-"""Parametric digi response (opt-in approximation W7 ``digi_response=parametric``): crystal hits drawn from a table
-instead of photoelectrons, waveforms, digis and the template fit.
+"""Parametric digi response (approximation W7 ``digi_response=parametric``, the default): crystal hits drawn from a
+table instead of photoelectrons, waveforms, digis and the template fit.
 
 Per (event, crystal) the visible energy ``E`` (Birks and longitudinal-response corrected energy of the accepted
 steps, as :func:`calofastsim.device_chain.photoelectrons` computes it) and its energy-weighted folded step time ``T``

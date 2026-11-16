@@ -47,6 +47,11 @@ def is_oneapi():
     return any(k in str(t).lower() for t in tags for k in ("oneapi", "sycl", "level_zero", "intel"))
 
 
+# Slot counts the combination check may run at instead of K (find_dense k_tiers): the dense [G, 2, K, K, K(, K)]
+# combination tensors cost K^3-K^4 per group whatever the occupancy, and a call's busiest (side, layer) rarely needs
+# K. The widths are the same at any slot count that holds every filtered hit. Used where the tensors run one element
+# after another (CPU) by the device mixing backend; a GPU keeps the single K.
+K_TIERS = (4, 8, 16, 32)
 K_MAX_4LAYER = 32   # the 4-layer combination tensor is [2, K, K, K, K]: cap K there (overflow -> next tier/numpy)   # (H, K, groups per call)
 
 
@@ -243,12 +248,15 @@ def _attach_opposite(lab, kept, filt, comp, idx, bar, sipm, first, t, enabled, w
     return jnp.where(selected, chosen_lab, lab), kept | selected
 
 
-@partial(dprec.jit, static_argnames=("ld", "ns", "uniform", "K"))
-def find_dense(valid, idx, side, bar, sipm, first, layer, counter, x, y, t, pe, pos, cut, tp, cu, ld, ns, uniform, K=K_DEFAULT):
+@partial(dprec.jit, static_argnames=("ld", "ns", "uniform", "K", "k_tiers"))
+def find_dense(valid, idx, side, bar, sipm, first, layer, counter, x, y, t, pe, pos, cut, tp, cu, ld, ns, uniform, K=K_DEFAULT,
+               k_tiers=None):
     """One sector type, [G, H] hits -> per-hit cluster label (root hit, -1 = no cluster) and per-root properties.
     cut [G, H, len(CUT_COLS)]: each hit's sector cuts; cu [len(CUT_COLS)]: the shared cuts when `uniform`;
     tp [len(TP_COLS)]: type-level settings. Static: ld (length axis), ns (combination sizes that can be needed),
-    uniform (one set of cuts for the whole type: scalar path, same result), K (slots per side and layer)."""
+    uniform (one set of cuts for the whole type: scalar path, same result), K (slots per side and layer), k_tiers
+    (smaller slot counts, ascending: the combinations run at the smallest that holds this call's busiest (side, layer),
+    with the same results; None: always K)."""
     max_dt, p0, p1, both, v, mti, toff, attach = (tp[i] for i in range(len(TP_COLS)))
     both = both > 0.5
     src = cu if uniform else cut
@@ -282,71 +290,83 @@ def find_dense(valid, idx, side, bar, sipm, first, layer, counter, x, y, t, pe, 
         (jnp.arange(H)[None, None, :] < jnp.arange(H)[None, :, None])
     slot = jnp.sum(sl, -1)
     overflow = jnp.any(filt & (slot >= K), -1)
-    # slot table [G, 2, 4, K] -> hit index (H = empty)
+    # slot table [G, 2, 4, K] -> hit index (H = empty), built in widths
     put = filt & (slot < K)
-    flat = jnp.where(put, (side * C.N_LAYERS + layer) * K + slot, 2 * C.N_LAYERS * K)
-    tab = jnp.full((Gn, 2 * C.N_LAYERS * K + 1), H, jnp.int64)
-    tab = tab.at[jnp.arange(Gn)[:, None], flat].set(jnp.arange(H)[None, :])[:, :-1].reshape(Gn, 2, C.N_LAYERS, K)
-    pad = lambda a, f: jnp.concatenate([a, jnp.full((Gn, 1), f, a.dtype)], 1)
-    gi = jnp.arange(Gn)[:, None, None, None]
-    sx, sy, st_ = pad(x, 0.0)[gi, tab], pad(y, 0.0)[gi, tab], pad(t, 0.0)[gi, tab]
-    sc, sv = pad(comp, -2)[gi, tab], tab < H
-    if not uniform:
-        sdt, slo, shi, smsd, sncl = (pad(a, 0.0)[gi, tab] for a in (cmax_dt, lo_h, hi_h, msd_h, ncl_h))
-        snmin, snmax = pad(nmin, 99.0)[gi, tab], pad(nmax, -1.0)[gi, tab]
-    wid = jnp.full((Gn, 2, C.N_LAYERS, K), -jnp.inf)
-    for layers in (c for n_ in ns for c in combinations(range(C.N_LAYERS), n_)):
-        n = len(layers)
 
-        def at(a, p, l):   # slot attribute of layer l on combo axis p: [G, 2, 1.., K, ..1]
-            shp = [Gn, 2] + [1] * n
-            shp[2 + p] = K
-            return a[:, :, l, :].reshape(shp)
-        X = [at(sx, p, l) for p, l in enumerate(layers)]
-        Y = [at(sy, p, l) for p, l in enumerate(layers)]
-        T = [at(st_, p, l) for p, l in enumerate(layers)]
-        ok = at(sv, 0, layers[0])
-        for p in range(1, n):
-            ok = ok & at(sv, p, layers[p]) & (at(sc, p, layers[p]) == at(sc, 0, layers[0]))
-        tmax, tmin = T[0], T[0]
-        for p in range(1, n):
-            tmax, tmin = jnp.maximum(tmax, T[p]), jnp.minimum(tmin, T[p])
-        if uniform:
-            c_dt, c_lo, c_hi, msd = cmax_dt, lo_h, hi_h, msd_h
-        else:
-            A_ = lambda a: [at(a, p, l) for p, l in enumerate(layers)]
-            red = lambda f, xs: functools.reduce(f, xs)
-            c_dt, c_lo, c_hi, msd = (red(f, A_(a)) for f, a in ((jnp.maximum, sdt), (jnp.minimum, slo),
-                                                                (jnp.maximum, shi), (jnp.maximum, smsd)))
-            # this combination size is checked for the cluster (nmin/nmax) and not every hit asks for more layers
-            nmn, nmx = at(snmin, 0, layers[0]), at(snmax, 0, layers[0])
-            need = (nmn == 2) if n == 2 else ((nmn <= 3) & (nmx >= 3)) if n == 3 else (nmx == 4)
-            ok = ok & need & ~red(jnp.logical_and, [c > n for c in A_(sncl)])
-        ok = ok & ~(tmax - tmin > c_dt)
-        S = []
-        for p in range(n - 1):
-            s = (X[p + 1] - X[p]) / jnp.where(Y[p + 1] == Y[p], 1.0, Y[p + 1] - Y[p])
-            ok = ok & ~((s < c_lo) | (s > c_hi))
-            S.append(s)
-        if n > 2:
-            ok = ok & ~(jnp.abs(S[0] - S[1]) > msd)
-        if n > 3:
-            ok = ok & ~((jnp.abs(S[0] - S[2]) > msd) | (jnp.abs(S[1] - S[2]) > msd))
-        rank = [sum(((X[q] < X[p]) | ((X[q] == X[p]) & (q < p))).astype(jnp.int64) for q in range(n) if q != p)
-                for p in range(n)]
-        for p, l in enumerate(layers):
-            w = jnp.zeros_like(ok, dtype=dprec.FLOAT)
-            for q in range(n):
-                if q == p:
-                    continue
-                w = jnp.maximum(w, jnp.where(rank[q] == rank[p] + 1, X[q] - X[p], 0.0))
-                w = jnp.maximum(w, jnp.where(rank[q] == rank[p] - 1, X[p] - X[q], 0.0))
-            w = jnp.where(ok, jnp.broadcast_to(w, ok.shape), -jnp.inf)
-            axes = tuple(2 + q for q in range(n) if q != p)
-            red = jnp.max(w, axis=axes).reshape(Gn, 2, K)
-            wid = wid.at[:, :, l, :].max(red)
-    hw = jnp.where(put, wid.reshape(Gn, -1)[jnp.arange(Gn)[:, None], jnp.minimum(flat, 2 * C.N_LAYERS * K - 1)],
-                   -jnp.inf)
+    def widths(Kc):
+        """Each filtered hit's widened distance from the coincidence combinations (-inf: in none passing), with the
+        slot table [G, 2, 4, Kc] -> hit index (H = empty). Any Kc at least the largest slot count gives the same
+        widths: the further slots are empty, so their combinations fail and add -inf to each max."""
+        flat = jnp.where(put, (side * C.N_LAYERS + layer) * Kc + slot, 2 * C.N_LAYERS * Kc)
+        tab = jnp.full((Gn, 2 * C.N_LAYERS * Kc + 1), H, jnp.int64)
+        tab = tab.at[jnp.arange(Gn)[:, None], flat].set(jnp.arange(H)[None, :])[:, :-1].reshape(Gn, 2, C.N_LAYERS, Kc)
+        pad = lambda a, f: jnp.concatenate([a, jnp.full((Gn, 1), f, a.dtype)], 1)
+        gi = jnp.arange(Gn)[:, None, None, None]
+        sx, sy, st_ = pad(x, 0.0)[gi, tab], pad(y, 0.0)[gi, tab], pad(t, 0.0)[gi, tab]
+        sc, sv = pad(comp, -2)[gi, tab], tab < H
+        if not uniform:
+            sdt, slo, shi, smsd, sncl = (pad(a, 0.0)[gi, tab] for a in (cmax_dt, lo_h, hi_h, msd_h, ncl_h))
+            snmin, snmax = pad(nmin, 99.0)[gi, tab], pad(nmax, -1.0)[gi, tab]
+        wid = jnp.full((Gn, 2, C.N_LAYERS, Kc), -jnp.inf)
+        for layers in (c for n_ in ns for c in combinations(range(C.N_LAYERS), n_)):
+            n = len(layers)
+
+            def at(a, p, l):   # slot attribute of layer l on combo axis p: [G, 2, 1.., Kc, ..1]
+                shp = [Gn, 2] + [1] * n
+                shp[2 + p] = Kc
+                return a[:, :, l, :].reshape(shp)
+            X = [at(sx, p, l) for p, l in enumerate(layers)]
+            Y = [at(sy, p, l) for p, l in enumerate(layers)]
+            T = [at(st_, p, l) for p, l in enumerate(layers)]
+            ok = at(sv, 0, layers[0])
+            for p in range(1, n):
+                ok = ok & at(sv, p, layers[p]) & (at(sc, p, layers[p]) == at(sc, 0, layers[0]))
+            tmax, tmin = T[0], T[0]
+            for p in range(1, n):
+                tmax, tmin = jnp.maximum(tmax, T[p]), jnp.minimum(tmin, T[p])
+            if uniform:
+                c_dt, c_lo, c_hi, msd = cmax_dt, lo_h, hi_h, msd_h
+            else:
+                A_ = lambda a: [at(a, p, l) for p, l in enumerate(layers)]
+                red = lambda f, xs: functools.reduce(f, xs)
+                c_dt, c_lo, c_hi, msd = (red(f, A_(a)) for f, a in ((jnp.maximum, sdt), (jnp.minimum, slo),
+                                                                    (jnp.maximum, shi), (jnp.maximum, smsd)))
+                # this combination size is checked for the cluster (nmin/nmax) and not every hit asks for more layers
+                nmn, nmx = at(snmin, 0, layers[0]), at(snmax, 0, layers[0])
+                need = (nmn == 2) if n == 2 else ((nmn <= 3) & (nmx >= 3)) if n == 3 else (nmx == 4)
+                ok = ok & need & ~red(jnp.logical_and, [c > n for c in A_(sncl)])
+            ok = ok & ~(tmax - tmin > c_dt)
+            S = []
+            for p in range(n - 1):
+                s = (X[p + 1] - X[p]) / jnp.where(Y[p + 1] == Y[p], 1.0, Y[p + 1] - Y[p])
+                ok = ok & ~((s < c_lo) | (s > c_hi))
+                S.append(s)
+            if n > 2:
+                ok = ok & ~(jnp.abs(S[0] - S[1]) > msd)
+            if n > 3:
+                ok = ok & ~((jnp.abs(S[0] - S[2]) > msd) | (jnp.abs(S[1] - S[2]) > msd))
+            rank = [sum(((X[q] < X[p]) | ((X[q] == X[p]) & (q < p))).astype(jnp.int64) for q in range(n) if q != p)
+                    for p in range(n)]
+            for p, l in enumerate(layers):
+                w = jnp.zeros_like(ok, dtype=dprec.FLOAT)
+                for q in range(n):
+                    if q == p:
+                        continue
+                    w = jnp.maximum(w, jnp.where(rank[q] == rank[p] + 1, X[q] - X[p], 0.0))
+                    w = jnp.maximum(w, jnp.where(rank[q] == rank[p] - 1, X[p] - X[q], 0.0))
+                w = jnp.where(ok, jnp.broadcast_to(w, ok.shape), -jnp.inf)
+                axes = tuple(2 + q for q in range(n) if q != p)
+                red = jnp.max(w, axis=axes).reshape(Gn, 2, Kc)
+                wid = wid.at[:, :, l, :].max(red)
+        return jnp.where(put, wid.reshape(Gn, -1)[jnp.arange(Gn)[:, None], jnp.minimum(flat, 2 * C.N_LAYERS * Kc - 1)],
+                       -jnp.inf)
+
+    if k_tiers:   # the smallest slot count holding every filtered hit of this call (see K_TIERS)
+        tiers = tuple(sorted({min(int(k), K) for k in k_tiers} | {K}))
+        need = jnp.max(jnp.where(put, slot + 1, 0))
+        hw = jax.lax.switch(jnp.searchsorted(jnp.asarray(tiers), need), [partial(widths, k) for k in tiers])
+    else:
+        hw = widths(K)
     kept = put & (hw > -jnp.inf)
     maxd = jnp.maximum(maxdf_h, hw)
     # final clustering across both readout sides

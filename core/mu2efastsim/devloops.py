@@ -31,7 +31,9 @@ same-job A100-80 rates (warm events/s over 2 warm passes, cold compile cache):
     W5 refit   3,119 / 3,132 | 3,040 / 3,045 (~0)        off     off  (same "W5" entry)
     W6         279 / 260 | 295 / 272 (+7..+8 %)          on      on (x1.03-1.07, output files identical)
     W7         3,551 / 3,557 | 5,459 / 5,460 (0)         off     off
-    W8         7,013 / 7,848 | 7,509 / 8,600 (-11..-13 %) off     off
+    W8         39,137 / 35,383 | 44,148 / 39,594 (+11 %)  on      off  (the trigger with fewer loop iterations and
+               packed results; decisions on / off identical, 819,000 per dtype; 13,000 / pass; before them,
+               7,013 / 7,848 | 7,509 / 8,600, -11..-13 %)
 
 Concurrency is on only where it is measured faster and its outputs were checked (W1, W6, and the CE chain W2-W4 with
 its loops off). A workflow not in the table, and a process that names none, gets both off. The CE chain (W2, W3, W4: the
@@ -72,7 +74,7 @@ WORKFLOWS = {
     "W6": (True, True),
     "mixing": (True, True),
     "W7": (False, False),
-    "W8": (False, False),
+    "W8": (True, False),
 }
 # workflows that run the CE chain, which hangs with device loops and concurrency both on
 CE_CHAIN = {"W2", "W3", "W4"}

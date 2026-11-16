@@ -192,9 +192,13 @@ def prepare(c, capacities, batch_events):
     unroll = cap.minion_unroll or dc.MINION_UNROLL
     method = cap.minion_search or dc.SEARCH_METHOD
     spec = jax.ShapeDtypeStruct
+    # gas-gain gamma draws made outside the per-block kernel on the kept lanes only (digi_jax GAMMA_SPLIT: the same
+    # draws, passed to the kernel as their integer bits)
+    gamma_split = dj._gamma_split_on()
     charge_kernel = lift(dj._charge_kernel(c), spec((2,), np.uint32), spec((dj.CHARGE_BLOCK,), np.int64),
                          spec((dj.CHARGE_BLOCK, 3), np.float64), spec((dj.CHARGE_BLOCK,), np.int64),
-                         spec((dj.CHARGE_BLOCK,), np.float64))
+                         spec((dj.CHARGE_BLOCK,), np.float64),
+                         *([spec((dj.CHARGE_BLOCK,), dj._gamma_dtypes()[2])] if gamma_split else []))
     batch = cap.electronics_batch
     pooled = cap.digit_entries_per_straw is not None and cap.saturation_pool()
 
@@ -520,16 +524,22 @@ def prepare(c, capacities, batch_events):
         arrays = (jnp.arange(ncharge // dj.CHARGE_BLOCK, dtype=jnp.int64) * dj.CHARGE_BLOCK,
                   us.reshape(-1, dj.CHARGE_BLOCK), pos.reshape(-1, dj.CHARGE_BLOCK, 3),
                   ne.reshape(-1, dj.CHARGE_BLOCK), times.reshape(-1, dj.CHARGE_BLOCK))
+        block_key = lambda first: random.key_data(random.fold_in(random.fold_in(key, 1), first))
+
         def block(inputs):
-            first, us_, pos_, ne_, time_ = inputs
-            return charge_kernel.apply(assets["charge_kernel"],
-                random.key_data(random.fold_in(random.fold_in(key, 1), first)), us_, pos_, ne_, time_)
+            first, us_, pos_, ne_, time_, *gamma = inputs
+            return charge_kernel.apply(assets["charge_kernel"], block_key(first), us_, pos_, ne_, time_, *gamma)
+
+        def with_gamma(blocks):   # blocks [n, ...]: the gamma bits of each block's kept lanes, drawn together
+            if not gamma_split:
+                return blocks
+            return blocks + (dj._gamma_bits(c, jax.vmap(block_key)(blocks[0]), blocks[3]),)
         if cap.charge_blocks_per_launch is None:
-            result = lax.map(block, arrays)
+            result = lax.map(lambda one: block(tuple(x[0] for x in with_gamma(tuple(a[None] for a in one)))), arrays)
         else:   # groups of blocks per launch (as digi_jax CHARGE_BLOCKS); each block keeps its own key
             g = cap.charge_blocks_per_launch
             grouped = tuple(a.reshape((-1, g) + a.shape[1:]) for a in arrays)
-            result = lax.map(lambda group: jax.vmap(block)(group), grouped)
+            result = lax.map(lambda group: jax.vmap(block)(with_gamma(group)), grouped)
             result = tuple(r.reshape((-1,) + r.shape[2:]) for r in result)
         gt, charge, wd = tuple(value.reshape((-1,) + value.shape[2:])[:cap.drift_clusters] for value in result)
         if rel:

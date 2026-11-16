@@ -329,3 +329,35 @@ def test_bounded_scan_matches_dense():
     for k, v in dense.items():
         if v.shape == found.shape and k != "found":
             np.testing.assert_array_equal(bounded[k][found], v[found], err_msg=k)
+
+
+def test_coinc_k_tiers_give_the_same_clusters(monkeypatch):
+    """find_dense with combination slot-count tiers (k_tiers, the device mixing default on CPU): the same clusters and
+    cluster properties as the single K, with uniform and per-sector cuts, quiet events (small tiers) and showers (busy
+    (side, layer) slots: the full K)."""
+    import dataclasses
+    from functools import partial
+    from crvfastsim.reco import coinc as C
+    from crvfastsim.reco import coinc_jax as CJ
+    from crvfastsim.reco import synth
+    from crvfastsim.reco.cli import _coinc_geom
+    G = _coinc_geom()
+    status = np.zeros(4 * len(G.sector), np.int64)
+    cuts = dict(C.EXTRACTED_V04)
+    for m in ("M1", "M3"):
+        cuts[m] = dataclasses.replace(cuts[m], coincidence_layers=3)
+    cuts["M2"] = dataclasses.replace(cuts["M2"], max_slope_diff=1.0)
+    original = CJ.find_dense
+    for shower in (0.0, 0.2):
+        P = synth.coinc_events(200, G, seed=11, shower_frac=shower, shower_mean=60)
+        cols = [P[k] for k in ("ev", "idx", "bar", "sipm", "time", "pe", "seq")]
+        for cfg in (C.FinderConfig(), C.FinderConfig(cuts=cuts)):
+            out = {}
+            for kt in (None, (2, 4, 8)):
+                monkeypatch.setattr(CJ, "find_dense", partial(original, k_tiers=kt) if kt else original)
+                out[kt] = CJ.find(*cols, G, status, cfg=cfg, tiers=((16, 6, 256), (64, 12, 64)))
+            a, b = out[None], out[(2, 4, 8)]
+            assert len(a["cl_event"]) > 50
+            assert set(a) == set(b)
+            for k in a:
+                np.testing.assert_array_equal(np.asarray(a[k]), np.asarray(b[k]), err_msg=k)

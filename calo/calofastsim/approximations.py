@@ -15,10 +15,10 @@ WORKFLOW = Workflow(
     "W7", "calorimeter",
     (
         Approximation(
-            "digi_response", "crystal hits: photoelectrons, waveforms, digis and the template fit (default), or drawn "
-            "per (event, crystal) from a table of the full chain's outcome (hit, energy ratio, time offset) per bin of "
-            "visible energy, without digis (calofastsim.param_response)",
-            levels=("waveform", "parametric"), default="waveform", sets={"parametric": {"digi_response": "parametric"}},
+            "digi_response", "crystal hits: drawn per (event, crystal) from a table of the full chain's outcome (hit, "
+            "energy ratio, time offset) per bin of the main deposit's visible energy, without digis "
+            "(calofastsim.param_response, default), or photoelectrons, waveforms, digis and the template fit",
+            levels=("waveform", "parametric"), default="parametric", sets={"waveform": {"digi_response": "waveform"}},
             fast="parametric", fidelity="waveform", alternative=NONE,
             stock="stock CaloDigiMaker and CaloRecoDigiMaker; the waveform response is the closer model (the table is "
                   "built from it)",

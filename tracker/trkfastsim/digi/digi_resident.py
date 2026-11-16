@@ -251,9 +251,11 @@ def make_clusters(key, c, st, idx, nidx):
             cap_used = cap if cap == CLASSES[0] else _b(ncmax, 128)
             lanes = max(1, _c("SAMPLE_LANES") // cap_used)
             mm_all = _compact(sel, _b(nsel))
+            # every sub-batch, the last one too, at one size per selection bucket: a last sub-batch padded to its own
+            # power of two would compile a new size whenever the remainder moves (the draws follow the step index)
+            k = min(lanes, _b(nsel, 16))
             for s0 in range(0, nsel, lanes):
                 nm = min(lanes, nsel - s0)
-                k = _b(nm, 16)
                 mm = jax.lax.dynamic_slice(_padto(mm_all, max(mm_all.shape[0], s0 + k)), (s0,), (k,))
                 sk, ps, ns_ = _class_slots(key, mm, nm, idx, eion, nc, minion, q0, q1, sdir, width, c.EAverage,
                                            energies, probabilities, ref, cap_used, k, rel)
@@ -484,10 +486,14 @@ def _waveforms_async(c, plan, key3, tabs, gt, charge, wd, cs, straw, straw_ev, s
     for cap, bucket_h in plan:
         batch = DJ._waveform_batch(cap)
         nbt = -(-len(bucket_h) // batch)
-        wh = np.zeros(nbt * batch, np.int64)
+        # batch rows padded to a power of two (empty rows, never packed): _pack_at compiles per row count, so the
+        # exact count of a bucket's batches would compile anew for almost every chunk
+        nbp = _b(nbt, 1)
+        wh = np.zeros(nbp * batch, np.int64)
         wh[:len(bucket_h)] = bucket_h
-        nbs = np.minimum(batch, len(bucket_h) - batch * np.arange(nbt)).astype(np.int64)
-        whichs, nbs_d = jnp.asarray(wh.reshape(nbt, batch)), jnp.asarray(nbs)
+        nbs = np.zeros(nbp, np.int64)
+        nbs[:nbt] = np.minimum(batch, len(bucket_h) - batch * np.arange(nbt))
+        whichs, nbs_d = jnp.asarray(wh.reshape(nbp, batch)), jnp.asarray(nbs)
         parts = None if elec is None else _parts(c, cap, batch, elec)
         kern = DJ._electronics_kernel(c, cap, 4, batch) if elec is None else parts.run   # default: unchanged
         pooled = elec is not None and elec["saturation_pool"]
