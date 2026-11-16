@@ -183,6 +183,13 @@ behaviour and any stock-art route outside the chain's levels:
   [mixing/DEVICE_TRACKER.md](../mixing/DEVICE_TRACKER.md)) and CRV thermal noise only on counters with steps
   (`thermal_counters: "hit"`, [mixing/DEVICE_CRV.md](../mixing/DEVICE_CRV.md)). `run1a_mix1bb_batch256_exact.json` is
   the same file without either. The run records the capacity file it used.
+- **W6 shared reuse table** (`reuse_table`, `mixing.device_reuse_table`; approved for W6 production by the user,
+  2026-11-16). The reuse setup is made once and loaded by every job, so each donor frame repeats its setup draws over
+  the whole production instead of within one job. Fidelity cost at 10^6 events (a MuStopPileup frame drawn about 377
+  times): variance of digi-count and occupancy sums x1.0007 (0.07 % effective-statistics loss), of ADC-peak sums at
+  most x1.029; occupancy unchanged at 10^5 events (per-plane chi2/36 0.01-0.02 against the no-reuse file, seed floor
+  0.5-0.7). Setup on one CPU core: 24,405 s computed, 189 s loaded. Without `reuse_table` each job computes its own
+  table, as before.
 - **W7.** `digi_response=parametric` (opt-in, the `fast` preset) draws each (event, crystal) hit from a table of the
   full chain's outcome per bin of visible energy (`calofastsim.param_response`) instead of photoelectrons, waveforms,
   digis and the template fit: steps -> hits + clusters, no digis. The shipped table (v2) keys each crystal on its main
