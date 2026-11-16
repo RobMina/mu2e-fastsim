@@ -81,6 +81,10 @@ def test_capacity_file_contract(path):
     from mixing import device_crv
     crv = dict(caps["response"]["crv"])
     options = {name: crv.pop(name) for name in list(crv) if name in device_crv.OPTIONS}
+    tiers = crv.pop("coinc_tiers", None)     # optional wider coincidence hit rows: [[events, hits], ...]
+    if tiers is not None:
+        widths = [crv["coinc_hits"]] + [hits for _, hits in tiers]
+        assert all(type(v) is int and v > 0 for t in tiers for v in t) and widths == sorted(set(widths))
     assert set(crv) == set(device_crv.CAPACITIES)
     assert all(type(v) is int and v > 0 for v in crv.values())
     expected = {"waveform": "scatter", "digi_starts": "rows", "pulse_scan": "bounded"}
