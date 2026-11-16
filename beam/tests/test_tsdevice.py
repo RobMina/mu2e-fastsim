@@ -258,6 +258,57 @@ def test_warm_ladder_is_exact_and_new_tails_do_not_compile():
     assert len(_COMPILES) == before
 
 
+def test_tail_chunk_runs_only_on_small_buckets():
+    """run_resident's tail chunk runs on the buckets of at most its lane count, the main chunk on the larger ones;
+    results and rows as with one chunk function (both chunks compute the same here), with and without warming."""
+    calls = []
+
+    def tagged(tag):
+        def run(key, st):
+            calls.append((tag, st.x.shape[0]))
+            return _die_at_t(key, st)
+        return run
+
+    main, tail = tagged("main"), tagged("tail")
+    st = _toy_state(np.r_[np.full(60, 1), np.full(20, 3), [6, 9, 12, 20]])
+    ref, _ = dev.run_resident(_die_at_t, st, dev._ts_live, dev._ts_kill, jax.random.PRNGKey(2), min_bucket=4, pool=32)
+    for warm in (False, True):
+        calls.clear()
+        out, _ = dev.run_resident(main, st, dev._ts_live, dev._ts_kill, jax.random.PRNGKey(2), min_bucket=4, pool=32,
+                                  tail=(8, tail), warm_ladder=warm)
+        for x, y in zip(ref, out):
+            np.testing.assert_array_equal(np.asarray(x), np.asarray(y))
+        assert all((tag == "tail") == (m <= 8) for tag, m in calls)
+        assert {tag for tag, _ in calls} == {"main", "tail"}
+
+
+def test_tail_layout_step_equals_the_default_to_rounding(geometry, monkeypatch):
+    """One TS step with the drain-tail layout (solids and DS-plane step on every lane) equals the default gathered
+    layout to rounding, on lanes spread over the fixture geometry (float64)."""
+    g = dev.DeviceGeometry(geometry)
+    if not g._matter:
+        pytest.skip("fixture has no generic solid")
+    monkeypatch.setattr(dev, "GATHER_FLOOR", 4)
+    rng = np.random.default_rng(6)
+    n = 2048
+    lo = np.array([-500.0, -400.0, geometry.z_start])
+    hi = np.array([4500.0, 400.0, geometry.z_end])
+    x = rng.uniform(lo, hi, (n, 3))
+    p = rng.normal(0, 20, (n, 3)) + np.array([0, 0, 60.0])
+    st = dev.ts_initial(x, p, np.zeros(n), np.where(rng.random(n) < 0.5, 13, -211), len(g.names), jax.random.PRNGKey(3))
+    s = dev.Settings(step_mm=40.0)
+    out = {}
+    for name, lay in (("default", dev.Layout()), ("tail", dev.Layout(0.0, 1.0))):
+        step = jax.jit(dev.make_ts_step(Zero(), g, s, lay))
+        out[name] = step(jax.random.PRNGKey(4), st)
+    a, b = out["default"], out["tail"]
+    np.testing.assert_array_equal(np.asarray(a.fate), np.asarray(b.fate))
+    for f in ("x", "p", "t", "path", "mpath", "hist"):
+        np.testing.assert_allclose(np.asarray(getattr(b, f)), np.asarray(getattr(a, f)), rtol=1e-12, atol=1e-9)
+    assert np.asarray(a.mpath).any()
+    assert dev.tail_layout() == dev.Layout(0.0, None)
+
+
 def test_cache_every_compile_only_with_a_cache_dir(monkeypatch, tmp_path):
     keep = (jax.config.jax_compilation_cache_dir, jax.config.jax_persistent_cache_min_compile_time_secs,
             jax.config.jax_persistent_cache_min_entry_size_bytes)
