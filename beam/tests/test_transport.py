@@ -111,5 +111,8 @@ def test_kit_task_renders():
     assert "beam_point" in tasks and "beam_point" in fnal
     b = tasks["beam_point"].body
     for p in kit_task.PARAMS:
+        if p in kit_task.SCALE_DEFAULTS:      # field-map scales: streaming route only, never in the mounted body
+            assert f"@p_{p}@" not in b
+            continue
         assert f"@p_{p}@" in b
     assert "@fnal_data@" in b and "@runtime_a@" in b

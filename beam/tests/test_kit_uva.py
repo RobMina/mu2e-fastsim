@@ -662,7 +662,7 @@ def test_field_scales_reach_the_job_container(tmp_path):
     assert body.count("MU2EFS_BFIELD_MAPSCALE") == 1
     r = subprocess.run(["bash", "-n"], input=body.encode(), capture_output=True)
     assert r.returncode == 0, r.stderr.decode()
-    assert json.loads((tmp_path / "kit" / "requests" / "bs1.json").read_text())["params"]["ds_bscale"] == 0.9
+    assert kit._delegates["beam_edep_cpu"]._rec("bs1")["params"]["ds_bscale"] == 0.9     # the delegate's binding
 
 
 SCALE_TASKS = {
