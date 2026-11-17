@@ -245,6 +245,24 @@ def test_stream_mismatch_cancels_against_original_expectations(tmp_path):
     assert "/dev/shm/test-inputs/ready" not in site.node_files
 
 
+def test_stream_timeout_marks_and_cancels(tmp_path):
+    """A stalled input stream (subprocess timeout) is a stream error: marked, the job cancelled, no ready file."""
+    site, ep, kit, streamed = make(tmp_path)
+    d = kit._delegates["beam_point"]
+    d.submit("stalled", P)
+
+    def stalled(src, host, remote, timeout):
+        raise subprocess.TimeoutExpired(["ssh", "-o", "BatchMode=yes", "login", "srun ... cat"], timeout)
+
+    ep.stream_runner = stalled
+    jid = _start(site, ep, "stalled")
+    assert d.stream_step("stalled") == "error"
+    assert site.state[jid] == "CANCELLED" and d._has("stalled", "streamerr")
+    assert "timed out after" in (d.dir / "stalled.streamerr").read_text()
+    assert "/dev/shm/test-inputs/ready" not in site.node_files
+    assert "stream error: input stream timed out" in d.status("stalled")["message"]
+
+
 def test_stream_uses_recorded_source_argv_without_remote_resolution(tmp_path, monkeypatch):
     site, ep, kit, streamed = make(tmp_path)
     d = kit._delegates["beam_point"]
