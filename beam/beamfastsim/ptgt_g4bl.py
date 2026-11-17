@@ -134,11 +134,10 @@ def helix_to_plane(x, p, t, pdg, z_target, field, step_mm=1.0, pz_floor=1.0):
         k4x, k4p = _helix_rhs(field, xl + hl * k3x, pl + hl * k3p, ql)
         xn = xl + hl / 6.0 * (k1x + 2 * k2x + 2 * k3x + k4x)
         pn = pl + hl / 6.0 * (k1p + 2 * k2p + 2 * k3p + k4p)
-        # path length from the mean slope of the step; |p| is conserved by the field
-        pmid = 0.5 * (pl + pn)
-        ds = hl[:, 0] * np.linalg.norm(pmid, axis=1) / np.abs(pmid[:, 2])
-        e = np.hypot(np.linalg.norm(pl, axis=1), m[live])
-        t[live] += ds * e / (np.linalg.norm(pl, axis=1) * C_MM_NS)
+        # |p| is conserved by the field: ds/dz = |p|/pz, trapezoidal in 1/pz (exact when pz is constant)
+        pabs = np.linalg.norm(pl, axis=1)
+        ds = hl[:, 0] * pabs * 0.5 * (1.0 / pl[:, 2] + 1.0 / np.maximum(pn[:, 2], pz_floor))
+        t[live] += ds * np.hypot(pabs, m[live]) / (pabs * C_MM_NS)
         x[live], p[live] = xn, pn
         returned[live] |= pn[:, 2] < pz_floor
     x[:, 2] = np.where(returned, x[:, 2], z_target)
