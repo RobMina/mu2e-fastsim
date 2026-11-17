@@ -221,11 +221,12 @@ def ratio_error(num, den):
     return float(r), float(np.sqrt(var))
 
 
-def score(reference, outputs):
+def score(reference, outputs, batch=None):
     """Stops per POT of one reference from tsdevice outputs (one per seed, same reference rows).
 
-    Stops per shard are averaged over the seeds, then the ratio to the shard POT carries the per-shard error (inputs
-    and transport together)."""
+    batch: the reference's position in a tsdevice run over several references (its rows are those with this `batch`
+    value). Stops per shard are averaged over the seeds, then the ratio to the shard POT carries the per-shard error
+    (inputs and transport together)."""
     with np.load(reference) as d:
         shard_ids = d["parent_shard_ids"][:, 1]
         pot = d["parent_shard_event_counts"].astype(float)
@@ -234,12 +235,13 @@ def score(reference, outputs):
     per_seed, seeds, dtypes = [], [], set()
     for path in outputs:
         with np.load(path) as o:
-            if not np.array_equal(o["id"], ref_id):
+            rows = slice(None) if batch is None else o["batch"] == batch
+            if not np.array_equal(o["id"][rows], ref_id):
                 raise ValueError(f"{path}: rows differ from the reference")
             meta = json.loads(str(o["meta"]))
-            stop = o["ds_fate"] == STOP
-            mu_minus = o["pdg_ds"] == 13
-            shard = o["shard"]
+            stop = o["ds_fate"][rows] == STOP
+            mu_minus = o["pdg_ds"][rows] == 13
+            shard = o["shard"][rows]
         idx = np.searchsorted(shard_ids, shard)
         if not np.all(shard_ids[idx] == shard):
             raise ValueError(f"{path}: shard outside the exposure table")
@@ -281,8 +283,9 @@ def main(argv=None):
     b.add_argument("--offline-root")
     b.add_argument("--maps")
     b.add_argument("--out", required=True)
-    s = sub.add_parser("score", help="stops per POT from tsdevice outputs of one reference (one file per seed)")
-    s.add_argument("--reference", required=True)
+    s = sub.add_parser("score", help="stops per POT from tsdevice outputs (one file per seed) of the references, "
+                                     "in the order tsdevice --reference read them; JSON lines, one per reference")
+    s.add_argument("--references", nargs="+", required=True)
     s.add_argument("--outputs", nargs="+", required=True)
     s.add_argument("--out", required=True)
     a = ap.parse_args(argv)
@@ -310,10 +313,12 @@ def main(argv=None):
         save(a.out, ref, meta)
         print(json.dumps(meta, indent=1))
     else:
-        res = score(a.reference, a.outputs)
+        many = len(a.references) > 1
+        res = [score(r, a.outputs, batch=k if many else None) for k, r in enumerate(a.references)]
         Path(a.out).parent.mkdir(parents=True, exist_ok=True)
-        Path(a.out).write_text(json.dumps(res, indent=1))
-        print(json.dumps(res, indent=1))
+        Path(a.out).write_text("".join(json.dumps(r) + "\n" for r in res))
+        for r in res:
+            print(json.dumps(r))
 
 
 if __name__ == "__main__":

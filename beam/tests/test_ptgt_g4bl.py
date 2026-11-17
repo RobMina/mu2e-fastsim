@@ -156,3 +156,26 @@ def test_root_reader_roundtrip(tmp_path):
     assert back["Pz"] == pytest.approx(r["Pz"])
     ref, meta = pg.build([str(path)], -4004.0, events=[5000])
     assert meta["entrances"] == 3 and ref["shard"].tolist() == [7, 7, 7]
+
+
+def test_score_selects_one_reference_of_a_multi_reference_run(tmp_path):
+    refs, ids = [], []
+    for k in range(2):
+        i = np.array([[k, 0, 1, 1], [k, 0, 1, 2]])
+        path = tmp_path / f"r{k}.npz"
+        pg.save(path, dict(id=i, shard=np.array([0, 0]), pdg=np.array([13, 13]), parent_shard_ids=np.array([[k, 0]]),
+                           parent_shard_event_counts=np.array([10 * (k + 1)])),
+                dict(point=k, mode="translate", entrances=2, board_objective=None))
+        refs.append(path)
+        ids.append(i)
+    out = tmp_path / "o.npz"
+    np.savez(out, id=np.concatenate(ids), shard=np.zeros(4, int), batch=np.array([0, 0, 1, 1]),
+             ds_fate=np.array([1, 0, 1, 1]), pdg_ds=np.full(4, 13), meta=json.dumps(dict(seed=5, dtype="float32")))
+    assert pg.score(refs[0], [out], batch=0)["stops_per_pot"] == pytest.approx(0.1)
+    assert pg.score(refs[1], [out], batch=1)["stops_per_pot"] == pytest.approx(0.1)
+    with pytest.raises(ValueError, match="rows differ"):
+        pg.score(refs[1], [out], batch=0)
+    pg.main(["score", "--references", str(refs[0]), str(refs[1]), "--outputs", str(out), "--out",
+             str(tmp_path / "s.jsonl")])
+    lines = (tmp_path / "s.jsonl").read_text().splitlines()
+    assert [json.loads(x)["point"] for x in lines] == [0, 1]
