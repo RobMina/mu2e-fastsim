@@ -552,3 +552,21 @@ def test_exact_restructure_defaults_match_the_full_scans(setup, waveform):
                 np.testing.assert_array_equal(outs[other][table][col][mask], value[mask], err_msg=f"{table}/{col}")
     with pytest.raises(ValueError, match="digi_starts"):
         adapter(setup, capacity(digi_starts="sparse"))
+
+
+def test_coincidence_slot_tiers_default(monkeypatch):
+    """COINC_K_TIERS None: the slot-count tiers on the CPU backend and in the float64 CRV on a GPU; the single slot
+    count in float32 on a GPU; () off everywhere, an explicit tuple everywhere."""
+    from crvfastsim.reco import coinc_jax as CJ
+    from mu2efastsim import precision as dprec
+    monkeypatch.setattr(D, "COINC_K_TIERS", None)
+    for backend, single, expected in (("cpu", True, CJ.K_TIERS), ("cpu", False, CJ.K_TIERS),
+                                      ("gpu", False, CJ.K_TIERS), ("gpu", True, None)):
+        monkeypatch.setattr(D.jax, "default_backend", lambda backend=backend: backend)
+        monkeypatch.setattr(D.dprec, "SINGLE", single)
+        assert D._coinc_k_tiers() == expected, (backend, single)
+    monkeypatch.setattr(D, "COINC_K_TIERS", ())
+    assert D._coinc_k_tiers() is None
+    monkeypatch.setattr(D, "COINC_K_TIERS", (8, 16))
+    assert D._coinc_k_tiers() == (8, 16)
+    assert dprec is D.dprec
