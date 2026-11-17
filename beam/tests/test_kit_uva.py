@@ -586,7 +586,8 @@ def test_beam_edep_streams_table_library_and_gdml_into_one_gpu_job(tmp_path):
 
 def test_beam_edep_mounted_body_runs_the_writer_on_the_gpu():
     t = kitmod.TASKS["beam_edep"]
-    assert t.resources.gpus == 1 and t.defaults == {"dtype": "float64"} and "beam_edep" in kitmod.FNAL_TASKS
+    assert t.resources.gpus == 1 and t.defaults == {"dtype": "float64", **kit_task.SCALE_DEFAULTS}
+    assert "beam_edep" in kitmod.FNAL_TASKS
     assert "-m beamfastsim.edepana point" in t.body and kit_task.EDEP_LIBRARY in t.body and "@p_dtype@" in t.body
     assert kit_task.EDEP_EDGE in t.body and '--edge-library "$EE"' in t.body
 
@@ -625,9 +626,70 @@ def test_beam_edep_cpu_streams_the_same_inputs_into_one_cpu_core(tmp_path):
 
 def test_beam_edep_cpu_mounted_body_runs_the_writer_on_one_core():
     t = kitmod.TASKS["beam_edep_cpu"]
-    assert t.resources.gpus == 0 and t.resources.cores == 1 and t.defaults == {"dtype": "float64"}
+    assert t.resources.gpus == 0 and t.resources.cores == 1
+    assert t.defaults == {"dtype": "float64", **kit_task.SCALE_DEFAULTS}
     assert "beam_edep_cpu" in kitmod.FNAL_TASKS
     assert "-m beamfastsim.edepana point" in t.body and "JAX not on the GPU" not in t.body
     assert "JAX_PLATFORMS=cpu" in t.body and "--procs 1 " in t.body and '--edge-library "$EE"' in t.body
     gpu = kitmod.TASKS["beam_edep"].body
     assert "JAX not on the GPU" in gpu and "JAX_PLATFORMS=cpu" not in gpu
+
+
+# -- opt-in field-map scales (ds_bscale, tsd_bscale) ----------------------------------------------------------------
+
+def _edep_cpu_body(tmp_path, **scale):
+    site, ep, kit, _ = make(tmp_path)
+    kit._delegates["beam_edep_cpu"] = kit_uva.BeamEdepCpuStream(kit, source=Source(), code="/path/to/slurm/beam",
+                                                               background=False)
+    pc = {**PE, "task": "beam_edep_cpu", "dtype": "float64", **scale}
+    assert kit.submit("bs1", pc, [], []) == {"handle": "bs1"}
+    return site.body, kit
+
+
+def test_unit_field_scales_are_the_unscaled_request(tmp_path):
+    plain = kit_uva.validate({**P})
+    assert kit_uva.validate({**P, "ds_bscale": 1.0, "tsd_bscale": 1}) == plain
+    assert "ds_bscale" not in plain and "tsd_bscale" not in plain
+    a, _ = _edep_cpu_body(tmp_path / "a")
+    b, _ = _edep_cpu_body(tmp_path / "b", ds_bscale=1.0, tsd_bscale=1.0)
+    assert a == b and "MU2EFS_BFIELD_MAPSCALE" not in a
+
+
+def test_field_scales_reach_the_job_container(tmp_path):
+    body, kit = _edep_cpu_body(tmp_path, ds_bscale=0.9, tsd_bscale=1.1)
+    line = next(l for l in body.splitlines() if l.startswith("B() { apptainer exec"))
+    assert '--env "MU2EFS_BFIELD_MAPSCALE=DSMap=0.9:DSExtension=0.9:TSdMap=1.1,JAX_PLATFORMS=cpu,' in line
+    assert body.count("MU2EFS_BFIELD_MAPSCALE") == 1
+    r = subprocess.run(["bash", "-n"], input=body.encode(), capture_output=True)
+    assert r.returncode == 0, r.stderr.decode()
+    assert json.loads((tmp_path / "kit" / "requests" / "bs1.json").read_text())["params"]["ds_bscale"] == 0.9
+
+
+SCALE_TASKS = {
+    "beam_point": (kit_uva.BeamPointStream, {k: v for k, v in P.items() if k != "task"}),
+    "beam_sob": (kit_uva.BeamSobStream, {"geom": "move_extras12.txt", "muons": 0, "electrons": 100000, "seed": 1}),
+    "beam_edep": (kit_uva.BeamEdepStream, {k: v for k, v in PE.items() if k != "task"}),
+    "beam_edep_cpu": (kit_uva.BeamEdepCpuStream, {k: v for k, v in PE.items() if k != "task"}),
+}
+
+
+@pytest.mark.parametrize("task", sorted(SCALE_TASKS))
+def test_field_scales_on_every_beam_task(tmp_path, task):
+    cls, params = SCALE_TASKS[task]
+    _, _, kit, _ = make(tmp_path)
+    h = cls(kit, source=Source(), code="/path/to/slurm/beam", background=False)
+    plain, _ = h.render(kit_uva.validate(params, task))
+    body, _ = h.render(kit_uva.validate({**params, "ds_bscale": 0.8}, task))
+    assert "MU2EFS_BFIELD_MAPSCALE" not in plain
+    assert body == plain.replace('--cleanenv --env "', '--cleanenv --env "MU2EFS_BFIELD_MAPSCALE=DSMap=0.8:DSExtension=0.8,', 1)
+    for bad in (0.4, 1.6, "0.9"):
+        with pytest.raises(ValueError):
+            kit_uva.validate({**params, "ds_bscale": bad}, task)
+
+
+def test_mounted_route_refuses_a_field_scale(tmp_path):
+    _, _, kit, _ = make(tmp_path)
+    with pytest.raises(ValueError, match="streaming route"):
+        kit.render({**PE, "ds_bscale": 0.9})
+    with pytest.raises(ValueError, match="in place"):           # unscaled: the plain route's usual refusal on UVA
+        kit.render({**PE, "ds_bscale": 1.0})

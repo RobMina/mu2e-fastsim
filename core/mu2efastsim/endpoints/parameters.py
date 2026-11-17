@@ -138,9 +138,20 @@ def schema(task: str, names) -> dict[str, Parameter]:
                                     unit="V" if key in ("min_voltage", "wf_noise") else "1")
     else:
         raise ValueError(f"fastsimkit: task {task!r} has no parameter schema")
+    if task in SCALED_TASKS:
+        for key in FIELD_SCALES:
+            if key in names:
+                specs[key] = number(0.5, 1.5, role="scenario")
     if set(specs) != set(names):
         raise ValueError(f"fastsimkit: parameter schema does not match task {task!r}")
     return specs
+
+
+# Opt-in field-map scales (mu2efastsim.bfield_scale: ds_bscale -> DSMap and DSExtension, tsd_bscale -> TSdMap) on
+# the beam tasks. A factor of exactly 1 is dropped from the validated parameters, so an unscaled request, its records
+# and its bindings are the same as before the parameters existed.
+FIELD_SCALES = ("ds_bscale", "tsd_bscale")
+SCALED_TASKS = ("beam_point", "beam_sob", "beam_edep", "beam_edep_cpu")
 
 
 def validate(task: str, params: dict, names, defaults=None) -> dict:
@@ -156,6 +167,9 @@ def validate(task: str, params: dict, names, defaults=None) -> dict:
         raise ValueError(f"fastsimkit: expected task {task!r}")
     specs = schema(task, names)
     out = {key: specs[key].parse(task, key, params.get(key, defaults.get(key))) for key in names}
+    for key in FIELD_SCALES:
+        if out.get(key) == 1.0:
+            del out[key]
     if task == "veto_c4":
         for lo, hi in (("dt_lo", "dt_hi"), ("pmin", "pmax")):
             if out[lo] >= out[hi]:
