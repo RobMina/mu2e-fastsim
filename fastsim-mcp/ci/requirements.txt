@@ -1,0 +1,4 @@
+# fastsim-mcp suite of the CI workflow, on top of core/ci/requirements.txt: the MCP SDK and pydantic (the versions
+# the server was tested with in the project image's Python 3.13)
+mcp[cli]==1.30.0
+pydantic==2.14.3
