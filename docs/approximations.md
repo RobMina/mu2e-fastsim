@@ -197,8 +197,8 @@ behaviour and any stock-art route outside the chain's levels:
   crystal on its main deposit: the energy and energy-weighted time of the steps within 6 ns of the crystal's
   energy-weighted median step time.
   - **Speed** (one A100-SXM4-80GB, stock CaloShowerSteps of CE events -> clusters, fresh inputs, medians of 3):
-    parametric 1,145,949 ev/s (float32) and 996,877 ev/s (float64) in batches of 65,536 events, against the
-    waveform response's 22,075 and 19,159 ev/s (batches of 4,096): 52x and 52x faster; 1,763x and 1,534x the stock
+    parametric 1,705,635 ev/s (float32) and 1,665,452 ev/s (float64) in batches of 65,536 events, against the
+    waveform response's 22,075 and 19,159 ev/s (batches of 4,096): 77x and 87x faster; 2,624x and 2,562x the stock
     calorimeter digi + reco stage (650 ev/s per grid slot).
   - **Fidelity cost against stock** (held-out CE files, 14,218 events, the same steps and timing, against the stock
     calorimeter reco; float32 and float64 give the same numbers, the table's draws have fixed dtypes): energy shape

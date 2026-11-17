@@ -484,3 +484,50 @@ def test_chains_compile_without_command_buffers(monkeypatch):
                             "time": [700.0, 700.5], "z_local": [50.0, 60.0]}, caps.steps)
     out = dc.run(chain, steps, t, jax.random.PRNGKey(0))
     assert out["clusters"]["valid"][0].sum() == 1
+
+
+@pytest.mark.parametrize("big_event", [False, True])
+def test_cluster_fast_path_equals_one_pass(big_event):
+    """clusters on 16 hits per event, then (only for a batch with a larger event) on event_hits: the same clusters
+    and counts as one pass on event_hits."""
+    pos, disk = _grid()
+    table = PropagationTable(np.ones((1, 1), np.float32), np.zeros(1, np.float32), np.float32(1.0))
+    resp = dc.pack_response(_sim(len(disk)), _pulse(), np.full(10000, 12.0), table, _geom(pos, disk))
+    rng = np.random.default_rng(11)
+    n_ev = 32
+    seeds = rng.integers(0, len(disk), n_ev)
+    near = np.argsort(np.linalg.norm(pos[None, :, :] - pos[seeds][:, None, :], axis=2), axis=1)
+    counts = rng.integers(0, 14, n_ev)
+    if big_event:
+        counts[5] = 28
+    ev = np.repeat(np.arange(n_ev), counts)
+    j = np.concatenate([rng.permutation(min(c + 4, 40))[:c] for c in counts]).astype(int)
+    crystal = near[ev, j]
+    H = 1024
+    m = len(ev)
+    pad = lambda a, f, dt: np.concatenate([a.astype(dt), np.full(H - m, f, dt)])  # noqa: E731
+    t0 = rng.uniform(500, 1500, n_ev)
+    hits = dict(ok=jnp.asarray(np.arange(H) < m), event=jnp.asarray(pad(ev, 0, np.int64)),
+                crystal=jnp.asarray(pad(crystal, 0, np.int64)), nsipm=jnp.asarray(np.full(H, 2, np.int64)),
+                t=jnp.asarray(pad(t0[ev] + rng.normal(0, 0.6, m) + np.where(rng.random(m) < 0.1, 30.0, 0.0), 0,
+                                  np.float32)),
+                t_err=jnp.ones(H, jnp.float32), e=jnp.asarray(pad(rng.exponential(8.0, m) + 0.5, 0, np.float32)),
+                e_err=jnp.ones(H, jnp.float32))
+    caps = dc.Caps(events=n_ev, hits=H, event_hits=32, rounds=8)
+    one = dataclasses.replace(caps, event_hits_fast=0)
+    a = jax.tree_util.tree_map(np.asarray, jax.jit(lambda h: dc.clusters(resp, h, n_ev, caps))(hits))
+    b = jax.tree_util.tree_map(np.asarray, jax.jit(lambda h: dc.clusters(resp, h, n_ev, one))(hits))
+    for k in a[0]:
+        np.testing.assert_array_equal(a[0][k], b[0][k], err_msg=k)
+    assert {k: int(v) for k, v in a[1].items()} == {k: int(v) for k, v in b[1].items()}
+    assert a[0]["valid"].sum() > n_ev // 2
+
+
+def test_steps_batch_ships_narrow_indices():
+    s = dc.steps_batch({"event": [0, 3], "crystal": [5, 1347], "energy_g4": [1.0, 2.0], "energy_birks": [1.0, 2.0],
+                        "time": [600.0, 700.0], "z_local": [10.0, 20.0]}, 4)
+    assert s["event"].dtype == np.int32 and s["crystal"].dtype == np.int16
+    assert list(s["crystal"]) == [5, 1347, -1, -1]
+    with pytest.raises(ValueError, match="int16"):
+        dc.steps_batch({"event": [0], "crystal": [40000], "energy_g4": [1.0], "energy_birks": [1.0],
+                        "time": [600.0], "z_local": [10.0]}, 4)
