@@ -265,3 +265,11 @@ def test_dts_select_keeps_the_per_event_rows_and_the_path_names():
     assert got["trig"].shape == (2, 2) and got["seg_front_pos"].shape == (2, 3)
     assert got["trig_names"].tolist() == ["a", "b", "c", "d"]     # path names, even when there are n of them
     assert got["pid"].tolist() == [0.1, 0.3]
+
+
+def test_trigger_table_accepts_decisions_without_a_response_layer():
+    # the trigger stage's default is the named response "none" (no layer); older files wrote None or ""
+    for r in ("none", "None", "", None, " NONE "):
+        assert A._no_response_layer(r)
+    for r in ("ce", "dio", "rpc", "/x/response_v3.json"):
+        assert not A._no_response_layer(r)
