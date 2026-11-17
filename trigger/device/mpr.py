@@ -2,20 +2,30 @@
 
 A port of the stock finder per time cluster, at the trigger's settings: no calorimeter cluster on the time cluster
 (our inputs have none; a cluster with one would need the calo terms), TargetCon false, FitCircleStrategy ChiSquared.
-The stock module computes in float, and so does this port in both precisions. The quirks of the stock code are kept:
+Each stock expression is evaluated in its own precision and operation order, in both precisions of the chain:
 
-- polyAtan2 (Mu2eUtilities), with the `+- M_PI` of its x < 0 branch added in double and rounded to float;
+- float where the stock code computes in float, double where a C++ double literal or a double function promotes it
+  (`1.0 - x`, `1.0 / res2`, `/ 6.283185`, `n * 6.283185`, `+ M_PI`, `lambda * 2. * M_PI`, cos and sin of the helix
+  centre and positions, LsqSums4): the module traces under `jax.enable_x64`, so float64 is there in both precisions;
+- every product is rounded on its own before it is added (`_m`): XLA contracts a * b + c into one fused multiply-add,
+  which the stock build does not;
+- the hits of a time cluster are in the stock TimeCluster order (index order, recovered hits appended in the order
+  they were added) and each track iteration orders them with libstdc++'s std::sort by panel, which is not stable for
+  more than 16 hits (`_stock_sort`); float sums run in that order, and MergeHelices and HelixTool read each seed's hits
+  in it.
+
+The quirks of the stock code are kept:
+
 - the triplet distance cut on (x3 - x2, y3 - y2), x2 and y2 being already relative to the first hit;
 - the per-panel stub choice of the circle scan and its chi2 sum (see `_stubs`);
 - the circle kept is the last triplet with the most straw hits and the smallest chi2 sum;
 - init_dzdp keeps, among the slopes with the most hits, the LAST one with the LARGEST sum of residuals;
 - MergeHelices recomputes chi2dXY / chi2dZPhi (LsqSums4) with the RobustHelix centre rebuilt from rcent and the
   polyAtan2 azimuth; the helix azimuth of the hits is the ComboHit default 0, so chi2dZPhi is 0.
-
-Hits of one panel keep their collection order (stock's std::sort by panel is not stable). Float sums run in hit order.
 """
 from __future__ import annotations
 
+import contextlib
 import math
 
 import jax
@@ -23,9 +33,12 @@ import jax.numpy as jnp
 import numpy as np
 
 F32 = jnp.float32
-TWO_PI = np.float32(6.283185)
+F64 = jnp.float64
 BIG = np.float32(3.0e38)
 CLUSTER_HITS = 64                    # hit slots per time cluster for the finder (more: counted in `overflow`)
+SORT_THRESHOLD = 16                  # libstdc++ _S_threshold
+_PI_2 = np.float32(math.pi / 2.0)    # polyAtan2's `float PI_2 = M_PI/2.`
+MM2MEV = np.float32(3. / 10.)        # HelixFilter's `float mm2MeV = 3./10.`
 
 
 def settings(m):
@@ -51,66 +64,95 @@ def merge_settings(m):
     """MergeHelices module settings (SelectBest true, the stock default, is the only mode)."""
     if not m.get("SelectBest", True):
         raise ValueError("device MergeHelices supports SelectBest true")
-    return {"minnover": int(m.get("MinNHitOverlap", 10)), "minfrac": float(m.get("MinHitOverlapFraction", 0.5)),
-            "deltanh": int(m.get("deltanh", 5)), "scalexy": float(m.get("scaleXY", 1.1))}
+    return {"minnover": int(m.get("MinNHitOverlap", 10)), "minfrac": np.float32(m.get("MinHitOverlapFraction", 0.5)),
+            "deltanh": int(m.get("deltanh", 5)), "scalexy": np.float32(m.get("scaleXY", 1.1))}
 
 
-# --- float helpers --------------------------------------------------------------------------------------------------
+# --- stock arithmetic -----------------------------------------------------------------------------------------------
+
+_ZERO = []                           # (int32, int64) zeros of the current trace, opaque to the compiler
+
+
+@contextlib.contextmanager
+def strict(zsrc):
+    """Trace mpr code: float64 on (the stock double steps, in either precision of the chain) and the product guard
+    armed. `zsrc` is any int array of the inputs; the guard ORs products with min(|zsrc|, 0), which is 0 but not
+    known to the compiler, so no multiply is fused into the add that follows it."""
+    with jax.enable_x64(True):
+        z = jnp.minimum(jnp.min(jnp.abs(jnp.ravel(jnp.asarray(zsrc)).astype(jnp.int32))), 0)
+        _ZERO.append((z, z.astype(jnp.int64)))
+        try:
+            yield
+        finally:
+            _ZERO.pop()
+
+
+def _g(p):
+    """p, rounded as it is: a value the compiler cannot fuse into a following add."""
+    z32, z64 = _ZERO[-1]
+    if p.dtype == F64:
+        return jax.lax.bitcast_convert_type(jax.lax.bitcast_convert_type(p, jnp.int64) | z64, F64)
+    return jax.lax.bitcast_convert_type(jax.lax.bitcast_convert_type(p, jnp.int32) | z32, F32)
+
+
+def _m(*xs):
+    """Left-to-right product, rounded after every factor as in C++, and never fused into a following add."""
+    p = xs[0]
+    for x in xs[1:]:
+        p = p * x
+    return _g(jnp.asarray(p))
+
+
+def _d(x):
+    return jnp.asarray(x).astype(F64)
+
 
 def _f(x):
-    return jnp.asarray(x, F32)
+    return jnp.asarray(x).astype(F32)
 
 
 def _round(x):
-    """std::round on float: halves away from zero."""
+    """std::round: halves away from zero."""
     t = jnp.trunc(x)
     return jnp.where(jnp.abs(x - t) >= 0.5, t + jnp.sign(x), t)
 
 
-_PI_HI = np.float32(math.pi)
-_PI_LO = np.float32(math.pi - float(_PI_HI))
-_PI_2 = np.float32(math.pi / 2.0)
-
-
-def _add_pi(a, sign):
-    """(float)((double)a + sign * M_PI) in float arithmetic: two-sum of a and the float pair (pi_hi, pi_lo)."""
-    hi = np.float32(sign) * _PI_HI
-    s = a + hi
-    bp = s - a
-    err = (a - (s - bp)) + (hi - bp)
-    return s + (err + np.float32(sign) * _PI_LO)
+def _loops(a):
+    """std::round(a / 6.283185) of a float numerator with the double literal (the dz/dphi loop count)."""
+    return _round(_d(a) / 6.283185)
 
 
 def _approx_atan(z):
-    return (np.float32(0.97239411) + np.float32(-0.19194795) * z * z) * z
+    return _m(np.float32(0.97239411) + _m(np.float32(-0.19194795), z, z), z)
 
 
 def poly_atan2(y, x):
-    """Mu2eUtilities polyAtan2 (float)."""
+    """Mu2eUtilities polyAtan2 (float; the x < 0 branch adds M_PI in double)."""
     y, x = _f(y), _f(x)
     ax = _approx_atan(y / jnp.where(x != 0, x, np.float32(1.0)))
     ay = _approx_atan(x / jnp.where(y != 0, y, np.float32(1.0)))
-    r_x = jnp.where(x > 0, ax, jnp.where(y >= 0, _add_pi(ax, 1.0), _add_pi(ax, -1.0)))
+    r_x = jnp.where(x > 0, ax, jnp.where(y >= 0, _f(_d(ax) + math.pi), _f(_d(ax) - math.pi)))
     r_y = jnp.where(y > 0, -ay + _PI_2, -ay - _PI_2)
     r0 = jnp.where(y > 0, _PI_2, jnp.where(y < 0, -_PI_2, np.float32(0.0)))
     return jnp.where(x != 0, jnp.where(jnp.abs(x) > jnp.abs(y), r_x, r_y), r0)
 
 
 def _seq_sum(v, mask, axis=-1):
-    """Float sum in index order along `axis` (the stock accumulation order)."""
-    v = jnp.moveaxis(jnp.where(mask, v, np.float32(0.0)), axis, 0)
-    s, _ = jax.lax.scan(lambda c, a: (c + a, None), jnp.zeros(v.shape[1:], F32), v)
+    """Sum in index order along `axis` (the stock accumulation order), in v's precision."""
+    v = jnp.moveaxis(jnp.where(mask, v, jnp.zeros((), v.dtype)), axis, 0)
+    s, _ = jax.lax.scan(lambda c, a: (c + a, None), jnp.zeros(v.shape[1:], v.dtype), v)
     return s
 
 
 def _ls_fit(x, y, w, mask):
-    """LSFitter: y = fa x + fb, weights w, float sums in hit order; 0 when |det| <= 1e-6."""
-    sn, sx, sx2 = _seq_sum(w, mask), _seq_sum(x * w, mask), _seq_sum(x * x * w, mask)
-    sy, sxy = _seq_sum(y * w, mask), _seq_sum(x * y * w, mask)
-    den = sn * sx2 - sx * sx
-    ok = jnp.abs(den) > np.float32(1e-6)
+    """LSFitter (float sums in hit order): y = fa x + fb; 0 when |det| <= 1e-6."""
+    sn, sx, sx2 = _seq_sum(w, mask), _seq_sum(_m(x, w), mask), _seq_sum(_m(x, x, w), mask)
+    sy, sxy = _seq_sum(_m(y, w), mask), _seq_sum(_m(x, y, w), mask)
+    den = _m(sn, sx2) - _m(sx, sx)
+    ok = _d(jnp.abs(den)) > 1e-6
     d = jnp.where(ok, den, np.float32(1.0))
-    return jnp.where(ok, (sn * sxy - sx * sy) / d, 0.0), jnp.where(ok, (sy * sx2 - sx * sxy) / d, 0.0)
+    return (jnp.where(ok, (_m(sn, sxy) - _m(sx, sy)) / d, np.float32(0.0)),
+            jnp.where(ok, (_m(sy, sx2) - _m(sx, sxy)) / d, np.float32(0.0)))
 
 
 def _first_strict_max(v, mask, start):
@@ -135,23 +177,93 @@ def _seg_scan(vals, flags, fn, reverse=False):
     return out
 
 
+# --- std::sort ------------------------------------------------------------------------------------------------------
+
+def _stock_sort(key, sel):
+    """The order libstdc++'s std::sort (GCC 13 / 14) gives the selected slots, taken in slot order, by `key` with
+    operator<: introsort (median of three to the first element, unguarded Hoare partition, recursion above 16
+    elements), then the final insertion sort, which is stable and so equals a stable sort of the arrangement the
+    partitions leave. Returns (perm, n, fallback): perm [L] lists the selected slots in that order, then the others;
+    fallback is True where introsort would have switched to heap sort (depth limit), which this does not reproduce."""
+    L = sel.shape[0]
+    n = jnp.sum(sel).astype(jnp.int32)
+    a = jnp.argsort(~sel, stable=True).astype(jnp.int32)               # selected slots first, in slot order
+    S = 2 * max(L, 2).bit_length() + 4                                  # stack bound: one pending range per level
+    depth0 = jnp.where(n > 0, 2 * (31 - jax.lax.clz(jnp.maximum(n, 1))), 0)
+    pos = jnp.arange(L, dtype=jnp.int32)
+
+    def lt(i, j, a):
+        return key[a[i]] < key[a[j]]
+
+    def swap(a, i, j):
+        ai, aj = a[i], a[j]
+        return a.at[i].set(aj).at[j].set(ai)
+
+    def partition(a, f, l, go):
+        mid = f + (l - f) // 2
+        x, y, z = f + 1, mid, l - 1
+        sw = jnp.where(lt(x, y, a), jnp.where(lt(y, z, a), y, jnp.where(lt(x, z, a), z, x)),
+                       jnp.where(lt(x, z, a), x, jnp.where(lt(y, z, a), z, y)))
+        a = swap(a, f, sw)
+        pk = key[a[f]]
+
+        def cond(st):
+            return go & ~st[3]
+
+        def body(st):
+            a, first, last, _ = st
+            ka = key[a]
+            cand = (pos >= first) & ~(ka < pk)
+            first = jnp.where(jnp.any(cand), jnp.argmax(cand), L).astype(jnp.int32)
+            last = (L - 1 - jnp.argmax(((pos <= last - 1) & ~(pk < ka))[::-1])).astype(jnp.int32)
+            done = ~(first < last)
+            a = jnp.where(done, a, swap(a, first, last))
+            return a, jnp.where(done, first, first + 1), last, done
+
+        a, cut, _, _ = jax.lax.while_loop(cond, body, (a, f + 1, l, jnp.bool_(False)))
+        return a, cut
+
+    def cond(st):
+        return st[4] > 0
+
+    def body(st):
+        a, sf, sl, sd, top, fb = st
+        top = top - 1
+        f, l, d = sf[top], sl[top], sd[top]
+        big = (l - f) > SORT_THRESHOLD
+        fb = fb | (big & (d == 0))
+        go = big & (d > 0)
+        a2, cut = partition(a, f, l, go)
+        a = jnp.where(go, a2, a)
+        sf = jnp.where(go, sf.at[top].set(cut).at[top + 1].set(f, mode="drop"), sf)
+        sl = jnp.where(go, sl.at[top].set(l).at[top + 1].set(cut, mode="drop"), sl)
+        sd = jnp.where(go, sd.at[top].set(d - 1).at[top + 1].set(d - 1, mode="drop"), sd)
+        return a, sf, sl, sd, jnp.where(go, top + 2, top), fb
+
+    z = jnp.zeros(S, jnp.int32)
+    st = (a, z, z.at[0].set(n), z.at[0].set(depth0), jnp.int32(1), jnp.bool_(False))
+    a, _, _, _, _, fb = jax.lax.while_loop(cond, body, st)
+    fin = jnp.argsort(jnp.where(pos < n, key[a], jnp.iinfo(jnp.int32).max), stable=True)   # final insertion sort
+    return a[fin], n, fb
+
+
 # --- circle candidate -----------------------------------------------------------------------------------------------
 
 def _compton(h, proc, s):
     phi = poly_atan2(h["y"], h["x"])
-    phi = jnp.where(phi < 0, phi + np.float32(6.28318), phi)
-    nb = int(np.float32(6.28318) / s["phibin"]) + 1
+    phi = jnp.where(phi < 0, _f(_d(phi) + 6.28318), phi)
+    nb = int(6.28318 / float(s["phibin"])) + 1
     ib = jnp.clip((phi / s["phibin"]).astype(jnp.int32), 0, nb - 1)
     hist = jnp.zeros(nb, jnp.int32).at[ib].add(jnp.where(proc, h["nsh"], 0))
     i = jnp.arange(nb + 3)
     tri = hist[(i + nb - 1) % nb] + hist[i % nb] + hist[(i + 1) % nb]
     imax = _first_strict_max(tri, jnp.ones(tri.shape, bool), 0)
     smax = jnp.where(imax >= 0, tri[jnp.maximum(imax, 0)], 0)
-    phimax = (jnp.maximum(imax, 0).astype(F32) + np.float32(0.5)) * s["phibin"]
+    phimax = _f((_d(jnp.maximum(imax, 0)) + 0.5) * _d(s["phibin"]))
     dphi = phi - phimax
-    dphi = jnp.where(dphi > np.float32(6.2831), dphi - np.float32(6.2831), dphi)
-    dphi = jnp.where(dphi < np.float32(-6.2831), dphi + np.float32(6.2831), dphi)
-    return proc & (smax >= s["minbin"]) & (jnp.abs(dphi) < np.float32(1.5) * s["phibin"])
+    dphi = jnp.where(_d(dphi) > 6.2831, _f(_d(dphi) - 6.2831), dphi)
+    dphi = jnp.where(_d(dphi) < -6.2831, _f(_d(dphi) + 6.2831), dphi)
+    return proc & (smax >= s["minbin"]) & (_d(jnp.abs(dphi)) < 1.5 * _d(s["phibin"]))
 
 
 def _stubs(h, proc, first_panel, cx, cy, r, s):
@@ -164,8 +276,8 @@ def _stubs(h, proc, first_panel, cx, cy, r, s):
     compares with the first processed hit's panel); each group contributes its first closest hit; the chi2 sum is the
     first hit's dR^2 of every group after the first, plus the closest dR^2 of the last group."""
     dx, dy = h["x"] - cx[..., None], h["y"] - cy[..., None]
-    dr = jnp.sqrt(dx * dx + dy * dy) - r[..., None]
-    chisq = dr * dr
+    dr = jnp.sqrt(_m(dx, dx) + _m(dy, dy)) - r[..., None]
+    chisq = _m(dr, dr)
     ok = proc & ~(chisq > s["mindr2"])
     H = ok.shape[-1]
     pos = jnp.broadcast_to(jnp.arange(H), ok.shape)
@@ -199,7 +311,7 @@ def _circle(h, proc, s):
     seed = proc & ~_compton(h, proc, s)
     first_panel = h["upanel"][jnp.argmax(proc)]
     x, y = h["x"], h["y"]
-    r2 = x * x + y * y
+    r2 = _m(x, x) + _m(y, y)
     jj, kk = jnp.meshgrid(jnp.arange(H), jnp.arange(H), indexing="ij")
     flat = jj * H + kk
 
@@ -208,17 +320,18 @@ def _circle(h, proc, s):
         x1, y1 = x[i], y[i]
         x2, y2 = (x - x1)[:, None], (y - y1)[:, None]                  # second hit j
         x3, y3 = (x - x1)[None, :], (y - y1)[None, :]                  # third hit k
-        d12, d13 = x2 * x2 + y2 * y2, x3 * x3 + y3 * y3
+        d12, d13 = _m(x2, x2) + _m(y2, y2), _m(x3, x3) + _m(y3, y3)
         x4, y4 = x[None, :] - x2, y[None, :] - y2
-        d4 = x4 * x4 + y4 * y4
-        den = np.float32(2) * (x2 * y3 - x3 * y2)
-        dd = jnp.where(jnp.abs(den) < np.float32(1e-9), np.float32(1.0), den)
-        cx = (d12 * y3 - d13 * y2) / dd + x1
-        cy = (d13 * x2 - d12 * x3) / dd + y1
-        r = jnp.sqrt((x1 - cx) * (x1 - cx) + (y1 - cy) * (y1 - cy))
-        rc2 = cx * cx + cy * cy
+        d4 = _m(x4, x4) + _m(y4, y4)
+        den = np.float32(2) * (_m(x2, y3) - _m(x3, y2))
+        bad = _d(jnp.abs(den)) < 1e-9
+        dd = jnp.where(bad, np.float32(1.0), den)
+        cx = (_m(d12, y3) - _m(d13, y2)) / dd + x1
+        cy = (_m(d13, x2) - _m(d12, x3)) / dd + y1
+        r = jnp.sqrt(_m(x1 - cx, x1 - cx) + _m(y1 - cy, y1 - cy))
+        rc2 = _m(cx, cx) + _m(cy, cy)
         okt = seed[i] & seed[:, None] & seed[None, :] & (jj > i) & (kk > jj)
-        okt &= ~(d12 < s["mindxy2"]) & ~(d13 < s["mindxy2"]) & ~(d4 < s["mindxy2"]) & ~(jnp.abs(den) < np.float32(1e-9))
+        okt &= ~(d12 < s["mindxy2"]) & ~(d13 < s["mindxy2"]) & ~(d4 < s["mindxy2"]) & ~bad
         okt &= ~((r < s["minrad"]) | (r > s["maxrad"]))
         okt &= ~((rc2 > r2[i]) | (rc2 > r2[:, None]) | (rc2 > r2[None, :]))
         stub, nsh, tot = _stubs(h, proc, first_panel, cx, cy, r, s)
@@ -245,17 +358,17 @@ def _init_dzdp(h, cx, cy, mem, hel, s):
     p = poly_atan2(h["y"] - cy, h["x"] - cx)
     fa_init = s["mindpdz"] if hel > 0 else -s["maxdpdz"]
     fa_end = s["maxdpdz"] if hel > 0 else -s["mindpdz"]
-    nsteps = int(np.round((fa_end - fa_init) / s["dpdzstep"]))
-    fas = jnp.asarray(np.float32(fa_init) + np.arange(nsteps + 1).astype(np.float32) * s["dpdzstep"])
+    nsteps = int(np.round(np.float32(np.float32(fa_end - fa_init) / s["dpdzstep"])))
+    fas = jnp.asarray(np.float32(fa_init) + np.arange(nsteps + 1).astype(np.float32) * s["dpdzstep"], F32)
     jsel = mem & ((jnp.cumsum(mem) - 1) % 2 == 0)
     i0 = jnp.argmax(mem)
     pos = jnp.arange(H)
 
     def per_fa(fa):
-        fb = h["z"] - fa * p                                           # candidate intercept per anchor j
+        fb = h["z"] - _m(fa, p)                                        # candidate intercept per anchor j
         q = (h["z"][None, :] - fb[:, None]) / fa                       # [j, hit]
-        nl = _round((p[None, :] - q) / TWO_PI)
-        delta = jnp.abs(q - (p[None, :] - nl * TWO_PI))
+        nl = _loops(p[None, :] - q)
+        delta = jnp.abs(q - _f(_d(p[None, :]) - _m(nl, 6.283185)))
         acc = mem[None, :] & ~(delta > s["dphiinit"])
         last = jax.lax.cummax(jnp.where(acc, pos[None, :], -1), axis=1)
         prev = jnp.concatenate([jnp.full((H, 1), -1), last[:, :-1]], axis=1)
@@ -278,42 +391,48 @@ def _fit_dzdp(h, cx, cy, fa0, fb0, mem, hel, s):
     """fit_dzdp from a valid slope fa0 != 0: (fa, fb), unchanged when the fitted slope has the wrong sign."""
     phic = poly_atan2(h["y"] - cy, h["x"] - cx)
     q = (h["z"] - fb0) / fa0
-    nl = _round((phic - q) / TWO_PI)
-    ploop = phic - nl * TWO_PI
+    nl = _loops(phic - q)
+    ploop = _f(_d(phic) - _m(nl, 6.283185))
     use = mem & (jnp.abs(q - ploop) < s["dphiinit"])
     fa, fb = _ls_fit(ploop, h["z"], h["nsh"].astype(F32), use)
-    keep = (fa < np.float32(1e-3)) if hel > 0 else (fa > np.float32(-1e-3))
+    keep = (_d(fa) < 1e-3) if hel > 0 else (_d(fa) > -1e-3)
     fs = jnp.where(keep, np.float32(1.0), fa)
-    return jnp.where(keep, fa0, fa), jnp.where(keep, fb0, fb - jnp.trunc(fb / fs / TWO_PI) * TWO_PI * fs)
+    fbn = _f(_d(fb) - _m(jnp.trunc(_d(fb / fs) / 6.283185), 6.283185, _d(fs)))
+    return jnp.where(keep, fa0, fa), jnp.where(keep, fb0, fbn)
+
+
+def _res2(werr, terr, c2):
+    """werr*werr*c2 + terr*terr*(1.0-c2): float first term, double second term and sum, stored as float."""
+    return _f(_d(_m(werr, werr, c2)) + _m(_d(_m(terr, terr)), 1.0 - _d(c2)))
 
 
 def _chi2_circle(h, cx, cy, r):
     dx, dy = h["x"] - cx, h["y"] - cy
-    rr = jnp.sqrt(dx * dx + dy * dy)
-    rw = (h["udx"] * dx + h["udy"] * dy) / rr
-    werr, terr = jnp.sqrt(h["uvar"]), jnp.sqrt(h["vvar"])
-    res2 = werr * werr * (rw * rw) + terr * terr * (np.float32(1.0) - rw * rw)
+    rr = jnp.sqrt(_m(dx, dx) + _m(dy, dy))
     dr = rr - r
-    return dr * dr / res2
+    rw = (_m(h["udx"], dx) + _m(h["udy"], dy)) / rr
+    werr, terr = jnp.sqrt(h["uvar"]), jnp.sqrt(h["vvar"])
+    return _m(dr, dr) / _res2(werr, terr, _m(rw, rw))
 
 
 def _fit_circle_chi2(h, cx0, cy0, mem):
     dx, dy = h["x"] - cx0, h["y"] - cy0
-    rw = h["udx"] * dx + h["udy"] * dy
-    c2 = rw * rw / (dx * dx + dy * dy)
+    rw = _m(h["udx"], dx) + _m(h["udy"], dy)
+    c2 = _m(rw, rw) / (_m(dx, dx) + _m(dy, dy))
     werr, terr = jnp.sqrt(h["uvar"]), jnp.sqrt(h["vvar"])
-    w = np.float32(1.0) / (werr * werr * c2 + terr * terr * (np.float32(1.0) - c2))
+    w = _f(1.0 / _d(_res2(werr, terr, c2)))
     x, y = h["x"], h["y"]
-    S = lambda v: _seq_sum(v, mem)
-    x_, x2_, x3_, y_, y2_, y3_ = S(x * w), S(x * x * w), S(x * x * x * w), S(y * w), S(y * y * w), S(y * y * y * w)
-    xy_, x2y_, xy2_, w_ = S(x * y * w), S(x * x * y * w), S(x * y * y * w), S(w)
-    d11, d20, d30, d21 = w_ * xy_ - x_ * y_, w_ * x2_ - x_ * x_, w_ * x3_ - x2_ * x_, w_ * x2y_ - x2_ * y_
-    d02, d03, d12 = w_ * y2_ - y_ * y_, w_ * y3_ - y2_ * y_, w_ * xy2_ - x_ * y2_
-    den = np.float32(2) * (d20 * d02 - d11 * d11)
-    cx = ((d30 + d12) * d02 - (d03 + d21) * d11) / den
-    cy = ((d03 + d21) * d20 - (d30 + d12) * d11) / den
-    c = (x2_ + y2_ - np.float32(2) * cx * x_ - np.float32(2) * cy * y_) / w_
-    return cx, cy, jnp.sqrt(c + cx * cx + cy * cy)
+    S = lambda *v: _seq_sum(_m(*v), mem)
+    x_, x2_, x3_, y_, y2_, y3_ = S(x, w), S(x, x, w), S(x, x, x, w), S(y, w), S(y, y, w), S(y, y, y, w)
+    xy_, x2y_, xy2_, w_ = S(x, y, w), S(x, x, y, w), S(x, y, y, w), _seq_sum(w, mem)
+    d11, d20, d30 = _m(w_, xy_) - _m(x_, y_), _m(w_, x2_) - _m(x_, x_), _m(w_, x3_) - _m(x2_, x_)
+    d21, d02, d03, d12 = _m(w_, x2y_) - _m(x2_, y_), _m(w_, y2_) - _m(y_, y_), _m(w_, y3_) - _m(y2_, y_), \
+        _m(w_, xy2_) - _m(x_, y2_)
+    den = np.float32(2) * (_m(d20, d02) - _m(d11, d11))
+    cx = (_m(d30 + d12, d02) - _m(d03 + d21, d11)) / den
+    cy = (_m(d03 + d21, d20) - _m(d30 + d12, d11)) / den
+    c = (x2_ + y2_ - _m(np.float32(2), cx, x_) - _m(np.float32(2), cy, y_)) / w_
+    return cx, cy, jnp.sqrt(c + _m(cx, cx) + _m(cy, cy))
 
 
 def _isnormal(x):
@@ -325,13 +444,13 @@ def _helix(h, cx, cy, r, chits, hel, s):
     nsh_c = jnp.sum(jnp.where(chits, h["nsh"], 0))
     fa, fb, found = _init_dzdp(h, cx, cy, chits, hel, s)
     fa, fb = _fit_dzdp(h, cx, cy, jnp.where(found, fa, np.float32(1)), fb, chits, hel, s)
-    alive = found & ~(jnp.abs(fa) < np.float32(1e-3))                  # no slope: stock divides by 0, no hit, cleared
+    alive = found & ~(_d(jnp.abs(fa)) < 1e-3)                          # no slope: stock divides by 0, no hit, cleared
     fs = jnp.where(alive, fa, np.float32(1))
     phi = poly_atan2(h["y"] - cy, h["x"] - cx)
     q = (h["z"] - fb) / fs
-    m = chits & (jnp.abs(q - phi + _round((phi - q) / TWO_PI) * TWO_PI) < s["dphifit"])     # filterZPhi
+    m = chits & (_f(jnp.abs(_d(q - phi) + _m(_loops(phi - q), 6.283185))) < s["dphifit"])  # filterZPhi
     fat, fbt = _ls_fit(h["z"], h["time"], jnp.ones_like(h["z"]), m)                         # fit_dzdt
-    m = m & (jnp.abs(fat * h["z"] + fbt - h["time"]) < s["dtfit"])                           # filterZT
+    m = m & (jnp.abs(_m(fat, h["z"]) + fbt - h["time"]) < s["dtfit"])                       # filterZT
     nsh = nsh_c - jnp.sum(jnp.where(chits & ~m, h["nsh"], 0))
     H = m.shape[0]
 
@@ -353,7 +472,7 @@ def _helix(h, cx, cy, r, chits, hel, s):
     cx, cy, r, m, nsh, _ = jax.lax.while_loop(cond, body, (cx, cy, r, m, nsh, alive))
     fa, fb = _fit_dzdp(h, cx, cy, fs, fb, m, hel, s)
     fat, fbt = _ls_fit(h["z"], h["time"], jnp.ones_like(h["z"]), m)
-    ok = alive & ~(jnp.abs(fa) < np.float32(1e-3)) & ~(jnp.abs(fat) < np.float32(1e-3)) & _isnormal(fa) & _isnormal(fat)
+    ok = alive & ~(_d(jnp.abs(fa)) < 1e-3) & ~(_d(jnp.abs(fat)) < 1e-3) & _isnormal(fa) & _isnormal(fat)
     m = m & ok
     return {"nsh": jnp.sum(jnp.where(m, h["nsh"], 0)), "mask": m, "cx": cx, "cy": cy, "r": r, "fa": fa, "fb": fb}
 
@@ -361,37 +480,47 @@ def _helix(h, cx, cy, r, chits, hel, s):
 # --- one time cluster -------------------------------------------------------------------------------------------------
 
 def _cluster(h, members, s):
-    """findHelicesInTC on one time cluster (hits already in panel order): per track iteration, the kept helix (or
-    none), as arrays [niter] (ok, helicity, nsh, cx, cy, r, fa, fb) and hit masks [niter, H]."""
+    """findHelicesInTC on one time cluster, its hits in the stock TimeCluster order: per track iteration, the kept
+    helix (or none), as arrays [niter] (ok, helicity, nsh, cx, cy, r, fa, fb), hit masks [niter, H] and each hit's
+    position in that iteration's hit order (rank [niter, H]), plus `fallback` (a sort this port does not cover).
+    Call it inside `strict`."""
     H = members.shape[0]
     outs = []
     used = jnp.zeros(H, bool)
     stopped = jnp.bool_(False)
+    fallback = jnp.bool_(False)
     for _ in range(s["niter"]):
         proc = members & ~used
         togo = jnp.sum(jnp.where(proc, h["nsh"], 0))
         stopped = stopped | (togo < s["minnsh"])
-        cx, cy, r, stub = _circle(h, proc, s)
-        ncirc = jnp.sum(jnp.where(stub, h["nsh"], 0))
+        perm, n, fb = _stock_sort(h["upanel"], proc)                   # hitsToProcess, sorted by panel
+        fallback = fallback | (fb & ~stopped)
+        hp = {k: v[perm] for k, v in h.items()}
+        pp = jnp.arange(H) < n
+        rank = jnp.zeros(H, jnp.int32).at[perm].set(jnp.arange(H, dtype=jnp.int32))
+        cx, cy, r, stub = _circle(hp, pp, s)
+        ncirc = jnp.sum(jnp.where(stub, hp["nsh"], 0))
         has = ~stopped & (ncirc >= s["minnsh"])
-        hx = {hel: _helix(h, cx, cy, r, stub, hel, s) for hel in s["helicities"]}
+        hx = {hel: _helix(hp, cx, cy, r, stub, hel, s) for hel in s["helicities"]}
         pos, neg = hx[1], hx[-1]
         pos_n = jnp.where(has, pos["nsh"], 0)
         neg_n = jnp.where(has, neg["nsh"], 0)
         use_pos = pos_n >= neg_n
         best = jax.tree.map(lambda a, b: jnp.where(use_pos, a, b), pos, neg)
-        bm = best["mask"] & has
-        used = used | bm
+        bm = best["mask"] & has                                        # in the iteration's hit order
+        used = used | bm[rank]
         bn = jnp.where(use_pos, pos_n, neg_n)
-        z = h["z"]
+        z = hp["z"]
         zfirst = z[jnp.argmax(bm)]
         zlast = z[H - 1 - jnp.argmax(bm[::-1])]
-        edep = jnp.sum(jnp.where(bm, h["edep"] * h["nsh"].astype(F32), 0.0)) / (jnp.sum(jnp.where(bm, h["nsh"], 0)) +
-                                                                               np.float32(1e-10))
+        nshf = hp["nsh"].astype(F32)
+        es = _seq_sum(_m(hp["edep"], nshf), bm)
+        edep = _f(_d(es) / (_d(jnp.sum(jnp.where(bm, hp["nsh"], 0))) + 1e-10))
         ok = ~stopped & (bn >= s["minnsh"]) & ~((zlast - zfirst) < s["mindz"]) & ~(edep > s["maxedep"])
-        outs.append({"ok": ok, "hel": jnp.where(use_pos, 1, -1), "nsh": bn, "mask": bm & ok, "cx": best["cx"],
-                     "cy": best["cy"], "r": best["r"], "fa": best["fa"], "fb": best["fb"]})
-    return jax.tree.map(lambda *a: jnp.stack(a), *outs)
+        outs.append({"ok": ok, "hel": jnp.where(use_pos, 1, -1), "nsh": bn, "mask": (bm & ok)[rank], "rank": rank,
+                     "cx": best["cx"], "cy": best["cy"], "r": best["r"], "fa": best["fa"], "fb": best["fb"]})
+    out = jax.tree.map(lambda *a: jnp.stack(a), *outs)
+    return {**out, "fallback": fallback}
 
 
 def _dedupe(ok, hel, mask, which):
@@ -417,52 +546,59 @@ def _dedupe(ok, hel, mask, which):
 
 # --- MergeHelices and the helix quantities --------------------------------------------------------------------------
 
-def _lsq_chi2_circle(x, y, w, mask, ft):
-    """LsqSums4::chi2DofCircle of the points (fX0 = fY0 = 0), in the float type ft (double in stock)."""
-    x, y, w = x.astype(ft), y.astype(ft), w.astype(ft)
-    S = lambda v: jnp.sum(jnp.where(mask, v, 0), axis=-1)
-    sw, qn = S(w), S(jnp.ones_like(w))
-    m = lambda v: S(w * v) / sw
-    xm, ym, x2m, xym, y2m = m(x), m(y), m(x * x), m(x * y), m(y * y)
-    x3m, x2ym, xy2m, y3m = m(x ** 3), m(x * x * y), m(x * y * y), m(y ** 3)
-    x4m, x2y2m, y4m = m(x ** 4), m(x * x * y * y), m(y ** 4)
-    sxx, sxy, syy = x2m - xm * xm, xym - xm * ym, y2m - ym * ym
-    sx2x, sx2y, sxy2, syy2 = x3m - xm * x2m, x2ym - ym * x2m, xy2m - xm * y2m, y3m - ym * y2m
-    sx2x2, sx2y2, sy2y2 = x4m - x2m * x2m, x2y2m - x2m * y2m, y4m - y2m * y2m
-    det = sxx * syy - sxy * sxy
-    x0 = (syy * (sx2x + sxy2) - sxy * (sx2y + syy2)) / 2 / det
-    y0 = (sxx * (sx2y + syy2) - sxy * (sx2x + sxy2)) / 2 / det
+def _lsq_chi2_circle(x, y, w):
+    """LsqSums4::chi2DofCircle (fX0 = fY0 = 0) of the points [n, L] in seed hit order (w = 0 past the end), double
+    sums in that order, every term as addPoint and the sig* members compute it."""
+    X, Y, W = _d(x), _d(y), _d(w)
+    used = W != 0
+    X2, Y2, XY = _m(X, X), _m(Y, Y), _m(X, Y)
+    W_X, W_Y, W_X2, W_Y2 = _m(W, X), _m(W, Y), _m(W, X2), _m(W, Y2)
+    S = lambda v: _seq_sum(v, used)
+    qn = jnp.sum(used, axis=-1).astype(F64)
+    sw, sx, sy, sx2, sxy, sy2 = S(W), S(W_X), S(W_Y), S(W_X2), S(_m(W, XY)), S(W_Y2)
+    sx3, sx2y, sxy2, sy3 = S(_m(W_X2, X)), S(_m(W_X2, Y)), S(_m(W_Y2, X)), S(_m(W_Y2, Y))
+    sx4, sx2y2, sy4 = S(_m(W_X2, X2)), S(_m(W_X2, Y2)), S(_m(W_Y2, Y2))
+    xm, ym, x2m, xym, y2m = sx / sw, sy / sw, sx2 / sw, sxy / sw, sy2 / sw
+    x3m, x2ym, xy2m, y3m = sx3 / sw, sx2y / sw, sxy2 / sw, sy3 / sw
+    x4m, x2y2m, y4m = sx4 / sw, sx2y2 / sw, sy4 / sw
+    sxx, sxy_, syy = x2m - _m(xm, xm), xym - _m(xm, ym), y2m - _m(ym, ym)
+    sx2x, sx2y_, sxy2_, syy2 = x3m - _m(xm, x2m), x2ym - _m(ym, x2m), xy2m - _m(xm, y2m), y3m - _m(ym, y2m)
+    sx2x2, sx2y2_, sy2y2 = x4m - _m(x2m, x2m), x2y2m - _m(x2m, y2m), y4m - _m(y2m, y2m)
+    det = _m(sxx, syy) - _m(sxy_, sxy_)
+    x0 = (_m(syy, sx2x + sxy2_) - _m(sxy_, sx2y_ + syy2)) / 2 / det
+    y0 = (_m(sxx, sx2y_ + syy2) - _m(sxy_, sx2x + sxy2_)) / 2 / det
     dx, dy = xm - x0, ym - y0
-    r = jnp.sqrt(sxx + syy + dx * dx + dy * dy)
-    a, b = sx2x + sxy2, sx2y + syy2
-    chi2 = sx2x2 + 2. * sx2y2 + sy2y2 - (syy * a * a + sxx * b * b - 2 * sxy * a * b) / det
-    return chi2 / (4 * r * r) * sw / qn
+    r = jnp.sqrt(sxx + syy + _m(dx, dx) + _m(dy, dy))
+    a, b = sx2x + sxy2_, sx2y_ + syy2
+    chi2 = sx2x2 + _m(2., sx2y2_) + sy2y2 - (_m(syy, a, a) + _m(sxx, b, b) - _m(2., sxy_, a, b)) / det
+    chi2 = chi2 / _m(4., r, r)
+    return _f(_m(chi2, sw / qn))
 
 
 def _robust(hx):
-    """RobustHelix of a finder helix: rcent, fcent (polyAtan2), radius, lambda, fz0, and its centre as stock rebuilds it."""
-    rcent = jnp.sqrt(hx["cx"] * hx["cx"] + hx["cy"] * hx["cy"])
+    """RobustHelix of a finder helix: rcent, fcent (polyAtan2), radius, lambda, fz0, and its centre as stock rebuilds
+    it (float _rcent * double cos(_fcent))."""
+    rcent = jnp.sqrt(_m(hx["cx"], hx["cx"]) + _m(hx["cy"], hx["cy"]))
     fcent = poly_atan2(hx["cy"], hx["cx"])
     fa = jnp.where(hx["fa"] != 0, hx["fa"], np.float32(1))
     return {"rcent": rcent, "fcent": fcent, "R": hx["r"], "lambda": hx["fa"], "fz0": -hx["fb"] / fa,
-            "ccx": rcent * jnp.cos(fcent), "ccy": rcent * jnp.sin(fcent)}
+            "ccx": _f(_m(_d(rcent), jnp.cos(_d(fcent)))), "ccy": _f(_m(_d(rcent), jnp.sin(_d(fcent))))}
 
 
-def _merge_chi2(h, rh, mask, ms, ft):
-    """MergeHelices::findchisq: (chi2dXY, chi2dZPhi) of each helix [n] over its hits [n, H]."""
-    dx = h["x"][None, :] - rh["ccx"][:, None]
-    dy = h["y"][None, :] - rh["ccy"][:, None]
-    vx, vy = -h["udy"], h["udx"]
-    dxn = dx * vx[None, :] + dy * vy[None, :]
-    costh2 = dxn * dxn / (dx * dx + dy * dy)
+def _merge_chi2(hs, rh, ms):
+    """MergeHelices::findchisq chi2dXY of each helix [n] over its hits hs [n, L] (seed hit order, w = 0 past the
+    end); chi2dZPhi of the (z, helixPhi = 0) line is 0 (sigXX > 0: MinDZTrk keeps every helix's hits that far apart
+    in z)."""
+    dx = hs["x"] - rh["ccx"][:, None]
+    dy = hs["y"] - rh["ccy"][:, None]
+    vx, vy = -hs["udy"], hs["udx"]
+    dxn = _m(dx, vx) + _m(dy, vy)
+    costh2 = _m(dxn, dxn) / (_m(dx, dx) + _m(dy, dy))
     sinth2 = np.float32(1) - costh2
-    e2xy = h["uvar"][None, :] * sinth2 + h["vvar"][None, :] * costh2
-    wxy = np.float32(1.) / e2xy * np.float32(ms["scalexy"])
-    chixy = _lsq_chi2_circle(jnp.broadcast_to(h["x"], mask.shape), jnp.broadcast_to(h["y"], mask.shape), wxy, mask, ft)
-    # z-phi line of (z, helixPhi = 0): sigYY = sigXY = 0, so chi2DofLine = 0 (sigXX > 0: MinDZTrk keeps the hits
-    # of every helix at least that far apart in z)
-    chizphi = jnp.zeros_like(chixy)
-    return chixy, chizphi
+    e2xy = _m(hs["uvar"], sinth2) + _m(hs["vvar"], costh2)
+    wxy = _m(_f(1. / _d(e2xy)), ms["scalexy"])
+    chixy = _lsq_chi2_circle(hs["x"], hs["y"], jnp.where(hs["valid"], wxy, np.float32(0)))
+    return chixy, jnp.zeros_like(chixy)
 
 
 def _merge(h, ok, mask, chi, ms):
@@ -474,7 +610,7 @@ def _merge(h, ok, mask, chi, ms):
 
     def comp(i, j):                                      # 0 unique, 1 first better, 2 second better
         minh = jnp.minimum(nh[i], nh[j])
-        over = (nover[i, j] >= ms["minnover"]) & (nover[i, j].astype(F32) / minh.astype(F32) > np.float32(ms["minfrac"]))
+        over = (nover[i, j] >= ms["minnover"]) & (nover[i, j].astype(F32) / minh.astype(F32) > ms["minfrac"])
         first = ((nh[i] > nh[j]) & (nh[i] - nh[j] > ms["deltanh"])) | \
             (~((nh[j] > nh[i]) & (nh[j] - nh[i] > ms["deltanh"])) & ~((nh[i] > nh[j]) & (nh[i] - nh[j] > ms["deltanh"])) &
              (chi[i] < chi[j]))
@@ -502,58 +638,84 @@ def _merge(h, ok, mask, chi, ms):
     return alive
 
 
-def _event(h, per, idx, s, ms, fz, ft):
-    """One event: panel hits h (each [H], panel order) and the finder results of its clusters `per` [C, niter, ...]
-    on the cluster slots idx [C, L] -> merged helix seeds [M] with the HelixFilter / KalSeedFilter quantities."""
+def _expected_faces(nmax):
+    """HelixTool's `float expected_faces(1e-6); ... ++expected_faces;` after k faces, k = 0..nmax."""
+    t = [np.float32(1e-6)]
+    for _ in range(nmax):
+        t.append(np.float32(t[-1] + np.float32(1)))
+    return np.asarray(t, np.float32)
+
+
+def _event(h, per, idx, s, ms, fz):
+    """One event: panel hits h (each [H], collection order) and the finder results of its clusters `per`
+    [C, niter, ...] on the cluster slots idx [C, L] -> merged helix seeds [M] with the HelixFilter / KalSeedFilter
+    quantities."""
     H = h["x"].shape[0]
-    gmask = jax.vmap(lambda m, ix: jnp.zeros(m.shape[:-1] + (H,), bool).at[:, ix].set(m))(per["mask"], idx)
-    flat = jax.tree.map(lambda a: a.reshape((-1,) + a.shape[2:]), {**per, "mask": gmask})   # (cluster, iteration)
-    keep = {hel: _dedupe(flat["ok"], flat["hel"], flat["mask"], hel) for hel in (1, -1)}
+    L = idx.shape[-1]
+    seeds = jax.tree.map(lambda a: a.reshape((-1,) + a.shape[2:]), per)                    # (cluster, iteration)
+    sidx = jnp.repeat(idx, per["ok"].shape[1], axis=0)                                     # [n, L] hit of each slot
+    gmask = jax.vmap(lambda m, ix: jnp.zeros(H, bool).at[ix].set(m))(seeds["mask"], sidx)
+    keep = {hel: _dedupe(seeds["ok"], seeds["hel"], gmask, hel) for hel in (1, -1)}
     # MergeHelices list: the Positive collection, then the Negative one
     sel = jnp.concatenate([keep[1], keep[-1]])
-    cat = jax.tree.map(lambda a: jnp.concatenate([a, a]), flat)
+    cat = jax.tree.map(lambda a: jnp.concatenate([a, a]), {**seeds, "gmask": gmask, "sidx": sidx})
+    # each seed's hits in its hit order (HelixSeed::hits(): the iteration's sorted order)
+    order = jnp.argsort(jnp.where(cat["mask"], cat["rank"], H + L), axis=1, stable=True)  # [n, L] slot positions
+    hit = jnp.take_along_axis(cat["sidx"], order, axis=1)
+    valid = jnp.take_along_axis(cat["mask"], order, axis=1)
+    hs = {k: h[k][hit] for k in ("x", "y", "z", "uvar", "vvar", "udx", "udy")}
+    hs["valid"] = valid
     rh = _robust(cat)
-    chixy, chizphi = _merge_chi2(h, rh, cat["mask"] & sel[:, None], ms, ft)
-    alive = _merge(h, sel, cat["mask"] & sel[:, None], chixy.astype(F32) + chizphi.astype(F32), ms)
-    mask = cat["mask"] & alive[:, None]
+    chixy, chizphi = _merge_chi2(hs, rh, ms)
+    gm = cat["gmask"] & sel[:, None]
+    alive = _merge(h, sel, gm, chixy + chizphi, ms)
+    mask = gm & alive[:, None]
     nsh = jnp.sum(jnp.where(mask, h["nsh"][None, :], 0), axis=1)
-    zf = h["z"][jnp.argmax(mask, axis=1)]
-    zl = h["z"][H - 1 - jnp.argmax(mask[:, ::-1], axis=1)]
+    # HelixTool: first / last hit z in hit order, loops in double, the faces the helix crosses inside the tracker
+    nv = jnp.sum(valid, axis=1)
+    zf = hs["z"][:, 0]
+    zl = jnp.take_along_axis(hs["z"], jnp.maximum(nv - 1, 0)[:, None], axis=1)[:, 0]
     lam, R = rh["lambda"], rh["R"]
-    lam_s = jnp.where(lam != 0, lam, np.float32(1))
-    nloops = jnp.abs((zl - zf) / (lam_s * np.float32(2. * math.pi)))
-    phf = rh["fz0"][:, None] + jnp.asarray(fz, F32)[None, :] / lam_s[:, None]
-    px = rh["ccx"][:, None] + R[:, None] * jnp.cos(phf)
-    py = rh["ccy"][:, None] + R[:, None] * jnp.sin(phf)
-    rf = jnp.sqrt(px * px + py * py)
-    from .helix import TRACKER_RIN, TRACKER_ROUT, MM2MEV
-    expected = np.float32(1e-6) + jnp.sum(~(rf < TRACKER_RIN) & ~(rf > TRACKER_ROUT), axis=1).astype(F32)
-    n = flat["ok"].shape[0]
+    nloops = _f(jnp.abs(_d(zl - zf) / _m(_d(lam), 2., math.pi)))
+    lam_d = jnp.where(lam != 0, _d(lam), 1.0)
+    az = jnp.where(lam[:, None] != 0, _f(_d(rh["fz0"])[:, None] + _d(jnp.asarray(fz, F32))[None, :] / lam_d[:, None]),
+                   np.float32(0))
+    px = _f(_d(rh["ccx"])[:, None] + _m(_d(R)[:, None], jnp.cos(_d(az))))
+    py = _f(_d(rh["ccy"])[:, None] + _m(_d(R)[:, None], jnp.sin(_d(az))))
+    rf = jnp.sqrt(_m(px, px) + _m(py, py))
+    from .helix import TRACKER_RIN, TRACKER_ROUT
+    nface = jnp.sum(~(rf < TRACKER_RIN) & ~(rf > TRACKER_ROUT), axis=1)
+    expected = jnp.asarray(_expected_faces(len(fz)))[nface]
+    n = seeds["ok"].shape[0]
     return {"ok": alive, "helicity": jnp.concatenate([jnp.ones(n, F32), -jnp.ones(n, F32)]),
             "R": R, "rcent": rh["rcent"], "fcent": rh["fcent"], "lambda": lam,
-            "p": MM2MEV * jnp.sqrt(R * R + lam * lam), "pt": MM2MEV * R, "d0": rh["rcent"] - R,
-            "chi2xy": chixy.astype(F32), "chi2zphi": chizphi.astype(F32), "nsh": nsh.astype(F32), "nloops": nloops,
+            "p": _m(jnp.sqrt(_m(R, R) + _m(lam, lam)), MM2MEV), "pt": _m(R, MM2MEV), "d0": rh["rcent"] - R,
+            "chi2xy": chixy, "chi2zphi": chizphi, "nsh": nsh.astype(F32), "nloops": nloops,
             "hitratio": nsh.astype(F32) / expected, "tandip": jnp.abs(lam) / R}
 
 
 def helices(ph, tc, s, ms, fz):
-    """Panel hits [E, H] + time clusters [E, C] -> merged mpr helix seeds [E, M] and `overflow` [E] (time clusters
-    with more hits than CLUSTER_HITS: their finder result would be truncated, so they are counted). The finder runs
-    on the valid clusters only, gathered up to one per event, else on every cluster in the same call."""
+    """Panel hits [E, H] + time clusters [E, C] (with the TimeCluster hit order `tc["order"]`) -> merged mpr helix
+    seeds [E, M], `overflow` [E] (time clusters with more hits than CLUSTER_HITS: their finder result would be
+    truncated, so they are counted) and `fallback` [E] (a hit sort this port does not reproduce). The finder runs on
+    the valid clusters only, gathered up to one per event, else on every cluster in the same call."""
     ft = jnp.float64 if jax.config.jax_enable_x64 else jnp.float32
-    upanel = (ph["sid"] >> 10) * 6 + ((ph["sid"] & 0x380) >> 7)
-    order = jnp.argsort(jnp.where(ph["valid"], upanel, 1 << 30), axis=1, stable=True)
-    take = lambda a: jnp.take_along_axis(a, order, axis=1)
-    h = {"x": take(ph["x"]), "y": take(ph["y"]), "z": take(ph["z"]), "time": take(ph["time"]),
-         "nsh": take(ph["ncombo"]).astype(jnp.int32), "uvar": take(ph["uvar"]), "vvar": take(ph["vvar"]),
-         "udx": take(ph["udx"]), "udy": take(ph["udy"]), "edep": take(ph["edep"]), "upanel": take(upanel)}
+    with strict(ph["sid"]):
+        out = _helices(ph, tc, s, ms, fz)
+    return {k: (v.astype(ft) if jnp.issubdtype(v.dtype, jnp.floating) else v) for k, v in out.items()}
+
+
+def _helices(ph, tc, s, ms, fz):
+    upanel = ((ph["sid"] >> 10) * 6 + ((ph["sid"] & 0x380) >> 7)).astype(jnp.int32)
+    h = {"x": ph["x"], "y": ph["y"], "z": ph["z"], "time": ph["time"], "nsh": ph["ncombo"], "uvar": ph["uvar"],
+         "vvar": ph["vvar"], "udx": ph["udx"], "udy": ph["udy"], "edep": ph["edep"], "upanel": upanel}
     h = {k: (v.astype(F32) if k not in ("nsh", "upanel") else v.astype(jnp.int32)) for k, v in h.items()}
-    mem = jnp.take_along_axis(tc["members"], order[:, None, :], axis=2) & take(ph["valid"])[:, None, :] & \
-        tc["valid"][:, :, None]
+    mem = tc["members"] & ph["valid"][:, None, :] & tc["valid"][:, :, None]
     E, C, H = mem.shape
     L = min(H, CLUSTER_HITS)
-    idx = jnp.argsort(~mem, axis=2, stable=True)[:, :, :L]                       # each cluster's hits, panel order
-    hc = jax.tree.map(lambda a: jax.vmap(lambda v, ix: v[ix])(a, idx), h)         # [E, C, L]
+    key = jnp.where(mem, tc["order"].astype(jnp.int64), jnp.int64(1) << 40)
+    idx = jnp.argsort(key, axis=2, stable=True)[:, :, :L]                            # each cluster's hits, TC order
+    hc = jax.tree.map(lambda a: jax.vmap(lambda v, ix: v[ix])(a, idx), h)            # [E, C, L]
     vc = jnp.take_along_axis(mem, idx, axis=2)
     overflow = jnp.sum(jnp.sum(mem, axis=2) > L, axis=1)
     run = jax.vmap(lambda hh, vv: _cluster(hh, vv, s))
@@ -574,6 +736,7 @@ def helices(ph, tc, s, ms, fz):
         return run(flat_h, flat_v)
 
     per = jax.lax.cond(jnp.sum(use) <= K, gathered, full)
+    fallback = jnp.any(per.pop("fallback").reshape(E, C), axis=1)
     per = jax.tree.map(lambda a: a.reshape((E, C) + a.shape[1:]), per)
-    out = jax.vmap(lambda hh, pp, ix: _event(hh, pp, ix, s, ms, fz, ft))(h, per, idx)
-    return {**out, "overflow": overflow}
+    out = jax.vmap(lambda hh, pp, ix: _event(hh, pp, ix, s, ms, fz))(h, per, idx)
+    return {**out, "overflow": overflow, "fallback": fallback}

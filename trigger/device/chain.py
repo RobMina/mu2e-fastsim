@@ -58,7 +58,7 @@ def pair_bucket(n, total):
 
 class Chain:
     def __init__(self, cfg, cond, tc_mva_path, response=None, path_names=None, salt=20261107, debug=False,
-                 precision="float64", compact=False, pairs=True):
+                 precision="float64", compact=False, pairs=True, mpr=False):
         if precision not in PRECISIONS:
             raise ValueError(f"precision must be one of {PRECISIONS}")
         # float32: every device array, including the stock double-precision intermediates of the hit ports, in
@@ -87,6 +87,7 @@ class Chain:
         self.opaths = menu.other_paths(cfg, path_names)
         self.stc = {}                            # SimpleTimeCluster label -> settings (cst paths)
         self.mprs = {}                           # RobustMultiHelixFinder label -> (finder, merge) settings (mpr paths)
+        self.mpr = mpr                           # mpr paths are opt-in: the finder costs ~0.5 s per event on a CPU
         for entry in phys["trigger_paths"]:
             name = entry.split(":", 1)[-1]
             if path_names and name not in path_names:
@@ -164,6 +165,9 @@ class Chain:
         tcl = self._tc_label(p)
         mlbl = next((lbl for lbl in labels if self.mods.get(lbl, {}).get("module_type") == "RobustMultiHelixFinder"),
                     None)
+        if mlbl is not None and not self.mpr:
+            self.skipped[name] = ["multi-helix finder: opt-in (Chain(mpr=True), decide --mpr, TRIGGER_DEVICE_MPR=1)"]
+            return
         if mlbl is not None:                     # mpr: RobustMultiHelixFinder + MergeHelices (mpr.py)
             merger = next((lbl for lbl in labels if self.mods.get(lbl, {}).get("module_type") == "MergeHelices"), None)
             fins = self.mods[merger]["HelixFinders"] if merger else []
@@ -202,6 +206,10 @@ class Chain:
             return hel
         return "TrigHelixFinder"
 
+    def _tc_settings(self, lbl):
+        """TimeClusterFinder settings; with mpr paths, every producer also returns the stock hit order (`order`)."""
+        return {**timecluster.settings(self.mods[lbl]), "order": bool(self.mprs)}
+
     def _tc_labels(self):
         """TimeClusterFinder settings the tpr/apr paths use (cst clusters come from SimpleTimeCluster)."""
         return sorted({p["tc"] for p in self.plan.values() if p["family"] in ("tpr", "apr", "mpr")})
@@ -215,7 +223,7 @@ class Chain:
         E = batch["valid"].shape[0]
         tcs = {}
         for group in self._tc_groups():              # producers that differ only in pitch share one batched call
-            ss = [timecluster.settings(self.mods[lbl]) for lbl in group]
+            ss = [self._tc_settings(lbl) for lbl in group]
             res = (timecluster.time_clusters_multi_pairs(ph, ss, self.net, K=E * len(group)) if self.pairs else
                    timecluster.time_clusters_multi(ph, ss, self.net))
             tcs.update(zip(group, res))
@@ -232,7 +240,7 @@ class Chain:
         """Time-cluster producers grouped by their settings apart from the pitch, in label order."""
         groups = {}
         for lbl in self._tc_labels():
-            s = timecluster.settings(self.mods[lbl])
+            s = self._tc_settings(lbl)
             groups.setdefault(tuple(sorted((k, v) for k, v in s.items() if k != "pitch")), []).append(lbl)
         return list(groups.values())
 
@@ -249,11 +257,11 @@ class Chain:
     def _stage_candidates(self, batch):
         sh = hits.straw_hits(batch, self.cond_dev, self.sh, self.tot_bins)
         ph = hits.panel_hits(sh, self.ph)
-        cands = {lbl: timecluster.candidates(ph, timecluster.settings(self.mods[lbl])) for lbl in self._tc_labels()}
+        cands = {lbl: timecluster.candidates(ph, self._tc_settings(lbl)) for lbl in self._tc_labels()}
         return sh, ph, cands, {lbl: jnp.sum(c[2]) for lbl, c in cands.items()}
 
     def _refine_one(self, cand, lbl, k):
-        tc = timecluster.refine_pairs(*cand, timecluster.settings(self.mods[lbl]), self.net, k)
+        tc = timecluster.refine_pairs(*cand, self._tc_settings(lbl), self.net, k)
         return tc, jnp.sum(tc["valid"])
 
     def _helix_one(self, ph, tc, key, k):

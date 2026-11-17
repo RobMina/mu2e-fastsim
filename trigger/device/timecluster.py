@@ -110,9 +110,15 @@ def _peaks(hit, s):
     return ev, members, oks
 
 
+ORDER_NONE = np.int32(2 ** 30)       # TimeCluster hit-order key of a non-member
+
+
 def _cluster(ev, m0, ok0, s, net):
-    """One candidate cluster (members m0 [H], ok0) of an event (`ev` from _peaks) -> keep, nsh, t0, t0err, members."""
+    """One candidate cluster (members m0 [H], ok0) of an event (`ev` from _peaks) -> keep, nsh, t0, t0err, members,
+    and with s["order"] the stock TimeCluster hit order as a key per hit (_strawHitIdxs: the peak-assigned hits in
+    index order, then the recovered hits in the order recoverHits adds them; ORDER_NONE for non-members)."""
     H = ev["valid"].shape[0]
+    order = bool(s.get("order", False))
     valid, nsh_i, cht, phi_h, feats_static, pos = (ev[k] for k in ("valid", "nsh_i", "cht", "phi_h", "feats", "pos"))
 
     def mva_of(t0, pphi):
@@ -131,7 +137,7 @@ def _cluster(ev, m0, ok0, s, net):
         t0 = jnp.where(ok, newt0, t0)
         p = jnp.where(ok, (p * nsh - pos[i] * ni) / jnp.where(ok, denom, 1.0), p)
         nsh = jnp.where(ok, denom, nsh)
-        return (m.at[i].set(False), nsh, t0, t0err, p)
+        return (m.at[i].set(False), nsh, t0, t0err, p) + tuple(c[5:])
 
     def add(c, i):
         m, nsh, t0, t0err, p = c
@@ -140,7 +146,8 @@ def _cluster(ev, m0, ok0, s, net):
         newt0 = (t0 * nsh + cht[i] * ni) / denom
         t0err = jnp.sqrt((t0err * t0err * nsh + (cht[i] - newt0) * (cht[i] - t0) * ni) / denom)
         p = (p * nsh + pos[i] * ni) / denom
-        return (m.at[i].set(True), denom, newt0, t0err, p)
+        o = (c[5].at[i].set(c[6]), c[6] + 1) if order else ()     # appended after the members it already has
+        return (m.at[i].set(True), denom, newt0, t0err, p) + o
 
     def cluster(m0, ok0):
         w = nsh_i.astype(F32)
@@ -151,6 +158,8 @@ def _cluster(ev, m0, ok0, s, net):
         t0err = ((tmx - tmn) * F32(1.0 / np.sqrt(12.0)) / jnp.sqrt(jnp.maximum(nstrs, 1).astype(F32))).astype(F32)
         p = jnp.stack([_wmedian(pos[:, k], w, m0) for k in range(3)])
         c = (m0, nsh, t0, t0err, p)
+        if order:
+            c = c + (jnp.where(m0, jnp.arange(H, dtype=jnp.int32), ORDER_NONE), jnp.int32(H))
 
         if s["prefilter"]:
             def pf_cond(st):
@@ -173,7 +182,7 @@ def _cluster(ev, m0, ok0, s, net):
             cnt = jnp.sum(m).astype(F32)
             t0err = jnp.sqrt(jnp.maximum(F32(1.0), 2.0 * var) / cnt).astype(F32)
             p = jnp.stack([jnp.sum(jnp.where(m, w * pos[:, k], 0.0)) / wsum for k in range(3)])
-            c = (m, c[1], mean.astype(F32), t0err, p.astype(F32))
+            c = (m, c[1], mean.astype(F32), t0err, p.astype(F32)) + tuple(c[5:])
             if s["refine"]:
                 def rf_cond(st):
                     return st[1] & (st[0][1] > 0)
@@ -222,7 +231,10 @@ def _cluster(ev, m0, ok0, s, net):
 
         c = jax.lax.cond(c[1] >= s["minnhits"], finish, lambda c: c, c)
         keep = ok0 & (c[1] >= s["minnhits"])
-        return keep, c[1], c[2], c[3], c[0] & keep
+        out = {"valid": keep, "nsh": c[1], "t0": c[2], "t0err": c[3], "members": c[0] & keep}
+        if order:
+            out["order"] = jnp.where(c[0] & keep, c[5], ORDER_NONE)
+        return out
 
     return cluster(m0, ok0)
 
@@ -230,8 +242,7 @@ def _cluster(ev, m0, ok0, s, net):
 def _one_event(hit, s, net):
     """hit: dict of [H] arrays for one event -> clusters [NTC] (valid, nsh, t0, t0err, members [NTC, H])."""
     ev, members, oks = _peaks(hit, s)
-    keep, nsh, t0, t0err, mem = jax.vmap(lambda m, o: _cluster(ev, m, o, s, net))(members, oks)
-    return {"valid": keep, "nsh": nsh, "t0": t0, "t0err": t0err, "members": mem}
+    return jax.vmap(lambda m, o: _cluster(ev, m, o, s, net))(members, oks)
 
 
 def _hits(ph):
@@ -274,8 +285,7 @@ def time_clusters_multi_pairs(ph, ss, net, K):
     def full():
         def one(ev_p, mem_p, ok_p):
             def per_event(ev_e, mem_e, ok_e):
-                keep, nsh, t0, t0err, mem = jax.vmap(lambda m, o: _cluster(ev_e, m, o, s0, net))(mem_e, ok_e)
-                return {"valid": keep, "nsh": nsh, "t0": t0, "t0err": t0err, "members": mem}
+                return jax.vmap(lambda m, o: _cluster(ev_e, m, o, s0, net))(mem_e, ok_e)
             return jax.vmap(per_event)(ev_p, mem_p, ok_p)
         return jax.vmap(one)(ev, members, oks)
 
@@ -285,15 +295,13 @@ def time_clusters_multi_pairs(ph, ss, net, K):
         f = jnp.minimum(flat, P * E * C - 1)
         p, e, c = f // (E * C), (f // C) % E, f % C
         evp = {k: v[p, e] for k, v in ev.items()}
-        keep, nsh, t0, t0err, mem = jax.vmap(lambda ev_, m, o: _cluster(ev_, m, o, s0, net))(
-            evp, members[p, e, c], oks[p, e, c] & use)
+        r = jax.vmap(lambda ev_, m, o: _cluster(ev_, m, o, s0, net))(evp, members[p, e, c], oks[p, e, c] & use)
         dst = jnp.where(use, flat, P * E * C)
 
         def put(v, fill):
             out = jnp.full((P * E * C + 1,) + v.shape[1:], fill, v.dtype).at[dst].set(v)
             return out[:P * E * C].reshape((P, E, C) + v.shape[1:])
-        return {"valid": put(keep & use, False), "nsh": put(nsh, 0), "t0": put(t0, 0), "t0err": put(t0err, 0),
-                "members": put(mem & use[:, None], False)}
+        return _put_all(r, use, put)
 
     out = jax.lax.cond(jnp.sum(oks) <= K, pairs, full)
     return [{k: v[i] for k, v in out.items()} for i in range(P)]
@@ -314,11 +322,20 @@ def refine_pairs(ev, members, oks, s, net, K):
     use = flat < E * C
     e, c = jnp.minimum(flat // C, E - 1), flat % C
     evp = {k: v[e] for k, v in ev.items()}
-    keep, nsh, t0, t0err, mem = jax.vmap(lambda ev_, m, o: _cluster(ev_, m, o, s, net))(evp, members[e, c], oks[e, c] & use)
+    r = jax.vmap(lambda ev_, m, o: _cluster(ev_, m, o, s, net))(evp, members[e, c], oks[e, c] & use)
     dst = jnp.where(use, flat, E * C)
 
     def put(v, fill):
         out = jnp.full((E * C + 1,) + v.shape[1:], fill, v.dtype).at[dst].set(v)
         return out[:E * C].reshape((E, C) + v.shape[1:])
-    return {"valid": put(keep & use, False), "nsh": put(nsh, 0), "t0": put(t0, 0), "t0err": put(t0err, 0),
-            "members": put(mem & use[:, None], False)}
+    return _put_all(r, use, put)
+
+
+def _put_all(r, use, put):
+    """Scatter the gathered clusters' results back to the full slots (no candidate: valid False, nsh 0, t0 0,
+    t0err 0, no members, ORDER_NONE)."""
+    out = {"valid": put(r["valid"] & use, False), "nsh": put(r["nsh"], 0), "t0": put(r["t0"], 0),
+           "t0err": put(r["t0err"], 0), "members": put(r["members"] & use[:, None], False)}
+    if "order" in r:
+        out["order"] = put(jnp.where(use[:, None], r["order"], ORDER_NONE), ORDER_NONE)
+    return out

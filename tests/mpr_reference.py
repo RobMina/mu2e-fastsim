@@ -1,6 +1,9 @@
-"""A literal float32 transcription of RobustMultiHelixFinder::findHelicesInTC (Offline v13_39), hit by hit, for the
-device port's tests (no calorimeter cluster, TargetCon false, ChiSquared circle fit). numpy float32 scalars round
-every operation, as the stock float code does."""
+"""A literal transcription of RobustMultiHelixFinder::findHelicesInTC (Offline v13_39), hit by hit, for the device
+port's tests (no calorimeter cluster, TargetCon false, ChiSquared circle fit). numpy float32 scalars round every
+operation, as the stock float code does; the steps a C++ double literal promotes run in numpy float64 and are
+rounded where stock stores them in a float. The time cluster's hits come in the stock TimeCluster order and each
+track iteration sorts them with libstdc++'s std::sort (`std_sort`). On the stock replay's ComboHits this reproduces
+the stock HelixFilter's helix parameters bit for bit."""
 import math
 
 import numpy as np
@@ -54,14 +57,74 @@ class LS:
         return (self.sy * self.sx2 - self.sx * self.sxy) / d if abs(d) > 1e-6 else f(0)
 
 
-TP = f(6.283185)
+def std_sort(a, less):
+    """libstdc++ (GCC 13) std::sort on the list a, in place: introsort (median of three, unguarded Hoare partition,
+    threshold 16) then the final insertion sort. Not stable for more than 16 elements."""
+    def lg(n):
+        return n.bit_length() - 1
+
+    def move_median_to_first(r, x, y, z):
+        if less(a[x], a[y]):
+            if less(a[y], a[z]): a[r], a[y] = a[y], a[r]
+            elif less(a[x], a[z]): a[r], a[z] = a[z], a[r]
+            else: a[r], a[x] = a[x], a[r]
+        elif less(a[x], a[z]): a[r], a[x] = a[x], a[r]
+        elif less(a[y], a[z]): a[r], a[z] = a[z], a[r]
+        else: a[r], a[y] = a[y], a[r]
+
+    def partition(first, last, pivot):
+        while True:
+            while less(a[first], a[pivot]): first += 1
+            last -= 1
+            while less(a[pivot], a[last]): last -= 1
+            if not first < last:
+                return first
+            a[first], a[last] = a[last], a[first]
+            first += 1
+
+    def introsort(first, last, depth):
+        while last - first > 16:
+            if depth == 0:
+                raise NotImplementedError("heap sort fallback")
+            depth -= 1
+            mid = first + (last - first) // 2
+            move_median_to_first(first, first + 1, mid, last - 1)
+            cut = partition(first + 1, last, first)
+            introsort(cut, last, depth)
+            last = cut
+
+    def linear_insert(i):
+        v = a[i]; j = i - 1
+        while less(v, a[j]):
+            a[j + 1] = a[j]; j -= 1
+        a[j + 1] = v
+
+    def insertion(first, last):
+        for i in range(first + 1, last):
+            if less(a[i], a[first]):
+                v = a[i]; a[first + 1:i + 1] = a[first:i]; a[first] = v
+            else:
+                linear_insert(i)
+
+    n = len(a)
+    if n:
+        introsort(0, n, lg(n) * 2)
+        if n > 16:
+            insertion(0, 16)
+            for i in range(16, n):
+                linear_insert(i)
+        else:
+            insertion(0, n)
+    return a
+
+
 
 
 def flag_compton(h, hits, s):
     phi = {}
     for i in hits:
         p = poly_atan2(h["y"][i], h["x"][i])
-        phi[i] = p + f(6.28318) if p < 0 else p
+        phi[i] = f(np.float64(p) + 6.28318) if p < 0 else p
     nb = int(f(6.28318) / s["phibin"]) + 1
     cl = [0] * nb
     for i in hits:
@@ -75,14 +138,14 @@ def flag_compton(h, hits, s):
     flags = set()
     if smax < s["minbin"]:
         return flags
-    pm = (f(imax) + f(0.5)) * s["phibin"]
+    pm = f((imax + 0.5) * np.float64(s["phibin"]))
     for i in hits:
         d = phi[i] - pm
-        if d > f(6.2831):
-            d -= f(6.2831)
-        if d < f(-6.2831):
-            d += f(6.2831)
-        if abs(d) < f(1.5) * s["phibin"]:
+        if np.float64(d) > 6.2831:
+            d = f(np.float64(d) - 6.2831)
+        if np.float64(d) < -6.2831:
+            d = f(np.float64(d) + 6.2831)
+        if np.float64(abs(d)) < 1.5 * np.float64(s["phibin"]):
             flags.add(i)
     return flags
 
@@ -167,10 +230,10 @@ def init_dzdp(c, h, hel, s):
         for j in range(0, len(ch), 2):
             fb = h["z"][ch[j]] - fa * p[ch[j]]
             nh, sd = 0, f(0)
-            prev = int(std_round((p[ch[0]] - (h["z"][ch[0]] - fb) / fa) / TP))
+            prev = int(std_round(np.float64(p[ch[0]] - (h["z"][ch[0]] - fb) / fa) / 6.283185))
             for k in ch:
-                nl = int(std_round((p[k] - (h["z"][k] - fb) / fa) / TP))
-                p2 = p[k] - f(nl) * TP
+                nl = int(std_round(np.float64(p[k] - (h["z"][k] - fb) / fa) / 6.283185))
+                p2 = f(np.float64(p[k]) - nl * 6.283185)
                 d = abs((h["z"][k] - fb) / fa - p2)
                 if nl > prev + 1:
                     nh = 0
@@ -191,15 +254,15 @@ def fit_dzdp(c, h, hel, s):
             q = (h["z"][i] - c["fb"]) / c["fa"]
             if not np.isfinite(q):
                 continue
-            nl = std_round((ph - q) / TP)
-            pl = ph - f(nl) * TP
+            nl = std_round(np.float64(ph - q) / 6.283185)
+            pl = f(np.float64(ph) - nl * 6.283185)
             if abs(q - pl) < s["dphiinit"]:
                 ls.add(pl, h["z"][i], f(h["nsh"][i]))
     fa, fb = ls.fa(), ls.fb()
     if (hel > 0 and fa < 1e-3) or (hel < 0 and fa > -1e-3):
         return
     c["fa"] = fa
-    c["fb"] = fb - f(int(fb / fa / TP)) * TP * fa
+    c["fb"] = f(np.float64(fb) - int(np.float64(fb / fa) / 6.283185) * 6.283185 * np.float64(fa))
 
 
 def fit_dzdt(c, h):
@@ -215,7 +278,8 @@ def chi2_circle(h, i, cx, cy, r):
     dr = rr - r
     rw = (h["udx"][i] * dx + h["udy"][i] * dy) / rr
     we, te = np.sqrt(h["uvar"][i]), np.sqrt(h["vvar"][i])
-    return dr * dr / (we * we * rw * rw + te * te * (f(1.0) - rw * rw))
+    rw2 = rw * rw
+    return dr * dr / f(np.float64(we * we * rw2) + np.float64(te * te) * (1.0 - np.float64(rw2)))
 
 
 def fit_circle(c, h):
@@ -225,7 +289,7 @@ def fit_circle(c, h):
         rw = h["udx"][i] * dx + h["udy"][i] * dy
         c2 = rw * rw / (dx * dx + dy * dy)
         we, te = np.sqrt(h["uvar"][i]), np.sqrt(h["vvar"][i])
-        w = f(1.0) / (we * we * c2 + te * te * (f(1.0) - c2))
+        w = f(1.0 / np.float64(f(np.float64(we * we * c2) + np.float64(te * te) * (1.0 - np.float64(c2)))))
         x, y = h["x"][i], h["y"][i]
         S["x"] += x * w; S["x2"] += x * x * w; S["x3"] += x * x * x * w; S["y"] += y * w; S["y2"] += y * y * w
         S["y3"] += y * y * y * w; S["xy"] += x * y * w; S["x2y"] += x * x * y * w; S["xy2"] += x * y * y * w; S["w"] += w
@@ -250,8 +314,8 @@ def find_helix(c, h, hel, s):
     for i in c["hits"]:
         ph = poly_atan2(h["y"][i] - c["y"], h["x"][i] - c["x"])
         q = (h["z"][i] - c["fb"]) / c["fa"]
-        n = std_round((ph - q) / TP)
-        if abs(q - ph + f(n) * TP) < s["dphifit"]:
+        n = std_round(np.float64(ph - q) / 6.283185)
+        if f(abs(np.float64(q - ph) + n * 6.283185)) < s["dphifit"]:
             keep.append(i)
         else:
             c["nsh"] -= int(h["nsh"][i])
@@ -288,13 +352,14 @@ def find_helix(c, h, hel, s):
 
 
 def find_helices_in_tc(h, members, s):
-    """-> list per track iteration of None or dict(hel, nsh, hits, x, y, r, fa, fb) of the kept helix."""
+    """members: the time cluster's hits in TimeCluster order -> list per track iteration of None or dict(hel, nsh,
+    hits, x, y, r, fa, fb) of the kept helix."""
     used, out = set(), []
     for _ in range(s["niter"]):
         proc = [i for i in members if i not in used]
         if sum(int(h["nsh"][i]) for i in proc) < s["minnsh"]:
             break
-        proc = sorted(proc, key=lambda i: (int(h["upanel"][i]), i))
+        proc = std_sort(list(proc), lambda i, j: int(h["upanel"][i]) < int(h["upanel"][j]))
         circ = find_circle(h, proc, s)
         cand = {}
         for hel in (1, -1):
