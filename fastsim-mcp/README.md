@@ -92,9 +92,8 @@ kit's own admission code, and the parsed approximation table against the package
 
 - The inputs are streamed by the server process: a point submitted by a server that exits before the job starts
   fails after 15 minutes (`job_status` on a new server restarts streaming while the job is still waiting).
-- A stalled input stream is not reported: when the copy into the job hangs, the kit's stream thread ends with a
-  `subprocess.TimeoutExpired` that it does not catch, so no stream-error marker is written and `job_status` shows
-  the job working until it exits ("no input arrived within 900 s"). Rerun the point under a new name.
+- A stalled input stream ends the point: the kit marks it as a stream error and cancels the job, and
+  `job_status` reports `stream_error`. Rerun the point under a new name (a failed handle is not resubmitted).
 - The CRV chain runs at its default device precision (float32): the `chain_point` and `chain` kit tasks have no
   precision parameter yet, so float64 CRV needs a kit change.
 - `beam_point` and `beam_sob` have no dtype switch: one job each.
