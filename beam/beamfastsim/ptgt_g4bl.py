@@ -21,8 +21,8 @@ Conventions (all checked against the deck, none fitted):
 * Exposure: POT per file = completed events of the job log ("Run complete N Events"); a file without a log needs an
   explicit `--events-per-file`.
 
-The board's own objective (mu- + pi- crossings per POT, counted by the campaign) is recomputed from the same
-selection for closure. Fields and geometry upstream of the plane are the deck's (its own field maps and PS), not
+The production-target yield objective (mu- + pi- crossings per POT at this plane) is recomputed from the same
+selection, as a closure check against the run's own figure. Fields and geometry upstream of the plane are the deck's (its own field maps and PS), not
 stock: a G4beamline point scored through the device chain is a G4beamline reference, never mixed with stock samples.
 """
 import argparse
@@ -158,7 +158,7 @@ def build(files, z_target, mode="translate", point=0, events=None, field=None, r
         raise ValueError("one POT count per file")
     cols = {k: [] for k in ("id", "x", "p", "t", "pdg", "shard")}
     plane_z, n_returned, n_rows = [], 0, 0
-    board_selected = 0
+    yield_count = 0
     seqs = []
     for path in files:
         seq = sequencer(path)
@@ -169,7 +169,7 @@ def build(files, z_target, mode="translate", point=0, events=None, field=None, r
         x = to_mu2e(np.stack([rows["x"][i], rows["y"][i], rows["z"][i]], axis=1))
         p = np.stack([rows["Px"][i], rows["Py"][i], rows["Pz"][i]], axis=1)
         t, pdg = rows["t"][i], rows["PDGid"][i]
-        board_selected += int(np.sum((pdg == 13) | (pdg == -211)))
+        yield_count += int(np.sum((pdg == 13) | (pdg == -211)))
         if len(t):
             plane_z.append(x[:, 2])
         if mode == "translate":
@@ -199,8 +199,8 @@ def build(files, z_target, mode="translate", point=0, events=None, field=None, r
                 source_plane_z=float(np.median(zs)) if zs.size else None, files=len(files), pot=int(pot.sum()),
                 rows_read=int(n_rows), entrances=int(len(out["t"])), helix_returned=n_returned,
                 species={str(s): int(np.sum(out["pdg"] == s)) for s in SPECIES},
-                board_objective=board_selected / float(pot.sum()) if pot.sum() else None,
-                board_selected=board_selected)
+                yield_per_pot=yield_count / float(pot.sum()) if pot.sum() else None,
+                yield_count=yield_count)
     return out, meta
 
 
@@ -262,7 +262,7 @@ def score(reference, outputs, batch=None):
     seed_totals = [float(s[0].sum()) for s in per_seed]
     return dict(reference=str(reference), point=ref_meta["point"], mode=ref_meta["mode"], dtype=dtypes.pop(),
                 seeds=seeds, pot=float(pot.sum()), entrances=ref_meta["entrances"],
-                board_objective=ref_meta["board_objective"], stops_per_pot=stops, stops_per_pot_err=stops_err,
+                yield_per_pot=ref_meta["yield_per_pot"], stops_per_pot=stops, stops_per_pot_err=stops_err,
                 mu_minus_stops_per_pot=mum, mu_minus_stops_per_pot_err=mum_err,
                 stops_per_seed=seed_totals,
                 seed_sd=float(np.std(seed_totals, ddof=1)) if len(seed_totals) > 1 else None)

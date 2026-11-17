@@ -40,7 +40,7 @@ def test_frame_puts_deck_collimator_face_on_the_ts_axis():
 
 
 def test_log_events_and_sequencer(tmp_path):
-    log = tmp_path / "log.o.ptg5k01R0000g4blf01c22.17bc967.00000011-1791004409.log"
+    log = tmp_path / "log.owner.desc.conf.00000011-12345.log"
     log.write_text("Event 1 ...\nRun complete  5000 Events  2757.3 seconds\n")
     assert pg.log_events(log) == 5000
     assert pg.sequencer(log) == 11
@@ -56,7 +56,7 @@ def fake_reader(tables):
     return lambda path: tables[pg.sequencer(path)]
 
 
-def test_build_translate_keeps_state_and_counts_board_objective():
+def test_build_translate_keeps_state_and_counts_the_yield():
     tables = {0: rows(), 1: rows(EventID=[9] * 7, TrackID=list(range(1, 8)))}
     files = ["nts.o.d.c.00000000.root", "nts.o.d.c.00000001.root"]
     ref, meta = pg.build(files, -4004.0, "translate", point=3, events=[100, 50], reader=fake_reader(tables))
@@ -69,8 +69,8 @@ def test_build_translate_keeps_state_and_counts_board_objective():
     assert meta["source_plane_z"] == pytest.approx(-4044.3)
     # mu- and pi- only: file 0 has pi-(1,5) and mu-(1,6); file 1 keeps pi-, mu-, pi+... per track
     sel1 = sum(1 for p in tables[1]["PDGid"][pg.first_inward(tables[1])] if p in (13, -211))
-    assert meta["board_selected"] == 2 + sel1
-    assert meta["board_objective"] == pytest.approx((2 + sel1) / 150)
+    assert meta["yield_count"] == 2 + sel1
+    assert meta["yield_per_pot"] == pytest.approx((2 + sel1) / 150)
 
 
 def test_build_rejects_two_planes_and_missing_pot():
@@ -130,7 +130,7 @@ def test_score_averages_seeds_per_shard(tmp_path):
                     parent_shard_ids=np.array([[0, 0], [0, 4]]), parent_shard_event_counts=np.array([100, 300]))
     ref = tmp_path / "ref.npz"
     pg.save(ref, {**ref_rows, "pdg": np.array([13, -211, 13])},
-            dict(point=0, mode="translate", entrances=3, board_objective=0.01))
+            dict(point=0, mode="translate", entrances=3, yield_per_pot=0.01))
     outs = []
     for seed, fate in ((1, [1, 1, 0]), (2, [1, 0, 1])):
         path = tmp_path / f"o{seed}.npz"
@@ -165,7 +165,7 @@ def test_score_selects_one_reference_of_a_multi_reference_run(tmp_path):
         path = tmp_path / f"r{k}.npz"
         pg.save(path, dict(id=i, shard=np.array([0, 0]), pdg=np.array([13, 13]), parent_shard_ids=np.array([[k, 0]]),
                            parent_shard_event_counts=np.array([10 * (k + 1)])),
-                dict(point=k, mode="translate", entrances=2, board_objective=None))
+                dict(point=k, mode="translate", entrances=2, yield_per_pot=None))
         refs.append(path)
         ids.append(i)
     out = tmp_path / "o.npz"
