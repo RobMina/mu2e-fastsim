@@ -47,6 +47,9 @@ venv/bin/python examples/smoke_client.py transcript.json \
   --point '{"name": "demo1", "electrons": 5000}' -- --site-env /path/to/site.env
 ```
 
+`examples/chain_client.py` drives two servers as an agent would: `fetch_outputs` here, then each returned
+`score_with` call on the Mu2e analysis server (its command in `ANALYSIS_MCP_CMD`).
+
 The site file also sets `M2FS_CODE` (this checkout) and `FASTSIMKIT_STATE_DIR` (job records and fetched outputs on
 the kit host). `PYTHONPATH` in it is ignored: set it in the client's environment instead.
 
