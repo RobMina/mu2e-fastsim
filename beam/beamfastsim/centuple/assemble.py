@@ -110,6 +110,12 @@ def dts_select(plan, keep, per_event_n):
     return {k: (v[keep] if k != "trig_names" and np.ndim(v) and len(v) == per_event_n else v) for k, v in plan.items()}
 
 
+def _no_response_layer(response):
+    """True when a trigger file's decisions carry no response layer: the trigger stage's default "none" (or a meta
+    record written before the named responses: None / empty)."""
+    return response is None or str(response).strip().lower() in ("none", "")
+
+
 def build(record, donor_lib, out, *, trigger=None, seed=20261111, trigger_cal=None, dts_filter=False):
     """Write plan (npz) for every event of the record. Returns the path and counters.
 
@@ -138,7 +144,7 @@ def build(record, donor_lib, out, *, trigger=None, seed=20261111, trigger_cal=No
         trig = {k[5:]: v.astype(bool) for k, v in tz.items() if k.startswith("trig_")}
         if trigger_cal is not None:      # on-spill response of the device paths (trigcal)
             from . import trigcal
-            if str(trig_meta.get("response")) not in ("None", ""):
+            if not _no_response_layer(trig_meta.get("response")):
                 raise ValueError("centuple: the trigger table needs device decisions without a response layer "
                                  f"(trigger file made with --response {trig_meta['response']}); run the trigger "
                                  "stage without --response, or assemble with --trigger-cal none")
