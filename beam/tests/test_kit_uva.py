@@ -449,6 +449,35 @@ def test_uva_geometry_result_evidence_and_files_from(tmp_path, monkeypatch):
     assert G.identity(kit._request("downstream")["geometry"]) == G.identity(artifact)
 
 
+def test_geometry_result_keeps_a_data_product_after_the_geometry(tmp_path, monkeypatch):
+    """beam_edep returns its EdepAna ROOT file: it stays in files, after the geometry FileRef, for the analysis step."""
+    site, ep, kit, _ = make(tmp_path)
+    params = {k: v for k, v in P.items() if k != "geom"}
+    ref = geometry_ref(tmp_path / "geom.txt", 25)
+    kit.submit("geometry", params, [ref], [], ["stop_frac"])
+    site.state[ep.state.get("geometry").job_id] = "COMPLETED"
+    fetch = ep.fetch
+    artifact = kit._request("geometry")["geometry"]
+    def with_geometry(name, dest):
+        files = fetch(name, dest)
+        out = dest / name / "out"
+        (out / "geometry.txt").write_text(artifact["text"])
+        (out / "geometry-artifact.json").write_text(json.dumps({k: v for k, v in artifact.items() if k != "text"}))
+        return files
+    monkeypatch.setattr(ep, "fetch", with_geometry)
+    plain = kit._results
+    def with_root(handle):
+        r = plain(handle)
+        r["files"].append({"name": "nts.root", "uri": (tmp_path / "nts.root").as_uri(), "kind": "root"})
+        return r
+    monkeypatch.setattr(kit, "_results", with_root)
+    result = kit.results("geometry")
+    assert [f["kind"] for f in result["files"]] == ["geom", "root"]
+    assert result["files"][1]["name"] == "nts.root"
+    diag = result["metadata"]["diagnostic_files"]
+    assert diag and all(f["kind"] == "text" for f in diag)
+
+
 def test_uva_geometry_retry_never_renders_current_body(tmp_path, monkeypatch):
     site, ep, kit, _ = make(tmp_path)
     params = {k: v for k, v in P.items() if k != "geom"}
