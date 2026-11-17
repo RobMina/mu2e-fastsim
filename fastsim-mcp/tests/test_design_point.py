@@ -109,4 +109,4 @@ def test_overall_state():
 
 def test_expected_minutes_grow_with_electrons():
     assert dp.expected_minutes("edep", 50_000, "float64") > dp.expected_minutes("edep", 5000, "float64")
-    assert dp.expected_minutes("edep", 5000, "float32") > dp.expected_minutes("edep", 5000, "float64")
+    assert 15 < dp.expected_minutes("edep", 5000, "float32") < dp.expected_minutes("edep", 5000, "float64") < 25

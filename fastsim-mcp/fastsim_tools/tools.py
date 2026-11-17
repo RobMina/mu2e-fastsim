@@ -127,7 +127,7 @@ def run_design_point(
     """Run one stopping-target design point through the fast chain: stops -> CE chain -> S/sqrt(B)-ready outputs.
 
     Asynchronous: submits CPU-only jobs to the configured compute endpoint and returns their handles and job ids
-    at once. A point takes minutes to hours on one core (about 9 min plus 53 ms per electron in float64); poll
+    at once. A point takes minutes to hours on one core (about 20 minutes for 5,000 electrons in float64); poll
     job_status(name), then fetch_outputs(name). Keep this server running until job_status reports
     inputs_streamed: the job waits up to 15 minutes for the server to stream its Mu2e-internal inputs in.
     Submitting the same name and request again returns the same jobs; a different request under an existing

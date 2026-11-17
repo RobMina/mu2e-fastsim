@@ -22,8 +22,8 @@ publishes it.
 | `fetch_outputs` | metrics, the EdepAna file with its `.edep.json` run record and `edep_summary.txt`, and `score_with`: the analysis server's `run_analysis` call for `approx_ce_sensitivity` | fetches `out/` |
 | `cancel_design_point` | cancels a point's queued or running jobs | ssh cancel |
 
-The compute tools are asynchronous: a point takes minutes to hours on one CPU core (about 9 minutes plus 53 ms per
-electron in float64, `beam/docs/edepana.md`). Both dtypes run by default, each as its own job. The server only asks
+The compute tools are asynchronous: a point takes minutes to hours on one CPU core (about 20 minutes for 5,000
+electrons on one core, compilation included). Both dtypes run by default, each as its own job. The server only asks
 for CPU jobs (`beam_edep_cpu`, `beam_sob`); GPU tasks are not exposed.
 
 `run_design_point` goes through the fastsim kit (`mu2efastsim.endpoints.kit`), so the kit's rules hold: the target
@@ -76,6 +76,9 @@ kit's own admission code, and the parsed approximation table against the package
 
 - The inputs are streamed by the server process: a point submitted by a server that exits before the job starts
   fails after 15 minutes (`job_status` on a new server restarts streaming while the job is still waiting).
+- A stalled input stream is not reported: when the copy into the job hangs, the kit's stream thread ends with a
+  `subprocess.TimeoutExpired` that it does not catch, so no stream-error marker is written and `job_status` shows
+  the job working until it exits ("no input arrived within 900 s"). Rerun the point under a new name.
 - CPU stages only; the GPU stages (`beam_edep`, `beam_point`) and the EventNtuple writer (`beam_centuple`, which
   also needs `/cvmfs`) are not exposed.
 - Scoring is a second server: `fetch_outputs` returns the call, the Mu2e analysis server runs it.

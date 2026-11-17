@@ -146,9 +146,10 @@ def requests(name: str, stage: str, dtypes: Iterable[str], electrons: int, muons
 
 
 def expected_minutes(stage: str, electrons: int, dtype: Optional[str]) -> float:
-    """Rough wall time once the job runs (beam/docs/edepana.md, docs/performance.md), queue not included."""
+    """Rough wall time once the job runs, queue not included: one core of the CPU queue, compilation included
+    (5,000 electrons: about 20 min float64, 17 min float32; faster CPUs in beam/docs/edepana.md)."""
     if stage == "edep":
-        per_e = 0.053 if dtype != "float32" else 0.067
+        per_e = 0.125 if dtype != "float32" else 0.095
         return round(9 + electrons * per_e / 60, 1)
     return round(4 + electrons / 117 / 60, 1)
 
