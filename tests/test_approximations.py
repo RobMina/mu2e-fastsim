@@ -9,7 +9,7 @@ import pytest
 from mu2efastsim import approximations as A
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGES = ("beamfastsim", "crvfastsim", "calofastsim", "mixing", "trigger")
+PACKAGES = ("beamfastsim", "crvfastsim", "crvfastsim.design", "calofastsim", "mixing", "trigger")
 DOC = ROOT / "docs" / "approximations.md"
 BEGIN, END = "<!-- table: python3 -m mu2efastsim.approximations -->", "<!-- end table -->"
 
@@ -24,7 +24,7 @@ def _all():
 
 
 def test_every_workflow_is_declared():
-    assert sorted(_all()) == ["W1", "W2-W4", "W5", "W6", "W7", "W8"]
+    assert sorted(_all()) == ["W1", "W2-W4", "W5", "W6", "W7", "W8", "W9"]
 
 
 @pytest.mark.parametrize("preset", A.PRESETS)
