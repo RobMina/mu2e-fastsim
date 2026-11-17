@@ -189,3 +189,13 @@ def test_covered_field_raises_outside_the_maps():
     assert f(np.array([[0.0, 0, -1]])).shape == (1, 3)
     with pytest.raises(ValueError, match="outside the field maps"):
         f(np.array([[0.0, 0, -1], [0, 0, 1]]))
+
+
+def test_saved_reference_loads_in_tsdevice_reader(tmp_path):
+    tsdevice = pytest.importorskip("beamfastsim.tsdevice")
+    ref, meta = pg.build(["nts.o.d.c.00000000.root"], -4004.0, events=[10], reader=fake_reader({0: rows()}))
+    path = tmp_path / "ref.npz"
+    pg.save(path, ref, meta)
+    loaded = tsdevice.load_references([str(path), str(path)])
+    assert len(loaded["pdg"]) == 2 * len(ref["pdg"]) and loaded["batch"].tolist() == [0, 0, 0, 1, 1, 1]
+    assert pg.load_meta(path)["entrances"] == 3

@@ -205,8 +205,14 @@ def build(files, z_target, mode="translate", point=0, events=None, field=None, r
 
 
 def save(path, ref, meta):
+    """Reference NPZ; the build record is a one-element array `build_meta` (tsdevice takes len() of every array)."""
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(path, meta=json.dumps(meta), **ref)
+    np.savez_compressed(path, build_meta=np.array([json.dumps(meta)]), **ref)
+
+
+def load_meta(path):
+    with np.load(path) as d:
+        return json.loads(str(d["build_meta"][0]))
 
 
 def ratio_error(num, den):
@@ -230,7 +236,7 @@ def score(reference, outputs, batch=None):
         shard_ids = d["parent_shard_ids"][:, 1]
         pot = d["parent_shard_event_counts"].astype(float)
         ref_id = d["id"]
-        ref_meta = json.loads(str(d["meta"]))
+        ref_meta = json.loads(str(d["build_meta"][0]))
     per_seed, seeds, dtypes = [], [], set()
     for path in outputs:
         with np.load(path) as o:
