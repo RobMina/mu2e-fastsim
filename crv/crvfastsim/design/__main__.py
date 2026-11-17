@@ -1,4 +1,5 @@
-"""python -m crvfastsim.design {muons, geometry, evaluate}: CRV module design points (docs/design.md)."""
+"""python -m crvfastsim.design {muons, geometry, evaluate, closure, stockcmp}: CRV module design points
+(docs/design.md)."""
 from __future__ import annotations
 
 import argparse
@@ -75,6 +76,24 @@ def cmd_closure(a):
     _write(a.out, out)
 
 
+def cmd_stockcmp(a):
+    from . import fom
+    from . import optics as O
+    from . import stockcmp
+    cfg = fom.FomConfig(optics=O.OpticsConfig(pe_scale=a.pe_scale))
+    ctx = fom.Context(counters=a.counters, lookup_dir=a.lookup_dir)
+    design = _design(a.design)
+    stock = stockcmp.read_stock(a.stock)
+    out = stockcmp.compare(stock, design, ctx, cfg, DTYPES[a.dtype], a.sectors)
+    if a.geometry_check:
+        out["geometry_check"] = stockcmp.geometry_check(a.stock, design, ctx)
+    if a.gen:
+        out["inefficiency"] = stockcmp.inefficiency(stock, a.gen, design, ctx, cfg, DTYPES[a.dtype])
+    out["config"] = dict(stock=a.stock, counters=a.counters)
+    out["approximations"] = WORKFLOW.select("default").record()
+    _write(a.out, out)
+
+
 def _write(path, obj):
     text = json.dumps(obj, indent=1, default=float)
     if path:
@@ -129,6 +148,18 @@ def main(argv=None):
     c.add_argument("--max-muons", type=int, default=0)
     c.add_argument("--out")
     c.set_defaults(func=cmd_closure)
+    s = sub.add_parser("stockcmp", help="paired comparison with a stock G4 + CRV reco sample of the same muons")
+    s.add_argument("stock", nargs="+", help="TFileService files with dump/ and crvdump/ trees")
+    s.add_argument("--design", help="the design the stock geometry implements; absent = nominal")
+    s.add_argument("--dtype", required=True, choices=sorted(DTYPES))
+    s.add_argument("--counters", default=RUN2_COUNTERS)
+    s.add_argument("--lookup-dir")
+    s.add_argument("--pe-scale", type=float, default=1.0)
+    s.add_argument("--sectors", nargs="*")
+    s.add_argument("--gen", nargs="*", help="gen dumps of every generated event: adds the CE-proxy inefficiency")
+    s.add_argument("--geometry-check", action="store_true", help="stock CrvSteps inside the design's bars")
+    s.add_argument("--out")
+    s.set_defaults(func=cmd_stockcmp)
     a = p.parse_args(argv)
     a.func(a)
     return 0
