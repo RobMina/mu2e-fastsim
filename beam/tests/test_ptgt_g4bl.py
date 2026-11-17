@@ -179,3 +179,13 @@ def test_score_selects_one_reference_of_a_multi_reference_run(tmp_path):
              str(tmp_path / "s.jsonl")])
     lines = (tmp_path / "s.jsonl").read_text().splitlines()
     assert [json.loads(x)["point"] for x in lines] == [0, 1]
+
+
+def test_covered_field_raises_outside_the_maps():
+    class Bank:
+        def evaluate(self, x):
+            return np.zeros_like(x), x[:, 2] < 0
+    f = pg.covered(Bank())
+    assert f(np.array([[0.0, 0, -1]])).shape == (1, 3)
+    with pytest.raises(ValueError, match="outside the field maps"):
+        f(np.array([[0.0, 0, -1], [0, 0, 1]]))

@@ -262,9 +262,21 @@ def score(reference, outputs, batch=None):
                 seed_sd=float(np.std(seed_totals, ddof=1)) if len(seed_totals) > 1 else None)
 
 
+def covered(bank):
+    """B(x) of a tsfield bank that raises on a point outside every map (never a silent zero field)."""
+    def field(x):
+        b, ok = bank.evaluate(x)
+        if not np.all(ok):
+            raise ValueError(f"{int(np.sum(~ok))} points outside the field maps, e.g. {x[~ok][0]}")
+        return b
+    return field
+
+
 def _field(a):
     from . import tsfield
-    return tsfield.from_config(a.field_config, a.offline_root, a.maps)
+    if not (a.field_config and a.offline_root and a.maps):
+        raise SystemExit("helix needs --field-config, --offline-root and --maps")
+    return covered(tsfield.from_config(a.field_config, a.offline_root, a.maps))
 
 
 def main(argv=None):
