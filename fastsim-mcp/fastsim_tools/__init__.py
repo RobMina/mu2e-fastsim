@@ -10,7 +10,7 @@ No MCP import here: fastsim_mcp_server publishes these functions.
 """
 
 from .tools import (ToolResult, cancel_design_point, describe_approximations, fetch_outputs, job_status,
-                    list_workflows, run_design_point)
+                    list_workflows, run_crv_chain, run_design_point)
 
-__all__ = ["list_workflows", "describe_approximations", "run_design_point", "job_status", "fetch_outputs",
-           "cancel_design_point"]
+__all__ = ["list_workflows", "describe_approximations", "run_design_point", "run_crv_chain", "job_status",
+           "fetch_outputs", "cancel_design_point"]

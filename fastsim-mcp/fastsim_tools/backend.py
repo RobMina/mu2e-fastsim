@@ -15,6 +15,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
+STREAMED_TASKS = ("beam_point", "beam_sob", "beam_edep", "beam_edep_cpu")
+
+
 class Backend:
     """The kit plus a state directory. ``kit`` is built on first use (tests pass a stand-in)."""
 
@@ -83,7 +86,10 @@ class Backend:
             return {}
 
     def stream_state(self, task: str, handle: str) -> Dict[str, Any]:
-        """Whether the kit has streamed the job's inputs in (streaming tasks keep markers per task)."""
+        """Whether the kit has streamed the job's inputs in (the beam streaming tasks keep markers per task; None
+        for other tasks: chain_point streams per sub-job and reports it in its status message)."""
+        if task not in STREAMED_TASKS:
+            return {"inputs_streamed": None}
         d = self.root / task
         if (d / f"{handle}.streamerr").exists():
             return {"inputs_streamed": False, "stream_error": (d / f"{handle}.streamerr").read_text()[:300]}

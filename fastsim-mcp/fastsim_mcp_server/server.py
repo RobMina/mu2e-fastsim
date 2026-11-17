@@ -24,9 +24,11 @@ INSTRUCTIONS = (
     "Mu2e fast simulation (JAX, GPUs and CPUs) as tools. Call list_workflows to see the fast workflows (beam, "
     "tracker, CRV, mixing, calorimeter, trigger, the conversion-electron chain and the EdepAna / EventNtuple "
     "writers), describe_approximations for what each replaces in the stock simulation and the switches. "
-    "run_design_point runs one stopping-target design on CPU, asynchronously, in float64 and float32: it returns "
-    "job handles at once; poll job_status (at most once a minute), then fetch_outputs, which returns the EdepAna "
-    "file and the run_analysis call that scores it with the Mu2e analysis server's approx_ce_sensitivity."
+    "run_design_point runs one stopping-target design, asynchronously, in float64 and float32, on CPU by default: "
+    "it returns job handles at once; poll job_status (at most once a minute), then fetch_outputs, which returns "
+    "the EdepAna file and the run_analysis call that scores it with the Mu2e analysis server's "
+    "approx_ce_sensitivity. GPU work (device='gpu', run_crv_chain) is sized first and returns needs_approval: show "
+    "the request to the user and repeat with allow_gpu=true only after they approve it."
 )
 
 

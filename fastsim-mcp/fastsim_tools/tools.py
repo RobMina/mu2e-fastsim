@@ -21,7 +21,7 @@ Dtype = Literal["float64", "float32"]
 
 class ToolResult(BaseModel):
     """What every tool returns: a status, a one-paragraph message, output files, and structured metadata."""
-    status: Literal["success", "submitted", "working", "error"]
+    status: Literal["success", "submitted", "needs_approval", "working", "error"]
     message: str
     files: List[Dict[str, Any]] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
@@ -54,9 +54,10 @@ def list_workflows() -> ToolResult:
     runnable = [w["key"] for w in entries if w["run_design_point"]]
     return ToolResult(
         status="success",
-        message=(f"{len(entries)} workflows: {', '.join(w['key'] for w in entries)}. run_design_point runs a "
-                 f"stopping-target design point through {', '.join(runnable)} on CPU; rates and validity are in "
-                 "the documents each entry names."),
+        message=(f"{len(entries)} workflows: {', '.join(w['key'] for w in entries)}. Runnable here: "
+                 f"{', '.join(runnable)} (run_design_point on CPU by default or GPU, run_crv_chain on GPU; GPU "
+                 "requests are sized and need allow_gpu); rates and validity are in the documents each entry "
+                 "names."),
         metadata={"workflows": entries, "repository": str(repo_root())})
 
 
@@ -99,6 +100,87 @@ def describe_approximations(
                       metadata=d)
 
 
+GPU_CAP_VAR = "FASTSIM_MCP_GPU_HOURS_CAP"
+
+
+def gpu_hours_cap() -> float:
+    """The most GPU-hours (at the jobs' wall-time limits) one tool call may request: ${GPU_CAP_VAR}, default 0 (GPU
+    jobs off). A site setting, so an agent cannot raise it."""
+    raw = os.environ.get(GPU_CAP_VAR, "0") or "0"
+    try:
+        cap = float(raw)
+    except ValueError:
+        raise ValueError(f"{GPU_CAP_VAR}={raw!r} is not a number") from None
+    return cap if cap > 0 else 0.0
+
+
+def _gpu_guard(size: Dict[str, Any], allow_gpu: bool, dry_run: bool) -> Optional[ToolResult]:
+    """None when a GPU request may go ahead; otherwise the reply that stops it (with the request size)."""
+    cap = gpu_hours_cap()
+    meta = {"gpu_request": size, "gpu_hours_cap": cap}
+    want = size["gpu_hours_requested"]
+    text = (f"{size['jobs']} GPU job(s) of {size['gpus_per_job']} {size['gpu_type']}, "
+            f"{want} GPU-h at the wall limits")
+    if size["gpu_hours_expected"]:
+        lo, hi = size["gpu_hours_expected"]
+        text += f", {lo}-{hi} GPU-h expected"
+    if cap == 0:
+        return ToolResult(status="error", metadata=meta,
+                          message=f"GPU jobs are off on this server ({GPU_CAP_VAR} unset or 0). Request: {text}.")
+    if want > cap:
+        return ToolResult(status="error", metadata=meta,
+                          message=f"request exceeds the configured cap of {cap} GPU-h ({GPU_CAP_VAR}): {text}.")
+    if not allow_gpu and not dry_run:
+        return ToolResult(status="needs_approval", metadata=meta,
+                          message=(f"not submitted: {text}. Get the user's approval for this request, then call "
+                                   "again with allow_gpu=true."))
+    return None
+
+
+def _submit(name: str, request: Dict[str, Any], reqs: List[Dict[str, Any]], files: List[Dict[str, Any]],
+            expected: Dict[str, Any], size: Optional[Dict[str, Any]], allow_gpu: bool, dry_run: bool) -> ToolResult:
+    """Shared by the run tools: refuse a changed request, size and guard GPU work, check, submit, record."""
+    be = _backend.get()
+    old = be.load_point(name)
+    if old is not None and old["request"] != request:
+        raise ValueError(f"point {name!r} already exists with a different request; choose another name")
+    if size is not None and old is None:
+        stop = _gpu_guard(size, allow_gpu, dry_run)
+        if stop is not None:
+            stop.metadata["request"] = request
+            return stop
+    if dry_run or size is not None:   # GPU requests are always checked with the kit first
+        checks = {r["handle"]: be.check(r["handle"], r["params"], files) for r in reqs}
+        ok = all(c.get("ok") for c in checks.values())
+        if dry_run or not ok:
+            bad = {h: c.get("message", "") for h, c in checks.items() if not c.get("ok")}
+            return ToolResult(status="success" if ok else "error",
+                              message=(("the kit admits " + ", ".join(checks)) if ok else
+                                       "the kit refuses: " + "; ".join(f"{h}: {m}" for h, m in bad.items())),
+                              metadata={"checks": checks, "request": request, "gpu_request": size})
+    jobs = []
+    for r in reqs:
+        be.submit(r["handle"], r["params"], files)
+        rec = be.job_record(r["handle"])
+        jobs.append({"handle": r["handle"], "dtype": r["dtype"], "task": r["params"]["task"],
+                     "params": r["params"], "job_id": rec.get("job_id"),
+                     "expected_minutes": expected.get(r["handle"])})
+    record = old or {"name": name, "created": _backend.now(), "request": request, "jobs": jobs}
+    for j, new in zip(record["jobs"], jobs):
+        j["job_id"] = j.get("job_id") or new["job_id"]
+    if size is not None:
+        record.setdefault("gpu_request", size)
+    be.save_point(record)
+    ids = ", ".join(f"{j['handle']} (job {j['job_id']})" for j in record["jobs"])
+    mins = [j.get("expected_minutes") for j in record["jobs"]]
+    when = (", ".join(f"{m} min" for m in mins) if all(m is not None for m in mins) else "not measured")
+    return ToolResult(status="submitted",
+                      message=(f"{name!r} submitted: {ids}. Expected run time once started: {when}, plus the queue."
+                               + (f" GPU request: {size['gpu_hours_requested']} GPU-h at the wall limits."
+                                  if size else "") + " Poll job_status, then fetch_outputs."),
+                      metadata=record)
+
+
 @validate_call
 def run_design_point(
     name: Annotated[str, Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_][A-Za-z0-9_-]*$",
@@ -110,25 +192,39 @@ def run_design_point(
                                         "omit to use `geometry`")] = None,
     geometry: Annotated[str, Field(description="'nominal' or a geometry file under beam/geom (ignored with "
                                                "target)")] = "nominal",
-    stage: Annotated[Literal["edep", "sob"],
-                     Field(description="edep: stops + CE chain + the EdepAna file for approx_ce_sensitivity (one "
-                                       "CPU core per dtype); sob: stops + CE chain + the built-in approximate "
-                                       "sensitivity (one 32-core CPU job, no dtype switch)")] = "edep",
-    electrons: Annotated[int, Field(ge=1000, le=200_000, description="conversion electrons from the stops "
-                                                                     "(edep: at most 50,000)")] = 5000,
+    stage: Annotated[Literal["edep", "sob", "stops", "centuple"],
+                     Field(description="edep: stops + CE chain + the EdepAna file for approx_ce_sensitivity (cpu: "
+                                       "one core per dtype; gpu: one GPU per dtype); sob: stops + CE chain + the "
+                                       "built-in approximate sensitivity (cpu only, one 32-core job, no dtype "
+                                       "switch); stops: stopping-target metrics only (gpu only, no dtype switch); "
+                                       "centuple: the fast EventNtuple file (gpu only; needs an endpoint with "
+                                       "/cvmfs and FNAL storage)")] = "edep",
+    device: Annotated[Literal["cpu", "gpu"],
+                      Field(description="cpu (default) or gpu. A gpu request is sized first and goes ahead only "
+                                        "with allow_gpu=true and within the server's configured GPU-hour cap")]
+    = "cpu",
+    electrons: Annotated[int, Field(ge=1000, le=2_000_000, description="conversion electrons from the stops "
+                                                                       "(edep cpu: at most 50,000; edep gpu: "
+                                                                       "2,000,000; sob, centuple: 200,000)")]
+    = 5000,
     muons: Annotated[int, Field(ge=0, le=10 ** 7, description="beam muons to transport; 0 = the whole beam "
                                                               "table")] = 0,
     seed: Annotated[int, Field(ge=0, lt=2 ** 31)] = 1,
     dtypes: Annotated[List[Dtype], Field(min_length=1, max_length=2,
                                          description="device precision(s); each runs as its own job")]
     = ["float64", "float32"],
-    dry_run: Annotated[bool, Field(description="check the request with the kit without submitting")] = False,
+    allow_gpu: Annotated[bool, Field(description="submit GPU jobs. Set it only after the user approved the GPU "
+                                                 "request this tool returned without it")] = False,
+    dry_run: Annotated[bool, Field(description="size the request and check it with the kit without "
+                                               "submitting")] = False,
 ) -> ToolResult:
     """Run one stopping-target design point through the fast chain: stops -> CE chain -> S/sqrt(B)-ready outputs.
 
-    Asynchronous: submits CPU-only jobs to the configured compute endpoint and returns their handles and job ids
-    at once. A point takes minutes to hours on one core (about 20 minutes for 5,000 electrons in float64); poll
-    job_status(name), then fetch_outputs(name). Keep this server running until job_status reports
+    Asynchronous: submits jobs to the configured compute endpoint and returns their handles and job ids at once.
+    CPU (default): about 20 minutes for 5,000 electrons per core in float64. GPU (device='gpu'): the reply first
+    gives the request size (jobs, GPU-hours at the wall limits and expected) and status needs_approval; nothing is
+    submitted until the call is repeated with allow_gpu=true, and never beyond the server's GPU-hour cap.
+    Poll job_status(name), then fetch_outputs(name). Keep this server running until job_status reports
     inputs_streamed: the job waits up to 15 minutes for the server to stream its Mu2e-internal inputs in.
     Submitting the same name and request again returns the same jobs; a different request under an existing
     name is refused. stage 'edep' returns, per dtype, the EdepAna file and the exact approx_ce_sensitivity call
@@ -136,9 +232,9 @@ def run_design_point(
     """
     try:
         dp.check_name(name)
+        st = dp.stage(stage, device)
         be = _backend.get()
         files: List[Dict[str, Any]] = []
-        geom: Optional[Dict[str, Any]]
         if target is not None:
             text = dp.render_target(target)
             from mu2efastsim.endpoints import geometry as kit_geometry   # the kit's own admission rules
@@ -147,41 +243,74 @@ def run_design_point(
             path = be.write_geometry(text, ref["sha256"])
             ref["uri"] = path.as_uri()
             files = [ref]
-            geom = {"kind": "overlay", "sha256": ref["sha256"], "text": text, "path": str(path)}
-            reqs = dp.requests(name, stage, dtypes, electrons, muons, seed, None)
+            geom = {"kind": "overlay", "sha256": ref["sha256"], "text": text}
+            reqs = dp.requests(name, stage, dtypes, electrons, muons, seed, None, device)
         else:
             geom = {"kind": "nominal" if geometry == "nominal" else "file", "name": dp.check_geometry(geometry)}
-            reqs = dp.requests(name, stage, dtypes, electrons, muons, seed, geometry)
-        request = {"stage": stage, "electrons": electrons, "muons": muons, "seed": seed,
-                   "dtypes": [r["dtype"] for r in reqs], "geometry": {k: v for k, v in geom.items() if k != "path"}}
-        old = be.load_point(name)
-        if old is not None and old["request"] != request:
-            raise ValueError(f"point {name!r} already exists with a different request; choose another name")
-        if dry_run:
-            checks = {r["handle"]: be.check(r["handle"], r["params"], files) for r in reqs}
-            ok = all(c.get("ok") for c in checks.values())
-            return ToolResult(status="success" if ok else "error",
-                              message=("the kit admits " if ok else "the kit refuses ") + ", ".join(checks),
-                              metadata={"checks": checks, "request": request})
-        jobs = []
-        for r in reqs:
-            be.submit(r["handle"], r["params"], files)
-            rec = be.job_record(r["handle"])
-            jobs.append({"handle": r["handle"], "dtype": r["dtype"], "task": r["params"]["task"],
-                         "params": r["params"], "job_id": rec.get("job_id"),
-                         "expected_minutes": dp.expected_minutes(stage, electrons, r["dtype"])})
-        record = old or {"name": name, "created": _backend.now(), "request": request, "jobs": jobs}
-        for j, new in zip(record["jobs"], jobs):
-            j["job_id"] = j.get("job_id") or new["job_id"]
-        be.save_point(record)
+            reqs = dp.requests(name, stage, dtypes, electrons, muons, seed, geometry, device)
+        request = {"stage": stage, "electrons": electrons if st.electrons else None, "muons": muons, "seed": seed,
+                   "dtypes": [r["dtype"] for r in reqs], "geometry": geom}
+        if device == "gpu":
+            request["device"] = "gpu"
+        ranges = {r["handle"]: dp.expected_minutes_range(stage, device, electrons, muons, r["dtype"]) for r in reqs}
+        expected = {h: (None if v is None else round(sum(v) / 2, 1)) for h, v in ranges.items()}
+        size = (dp.gpu_request(reqs, st.gpus, st.minutes, ranges.values()) if device == "gpu" else None)
+        return _submit(name, request, reqs, files, expected, size, allow_gpu, dry_run)
     except Exception as exc:   # every failure goes back to the agent as a message
         return _error(exc)
-    ids = ", ".join(f"{j['handle']} (job {j['job_id']})" for j in record["jobs"])
-    return ToolResult(status="submitted",
-                      message=(f"design point {name!r} submitted: {ids}. Expected run time once started: "
-                               f"{', '.join(str(j['expected_minutes']) + ' min' for j in record['jobs'])}, plus "
-                               "the queue. Poll job_status, then fetch_outputs."),
-                      metadata=record)
+
+
+@validate_call
+def run_crv_chain(
+    name: Annotated[str, Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_][A-Za-z0-9_-]*$",
+                               description="a name for the point, used as the job handle prefix")],
+    task: Annotated[Literal["chain_point", "chain"],
+                    Field(description="chain_point: the whole CRV chain as `shards` one-GPU jobs with the inputs "
+                                      "streamed in (Slurm endpoints); chain: one GPU job reading the inputs in "
+                                      "place (endpoints that mount FNAL storage)")] = "chain_point",
+    shards: Annotated[int, Field(ge=1, le=32, description="chain_point: sub-jobs; chain: gen shards (1-10)")] = 1,
+    files_per_job: Annotated[int, Field(ge=1, le=25, description="chain_point: gen files per sub-job")] = 1,
+    max_events: Annotated[int, Field(ge=0, le=10 ** 7, description="events per gen file, 0 = all")] = 0,
+    seed: Annotated[int, Field(ge=0, lt=2 ** 31)] = 1,
+    wall_minutes: Annotated[int, Field(ge=10, le=180, description="chain_point: wall limit per sub-job")] = 60,
+    gen_set: Annotated[int, Field(ge=0, le=5, description="chain_point gen set (0 g4ref_v1 with a Geant4 "
+                                                          "reference, 1 crygen_v1, ...)")] = 0,
+    allow_gpu: Annotated[bool, Field(description="submit. Set it only after the user approved the GPU request "
+                                                 "this tool returned without it")] = False,
+    dry_run: Annotated[bool, Field(description="size and check without submitting")] = False,
+) -> ToolResult:
+    """Run the fast CRV chain (W5: cosmic generator events -> CRV pulses and coincidences) on GPUs.
+
+    Always GPU: the first call returns the request size (jobs, GPU-hours at the wall limits and expected) with
+    status needs_approval; repeat with allow_gpu=true after the user approved it; the server's GPU-hour cap
+    applies. Device precision is the chain's default (float32): the kit task has no precision switch yet.
+    Poll job_status(name), then fetch_outputs(name) for accepted events and clusters per generated event.
+    """
+    try:
+        dp.check_name(name)
+        if task == "chain_point":
+            from mu2efastsim.endpoints import chainpoint as cp
+            params = cp.validate({"task": "chain_point", "shards": shards, "files_per_job": files_per_job,
+                                  "shard_offset": 0, "max_events": max_events, "seed": seed,
+                                  "wall_minutes": wall_minutes, "gen_set": gen_set})
+            low = cp.chain_estimate_s(params) / 60
+            high = min(wall_minutes, (cp.wait_budget_s(params) + cp.chain_estimate_s(params)) / 60)
+            per_job = [(round(low, 1), round(high, 1))] * shards
+            reqs = [{"handle": f"{name}.crv", "dtype": None, "params": {"task": "chain_point", **params}}]
+            size = dp.gpu_request(reqs * shards, 1, wall_minutes, per_job)
+            size["sub_jobs"] = shards
+        else:
+            if not 1 <= shards <= 10:
+                raise ValueError("chain: shards 1-10 (the held-out Geant4 shards 11-20)")
+            reqs = [{"handle": f"{name}.crv", "dtype": None,
+                     "params": {"task": "chain", "shards": shards, "max_events": max_events, "seed": seed}}]
+            size = dp.gpu_request(reqs, 1, 60, [None])
+        request = {"stage": "crv", "task": task, "params": reqs[0]["params"], "device": "gpu"}
+        expected = {reqs[0]["handle"]: size["expected_minutes_per_job"][0][1]
+                    if size["expected_minutes_per_job"] else None}
+        return _submit(name, request, reqs, [], expected, size, allow_gpu, dry_run)
+    except Exception as exc:
+        return _error(exc)
 
 
 @validate_call
@@ -254,9 +383,11 @@ def fetch_outputs(
                           message=f"{name}: no completed job yet; " + "; ".join(
                               f"{p['dtype'] or p['handle']}: {p['state']}" for p in pending),
                           metadata={"name": name, "pending": pending})
-    key = "sensitivity" if stage == "sob" else "ce_acceptance"
-    text = ", ".join(f"{o['dtype'] or 'cpu'}: {key} {o['metrics'].get(key)}, stops_per_pot "
-                     f"{o['metrics'].get('stops_per_pot')}" for o in outputs)
+    key = {"sob": "sensitivity", "stops": "stop_frac", "centuple": "efficiency", "crv": "accepted_events"}.get(
+        stage, "ce_acceptance")
+    text = ", ".join(f"{o['dtype'] or 'job'}: {key} {o['metrics'].get(key)}"
+                     + (f", stops_per_pot {o['metrics'].get('stops_per_pot')}" if "stops_per_pot" in o["metrics"]
+                        else "") for o in outputs)
     return ToolResult(status="success",
                       message=f"{name}: {len(outputs)} job(s) fetched ({text})."
                               + (f" Still pending: {', '.join(p['handle'] for p in pending)}." if pending else ""),

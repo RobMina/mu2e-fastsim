@@ -37,7 +37,7 @@ WORKFLOWS: Tuple[Workflow, ...] = (
         ("beamfastsim",), ("python3 -m beamfastsim.tsdevice", "python3 -m beamfastsim point"),
         ("W1",), ("docs/performance.md", "beam/docs/ts-transport.md", "beam/docs/target-geometry.md"),
         kit_tasks=("beam_point", "beam_sob", "beam_edep", "beam_edep_cpu"),
-        run_design_point="first stage of every design point: the stops of the requested target geometry"),
+        run_design_point="first stage of every design point; stage 'stops' (gpu) returns the stopping metrics alone"),
     Workflow(
         "W2-W4", "tracker: stops, DIO or RPC electrons to tracker steps, digis and observables",
         "electron births (CE from the stops, DIO, RPC internal-conversion pairs)",
@@ -53,7 +53,7 @@ WORKFLOWS: Tuple[Workflow, ...] = (
         ("crvfastsim",), ("python3 -m crvfastsim runchain",),
         ("W5",), ("docs/performance.md", "crv/docs/validation.md", "crv/docs/running.md"),
         kit_tasks=("chain", "chain_point", "crv_response"),
-        notes=("GPU tasks: not exposed by run_design_point (CPU-only server)",)),
+        run_design_point="run_crv_chain (GPU only, chain_point or chain; float32, the chain's default)"),
     Workflow(
         "W6", "pileup mixing",
         "donor frames of the pileup streams and a signal event",
@@ -90,7 +90,8 @@ WORKFLOWS: Tuple[Workflow, ...] = (
         ("beamfastsim",), ("python3 -m beamfastsim.edepana point",),
         ("W1", "W2-W4", "W7"), ("beam/docs/edepana.md",),
         kit_tasks=("beam_edep", "beam_edep_cpu"),
-        run_design_point="stage 'edep' (default): one CPU core per dtype, the file comes back with fetch_outputs",
+        run_design_point="stage 'edep' (default): one CPU core (or one GPU) per dtype, the file comes back with "
+                         "fetch_outputs",
         notes=("event_trk_edep is low: no delta rays in the tracker (beam/docs/edepana.md, known gaps)",)),
     Workflow(
         "eventntuple_writer", "EventNtuple writer: the fast CE chain written as EventNtuple/ntuple",
@@ -100,7 +101,8 @@ WORKFLOWS: Tuple[Workflow, ...] = (
         ("beamfastsim",), ("python3 -m beamfastsim.centuple point",),
         ("W1", "W2-W4", "W7", "W8"), ("beam/docs/eventntuple.md",),
         kit_tasks=("beam_centuple",),
-        notes=("GPU task that also needs /cvmfs: not exposed by run_design_point (CPU-only server)",)),
+        run_design_point="stage 'centuple' (gpu), on an endpoint with /cvmfs and FNAL storage",
+        notes=("the kit refuses it on Slurm endpoints without FNAL storage",)),
 )
 
 BY_KEY: Dict[str, Workflow] = {w.key: w for w in WORKFLOWS}

@@ -18,8 +18,11 @@ class FakeKit:
         self.root = root
         self.submitted, self.states, self.files_seen = {}, {}, {}
 
+    REFUSED = {"beam_centuple": "needs an endpoint that mounts FNAL storage (eaf)"}   # as on a Slurm endpoint
+
     def check(self, name, params, files, inputs):
-        return {"ok": params["task"] in ("beam_edep_cpu", "beam_sob"), "message": ""}
+        msg = self.REFUSED.get(params["task"])
+        return {"ok": msg is None, "message": msg or ""}
 
     def submit(self, name, params, files, inputs):
         if name in self.submitted and self.submitted[name] != params:
@@ -61,7 +64,7 @@ def kit(tmp_path):
 
 def test_exports_are_the_tools():
     assert fastsim_tools.__all__ == ["list_workflows", "describe_approximations", "run_design_point",
-                                     "job_status", "fetch_outputs", "cancel_design_point"]
+                                     "run_crv_chain", "job_status", "fetch_outputs", "cancel_design_point"]
 
 
 def test_list_workflows():

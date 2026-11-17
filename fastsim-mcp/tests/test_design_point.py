@@ -64,8 +64,15 @@ def test_requests_one_job_per_dtype():
                                                                    "electrons": 100_000, "seed": 7, "geom": "nominal"}}]
 
 
-def test_requests_are_cpu_tasks_only():
-    assert {task for task, _, _ in dp.STAGES.values()} == {"beam_edep_cpu", "beam_sob"}
+def test_stage_table():
+    assert {k: v.task for k, v in dp.STAGES.items()} == {
+        ("edep", "cpu"): "beam_edep_cpu", ("sob", "cpu"): "beam_sob", ("edep", "gpu"): "beam_edep",
+        ("stops", "gpu"): "beam_point", ("centuple", "gpu"): "beam_centuple"}
+    assert all((v.gpus > 0) == (k[1] == "gpu") for k, v in dp.STAGES.items())
+    with pytest.raises(ValueError, match="no gpu task"):
+        dp.stage("sob", "gpu")
+    with pytest.raises(ValueError, match="no cpu task"):
+        dp.stage("stops", "cpu")
 
 
 @pytest.mark.parametrize("args, match", [

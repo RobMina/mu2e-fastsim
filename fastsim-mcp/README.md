@@ -17,14 +17,30 @@ publishes it.
 |---|---|---|
 | `list_workflows` | W1 beam, W2-W4 tracker, W5 CRV, W6 mixing, W7 calorimeter, W8 trigger, the CE chain, the EdepAna and EventNtuple writers: boundary (input -> output), packages, command lines, documents, kit tasks | none |
 | `describe_approximations` | per workflow (or chain): switchable approximations with levels, presets, stock alternative and switch; fixed ones; the notes of `docs/approximations.md` | none |
-| `run_design_point` | one target design (`target` overlay, or `geometry` nominal / a `beam/geom` file) -> stops -> CE chain -> EdepAna file (stage `edep`, one CPU core per dtype) or the built-in sensitivity (stage `sob`, one 32-core CPU job); returns job handles at once | submits CPU jobs |
+| `run_design_point` | one target design (`target` overlay, or `geometry` nominal / a `beam/geom` file), `device` cpu (default) or gpu. Stages: `edep` stops -> CE chain -> EdepAna file (cpu `beam_edep_cpu`, one core per dtype; gpu `beam_edep`, one GPU per dtype); `sob` built-in sensitivity (cpu `beam_sob`, 32 cores); `stops` stopping metrics only (gpu `beam_point`); `centuple` the fast EventNtuple (gpu `beam_centuple`, endpoints with /cvmfs and FNAL storage). Returns job handles at once | submits jobs |
+| `run_crv_chain` | the W5 CRV chain on GPUs: `chain_point` (N one-GPU sub-jobs, inputs streamed) or `chain` (one job, inputs read in place); float32, the chain's default | submits GPU jobs |
 | `job_status` | per job: working / completed / failed / cancelled, site state, job id, whether the inputs were streamed in | ssh status |
 | `fetch_outputs` | metrics, the EdepAna file with its `.edep.json` run record and `edep_summary.txt`, and `score_with`: the analysis server's `run_analysis` call for `approx_ce_sensitivity` | fetches `out/` |
 | `cancel_design_point` | cancels a point's queued or running jobs | ssh cancel |
 
-The compute tools are asynchronous: a point takes minutes to hours on one CPU core (about 20 minutes for 5,000
-electrons on one core, compilation included). Both dtypes run by default, each as its own job. The server only asks
-for CPU jobs (`beam_edep_cpu`, `beam_sob`); GPU tasks are not exposed.
+The compute tools are asynchronous: a CPU point takes about 20 minutes for 5,000 electrons on one core, compilation
+included. Both dtypes run by default, each as its own job.
+
+### GPU requests
+
+GPU work never starts by accident:
+
+1. **Sized first.** A call with `device="gpu"` (or any `run_crv_chain` call) returns `needs_approval` and submits
+   nothing. The reply's `gpu_request` gives the jobs, GPUs per job and card, the GPU-hours at the jobs' wall-time
+   limits (the most the request can use) and the expected GPU-hours from the measured rates (`null` where nothing
+   was measured).
+2. **Explicit flag.** The agent repeats the call with `allow_gpu=true` only after the user approved that request.
+3. **Configured cap.** `FASTSIM_MCP_GPU_HOURS_CAP` (a site setting, not a tool argument) bounds the GPU-hours at the
+   wall limits of one call. Unset or 0 turns GPU jobs off. The kit's own per-job budget guard applies on top.
+4. **Kit admission.** Every GPU request is checked with the kit before anything is submitted. A task the endpoint
+   cannot run, such as `beam_centuple` without FNAL storage and /cvmfs, comes back as an error.
+
+`dry_run=true` sizes and checks a GPU request without the flag and without submitting.
 
 `run_design_point` goes through the fastsim kit (`mu2efastsim.endpoints.kit`), so the kit's rules hold: the target
 overlay must pass the kit's geometry admission (`core/mu2efastsim/endpoints/geometry.py`), the same handle and
@@ -79,6 +95,9 @@ kit's own admission code, and the parsed approximation table against the package
 - A stalled input stream is not reported: when the copy into the job hangs, the kit's stream thread ends with a
   `subprocess.TimeoutExpired` that it does not catch, so no stream-error marker is written and `job_status` shows
   the job working until it exits ("no input arrived within 900 s"). Rerun the point under a new name.
-- CPU stages only; the GPU stages (`beam_edep`, `beam_point`) and the EventNtuple writer (`beam_centuple`, which
-  also needs `/cvmfs`) are not exposed.
+- The CRV chain runs at its default device precision (float32): the `chain_point` and `chain` kit tasks have no
+  precision parameter yet, so float64 CRV needs a kit change.
+- `beam_point` and `beam_sob` have no dtype switch: one job each.
+- Expected GPU time of `beam_centuple` and `chain` is not measured here; their requests are sized at the wall
+  limits only.
 - Scoring is a second server: `fetch_outputs` returns the call, the Mu2e analysis server runs it.

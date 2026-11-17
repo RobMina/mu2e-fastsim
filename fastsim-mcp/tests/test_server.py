@@ -9,8 +9,8 @@ def test_tool_modules_from_pyproject():
     from fastsim_mcp_server import server
     assert server.configured_tool_module_names() == ["fastsim_tools"]
     assert [n for n, _ in server.tool_functions()] == ["list_workflows", "describe_approximations",
-                                                      "run_design_point", "job_status", "fetch_outputs",
-                                                      "cancel_design_point"]
+                                                      "run_design_point", "run_crv_chain", "job_status",
+                                                      "fetch_outputs", "cancel_design_point"]
 
 
 def test_server_registers_every_tool():
@@ -21,7 +21,8 @@ def test_server_registers_every_tool():
     by_name = {t.name: t for t in tools}
     assert set(by_name) == {n for n, _ in server.tool_functions()}
     props = by_name["run_design_point"].inputSchema["properties"]
-    assert {"name", "target", "geometry", "stage", "electrons", "dtypes"} <= set(props)
+    assert {"name", "target", "geometry", "stage", "device", "electrons", "dtypes", "allow_gpu"} <= set(props)
+    assert {"shards", "wall_minutes", "allow_gpu"} <= set(by_name["run_crv_chain"].inputSchema["properties"])
     assert "Asynchronous" in by_name["run_design_point"].description
 
 
