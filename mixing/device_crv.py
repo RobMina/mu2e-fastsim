@@ -109,7 +109,7 @@ def _counts_draw(avg, nsub, key):
     normal, poisson = jax.random.split(key)
     avg = jnp.maximum(avg, 0.0)
     draw = jnp.where(avg > 10, avg + jnp.sqrt(avg) * jax.random.normal(normal, avg.shape),
-                     dpoisson.poisson(poisson, jnp.where(avg <= 10, avg, 0.0)))   # exact, without a per-lane loop
+                     dpoisson.poisson(poisson, jnp.where(avg <= 10, avg, 0.0), large=False))   # exact, without a per-lane loop
     return jnp.maximum(jnp.rint(draw / jnp.maximum(nsub, 1)), 0).astype(jnp.int64)
 
 
@@ -302,7 +302,7 @@ class Adapter:
             live &= hit
         lo, hi = self.cfg.window
         lam = self.cfg.sipm.thermal_rate / self.cfg.sipm.p_fire(self.cfg.sipm.overvoltage) * (hi - lo + 100)
-        count = dpoisson.poisson(kc, jnp.where(live, lam, 0.)).ravel()   # exact, without a per-lane loop
+        count = dpoisson.poisson(kc, jnp.where(live, lam, 0.), large=False).ravel()   # exact, without a per-lane loop
         size = self.capacities["thermal"]
         flat = jnp.repeat(jnp.arange(count.size), count, total_repeat_length=size)
         channel = flat % assets["status"].size

@@ -52,6 +52,14 @@ def test_batched_draws_are_poisson(lam):
     assert abs(float(np.mean(draws)) - lam) < 5 * math.sqrt(lam / N), info
 
 
+@pytest.mark.parametrize("lam", [0.05, 2.0, 10.0, 15.0])
+def test_small_only_draws_are_poisson(lam):
+    """large=False: inversion only (15 continues past the fixed terms for a fraction of the lanes); still Poisson."""
+    draws = jax.jit(lambda k: P.poisson(k, jnp.full(N, lam), large=False))(jax.random.PRNGKey(13))
+    ok, info = _chi2_ok(draws, lam)
+    assert ok, info
+
+
 @pytest.mark.parametrize("terms,trials,lam", [(3, 8, 4.0), (6, 8, 9.0), (48, 1, 50.0), (48, 1, 1e4)])
 def test_continuations_keep_the_distribution(terms, trials, lam):
     """Few CDF terms (most small lanes continue the inversion) or one PTRS trial (about a tenth of the large lanes

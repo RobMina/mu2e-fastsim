@@ -81,8 +81,11 @@ def _ptrs(key, lam, trials):
     return draw.astype(jnp.int64), found
 
 
-def poisson(key, lam, *, terms=None, trials=None):
-    """int64 Poisson draws with means `lam` (any shape, >= 0), exact distribution; see the module docstring."""
+def poisson(key, lam, *, terms=None, trials=None, large=True):
+    """int64 Poisson draws with means `lam` (any shape, >= 0), exact distribution; see the module docstring.
+
+    large=False (for means that are all small, such as the CRV photon and thermal counts): every lane takes the CDF
+    inversion and no PTRS trials are drawn; a lane above SMALL continues the inversion exactly, only slower."""
     if METHOD == "jax":
         return jax.random.poisson(key, lam, dtype=jnp.int64)
     if METHOD != "batched":
@@ -90,14 +93,17 @@ def poisson(key, lam, *, terms=None, trials=None):
     terms = TERMS if terms is None else int(terms)
     trials = TRIALS if trials is None else int(trials)
     lam = jnp.asarray(lam, jnp.float64)
-    small = lam < SMALL
+    small = lam < SMALL if large else jnp.ones(lam.shape, bool)
     k_u, k_r, k_f = jax.random.split(key, 3)
     u = jax.random.uniform(k_u, lam.shape, jnp.float64)
     lam_small = jnp.where(small, lam, 0.0)
     k_small, p, cdf, ok_small = _inversion(u, lam_small, terms)
-    k_large, ok_large = _ptrs(k_r, jnp.where(small, SMALL, lam), trials)
-    draw = jnp.where(small, k_small, k_large)
-    settled = jnp.where(small, ok_small, ok_large)
+    if large:
+        k_large, ok_large = _ptrs(k_r, jnp.where(small, SMALL, lam), trials)
+        draw = jnp.where(small, k_small, k_large)
+        settled = jnp.where(small, ok_small, ok_large)
+    else:
+        draw, settled = k_small, ok_small
 
     def finish():   # rare: continue the inversion (small means); fresh PTRS draws, independent of the rejected
         small_rest = _continue_inversion(u, lam_small, k_small, p, cdf, terms)   # trials (large means)
