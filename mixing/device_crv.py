@@ -28,14 +28,15 @@ PERIOD = 1695.0
 
 
 # Combination slot counts of the coincidence finder (coinc_jax.find_dense k_tiers; the same clusters): None uses
-# coinc_jax.K_TIERS on the CPU backend and the single capacity K on a GPU; () keeps the single K everywhere.
+# coinc_jax.K_TIERS on the CPU backend and, on a GPU, in the float64 CRV (W6 on an A100 at batch 256: +7.7 % in
+# float64, none in float32, where the single capacity K stays); () keeps the single K everywhere.
 COINC_K_TIERS = None
 
 
 def _coinc_k_tiers():
     if COINC_K_TIERS is not None:
         return tuple(COINC_K_TIERS) or None
-    return CJ.K_TIERS if jax.default_backend() == "cpu" else None
+    return CJ.K_TIERS if jax.default_backend() == "cpu" or not dprec.SINGLE else None
 
 
 def _fold(t):
@@ -140,6 +141,7 @@ class Adapter:
     digi_mode: str = "rows"
     pulse_mode: str = "bounded"
     thermal_mode: str = "all"
+    coinc_tiers: tuple = ()
     kind: str = "physics"
     support: tuple = ("crv_digis", "crv_reco")
 
@@ -153,6 +155,7 @@ class Adapter:
                     **({"digi_starts": self.digi_mode} if self.digi_mode != "dense" else {}),
                     **({"pulse_scan": self.pulse_mode} if self.pulse_mode != "dense" else {}),
                     **({"thermal_counters": self.thermal_mode} if self.thermal_mode != "all" else {}),
+                    **({"coinc_tiers": [list(t) for t in self.coinc_tiers]} if self.coinc_tiers else {}),
                     unsupported=["traps", "NZS", "background", "fused response"],
                     validation="local kernel/packing tests; no production closure or memory qualification")
 
@@ -413,6 +416,8 @@ class Adapter:
 
     def clusters(self, p, timing, assets, report=False):
         """Pack event/type groups on device and call the physical coincidence kernel."""
+        if self.coinc_tiers:
+            return self._clusters_tiered(p, timing, assets, report)
         B, H = timing["event_mask"].size, self.capacities["coinc_hits"]
         a = assets["coincidence"]
         ch = p["bar"] * 4 + p["sipm"]
@@ -456,6 +461,84 @@ class Adapter:
         if report:
             out["usage"] = {"coinc_hits": hits_used}
         return out, dict(crv_coinc_hits=hit_over, crv_coinc_combinations=comb_over)
+
+    def _clusters_tiered(self, p, timing, assets, report=False):
+        """clusters() with the hit buffer in tiers (capacity `coinc_tiers`): an event goes to the smallest tier that
+        holds its hits of the sector type, [batch, coinc_hits] first, then [events, hits] per tier. The finder is
+        pairwise in the hits, so a few wide rows cost far less than one wide buffer for every event. Each event's
+        hits keep their rank in its row, and the rows come back in (event, rank) order: the clusters of the single
+        buffer wide enough for every event, to rounding (the finder's sums run over the row width)."""
+        B = timing["event_mask"].size
+        widths = (self.capacities["coinc_hits"],) + tuple(h for _, h in self.coinc_tiers)
+        rows_of = (B,) + tuple(e for e, _ in self.coinc_tiers)
+        a = assets["coincidence"]
+        ch = p["bar"] * 4 + p["sipm"]
+        outputs, hit_over, comb_over, tier_over = [], jnp.array(False), jnp.array(False), jnp.array(False)
+        hits_used = jnp.int64(0)
+        tier_used = [jnp.int64(0)] * len(self.coinc_tiers)
+        for ti, (stype, ld, ns, uniform) in enumerate(self.coincidence_static):
+            mask = p["mask"] & (a["stype"][ch] == stype)
+            if self.fcfg.ignore_secondary_pulses:
+                mask &= p["seq"] == 0
+            counts = jnp.zeros(B, jnp.int64).at[p["ev"]].add(mask.astype(jnp.int64))
+            start = jnp.cumsum(counts) - counts
+            rank = jnp.cumsum(mask) - 1 - start[p["ev"]]
+            tier = jnp.searchsorted(jnp.array(widths, jnp.int64), counts, side="left")   # smallest tier that holds it
+            hit_over |= jnp.any(counts > widths[-1])
+            hits_used = jnp.maximum(hits_used, jnp.max(counts))
+            parts = []
+            for k, (G, H) in enumerate(zip(rows_of, widths)):
+                if k == 0:
+                    slot_of = jnp.where(tier == 0, jnp.arange(B), G)           # every event has its own row
+                    event_at = jnp.arange(B)
+                else:
+                    member = (tier == k) & (counts > 0)
+                    order = jnp.cumsum(member) - 1
+                    slot_of = jnp.where(member & (order < G), order, G)
+                    event_at = jnp.full(G, B, jnp.int64).at[slot_of].set(jnp.arange(B), mode="drop")
+                    tier_over |= member.sum() > G
+                    tier_used[k - 1] = jnp.maximum(tier_used[k - 1], member.sum())
+                row = jnp.where(mask & (rank < H), slot_of[p["ev"]], G)
+                col = jnp.clip(rank, 0, H - 1)
+                def dense(value, G=G, H=H, row=row, col=col):
+                    return jnp.zeros((G, H) + value.shape[1:], value.dtype).at[row, col].set(value, mode="drop")
+                bar = p["bar"]
+                args = dict(valid=dense(mask), idx=dense(p["idx"]), side=dense(p["sipm"] % 2),
+                            bar=dense(bar), sipm=dense(p["sipm"]), first=dense(p["seq"] == 0),
+                            layer=dense(a["layer"][bar]), counter=dense(a["counter"][bar]),
+                            x=dense(a["x"][bar]), y=dense(a["y"][bar]),
+                            t=dense(p["time"] + a["tcorr"][ch]), pe=dense(p["pe"] * a["pefac"][ch]),
+                            pos=dense(a["pos"][bar]), cut=dense(a["cuts"][ch]))
+                reference = args["t"][:, 0]
+                if dprec.SINGLE:
+                    for name in ("t", "x", "y"):
+                        args[name] = jnp.where(args["valid"], args[name] - args[name][:, :1], args[name])
+                result = CJ.find_dense(**args, tp=a["types"][ti]["tp"], cu=a["types"][ti]["cu"],
+                                       ld=ld, ns=ns, uniform=uniform, K=self.capacities["coinc_combinations"],
+                                       k_tiers=_coinc_k_tiers())
+                comb_over |= jnp.any(result["overflow"])
+                position = result["pos"].reshape(-1, 3)
+                time = result["avgtime"] + (reference[:, None] if dprec.SINGLE else 0.)
+                ev = jnp.repeat(event_at, H)
+                live = (event_at < B)[:, None] & timing["event_mask"][jnp.clip(event_at, 0, B - 1)][:, None]
+                parts.append(dict(mask=(result["root"] & live).ravel(), ev=ev,
+                                  rank=jnp.tile(jnp.arange(H, dtype=jnp.int64), G),
+                                  sectortype=jnp.full(G * H, stype, jnp.int64),
+                                  pe=result["pe"].ravel(), time=time.ravel(), poscalc=result["poscalc"].ravel(),
+                                  x=position[:, 0], y=position[:, 1], z=position[:, 2]))
+            part = {name: jnp.concatenate([q[name] for q in parts]) for name in parts[0]}
+            # the single buffer's order: clusters by (event, rank of the root hit), empty rows after
+            size = part["mask"].size
+            key = jnp.where(part["mask"], part["ev"] * (widths[-1] + 1) + part["rank"], B * (widths[-1] + 1) + jnp.arange(size))
+            o = jnp.argsort(key)
+            part = {name: value[o] for name, value in part.items() if name != "rank"}
+            part["ev"] = jnp.clip(part["ev"], 0, B - 1)
+            outputs.append(part)
+        out = {name: jnp.concatenate([o[name] for o in outputs]) for name in outputs[0]}
+        if report:
+            out["usage"] = {"coinc_max_hits": hits_used,
+                            **{f"coinc_tier_{k}_events": n for k, n in enumerate(tier_used, start=1)}}
+        return out, dict(crv_coinc_hits=hit_over, crv_coinc_tier_events=tier_over, crv_coinc_combinations=comb_over)
 
     def apply(self, collection, timing, assets, key):
         """Return fixed-size digis/pulses/clusters and fatal batch error flags."""
@@ -505,6 +588,7 @@ def prepare(geom, cond, cfg, counters, capacities, tabs, pmap):
     cfg = deepcopy(cfg)
     capacities = dict(capacities)
     options = {name: capacities.pop(name, DEFAULTS[name]) for name in OPTIONS}
+    tiers = capacities.pop("coinc_tiers", None)
     for name, value in options.items():
         if value not in OPTIONS[name]:
             raise ValueError(f"CRV option {name} must be one of {OPTIONS[name]}")
@@ -514,6 +598,15 @@ def prepare(geom, cond, cfg, counters, capacities, tabs, pmap):
     cap = dict(capacities)
     if any(type(v) is not int or v < 1 for v in cap.values()):
         raise ValueError("CRV capacities must be positive Python integers")
+    if tiers is not None:   # [[events, hits], ...]: wider hit rows for the few events with many hits
+        if (not isinstance(tiers, (list, tuple)) or not tiers
+                or any(not isinstance(t, (list, tuple)) or len(t) != 2 or any(type(v) is not int or v < 1 for v in t)
+                       for t in tiers)):
+            raise ValueError("CRV coinc_tiers must be a non-empty list of [events, hits] positive integers")
+        widths = [cap["coinc_hits"]] + [t[1] for t in tiers]
+        if any(b <= a for a, b in zip(widths, widths[1:])):
+            raise ValueError("CRV coinc_tiers hits must increase, from above coinc_hits")
+        tiers = tuple(tuple(t) for t in tiers)
     if cap["reco_samples"] < 3 or cap["waveform_samples"] < 3:
         raise ValueError("waveform buffers need at least three samples")
     cond = readout.apply(cond, geom, counters)
@@ -622,4 +715,4 @@ def prepare(geom, cond, cfg, counters, capacities, tabs, pmap):
     return Adapter(assets, cap, tuple(blocks), tuple(statics),
                    tuple((int(t), p.ld, p.ns, p.uniform) for t, p in params.items()),
                    cfg, w, pcfg, fcfg, geom.nbars, len(ufeb), pmap.shape[1], options["waveform"],
-                   options["digi_starts"], options["pulse_scan"], options["thermal_counters"])
+                   options["digi_starts"], options["pulse_scan"], options["thermal_counters"], tiers or ())

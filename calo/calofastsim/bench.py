@@ -19,8 +19,12 @@ batches through the chain (built once per process and configuration) and returns
 Example::
 
     python3 -m mu2efastsim.bench calofastsim.bench:bench_steps --prepare calofastsim.bench:bench_prepare \\
-        --events 40960 --fresh-inputs --dtype float32 --kwargs '{"dtype": "float32"}' --workflow W7 \\
-        --boundary "CE CaloShowerSteps -> calo digis + hits + clusters" --out bench.json
+        --events 163840 --fresh-inputs --dtype float32 --kwargs '{"dtype": "float32"}' --workflow W7 \\
+        --boundary "CE CaloShowerSteps -> calo hits + clusters" --out bench.json
+
+Batches: ``BATCH`` (65,536 events) for the default parametric response, which runs fastest at large batches;
+the waveform response runs fastest at ``WAVEFORM_BATCH`` (4,096): ``--prepare calofastsim.bench:
+bench_prepare_waveform`` with ``--kwargs '{"digi_response": "waveform", ...}'``.
 """
 from __future__ import annotations
 
@@ -33,7 +37,8 @@ import numpy as np
 # per digi are absolute
 PER_EVENT = dict(steps=56, photoelectrons=5000, rows=26, digis=16, hits=8)
 FIXED = dict(digi_length=96, event_hits=32, rounds=8)
-BATCH = 4096
+BATCH = 65536                   # events per device call, parametric response (one GPU: 4,096 -> 65,536 = 2.1x)
+WAVEFORM_BATCH = 4096           # the waveform response (16,384 and 65,536 are slower)
 MBTIME, EVENT_LENGTH, MARKER, CRYSTAL_LENGTH = 1695.0, 1700.0, 200.0, 200.0
 PBTIMES = (-220.0, -215.0, -210.0, -205.0, -200.0)      # MC proton-bunch times of the on-spill production samples
 _STEPS = {}
@@ -120,6 +125,11 @@ def pack_batches(events, n, batch=BATCH, seed=None):
 def bench_prepare(n, seed=None, batch=BATCH):
     """mu2efastsim.bench --prepare: ``n`` events of the bench tables as host batches (seeded with ``seed``)."""
     return {"batches": pack_batches(_steps(), int(n), batch, seed), "seed": seed, "batch": batch}
+
+
+def bench_prepare_waveform(n, seed=None):
+    """bench_prepare in batches of WAVEFORM_BATCH, for ``digi_response="waveform"``."""
+    return bench_prepare(n, seed=seed, batch=WAVEFORM_BATCH)
 
 
 def conditions(dtype="float64", directory=None, fit_hessian="analytic"):

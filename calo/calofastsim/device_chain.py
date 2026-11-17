@@ -72,6 +72,8 @@ class Caps:
     digi_length: int = 96
     hits: int = 32768
     event_hits: int = 64
+    event_hits_fast: int = -1    # clustering first on this many hits per event; a batch with a larger event is
+    #                              clustered again on event_hits (exact). -1: 16 when event_hits is larger, 0: off
     rounds: int = 8
     window: int = 8              # samples per row histogrammed for the pulse matmul
     outliers: int = 1 << 18      # photoelectrons outside a row's window (scattered one by one)
@@ -845,9 +847,9 @@ def param_hits(resp: DeviceResponse, table, ev, t, st, crystal, depth, mapped, k
     th = (th.astype(jnp.float64) - shift[cev]).astype(jnp.float32)
     # compact the hits (cell order: event, crystal) into the hit capacity, as fit_and_hits leaves them
     n = hit.shape[0]
-    order = jnp.argsort(jnp.where(hit, jnp.arange(n), n))
     H = caps.hits
-    sel = order[:H] if n >= H else jnp.concatenate([order, jnp.full(H - n, n - 1, order.dtype)])
+    pos = jnp.cumsum(hit) - 1
+    sel = jnp.zeros(H + 1, jnp.int64).at[jnp.where(hit & (pos < H), pos, H)].set(jnp.arange(n))[:H]
     n_hits = jnp.sum(hit)
     h_ok = jnp.arange(H) < jnp.minimum(n_hits, H)
     f32 = jnp.float32
@@ -911,6 +913,24 @@ def _closest_pairs(member_a, member_b, dist):
 
 def clusters(resp: DeviceResponse, hits, n_events, caps: Caps):
     """cluster.make_clusters on padded per-event hits; returns per-event clusters sorted by energy, and overflows.
+
+    The hits are padded to ``caps.event_hits_fast`` per event (auto 16: CE events have at most 13); only a batch
+    with a larger event runs the clustering again on ``caps.event_hits`` per event, whose results it takes whole.
+    An event's clusters do not depend on the padding, so the result is the same as one pass on ``event_hits``.
+    """
+    import dataclasses
+    from jax import lax
+    fast = caps.event_hits_fast
+    if fast < 0:
+        fast = 16 if caps.event_hits > 16 else 0
+    if not fast or fast >= caps.event_hits:
+        return _clusters(resp, hits, n_events, caps)
+    out, over = _clusters(resp, hits, n_events, dataclasses.replace(caps, event_hits=fast))
+    return lax.cond(over["event_hits"] > 0, lambda: _clusters(resp, hits, n_events, caps), lambda: (out, over))
+
+
+def _clusters(resp: DeviceResponse, hits, n_events, caps: Caps):
+    """:func:`clusters` on ``caps.event_hits`` hits per event.
 
     Main and split clusters grow in ``caps.rounds`` rounds, and the result has ``caps.rounds`` slots. With
     ``caps.recluster`` (default) an event that still has seeds after those rounds is clustered again with
@@ -1174,6 +1194,8 @@ def make_steps_chain(resp: DeviceResponse, caps: Caps = Caps(), digi_response="p
 
     def chain(steps, t, key, uniform=None):
         k_pe, k_digi, k_pbt = jax.random.split(key, 3)
+        # steps_batch ships the indices narrow (int32 / int16): widened here, the values are the same
+        steps = dict(steps, event=steps["event"].astype(jnp.int64), crystal=steps["crystal"].astype(jnp.int64))
         n = steps["event"].shape[0]
         ok = steps["crystal"] >= 0
         st = dict(row=jnp.arange(n), time=steps["time"], energy_g4=steps["energy_g4"],
@@ -1208,12 +1230,15 @@ def make_steps_chain(resp: DeviceResponse, caps: Caps = Caps(), digi_response="p
 
 
 def steps_batch(steps, n_steps):
-    """Pad flat CaloShowerSteps (batch-local ``event``) to ``n_steps`` rows for :func:`make_steps_chain`."""
+    """Pad flat CaloShowerSteps (batch-local ``event``) to ``n_steps`` rows for :func:`make_steps_chain`. The indices
+    are int32 (event) and int16 (crystal) to cut the host-to-device copy; the chain widens them."""
     m = len(steps["event"])
     if m > n_steps:
         raise ValueError("more steps than the batch capacity")
+    if m and (np.max(steps["crystal"]) > np.iinfo(np.int16).max or np.max(steps["event"]) > np.iinfo(np.int32).max):
+        raise ValueError("crystal or event index beyond the int16 / int32 range of steps_batch")
     out = {}
-    for k, fill, dtype in (("event", 0, np.int64), ("crystal", -1, np.int64), ("energy_g4", 0.0, np.float32),
+    for k, fill, dtype in (("event", 0, np.int32), ("crystal", -1, np.int16), ("energy_g4", 0.0, np.float32),
                            ("energy_birks", 0.0, np.float32), ("time", 0.0, np.float64), ("z_local", 0.0, np.float32)):
         a = np.full(n_steps, fill, dtype)
         a[:m] = np.asarray(steps[k], dtype)

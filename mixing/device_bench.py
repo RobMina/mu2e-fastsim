@@ -7,7 +7,8 @@
 `config.json` holds the `stream_benchmark` arguments by their long names (frames_manifest, expanded,
 truth, stock, photon_csv, tracker_conditions, batch_events, max_selected_rows, device_capacities,
 occupancy_geometry, out, and optionally seeds, device_kernel, device_output, device_platform, device_pipeline,
-device_pipeline_writers).
+device_pipeline_writers, and `reuse_table` / `reuse_table_shifts` for a saved donor-frame reuse table:
+`mixing.device_reuse_table`).
 
 Output is pipelined by default (`device_pipeline`, as `stream_benchmark --device-pipeline`): batch k is downloaded and
 written on one worker thread while batch k + 1 runs on the device. The outputs are those of the serial loop;

@@ -74,6 +74,7 @@ Where each workflow writes it:
 | W6 | `mixing.stream_benchmark`: `configuration.json` |
 | W7 | the timer report only (the device chain has no command) |
 | W8 | `trigger.device.run decide`: the decide JSON |
+| W9 | `crvfastsim.design evaluate`: the metrics JSON (`approximations`) |
 
 Every workflow also writes the entry to the timer report.
 
@@ -88,7 +89,7 @@ python3 -m mu2efastsim.approximations crvfastsim --record W5 --approx-preset fid
 The table is generated from the declarations; a test keeps it in sync. To regenerate it:
 
 ```bash
-python3 -m mu2efastsim.approximations beamfastsim crvfastsim calofastsim mixing trigger
+python3 -m mu2efastsim.approximations beamfastsim crvfastsim crvfastsim.design calofastsim mixing trigger
 ```
 
 The alternative column says what gives the stock result. For an approximation with no switch, it gives the stock
@@ -135,6 +136,12 @@ behaviour and any stock-art route outside the chain's levels:
 | W8 | `exact_weighted_median` (no switch) | always on | - | no level | time clusters use the exact weighted median where stock uses the P2 estimate; stock trigger replay on the same digis (trigger/replay.py --straw-digi-tag, trigger/hybrid pairing) | - |
 | W8 | `tracker_path_subset` (no switch) | always on | - | no level | 20 single-helix tracker paths of 52 on the device; the replay runs all 52 | - |
 | W8 | `no_delta_finder` (no switch) | always on | - | no level | DeltaFinder skipped (exact without pileup); stock trigger replay on the same digis (trigger/replay.py --straw-digi-tag, trigger/hybrid pairing) | - |
+| W9 | `primary_muon_lines` (no switch) | always on | - | no level | Geant4 transport of CRY muons with secondaries (straight primary lines here; secondaries, scattering and energy loss in the CRV are not simulated) | - |
+| W9 | `scaled_optics` (no switch) | always on | - | no level | photon lookup tables made by the stock optical simulation for each counter cross-section, fiber and length (here: the nearest stock table, scaled; fiber via the stock yield ratio) | - |
+| W9 | `expected_pe_poisson` (no switch) | always on | - | no level | stock photons, SiPM, waveforms and pulse reco on Geant4 steps (here: expected PE per counter end, Poisson, no visible-energy fluctuations, calibrated at nominal) | - |
+| W9 | `coincidence_rule` (no switch) | always on | - | no level | stock CrvCoincidenceFinder with time, slope and distance cuts (here: k-of-N layers, same-plus-adjacent PE threshold) | - |
+| W9 | `ce_like_proxy` (no switch) | always on | - | no level | CE-like track selection on full Geant4 + reco cosmics (here: lines through a cylinder about the DS axis) | - |
+| W9 | `deadtime_rate_model` (no switch) | always on | - | no level | stock CRV response and reco on beam-background frames in the design geometry (here: accidental and correlated rates calibrated at the nominal design) | - |
 <!-- end table -->
 
 ## Notes per workflow
@@ -183,6 +190,13 @@ behaviour and any stock-art route outside the chain's levels:
   [mixing/DEVICE_TRACKER.md](../mixing/DEVICE_TRACKER.md)) and CRV thermal noise only on counters with steps
   (`thermal_counters: "hit"`, [mixing/DEVICE_CRV.md](../mixing/DEVICE_CRV.md)). `run1a_mix1bb_batch256_exact.json` is
   the same file without either. The run records the capacity file it used.
+- **W6 shared reuse table** (`reuse_table`, `mixing.device_reuse_table`; approved for W6 production by the user,
+  2026-11-16). The reuse setup is made once and loaded by every job, so each donor frame repeats its setup draws over
+  the whole production instead of within one job. Fidelity cost at 10^6 events (a MuStopPileup frame drawn about 377
+  times): variance of digi-count and occupancy sums x1.0007 (0.07 % effective-statistics loss), of ADC-peak sums at
+  most x1.029; occupancy unchanged at 10^5 events (per-plane chi2/36 0.01-0.02 against the no-reuse file, seed floor
+  0.5-0.7). Setup on one CPU core: 24,405 s computed, 189 s loaded. Without `reuse_table` each job computes its own
+  table, as before.
 - **W7.** `digi_response` defaults to `parametric`, an approximation: each (event, crystal) hit is drawn from a
   table of the full chain's outcome per bin of visible energy (`calofastsim.param_response`, shipped table v2)
   instead of photoelectrons, waveforms, digis and the template fit: steps -> hits + clusters, no digis.
@@ -190,8 +204,9 @@ behaviour and any stock-art route outside the chain's levels:
   crystal on its main deposit: the energy and energy-weighted time of the steps within 6 ns of the crystal's
   energy-weighted median step time.
   - **Speed** (one A100-SXM4-80GB, stock CaloShowerSteps of CE events -> clusters, fresh inputs, medians of 3):
-    parametric 396,933 ev/s (float32) and 401,636 ev/s (float64), against the waveform response's 22,075 and 19,159
-    ev/s: 18x and 21x faster; 611x and 618x the stock calorimeter digi + reco stage (650 ev/s per grid slot).
+    parametric 1,705,635 ev/s (float32) and 1,665,452 ev/s (float64) in batches of 65,536 events, against the
+    waveform response's 22,075 and 19,159 ev/s (batches of 4,096): 77x and 87x faster; 2,624x and 2,562x the stock
+    calorimeter digi + reco stage (650 ev/s per grid slot).
   - **Fidelity cost against stock** (held-out CE files, 14,218 events, the same steps and timing, against the stock
     calorimeter reco; float32 and float64 give the same numbers, the table's draws have fixed dtypes): energy shape
     chi2 65/46 (waveform response 43/45) and leading-cluster energy -0.16 +- 0.03 MeV (paired, about 0.2 %);

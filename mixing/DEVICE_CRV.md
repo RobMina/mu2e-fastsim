@@ -88,13 +88,18 @@ rejected. They are static allocation bounds, not physics cuts.
 | `digis` | Total digis in batch |
 | `reco_waveforms`, `reco_samples` | Concatenated reconstruction waveforms and sample length |
 | `pulse_rounds` | Pulse-fit rounds per waveform; a pulse in the last round is fatal |
-| `coinc_hits` | Hits per event and sector type |
+| `coinc_hits` | Hits per event and sector type (with `coinc_tiers`: in the main buffer) |
+| `coinc_tiers` | Optional `[[events, hits], ...]`, hits increasing: wider rows for the few events with more hits than `coinc_hits` |
 | `coinc_combinations` | Filtered hit slots per side/layer in the coincidence kernel |
 
 Pulse-output capacity is `reco_waveforms*pulse_rounds`; cluster-output capacity is
-`batch_events*sector_types*coinc_hits`. Total SiPM candidate-buffer length is
+`sector_types*(batch_events*coinc_hits + sum of events*hits over coinc_tiers)`. Total SiPM candidate-buffer length is
 `optical_blocks*photons + thermal + ct1 + ct2 + ct3`. Coincidence memory can grow as
-the fourth power of `coinc_combinations`; charge waveform intermediates scale with
+the fourth power of `coinc_combinations`, and the coincidence finder is pairwise in the hits of a row: with
+`coinc_tiers` each event takes the smallest row that holds its hits of the sector type (the main buffer, then each
+tier in turn), so a few wide rows replace one wide buffer for every event. The clusters are those of one buffer wide
+enough for every event, in the same (event, hit) order, to rounding (the finder's sums run over the row width). An
+event with more hits than the widest tier, or more events than a tier's rows, rejects the batch; charge waveform intermediates scale with
 `charge_clusters*charges_per_cluster*waveform_samples`. **The tiny test capacities
 are not production recommendations.** No capacity overflow is accepted as a
 truncated event. The fixed three-generation SiPM model is inherited from the
@@ -124,15 +129,18 @@ the full scans, kept as the equality reference:
 On an A100 at batch 256 the CRV stage goes 0.183 -> 0.102 s (float32) and 0.227 -> 0.133 s (float64). Full-pass
 outputs are identical to the full scans (dev and held-out, both dtypes). The Run 1A capacity files also set both.
 
-## Coincidence slot-count tiers (CPU default)
+## Coincidence slot-count tiers (CPU and float64 default)
 
 `coinc_jax.find_dense(..., k_tiers=...)` runs the coincidence combination check at the smallest slot count per
 (side, layer) that holds the call's busiest (side, layer), chosen with `lax.switch` from `coinc_jax.K_TIERS`
 (4, 8, 16, 32) and the capacity `coinc_combinations`, instead of always at that capacity. The combination tensors are
 [G, 2, K, K, K(, K)] (at K = 64 and 256 events, about 1 GB each in float64) whatever the occupancy. Any slot count
 that holds every filtered hit gives the same widened distances: the further slots are empty, so their combinations
-fail and add -inf to each maximum. The device backend passes the tiers on the CPU backend (`device_crv.COINC_K_TIERS`:
-None = CPU only, () = off); a GPU keeps the single K. Clusters identical (synthetic events with and without showers,
+fail and add -inf to each maximum. The device backend passes the tiers on the CPU backend and, on a GPU, in the
+float64 CRV (`device_crv.COINC_K_TIERS`: None = that default, () = off); a GPU keeps the single K in float32. On an
+A100 (W6 default file, batch 256, full output, same job, median of 3) the tiers give float64 1065.6 -> 1147.2 ev/s
+(+7.7 %) and float32 1183.7 -> 1176.9 (no gain: the float32 combinations are cheap enough that the switch costs as
+much as it saves). Clusters identical (synthetic events with and without showers,
 uniform and per-sector cuts, both dtypes); W6 outputs identical in both dtypes. One core, same node, exact capacity
 file: W6 x1.02 (float64) / x1.05 (float32), peak memory 19.0 -> 11.9 GB (float64) and 13.0 -> 11.3 GB (float32).
 
