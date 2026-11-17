@@ -549,8 +549,11 @@ class FastsimKit:
                                        capabilities=record["capabilities"])
             if record["geometry"] is not None:
                 ref = geometry_artifacts.verify_result(self.out_root / handle / "out", record["geometry"])
-                result["metadata"]["diagnostic_files"] = result["files"]
-                result["files"] = [ref]
+                # The geometry FileRef comes first, so files_from forwards the reusable artifact. A task's data
+                # product (beam_edep's EdepAna ROOT file) stays after it: a downstream analysis step reads it
+                # (select it there by name, e.g. Mu2eBO's input_glob). Text diagnostics move to metadata.
+                result["metadata"]["diagnostic_files"] = [f for f in result["files"] if f.get("kind") == "text"]
+                result["files"] = [ref] + [f for f in result["files"] if f.get("kind") != "text"]
                 result["metadata"]["geometry"] = geometry_artifacts.identity(record["geometry"])
         return result
 

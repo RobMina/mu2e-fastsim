@@ -27,6 +27,7 @@ import json
 from dataclasses import asdict
 import os
 import shlex
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -275,6 +276,12 @@ class BeamPointStream:
                     if not verify_cache(self.ep, name, host, tmp, entries):
                         raise ValueError("streamed input cache does not match the bound manifest")
                     self.ep.run_on_node(name, host, f"touch {shlex.quote(tmp)}/ready")
+        except subprocess.TimeoutExpired as e:
+            # A stalled stream (ssh source or srun sink) raises from subprocess.run: without this the stream thread
+            # dies unmarked and the job only fails after its input wait. Mark and cancel, like any other stream error.
+            self._mark(name, "streamerr", f"input stream timed out after {e.timeout} s: {' '.join(map(str, e.cmd))[:120]}")
+            self.ep.cancel(name)
+            return "error"
         except (EndpointError, ValueError, KeyError) as e:
             self._mark(name, "streamerr", str(e))
             self.ep.cancel(name)

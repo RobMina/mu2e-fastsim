@@ -81,10 +81,14 @@ Do not attach a new contract to a legacy submitted handle.
 `out/geometry-artifact.json` records the same descriptor, byte count, admitted
 parameter keys and explicit render-only coverage. Results verify both evidence
 and exact retained bytes. For artifact-bearing beam calls, returned `files`
-contains **only** the geometry FileRef, with its digest and metadata intact, so
-Mu2eBO's existing `files_from` forwarding sends exactly the reusable artifact.
-Fetched diagnostic references move to `metadata.diagnostic_files`; they are not
-deleted or newly allowed for transfer. Selector-only calls retain legacy files.
+starts with the geometry FileRef, with its digest and metadata intact, so
+Mu2eBO's existing `files_from` forwarding sends the reusable artifact. A task's
+data product (`beam_edep`'s EdepAna ROOT file, kind `root`) follows it, because
+a downstream analysis step reads that file (Mu2eBO selects it with the anakit
+step's `input_glob`). Fetched text diagnostics move to
+`metadata.diagnostic_files`; they are not deleted or newly allowed for transfer.
+Tasks whose results hold only text (`beam_point`, `beam_sob`) return the
+geometry FileRef alone, as before. Selector-only calls retain legacy files.
 Downstream steps report the same render digest even though their local URI differs.
 
 The candidate content hash and renderer-definition hash remain distinct. Mu2eBO
