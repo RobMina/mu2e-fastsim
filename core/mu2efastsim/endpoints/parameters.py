@@ -91,6 +91,10 @@ def enum(*choices, role="scenario"):
     return Parameter("string", role=role, choices=choices)
 
 
+FIELD_SCALE = ("ds_bscale", "tsd_bscale")   # beam tasks: DS (DSMap + DSExtension) and TSd field-map scales
+FIELD_SCALE_TASKS = ("beam_point", "beam_sob", "beam_edep", "beam_edep_cpu")
+
+
 def schema(task: str, names) -> dict[str, Parameter]:
     seed = integer(0, 2 ** 31 - 1, role="stochastic_stream")
     if task in ("reco_bench", "v4_response"):
@@ -138,6 +142,8 @@ def schema(task: str, names) -> dict[str, Parameter]:
                                     unit="V" if key in ("min_voltage", "wf_noise") else "1")
     else:
         raise ValueError(f"fastsimkit: task {task!r} has no parameter schema")
+    if task in FIELD_SCALE_TASKS:
+        specs.update({k: number(0.5, 1.5, role="scenario") for k in FIELD_SCALE if k in names})
     if set(specs) != set(names):
         raise ValueError(f"fastsimkit: parameter schema does not match task {task!r}")
     return specs
@@ -170,4 +176,7 @@ def validate(task: str, params: dict, names, defaults=None) -> dict:
             from crvfastsim.kit_task import KNOB_PARAMS
             response_config.apply_knobs(response_config.parse(out["response_config"], kit=True),
                                         {k: out[k] for k in KNOB_PARAMS})
+    for k in FIELD_SCALE:           # the stock field: dropped, so the record equals a call without the key
+        if out.get(k) == 1.0:
+            del out[k]
     return out

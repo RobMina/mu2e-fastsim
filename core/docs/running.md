@@ -81,6 +81,15 @@ endpoint versions byte for byte. Tasks:
 | `beam_edep_cpu` | `beam_edep` on one CPU core (no GPU): the same point and file, JAX single-threaded, float64 by default, 5,000 electrons per batch; about 1.6 core-hours per design point with 100k electrons | EAF, Slurm (CPU partition) | as `beam_edep`; CPU timing and agreement in `beam/docs/edepana.md` |
 | `beam_centuple` | the stock EventNtuple file of a target geometry for the analysis server's EventNtuple analyses (Mu2eBO ce_chain): stops, conversion electrons through the device chain with digis and the reco response, calorimeter device chain, device trigger, donor events, PyROOT writer in the stock release; float64 or float32 (umbrella `beam/`, `calo/`, `tracker/`, `trigger/`; one GPU, `/cvmfs`) | EAF | see `beam/docs/eventntuple.md` |
 
+**Field-map scales (opt-in).** `beam_point`, `beam_sob`, `beam_edep` and `beam_edep_cpu` take optional `ds_bscale`
+and `tsd_bscale` (0.5-1.5, default 1), as Offline's `bfield.mapScale`: `ds_bscale` scales both `DSMap` and
+`DSExtension`, `tsd_bscale` scales `TSdMap`. A factor other than 1 sets `MU2EFS_BFIELD_MAPSCALE` (e.g.
+`DSMap=0.9,DSExtension=0.9`) in the job; the two map readers (`mu2efastsim.ehelix.read_g4bl`,
+`beamfastsim.fieldmap.load`) multiply the named map's grid when they read it and print `map <name> scaled by <f>`.
+At 1 the job script and its record are those of a call without the parameter. Limitation: these tasks start at the
+Coll5_Out plane, so `tsd_bscale` acts only downstream of it (the start table keeps the nominal TS history), and the DS
+scale acts only on the part of the DS map the transport reads.
+
 ## Endpoint job scripts
 
 `uva/` (Slurm on UVA, [README](../uva/README.md)), `aurora/` (ALCF Aurora, SSH + PBS), `iri/` (ALCF Polaris through

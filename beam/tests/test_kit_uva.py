@@ -586,7 +586,7 @@ def test_beam_edep_streams_table_library_and_gdml_into_one_gpu_job(tmp_path):
 
 def test_beam_edep_mounted_body_runs_the_writer_on_the_gpu():
     t = kitmod.TASKS["beam_edep"]
-    assert t.resources.gpus == 1 and t.defaults == {"dtype": "float64"} and "beam_edep" in kitmod.FNAL_TASKS
+    assert t.resources.gpus == 1 and t.defaults == {"dtype": "float64", **kit_task.FIELD_DEFAULTS} and "beam_edep" in kitmod.FNAL_TASKS
     assert "-m beamfastsim.edepana point" in t.body and kit_task.EDEP_LIBRARY in t.body and "@p_dtype@" in t.body
     assert kit_task.EDEP_EDGE in t.body and '--edge-library "$EE"' in t.body
 
@@ -625,9 +625,78 @@ def test_beam_edep_cpu_streams_the_same_inputs_into_one_cpu_core(tmp_path):
 
 def test_beam_edep_cpu_mounted_body_runs_the_writer_on_one_core():
     t = kitmod.TASKS["beam_edep_cpu"]
-    assert t.resources.gpus == 0 and t.resources.cores == 1 and t.defaults == {"dtype": "float64"}
+    assert t.resources.gpus == 0 and t.resources.cores == 1 and t.defaults == {"dtype": "float64", **kit_task.FIELD_DEFAULTS}
     assert "beam_edep_cpu" in kitmod.FNAL_TASKS
     assert "-m beamfastsim.edepana point" in t.body and "JAX not on the GPU" not in t.body
     assert "JAX_PLATFORMS=cpu" in t.body and "--procs 1 " in t.body and '--edge-library "$EE"' in t.body
     gpu = kitmod.TASKS["beam_edep"].body
     assert "JAX not on the GPU" in gpu and "JAX_PLATFORMS=cpu" not in gpu
+
+
+def test_field_scale_default_leaves_params_and_body_unchanged(tmp_path):
+    for task, p in (("beam_point", P), ("beam_sob", PS), ("beam_edep_cpu", {**PE, "task": "beam_edep_cpu"})):
+        assert kit_uva.validate({**p, "ds_bscale": 1.0, "tsd_bscale": 1}, task) == kit_uva.validate(p, task)
+        assert "ds_bscale" not in kit_uva.validate(p, task)
+    site, ep, kit, _ = make(tmp_path)
+    kit._delegates["beam_edep_cpu"] = kit_uva.BeamEdepCpuStream(kit, source=Source(), code="/path/to/slurm/beam",
+                                                               background=False)
+    pc = {**PE, "task": "beam_edep_cpu"}
+    kit.submit("fs0", pc, [], [])
+    plain = site.body
+    kit.submit("fs1", {**pc, "ds_bscale": 1.0, "tsd_bscale": 1.0}, [], [])
+    def lines(body):                                   # the manifest line carries per-submission identity
+        return [ln for ln in body.replace("fs1", "fs0").splitlines() if "manifest" not in ln]
+    assert lines(site.body) == lines(plain) and "MU2EFS_BFIELD_MAPSCALE" not in plain
+
+
+def test_field_scale_reaches_the_container(tmp_path):
+    for bad in (0.4, 1.6, "0.9", True):
+        with pytest.raises(ValueError):
+            kit_uva.validate({**PE, "task": "beam_edep_cpu", "ds_bscale": bad}, "beam_edep_cpu")
+    site, ep, kit, _ = make(tmp_path)
+    kit._delegates["beam_edep_cpu"] = kit_uva.BeamEdepCpuStream(kit, source=Source(), code="/path/to/slurm/beam",
+                                                               background=False)
+    kit.submit("fs2", {**PE, "task": "beam_edep_cpu", "ds_bscale": 0.9}, [], [])
+    body = site.body
+    line = "export MU2EFS_BFIELD_MAPSCALE=DSMap=0.9,DSExtension=0.9 APPTAINERENV_MU2EFS_BFIELD_MAPSCALE=DSMap=0.9,DSExtension=0.9"
+    assert line in body.splitlines()
+    assert body.index(line) < body.index("apptainer exec")     # set before any container starts (--cleanenv)
+    assert '"ds_bscale": 0.9' in json.dumps(site.manifests)
+    r = subprocess.run(["bash", "-n"], input=body.encode(), capture_output=True)
+    assert r.returncode == 0, r.stderr.decode()
+    with pytest.raises(ValueError, match="different params"):
+        kit.submit("fs2", {**PE, "task": "beam_edep_cpu", "ds_bscale": 0.8}, [], [])
+
+
+def test_field_scale_mounted_route(tmp_path):
+    class Eaf:
+        name, fnal_data = "eaf", "/path/to/fnal/data/test/crv_fastsim"
+
+    kit = FastsimKit(endpoint=Eaf(), state_dir=tmp_path)
+    base = {"task": "beam_edep_cpu", "geom": "nominal", "muons": 0, "electrons": 5000, "seed": 1}
+    plain, _ = kit.render(base)
+    assert kit.render({**base, "ds_bscale": 1.0, "tsd_bscale": 1.0})[0] == plain
+    scaled, _ = kit.render({**base, "tsd_bscale": 0.95})
+    assert scaled == "export MU2EFS_BFIELD_MAPSCALE=TSdMap=0.95 APPTAINERENV_MU2EFS_BFIELD_MAPSCALE=TSdMap=0.95\n" + plain
+    for task in ("beam_point", "beam_sob", "beam_edep", "beam_edep_cpu"):
+        assert set(kit_task.FIELD_PARAMS) <= set(kitmod.TASKS[task].params)
+    assert not set(kit_task.FIELD_PARAMS) & set(kitmod.TASKS["beam_centuple"].params)
+
+
+def test_fieldmap_load_scales_only_when_set(tmp_path, monkeypatch):
+    pytest.importorskip("jax")
+    import numpy as np
+    from beamfastsim import fieldmap
+    from mu2efastsim import bfield_scale
+    (tmp_path / "DSMap.header").write_text("grid X0=0 Y0=0 Z0=0 nX=2 nY=2 nZ=2 dX=1 dY=1 dZ=1\n")
+    B = np.random.default_rng(4).normal(size=(2, 2, 2, 3))
+    with open(tmp_path / "DSMap.bin", "wb") as f:
+        np.array([0xDEADBEEF], np.uint32).tofile(f)
+        B.tofile(f)
+    h = str(tmp_path / "DSMap.header")
+    monkeypatch.delenv(bfield_scale.ENV, raising=False)
+    assert np.array_equal(fieldmap.load(h).B, B)
+    assert np.array_equal(fieldmap.load(h, np.float32).B, B.astype(np.float32))
+    monkeypatch.setenv(bfield_scale.ENV, "DSMap=1.1")
+    assert np.array_equal(fieldmap.load(h).B, B * 1.1)
+    assert np.array_equal(fieldmap.load(h, np.float32).B, (B * 1.1).astype(np.float32))

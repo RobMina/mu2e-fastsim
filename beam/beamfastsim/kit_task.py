@@ -12,6 +12,10 @@ Metrics: stop_frac, stop_frac_err, stop_frac_mu_minus, stops, muons, foils, stop
 """
 
 PARAMS = ("geom", "muons", "seed", "repeat")
+# Optional on beam_point, beam_sob, beam_edep, beam_edep_cpu: uniform DS (DSMap and DSExtension) and TSd field-map
+# scales, as Offline bfield.mapScale; 1 is the stock field and leaves the job unchanged (mu2efastsim.bfield_scale).
+FIELD_PARAMS = ("ds_bscale", "tsd_bscale")
+FIELD_DEFAULTS = {"ds_bscale": 1.0, "tsd_bscale": 1.0}
 METRICS = ("stop_frac", "stop_frac_err", "stop_frac_mu_minus", "stops", "muons", "foils", "stops_foil_mean",
            "stop_r_mean", "stop_frac_upstream_half", "muons_per_s_warm", "first_pass_s")
 
@@ -145,23 +149,23 @@ tail -c 300 "$M2FS_OUT/point.txt"
 
 def register(tasks, task_cls, resources_cls, fnal_tasks):
     """Add beam_point to a fastsimkit TASKS dict (and to its FNAL-only set)."""
-    tasks["beam_point"] = task_cls(params=PARAMS, metrics=METRICS,
+    tasks["beam_point"] = task_cls(params=PARAMS + FIELD_PARAMS, metrics=METRICS,
                                    resources=resources_cls(cores=4, mem_gb=24, gpus=1, gpu_type="a100", minutes=30),
-                                   body=BODY)
+                                   body=BODY, defaults=dict(FIELD_DEFAULTS))
     fnal_tasks.add("beam_point")
-    tasks["beam_sob"] = task_cls(params=SOB_PARAMS, metrics=SOB_METRICS,
+    tasks["beam_sob"] = task_cls(params=SOB_PARAMS + FIELD_PARAMS, metrics=SOB_METRICS,
                                  resources=resources_cls(cores=SOB_CORES, mem_gb=96, gpus=0, gpu_type="", minutes=40),
-                                 body=SOB_BODY)
+                                 body=SOB_BODY, defaults=dict(FIELD_DEFAULTS))
     fnal_tasks.add("beam_sob")
-    tasks["beam_edep"] = task_cls(params=EDEP_PARAMS, metrics=EDEP_METRICS,
+    tasks["beam_edep"] = task_cls(params=EDEP_PARAMS + FIELD_PARAMS, metrics=EDEP_METRICS,
                                   resources=resources_cls(cores=EDEP_CORES, mem_gb=96, gpus=1, gpu_type="a100",
                                                           minutes=60),
-                                  body=EDEP_BODY, defaults={"dtype": "float64"})
+                                  body=EDEP_BODY, defaults={"dtype": "float64", **FIELD_DEFAULTS})
     fnal_tasks.add("beam_edep")
-    tasks["beam_edep_cpu"] = task_cls(params=EDEP_PARAMS, metrics=EDEP_METRICS,
+    tasks["beam_edep_cpu"] = task_cls(params=EDEP_PARAMS + FIELD_PARAMS, metrics=EDEP_METRICS,
                                       resources=resources_cls(cores=1, mem_gb=EDEP_CPU_MEM_GB, gpus=0, gpu_type="",
                                                               minutes=EDEP_CPU_MINUTES),
-                                      body=EDEP_CPU_BODY, defaults={"dtype": "float64"})
+                                      body=EDEP_CPU_BODY, defaults={"dtype": "float64", **FIELD_DEFAULTS})
     fnal_tasks.add("beam_edep_cpu")
     tasks["beam_centuple"] = task_cls(params=CENT_PARAMS, metrics=CENT_METRICS,
                                       resources=resources_cls(cores=CENT_CORES, mem_gb=96, gpus=1, gpu_type="a100",

@@ -21,7 +21,7 @@ They are read when the source or the code snapshot is first needed; a missing on
 """
 from __future__ import annotations
 
-from mu2efastsim import site
+from mu2efastsim import bfield_scale, site
 
 import json
 from dataclasses import asdict
@@ -75,9 +75,13 @@ class _Source(FnalSource):
 
 def validate(params: Dict[str, Any], task: str = "beam_point") -> Dict[str, Any]:
     from mu2efastsim.endpoints.parameters import validate as validate_parameters
+    defaults = dict(kit_task.FIELD_DEFAULTS)
     if task in ("beam_edep", "beam_edep_cpu"):
-        return validate_parameters(task, params, kit_task.EDEP_PARAMS, {"dtype": "float64"})
-    return validate_parameters(task, params, kit_task.SOB_PARAMS if task == "beam_sob" else kit_task.PARAMS)
+        names = kit_task.EDEP_PARAMS
+        defaults["dtype"] = "float64"
+    else:
+        names = kit_task.SOB_PARAMS if task == "beam_sob" else kit_task.PARAMS
+    return validate_parameters(task, params, names + kit_task.FIELD_PARAMS, defaults)
 
 
 class BeamPointStream:
@@ -163,6 +167,7 @@ class BeamPointStream:
             raise ValueError(f"fastsimkit: {self.TASK}: unfilled placeholder")
         if geometry is not None:
             body = geometry_artifacts.stage_shell(geometry) + body
+        body = bfield_scale.kit_exports(p) + body
         if manifest is not None:
             from mu2efastsim.endpoints.artifacts import consumption_guard
             body = body.replace('B python -m beamfastsim.stage',

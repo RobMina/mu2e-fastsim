@@ -8,6 +8,8 @@ the step. The direction obeys du/ds = K q / p (u x B), K = 0.299792458 (mm, MeV/
 """
 import numpy as np
 
+from . import bfield_scale
+
 K = 0.299792458        # MeV/c per (T mm)
 _SMALL = 1e-6          # |k s| below which the series forms are used
 
@@ -137,7 +139,11 @@ def read_g4bl(header_path):
     binf = header_path[: -len(".header")] + ".bin"
     if np.fromfile(binf, dtype=np.uint32, count=1)[0] != 0xDEADBEEF:
         raise ValueError(f"{binf}: bad endian marker")
-    return lo, d, n, np.fromfile(binf, dtype=np.float64, offset=4).reshape(n[0], n[1], n[2], 3)
+    B = np.fromfile(binf, dtype=np.float64, offset=4).reshape(n[0], n[1], n[2], 3)
+    f = bfield_scale.scale_for(header_path)
+    if f != 1.0:
+        B *= f
+    return lo, d, n, B
 
 
 def grid_field(lo, d, n, Bgrid):

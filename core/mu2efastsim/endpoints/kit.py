@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from . import EndpointError, Resources, get
-from mu2efastsim import site
+from mu2efastsim import bfield_scale, site
 from .parameters import schema, validate as validate_parameters
 from . import capabilities, geometry as geometry_artifacts
 from .artifacts import digest
@@ -401,7 +401,7 @@ class FastsimKit:
             body = body.replace(f"@{k}@", v)
         if any(s in body for s in ("@p_", "@sif@", "@tables@", "@metrics_py@", "@runtime_", "@fnal_data@")):
             raise ValueError(f"fastsimkit: unfilled placeholder in task {params['task']!r}")
-        body = body.replace("@geometry_setup@", setup)
+        body = bfield_scale.kit_exports(params) + body.replace("@geometry_setup@", setup)
         admit_resources(self.ep, t.resources)
         return body, t.resources
 

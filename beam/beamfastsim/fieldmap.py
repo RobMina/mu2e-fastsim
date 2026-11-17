@@ -10,6 +10,8 @@ from typing import NamedTuple
 
 import numpy as np
 
+from mu2efastsim import bfield_scale
+
 import jax
 import jax.numpy as jnp
 
@@ -46,7 +48,11 @@ def load(header_path, dtype=np.float64):
     marker = np.fromfile(binf, dtype=np.uint32, count=1)[0]
     if marker != MARKER:
         raise ValueError(f"{binf}: endian marker {marker:#x}")
-    B = np.fromfile(binf, dtype=np.float64, offset=4).reshape(n[0], n[1], n[2], 3).astype(dtype)
+    B = np.fromfile(binf, dtype=np.float64, offset=4).reshape(n[0], n[1], n[2], 3)
+    f = bfield_scale.scale_for(header_path)
+    if f != 1.0:
+        B *= f
+    B = B.astype(dtype)
     return FieldMap(lo, d, n, B)
 
 

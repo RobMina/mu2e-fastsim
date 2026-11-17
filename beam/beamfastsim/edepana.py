@@ -49,6 +49,8 @@ from pathlib import Path
 
 import numpy as np
 
+from mu2efastsim import bfield_scale
+
 TREE = "EDepAna/tree"
 PROVENANCE = "EDepAna/fastsim_provenance"
 RUN_RECORD_SUFFIX = ".edep.json"
@@ -826,7 +828,9 @@ def cmd_point(a):
     root, maps = _paths(a)
     paths, tot = run(stops, a.electrons, a.seed, a.out, offline_root=root, maps=maps, gdml=a.gdml, library=a.library,
                      geom=a.geom, dtype=a.dtype, calo=a.calo, deltas="default" if a.deltas else None, batch=a.batch,
-                     procs=a.procs, edge_library=a.edge_library, extra_provenance=dict(stops_per_gen_event=stops_per_gen, upstream_eff=cesob.UPSTREAM_EFF))
+                     procs=a.procs, edge_library=a.edge_library,
+                     extra_provenance=dict(stops_per_gen_event=stops_per_gen, upstream_eff=cesob.UPSTREAM_EFF,
+                                           **bfield_scale.provenance()))
     extra = dict(stops_per_gen_event=stops_per_gen, stops_per_pot=stops_per_gen * cesob.UPSTREAM_EFF,
                  stop_frac=bm["stop_frac"], stop_frac_err=bm.get("stop_frac_err", math.nan), beam_s=t_beam)
     print(json.dumps(_metrics(a.out, paths, tot, extra)))
