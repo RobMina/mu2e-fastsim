@@ -11,6 +11,8 @@ NeutralsFlash pools at the stock intensity law.
 | `run1a_mix1bb_batch64.json` | 64 events | a 24 GB GPU slice (groups of 4,096 straws) |
 | `run1a_mix1bb_batch256.json` | 256 events | **the W6 default**: a 32-80 GB GPU (groups of 8,192 straws), with the two W6 approximations, donor-frame digi reuse ([../DEVICE_TRACKER.md](../DEVICE_TRACKER.md)) and CRV thermal noise on counters with steps ([../DEVICE_CRV.md](../DEVICE_CRV.md)) |
 | `run1a_mix1bb_batch256_exact.json` | 256 events | the exact reference for the default: the same file without either approximation (every straw digitised per batch, thermal noise on every counter, CRV buffers at their earlier sizes) |
+| `run1a_mix1bb_batch256_cpu.json` | 256 events | **the W6 default on CPU**: `run1a_mix1bb_batch256.json` with finer tracker end tiers (below) |
+| `run1a_mix1bb_batch256_exact_cpu.json` | 256 events | the exact reference on CPU: `run1a_mix1bb_batch256_exact.json` with the same finer end tiers |
 
 ## How they were made
 
@@ -83,6 +85,30 @@ NeutralsFlash pools at the stock intensity law.
   batch; `streams` lists the reused donor streams; `shifts: "events"` digitises one setup copy per distinct event
   time shift of the signal events (5 in Run 1A), so a reused digi is never moved in time; `event_jitter` gives a
   reused digi its event's ROC jitter.
+
+- **CPU end tiers** (`*_cpu.json`): on a GPU a launch costs little more for padded straws; on one CPU core every
+  padded straw costs its full width. The CPU files keep each file's sizes and options and change only the tracker
+  `clusters_per_end` (24 -> 8) and `end_tiers`, in the tracker and in the reuse `compute` tracker. `precompute` is
+  unchanged, so a saved reuse table made with the GPU default loads with the CPU default.
+  - Tiers at 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1,536 and 6,144 clusters per end, sized from
+    a census of straws per busiest-end width over 6 batches of 256 events (development seeds, float64; the reuse
+    `compute` census in float32 and float64): max(1.25 n, n + 4 sqrt n) straws, rounded up to whole launches of
+    8,192 above 8,192, and at least 16 in the widest tier. Held out (12 batches of 256 events per file on other
+    seeds, float32 and float64): no overflow, the fullest tier at 0.82 of its size. The largest per-launch
+    digitisation demand stayed at 0.93-1.00 entries per straw, inside `digit_entries_per_straw`.
+  - Electronics draws are keyed per straw, so the digis do not depend on the tiers: every W6 output array was
+    identical to the GPU file's in float32 and float64.
+  - Warm rate on one Xeon Gold 6248 core, both files side by side on one node, 3 passes of 256 events:
+
+    | | GPU file ev/s | CPU file ev/s | gain |
+    |---|---|---|---|
+    | default (saved reuse table), float64 | 6.27 / 6.64 | 7.39 / 8.03 | x1.18 / x1.21 |
+    | default (saved reuse table), float32 | 9.23 | 10.24 | x1.11 |
+    | exact, float64 | 3.20 / 3.49 | 3.59 / 3.88 | x1.12 / x1.11 |
+    | exact, float32 | 4.89 | 5.38 | x1.10 |
+
+    (Two float64 pairs: the second with the files on swapped cores.) Fifteen electronics kernels instead of five add
+    80-115 s of compile at setup, none with a filled compile cache.
 
 ## When a batch does not fit
 
