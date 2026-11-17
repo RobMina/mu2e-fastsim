@@ -28,14 +28,15 @@ PERIOD = 1695.0
 
 
 # Combination slot counts of the coincidence finder (coinc_jax.find_dense k_tiers; the same clusters): None uses
-# coinc_jax.K_TIERS on the CPU backend and the single capacity K on a GPU; () keeps the single K everywhere.
+# coinc_jax.K_TIERS on the CPU backend and, on a GPU, in the float64 CRV (W6 on an A100 at batch 256: +7.7 % in
+# float64, none in float32, where the single capacity K stays); () keeps the single K everywhere.
 COINC_K_TIERS = None
 
 
 def _coinc_k_tiers():
     if COINC_K_TIERS is not None:
         return tuple(COINC_K_TIERS) or None
-    return CJ.K_TIERS if jax.default_backend() == "cpu" else None
+    return CJ.K_TIERS if jax.default_backend() == "cpu" or not dprec.SINGLE else None
 
 
 def _fold(t):
