@@ -88,6 +88,7 @@ def sample_overlay(pools, state, key, ordinal, size, *, layout, law):
     import jax
     import jax.numpy as jnp
     from jax.scipy.special import ndtri
+    from mu2efastsim import poisson as dpoisson
 
     b, d = layout.batch_events, layout.max_donors
     event_mask = jnp.arange(b) < size
@@ -99,7 +100,7 @@ def sample_overlay(pools, state, key, ordinal, size, *, layout, law):
     intensity = jnp.rint(jnp.clip(jnp.exp(law["mu"] + law["sigma"] * ndtri(prob)),
                                 law["cut_min"], np.nextafter(law["cut_max"], law["cut_min"]))).astype(jnp.int64)
     intensity = jnp.where(event_mask, intensity, 0)
-    counts = jax.random.poisson(poisson_key, intensity[:, None] * pools["rates"], dtype=jnp.int64)
+    counts = dpoisson.poisson(poisson_key, intensity[:, None] * pools["rates"])   # exact, without a per-lane loop
     counts = jnp.where(event_mask[:, None], counts, 0)
     count_error = jnp.any((counts < 0) | (counts > d))
     bounded = jnp.clip(counts, 0, d)

@@ -11,7 +11,7 @@ from crvfastsim import chain as CH, onspill, readout
 from crvfastsim.response import photons as PH, photons_jax as PJ, sipm as SI, sipm_jax as SJ
 from crvfastsim.reco import waveform as WF, waveform_jax as WJ
 from crvfastsim.reco import pulsefit as PF, pulsefit_jax as FJ, coinc as CO, coinc_jax as CJ
-from mu2efastsim import precision as dprec
+from mu2efastsim import poisson as dpoisson, precision as dprec
 
 
 CAPACITIES = ("substeps", "photons", "thermal", "ct1", "ct2", "ct3", "pixel_short",
@@ -109,7 +109,7 @@ def _counts_draw(avg, nsub, key):
     normal, poisson = jax.random.split(key)
     avg = jnp.maximum(avg, 0.0)
     draw = jnp.where(avg > 10, avg + jnp.sqrt(avg) * jax.random.normal(normal, avg.shape),
-                     jax.random.poisson(poisson, jnp.where(avg <= 10, avg, 0.0)))
+                     dpoisson.poisson(poisson, jnp.where(avg <= 10, avg, 0.0)))   # exact, without a per-lane loop
     return jnp.maximum(jnp.rint(draw / jnp.maximum(nsub, 1)), 0).astype(jnp.int64)
 
 
@@ -302,7 +302,7 @@ class Adapter:
             live &= hit
         lo, hi = self.cfg.window
         lam = self.cfg.sipm.thermal_rate / self.cfg.sipm.p_fire(self.cfg.sipm.overvoltage) * (hi - lo + 100)
-        count = jax.random.poisson(kc, jnp.where(live, lam, 0.), dtype=jnp.int64).ravel()
+        count = dpoisson.poisson(kc, jnp.where(live, lam, 0.)).ravel()   # exact, without a per-lane loop
         size = self.capacities["thermal"]
         flat = jnp.repeat(jnp.arange(count.size), count, total_repeat_length=size)
         channel = flat % assets["status"].size
