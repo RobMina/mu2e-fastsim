@@ -45,6 +45,7 @@ class Design:
     fiber_diameter: float | None = None   # mm; None = the stock fiber of each sector
     counters_per_module: int | None = None
     coincidence_layers: int | None = None  # k of the k-of-N layer rule; None = stock (N minus the stock spare layers)
+    spare_layers: int | None = None        # or k = N - spare_layers in every sector (exclusive with coincidence_layers)
     pe_threshold: float | None = None      # PE per layer-end for a hit; None = the stock threshold of each sector
 
     def __post_init__(self):
@@ -64,6 +65,12 @@ class Design:
             raise ValueError("coincidence_layers must be 1..12")
         if None not in (self.n_layers, self.coincidence_layers) and self.coincidence_layers > self.n_layers:
             raise ValueError("coincidence_layers must not exceed n_layers")
+        if self.spare_layers is not None and not 0 <= self.spare_layers <= 11:
+            raise ValueError("spare_layers must be 0..11")
+        if None not in (self.spare_layers, self.coincidence_layers):
+            raise ValueError("give coincidence_layers or spare_layers, not both")
+        if None not in (self.n_layers, self.spare_layers) and self.spare_layers >= self.n_layers:
+            raise ValueError("spare_layers must be below n_layers")
         if self.pe_threshold is not None and not (self.pe_threshold > 0 and math.isfinite(self.pe_threshold)):
             raise ValueError("pe_threshold must be finite and > 0")
         if self.absorber_material is not None and self.absorber_material not in ABSORBER_MATERIALS:

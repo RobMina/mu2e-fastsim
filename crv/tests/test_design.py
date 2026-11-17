@@ -194,6 +194,12 @@ def test_coincidence_rule_and_threshold_knobs(counters):
     assert set(loose["coincidence"].values()) == {"2 of 5, 8 PE"}
     high = F.evaluate(M.Design(pe_threshold=30.0), mu, _ctx(counters), calibration=cal)
     assert high["inefficiency"] > base["inefficiency"] and high["deadtime"] < base["deadtime"]
+    spare = F.evaluate(M.Design(n_layers=5, spare_layers=3), mu, _ctx(counters), calibration=cal)
+    assert spare["inefficiency"] == loose["inefficiency"] and spare["deadtime"] == loose["deadtime"]
+    with pytest.raises(ValueError):
+        M.Design(n_layers=3, spare_layers=3)
+    with pytest.raises(ValueError):
+        M.Design(coincidence_layers=3, spare_layers=1)
     with pytest.raises(ValueError):
         M.Design(n_layers=3, coincidence_layers=4)
     with pytest.raises(ValueError):

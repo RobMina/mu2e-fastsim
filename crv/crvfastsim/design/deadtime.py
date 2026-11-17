@@ -42,7 +42,7 @@ def sector_terms(dg, sector_cuts, ly_per_mev, stock_required, thr_ratio=None):
     for s, name in enumerate(dg.sector_names):
         b = dg.sector == s
         nl = int(dg.n_layers[s])
-        k = int(required_layers(nl, stock_required[name], dg.design.coincidence_layers))
+        k = int(required_layers(nl, stock_required[name], dg.design.coincidence_layers, dg.design.spare_layers))
         n_roads = int(b.sum() // nl)
         vol = float(np.prod(2 * dg.halflen[b][0]))
         area = float((4 * dg.halflen[b][:, 1] * dg.halflen[b][:, 2]).sum() / nl)
