@@ -1,5 +1,9 @@
 # Component-local interaction replay (experimental, opt-in)
 
+> `mu2efastsim.component_response` is now `hepsimlib.component` from
+> [hep-simlib](https://github.com/RobMina/hep-simlib), re-exported under this name with the Mu2e profile (bank names
+> `secondaries.component.*`). The Mu2e capture path below stays in this repository.
+
 `mu2efastsim.component_response` is the shared NumPy starting point for geometry-portable interaction libraries.
 It is not a production shower model, a complete geometry navigator or an adapter for a detector's existing bank.
 No existing chain imports it. No trained bank or Geant4 physics validation is included.
