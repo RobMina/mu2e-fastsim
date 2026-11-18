@@ -90,6 +90,8 @@ class Stepping:
     near: float = 30.0
     h_mat: float = 2.0                  # largest step in material
     neutral_step: float = 200.0
+    elastic: bool = True                # hadron elastic scattering from the bank (diagnostic switch)
+    msc_scale: float = 1.0              # scale on the Highland width (diagnostic switch)
     max_iter: int = 200_000
     cuts: D.Cuts = field(default_factory=D.Cuts)
 
@@ -293,6 +295,8 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None):
             sp = D.species_index(L["pdg"][i])
             cell = bank.cell(sp, target.mat[seg], ke[i])
             s_in, s_el = bank.per_cell("sigma_inel", cell), bank.per_cell("sigma_el", cell)
+            if not st.elastic:
+                s_el = np.zeros_like(s_el)
             dedx, x0 = bank.per_cell("dedx", cell), bank.per_cell("x0", cell)
             s_tot = s_in + s_el
             with np.errstate(divide="ignore"):
@@ -310,9 +314,9 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None):
             e_new = ke[i] - de + m[i]
             pn = np.sqrt(np.maximum(e_new ** 2 - m[i] ** 2, 0.0))
             bet = np.where(e_new > 0, pn / np.maximum(e_new, 1e-300), 0.0)
-            with np.errstate(divide="ignore", invalid="ignore"):
-                th0 = 13.6 / np.maximum(bet * pn, 1e-300) * np.sqrt(step / x0) * \
-                    (1 + 0.038 * np.log(np.maximum(step / x0, 1e-12)))
+            with np.errstate(divide="ignore", invalid="ignore"):   # Highland (PDG), log term with x / (X0 beta^2)
+                th0 = st.msc_scale * 13.6 / np.maximum(bet * pn, 1e-300) * np.sqrt(step / x0) * \
+                    (1 + 0.038 * np.log(np.maximum(step / (x0 * np.maximum(bet, 1e-6) ** 2), 1e-12)))
             th0 = np.where((step > 0) & (q[i] != 0), np.abs(th0), 0.0)
             th = np.minimum(th0 * np.sqrt(-2.0 * np.log(1.0 - rng.random(i.size))), np.pi)
             u = D.rotate_secondaries(np.stack([np.sin(th), np.zeros(i.size), np.cos(th)], 1), u,
@@ -502,6 +506,9 @@ def main(argv=None):
     ap.add_argument("--shard", type=int, default=0)
     ap.add_argument("--h-vac", type=float, default=Stepping.h_vac)
     ap.add_argument("--h-near", type=float, default=Stepping.h_near)
+    ap.add_argument("--no-elastic", action="store_true", help="diagnostic: no hadron elastic scattering")
+    ap.add_argument("--msc-scale", type=float, default=1.0, help="diagnostic: scale on the Highland width")
+    ap.add_argument("--h-mat", type=float, default=Stepping.h_mat)
     ap.add_argument("--annulus", nargs=3, type=float, action="append", default=[], metavar=("Z", "R_IN", "R_OUT"),
                     help="absorbing thin annulus at z (repeatable)")
     ap.add_argument("--enclosure", nargs=2, type=float, metavar=("R", "H"),
@@ -515,7 +522,7 @@ def main(argv=None):
     fb = tsfield.FieldBank(a.maps)
     env = Envelope(z_nodes=np.asarray(a.env_z), r_nodes=np.asarray(a.env_r), z_min=a.z_min, z_plane=a.z_plane,
                    r_plane=a.r_plane, annuli=tuple(tuple(x) for x in a.annulus))
-    st = Stepping(h_vac=a.h_vac, h_near=a.h_near)
+    st = Stepping(h_vac=a.h_vac, h_near=a.h_near, h_mat=a.h_mat, elastic=not a.no_elastic, msc_scale=a.msc_scale)
     rng = np.random.default_rng(a.seed)
     recs, counts, edep = [], {}, np.zeros(len(tgt.mat))
     t0 = time.time()
@@ -536,7 +543,8 @@ def main(argv=None):
     meta.update(rod=a.rod, material=a.material, seed=a.seed, counts=counts, edep_per_pot=(edep / a.pot).tolist(),
                 wall_s=wall, s_per_pot=wall / a.pot, maps=[str(m) for m in a.maps],
                 envelope=dict(z=a.env_z, r=a.env_r, z_min=a.z_min, r_plane=a.r_plane, z_plane=a.z_plane, annuli=a.annulus),
-                stepping=dict(h_vac=st.h_vac, h_near=st.h_near), bank=dict(path=str(a.bank),
+                stepping=dict(h_vac=st.h_vac, h_near=st.h_near, h_mat=st.h_mat, elastic=st.elastic,
+                              msc_scale=st.msc_scale), bank=dict(path=str(a.bank),
                                                                             content_hash=bank.lib.content_hash))
     ptgt_g4bl.save(a.out, ref, meta)
     print(json.dumps({k: meta[k] for k in ("pot", "entrances", "yield_per_pot", "species", "s_per_pot", "counts")}))
