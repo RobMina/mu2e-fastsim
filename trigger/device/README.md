@@ -18,8 +18,11 @@ and lumi-stream paths) of the production menu, from StrawDigis to per-path decis
 | lumi stream | `LumiStreamFilter` | event counter per subrun on the host, in event order | exact |
 | off-spill hits, time clusters (`cst_TimeCluster`) | off-spill `StrawHitReco` / `CombineStrawHits`, `SimpleTimeCluster` | the hit ports with the off-spill settings, `simpletc.py` | exact on the held-out shards |
 | multi-helix finder (`mpr_*`) | `RobustMultiHelixFinder` + `MergeHelices` | port with the stock arithmetic (`mpr.py`); opt-in | see [Multi-helix paths](#multi-helix-paths-mpr) |
+| calo hits, clusters | `CaloHitMakerFast`, `CaloClusterFast` | port with the stock arithmetic and orders (`calo.py`), from CaloDigis | bit for bit; see [Calorimeter paths](#calorimeter-paths) |
+| calo filters | `CaloClusterCounterFilter`, `CaloLikelihood`, `CaloNNEval` + `FilterEcalNNTrigger`, `CaloCosmicCalib`, `DigiFilter` (calo digis) | ports (`calo.py`, `calopaths.py`) | exact on the development and held-out files |
 
-Not evaluated on the device: calorimeter paths (`calo_*`, `cpr_*`), `cst_CosmicTrackSeed` (`LineFinder` +
+Not evaluated on the device: the calorimeter-seeded tracker paths (`cpr_*`), `apr_TC_calo` (its `TZClusterFinder`
+attaches and recovers calo clusters; always false on the device), `cst_CosmicTrackSeed` (`LineFinder` +
 `CosmicSeedFilter`), paths with `MultiHelixFilter` or `minNHelices > 1`.
 
 ### Multi-helix paths (mpr)
@@ -69,6 +72,29 @@ in about 98.5 % of the events with a time cluster. Clusters with more than 64 hi
 events) and 2 development events with the sort fallback account for part of the rest. Adding the mpr paths changes no
 decision of the other paths. The port is not tuned for speed: a decide job with the mpr paths on takes 0.6-1.5 s per
 event on four CPU cores (the other paths together take about 3 ms), and its GPU rate is not measured.
+
+### Calorimeter paths
+
+`calo.py` ports `CaloHitMakerFast` and `CaloClusterFast` (Offline v13_41: CaloDigi times in ticks, `CalCalib` from the
+configuration) and the calo filters; `calopaths.py` reads the paths from the menu (`PrescaleEvent`, the calo stage,
+the filter); `calorun.py` decides them on stock art files and compares them with the decisions and clusters stored
+there. The geometry is built as Offline builds it (`calogeom.py`, from Offline's crystal file in `data/`). The port keeps
+the stock orders where they decide a result:
+
+- digis in (SiPM id, t0) order, hits per crystal in pulse creation order, float pulse averaging;
+- the cluster seeds sorted with libstdc++'s `std::sort` on stock's comparator itself (times within 1 ps compare by
+  crystal id, so it is not a strict weak order), the seed window found with stock's iterator scan, which never reaches
+  back to the first hit, and stock's used-hit sentinel (a hit whose index equals the number of selected hits counts as
+  used);
+- clusters grown breadth first in stock's neighbour order (first ring, then second), members sorted by energy with
+  `std::sort`, every sum in the stock order;
+- `CaloLikelihood`'s template projections and bin lookup as stock computes them, `CaloNNEval`'s MLP with sequential float
+  sums, `ClusterUtils`' moments.
+
+On the production CE files (Offline v13_41, OnSpill; development 14,052 events, held-out 13,992), the device clusters
+equal the stored stock clusters in every field and the 11 paths have no discordant event, in both precisions.
+`calo_cosmic` and the two prescaled digi-count paths do not fire on these files; `CaloCosmicCalib` calls `abs` on a
+float, and the overload stock resolves (float or int) is not settled by them (`--int-abs` selects the int one).
 
 ## Use
 

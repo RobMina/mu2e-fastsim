@@ -20,7 +20,8 @@ def load(path):
     if int(release.split("[")[1].split("]")[0]) < 262657:
         raise ValueError("pre-262657 TMVA networks (raw output) are not supported")
     act = opts.get("NeuronType", "sigmoid")
-    if act not in ("sigmoid", "tanh"):
+    act = "relu" if act == "ReLU" else act
+    if act not in ("sigmoid", "tanh", "relu"):
         raise ValueError(f"unsupported activation {act}")
     norm = "N" in opts.get("VarTransform", "")
     vmin = np.array([np.float32(v.get("Min")) for v in root.find("Variables")], np.float32)
@@ -43,6 +44,7 @@ def evaluate(net, x):
     for k, w in enumerate(net["layers"]):
         y = jnp.matmul(jnp.concatenate([x, one], axis=-1), jnp.asarray(w), precision="highest")   # float32 as stock, no TF32
         if k < len(net["layers"]) - 1:
-            y = F32(1.0) / (F32(1.0) + jnp.exp(-y)) if net["act"] == "sigmoid" else jnp.tanh(y)
+            y = (F32(1.0) / (F32(1.0) + jnp.exp(-y)) if net["act"] == "sigmoid"
+                 else jnp.maximum(F32(0.0), y) if net["act"] == "relu" else jnp.tanh(y))
         x = y
     return (F32(1.0) / (F32(1.0) + jnp.exp(-x[..., 0]))).astype(F32)
