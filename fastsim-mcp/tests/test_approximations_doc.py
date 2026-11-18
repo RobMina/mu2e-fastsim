@@ -9,7 +9,7 @@ TEXT = ad.read(repo_root())
 def test_table_parses():
     rows = ad.parse_table(TEXT)
     assert rows
-    assert {r["workflow"] for r in rows} >= {"W1", "W2-W4", "W5", "W6", "W7", "W8"}
+    assert {r["workflow"] for r in rows} >= {"W1", "W2-W4", "W5", "W6", "W7", "W8", "W9"}
     for r in rows:
         if r["switchable"]:
             assert r["levels"] and r["default"] == r["levels"][0]
@@ -29,7 +29,7 @@ def test_against_the_declarations():
     """The parsed table carries the packages' declarations (where the packages import here)."""
     approximations = pytest.importorskip("mu2efastsim.approximations")
     workflows = []
-    for package in ("beamfastsim", "crvfastsim", "calofastsim", "mixing", "trigger"):
+    for package in ("beamfastsim", "crvfastsim", "crvfastsim.design", "calofastsim", "mixing", "trigger"):
         try:
             workflows += list(approximations.declared(package).values())
         except ImportError:   # calofastsim needs its numerical stack
@@ -74,7 +74,7 @@ def test_notes_shared_label():
 
 def test_errors():
     with pytest.raises(ValueError, match="no approximations"):
-        ad.describe(TEXT, "W9")
+        ad.describe(TEXT, "W99")
     with pytest.raises(ValueError, match="preset"):
         ad.describe(TEXT, "W1", "fastest")
     with pytest.raises(ValueError, match="markers"):
