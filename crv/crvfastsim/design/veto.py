@@ -18,6 +18,7 @@ import numpy as np
 from scipy.special import pdtr
 
 from mu2efastsim import crossings as XC
+from mu2efastsim import eloss, materials
 
 
 def sector_crossings(dg, origin, direction, dtype=np.float64, chunk=4096):
@@ -52,6 +53,62 @@ def sector_crossings(dg, origin, direction, dtype=np.float64, chunk=4096):
     return np.concatenate(idx), np.concatenate(pos).astype(dtype)
 
 
+def _paths(axes, box_sector, center, halflen, origin, direction, chunk=4096):
+    """Rows (track, box, t_in, t_out) of straight lines through boxes given in their sector-local frames."""
+    out = []
+    for s in np.unique(box_sector):
+        boxes = np.flatnonzero(box_sector == s)
+        A = axes[s]
+        o, d = origin @ A.T, direction @ A.T
+        c, h = center[boxes] @ A.T, halflen[boxes]
+        lo, hi = c - h, c + h
+        _, keep = _box_hits(o, d, lo.min(0), hi.max(0))
+        tk = np.flatnonzero(keep)
+        if not len(tk):
+            continue
+        x = XC.crossings(o[tk], d[tk], lo, hi, chunk=chunk)
+        if len(x):
+            out.append(np.stack([tk[x[:, 0].astype(np.int64)], boxes[x[:, 1].astype(np.int64)], x[:, 2], x[:, 3]], 1))
+    return np.concatenate(out) if out else np.zeros((0, 4))
+
+
+def stack_range(dg, origin, direction, p, idx, pos, t_stop=None):
+    """Which bar crossings a muon still reaches through the designed stack, and which muons stop in it.
+
+    Bar and absorber crossings are taken in path order; each costs the mean (Bethe) loss at the muon's entry
+    momentum times its path (polystyrene, the design's absorber material); a bar crossing is kept while the loss
+    before it is below the kinetic energy. stopped: the loss before t_stop (per muon, e.g. the entry into the CE-like
+    region; default the whole line) reaches the kinetic energy. Returns (keep [m], stopped [n]).
+    Approximation: no straggling, no loss outside the counters and absorbers (sheets, strongbacks, supports)."""
+    origin, direction, p = (np.asarray(a, np.float64) for a in (origin, direction, p))
+    n = len(p)
+    cw = dg.center[idx[:, 1]] + np.einsum("mi,mij->mj", np.asarray(pos[:, :3], np.float64), dg.axes[dg.sector[idx[:, 1]]])
+    t_bar = np.einsum("mi,mi->m", cw - origin[idx[:, 0]], direction[idx[:, 0]])
+    path_bar = np.linalg.norm(np.asarray(pos[:, 3:] - pos[:, :3], np.float64), axis=1)
+    ab = _paths(dg.axes, dg.abs_sector, dg.abs_center, dg.abs_halflen, origin, direction) if len(dg.abs_sector) \
+        else np.zeros((0, 4))
+    ta, tb = ab[:, 0].astype(np.int64), ab[:, 3] - ab[:, 2]
+    trk = np.r_[idx[:, 0], ta]
+    t = np.r_[t_bar, ab[:, 2]]
+    is_bar = np.r_[np.ones(len(idx), bool), np.zeros(len(ab), bool)]
+    dedx_s = eloss.dedx_restricted(materials.POLYSTYRENE, np.maximum(p, 1.0), np.inf)
+    dedx_a = eloss.dedx_restricted(materials.get(dg.absorber_material), np.maximum(p, 1.0), np.inf)
+    loss = np.r_[dedx_s[idx[:, 0]] * path_bar, dedx_a[ta] * tb]
+    order = np.lexsort((t, trk))
+    tr_o, l_o = trk[order], loss[order]
+    cum = np.cumsum(l_o)
+    start = np.r_[True, tr_o[1:] != tr_o[:-1]] if len(tr_o) else np.zeros(0, bool)
+    seg = np.cumsum(start) - 1
+    before = (cum - l_o) - (cum - l_o)[np.flatnonzero(start)][seg]     # loss before each element, per track
+    ke = np.sqrt(p ** 2 + eloss.MMU ** 2) - eloss.MMU
+    reached = np.empty(len(order), bool)
+    reached[order] = before < ke[tr_o]
+    keep = reached[:len(idx)]
+    lim = np.full(n, np.inf) if t_stop is None else np.asarray(t_stop, np.float64)
+    upto = np.zeros(n)
+    w = t < lim[trk]
+    np.add.at(upto, trk[w], loss[w])
+    return keep, upto >= ke
 def _box_hits(o, d, lo, hi):
     inv = 1.0 / np.where(d == 0, 1e-30, d)
     t1, t2 = (lo - o) * inv, (hi - o) * inv
