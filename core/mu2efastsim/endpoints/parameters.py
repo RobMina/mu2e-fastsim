@@ -136,6 +136,24 @@ def schema(task: str, names) -> dict[str, Parameter]:
             elif key in ("cross_talk", "min_voltage", "wf_noise", "background_scale", "photon_yield_scale"):
                 specs[key] = number(0, 1 if key == "cross_talk" else None, optional=True, role="calibration",
                                     unit="V" if key in ("min_voltage", "wf_noise") else "1")
+    elif task == "crv_design":
+        from crvfastsim.design.kit_task import ABSORBER_MATERIALS, SAMPLES
+
+        def knob(kind, lo, hi, unit):   # empty = the stock value of each sector
+            return Parameter(kind, unit, "physics_design", lo, hi, allow_empty=True)
+        specs = {"n_layers": knob("integer", 1, 12, "count"), "counters_per_module": knob("integer", 2, 64, "count"),
+                 "coincidence_layers": knob("integer", 1, 12, "count"),
+                 "spare_layers": knob("integer", 0, 11, "count"), "thickness": knob("number", 2, 100, "mm"),
+                 "width": knob("number", 2, 200, "mm"), "max_length": knob("number", 0, 10000, "mm"),
+                 "absorber": knob("number", 0, 200, "mm"), "tilt_deg": knob("number", 0, 79.9, "deg"),
+                 "fiber_diameter": knob("number", 0.2, 5, "mm"), "pe_threshold": knob("number", 0.5, 100, "PE"),
+                 "absorber_material": Parameter("string", role="physics_design", choices=ABSORBER_MATERIALS,
+                                                allow_empty=True),
+                 "sample": enum(*SAMPLES, role="fidelity"), "dtype": enum("float64", "float32", role="fidelity"),
+                 "pe_scale": number(0, role="calibration", positive=True), "kappa": number(0, role="scenario"),
+                 "f_acc": number(0, 1, role="calibration"), "beta": number(0, role="calibration"),
+                 "aging_c1": number(0, 1, role="scenario", positive=True),
+                 "aging_ref": number(0, 1, role="calibration", positive=True), "max_muons": integer(0)}
     else:
         raise ValueError(f"fastsimkit: task {task!r} has no parameter schema")
     if task in SCALED_TASKS:

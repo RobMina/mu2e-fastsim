@@ -122,7 +122,21 @@ refines time clusters and fits helices only on the occupied (event, cluster) pai
 `NTC` slots), in per-producer device calls with a host read of the counts between them; pair capacities are 1/4, 1/2 or
 all of the batch's cluster slots, and the bench compiles them all in its first pass (setup), so later passes compile
 nothing. Same per-cluster computation and the same decisions as the one-call path; on a GPU keep the one-call path
-(the host reads would stall the device). Process memory at these settings is 2.7 GB (float32) / 3.5 GB (float64).
+(the host reads would stall the device).
+
+In the compact path's helix fits the XY circle is fitted once per cluster for both helicities, and the lambda coherence
+scan (98 lambdas) sums over the XY-selected hits only. Those are at most one per face (72), and the other hits carry
+zero weight. The scan runs at the narrowest of 16, 32 or 72 slots that holds the launch's largest selected-hit count,
+or over every hit when the hit axis is narrower. The helix outputs are bit-identical to the full scan's in float32 and
+float64. One Xeon Gold 6248 core, 6,000 events per pass, same node:
+
+| | float32 (events/s) | float64 (events/s) |
+|---|---|---|
+| scan over every hit | 781 / 782 | 464 / 458 |
+| selected hits only | 838 / 832 (x1.07 / x1.06) | 592 / 595 (x1.28 / x1.30) |
+
+(The second number of each pair is from the run with the two trees on swapped cores.) The three scan widths add
+30-55 s of compile at setup. Process memory at these settings is 3.9 GB (float32) / 4.9 GB (float64).
 
 ### One-call path on a GPU
 

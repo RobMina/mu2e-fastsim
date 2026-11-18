@@ -7,6 +7,7 @@ job_status polls the jobs and fetch_outputs brings back the files and metrics on
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Annotated, Any, Dict, List, Literal, Optional
 
@@ -158,6 +159,8 @@ def _submit(name: str, request: Dict[str, Any], reqs: List[Dict[str, Any]], file
                               message=(("the kit admits " + ", ".join(checks)) if ok else
                                        "the kit refuses: " + "; ".join(f"{h}: {m}" for h, m in bad.items())),
                               metadata={"checks": checks, "request": request, "gpu_request": size})
+    if be.detached:
+        return _submit_detached(be, name, old, request, reqs, files, expected, size)
     jobs = []
     for r in reqs:
         be.submit(r["handle"], r["params"], files)
@@ -179,6 +182,42 @@ def _submit(name: str, request: Dict[str, Any], reqs: List[Dict[str, Any]], file
                                + (f" GPU request: {size['gpu_hours_requested']} GPU-h at the wall limits."
                                   if size else "") + " Poll job_status, then fetch_outputs."),
                       metadata=record)
+
+
+def _submit_detached(be, name, old, request, reqs, files, expected, size) -> ToolResult:
+    """Record the point and hand it to a detached worker; wait briefly for the job ids it reports."""
+    record = old or {"name": name, "created": _backend.now(), "request": request, "detached": True, "files": files,
+                     "jobs": [{"handle": r["handle"], "dtype": r["dtype"], "task": r["params"]["task"],
+                               "params": r["params"], "job_id": None,
+                               "expected_minutes": expected.get(r["handle"])} for r in reqs]}
+    if size is not None:
+        record.setdefault("gpu_request", size)
+    be.save_point(record)
+    worker = be.ensure_worker(name)
+    deadline = time.time() + float(os.environ.get("FASTSIM_MCP_SUBMIT_WAIT_S", "120"))
+    while True:
+        hb = be.heartbeat(name)
+        ids = {h: j.get("job_id") for h, j in (hb.get("jobs") or {}).items()}
+        if hb.get("phase") == "error" or (ids and all(ids.values())) or time.time() > deadline:
+            break
+        time.sleep(1.0)
+    if hb.get("phase") == "error":
+        return ToolResult(status="error", message=f"{name!r}: the worker could not submit: {hb.get('error')}",
+                          metadata=dict(record, worker=worker))
+    for j in record["jobs"]:
+        j["job_id"] = j.get("job_id") or ids.get(j["handle"])
+    be.save_point(record)
+    got = ", ".join(f"{j['handle']} (job {j['job_id'] or 'pending'})" for j in record["jobs"])
+    mins = [j.get("expected_minutes") for j in record["jobs"]]
+    when = (", ".join(f"{m} min" for m in mins) if all(m is not None for m in mins) else "not measured")
+    return ToolResult(
+        status="submitted",
+        message=(f"{name!r} submitted: {got}. A detached worker streams the inputs and tracks the jobs, so this "
+                 f"session may end. Expected run time once started: {when}, plus the queue."
+                 + (f" GPU request: {size['gpu_hours_requested']} GPU-h at the wall limits." if size else "")
+                 + " Poll job_status, then fetch_outputs."),
+        metadata=dict(record, worker={"pid": hb.get("pid"), "log": str(be.worker_log(name)),
+                                      "restarted": worker.get("restarted", False)}))
 
 
 @validate_call
@@ -224,8 +263,9 @@ def run_design_point(
     CPU (default): about 20 minutes for 5,000 electrons per core in float64. GPU (device='gpu'): the reply first
     gives the request size (jobs, GPU-hours at the wall limits and expected) and status needs_approval; nothing is
     submitted until the call is repeated with allow_gpu=true, and never beyond the server's GPU-hour cap.
-    Poll job_status(name), then fetch_outputs(name). Keep this server running until job_status reports
-    inputs_streamed: the job waits up to 15 minutes for the server to stream its Mu2e-internal inputs in.
+    A detached worker submits the jobs, streams their Mu2e-internal inputs, tracks them and fetches the outputs,
+    so the point does not depend on this session staying connected. Poll job_status(name) (it reattaches, from
+    any later session), then fetch_outputs(name).
     Submitting the same name and request again returns the same jobs; a different request under an existing
     name is refused. stage 'edep' returns, per dtype, the EdepAna file and the exact approx_ce_sensitivity call
     for the Mu2e analysis server.
@@ -319,8 +359,10 @@ def job_status(
 ) -> ToolResult:
     """The state of a design point's jobs: working, completed, failed or cancelled, with the site's own state.
 
-    Also reports, per job, whether the server has streamed the job's inputs in (inputs_streamed): until then the
-    server must stay running. Poll at most once a minute; when the point is completed call fetch_outputs.
+    Also reports, per job, whether the job's inputs were streamed in (inputs_streamed). A detached worker streams
+    them and tracks the jobs, so the session that submitted the point may have ended; this call reattaches, and
+    restarts the worker if it died before the point was done (metadata.worker). Poll at most once a minute; when
+    the point is completed call fetch_outputs.
     """
     try:
         be = _backend.get()
@@ -328,20 +370,29 @@ def job_status(
         if record is None:
             known = be.list_points()
             raise ValueError(f"no design point {name!r}; known: {', '.join(known) or 'none'}")
+        tracked = be.track(record)
         jobs = []
         for j in record["jobs"]:
-            s = be.status(j["handle"])
-            rec = be.job_record(j["handle"])
-            jobs.append({"handle": j["handle"], "dtype": j["dtype"], "state": s.get("state"),
-                         "message": s.get("message", ""), "job_id": rec.get("job_id") or j.get("job_id"),
-                         **be.stream_state(j["task"], j["handle"])})
+            t = tracked["jobs"][j["handle"]]
+            jobs.append({"handle": j["handle"], "dtype": j["dtype"], "state": t.get("state"),
+                         "message": t.get("message", ""),
+                         "job_id": t.get("job_id") or be.job_record(j["handle"]).get("job_id") or j.get("job_id"),
+                         "inputs_streamed": t.get("inputs_streamed"),
+                         **({"stream_error": t["stream_error"]} if t.get("stream_error") else {}),
+                         **({"fetched": t["fetched"]} if "fetched" in t else {})})
     except Exception as exc:
         return _error(exc)
     state = dp.overall_state(j["state"] for j in jobs)
     status = {"completed": "success", "working": "working"}.get(state, "error")
     text = "; ".join(f"{j['dtype'] or j['handle']}: {j['state']} ({j['message']})" for j in jobs)
+    worker = tracked["worker"]
+    if worker and worker.get("restarted"):
+        text += " Worker restarted."
+    if worker and worker.get("error"):
+        text += f" Worker: {worker['error']}"
     return ToolResult(status=status, message=f"{name}: {state}. {text}",
-                      metadata={"name": name, "state": state, "jobs": jobs, "request": record["request"]})
+                      metadata={"name": name, "state": state, "jobs": jobs, "request": record["request"],
+                                "worker": worker})
 
 
 @validate_call
@@ -364,10 +415,11 @@ def fetch_outputs(
             raise ValueError(f"no design point {name!r}; known: {', '.join(be.list_points()) or 'none'}")
         stage = record["request"]["stage"]
         outputs, pending, files = [], [], []
+        tracked = be.track(record)["jobs"]
         for j in record["jobs"]:
             if dtype is not None and j["dtype"] != dtype:
                 continue
-            s = be.status(j["handle"])
+            s = tracked[j["handle"]]
             if s.get("state") != "completed":
                 pending.append({"handle": j["handle"], "dtype": j["dtype"], "state": s.get("state"),
                                 "message": s.get("message", "")})

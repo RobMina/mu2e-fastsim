@@ -194,6 +194,12 @@ def test_coincidence_rule_and_threshold_knobs(counters):
     assert set(loose["coincidence"].values()) == {"2 of 5, 8 PE"}
     high = F.evaluate(M.Design(pe_threshold=30.0), mu, _ctx(counters), calibration=cal)
     assert high["inefficiency"] > base["inefficiency"] and high["deadtime"] < base["deadtime"]
+    spare = F.evaluate(M.Design(n_layers=5, spare_layers=3), mu, _ctx(counters), calibration=cal)
+    assert spare["inefficiency"] == loose["inefficiency"] and spare["deadtime"] == loose["deadtime"]
+    with pytest.raises(ValueError):
+        M.Design(n_layers=3, spare_layers=3)
+    with pytest.raises(ValueError):
+        M.Design(coincidence_layers=3, spare_layers=1)
     with pytest.raises(ValueError):
         M.Design(n_layers=3, coincidence_layers=4)
     with pytest.raises(ValueError):
@@ -311,3 +317,65 @@ def test_closure_against_full_chain_where_tables_are(tmp_path):
     assert out["skipped_sectors"] == [] and 0.5 < out["pe_scale_fit"] < 2.0
     for s in out["sectors"].values():
         assert s["crossings"] > 100 and abs(s["pe_ratio"] - out["pe_scale_fit"]) < 0.2
+
+
+def test_finder_positions_are_the_stock_world_coordinates(counters):
+    dg = M.build(M.Design(), counters)
+    geo = G.from_offline_config(counters)
+    b = np.arange(dg.nbars)
+    x, y = V.finder_positions(dg, b)
+    lw = geo.local_to_world                                   # Mu2e axis of (thickness, width, length) per bar
+    np.testing.assert_allclose(x, geo.center[b, lw[b, 1]], atol=1e-9)
+    np.testing.assert_allclose(y, geo.center[b, lw[b, 0]], atol=1e-9)
+
+
+def test_finder_cuts_slope_window_and_cluster_pe(counters):
+    import dataclasses as dc
+    mu = _muons(3000, seed=11)
+    wide = _ctx(counters)
+    for n in wide.cuts:
+        wide.cuts[n] = dc.replace(wide.cuts[n], min_slope=-1e9, max_slope=1e9, max_slope_diff=1e9, min_cluster_pes=0)
+    off = F.evaluate(M.Design(), mu, wide, F.FomConfig(finder_cuts=False))
+    on = F.evaluate(M.Design(), mu, wide)
+    assert on["inefficiency"] == pytest.approx(off["inefficiency"], rel=1e-12)
+    narrow = _ctx(counters)
+    for n in narrow.cuts:
+        narrow.cuts[n] = dc.replace(narrow.cuts[n], min_slope=0.0, max_slope=0.01)
+    one_sided = F.evaluate(M.Design(), mu, narrow)
+    assert one_sided["inefficiency"] > off["inefficiency"] + 0.1          # half the muon directions fail the window
+    heavy = _ctx(counters)
+    for n in heavy.cuts:
+        heavy.cuts[n] = dc.replace(heavy.cuts[n], min_cluster_pes=1e6)
+    assert F.evaluate(M.Design(), mu, heavy)["inefficiency_covered"] > 0.99 - off["uncovered_fraction"]
+
+
+def test_stockcmp_bookkeeping(counters):
+    """A synthetic 'stock' arm that is the model's own expected PE (rounded) and one cluster per crossed sector:
+    ratio 1 within rounding, and every crossed event has a stock coincidence."""
+    from crvfastsim.design import stockcmp as SC
+    ctx = _ctx(counters)
+    mu = _muons(500, seed=7)
+    dg = M.build(M.Design(), counters, {n: s.yield_per_mev for n, s in ctx.sectors.items()})
+    idx, pos = V.sector_crossings(dg, mu["origin"], mu["direction"])
+    pe = F.sector_pe(dg, ctx, idx, pos, mu["p"], O.OpticsConfig(), np.float64)
+    ev = idx[:, 0]
+    bar = np.repeat(idx[:, 1], 2)
+    side = np.tile([0, 1], len(idx))
+    pv = pe.reshape(-1)
+    keep = pv > 0
+    pidx = np.zeros(keep.sum(), np.int64)
+    pev = np.repeat(ev, 2)[keep]
+    for e in np.unique(pev):
+        m = pev == e
+        pidx[m] = np.arange(m.sum())
+    pulses = dict(event=pev, idx=pidx, bar=bar[keep], side=side[keep], pe=pv[keep])
+    first = np.unique(pev * 16 + dg.sector[pulses["bar"]], return_index=True)[1]
+    clusters = dict(event=pev[first], cluster=np.arange(len(first)), bar=pulses["bar"][first])
+    stock = dict(n_events=len(mu["p"]), muons=dict(event=np.arange(len(mu["p"])), **mu), pulses=pulses,
+                 clusters=clusters)
+    out = SC.compare(stock, M.Design(), ctx)
+    for s in out["sectors"].values():
+        assert s["pe_ratio"][0] == pytest.approx(1.0, rel=1e-9) and s["coinc_stock"] == 1.0
+        assert 0.0 <= s["coinc_model"] <= 1.0 and s["events"] > 5
+        for row in s["pe"]:
+            assert row["ratio_end0"] == pytest.approx(1.0, rel=1e-9)

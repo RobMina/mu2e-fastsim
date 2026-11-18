@@ -11,6 +11,8 @@ python -m crvfastsim.design evaluate --design design.json --muons muons.npz --dt
     [--lookup-dir DIR] [--calibration deadtime.json] [--kappa K] --out metrics.json
 python -m crvfastsim.design closure --muons muons.npz --dtype float64 --lookup-dir DIR \
     --photon-map DIR/photonMap.root --mode mean|sampled --out closure.json    # optics model vs the full chain
+python -m crvfastsim.design stockcmp STOCK.root ... --dtype float64 [--design D] [--gen GEN.root ...] \
+    [--geometry-check] --out stockcmp.json                                    # paired comparison with stock
 ```
 
 ## Design knobs (`module.Design`)
@@ -25,6 +27,7 @@ python -m crvfastsim.design closure --muons muons.npz --dtype float64 --lookup-d
 | `fiber_diameter` | WLS fiber [mm] | stock fiber of each sector |
 | `counters_per_module` | counters per layer and module | stock (16) |
 | `coincidence_layers` | k of the k-of-N layer rule (at most the layer count of every sector) | stock: N minus the stock spare layers (3 of 4, 4 of 4 where stock asks for all four) |
+| `spare_layers` | instead of `coincidence_layers`: k = N - spare_layers in every sector (follows per-sector layer counts) | unset |
 | `pe_threshold` | PE per layer and read-out end for a hit, every sector | stock threshold of each sector (8 PE in Run 2) |
 
 The default `Design()` reproduces the stock bars exactly (`module.to_crv_geometry` against
@@ -71,6 +74,22 @@ absorber transmission for 1 MeV photons). A higher PE threshold lowers the singl
 (the same exponent beta); a different k changes the accidental combinatorics. Deadtime = 1 - exp(-veto window x total rate). The calibration file
 (`{"source": ..., "deadtime": {sector: fraction}}` or `{"total": fraction}`) holds the stock nominal deadtime; it is
 an input, not part of this repository.
+
+## Comparison with stock (`stockcmp.py`)
+
+Input: the TFileService files of a stock job that ran the CrvStepTableDumper (`dump/`) and the CrvRecoTableDumper
+(`crvdump/`) on every event, in the geometry of the design being checked. Paired over events, per sector: stock PE
+(reconstructed pulses) over the model's expected PE, per layer and read-out end; the fraction of (event, layer) rows
+with an end at or above threshold against the model's mean probability; the fraction of events with a stock
+coincidence cluster against the mean P_coinc. `--geometry-check` places every stock CrvStep in the design bar of the
+same index (1.0 = the stock geometry is the design's). `--gen` (dumps of every generated event) adds the paired
+CE-proxy inefficiency; events the stock job dropped for having no CRV steps count as stock misses.
+
+Reference numbers (stock Offline, Run 2 conditions, 3 GeV muons on a top module, 33,334 per angle): stock/model PE
+0.847 +- 0.001 at 0, 15 and 30 degrees from the counter normal, while the PE itself grows by 16 %. The tilt
+dependence of the model therefore agrees with stock to 0.2 %, and `--pe-scale 0.847` calibrates the absolute scale.
+Every layer was hit at 15 and 30 degrees in both arms; at normal incidence the model misses 0.2 % more layers
+(counter edges).
 
 ## Approximations (W9)
 
