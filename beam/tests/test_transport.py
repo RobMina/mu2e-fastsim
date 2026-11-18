@@ -104,7 +104,7 @@ def test_kit_task_renders():
 
     @dataclass(frozen=True)
     class T:                                   # mu2efastsim.endpoints.kit.Task's fields
-        params: tuple; metrics: tuple; resources: object; body: str; defaults: dict = None
+        params: tuple; metrics: tuple; resources: object; body: str; defaults: dict = None; sizer: object = None
 
     tasks, fnal = {}, set()
     kit_task.register(tasks, T, R, fnal)
