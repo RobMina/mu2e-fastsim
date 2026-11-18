@@ -251,7 +251,8 @@ int main(int argc, char** argv) {
     G4VProcess* p = (*pv)[i];
     const std::string n = p->GetProcessName();
     if (n == s.target_process) found = true;
-    if (n != "Transportation" && n != s.target_process) pm->SetProcessActivation(p, false);
+    // xs mode keeps every process active: G4EmCalculator returns zero stopping power for inactivated EM processes
+    if (c.mode != "xs" && n != "Transportation" && n != s.target_process) pm->SetProcessActivation(p, false);
   }
   if (!found && c.mode != "xs") { std::cerr << "process " << s.target_process << " not found\n"; return 3; }
   rm->BeamOn(0);   // builds the physics tables
