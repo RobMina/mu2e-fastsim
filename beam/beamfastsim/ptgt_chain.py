@@ -226,9 +226,12 @@ def primaries(n, target, rng, sigma=1.0, ke=8000.0, offset=0.5):
                 event=np.arange(n))
 
 
-def run(bank, target, bfield, env, prim, rng, st=Stepping()):
+def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None):
     """Transport primaries to the record plane. Returns recorded states (event, pdg, x, p, t), deposit per target
-    segment and counters."""
+    segment and counters.
+
+    enclosure=(R, H) (diagnostic): instead of the plane, record every lane (all species) where it first leaves the
+    cylinder of radius R and half-length H about the target axis (target frame), and stop it there."""
     n0 = len(prim["pdg"])
     L = dict(pdg=np.asarray(prim["pdg"], np.int64), x=np.asarray(prim["x"], float).copy(),
              u=np.asarray(prim["u"], float).copy(), p=np.asarray(prim["p"], float).copy(),
@@ -386,7 +389,17 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping()):
             # record plane crossing (downstream), absorbers
             zp = env.z_plane
             cross = (x0v[:, 2] < zp) & (xn[:, 2] >= zp)
-            if np.any(cross):
+            if enclosure is not None:
+                xe = target.to_local(xn)
+                cross = (np.hypot(xe[:, 0], xe[:, 1]) >= enclosure[0]) | (np.abs(xe[:, 2] - zc) >= enclosure[1])
+                if neu.size:
+                    cross[neu[hv[neu] == 0.0]] = True
+                c = np.flatnonzero(cross)
+                rec["ev"].append(L["ev"][i[c]]); rec["pdg"].append(L["pdg"][i[c]])
+                rec["x"].append(np.where((hv[c] == 0)[:, None], x0v[c], xn[c]))
+                rec["p"].append(un[c] * L["p"][i[c], None]); rec["t"].append(L["t"][i[c]].copy())
+                cnt["recorded"] += c.size
+            elif np.any(cross):
                 c = np.flatnonzero(cross)
                 f = (zp - x0v[c, 2]) / (xn[c, 2] - x0v[c, 2])
                 xp = x0v[c] + f[:, None] * (xn[c] - x0v[c])
@@ -481,6 +494,8 @@ def main(argv=None):
     ap.add_argument("--shard", type=int, default=0)
     ap.add_argument("--h-vac", type=float, default=Stepping.h_vac)
     ap.add_argument("--h-near", type=float, default=Stepping.h_near)
+    ap.add_argument("--enclosure", nargs=2, type=float, metavar=("R", "H"),
+                    help="diagnostic: record all species leaving this cylinder about the target, instead of the plane")
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     bank = D.Bank.load(a.bank)
@@ -499,7 +514,7 @@ def main(argv=None):
         n = min(a.chunk, a.pot - done)
         prim = primaries(n, tgt, rng)
         prim["event"] = prim["event"] + done
-        out = run(bank, tgt, fb, env, prim, rng, st)
+        out = run(bank, tgt, fb, env, prim, rng, st, enclosure=a.enclosure)
         recs.append(out["record"])
         edep += out["edep"]
         for k, v in out["counts"].items():
