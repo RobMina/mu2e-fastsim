@@ -456,7 +456,7 @@ class BeamEdepCpuStream(BeamEdepStream):
 # place from FASTSIMKIT_CENT_DONORS on the endpoint (an exception to the stream-and-delete rule: the donor set is ~2 GB
 # and lives on the endpoint) and the GPU job's plan from its out/ directory.
 CENT_RESOURCES = Resources(cores=kit_task.CENT_CORES, mem_gb=64, gpus=1, gpu_type="a100", minutes=60)
-CENT_WRITER_RESOURCES = Resources(cores=1, mem_gb=16, gpus=0, gpu_type="", minutes=150)
+CENT_WRITER_RESOURCES = Resources(cores=1, mem_gb=8, gpus=0, gpu_type="", minutes=150)  # writer step peaks at 5.7 GB (20k CE)
 CENT_CALO_FILES = ("Sim_crystal.txt", "CsI-waveform-2020-02-12.root", "ReadoutNoise.root", "CsI-propag-2020-07-29.root",
                    "calo_geometry_run1430.npz")
 # streamed name (flat in tmpfs) -> path under the point's data directory (beamfastsim.centuple.__main__.DATA)
