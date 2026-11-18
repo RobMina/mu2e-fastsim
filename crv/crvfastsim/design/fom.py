@@ -150,7 +150,7 @@ def evaluate(design, muons, ctx=None, cfg=FomConfig(), calibration=None, dtype=n
     req = _stock_required(ctx.cuts)
     thr0 = np.array([ctx.cuts[nm].pe_threshold for nm in names], np.float64)
     thr = np.full_like(thr0, design.pe_threshold) if design.pe_threshold is not None else thr0
-    k = np.array([V.required_layers(int(dg.n_layers[s]), req[nm], design.coincidence_layers)
+    k = np.array([V.required_layers(int(dg.n_layers[s]), req[nm], design.coincidence_layers, design.spare_layers)
                   for s, nm in enumerate(names)])
     pm, (gt, gs, pc) = V.p_miss(n, idx[:, 0], dg.sector[idx[:, 1]], dg.layer[idx[:, 1]], pe, dg.n_layers, thr, k)
     covered = np.zeros(n, bool)

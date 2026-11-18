@@ -6,7 +6,8 @@ and crossed with the core slab method (tracks first culled by the sector's bound
 Veto probability, response fluctuations averaged analytically: per (muon, sector, layer, read-out end) the expected
 PE of the crossed counters are summed (the finder's same-plus-adjacent-counter PE sum); the layer is hit if either
 end has at least the sector's PE threshold (Poisson); the sector has a coincidence if at least k of its N layers are
-hit (Poisson-binomial), k = Design.coincidence_layers, or by default N - (4 - stock required layers), at least 1.
+hit (Poisson-binomial), k = Design.coincidence_layers, or N - Design.spare_layers, or by default N - (4 - stock
+required layers), at least 1.
 P_miss = prod over sectors (1 - P_coinc); a muon that crosses no counter has P_miss = 1. The finder's time, slope
 and distance cuts are not applied.
 """
@@ -58,12 +59,13 @@ def _box_hits(o, d, lo, hi):
     return t_in, t_out > t_in
 
 
-def required_layers(n_layers, stock_required, k=None):
-    """k of the k-of-N rule: ``k`` if given (Design.coincidence_layers), else N minus the stock spare layers
-    (stock: 3 of 4 or 4 of 4), at least 1. Raises if k exceeds N."""
+def required_layers(n_layers, stock_required, k=None, spare=None):
+    """k of the k-of-N rule: ``k`` if given (Design.coincidence_layers), else N - ``spare`` (Design.spare_layers),
+    else N minus the stock spare layers (stock: 3 of 4 or 4 of 4); at least 1. Raises if k exceeds N."""
     n = np.asarray(n_layers)
     if k is None:
-        return np.maximum(1, n - (4 - np.asarray(stock_required)))
+        spare_n = 4 - np.asarray(stock_required) if spare is None else spare
+        return np.maximum(1, n - spare_n)
     if np.any(k > n):
         raise ValueError(f"coincidence_layers {k} exceeds the layer count {n_layers}")
     return np.full(n.shape, int(k), np.int64)

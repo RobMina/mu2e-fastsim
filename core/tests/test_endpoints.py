@@ -144,11 +144,11 @@ def test_kit_contract_roundtrip(site_ep, tmp_path):
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
 def test_rendered_jobs_are_valid_bash(site_ep, tmp_path):
-    from mu2efastsim.endpoints.kit import FNAL_TASKS, TASKS
+    from mu2efastsim.endpoints.kit import DELEGATED_ONLY, FNAL_TASKS, TASKS
     _, ep = site_ep
     kit = FastsimKit(endpoint=ep, state_dir=tmp_path / "kit", sif="/x/m.sif")
     for name, task in TASKS.items():
-        if name in FNAL_TASKS:     # need an endpoint that mounts FNAL storage (EAF): tested in test_endpoint_eaf.py
+        if name in FNAL_TASKS | DELEGATED_ONLY:   # FNAL storage (test_endpoint_eaf.py) or delegate-rendered (own tests)
             assert not kit.check("n", {"task": name, **{p: 1 for p in task.params}}, [], [])["ok"]
             continue
         params = {"task": name, **{p: 1 for p in task.params}}
@@ -160,10 +160,10 @@ def test_rendered_jobs_are_valid_bash(site_ep, tmp_path):
 
 
 def test_table_tasks_stage_and_delete(site_ep, tmp_path):
-    from mu2efastsim.endpoints.kit import FNAL_TASKS, TABLE_TASKS, TASKS
+    from mu2efastsim.endpoints.kit import DELEGATED_ONLY, FNAL_TASKS, TABLE_TASKS, TASKS
     _, ep = site_ep
     kit = FastsimKit(endpoint=ep, state_dir=tmp_path / "kit", sif="/x/m.sif")
-    for name in TABLE_TASKS - FNAL_TASKS:
+    for name in TABLE_TASKS - FNAL_TASKS - DELEGATED_ONLY:
         params = {"task": name, **{p: 1 for p in TASKS[name].params}}
         body, _ = kit.render(params)
         assert "cvmfsget" in body and "trap 'rm -rf" in body and "cleanup.txt" in body

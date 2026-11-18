@@ -27,6 +27,7 @@ python -m crvfastsim.design stockcmp STOCK.root ... --dtype float64 [--design D]
 | `fiber_diameter` | WLS fiber [mm] | stock fiber of each sector |
 | `counters_per_module` | counters per layer and module | stock (16) |
 | `coincidence_layers` | k of the k-of-N layer rule (at most the layer count of every sector) | stock: N minus the stock spare layers (3 of 4, 4 of 4 where stock asks for all four) |
+| `spare_layers` | instead of `coincidence_layers`: k = N - spare_layers in every sector (follows per-sector layer counts) | unset |
 | `pe_threshold` | PE per layer and read-out end for a hit, every sector | stock threshold of each sector (8 PE in Run 2) |
 
 The default `Design()` reproduces the stock bars exactly (`module.to_crv_geometry` against
