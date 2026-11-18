@@ -48,8 +48,8 @@ def _bank(tmp_path, n_pim=1, sigma_p=1e3, dedx=0.0):
 def test_device_matches_host_on_synthetic_cascade(tmp_path, dtype):
     bank = _bank(tmp_path, n_pim=3)
     tgt = D.Target.rod(100.0, 10.0, 10.0, 10.0)
-    env = C.Envelope(z_nodes=np.array([-5000.0, 5000.0]), r_nodes=np.array([400.0, 400.0]), z_min=-2000.0,
-                     z_plane=800.0, r_plane=300.0, axis_x=0.0)
+    env = C.Envelope(z_nodes=np.array([-5000.0, 5000.0]), r_nodes=np.array([1900.0, 1900.0]), z_min=-2000.0,
+                     z_plane=800.0, r_plane=1800.0, axis_x=0.0)
     fm = _uniform_map(2.0)
     rng = np.random.default_rng(3)
     n = 4000
@@ -58,8 +58,8 @@ def test_device_matches_host_on_synthetic_cascade(tmp_path, dtype):
     rec, cnt = J.run(bank, tgt, fm, env, prim, seed=5, pool=4096, steps=32, dtype=dtype)
     assert cnt["inelastic"] == host["counts"]["inelastic"] == n          # every proton interacts once
     nh, nd = host["counts"]["recorded"], len(rec["pdg"])
-    assert nh > 200
-    assert abs(nd - nh) < 4 * np.sqrt(nh)                                  # same physics, independent streams
+    assert nh > 2000, (nh, nd)
+    assert abs(nd - nh) < 4 * np.sqrt(nh), (nh, nd)                        # same physics, independent streams
     assert set(np.unique(rec["pdg"])) <= {13, -13, 211, -211}
     assert np.allclose(rec["x"][:, 2], 800.0, atol=1e-3)
     ph, pd = np.linalg.norm(host["record"]["p"], axis=1), np.linalg.norm(rec["p"], axis=1)
