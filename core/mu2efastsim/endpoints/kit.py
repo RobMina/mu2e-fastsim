@@ -276,6 +276,7 @@ if _beam_task is not None:
         _beam_task.register_delegate(DELEGATES)
 
 TABLE_TASKS = {"response_bench", "v4_response", "chain", "regression"}   # stage Mu2e-internal tables: cleanup record required
+DELEGATED_ONLY: set = set()   # tasks whose job body only their endpoint delegate renders (plain render refuses them)
 
 # CRV response tuning (crv package, crvfastsim.kit_task): task crv_response, one point of every chain.KNOBS knob scored
 # against the KPP data reference. Registered when crvfastsim is importable: inputs read in place on FNAL endpoints (EAF),
@@ -298,6 +299,17 @@ if _tracker_task is not None:
     _tracker_task.register(TASKS, Task, Resources, FNAL_TASKS)
     _tracker_task.register_delegate(DELEGATES)
     TABLE_TASKS.add("tracker_point")  # scratch EventNtuple cleanup is mandatory
+
+# CRV module design points (crvfastsim.design, W9): task crv_design, one CPU job per point, Run 2 lookup tables fetched
+# per job into tmpfs (cleanup record required); registered when crvfastsim is importable (delegate design.kit_uva).
+try:
+    from crvfastsim.design import kit_task as _crv_design_task
+except ImportError:
+    _crv_design_task = None
+if _crv_design_task is not None:
+    _crv_design_task.register(TASKS, Task, Resources, delegates=DELEGATES)
+    TABLE_TASKS.add("crv_design")
+    DELEGATED_ONLY.add("crv_design")   # the body needs the delegate's pinned sample and code snapshot
 
 
 def _arg(v) -> str:
@@ -381,6 +393,12 @@ class FastsimKit:
     def render(self, params: Dict[str, Any], geometry=None) -> Tuple[str, Resources]:
         params = self._parameters(params)
         t = self._task(params)
+        if params["task"] in DELEGATED_ONLY:
+            raise ValueError(f"fastsimkit: task {params['task']!r} runs only through its endpoint delegate; "
+                             f"{getattr(self.ep, 'name', '?')!r} has none")
+        if any(params.get(k, 1.0) != 1.0 for k in ("ds_bscale", "tsd_bscale")):
+            raise ValueError(f"fastsimkit: {params['task']}: field-map scales (ds_bscale, tsd_bscale) run on the "
+                             f"streaming route (UVA) only; {getattr(self.ep, 'name', '?')!r} renders none")
         fnal = getattr(self.ep, "fnal_data", None)
         if params["task"] in FNAL_TASKS and not fnal:
             raise ValueError(f"fastsimkit: task {params['task']!r} reads Mu2e-internal inputs in place and needs an "

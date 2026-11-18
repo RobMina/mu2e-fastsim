@@ -11,6 +11,8 @@ python -m crvfastsim.design evaluate --design design.json --muons muons.npz --dt
     [--lookup-dir DIR] [--calibration deadtime.json] [--kappa K] --out metrics.json
 python -m crvfastsim.design closure --muons muons.npz --dtype float64 --lookup-dir DIR \
     --photon-map DIR/photonMap.root --mode mean|sampled --out closure.json    # optics model vs the full chain
+python -m crvfastsim.design stockcmp STOCK.root ... --dtype float64 [--design D] [--gen GEN.root ...] \
+    [--geometry-check] --out stockcmp.json                                    # paired comparison with stock
 ```
 
 ## Design knobs (`module.Design`)
@@ -25,6 +27,7 @@ python -m crvfastsim.design closure --muons muons.npz --dtype float64 --lookup-d
 | `fiber_diameter` | WLS fiber [mm] | stock fiber of each sector |
 | `counters_per_module` | counters per layer and module | stock (16) |
 | `coincidence_layers` | k of the k-of-N layer rule (at most the layer count of every sector) | stock: N minus the stock spare layers (3 of 4, 4 of 4 where stock asks for all four) |
+| `spare_layers` | instead of `coincidence_layers`: k = N - spare_layers in every sector (follows per-sector layer counts) | unset |
 | `pe_threshold` | PE per layer and read-out end for a hit, every sector | stock threshold of each sector (8 PE in Run 2) |
 
 The default `Design()` reproduces the stock bars exactly (`module.to_crv_geometry` against
@@ -48,8 +51,19 @@ bin on the entrance state in the component's frame, never on a global detector c
 | `ly_margin` | min over sectors of the design's minimum light yield along its longest counter (better end, normal incidence, aged by `aging_c1`) over the nominal design's (aged by `aging_ref`) |
 | `cost`, `cost_rel`, `cost_terms` | scintillator volume [m^3], channels, absorber mass [t], fiber length x diameter^2 [m mm^2], each over the nominal design; `cost` is their mean |
 
-The muon sample (`muons`) is the CRY muons whose straight line passes through a cylinder about the detector-solenoid
-axis from the stopping target to the tracker end (`fom.PROXY`), a geometric stand-in for the CE-like selection.
+The muon sample (`muons`) is the CRY muons whose line passes through a cylinder about the detector-solenoid axis
+from the stopping target to the tracker end (`fom.PROXY`), a geometric stand-in for the CE-like selection. With
+`--world GDML` (`sample.py`) the muons are first carried through the world material above the CRV (the fast stage-C
+transport: straggled loss, Highland scattering to the MSC plane) and start on that plane with their momentum there;
+muons that range out above it are dropped. Inside the CRV each muon loses the mean (Bethe) energy in the designed
+counters and absorbers in path order (`veto.stack_range`): crossings after it stops are dropped, and a muon that
+stops before the CE-like region is left out of the inefficiency (it cannot reach the tracker; `stopped_fraction`).
+The P_coinc of a sector also carries the finder's slope window and minimum cluster PE (`veto.finder_factor`).
+
+Against stock Geant4 + CRV reco on a thick-absorber Run 2 sample (25.4 mm Al per gap, 1M CRY events), over CE-like
+events whose stock muon reached the detector region: stock 0.115 % (14 of 12,176) against the model's 0.177 %, a
+difference of -0.06 +- 0.05 %, consistent in momentum bins. With generated lines instead of CRV-entry states the
+model was 8 times too low (muons that lose most of their energy above the CRV).
 
 ### Optics model (`optics.py`)
 
@@ -71,6 +85,22 @@ absorber transmission for 1 MeV photons). A higher PE threshold lowers the singl
 (the same exponent beta); a different k changes the accidental combinatorics. Deadtime = 1 - exp(-veto window x total rate). The calibration file
 (`{"source": ..., "deadtime": {sector: fraction}}` or `{"total": fraction}`) holds the stock nominal deadtime; it is
 an input, not part of this repository.
+
+## Comparison with stock (`stockcmp.py`)
+
+Input: the TFileService files of a stock job that ran the CrvStepTableDumper (`dump/`) and the CrvRecoTableDumper
+(`crvdump/`) on every event, in the geometry of the design being checked. Paired over events, per sector: stock PE
+(reconstructed pulses) over the model's expected PE, per layer and read-out end; the fraction of (event, layer) rows
+with an end at or above threshold against the model's mean probability; the fraction of events with a stock
+coincidence cluster against the mean P_coinc. `--geometry-check` places every stock CrvStep in the design bar of the
+same index (1.0 = the stock geometry is the design's). `--gen` (dumps of every generated event) adds the paired
+CE-proxy inefficiency; events the stock job dropped for having no CRV steps count as stock misses.
+
+Reference numbers (stock Offline, Run 2 conditions, 3 GeV muons on a top module, 33,334 per angle): stock/model PE
+0.847 +- 0.001 at 0, 15 and 30 degrees from the counter normal, while the PE itself grows by 16 %. The tilt
+dependence of the model therefore agrees with stock to 0.2 %, and `--pe-scale 0.847` calibrates the absolute scale.
+Every layer was hit at 15 and 30 degrees in both arms; at normal incidence the model misses 0.2 % more layers
+(counter edges).
 
 ## Approximations (W9)
 

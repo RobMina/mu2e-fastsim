@@ -136,11 +136,40 @@ def schema(task: str, names) -> dict[str, Parameter]:
             elif key in ("cross_talk", "min_voltage", "wf_noise", "background_scale", "photon_yield_scale"):
                 specs[key] = number(0, 1 if key == "cross_talk" else None, optional=True, role="calibration",
                                     unit="V" if key in ("min_voltage", "wf_noise") else "1")
+    elif task == "crv_design":
+        from crvfastsim.design.kit_task import ABSORBER_MATERIALS, SAMPLES
+
+        def knob(kind, lo, hi, unit):   # empty = the stock value of each sector
+            return Parameter(kind, unit, "physics_design", lo, hi, allow_empty=True)
+        specs = {"n_layers": knob("integer", 1, 12, "count"), "counters_per_module": knob("integer", 2, 64, "count"),
+                 "coincidence_layers": knob("integer", 1, 12, "count"),
+                 "spare_layers": knob("integer", 0, 11, "count"), "thickness": knob("number", 2, 100, "mm"),
+                 "width": knob("number", 2, 200, "mm"), "max_length": knob("number", 0, 10000, "mm"),
+                 "absorber": knob("number", 0, 200, "mm"), "tilt_deg": knob("number", 0, 79.9, "deg"),
+                 "fiber_diameter": knob("number", 0.2, 5, "mm"), "pe_threshold": knob("number", 0.5, 100, "PE"),
+                 "absorber_material": Parameter("string", role="physics_design", choices=ABSORBER_MATERIALS,
+                                                allow_empty=True),
+                 "sample": enum(*SAMPLES, role="fidelity"), "dtype": enum("float64", "float32", role="fidelity"),
+                 "pe_scale": number(0, role="calibration", positive=True), "kappa": number(0, role="scenario"),
+                 "f_acc": number(0, 1, role="calibration"), "beta": number(0, role="calibration"),
+                 "aging_c1": number(0, 1, role="scenario", positive=True),
+                 "aging_ref": number(0, 1, role="calibration", positive=True), "max_muons": integer(0)}
     else:
         raise ValueError(f"fastsimkit: task {task!r} has no parameter schema")
+    if task in SCALED_TASKS:
+        for key in FIELD_SCALES:
+            if key in names:
+                specs[key] = number(0.5, 1.5, role="scenario")
     if set(specs) != set(names):
         raise ValueError(f"fastsimkit: parameter schema does not match task {task!r}")
     return specs
+
+
+# Opt-in field-map scales (mu2efastsim.bfield_scale: ds_bscale -> DSMap and DSExtension, tsd_bscale -> TSdMap) on
+# the beam tasks. A factor of exactly 1 is dropped from the validated parameters, so an unscaled request, its records
+# and its bindings are the same as before the parameters existed.
+FIELD_SCALES = ("ds_bscale", "tsd_bscale")
+SCALED_TASKS = ("beam_point", "beam_sob", "beam_edep", "beam_edep_cpu")
 
 
 def validate(task: str, params: dict, names, defaults=None) -> dict:
@@ -156,6 +185,9 @@ def validate(task: str, params: dict, names, defaults=None) -> dict:
         raise ValueError(f"fastsimkit: expected task {task!r}")
     specs = schema(task, names)
     out = {key: specs[key].parse(task, key, params.get(key, defaults.get(key))) for key in names}
+    for key in FIELD_SCALES:
+        if out.get(key) == 1.0:
+            del out[key]
     if task == "veto_c4":
         for lo, hi in (("dt_lo", "dt_hi"), ("pmin", "pmax")):
             if out[lo] >= out[hi]:

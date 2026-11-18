@@ -1,4 +1,5 @@
-"""python -m crvfastsim.design {muons, geometry, evaluate}: CRV module design points (docs/design.md)."""
+"""python -m crvfastsim.design {muons, geometry, evaluate, closure, stockcmp}: CRV module design points
+(docs/design.md)."""
 from __future__ import annotations
 
 import argparse
@@ -27,11 +28,21 @@ def cmd_muons(a):
     from mu2efastsim import tables
     from . import fom
     proxy = dict(fom.PROXY, r=a.proxy_r, z0=a.proxy_z[0], z1=a.proxy_z[1])
-    gen = tables.read_many(a.gen, "gen", ["pdg", "x", "y", "z", "px", "py", "pz"])
-    m = fom.muons_from_gen(gen, proxy)
-    np.savez(a.out, origin=m["origin"], direction=m["direction"], p=m["p"],
-             n_generated_muons=m["n_generated_muons"], proxy=json.dumps(proxy))
-    print(json.dumps(dict(selected=len(m["p"]), generated_muons=m["n_generated_muons"], out=a.out)))
+    cols = ["pdg", "x", "y", "z", "px", "py", "pz"]
+    if a.world:                                      # CRV-entry states: world material + scattering to the MSC plane
+        from . import sample
+        gen = tables.read_many(a.gen, "gen", tables.KEY + cols)
+        m = sample.crv_entry_states(gen, a.world, a.counters, np.random.default_rng(a.seed), proxy)
+        extra = {k: v for k, v in m.items() if k.startswith("n_") or k == "y_plane"}
+        np.savez(a.out, origin=m["origin"], direction=m["direction"], p=m["p"], event_key=m["event_key"],
+                 proxy=json.dumps(proxy), states="crv_entry", **extra)
+    else:
+        gen = tables.read_many(a.gen, "gen", cols)
+        m = fom.muons_from_gen(gen, proxy)
+        extra = {}
+        np.savez(a.out, origin=m["origin"], direction=m["direction"], p=m["p"],
+                 n_generated_muons=m["n_generated_muons"], proxy=json.dumps(proxy), states="generated")
+    print(json.dumps(dict(selected=len(m["p"]), generated_muons=m["n_generated_muons"], out=a.out, **extra)))
 
 
 def cmd_geometry(a):
@@ -75,6 +86,24 @@ def cmd_closure(a):
     _write(a.out, out)
 
 
+def cmd_stockcmp(a):
+    from . import fom
+    from . import optics as O
+    from . import stockcmp
+    cfg = fom.FomConfig(optics=O.OpticsConfig(pe_scale=a.pe_scale))
+    ctx = fom.Context(counters=a.counters, lookup_dir=a.lookup_dir)
+    design = _design(a.design)
+    stock = stockcmp.read_stock(a.stock)
+    out = stockcmp.compare(stock, design, ctx, cfg, DTYPES[a.dtype], a.sectors)
+    if a.geometry_check:
+        out["geometry_check"] = stockcmp.geometry_check(a.stock, design, ctx)
+    if a.gen:
+        out["inefficiency"] = stockcmp.inefficiency(stock, a.gen, design, ctx, cfg, DTYPES[a.dtype])
+    out["config"] = dict(stock=a.stock, counters=a.counters)
+    out["approximations"] = WORKFLOW.select("default").record()
+    _write(a.out, out)
+
+
 def _write(path, obj):
     text = json.dumps(obj, indent=1, default=float)
     if path:
@@ -92,6 +121,10 @@ def main(argv=None):
     m.add_argument("--out", required=True)
     m.add_argument("--proxy-r", type=float, default=800.0)
     m.add_argument("--proxy-z", type=float, nargs=2, default=(5400.0, 11800.0))
+    m.add_argument("--world", help="GDML world: carry the muons through the material above the CRV (stage C) and "
+                                   "start them on the MSC plane (design.sample)")
+    m.add_argument("--counters", default=RUN2_COUNTERS)
+    m.add_argument("--seed", type=int, default=1)
     m.set_defaults(func=cmd_muons)
     g = sub.add_parser("geometry", help="build a design and summarise it")
     g.add_argument("--design")
@@ -129,6 +162,18 @@ def main(argv=None):
     c.add_argument("--max-muons", type=int, default=0)
     c.add_argument("--out")
     c.set_defaults(func=cmd_closure)
+    s = sub.add_parser("stockcmp", help="paired comparison with a stock G4 + CRV reco sample of the same muons")
+    s.add_argument("stock", nargs="+", help="TFileService files with dump/ and crvdump/ trees")
+    s.add_argument("--design", help="the design the stock geometry implements; absent = nominal")
+    s.add_argument("--dtype", required=True, choices=sorted(DTYPES))
+    s.add_argument("--counters", default=RUN2_COUNTERS)
+    s.add_argument("--lookup-dir")
+    s.add_argument("--pe-scale", type=float, default=1.0)
+    s.add_argument("--sectors", nargs="*")
+    s.add_argument("--gen", nargs="*", help="gen dumps of every generated event: adds the CE-proxy inefficiency")
+    s.add_argument("--geometry-check", action="store_true", help="stock CrvSteps inside the design's bars")
+    s.add_argument("--out")
+    s.set_defaults(func=cmd_stockcmp)
     a = p.parse_args(argv)
     a.func(a)
     return 0
