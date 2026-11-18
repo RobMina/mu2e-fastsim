@@ -16,6 +16,8 @@ Both helicities are fitted and the better one (more straw hits, then lower chi2d
 """
 from __future__ import annotations
 
+import math
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -38,12 +40,48 @@ def settings(m):
             "helicities": tuple(int(h) for h in m["Helicities"])}
 
 
-def face_z(cond):
-    """z of the two faces scanned by HelixTool per plane: mean midpoint z of straws 0 and 1 of panels 0 and 1."""
+# Nominal tracker of the stock geometry file (geom_run1_a.txt -> tracker_v7.txt, Offline v13_39): the parameters
+# TrackerMaker places the straws with along z.
+TRACKER_GEOM = {"nstations": 18, "planeSpacing": 174.0, "planeHalfSeparation": 27.992, "supportHalfThickness": 2.767,
+                "manifoldHalfLengthZ": 8.4454, "strawOuterRadius": 2.5235, "strawGap": 1.203, "layerZPattern": 1,
+                "panelZPattern": 1, "spacingPattern": 1}
+ALIGNED_TOLERANCE = 5.0      # mm: largest |nominal - aligned| face z accepted (catches a geometry that is not the dump's)
+
+
+def nominal_straw_z(geom, plane, panel, layer):
+    """z of a straw midpoint in the nominal tracker, as TrackerMaker::makeStraws / makeLayer compute it."""
+    g = geom
+    if g["spacingPattern"] != 1:
+        raise ValueError("nominal tracker: spacingPattern 1 only")
+    R, gap = g["strawOuterRadius"], g["strawGap"]
+    rspacing = 2 * R + gap
+    lhs = 0.25 * math.sqrt(3.0) * rspacing                              # _layerHalfSpacing
+    mzx = g["manifoldHalfLengthZ"] - R - (2 - 1) * lhs                  # _manifoldZEdgeExcessSpace (2 layers)
+    z0 = -(float(g["nstations"] - 1) / 2.0 * g["planeSpacing"])         # -findFirstPlaneZ0()
+    station, k = plane // 2, plane % 2
+    dz = station * g["planeSpacing"] + (g["planeHalfSeparation"] if k else -g["planeHalfSeparation"])
+    factor = layer if g["layerZPattern"] == 0 else 2 - layer - 1
+    zoff = g["supportHalfThickness"] + mzx + R + factor * 2. * lhs
+    side = -1.0 if panel % 2 == 0 else 1.0                              # _panelZSide: -1, +1, -1, ...
+    if g["panelZPattern"] == 1:
+        side *= -1.0 if plane % 4 in (0, 3) else 1.0
+    return zoff * side + (z0 + dz)
+
+
+def face_z(cond, geom=TRACKER_GEOM):
+    """z of the two faces per plane that HelixTool counts for the hit ratio: `float z = (straw 0 z + straw 1 z) / 2.`
+    of panels 0 and 1, on the nominal tracker (HelixFilter's GeomHandle<Tracker>, not the aligned one the hits are
+    made with). Checked against the aligned straw midpoints of the conditions."""
     mz = np.asarray(cond["straw"]["midz"], np.float64)
     planes = len(mz) // (6 * 96)
     us = lambda pl, pn, st: (pl * 6 + pn) * 96 + st
-    return np.array([[0.5 * (mz[us(p, f, 0)] + mz[us(p, f, 1)]) for f in (0, 1)] for p in range(planes)]).ravel()
+    nom = np.array([[np.float32((nominal_straw_z(geom, p, f, 0) + nominal_straw_z(geom, p, f, 1)) / 2.) for f in (0, 1)]
+                    for p in range(planes)]).ravel()
+    aligned = np.array([[0.5 * (mz[us(p, f, 0)] + mz[us(p, f, 1)]) for f in (0, 1)] for p in range(planes)]).ravel()
+    if np.max(np.abs(nom - aligned)) > ALIGNED_TOLERANCE:
+        raise ValueError(f"nominal face z differs from the aligned straws by up to {np.max(np.abs(nom - aligned)):.3f} mm: "
+                         "the tracker geometry is not the dump's")
+    return nom.astype(np.float64)
 
 
 def _circle_lsq(x, y, w):
