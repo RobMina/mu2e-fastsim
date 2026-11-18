@@ -618,14 +618,6 @@ def _merge(h, ok, mask, chi, ms):
     return alive
 
 
-def _expected_faces(nmax):
-    """HelixTool's `float expected_faces(1e-6); ... ++expected_faces;` after k faces, k = 0..nmax."""
-    t = [np.float32(1e-6)]
-    for _ in range(nmax):
-        t.append(np.float32(t[-1] + np.float32(1)))
-    return np.asarray(t, np.float32)
-
-
 def _event(h, per, idx, s, ms, fz):
     """One event: panel hits h (each [H], collection order) and the finder results of its clusters `per`
     [C, niter, ...] on the cluster slots idx [C, L] -> merged helix seeds [M] with the HelixFilter / KalSeedFilter
@@ -663,9 +655,9 @@ def _event(h, per, idx, s, ms, fz):
     px = rh["ccx"][:, None] + _m(R[:, None], _f(jnp.cos(_d(az))))
     py = rh["ccy"][:, None] + _m(R[:, None], _f(jnp.sin(_d(az))))
     rf = jnp.sqrt(_m(px, px) + _m(py, py))
-    from .helix import TRACKER_RIN, TRACKER_ROUT
+    from .helix import TRACKER_RIN, TRACKER_ROUT, expected_faces
     nface = jnp.sum(~(rf < TRACKER_RIN) & ~(rf > TRACKER_ROUT), axis=1)
-    expected = jnp.asarray(_expected_faces(len(fz)))[nface]
+    expected = jnp.asarray(expected_faces(len(fz)))[nface]
     n = seeds["ok"].shape[0]
     return {"ok": alive, "helicity": jnp.concatenate([jnp.ones(n, F32), -jnp.ones(n, F32)]),
             "R": R, "rcent": rh["rcent"], "fcent": rh["fcent"], "lambda": lam,

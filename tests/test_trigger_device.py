@@ -199,6 +199,19 @@ def test_panel_combine_matches_the_stock_arithmetic():
     assert multi > 20
 
 
+def test_hit_ratio_uses_the_stock_float_face_count():
+    """HelixTool counts the expected faces in float from 1e-6 and divides the int straw-hit count by it in float; at an
+    exact ratio (16 of 40 faces, 12 of 30) the result is the float 0.4, which passes HelixFilter's double cut 0.4. A
+    double count (1e-6 + 40) would give 0.39999999 and fail it."""
+    from trigger.device.helix import expected_faces
+    t = expected_faces(72)
+    assert t.dtype == np.float32 and t.size == 73 and abs(float(t[40]) - 40.0) < 1e-5
+    for nsh, n in ((16, 40), (12, 30), (14, 35)):
+        r = np.float32(nsh) / t[n]
+        assert r == np.float32(0.4) and float(r) >= 0.4
+    assert 16 / (1e-6 + 40) < 0.4
+
+
 def test_nominal_face_z():
     """HelixTool's face z on the nominal tracker (TrackerMaker): 36 planes, two faces each, the pattern repeating every
     two stations (348 mm); a geometry that is not the conditions' is refused."""

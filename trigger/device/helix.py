@@ -48,6 +48,15 @@ TRACKER_GEOM = {"nstations": 18, "planeSpacing": 174.0, "planeHalfSeparation": 2
 ALIGNED_TOLERANCE = 5.0      # mm: largest |nominal - aligned| face z accepted (catches a geometry that is not the dump's)
 
 
+def expected_faces(nmax):
+    """HelixTool's `float expected_faces(1e-6); ... ++expected_faces;` after k faces, k = 0..nmax (float32). The hit
+    ratio is then `int nStrawHits / expected_faces` in float, which HelixFilter compares with its double cut."""
+    t = [np.float32(1e-6)]
+    for _ in range(nmax):
+        t.append(np.float32(t[-1] + np.float32(1)))
+    return np.asarray(t, np.float32)
+
+
 def nominal_straw_z(geom, plane, panel, layer):
     """z of a straw midpoint in the nominal tracker, as TrackerMaker::makeStraws / makeLayer compute it."""
     g = geom
@@ -220,12 +229,13 @@ def _phiz(hit, s, lam_sign, fz, circle, width=None):
     # expected faces (HelixTool::hitRatio)
     phf = fz0 + fz * invl
     rf = jnp.hypot(cx + R * jnp.cos(phf), cy + R * jnp.sin(phf))
-    expected = 1e-6 + jnp.sum((rf >= TRACKER_RIN) & (rf <= TRACKER_ROUT))
+    nface = jnp.sum((rf >= TRACKER_RIN) & (rf <= TRACKER_ROUT))
+    hitratio = (nstraw.astype(jnp.float32) / jnp.asarray(expected_faces(fz.shape[-1]))[nface]).astype(nstraw.dtype)
     ok = (nstraw >= s["minnsh"]) & (R >= s["minR"]) & (R <= s["maxR"]) & (rcent >= s["minCR"]) & (rcent <= s["maxCR"]) & \
         (jnp.abs(lam) >= s["minabsl"]) & (jnp.abs(lam) <= s["maxabsl"]) & jnp.isfinite(lam) & jnp.isfinite(R)
     return {"ok": ok, "helicity": jnp.sign(lam), "R": R, "rcent": rcent, "fcent": jnp.arctan2(cy, cx), "lambda": lam,
             "p": MM2MEV * jnp.sqrt(R * R + lam * lam), "pt": MM2MEV * R, "d0": rcent - R, "chi2xy": chi2xy,
-            "chi2zphi": chi2zphi, "nsh": nstraw, "nloops": nloops, "hitratio": nstraw / expected,
+            "chi2zphi": chi2zphi, "nsh": nstraw, "nloops": nloops, "hitratio": hitratio,
             "tandip": jnp.abs(lam) / R}
 
 
