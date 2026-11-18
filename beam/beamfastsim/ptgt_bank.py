@@ -101,6 +101,9 @@ def build(d):
     if not filled.all():
         missing = [(G4NAME[P.SPECIES[i]], mats[j], int(k)) for i, j, k in zip(*np.nonzero(~filled))]
         raise ValueError(f"cells without cross sections: {missing[:5]} ... ({len(missing)})")
+    charged = np.asarray([sp != 2112 for sp in P.SPECIES])
+    if np.any(cells["dedx"][charged] <= 0):
+        raise ValueError("charged species with zero stopping power: xs files made with the EM processes inactive?")
     icdf = np.ones(shape + (P.N_EL,))
     u = np.linspace(0.0, 1.0, P.N_EL)
     for key, chunks in el_samples.items():

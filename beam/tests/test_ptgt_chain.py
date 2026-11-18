@@ -122,7 +122,8 @@ def test_bank_builder_round_trip(tmp_path):
               open(d / "grid.json", "w"))
     for sp in PB.G4NAME.values():
         with open(d / f"xs_{sp}_G4_W_b0.txt", "w") as f:
-            f.write("# test\n0 0.5 0.01 0.002 1.5 3.5\n1 1.5 0.02 0.003 2.5 3.5\n")
+            dedx = (0.0, 0.0) if sp == "neutron" else (1.5, 2.5)
+            f.write(f"# test\n0 0.5 0.01 0.002 {dedx[0]} 3.5\n1 1.5 0.02 0.003 {dedx[1]} 3.5\n")
     _write_inel(d / "inel_proton_G4_W_b0_s1.bin",
                 [(1, 30.0, 4.0, 0.5, [(211, 1.0, 2.0, 3.0), (2112, 0.0, 0.0, 300.0)]), (0, 5.0, 1.0, 0.0, [])])
     _write_inel(d / "inel_pi-_G4_W_b1_s1.bin", [(0, 40.0, 2.0, 0.0, [(-211, 0.0, 1.0, 9.0)])])
@@ -180,3 +181,15 @@ def test_decay_without_charged_daughters_returns_integer_parents():
     rng = np.random.default_rng(9)
     d = C.decay(np.array([2212]), np.zeros((1, 3)), np.array([[0.0, 0.0, 1.0]]), np.array([100.0]), np.zeros(1), rng)
     assert d["parent"].dtype.kind == "i" and d["pdg"].dtype.kind == "i" and d["x"].shape == (0, 3)
+
+
+def test_bank_builder_refuses_zero_stopping_power(tmp_path):
+    d = tmp_path / "camp"
+    d.mkdir()
+    json.dump(dict(log10_ke_edges=[0.0, 1.0], materials=list(MATS)), open(d / "grid.json", "w"))
+    for sp in PB.G4NAME.values():
+        with open(d / f"xs_{sp}_G4_W_b0.txt", "w") as f:
+            f.write("0 0.5 0.01 0.002 0.0 3.5\n")
+    _write_inel(d / "inel_proton_G4_W_b0_s1.bin", [(0, 5.0, 1.0, 0.0, [])])
+    with pytest.raises(ValueError, match="stopping power"):
+        PB.build(str(d))
