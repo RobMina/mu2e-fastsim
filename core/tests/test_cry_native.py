@@ -39,7 +39,8 @@ def fake(tmp_path, monkeypatch):
     for h in (0, 2100, 11300):
         (tmp_path / f"cosmics_{h}.data").write_text("test fixture")
     lib = FakeLibrary()
-    monkeypatch.setattr(cry, "_library", lambda _: lib)
+    import cryjax.native
+    monkeypatch.setattr(cryjax.native, "_library", lambda _: lib)
     return tmp_path, lib
 
 
