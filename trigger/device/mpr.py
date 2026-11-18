@@ -5,8 +5,9 @@ A port of the stock finder per time cluster, at the trigger's settings: no calor
 Each stock expression is evaluated in its own precision and operation order, in both precisions of the chain:
 
 - float where the stock code computes in float, double where a C++ double literal or a double function promotes it
-  (`1.0 - x`, `1.0 / res2`, `/ 6.283185`, `n * 6.283185`, `+ M_PI`, `lambda * 2. * M_PI`, cos and sin of the helix
-  centre and positions, LsqSums4): the module traces under `jax.enable_x64`, so float64 is there in both precisions;
+  (`1.0 - x`, `1.0 / res2`, `/ 6.283185`, `n * 6.283185`, `+ M_PI`, `lambda * 2. * M_PI`, circleAzimuth, LsqSums4):
+  the module traces under `jax.enable_x64`, so float64 is there in both precisions; RobustHelix's cos and sin of a
+  float are the float overloads (the correctly rounded value);
 - every product is rounded on its own before it is added (`_m`): XLA contracts a * b + c into one fused multiply-add,
   which the stock build does not;
 - the hits of a time cluster are in the stock TimeCluster order (index order, recovered hits appended in the order
@@ -588,12 +589,12 @@ def _lsq_chi2_circle(x, y, w):
 
 def _robust(hx):
     """RobustHelix of a finder helix: rcent, fcent (polyAtan2), radius, lambda, fz0, and its centre as stock rebuilds
-    it (float _rcent * double cos(_fcent))."""
+    it (float _rcent * cos(float _fcent), all float)."""
     rcent = jnp.sqrt(_m(hx["cx"], hx["cx"]) + _m(hx["cy"], hx["cy"]))
     fcent = poly_atan2(hx["cy"], hx["cx"])
     fa = jnp.where(hx["fa"] != 0, hx["fa"], np.float32(1))
     return {"rcent": rcent, "fcent": fcent, "R": hx["r"], "lambda": hx["fa"], "fz0": -hx["fb"] / fa,
-            "ccx": _f(_m(_d(rcent), jnp.cos(_d(fcent)))), "ccy": _f(_m(_d(rcent), jnp.sin(_d(fcent))))}
+            "ccx": _m(rcent, _f(jnp.cos(_d(fcent)))), "ccy": _m(rcent, _f(jnp.sin(_d(fcent))))}
 
 
 def _merge_chi2(hs, rh, ms):
@@ -691,8 +692,8 @@ def _event(h, per, idx, s, ms, fz):
     lam_d = jnp.where(lam != 0, _d(lam), 1.0)
     az = jnp.where(lam[:, None] != 0, _f(_d(rh["fz0"])[:, None] + _d(jnp.asarray(fz, F32))[None, :] / lam_d[:, None]),
                    np.float32(0))
-    px = _f(_d(rh["ccx"])[:, None] + _m(_d(R)[:, None], jnp.cos(_d(az))))
-    py = _f(_d(rh["ccy"])[:, None] + _m(_d(R)[:, None], jnp.sin(_d(az))))
+    px = rh["ccx"][:, None] + _m(R[:, None], _f(jnp.cos(_d(az))))
+    py = rh["ccy"][:, None] + _m(R[:, None], _f(jnp.sin(_d(az))))
     rf = jnp.sqrt(_m(px, px) + _m(py, py))
     from .helix import TRACKER_RIN, TRACKER_ROUT
     nface = jnp.sum(~(rf < TRACKER_RIN) & ~(rf > TRACKER_ROUT), axis=1)
