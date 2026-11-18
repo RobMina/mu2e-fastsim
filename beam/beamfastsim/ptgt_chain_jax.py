@@ -336,6 +336,15 @@ def _step(S, cfg, carry, key):
     n_emit = (n_sec + n_dec).astype(jnp.int64)
     E_CAP = emit[0].shape[0]
     M = cfg_emit_per_step(N)
+    # lanes whose emissions do not fit this step's budget are deferred: they keep their pre-step state and take the
+    # step again (exact: only the order of steps changes)
+    budget = jnp.minimum(M, E_CAP - ecount)
+    defer = (n_emit > 0) & (jnp.cumsum(n_emit) > budget)
+    n_emit = jnp.where(defer, 0, n_emit)
+    n_sec = jnp.where(defer, 0, n_sec)
+    inel = inel & ~defer
+    dec_had = dec_had & ~defer
+    alive_new = jnp.where(defer, L.alive, alive_new)
     tot = jnp.sum(n_emit)
     lane = jnp.repeat(jnp.arange(N), n_emit, total_repeat_length=M)
     start = jnp.cumsum(n_emit) - n_emit
@@ -405,7 +414,10 @@ def _step(S, cfg, carry, key):
     nrec = jnp.sum(rec_ok)
     over_r = jnp.maximum(rcount + nrec - R_CAP, 0)
     rcount = jnp.minimum(rcount + nrec, R_CAP)
-    cnt = cnt + jnp.stack([jnp.sum(inel), jnp.sum(el), jnp.sum(stop), jnp.sum(dec_had), jnp.sum(ab), jnp.sum(upstream),
+    keep_old = lambda new, old: jnp.where(defer.reshape((-1,) + (1,) * (new.ndim - 1)), old, new)
+    x_new, u_new, p_new, t_new = keep_old(x_new, L.x), keep_old(u_new, L.u), keep_old(p_new, L.p), keep_old(t_new, L.t)
+    tau_new, seg_new = keep_old(tau_new, L.tau), keep_old(seg_new, L.seg)
+    cnt = cnt + jnp.stack([jnp.sum(inel), jnp.sum(el & ~defer), jnp.sum(stop), jnp.sum(dec_had), jnp.sum(ab), jnp.sum(upstream),
                            nrec, over_e, over_r]).astype(jnp.int64)
     L = Lanes(alive=alive_new, sp=L.sp, x=x_new, u=u_new, p=p_new, t=t_new, tau=tau_new, seg=seg_new, ev=L.ev)
     return (L, emit, ecount, rec, rcount, cnt)
@@ -423,14 +435,14 @@ COUNTERS = ("inelastic", "elastic", "stopped", "decays", "absorbed", "upstream",
 
 @partial(jax.jit, static_argnums=(1, 3))
 def chunk(S, cfg, carry, steps, key):
-    """Up to `steps` steps; stops early when the emission buffer could overflow in the next step."""
+    """Up to `steps` steps (fewer when every lane is done)."""
     N = carry[0].alive.shape[0]
     M = cfg_emit_per_step(N)
     E_CAP = carry[1][0].shape[0]
 
     def cond(c):
         i, cr = c
-        return (i < steps) & (cr[2] + M <= E_CAP) & jnp.any(cr[0].alive)
+        return (i < steps) & jnp.any(cr[0].alive)        # emissions beyond the buffer are deferred, never lost
 
     def body(c):
         i, cr = c
