@@ -690,6 +690,34 @@ def test_beam_centuple_cancel_stops_both_jobs(tmp_path):
     assert site.state[wj] == "CANCELLED"
 
 
+def test_beam_centuple_cancel_while_the_writer_waits_for_the_prestaged_runtime_submits_nothing(tmp_path):
+    site, ep, kit, streamed, d = _centuple(tmp_path)
+    site.prestaged = False
+    kit.submit("ct1", PC, [], [])
+    j = _start(site, ep, "ct1")
+    kit.status("ct1")
+    site.state[j] = "COMPLETED"
+    assert "prestaged CVMFS runtime" in kit.status("ct1")["message"]
+    n = site.next_id
+    assert kit.cancel("ct1")["state"] == "cancelled"
+    site.prestaged = True                                 # the runtime appears after the cancel
+    st = kit.status("ct1")
+    assert st["state"] == "cancelled" and site.next_id == n and ep.state.get("ct1.w") is None
+    assert not d.ensure_writer("ct1") and site.next_id == n
+    with pytest.raises(ValueError, match="cancelled"):
+        kit.results("ct1")
+
+
+def test_beam_centuple_front_body_is_derived_from_the_edep_body_by_checked_replacements():
+    body = kit_uva.CENT_BODY
+    assert "beamfastsim.centuple missing" in body and "edepana" not in body
+    assert "$CODE/tracker:$CODE," in body and "-m beamfastsim.centuple point" in body
+    with pytest.raises(RuntimeError, match="pattern not found"):
+        kit_uva._swap("abc", "x", "y")
+    with pytest.raises(RuntimeError, match="marker not found"):
+        kit_uva._head("abc", "x")
+
+
 def test_beam_centuple_check_names_the_missing_site_setting(tmp_path, monkeypatch):
     site, ep, kit, streamed = make(tmp_path)
     monkeypatch.delenv("FASTSIMKIT_CENT_DONORS", raising=False)

@@ -462,7 +462,7 @@ class BeamEdepCpuStream(BeamEdepStream):
 # the node needs no /cvmfs) and `centuple finish` (metrics.json). The write stage reads the donor EventNtuple files in
 # place from FASTSIMKIT_CENT_DONORS on the endpoint (an exception to the stream-and-delete rule: the donor set is ~2 GB
 # and lives on the endpoint) and the GPU job's plan from its out/ directory.
-CENT_RESOURCES = Resources(cores=kit_task.CENT_CORES, mem_gb=64, gpus=1, gpu_type="a100", minutes=60)
+CENT_RESOURCES = Resources(cores=kit_task.CENT_CORES, mem_gb=32, gpus=1, gpu_type="a100", minutes=60)  # front step peaks at 15.6 GB (20k CE)
 CENT_WRITER_RESOURCES = Resources(cores=1, mem_gb=8, gpus=0, gpu_type="", minutes=150)  # writer step peaks at 5.7 GB (20k CE)
 CENT_CALO_FILES = ("Sim_crystal.txt", "CsI-waveform-2020-02-12.root", "ReadoutNoise.root", "CsI-propag-2020-07-29.root",
                    "calo_geometry_run1430.npz")
@@ -473,11 +473,28 @@ CENT_LAYOUT = {"shower_library.npz": "shower_library.npz", "edge_library.npz": "
                "trigger__TimeCluster.weights.xml": "trigger/TimeCluster.weights.xml",
                "donor__donor.npz": "donor/donor.npz",
                **{f"calo_response__{f}": f"calo_response/{f}" for f in CENT_CALO_FILES}}
-CENT_BODY = EDEP_BODY.replace('python -c "import beamfastsim.stage, beamfastsim.edepana" || { echo "beamfastsim.edepana missing',
-                              'python -c "import beamfastsim.stage, beamfastsim.centuple" || { echo "beamfastsim.centuple missing')
-CENT_BODY = CENT_BODY.replace("PYTHONPATH=$CODE/core:$CODE/beam:$CODE/calo:$CODE/tracker,",
-                              "PYTHONPATH=$CODE/core:$CODE/beam:$CODE/calo:$CODE/tracker:$CODE,")
-CENT_BODY = CENT_BODY[:CENT_BODY.index("B python -m beamfastsim.edepana point")] + """mkdir -p "$L/data/trigger" "$L/data/donor" "$L/data/calo_response"
+
+
+def _swap(text: str, old: str, new: str) -> str:
+    """text with old replaced by new; raises when old is absent, so a change to the body it derives from fails at
+    import instead of leaving the derived body running the other stage."""
+    if old not in text:
+        raise RuntimeError(f"kit_uva: derived job body: pattern not found: {old[:80]!r}")
+    return text.replace(old, new)
+
+
+def _head(text: str, marker: str) -> str:
+    """text up to marker; raises when marker is absent (as _swap)."""
+    if marker not in text:
+        raise RuntimeError(f"kit_uva: derived job body: marker not found: {marker[:80]!r}")
+    return text[:text.index(marker)]
+
+
+CENT_BODY = _swap(EDEP_BODY, 'python -c "import beamfastsim.stage, beamfastsim.edepana" || { echo "beamfastsim.edepana missing',
+                  'python -c "import beamfastsim.stage, beamfastsim.centuple" || { echo "beamfastsim.centuple missing')
+CENT_BODY = _swap(CENT_BODY, "PYTHONPATH=$CODE/core:$CODE/beam:$CODE/calo:$CODE/tracker,",
+                  "PYTHONPATH=$CODE/core:$CODE/beam:$CODE/calo:$CODE/tracker:$CODE,")
+CENT_BODY = _head(CENT_BODY, "B python -m beamfastsim.edepana point") + """mkdir -p "$L/data/trigger" "$L/data/donor" "$L/data/calo_response"
 @layout@
 B python -m beamfastsim.centuple point --g4 "$L/g4ref.npz" --z-up @zup@ @geomarg@ --data "$L/data" --muons @muons@ \\
   --electrons @electrons@ --seed @seed@ --dtype @dtype@ --writer none --out "$M2FS_OUT" > "$M2FS_OUT/point.txt" 2>&1 || { tail -20 "$M2FS_OUT/point.txt"; exit 6; }
@@ -579,6 +596,8 @@ class BeamCentupleStream(BeamPointStream):
         with submission_lock(self.dir / ".streams", name + self.WRITER):
             if self._has(name, "writer"):
                 return True
+            if self._has(name, "cancelled"):            # cancelled while it waited: never submit
+                return False
             if not self.prestaged():
                 return False
             body = self.writer_body(name)
@@ -601,6 +620,8 @@ class BeamCentupleStream(BeamPointStream):
 
     def status(self, name) -> Dict[str, Any]:
         from mu2efastsim.endpoints.kit import POLL_MS
+        if self._has(name, "cancelled"):
+            return {"state": "cancelled", "message": "cancelled", "poll_ms": 0, "progress": None}
         front = super().status(name)
         if front["state"] != "completed":
             if front["state"] == "working":
@@ -624,6 +645,8 @@ class BeamCentupleStream(BeamPointStream):
         """The EventNtuple file as a FileRef (kind "root"); metrics from the write stage's `finish`. The writer's out/
         is fetched next to the front job's and its files are copied into the front job's out/ (whose manifest and
         geometry evidence the kit verifies)."""
+        if self._has(name, "cancelled"):
+            raise ValueError(f"fastsimkit: {name!r} is cancelled, not completed")
         s = self.ep.status(name)
         if s.state != "completed":
             raise ValueError(f"fastsimkit: {name!r} is {s.state}, not completed")
@@ -648,7 +671,15 @@ class BeamCentupleStream(BeamPointStream):
         return r
 
     def cancel(self, name) -> Dict[str, Any]:
-        state = self.ep.cancel(name)
-        if self._has(name, "writer"):
-            self.ep.cancel(name + self.WRITER)
+        """Stop the point: the front job if it runs, the writer if it was submitted. A point whose front has completed
+        and whose writer has not been submitted yet (it waits for the prestaged runtime) is cancelled by its mark, which
+        ensure_writer honours under the same lock, so a later status() never submits the writer."""
+        with submission_lock(self.dir / ".streams", name + self.WRITER):
+            front = self.ep.cancel(name)
+            if self._has(name, "writer"):
+                state = self.ep.cancel(name + self.WRITER)
+            else:
+                state = "cancelled" if front in ("cancelled", "completed") else front
+            if state == "cancelled":
+                self._mark(name, "cancelled")
         return {"state": state}
