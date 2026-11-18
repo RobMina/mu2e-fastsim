@@ -77,6 +77,8 @@ def validate(params: Dict[str, Any], task: str = "beam_point") -> Dict[str, Any]
     from mu2efastsim.endpoints.parameters import validate as validate_parameters
     if task in ("beam_edep", "beam_edep_cpu"):
         return validate_parameters(task, params, kit_task.EDEP_PARAMS, {"dtype": "float64"})
+    if task == "beam_centuple":
+        return validate_parameters(task, params, kit_task.CENT_PARAMS, {"dtype": "float64"})
     return validate_parameters(task, params, kit_task.SOB_PARAMS if task == "beam_sob" else kit_task.PARAMS)
 
 
@@ -302,7 +304,10 @@ class BeamPointStream:
         s = self.ep.status(name)
         if s.state != "completed":
             raise ValueError(f"fastsimkit: {name!r} is {s.state}, not completed")
-        files = self.ep.fetch(name, self.kit.out_root)
+        return self._assemble(name, s, self.ep.fetch(name, self.kit.out_root))
+
+    def _assemble(self, name, s, files) -> Dict[str, Any]:
+        """The result of a completed job whose out/ is fetched to <out_root>/<name>/out (files: the fetched files)."""
         out = Path(self.kit.out_root) / name / "out"
         if not (out / "cleanup.txt").exists():
             raise ValueError(f"fastsimkit: {name!r} staged Mu2e-internal inputs but wrote no cleanup record")
@@ -441,3 +446,188 @@ class BeamEdepCpuStream(BeamEdepStream):
         super().__init__(kit, **kw)
         self.BODY = EDEP_CPU_BODY.replace("@zup@", str(kit_task.SOB_Z_UP)).replace(
             "@cores@", str(EDEP_CPU_RESOURCES.cores))
+
+
+# beam_centuple on the streaming route: two Slurm jobs per point. The GPU job (in the image) streams the beam table and
+# the centuple inputs into tmpfs and runs `centuple point --writer none` (stops, CE births, record, trigger, assemble);
+# the kit then submits the write stage as a one-core CPU job, `<name>.w`, which runs `centuple write` in the stock
+# release's Mu2e environment (mu2e_env.sh -> container/offline/offline_uva.sh: cvmfsexec + the FNAL worker image, so
+# the node needs no /cvmfs) and `centuple finish` (metrics.json). The write stage reads the donor EventNtuple files in
+# place from FASTSIMKIT_CENT_DONORS on the endpoint (an exception to the stream-and-delete rule: the donor set is ~2 GB
+# and lives on the endpoint) and the GPU job's plan from its out/ directory.
+CENT_RESOURCES = Resources(cores=kit_task.CENT_CORES, mem_gb=64, gpus=1, gpu_type="a100", minutes=60)
+CENT_WRITER_RESOURCES = Resources(cores=1, mem_gb=16, gpus=0, gpu_type="", minutes=150)
+CENT_CALO_FILES = ("Sim_crystal.txt", "CsI-waveform-2020-02-12.root", "ReadoutNoise.root", "CsI-propag-2020-07-29.root",
+                   "calo_geometry_run1430.npz")
+# streamed name (flat in tmpfs) -> path under the point's data directory (beamfastsim.centuple.__main__.DATA)
+CENT_LAYOUT = {"shower_library.npz": "shower_library.npz", "edge_library.npz": "edge_library.npz",
+               "tracker.gdml": "tracker.gdml", "digicond_onspill.npz": "digicond_onspill.npz",
+               "trigger__replay.fcl": "trigger/replay.fcl", "trigger__trgdump.root": "trigger/trgdump.root",
+               "trigger__TimeCluster.weights.xml": "trigger/TimeCluster.weights.xml",
+               "donor__donor.npz": "donor/donor.npz",
+               **{f"calo_response__{f}": f"calo_response/{f}" for f in CENT_CALO_FILES}}
+CENT_BODY = EDEP_BODY.replace('python -c "import beamfastsim.stage, beamfastsim.edepana" || { echo "beamfastsim.edepana missing',
+                              'python -c "import beamfastsim.stage, beamfastsim.centuple" || { echo "beamfastsim.centuple missing')
+CENT_BODY = CENT_BODY.replace("PYTHONPATH=$CODE/core:$CODE/beam:$CODE/calo:$CODE/tracker,",
+                              "PYTHONPATH=$CODE/core:$CODE/beam:$CODE/calo:$CODE/tracker:$CODE,")
+CENT_BODY = CENT_BODY[:CENT_BODY.index("B python -m beamfastsim.edepana point")] + """mkdir -p "$L/data/trigger" "$L/data/donor" "$L/data/calo_response"
+@layout@
+B python -m beamfastsim.centuple point --g4 "$L/g4ref.npz" --z-up @zup@ @geomarg@ --data "$L/data" --muons @muons@ \\
+  --electrons @electrons@ --seed @seed@ --dtype @dtype@ --writer none --out "$M2FS_OUT" > "$M2FS_OUT/point.txt" 2>&1 || { tail -20 "$M2FS_OUT/point.txt"; exit 6; }
+tail -c 300 "$M2FS_OUT/point.txt"
+"""
+CENT_WRITER_BODY = """module load apptainer >/dev/null 2>&1
+M2FS_OUT=$(readlink -f "$M2FS_OUT")
+CODE=@code@
+G=$(readlink -f "$(dirname "$(dirname "$M2FS_OUT")")/@front@/out")
+DON=$(readlink -f @donors@)
+echo "host $(hostname) job ${SLURM_JOB_ID:-none} cpus ${SLURM_CPUS_PER_TASK:-?} out $M2FS_OUT front $G"
+[ -f "$G/centuple_point.json" ] || { echo "no centuple_point.json in $G"; exit 3; }
+[ -d "$DON" ] || { echo "no donor directory $DON"; exit 3; }
+# plan, generated count and the donor files (names resolved under $DON) from the front stage's record
+ARGS=$(python3 - "$G/centuple_point.json" "$DON" <<'PY'
+import json, os, sys
+rec, root = json.load(open(sys.argv[1])), sys.argv[2]
+found = {}
+for d, _, fs in os.walk(root, followlinks=True):
+    for f in fs:
+        found.setdefault(f, os.path.join(d, f))
+missing = [f for f in rec["donor_files"] if f not in found]
+if missing:
+    sys.exit("missing donor files under %s: %s" % (root, missing[:5]))
+print(rec["plan"], rec["n_generated"], " ".join(os.path.realpath(found[f]) for f in rec["donor_files"]))
+PY
+) || exit 3
+read -r PLAN NGEN FILES <<< "$ARGS"
+cd "$M2FS_OUT"
+tw=$SECONDS
+CVMFSEXEC_DIST=@cvmfsexec@ OFFLINE_BINDS="$G,$DON" OFFLINE_LOG_PREFIX=centuple_write \\
+CENTUPLE_PYTHONPATH="$CODE/core:$CODE/beam:$CODE/calo:$CODE/tracker:$CODE" \\
+  bash "$CODE/beam/beamfastsim/centuple/mu2e_env.sh" python3 -m beamfastsim.centuple write --plan "$G/$PLAN" \\
+  --donor-files $FILES --out "$M2FS_OUT/@file@" --n-generated "$NGEN" > "$M2FS_OUT/write.txt" 2>&1 || { tail -20 "$M2FS_OUT/write.txt"; exit 6; }
+WS=$((SECONDS-tw))
+apptainer exec --cleanenv --env "JAX_PLATFORMS=cpu,PYTHONDONTWRITEBYTECODE=1,PYTHONPATH=$CODE/core:$CODE/beam" \\
+  -B "$G" -B "$M2FS_OUT" -B "$CODE" --pwd "$CODE" @sif@ python -m beamfastsim.centuple finish \\
+  --point "$G/centuple_point.json" --file "$M2FS_OUT/@file@" --out "$M2FS_OUT" --writer-s "$WS" \\
+  > "$M2FS_OUT/finish.txt" 2>&1 || { tail -20 "$M2FS_OUT/finish.txt"; exit 7; }
+tail -c 300 "$M2FS_OUT/finish.txt"
+"""
+
+
+class BeamCentupleStream(BeamPointStream):
+    """beam_centuple (beamfastsim.centuple point) on the streaming route: a GPU job for the front stages (inputs streamed
+    in, deleted at exit), then a one-core CPU job `<name>.w` for the EventNtuple writer in the Mu2e environment through
+    cvmfsexec. Its EventNtuple file comes back with the results (kind "root").
+
+    Site settings: FASTSIMKIT_CENT_DONORS (endpoint directory holding the donor EventNtuple files named in the donor
+    library, searched recursively; required), CVMFSEXEC_DIST (endpoint path of a prepared cvmfsexec tree; required)."""
+    TASK = "beam_centuple"
+    TABLE = kit_task.SOB_TABLE
+    RESOURCES = CENT_RESOURCES
+    WRITER = ".w"
+
+    def __init__(self, kit, donors=None, cvmfsexec=None, **kw):
+        super().__init__(kit, **kw)
+        layout = "\n".join(f'ln -s "$L/{k}" "$L/data/{v}"' for k, v in CENT_LAYOUT.items())
+        self.BODY = CENT_BODY.replace("@zup@", str(kit_task.SOB_Z_UP)).replace(
+            "@cores@", str(CENT_RESOURCES.cores)).replace("@layout@", layout)
+        self._donors, self._cvmfsexec = donors, cvmfsexec
+
+    @property
+    def donors(self):
+        return self._donors or site.require("FASTSIMKIT_CENT_DONORS")
+
+    @property
+    def cvmfsexec(self):
+        return self._cvmfsexec or site.require("CVMFSEXEC_DIST")
+
+    @classmethod
+    def inputs(cls, p) -> Dict[str, str]:
+        out = super().inputs(p)
+        out.update({f"{kit_task.CENT_DIR}/{v}": k for k, v in CENT_LAYOUT.items()})
+        return out
+
+    def writer_body(self, name) -> str:
+        rec = self._rec(name)
+        man = rec.get("manifest") if rec else None
+        subs = {"code": shlex.quote(man["code"]["path"] if man else self.code),
+                "sif": shlex.quote(man["image"]["path"] if man else self.kit.sif),
+                "front": shlex.quote(name), "donors": shlex.quote(self.donors),
+                "cvmfsexec": shlex.quote(self.cvmfsexec), "file": kit_task.CENT_FILE}
+        body = CENT_WRITER_BODY
+        for a, b in subs.items():
+            body = body.replace(f"@{a}@", b)
+        return body
+
+    def ensure_writer(self, name):
+        """Submit the write stage once the front job has completed (idempotent, under the stream lock)."""
+        with submission_lock(self.dir / ".streams", name + self.WRITER):
+            if self._has(name, "writer"):
+                return
+            body = self.writer_body(name)
+            try:
+                job = self.ep.submit(name + self.WRITER, body, CENT_WRITER_RESOURCES)
+            except EndpointError as e:
+                self._mark(name, "writererr", str(e))
+                raise ValueError(str(e)) from e
+            self._mark(name, "writer", str(getattr(job, "job_id", "")))
+
+    def check(self, name, params) -> Dict[str, Any]:
+        r = super().check(name, params)
+        if r["ok"]:
+            try:
+                self.donors, self.cvmfsexec   # noqa: B018 (site settings the write stage needs)
+            except site.SiteConfigError as e:
+                return {"ok": False, "message": str(e)}
+        return r
+
+    def status(self, name) -> Dict[str, Any]:
+        from mu2efastsim.endpoints.kit import POLL_MS
+        front = super().status(name)
+        if front["state"] != "completed":
+            if front["state"] == "working":
+                front["message"] = "front: " + front["message"]
+            return front
+        if self._has(name, "writererr"):
+            return {"state": "failed", "message": "writer submit failed: " + (self.dir / f"{name}.writererr").read_text()[:200],
+                    "poll_ms": 0, "progress": None}
+        try:
+            self.ensure_writer(name)
+        except ValueError as e:
+            return {"state": "failed", "message": f"writer submit failed: {e}", "poll_ms": 0, "progress": None}
+        w = self.ep.status(name + self.WRITER)
+        return {"state": w.state, "message": f"writer: {w.site_state} {w.message}".strip(),
+                "poll_ms": POLL_MS if w.state == "working" else 0, "progress": None}
+
+    def results(self, name) -> Dict[str, Any]:
+        """The EventNtuple file as a FileRef (kind "root"); metrics from the write stage's `finish`. The writer's out/
+        is fetched next to the front job's and its files are copied into the front job's out/ (whose manifest and
+        geometry evidence the kit verifies)."""
+        s = self.ep.status(name)
+        if s.state != "completed":
+            raise ValueError(f"fastsimkit: {name!r} is {s.state}, not completed")
+        w = self.ep.status(name + self.WRITER)
+        if w.state != "completed":
+            raise ValueError(f"fastsimkit: {name!r} write stage is {w.state}, not completed")
+        files = self.ep.fetch(name, self.kit.out_root)          # the front first: its out/ has the beam metrics.json
+        wfiles = self.ep.fetch(name + self.WRITER, self.kit.out_root)
+        out = Path(self.kit.out_root) / name / "out"
+        wout = Path(self.kit.out_root) / (name + self.WRITER) / "out"
+        import shutil
+        for f in wfiles:                                          # then the writer's (EventNtuple, metrics.json) over it
+            if f.parent == wout:
+                shutil.copy2(f, out / f.name)
+        r = self._assemble(name, s, sorted(set(files) | {out / f.name for f in wfiles if f.parent == wout}))
+        nts = out / kit_task.CENT_FILE
+        if not nts.exists():
+            raise ValueError(f"fastsimkit: {name!r} wrote no {kit_task.CENT_FILE}")
+        r["metadata"]["text_files"] = [f["name"] for f in r["files"]]
+        r["metadata"]["writer_job_id"] = w.job_id
+        r["files"] = [{"name": nts.name, "uri": nts.resolve().as_uri(), "kind": "root"}]
+        return r
+
+    def cancel(self, name) -> Dict[str, Any]:
+        state = self.ep.cancel(name)
+        if self._has(name, "writer"):
+            self.ep.cancel(name + self.WRITER)
+        return {"state": state}

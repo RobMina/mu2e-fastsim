@@ -273,3 +273,51 @@ def test_trigger_table_accepts_decisions_without_a_response_layer():
         assert A._no_response_layer(r)
     for r in ("ce", "dio", "rpc", "/x/response_v3.json"):
         assert not A._no_response_layer(r)
+
+
+def test_finish_merges_the_front_record_with_the_written_file(tmp_path, monkeypatch):
+    """point --writer none records the front stage; `finish` adds the written file's ce_chain counts (metrics.json)."""
+    from beamfastsim.centuple import __main__ as M
+    rec = {"plan": "centuple_plan.npz", "donor_files": ["nts.a.root"], "n_generated": 2000,
+           "partial": {"n_generated": 2000.0, "births": 1990.0, "beam_s": 60.0, "front_s": 300.0,
+                       "electrons_per_s": 8.3, "stops_per_pot": 1.2e-3, "class_Q": 1500.0}}
+    (tmp_path / M.POINT_RECORD).write_text(json.dumps(rec))
+    seen = {}
+
+    def fake_summary(path):
+        seen["path"] = path
+        return {"n_events": 1800.0, "n_selected": 1700.0, "n_triggered": 1650.0, "efficiency": 1650 / 1700}
+
+    monkeypatch.setattr(M, "summary", fake_summary)
+    M.main(["finish", "--point", str(tmp_path / M.POINT_RECORD), "--file", str(tmp_path / M.FILE),
+            "--out", str(tmp_path), "--writer-s", "2400"])
+    m = json.loads((tmp_path / "metrics.json").read_text())
+    assert seen["path"] == str(tmp_path / M.FILE)
+    assert m["n_selected"] == 1700.0 and m["births"] == 1990.0 and m["class_Q"] == 1500.0
+    assert m["wall_s"] == 2700.0 and m["writer_s"] == 2400.0 and m["front_s"] == 300.0
+    assert all(isinstance(v, float) for v in m.values())
+
+
+def test_point_writer_option_defaults_to_inline():
+    """The mounted route (kit body without --writer) keeps writing the file in the same process."""
+    from beamfastsim.centuple import __main__ as M
+    import argparse
+    seen = {}
+
+    def grab(a):
+        seen["writer"] = a.writer
+
+    real = argparse.ArgumentParser.parse_args
+
+    def parse(self, argv=None, namespace=None):
+        a = real(self, argv, namespace)
+        if getattr(a, "cmd", None) == "point":
+            a.fn = grab
+        return a
+
+    import unittest.mock as um
+    with um.patch.object(argparse.ArgumentParser, "parse_args", parse):
+        M.main(["point", "--g4", "g.npz", "--data", "d", "--out", "o"])
+        assert seen["writer"] == "inline"
+        M.main(["point", "--g4", "g.npz", "--data", "d", "--out", "o", "--writer", "none"])
+        assert seen["writer"] == "none"
