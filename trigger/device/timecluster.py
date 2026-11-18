@@ -127,7 +127,7 @@ def _cluster(ev, m0, ok0, s, net):
         return mva.evaluate(net, jnp.concatenate([d[:, None], dphi[:, None], feats_static], -1)), d, dphi
 
     def remove(c, i):
-        m, nsh, t0, t0err, p = c
+        m, nsh, t0, t0err, p = c[:5]
         ni = nsh_i[i].astype(F32)
         denom = nsh - ni
         ok = denom > 0
@@ -140,7 +140,7 @@ def _cluster(ev, m0, ok0, s, net):
         return (m.at[i].set(False), nsh, t0, t0err, p) + tuple(c[5:])
 
     def add(c, i):
-        m, nsh, t0, t0err, p = c
+        m, nsh, t0, t0err, p = c[:5]
         ni = nsh_i[i].astype(F32)
         denom = nsh + ni
         newt0 = (t0 * nsh + cht[i] * ni) / denom

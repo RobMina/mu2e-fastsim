@@ -339,6 +339,41 @@ def test_compact_clusters_and_helices_match_the_one_call_path():
     assert [chain.pair_bucket(n, 64) for n in (0, 16, 17, 32, 33, 64)] == [16, 16, 32, 32, 64, 64]
 
 
+def test_time_cluster_order_key_leaves_the_clusters_unchanged():
+    """timecluster with s["order"] (the TimeCluster hit order the mpr finder reads) gives the same clusters as without
+    it, in the full, compact and pairs paths; the key is the hit index for the peak-assigned hits, above every index
+    for the recovered ones (in the order they were added), and ORDER_NONE for non-members."""
+    pytest.importorskip("jax")
+    import jax
+    import jax.numpy as jnp
+    from trigger.device import chain, timecluster
+    rng = np.random.default_rng(2)
+    net = {"act": "sigmoid", "norm": False, "offset": np.zeros(7, np.float32), "scale": np.ones(7, np.float32),
+           "layers": [rng.normal(0, 0.3, (8, 4)).astype(np.float32), rng.normal(0, 0.3, (5, 1)).astype(np.float32)]}
+    s = {"tmin": 400.0, "tmax": 1800.0, "tbin": 10.0, "ymin": 3.0, "npeak": 1, "maxdt": 30.0, "minnhits": 5,
+         "maxdphi": 2.0, "minkeep": 0.1, "minadd": 0.9, "pitch": 0.6, "prefilter": True, "refine": True,
+         "recover": True}
+    so = {**s, "order": True}
+    ph = {k: jnp.asarray(v) for k, v in _synthetic_panel_hits().items()}
+    H = ph["x"].shape[1]
+    ref = jax.jit(lambda p: timecluster.time_clusters(p, s, net))(ph)
+    full = jax.jit(lambda p: timecluster.time_clusters(p, so, net))(ph)
+    cand = jax.jit(lambda p: timecluster.candidates(p, so))(ph)
+    k = chain.pair_bucket(int(jnp.sum(cand[2])), cand[2].size)
+    comp = jax.jit(lambda c: timecluster.refine_pairs(*c, so, net, k))(cand)
+    pairs = jax.jit(lambda p: timecluster.time_clusters_multi_pairs(p, [so], net, K=ph["x"].shape[0] * 8))(ph)[0]
+    assert "order" not in ref
+    for got in (full, comp, pairs):
+        for key in ("valid", "nsh", "t0", "t0err", "members"):
+            np.testing.assert_array_equal(np.asarray(got[key]), np.asarray(ref[key]))
+        np.testing.assert_array_equal(np.asarray(got["order"]), np.asarray(full["order"]))
+    mem, key = np.asarray(full["members"]), np.asarray(full["order"])
+    assert ((key < timecluster.ORDER_NONE) == mem).all()
+    idx = np.broadcast_to(np.arange(H), key.shape)
+    assert ((key == idx) | (key >= H) | ~mem).all() and (key[mem & (key >= H)] >= H).all()
+    assert mem.any() and (key[mem] >= H).any()                  # the synthetic events recover hits
+
+
 def test_pair_paths_match_the_batched_multi_path():
     """chain pairs path (the default): cluster refinement and helix fits on the gathered (producer, event, slot) pairs
     give the same clusters as the batched multi path and the same helices as the per-set fit, bit for bit where a
