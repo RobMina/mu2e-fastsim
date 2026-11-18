@@ -103,6 +103,17 @@ def _m(*xs):
     return _g(jnp.asarray(p))
 
 
+def _argmax(x, axis=None):
+    """jnp.argmax with int32 indices: under `strict` jnp.argmax asks for int64 ones, and the chain lowers its jit
+    after the x64 context has closed, which lowers the reduction's index type as int32 (a verifier error)."""
+    x = jnp.asarray(x)
+    if axis is None:
+        x, axis = jnp.ravel(x), 0
+    if x.dtype == jnp.bool_:
+        x = x.astype(jnp.int32)
+    return jax.lax.argmax(x, axis % x.ndim, jnp.int32)
+
+
 def _d(x):
     return jnp.asarray(x).astype(F64)
 
@@ -160,7 +171,7 @@ def _first_strict_max(v, mask, start):
     vv = jnp.where(mask, v, -BIG)
     m = jnp.max(vv)
     hit = mask & (vv == m) & (m > start)
-    return jnp.where(jnp.any(hit), jnp.argmax(hit), -1)
+    return jnp.where(jnp.any(hit), _argmax(hit), -1)
 
 
 def _cummax(x):
@@ -214,8 +225,8 @@ def _stock_sort(key, sel):
             a, first, last, _ = st
             ka = key[a]
             cand = (pos >= first) & ~(ka < pk)
-            first = jnp.where(jnp.any(cand), jnp.argmax(cand), L).astype(jnp.int32)
-            last = (L - 1 - jnp.argmax(((pos <= last - 1) & ~(pk < ka))[::-1])).astype(jnp.int32)
+            first = jnp.where(jnp.any(cand), _argmax(cand), L).astype(jnp.int32)
+            last = (L - 1 - _argmax(((pos <= last - 1) & ~(pk < ka))[::-1])).astype(jnp.int32)
             done = ~(first < last)
             a = jnp.where(done, a, swap(a, first, last))
             return a, jnp.where(done, first, first + 1), last, done
@@ -309,7 +320,7 @@ def _circle(h, proc, s):
     """findCircleCandidate: (cx, cy, r, stub mask) of the best circle through processed, non-Compton hit triplets."""
     H = proc.shape[0]
     seed = proc & ~_compton(h, proc, s)
-    first_panel = h["upanel"][jnp.argmax(proc)]
+    first_panel = h["upanel"][_argmax(proc)]
     x, y = h["x"], h["y"]
     r2 = _m(x, x) + _m(y, y)
     jj, kk = jnp.meshgrid(jnp.arange(H), jnp.arange(H), indexing="ij")
@@ -361,7 +372,7 @@ def _init_dzdp(h, cx, cy, mem, hel, s):
     nsteps = int(np.round(np.float32(np.float32(fa_end - fa_init) / s["dpdzstep"])))
     fas = jnp.asarray(np.float32(fa_init) + np.arange(nsteps + 1).astype(np.float32) * s["dpdzstep"], F32)
     jsel = mem & ((jnp.cumsum(mem) - 1) % 2 == 0)
-    i0 = jnp.argmax(mem)
+    i0 = _argmax(mem)
     pos = jnp.arange(H)
 
     def per_fa(fa):
@@ -511,8 +522,8 @@ def _cluster(h, members, s):
         used = used | bm[rank]
         bn = jnp.where(use_pos, pos_n, neg_n)
         z = hp["z"]
-        zfirst = z[jnp.argmax(bm)]
-        zlast = z[H - 1 - jnp.argmax(bm[::-1])]
+        zfirst = z[_argmax(bm)]
+        zlast = z[H - 1 - _argmax(bm[::-1])]
         nshf = hp["nsh"].astype(F32)
         es = _seq_sum(_m(hp["edep"], nshf), bm)
         edep = _f(_d(es) / (_d(jnp.sum(jnp.where(bm, hp["nsh"], 0))) + 1e-10))
@@ -618,7 +629,7 @@ def _merge(h, ok, mask, chi, ms):
 
     def nxt(alive, k):                                   # first alive index > k (n when none)
         cand = alive & (jnp.arange(n) > k)
-        return jnp.where(jnp.any(cand), jnp.argmax(cand), n)
+        return jnp.where(jnp.any(cand), _argmax(cand), n)
 
     def cond(st):
         return st[0] < n

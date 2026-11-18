@@ -363,9 +363,12 @@ def test_time_cluster_order_key_leaves_the_clusters_unchanged():
     comp = jax.jit(lambda c: timecluster.refine_pairs(*c, so, net, k))(cand)
     pairs = jax.jit(lambda p: timecluster.time_clusters_multi_pairs(p, [so], net, K=ph["x"].shape[0] * 8))(ph)[0]
     assert "order" not in ref
+    v = np.asarray(ref["valid"])
     for got in (full, comp, pairs):
-        for key in ("valid", "nsh", "t0", "t0err", "members"):
+        for key in ("valid", "members"):
             np.testing.assert_array_equal(np.asarray(got[key]), np.asarray(ref[key]))
+        for key in ("nsh", "t0", "t0err"):                      # read only where valid
+            np.testing.assert_array_equal(np.asarray(got[key])[v], np.asarray(ref[key])[v])
         np.testing.assert_array_equal(np.asarray(got["order"]), np.asarray(full["order"]))
     mem, key = np.asarray(full["members"]), np.asarray(full["order"])
     assert ((key < timecluster.ORDER_NONE) == mem).all()
