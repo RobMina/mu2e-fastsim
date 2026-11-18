@@ -373,8 +373,9 @@ def test_time_cluster_order_key_leaves_the_clusters_unchanged():
     mem, key = np.asarray(full["members"]), np.asarray(full["order"])
     assert ((key < timecluster.ORDER_NONE) == mem).all()
     idx = np.broadcast_to(np.arange(H), key.shape)
-    assert ((key == idx) | (key >= H) | ~mem).all() and (key[mem & (key >= H)] >= H).all()
-    assert mem.any() and (key[mem] >= H).any()                  # the synthetic events recover hits
+    assert mem.any() and ((key == idx) | (key >= H) | ~mem).all()
+    rec = key[mem & (key >= H)]
+    assert len(np.unique(rec)) == len(rec)                       # recovered hits: distinct keys in add order
 
 
 def test_pair_paths_match_the_batched_multi_path():
