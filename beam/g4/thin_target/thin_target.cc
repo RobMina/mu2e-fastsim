@@ -280,7 +280,9 @@ int main(int argc, char** argv) {
   if (!s.out) { std::cerr << "cannot open " << c.out << "\n"; return 2; }
   for (s.bin = 0; s.bin < c.nbins; ++s.bin) rm->BeamOn(c.events);
   std::fclose(s.out);
+  // A projectile can leave the 1 km world without the selected process (low-energy pi+ below the Coulomb barrier,
+  // elastic at tiny cross sections): those events write nothing; the bank builder zeroes cells without interactions.
   std::cout << "events written " << s.written << " no_interaction " << s.no_interaction << "\n";
   delete rm;
-  return s.written == (long)c.nbins * c.events ? 0 : 4;
+  return s.written + s.no_interaction == (long)c.nbins * c.events ? 0 : 4;
 }

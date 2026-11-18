@@ -109,6 +109,13 @@ def build(d):
     if not tc:
         raise ValueError(f"{d}: no inel files")
     tc, edep, nsec = np.concatenate(tc), np.concatenate(edep), np.concatenate(nsec)
+    # hadron cells without stored interactions (pi+ below the Coulomb barrier, bins below the nucleon cut): sigma_inel
+    # = 0 there, so a lane never draws from an empty cell; counted in the build statistics
+    have = np.bincount(tc, minlength=int(np.prod(shape))).reshape(shape) > 0
+    had = np.isin(np.asarray(P.SPECIES), HADRONS)[:, None, None]
+    zero = had & ~have & (cells["sigma_inel"] > 0)
+    cells["sigma_inel"][zero] = 0.0
+    stats["_cells_zeroed_no_interactions"] = [(G4NAME[P.SPECIES[i]], mats[j], int(k)) for i, j, k in zip(*np.nonzero(zero))]
     pdg, mom = np.concatenate(pdg), np.concatenate(mom)
     off = np.concatenate([[0], np.cumsum(nsec)])
     order = np.argsort(tc, kind="stable")                      # trials sorted by cell, secondaries carried along
