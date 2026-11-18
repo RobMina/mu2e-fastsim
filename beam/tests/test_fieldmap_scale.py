@@ -1,8 +1,10 @@
 """The beam reader (beamfastsim.fieldmap.load) under the opt-in field-map scales of mu2efastsim.bfield_scale."""
 import numpy as np
+import pytest
 
-from beamfastsim import fieldmap
 from mu2efastsim import bfield_scale
+
+fieldmap = pytest.importorskip("beamfastsim.fieldmap")   # needs jax; the no-JAX job skips
 
 
 def write_map(tmp_path, name="DSMap", n=(2, 3, 4)):
