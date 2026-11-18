@@ -78,6 +78,9 @@ def compare(stock, design=M.Design(), ctx=None, cfg=F.FomConfig(), dtype=np.floa
     dg = M.build(design, ctx.counters, yields)
     mu = stock["muons"]
     idx, pos = V.sector_crossings(dg, mu["origin"], mu["direction"], dtype)
+    if cfg.stack_range:                          # crossings the muon reaches through the designed stack
+        keep, _ = V.stack_range(dg, mu["origin"], mu["direction"], mu["p"], idx, pos)
+        idx, pos = idx[keep], pos[keep]
     pe = F.sector_pe(dg, ctx, idx, pos, mu["p"], cfg.optics, dtype).astype(np.float64)
     names = dg.sector_names
     req = F._stock_required(ctx.cuts)
@@ -86,16 +89,24 @@ def compare(stock, design=M.Design(), ctx=None, cfg=F.FomConfig(), dtype=np.floa
     sec_x, lay_x = dg.sector[idx[:, 1]], dg.layer[idx[:, 1]]
     pu, cl = stock["pulses"], stock["clusters"]
     sec_p, lay_p = dg.sector[pu["bar"]], dg.layer[pu["bar"]]
+    # the model's P_coinc per (muon, sector), with the finder cuts when the config has them, combined per event
+    thr_s = np.array([float(design.pe_threshold or ctx.cuts[nm].pe_threshold) for nm in names])
+    k_s = np.array([int(V.required_layers(int(dg.n_layers[s]), req[nm], design.coincidence_layers,
+                                          design.spare_layers)) for s, nm in enumerate(names)])
+    _, (gt, gs, pcm) = V.p_miss(len(mu["p"]), idx[:, 0], sec_x, lay_x, pe, dg.n_layers, thr_s, k_s,
+                                F.finder_config(dg, ctx.cuts, idx[:, 1]) if cfg.finder_cuts else None)
+    miss_es = np.ones((nev, len(names)))
+    np.multiply.at(miss_es, (mu["event"][gt], gs), 1.0 - pcm)
     out = dict(n_events=nev, n_muons=len(mu["p"]), n_crossings=int(len(idx)), dtype=np.dtype(dtype).name,
-               pe_scale=cfg.optics.pe_scale, design=design.as_dict(), sectors={})
+               pe_scale=cfg.optics.pe_scale, design=design.as_dict(), sectors={},
+               finder_cuts=bool(cfg.finder_cuts))
     for s, nm in enumerate(names):
         if sectors and nm not in sectors:
             continue
         xs = sec_x == s
         if not xs.any():
             continue
-        thr = float(design.pe_threshold or ctx.cuts[nm].pe_threshold)
-        k = int(V.required_layers(int(dg.n_layers[s]), req[nm], design.coincidence_layers))
+        thr, k = float(thr_s[s]), int(k_s[s])
         # (event, layer, end) sums, both arms, on the events the model crosses
         fast = np.zeros((nev, nl, 2))
         np.add.at(fast, (ev_x[xs], lay_x[xs]), pe[xs])
@@ -119,7 +130,7 @@ def compare(stock, design=M.Design(), ctx=None, cfg=F.FomConfig(), dtype=np.floa
         p_hit = 1.0 - (1.0 - p_end).prod(2)
         ph = p_hit[rows[:, 0], rows[:, 1]]
         evs = np.unique(ev_x[xs])
-        pc = V.p_coincidence(fast[evs], np.full(len(evs), thr), np.full(len(evs), k))
+        pc = 1.0 - miss_es[evs, s]
         has_cl = np.zeros(nev, bool)
         has_cl[cl["event"][dg.sector[cl["bar"]] == s]] = True
         c_st = has_cl[evs]
@@ -168,14 +179,18 @@ def inefficiency(stock, gen_paths, design=M.Design(), ctx=None, cfg=F.FomConfig(
     sel = np.isin(ek, np.unique(ek[F.proxy_hits(o, d, proxy) & (p > 0)]))
     o, d, p, ek = o[sel], d[sel], p[sel], ek[sel]
     idx, pos = V.sector_crossings(dg, o, d, dtype)
+    if cfg.stack_range:
+        keep, _ = V.stack_range(dg, o, d, p, idx, pos)
+        idx, pos = idx[keep], pos[keep]
     pe = F.sector_pe(dg, ctx, idx, pos, p, cfg.optics, dtype)
     names = dg.sector_names
     req = F._stock_required(ctx.cuts)
     thr0 = np.array([ctx.cuts[nm].pe_threshold for nm in names], np.float64)
     thr = np.full_like(thr0, design.pe_threshold) if design.pe_threshold is not None else thr0
-    k = np.array([V.required_layers(int(dg.n_layers[s]), req[nm], design.coincidence_layers)
+    k = np.array([V.required_layers(int(dg.n_layers[s]), req[nm], design.coincidence_layers, design.spare_layers)
                   for s, nm in enumerate(names)])
-    pm, _ = V.p_miss(len(p), idx[:, 0], dg.sector[idx[:, 1]], dg.layer[idx[:, 1]], pe, dg.n_layers, thr, k)
+    pm, _ = V.p_miss(len(p), idx[:, 0], dg.sector[idx[:, 1]], dg.layer[idx[:, 1]], pe, dg.n_layers, thr, k,
+                     F.finder_config(dg, ctx.cuts, idx[:, 1]) if cfg.finder_cuts else None)
     ue, inv = np.unique(ek, return_inverse=True)
     pm_ev = np.ones(len(ue))
     np.multiply.at(pm_ev, inv, pm)

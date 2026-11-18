@@ -1,7 +1,7 @@
 # Tracker trigger paths on the device
 
-Opt-in JAX evaluation of the tracker trigger paths (tpr and apr families) of the production menu, from StrawDigis
-to per-path decisions, on a GPU or CPU. Nothing in the stock replay (`trigger/replay.py`, `compare.py`) changes.
+Opt-in JAX evaluation of the tracker trigger paths (tpr, apr, mpr and cst families, plus the prescale, digi-count
+and lumi-stream paths) of the production menu, from StrawDigis to per-path decisions, on a GPU or CPU. Nothing in the stock replay (`trigger/replay.py`, `compare.py`) changes.
 
 | Stage | Stock module | Device | Agreement with stock on stock digis |
 |---|---|---|---|
@@ -13,9 +13,62 @@ to per-path decisions, on a GPU or CPU. Nothing in the stock replay (`trigger/re
 | helices | `RobustHelixFinder` (tpr), `AgnosticHelixFinder` (apr) | compact fit with the stock per-face hit selection and chi2 definitions (`helix.py`) | approximation |
 | helix cuts | `HelixFilter` | same cuts, incl. the D0-phi prescale counter on the host | exact given the helix |
 | track fit + cuts | `KalSeedFit` + `KalSeedFilter` | response layer: the filter's cuts on helix quantities and a pass probability per path and process from development shards (shipped, `data/`) | statistical |
+| prescale | `PrescaleEvent` | event number modulo the factor; a mode the module does not configure rejects (`apr_proton`) | exact |
+| straw-digi count | `DigiFilter` (`minBias_SDCount`) | straw digis of the event | exact |
+| lumi stream | `LumiStreamFilter` | event counter per subrun on the host, in event order | exact |
+| off-spill hits, time clusters (`cst_TimeCluster`) | off-spill `StrawHitReco` / `CombineStrawHits`, `SimpleTimeCluster` | the hit ports with the off-spill settings, `simpletc.py` | exact on the held-out shards |
+| multi-helix finder (`mpr_*`) | `RobustMultiHelixFinder` + `MergeHelices` | port with the stock arithmetic (`mpr.py`); opt-in | see [Multi-helix paths](#multi-helix-paths-mpr) |
 
-Not evaluated on the device: calorimeter (`calo_*`, `cpr_*`) and cosmic (`cst_*`) paths, paths with
-`MultiHelixFilter` or `minNHelices > 1`, `mpr_*` (multi-helix finder), `apr_proton`.
+Not evaluated on the device: calorimeter paths (`calo_*`, `cpr_*`), `cst_CosmicTrackSeed` (`LineFinder` +
+`CosmicSeedFilter`), paths with `MultiHelixFilter` or `minNHelices > 1`.
+
+### Multi-helix paths (mpr)
+
+The mpr paths are off by default: they run with `Chain(mpr=True)`, `decide --mpr` or `TRIGGER_DEVICE_MPR=1` (bench), and
+are otherwise listed as skipped. With them off, no other path changes.
+
+`mpr.py` ports `RobustMultiHelixFinder` (Compton flagging, triplet circle search with the per-panel stub selection,
+the dz/dphi scan and fits, the z-phi and z-t filters, the chi2 circle refit with hit removal, duplicate removal) and
+`MergeHelices` (overlap, hit-count and chi2 rules; the merged seed's `LsqSums4` circle chi2). The helix cuts read the
+`HelixTool` quantities of the merged seeds. The port follows the stock arithmetic, so that the discrete choices of the
+finder come out as in stock:
+
+- hit order: each time cluster's hits in the stock `TimeCluster` order (assigned hits in index order, recovered hits in
+  the order they are added; `timecluster.py` carries this order key when an mpr path is on), and the per-panel sort with
+  the libstdc++ `std::sort` (introsort, not stable above 16 hits);
+- float32 values with the double-precision steps of the C++ (`1.0 - c2`, `1.0/res2`, the loop counts, the Compton
+  binning, `polyAtan2`'s `+ M_PI`, `HelixTool`'s loop count, `LsqSums4`), and the float `cos` / `sin` where stock calls
+  them;
+- no fused multiply-add: XLA contracts `a*b + c` on CPU and no flag turns that off, so each product passes through a
+  bitwise guard that the compiler cannot fold.
+
+These hold in both precisions; `float32` / `float64` change only the inputs. `tests/mpr_reference.py` is a literal
+transcription of `findHelicesInTC` with these semantics, and the unit test requires the port to match it bit for bit.
+Each time cluster's hits are gathered into 64 slots (`<path>:overflow` counts clusters with more). Where the sort would
+reach its heap-sort fallback, the port uses a stable sort instead (`<path>:fallback` counts these events). The seed fit
+and its cuts use the response layer: one scalar KalSeed factor from the development shards (`ks` = stock KS/HS over
+device KS/HS = 0.9909), in both shipped response files.
+
+Device on stock digis, against the stock replay (development: 19,543 events; held-out: 19,627):
+
+| | stock | float32 | float64 |
+|---|---|---|---|
+| development: time-cluster / helix filter passes | 17,949 / 17,452 | 17,949 / 17,453 | 17,949 / 17,452 |
+| held-out: time-cluster / helix filter passes | 18,056 / 17,562 | 18,056 / 17,563 | 18,056 / 17,563 |
+| held-out path acceptance, paired difference | 0.8831 | -0.32 +- 0.10 pp | -0.16 +- 0.10 pp |
+
+Each extra helix-filter pass is one event. The remaining differences come from the finder's inputs, not from the port:
+
+- the device panel hits agree with stock `ComboHits` to float32 rounding, not bit for bit, and a few ulps can change a
+  circle choice;
+- `HelixFilter` takes the face z positions for the hit ratio from the nominal tracker geometry, the device from the
+  aligned straw positions; the hit ratio then differs by one face in about a quarter of the helices.
+
+With the stock `ComboHits` floats substituted, all helix quantities except the hit ratio agree with the stock printout
+in about 98.5 % of the events with a time cluster. Clusters with more than 64 hits (28 development and 19 held-out
+events) and 2 development events with the sort fallback account for part of the rest. Adding the mpr paths changes no
+decision of the other paths. The port is not tuned for speed: a decide job with the mpr paths on takes 0.6-1.5 s per
+event on four CPU cores (the other paths together take about 3 ms), and its GPU rate is not measured.
 
 ## Use
 

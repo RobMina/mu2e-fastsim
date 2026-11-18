@@ -7,11 +7,13 @@ DS-entrance muons (g4ref table made from MuBeamCat) in place, so it runs only on
   muons    number of DS-entrance muons to transport (<= the table size, 105,350 for MDC2025ac)
   seed     random seed
   repeat   warm passes for the throughput metric (0 = none)
+  ds_bscale, tsd_bscale  optional field-map scales (default 1 = unscaled; mu2efastsim.bfield_scale), on the
+           streaming route (UVA) only; they scale the maps the job reads, downstream of its start table
 Metrics: stop_frac, stop_frac_err, stop_frac_mu_minus, stops, muons, foils, stops_foil_mean, stop_r_mean,
   stop_frac_upstream_half (fraction of stops in the upstream half of the foils), muons_per_s_warm, first_pass_s.
 """
 
-PARAMS = ("geom", "muons", "seed", "repeat")
+PARAMS = ("geom", "muons", "seed", "repeat", "ds_bscale", "tsd_bscale")
 METRICS = ("stop_frac", "stop_frac_err", "stop_frac_mu_minus", "stops", "muons", "foils", "stops_foil_mean",
            "stop_r_mean", "stop_frac_upstream_half", "muons_per_s_warm", "first_pass_s")
 
@@ -37,7 +39,7 @@ tail -3 "$M2FS_OUT/point.txt"
 SOB_TABLE = "g4ref_run1baa/g4ref_run1baa_vd8.npz"
 SOB_Z_UP = 3900.0
 SOB_CORES = 32
-SOB_PARAMS = ("geom", "muons", "electrons", "seed")
+SOB_PARAMS = ("geom", "muons", "electrons", "seed", "ds_bscale", "tsd_bscale")
 SOB_METRICS = ("sensitivity", "sensitivity_err", "signal_box_low_mev", "signal_box_high_mev", "signal_rate",
                "dio_background", "cosmic_background", "total_background", "total_background_err", "signal_mpv_mev",
                "signal_fwhm_mev", "stops_per_gen_event", "stops_per_pot", "ce_acceptance", "ce_acceptance_err",
@@ -69,7 +71,7 @@ EDEP_GDML = EDEP_DIR + "/mu2e_run1a_v01.gdml"
 EDEP_EDGE = EDEP_DIR + "/edge_library_mdc2025ac.npz"  # Geant4 inner-edge calorimeter energies (calo library+edge)
 EDEP_FILE = "nts.mu2efastsim.edep.root"
 EDEP_CORES = 16
-EDEP_PARAMS = ("geom", "muons", "electrons", "seed", "dtype")
+EDEP_PARAMS = ("geom", "muons", "electrons", "seed", "dtype", "ds_bscale", "tsd_bscale")
 EDEP_METRICS = ("n_events", "n_gen_events", "event_rate", "avg_calo_edep_per_event_mev",
                 "avg_calo_edep_per_gen_event_mev", "n_events_calo_edep_above_50mev", "avg_trk_edep_per_event_mev",
                 "avg_trk_edep_per_gen_event_mev", "n_events_vis_gt10", "ce_acceptance", "births", "tracker_entry",
@@ -143,25 +145,32 @@ tail -c 300 "$M2FS_OUT/point.txt"
 '''
 
 
+# Optional field-map scales of the beam tasks (default 1 = unscaled). They scale the maps the job reads (DSMap and
+# DSExtension for ds_bscale, TSdMap for tsd_bscale), so they act only downstream of the task's start table: the
+# Coll5_Out table of beam_sob / beam_edep(_cpu) carries the nominal TS3-TS5 history, so tsd_bscale is only partly
+# represented there; the faithful path for tsd_bscale is W1's TS-entrance chain (tsdevice, GPU).
+SCALE_DEFAULTS = {"ds_bscale": 1.0, "tsd_bscale": 1.0}
+
+
 def register(tasks, task_cls, resources_cls, fnal_tasks):
     """Add beam_point to a fastsimkit TASKS dict (and to its FNAL-only set)."""
     tasks["beam_point"] = task_cls(params=PARAMS, metrics=METRICS,
                                    resources=resources_cls(cores=4, mem_gb=24, gpus=1, gpu_type="a100", minutes=30),
-                                   body=BODY)
+                                   body=BODY, defaults=dict(SCALE_DEFAULTS))
     fnal_tasks.add("beam_point")
     tasks["beam_sob"] = task_cls(params=SOB_PARAMS, metrics=SOB_METRICS,
                                  resources=resources_cls(cores=SOB_CORES, mem_gb=96, gpus=0, gpu_type="", minutes=40),
-                                 body=SOB_BODY)
+                                 body=SOB_BODY, defaults=dict(SCALE_DEFAULTS))
     fnal_tasks.add("beam_sob")
     tasks["beam_edep"] = task_cls(params=EDEP_PARAMS, metrics=EDEP_METRICS,
                                   resources=resources_cls(cores=EDEP_CORES, mem_gb=96, gpus=1, gpu_type="a100",
                                                           minutes=60),
-                                  body=EDEP_BODY, defaults={"dtype": "float64"})
+                                  body=EDEP_BODY, defaults={"dtype": "float64", **SCALE_DEFAULTS})
     fnal_tasks.add("beam_edep")
     tasks["beam_edep_cpu"] = task_cls(params=EDEP_PARAMS, metrics=EDEP_METRICS,
                                       resources=resources_cls(cores=1, mem_gb=EDEP_CPU_MEM_GB, gpus=0, gpu_type="",
                                                               minutes=EDEP_CPU_MINUTES),
-                                      body=EDEP_CPU_BODY, defaults={"dtype": "float64"})
+                                      body=EDEP_CPU_BODY, defaults={"dtype": "float64", **SCALE_DEFAULTS})
     fnal_tasks.add("beam_edep_cpu")
     tasks["beam_centuple"] = task_cls(params=CENT_PARAMS, metrics=CENT_METRICS,
                                       resources=resources_cls(cores=CENT_CORES, mem_gb=96, gpus=1, gpu_type="a100",

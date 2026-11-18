@@ -339,6 +339,45 @@ def test_compact_clusters_and_helices_match_the_one_call_path():
     assert [chain.pair_bucket(n, 64) for n in (0, 16, 17, 32, 33, 64)] == [16, 16, 32, 32, 64, 64]
 
 
+def test_time_cluster_order_key_leaves_the_clusters_unchanged():
+    """timecluster with s["order"] (the TimeCluster hit order the mpr finder reads) gives the same clusters as without
+    it, in the full, compact and pairs paths; the key is the hit index for the peak-assigned hits, above every index
+    for the recovered ones (in the order they were added), and ORDER_NONE for non-members."""
+    pytest.importorskip("jax")
+    import jax
+    import jax.numpy as jnp
+    from trigger.device import chain, timecluster
+    rng = np.random.default_rng(2)
+    net = {"act": "sigmoid", "norm": False, "offset": np.zeros(7, np.float32), "scale": np.ones(7, np.float32),
+           "layers": [rng.normal(0, 0.3, (8, 4)).astype(np.float32), rng.normal(0, 0.3, (5, 1)).astype(np.float32)]}
+    s = {"tmin": 400.0, "tmax": 1800.0, "tbin": 10.0, "ymin": 3.0, "npeak": 1, "maxdt": 30.0, "minnhits": 5,
+         "maxdphi": 2.0, "minkeep": 0.1, "minadd": 0.9, "pitch": 0.6, "prefilter": True, "refine": True,
+         "recover": True}
+    so = {**s, "order": True}
+    ph = {k: jnp.asarray(v) for k, v in _synthetic_panel_hits().items()}
+    H = ph["x"].shape[1]
+    ref = jax.jit(lambda p: timecluster.time_clusters(p, s, net))(ph)
+    full = jax.jit(lambda p: timecluster.time_clusters(p, so, net))(ph)
+    cand = jax.jit(lambda p: timecluster.candidates(p, so))(ph)
+    k = chain.pair_bucket(int(jnp.sum(cand[2])), cand[2].size)
+    comp = jax.jit(lambda c: timecluster.refine_pairs(*c, so, net, k))(cand)
+    pairs = jax.jit(lambda p: timecluster.time_clusters_multi_pairs(p, [so], net, K=ph["x"].shape[0] * 8))(ph)[0]
+    assert "order" not in ref
+    v = np.asarray(ref["valid"])
+    for got in (full, comp, pairs):
+        for key in ("valid", "members"):
+            np.testing.assert_array_equal(np.asarray(got[key]), np.asarray(ref[key]))
+        for key in ("nsh", "t0", "t0err"):                      # read only where valid
+            np.testing.assert_array_equal(np.asarray(got[key])[v], np.asarray(ref[key])[v])
+        np.testing.assert_array_equal(np.asarray(got["order"]), np.asarray(full["order"]))
+    mem, key = np.asarray(full["members"]), np.asarray(full["order"])
+    assert ((key < timecluster.ORDER_NONE) == mem).all()
+    idx = np.broadcast_to(np.arange(H), key.shape)
+    assert mem.any() and ((key == idx) | (key >= H) | ~mem).all()
+    rec = key[mem & (key >= H)]
+    assert len(np.unique(rec)) == len(rec)                       # recovered hits: distinct keys in add order
+
+
 def test_pair_paths_match_the_batched_multi_path():
     """chain pairs path (the default): cluster refinement and helix fits on the gathered (producer, event, slot) pairs
     give the same clusters as the batched multi path and the same helices as the per-set fit, bit for bit where a
@@ -622,3 +661,118 @@ def test_offspill_panel_hits_reuse_or_recombine():
         for k in ref:
             np.testing.assert_array_equal(np.asarray(got[k])[v], np.asarray(ref[k])[v], err_msg=f"spill {spill} {k}")
 
+
+
+MPR_CFG = {"CaloClusterMinE": 30, "CaloClusterWeight": 5, "ClusteringMinBin": 30, "ClusteringPhiBin": 0.1,
+           "DPDZStep": 25, "FitCircleStrategy": "ChiSquared", "Helicities": [-1, 1], "MaxChi2Hit": 50,
+           "MaxDPDZSlope": 350, "MaxDPhiHelFit": 0.7, "MaxDPhiHelInit": 1, "MaxDTHelFit": 25, "MaxRadCircle": 350,
+           "MinDPDZSlope": 150, "MinDRCircle": 40, "MinDXY2Circle": 1600, "MinDZTrk": 1500, "MinRadCircle": 150,
+           "MinStrawHits": 10, "NMaxTrkIter": 3, "TargetCon": False, "TargetRadius": 150, "maxEDepAvg": 2.5e-3}
+
+
+def _mpr_cluster(rng, L, helices, order="tc"):
+    """Synthetic time cluster: hits on `helices` (cx, cy, R, lambda, fz0) at the plane faces, plus noise, in a
+    TimeCluster-like order: by panel with some hits moved to the end (recovered hits), or random."""
+    zf = np.linspace(-1500, 1500, 72)
+    rows = []
+    for cx, cy, R, lam, fz0 in helices:
+        for z in zf:
+            if rng.random() < 0.35:
+                continue
+            ph = fz0 + z / lam
+            rows.append((cx + R * np.cos(ph) + rng.normal(0, 2), cy + R * np.sin(ph) + rng.normal(0, 2), z,
+                         600 + z / 250 + rng.normal(0, 3)))
+    for _ in range(rng.integers(0, 6)):
+        rows.append((rng.uniform(-600, 600), rng.uniform(-600, 600), rng.choice(zf), rng.uniform(500, 1600)))
+    rows = rows[:L]
+    n = len(rows)
+    x, y, z, t = (np.array([r[k] for r in rows], np.float32) for k in range(4))
+    plane = np.searchsorted(zf, z) // 2
+    panel = ((np.arctan2(y, x) + np.pi) / (np.pi / 3)).astype(int) % 6
+    upanel = plane * 6 + panel
+    if order == "random":
+        o = rng.permutation(n)
+    else:
+        o = np.lexsort((np.arange(n), upanel))
+        tail = rng.random(n) < 0.2
+        o = np.concatenate([o[~tail[o]], o[tail[o]]])
+    pad = lambda a, v: np.concatenate([a[o], np.full(L - n, v, a.dtype)])
+    ang = rng.uniform(0, np.pi, n)
+    h = {"x": pad(x, 0), "y": pad(y, 0), "z": pad(z, 0), "time": pad(t, 0),
+         "nsh": pad(rng.integers(1, 4, n).astype(np.int32), 0), "uvar": pad(rng.uniform(100, 900, n).astype(np.float32), 1),
+         "vvar": pad(rng.uniform(2, 30, n).astype(np.float32), 1), "udx": pad(np.cos(ang).astype(np.float32), 1),
+         "udy": pad(np.sin(ang).astype(np.float32), 0), "edep": pad(rng.uniform(5e-4, 2e-3, n).astype(np.float32), 0),
+         "upanel": pad(upanel.astype(np.int32), 1 << 20)}
+    return h, np.arange(L) < n
+
+
+def test_mpr_stock_sort_matches_libstdcxx():
+    """mpr._stock_sort (the device std::sort) gives the selected slots in the order of the reference's libstdc++
+    introsort transcription (itself checked against GCC 14), below and above the 16-element threshold."""
+    pytest.importorskip("jax")
+    import jax
+    import jax.numpy as jnp
+    sys_path = str(Path(__file__).parent)
+    if sys_path not in sys.path:
+        sys.path.insert(0, sys_path)
+    import mpr_reference as ref
+    from trigger.device import mpr
+    rng = np.random.default_rng(5)
+    L, N = 64, 400
+    keys = rng.integers(0, rng.integers(2, 40, N)[:, None], (N, L)).astype(np.int32)
+    sel = rng.random((N, L)) < rng.uniform(0.1, 1.0, N)[:, None]
+    perm, n, fb = jax.jit(jax.vmap(mpr._stock_sort))(jnp.asarray(keys), jnp.asarray(sel))
+    perm, n, fb = map(np.asarray, (perm, n, fb))
+    assert not fb.any()
+    for k in range(N):
+        want = ref.std_sort([int(i) for i in np.flatnonzero(sel[k])], lambda i, j: keys[k, i] < keys[k, j])
+        assert int(n[k]) == len(want) and perm[k, :n[k]].tolist() == want, k
+    assert (np.sum(sel, axis=1) > 16).sum() > 100
+
+
+def test_mpr_cluster_matches_the_stock_walk():
+    """mpr._cluster (the RobustMultiHelixFinder port on one time cluster) against the literal transcription of the
+    stock findHelicesInTC: per track iteration, kept or not, helicity, straw hits and hit set equal, and the circle
+    and slope parameters bit for bit (the port keeps the stock float / double steps and fuses no multiply-add)."""
+    pytest.importorskip("jax")
+    import jax
+    import jax.numpy as jnp
+    sys_path = str(Path(__file__).parent)
+    if sys_path not in sys.path:
+        sys.path.insert(0, sys_path)
+    import mpr_reference as ref
+    from trigger.device import mpr
+    s = mpr.settings(MPR_CFG)
+    rng = np.random.default_rng(21)
+    L = 48
+    cases = []
+    for c in range(12):
+        hel = 1 if c % 2 else -1
+        hx = [(rng.uniform(-150, 150), rng.uniform(-150, 150), rng.uniform(200, 320), hel * rng.uniform(170, 300),
+               rng.uniform(0, 6))]
+        if c % 4 == 3:                                                  # a second track in the cluster
+            hx.append((rng.uniform(-150, 150), rng.uniform(-150, 150), rng.uniform(200, 320), -hel * 220.0, 1.0))
+        cases.append(_mpr_cluster(rng, L, hx, order="random" if c % 3 == 0 else "tc"))
+    hs = {k: jnp.asarray(np.stack([c[0][k] for c in cases])) for k in cases[0][0]}
+    ms = jnp.asarray(np.stack([c[1] for c in cases]))
+
+    def one(h, m):
+        with mpr.strict(h["upanel"]):
+            return mpr._cluster(h, m, s)
+    got = jax.tree.map(np.asarray, jax.jit(jax.vmap(one))(hs, ms))
+    assert not got["fallback"].any()
+    kept = 0
+    for c, (h, m) in enumerate(cases):
+        want = ref.find_helices_in_tc(h, list(np.flatnonzero(m)), s)
+        want += [None] * (s["niter"] - len(want))
+        for it, w in enumerate(want):
+            assert bool(got["ok"][c, it]) == (w is not None), (c, it)
+            if w is None:
+                continue
+            kept += 1
+            assert int(got["hel"][c, it]) == w["hel"] and int(got["nsh"][c, it]) == w["nsh"], (c, it)
+            assert sorted(np.flatnonzero(got["mask"][c, it]).tolist()) == w["hits"], (c, it)
+            for k in ("x", "y", "r", "fa", "fb"):
+                g, r = np.float32(got[{"x": "cx", "y": "cy"}.get(k, k)][c, it]), np.float32(w[k])
+                assert g == r, f"{c} {it} {k}: {g!r} != {r!r}"
+    assert kept >= 6

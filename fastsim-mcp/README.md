@@ -45,8 +45,27 @@ GPU work never starts by accident:
 `run_design_point` goes through the fastsim kit (`mu2efastsim.endpoints.kit`), so the kit's rules hold: the target
 overlay must pass the kit's geometry admission (`core/mu2efastsim/endpoints/geometry.py`), the same handle and
 request return the same job, and the Mu2e-internal inputs are streamed from the FNAL host into the running job, never
-stored on the endpoint. **Keep the server running until `job_status` reports `inputs_streamed`**: the job waits at
-most 15 minutes for them.
+stored on the endpoint.
+
+### Detached workers: points outlive the session
+
+A job waits at most 15 minutes for its inputs, which the process holding the kit streams in, so a point must not
+depend on the MCP client staying connected. `run_design_point` saves the point and starts a **detached worker**
+(`python -m fastsim_tools.worker`, in its own session, logging to `<state>/mcp_workers/<name>.log`). The worker:
+
+- submits the jobs through the kit (idempotent per handle);
+- polls them, which keeps the kit's input streaming going;
+- fetches each job's outputs when it completes;
+- writes a heartbeat (`<state>/mcp_workers/<name>.json`) after every round.
+
+It holds a lock per point, so there is at most one worker per point, and it exits when every job is done.
+
+`job_status` and `fetch_outputs` never stream from the server: they read the heartbeat. From any later session
+they respawn a worker that died before the point was done (the restarted worker gets the same jobs back from the
+kit and resumes streaming), at most 5 times per point. The client, the server or the network can go away
+mid-stream; the worker carries on, and the next `job_status` reattaches. Settings: `FASTSIM_MCP_WORKER_POLL_S`
+(default 30), `FASTSIM_MCP_WORKER_MAX_H` (48), `FASTSIM_MCP_SUBMIT_WAIT_S` (how long `run_design_point` waits for
+the job ids, 120).
 
 ## Running it
 
@@ -90,8 +109,8 @@ kit's own admission code, and the parsed approximation table against the package
 
 ## Gaps
 
-- The inputs are streamed by the server process: a point submitted by a server that exits before the job starts
-  fails after 15 minutes (`job_status` on a new server restarts streaming while the job is still waiting).
+- The worker runs on the kit host. If that machine loses its connection to the endpoint or to the FNAL host for
+  longer than a job's input wait, that job fails; the worker records it, and the point is rerun under a new name.
 - A stalled input stream ends the point: the kit marks it as a stream error and cancels the job, and
   `job_status` reports `stream_error`. Rerun the point under a new name (a failed handle is not resubmitted).
 - The CRV chain runs at its default device precision (float32): the `chain_point` and `chain` kit tasks have no

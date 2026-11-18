@@ -51,8 +51,19 @@ bin on the entrance state in the component's frame, never on a global detector c
 | `ly_margin` | min over sectors of the design's minimum light yield along its longest counter (better end, normal incidence, aged by `aging_c1`) over the nominal design's (aged by `aging_ref`) |
 | `cost`, `cost_rel`, `cost_terms` | scintillator volume [m^3], channels, absorber mass [t], fiber length x diameter^2 [m mm^2], each over the nominal design; `cost` is their mean |
 
-The muon sample (`muons`) is the CRY muons whose straight line passes through a cylinder about the detector-solenoid
-axis from the stopping target to the tracker end (`fom.PROXY`), a geometric stand-in for the CE-like selection.
+The muon sample (`muons`) is the CRY muons whose line passes through a cylinder about the detector-solenoid axis
+from the stopping target to the tracker end (`fom.PROXY`), a geometric stand-in for the CE-like selection. With
+`--world GDML` (`sample.py`) the muons are first carried through the world material above the CRV (the fast stage-C
+transport: straggled loss, Highland scattering to the MSC plane) and start on that plane with their momentum there;
+muons that range out above it are dropped. Inside the CRV each muon loses the mean (Bethe) energy in the designed
+counters and absorbers in path order (`veto.stack_range`): crossings after it stops are dropped, and a muon that
+stops before the CE-like region is left out of the inefficiency (it cannot reach the tracker; `stopped_fraction`).
+The P_coinc of a sector also carries the finder's slope window and minimum cluster PE (`veto.finder_factor`).
+
+Against stock Geant4 + CRV reco on a thick-absorber Run 2 sample (25.4 mm Al per gap, 1M CRY events), over CE-like
+events whose stock muon reached the detector region: stock 0.115 % (14 of 12,176) against the model's 0.177 %, a
+difference of -0.06 +- 0.05 %, consistent in momentum bins. With generated lines instead of CRV-entry states the
+model was 8 times too low (muons that lose most of their energy above the CRV).
 
 ### Optics model (`optics.py`)
 

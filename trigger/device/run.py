@@ -251,7 +251,7 @@ def cmd_decide(args):
     hmin = args.hmin if args.hmin is not None else cpu.get("hmin", 64)
     compact = args.compact if args.compact is not None else cpu.get("compact", False)
     ch = chainmod.Chain(cfg, cond, args.tc_mva, response=resp, debug=args.check_hits, precision=args.precision,
-                        compact=compact, pairs=args.pairs)
+                        compact=compact, pairs=args.pairs, mpr=args.mpr)
     report, device, stages, stage_flags, path_vars = {}, {}, {}, {}, {}
     t_dev = 0.0
     for dump in args.dump:
@@ -375,6 +375,8 @@ def main(argv=None):
     d.add_argument("--pairs", action=argparse.BooleanOptionalAction, default=True,
                    help="one-call path: cluster refinement and helix fits on the gathered candidate pairs (default; "
                         "--no-pairs: the full batched path; the same decisions)")
+    d.add_argument("--mpr", action="store_true",
+                   help="also evaluate the mpr paths (RobustMultiHelixFinder port; slow: ~0.5 s per event on a CPU)")
     d.add_argument("--check-hits", action="store_true")
     d.add_argument("--offspill-tree", help="with --check-hits: dumper tree of TrigOffSpMakeSH/PH (e.g. w8offsp) to check "
                                             "the cst paths' off-spill hits against")

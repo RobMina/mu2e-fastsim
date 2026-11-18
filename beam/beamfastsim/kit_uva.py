@@ -21,7 +21,7 @@ They are read when the source or the code snapshot is first needed; a missing on
 """
 from __future__ import annotations
 
-from mu2efastsim import site
+from mu2efastsim import bfield_scale, site
 
 import json
 from dataclasses import asdict
@@ -76,10 +76,11 @@ class _Source(FnalSource):
 def validate(params: Dict[str, Any], task: str = "beam_point") -> Dict[str, Any]:
     from mu2efastsim.endpoints.parameters import validate as validate_parameters
     if task in ("beam_edep", "beam_edep_cpu"):
-        return validate_parameters(task, params, kit_task.EDEP_PARAMS, {"dtype": "float64"})
+        return validate_parameters(task, params, kit_task.EDEP_PARAMS, {"dtype": "float64", **kit_task.SCALE_DEFAULTS})
     if task == "beam_centuple":
         return validate_parameters(task, params, kit_task.CENT_PARAMS, {"dtype": "float64"})
-    return validate_parameters(task, params, kit_task.SOB_PARAMS if task == "beam_sob" else kit_task.PARAMS)
+    return validate_parameters(task, params, kit_task.SOB_PARAMS if task == "beam_sob" else kit_task.PARAMS,
+                               kit_task.SCALE_DEFAULTS)
 
 
 class BeamPointStream:
@@ -155,9 +156,15 @@ class BeamPointStream:
         else:
             stagegeom = geomarg = f'--geom "$CODE/beam/geom/{g}"'
         body = self.BODY.replace("@common@", _COMMON).replace("@runtime_a@", APPTAINER_RUNTIME["a"])
+        scale = bfield_scale.setting(p)
+        if scale:   # opt-in field-map scales: into the job container's environment (the first --env list is B()'s)
+            if '--cleanenv --env "' not in body:
+                raise ValueError(f"fastsimkit: {self.TASK}: no container environment to carry the field scale")
+            body = body.replace('--cleanenv --env "', f'--cleanenv --env "{bfield_scale.ENV}={scale},', 1)
         subs = {"sif": shlex.quote(manifest["image"]["path"] if manifest else self.kit.sif),
                 "code": shlex.quote(manifest["code"]["path"] if manifest else self.code), "waits": str(WAIT_S),
-                "stagegeom": stagegeom, "geomarg": geomarg, **{k: str(v) for k, v in p.items() if k != "geom"}}
+                "stagegeom": stagegeom, "geomarg": geomarg,
+                **{k: str(v) for k, v in p.items() if k != "geom" and k not in kit_task.SCALE_DEFAULTS}}
         for a, b in subs.items():
             body = body.replace(f"@{a}@", b)
         import re
@@ -561,8 +568,8 @@ class BeamCentupleStream(BeamPointStream):
 
     def prestaged(self) -> bool:
         """True when CVMFSEXEC_DIST on the endpoint is a prestaged runtime (its PRESTAGED marker exists): the write
-        stages of parallel points must not each fill a cold CVMFS cache over the network (skill
-        prestaging-cvmfs-on-uva); the tree's config reads a read-only prestaged cache below each job's own."""
+        stages of parallel points must not each fill a cold CVMFS cache over the network; the tree's config reads a
+        read-only prestaged cache below each job's own."""
         marker = shlex.quote(self.cvmfsexec.rstrip("/") + "/PRESTAGED")
         return self.ep._sh(f"test -f {marker} && echo yes || true").strip() == "yes"
 
