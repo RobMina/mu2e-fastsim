@@ -5,6 +5,8 @@
 #include <array>
 #include <memory>
 #include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "art/Framework/Core/EDProducer.h"
@@ -20,6 +22,19 @@
 #include "CrvRecoTable.hh"
 
 namespace mu2e {
+
+namespace {
+// CrvCoincidenceCluster gained the start/end times shifted to the hit position after Offline v13_39_00. The tables do
+// not carry them, so a table cluster gets its unshifted start and end times. Only the constructor the Offline in use
+// has is compiled (the check is on the template parameters).
+template <class C, class... Args>
+void emplaceCluster(std::vector<C>& out, double startAdjusted, double endAdjusted, Args&&... args) {
+  if constexpr (std::is_constructible_v<C, Args..., double, double>)
+    out.emplace_back(std::forward<Args>(args)..., startAdjusted, endAdjusted);
+  else
+    out.emplace_back(std::forward<Args>(args)...);
+}
+}  // namespace
 
 class CrvCoincidenceClustersFromTable : public art::EDProducer {
  public:
@@ -89,8 +104,8 @@ void CrvCoincidenceClustersFromTable::produce(art::Event& event) {
       std::array<size_t, CRVId::nSidesPerBar> sideHits{static_cast<size_t>(sh0_), static_cast<size_t>(sh1_)};
       std::array<float, CRVId::nSidesPerBar> sidePEs{spe0_, spe1_};
       std::array<double, CRVId::nSidesPerBar> sideTimes{st0_, st1_};
-      out->emplace_back(sectortype_, start_, end_, pe_, ptrs, slope_, layers_->values(), sideHits, sidePEs, sideTimes, avgtime_,
-                        CLHEP::Hep3Vector(x_, y_, z_), poscalc_ != 0);
+      emplaceCluster(*out, start_, end_, sectortype_, start_, end_, pe_, ptrs, slope_, layers_->values(), sideHits,
+                     sidePEs, sideTimes, avgtime_, CLHEP::Hep3Vector(x_, y_, z_), poscalc_ != 0);
     }
   }
   event.put(std::move(out));
