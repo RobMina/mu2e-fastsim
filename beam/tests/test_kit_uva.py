@@ -770,6 +770,32 @@ def test_beam_edep_cpu_mounted_body_runs_the_writer_on_one_core():
     assert "JAX not on the GPU" in gpu and "JAX_PLATFORMS=cpu" not in gpu
 
 
+# -- opt-in persistent JAX compilation cache (FASTSIMKIT_JAX_CACHE) ---------------------------------------------------
+
+def test_jax_cache_reaches_the_gpu_container_only(tmp_path, monkeypatch):
+    def edep(sub, task="beam_edep", cls=kit_uva.BeamEdepStream):
+        site, ep, kit, _ = make(tmp_path / sub)
+        kit._delegates[task] = cls(kit, source=Source(), code="/path/to/slurm/beam", background=False)
+        assert kit.submit("j1", {**PE, "task": task}, [], []) == {"handle": "j1"}
+        return site.body
+    plain = edep("plain")
+    assert "JAX_COMPILATION_CACHE_DIR" not in plain
+    monkeypatch.setenv("FASTSIMKIT_JAX_CACHE", "/path/to/jaxcache")
+    body = edep("cache")
+    line = next(l for l in body.splitlines() if l.startswith("B() { apptainer exec --nv"))
+    assert '--env "JAX_COMPILATION_CACHE_DIR=$JC,JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0,CUDA_VISIBLE' in line
+    assert '-B "$JC" -B "$CODE"' in line and body.count("JAX_COMPILATION_CACHE_DIR") == 1
+    assert body.splitlines()[0].startswith("mkdir -p /path/to/jaxcache && JC=$(readlink -f /path/to/jaxcache)")
+    r = subprocess.run(["bash", "-n"], input=body.encode(), capture_output=True)
+    assert r.returncode == 0, r.stderr.decode()
+    cpu = edep("cpu", "beam_edep_cpu", kit_uva.BeamEdepCpuStream)  # no GPU container: unchanged
+    assert "JAX_COMPILATION_CACHE_DIR" not in cpu and "$JC" not in cpu
+    site, ep, kit, streamed, d = _centuple(tmp_path / "ct")
+    kit.submit("ct1", PC, [], [])
+    assert "JAX_COMPILATION_CACHE_DIR=$JC" in site.body       # the centuple front is a GPU job too
+    assert "JAX_COMPILATION_CACHE_DIR" not in d.writer_body("ct1")
+
+
 # -- opt-in field-map scales (ds_bscale, tsd_bscale) ----------------------------------------------------------------
 
 def _edep_cpu_body(tmp_path, **scale):
