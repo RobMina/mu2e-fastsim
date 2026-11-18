@@ -12,4 +12,4 @@ pytest==9.1.1
 # hep-endpoints: the endpoint adapters under mu2efastsim.endpoints (kit host only); same pin as pyproject.toml
 hep-endpoints @ git+https://github.com/RobMina/hep-endpoints.git@536656008f457eefb5939cdbe1095cbdf445857d
 # hep-simlib: the library core and component banks (mu2efastsim.library, component_response); same pin as pyproject.toml
-hep-simlib @ git+https://github.com/RobMina/hep-simlib.git@7ac6f0c3e241362609d59d8bb97fe88b612b3d5d
+hep-simlib @ git+https://github.com/RobMina/hep-simlib.git@22e160ddb973f863e2639e19553e5e5c3aa4f8bf
