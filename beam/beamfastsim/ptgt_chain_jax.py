@@ -554,3 +554,57 @@ def run(bank, target, fm, env, prim, seed=1, st=C.Stepping(), pool=1 << 16, emit
                p=np.asarray(rec[3][:n], float), t=np.asarray(rec[4][:n], float))
     c["steps"] = steps_run
     return out, c
+
+
+def main(argv=None):
+    import argparse
+    import json
+    import time
+
+    from beamfastsim import ptgt_g4bl
+
+    ap = argparse.ArgumentParser(description="device target + PS chain for one rod design point")
+    ap.add_argument("--bank", required=True)
+    ap.add_argument("--rod", nargs=4, type=float, metavar=("TLENGTH", "R_UP", "R_MID", "R_DN"), required=True)
+    ap.add_argument("--material", default="G4_W")
+    ap.add_argument("--map", required=True, help="field map .header (PS region)")
+    ap.add_argument("--env-z", nargs="+", type=float, required=True)
+    ap.add_argument("--env-r", nargs="+", type=float, required=True)
+    ap.add_argument("--z-min", type=float, required=True)
+    ap.add_argument("--r-plane", type=float, required=True)
+    ap.add_argument("--z-plane", type=float, default=-4044.45)
+    ap.add_argument("--annulus", nargs=3, type=float, action="append", default=[])
+    ap.add_argument("--pot", type=int, required=True)
+    ap.add_argument("--warm-pot", type=int, default=2000, help="primaries of an untimed first run (compile)")
+    ap.add_argument("--pool", type=int, default=1 << 18)
+    ap.add_argument("--steps", type=int, default=64)
+    ap.add_argument("--dtype", choices=("float64", "float32"), default="float64")
+    ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--point", type=int, default=0)
+    ap.add_argument("--out", required=True)
+    a = ap.parse_args(argv)
+    bank = D.Bank.load(a.bank)
+    tgt = C.rod_target(*a.rod, mat=bank.materials.index(a.material))
+    env = C.Envelope(z_nodes=np.asarray(a.env_z), r_nodes=np.asarray(a.env_r), z_min=a.z_min, z_plane=a.z_plane,
+                     r_plane=a.r_plane, annuli=tuple(tuple(x) for x in a.annulus))
+    fm = fieldmap.load(a.map)
+    dt = jnp.float64 if a.dtype == "float64" else jnp.float32
+    rng = np.random.default_rng(a.seed)
+    if a.warm_pot:
+        run(bank, tgt, fm, env, C.primaries(a.warm_pot, tgt, rng), seed=a.seed + 1000, pool=a.pool, steps=a.steps, dtype=dt)
+    prim = C.primaries(a.pot, tgt, rng)
+    t0 = time.perf_counter()
+    rec, cnt = run(bank, tgt, fm, env, prim, seed=a.seed, pool=a.pool, steps=a.steps, dtype=dt)
+    wall = time.perf_counter() - t0
+    ref, meta = C.reference(rec, a.pot, a.point, 0)
+    meta.update(rod=a.rod, material=a.material, seed=a.seed, counts=cnt, wall_s=wall, s_per_pot=wall / a.pot,
+                dtype=a.dtype, pool=a.pool, steps=a.steps, device=str(jax.devices()[0]), generator="ptgt_chain_jax",
+                envelope=dict(z=a.env_z, r=a.env_r, z_min=a.z_min, r_plane=a.r_plane, z_plane=a.z_plane, annuli=a.annulus),
+                bank=dict(path=str(a.bank), content_hash=bank.lib.content_hash))
+    ptgt_g4bl.save(a.out, ref, meta)
+    print(json.dumps({k: meta[k] for k in ("pot", "entrances", "yield_per_pot", "species", "s_per_pot", "wall_s",
+                                           "counts", "device", "dtype")}))
+
+
+if __name__ == "__main__":
+    main()
