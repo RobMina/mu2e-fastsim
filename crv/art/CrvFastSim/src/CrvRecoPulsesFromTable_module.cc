@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "art/Framework/Core/EDProducer.h"
@@ -19,6 +20,28 @@
 #include "CrvRecoTable.hh"
 
 namespace mu2e {
+
+namespace {
+// CrvRecoPulse gained ringing-artifact fields and a reflected-pulse flag after Offline v13_39_00. The tables carry
+// neither, so a table pulse has no ringing artifact removed (height 0) and is not a reflected-pulse candidate. The
+// check is on the template parameter, so only the constructor the Offline in use has is compiled.
+template <class P>
+void emplacePulse(std::vector<P>& out, float pe, float peph, double time, float height, float beta, float chi2,
+                  double letime, size_t seq, CrvRecoPulseFlags const& flags, std::vector<size_t> const& wf,
+                  CRSScintillatorBarIndex bar, uint8_t sipm, CRVROC const& on, float ped, bool pedfromdb) {
+  if constexpr (std::is_constructible_v<P, float, float, double, float, float, float, double, size_t,
+                                        CrvRecoPulseFlags const&, double, float, float, std::vector<size_t> const&,
+                                        CRSScintillatorBarIndex, uint8_t, uint8_t, uint8_t, uint8_t, float, bool,
+                                        bool>) {
+    out.emplace_back(pe, peph, time, height, beta, chi2, letime, seq, flags, 0.0, 0.f, 0.f, wf, bar, sipm,
+                     static_cast<uint8_t>(on.ROC()), static_cast<uint8_t>(on.FEB()),
+                     static_cast<uint8_t>(on.FEBchannel()), ped, pedfromdb, false);
+  } else {
+    out.emplace_back(pe, peph, time, height, beta, chi2, letime, seq, flags, wf, bar, sipm, on.ROC(), on.FEB(),
+                     on.FEBchannel(), ped, pedfromdb);
+  }
+}
+}  // namespace
 
 class CrvRecoPulsesFromTable : public art::EDProducer {
  public:
@@ -71,9 +94,9 @@ void CrvRecoPulsesFromTable::produce(art::Event& event) {
       auto const& on = channelMap.online(static_cast<std::uint16_t>(bar_ * CRVId::nChanPerBar + sipm_));
       auto w = wfidx_->values();
       std::vector<size_t> wf(w.begin(), w.end());
-      out->emplace_back(pe_, peph_, time_, height_, beta_, chi2_, letime_, static_cast<size_t>(seq_),
-                        CrvRecoPulseFlags(static_cast<unsigned long>(flags_)), wf, CRSScintillatorBarIndex(bar_),
-                        static_cast<uint8_t>(sipm_), on.ROC(), on.FEB(), on.FEBchannel(), ped_, pedfromdb_ != 0);
+      emplacePulse(*out, pe_, peph_, time_, height_, beta_, chi2_, letime_, static_cast<size_t>(seq_),
+                   CrvRecoPulseFlags(static_cast<unsigned long>(flags_)), wf, CRSScintillatorBarIndex(bar_),
+                   static_cast<uint8_t>(sipm_), on, ped_, pedfromdb_ != 0);
     }
   }
   event.put(std::move(out));
