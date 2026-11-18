@@ -287,7 +287,7 @@ def rotate_secondaries(p_local, d, phi):
 
 @dataclass(frozen=True)
 class Cuts:
-    ke_min_hadron: float = 150.0          # p, n below: deposit, stop (below pion production)
+    ke_min_hadron: float = 50.0           # p, n below: deposit, stop (the bank stores nucleons from 50 MeV)
     ke_min_pion: float = 1.0              # pi, K, mu below: deposit, stop
     max_loss_fraction: float = 0.05       # continuous-loss step cap
     max_lanes: int = 10_000_000

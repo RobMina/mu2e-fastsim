@@ -599,9 +599,12 @@ def main(argv=None):
     ap.add_argument("--dtype", choices=("float64", "float32"), default="float64")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--point", type=int, default=0)
+    ap.add_argument("--ke-min-hadron", type=float, default=D.Cuts.ke_min_hadron,
+                    help="nucleon transport cut, MeV (below: local deposit)")
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     bank = D.Bank.load(a.bank)
+    st = C.Stepping(cuts=D.Cuts(ke_min_hadron=a.ke_min_hadron))
     if a.rods_tsv:
         table = {int(r[0]): r[1:5] for r in np.loadtxt(a.rods_tsv, ndmin=2)}
         jobs = [(pt, table[pt]) for pt in a.points]
@@ -616,11 +619,11 @@ def main(argv=None):
         tgt = C.rod_target(*rod, mat=bank.materials.index(a.material))
         rng = np.random.default_rng(a.seed + 7919 * point)
         if a.warm_pot and n_job == 0:
-            run(bank, tgt, fm, env, C.primaries(a.warm_pot, tgt, rng), seed=a.seed + 1000, pool=a.pool, steps=a.steps,
-                dtype=dt)
+            run(bank, tgt, fm, env, C.primaries(a.warm_pot, tgt, rng), st=st, seed=a.seed + 1000, pool=a.pool,
+                steps=a.steps, dtype=dt)
         prim = C.primaries(a.pot, tgt, rng)
         t0 = time.perf_counter()
-        rec, cnt = run(bank, tgt, fm, env, prim, seed=a.seed + point, pool=a.pool, steps=a.steps, dtype=dt)
+        rec, cnt = run(bank, tgt, fm, env, prim, st=st, seed=a.seed + point, pool=a.pool, steps=a.steps, dtype=dt)
         wall = time.perf_counter() - t0
         out = a.out.replace("{point}", f"{point:02d}") if "{point}" in a.out else a.out
         _save_point(a, bank, env, rec, cnt, point, rod, wall, out, ptgt_g4bl)
@@ -630,7 +633,8 @@ def _save_point(a, bank, env, rec, cnt, point, rod, wall, out, ptgt_g4bl):
     import json
     ref, meta = C.reference(rec, a.pot, point, 0)
     meta.update(rod=rod, material=a.material, seed=a.seed + point, counts=cnt, wall_s=wall, s_per_pot=wall / a.pot,
-                dtype=a.dtype, pool=a.pool, steps=a.steps, device=str(jax.devices()[0]), generator="ptgt_chain_jax",
+                dtype=a.dtype, pool=a.pool, steps=a.steps, ke_min_hadron=a.ke_min_hadron, device=str(jax.devices()[0]),
+                generator="ptgt_chain_jax",
                 envelope=dict(z=a.env_z, r=a.env_r, z_min=a.z_min, r_plane=a.r_plane, z_plane=a.z_plane, annuli=a.annulus),
                 bank=dict(path=str(a.bank), content_hash=bank.lib.content_hash))
     ptgt_g4bl.save(out, ref, meta)
