@@ -509,6 +509,8 @@ def main(argv=None):
     ap.add_argument("--no-elastic", action="store_true", help="diagnostic: no hadron elastic scattering")
     ap.add_argument("--msc-scale", type=float, default=1.0, help="diagnostic: scale on the Highland width")
     ap.add_argument("--h-mat", type=float, default=Stepping.h_mat)
+    ap.add_argument("--ke-min-hadron", type=float, default=D.Cuts.ke_min_hadron,
+                    help="p, n transport cut [MeV] (the bank must hold interactions down to it)")
     ap.add_argument("--annulus", nargs=3, type=float, action="append", default=[], metavar=("Z", "R_IN", "R_OUT"),
                     help="absorbing thin annulus at z (repeatable)")
     ap.add_argument("--enclosure", nargs=2, type=float, metavar=("R", "H"),
@@ -522,7 +524,8 @@ def main(argv=None):
     fb = tsfield.FieldBank(a.maps)
     env = Envelope(z_nodes=np.asarray(a.env_z), r_nodes=np.asarray(a.env_r), z_min=a.z_min, z_plane=a.z_plane,
                    r_plane=a.r_plane, annuli=tuple(tuple(x) for x in a.annulus))
-    st = Stepping(h_vac=a.h_vac, h_near=a.h_near, h_mat=a.h_mat, elastic=not a.no_elastic, msc_scale=a.msc_scale)
+    st = Stepping(h_vac=a.h_vac, h_near=a.h_near, h_mat=a.h_mat, elastic=not a.no_elastic, msc_scale=a.msc_scale,
+                  cuts=D.Cuts(ke_min_hadron=a.ke_min_hadron))
     rng = np.random.default_rng(a.seed)
     recs, counts, edep = [], {}, np.zeros(len(tgt.mat))
     t0 = time.time()
