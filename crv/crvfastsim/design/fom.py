@@ -1,6 +1,7 @@
 """Figures of merit of one CRV design point: veto inefficiency, deadtime, light-yield margin and cost proxy.
 
-  inefficiency       mean over the muon sample of P_miss (veto.py), with its standard error; split into
+  inefficiency       mean over the muon sample of P_miss (veto.py), with its standard error, leaving out the muons
+                     that stop in the CRV before the CE-like region (stack_range; stopped_fraction); split into
                      ``inefficiency_covered`` (muons that cross at least one counter) and ``uncovered_fraction``;
                      per sector: each muon assigned to the highest sector (largest y of its crossings);
   deadtime           deadtime.py (absolute with a calibration file, ``deadtime_rate_ratio`` always);
@@ -37,6 +38,20 @@ class FomConfig:
     aging_c1: float = 0.94 ** 5   # Mu2e-II end of run (6 %/yr, 5 yr)
     aging_ref: float = 0.86    # nominal Run 2 counter at the end of Mu2e
     finder_cuts: bool = True   # the finder's slope and minimum-cluster-PE cuts in P_coinc (veto.finder_factor)
+    stack_range: bool = True   # muons lose energy in the designed stack (veto.stack_range); those that stop before
+                               # the CE-like region are left out of the inefficiency (they cannot reach the tracker)
+
+
+def proxy_entry_t(origin, direction, proxy=PROXY):
+    """Path parameter where each line enters the proxy cylinder (inf for lines that miss it)."""
+    o = np.asarray(origin, np.float64) - [proxy["x"], proxy["y"], 0.0]
+    d = np.asarray(direction, np.float64)
+    a = d[:, 0] ** 2 + d[:, 1] ** 2
+    b = 2 * (o[:, 0] * d[:, 0] + o[:, 1] * d[:, 1])
+    c = o[:, 0] ** 2 + o[:, 1] ** 2 - proxy["r"] ** 2
+    disc = b * b - 4 * a * c
+    t = np.where((disc > 0) & (a > 0), (-b - np.sqrt(np.maximum(disc, 0.0))) / np.where(a > 0, 2 * a, 1.0), np.inf)
+    return np.where(proxy_hits(origin, direction, proxy), np.maximum(t, 0.0), np.inf)
 
 
 def proxy_hits(origin, direction, proxy=PROXY):
@@ -154,8 +169,13 @@ def evaluate(design, muons, ctx=None, cfg=FomConfig(), calibration=None, dtype=n
     dg0 = nominal or M.build(M.Design(), ctx.counters, yields)
     o1 = dataclasses.replace(cfg.optics, aging=cfg.optics.aging * cfg.aging_o1)
     idx, pos = V.sector_crossings(dg, muons["origin"], muons["direction"], dtype)
-    pe = sector_pe(dg, ctx, idx, pos, np.asarray(muons["p"], np.float64), o1, dtype)
     n = len(muons["p"])
+    stopped = np.zeros(n, bool)
+    if cfg.stack_range:
+        keep, stopped = V.stack_range(dg, muons["origin"], muons["direction"], muons["p"], idx, pos,
+                                      proxy_entry_t(muons["origin"], muons["direction"]))
+        idx, pos = idx[keep], pos[keep]
+    pe = sector_pe(dg, ctx, idx, pos, np.asarray(muons["p"], np.float64), o1, dtype)
     names = dg.sector_names
     req = _stock_required(ctx.cuts)
     thr0 = np.array([ctx.cuts[nm].pe_threshold for nm in names], np.float64)
@@ -174,8 +194,10 @@ def evaluate(design, muons, ctx=None, cfg=FomConfig(), calibration=None, dtype=n
         order = np.lexsort((cy, idx[:, 0]))
         last = np.r_[idx[order[1:], 0] != idx[order[:-1], 0], True]
         top[idx[order[last], 0]] = dg.sector[idx[order[last], 1]]
-    per = {nm: float(pm[top == s].sum() / n) for s, nm in enumerate(names)}
-    se = float(pm.std(ddof=1) / np.sqrt(n)) if n > 1 else float("nan")
+    live = ~stopped                                    # muons that reach the CE-like region
+    nl_ = max(int(live.sum()), 1)
+    per = {nm: float(pm[(top == s) & live].sum() / nl_) for s, nm in enumerate(names)}
+    se = float(pm[live].std(ddof=1) / np.sqrt(nl_)) if nl_ > 1 else float("nan")
     # light yield (C1) and deadtime
     c1 = dataclasses.replace(cfg.optics, aging=cfg.optics.aging * cfg.aging_c1)
     c0 = dataclasses.replace(cfg.optics, aging=cfg.optics.aging * cfg.aging_ref)
@@ -192,9 +214,9 @@ def evaluate(design, muons, ctx=None, cfg=FomConfig(), calibration=None, dtype=n
     ct, ct0 = M.cost_terms(dg, refl, dens), M.cost_terms(dg0, refl, materials.get(dg0.absorber_material).rho)
     rel = {k_: (ct[k_] / ct0[k_] if ct0[k_] else 1.0) for k_ in ct}
     out = dict(
-        inefficiency=float(pm.mean()), inefficiency_err=se,
-        inefficiency_covered=float(pm[covered].sum() / n), uncovered_fraction=float((~covered).mean()),
-        inefficiency_sector=per, n_muons=n, n_crossings=int(len(idx)),
+        inefficiency=float(pm[live].mean()) if live.any() else float("nan"), inefficiency_err=se,
+        inefficiency_covered=float(pm[covered & live].sum() / nl_), uncovered_fraction=float((~covered[live]).mean()),
+        inefficiency_sector=per, n_muons=n, n_crossings=int(len(idx)), stopped_fraction=float(stopped.mean()),
         deadtime_rate_ratio=dt["rate_ratio"], ly_min=dict(zip(names, ly.tolist())),
         ly_margin=float(np.min(ly / ly0)), cost=float(np.mean(list(rel.values()))), cost_terms=ct, cost_rel=rel,
         n_bars=int(dg.nbars), module_pitch=dict(zip(names, dg.module_pitch.tolist())),

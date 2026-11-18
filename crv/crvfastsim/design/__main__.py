@@ -27,11 +27,21 @@ def cmd_muons(a):
     from mu2efastsim import tables
     from . import fom
     proxy = dict(fom.PROXY, r=a.proxy_r, z0=a.proxy_z[0], z1=a.proxy_z[1])
-    gen = tables.read_many(a.gen, "gen", ["pdg", "x", "y", "z", "px", "py", "pz"])
-    m = fom.muons_from_gen(gen, proxy)
-    np.savez(a.out, origin=m["origin"], direction=m["direction"], p=m["p"],
-             n_generated_muons=m["n_generated_muons"], proxy=json.dumps(proxy))
-    print(json.dumps(dict(selected=len(m["p"]), generated_muons=m["n_generated_muons"], out=a.out)))
+    cols = ["pdg", "x", "y", "z", "px", "py", "pz"]
+    if a.world:                                      # CRV-entry states: world material + scattering to the MSC plane
+        from . import sample
+        gen = tables.read_many(a.gen, "gen", tables.KEY + cols)
+        m = sample.crv_entry_states(gen, a.world, a.counters, np.random.default_rng(a.seed), proxy)
+        extra = {k: v for k, v in m.items() if k.startswith("n_") or k == "y_plane"}
+        np.savez(a.out, origin=m["origin"], direction=m["direction"], p=m["p"], event_key=m["event_key"],
+                 proxy=json.dumps(proxy), states="crv_entry", **extra)
+    else:
+        gen = tables.read_many(a.gen, "gen", cols)
+        m = fom.muons_from_gen(gen, proxy)
+        extra = {}
+        np.savez(a.out, origin=m["origin"], direction=m["direction"], p=m["p"],
+                 n_generated_muons=m["n_generated_muons"], proxy=json.dumps(proxy), states="generated")
+    print(json.dumps(dict(selected=len(m["p"]), generated_muons=m["n_generated_muons"], out=a.out, **extra)))
 
 
 def cmd_geometry(a):
@@ -92,6 +102,10 @@ def main(argv=None):
     m.add_argument("--out", required=True)
     m.add_argument("--proxy-r", type=float, default=800.0)
     m.add_argument("--proxy-z", type=float, nargs=2, default=(5400.0, 11800.0))
+    m.add_argument("--world", help="GDML world: carry the muons through the material above the CRV (stage C) and "
+                                   "start them on the MSC plane (design.sample)")
+    m.add_argument("--counters", default=RUN2_COUNTERS)
+    m.add_argument("--seed", type=int, default=1)
     m.set_defaults(func=cmd_muons)
     g = sub.add_parser("geometry", help="build a design and summarise it")
     g.add_argument("--design")

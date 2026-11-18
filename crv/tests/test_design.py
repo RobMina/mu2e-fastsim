@@ -347,3 +347,22 @@ def test_finder_cuts_slope_window_and_cluster_pe(counters):
     for n in heavy.cuts:
         heavy.cuts[n] = dc.replace(heavy.cuts[n], min_cluster_pes=1e6)
     assert F.evaluate(M.Design(), mu, heavy)["inefficiency_covered"] > 0.99 - off["uncovered_fraction"]
+
+
+def test_stack_range_stops_slow_muons(counters):
+    from mu2efastsim import eloss
+    dg = M.build(M.Design(), counters)
+    o = np.array([[-500.0, 6000.0, 1000.0]] * 2)
+    d = np.array([[0.0, -1.0, 0.0]] * 2)
+    idx, pos = V.sector_crossings(dg, o, d)
+    a = dg.sector[idx[:, 1]] == 0
+    idx, pos = idx[a], pos[a]
+    ke = 12.0                                                    # MeV: about 2.5 counters of polystyrene
+    p_slow = np.sqrt((ke + eloss.MMU) ** 2 - eloss.MMU ** 2)
+    keep, stopped = V.stack_range(dg, o, d, np.array([5000.0, p_slow]), idx, pos)
+    fast, slow = keep[idx[:, 0] == 0], keep[idx[:, 0] == 1]
+    assert fast.all() and fast.size == 4 and 1 <= slow.sum() < 4 and stopped.tolist() == [False, True]
+    mu = _muons()
+    on, off = F.evaluate(M.Design(), mu, _ctx(counters)), F.evaluate(M.Design(), mu, _ctx(counters),
+                                                                     F.FomConfig(stack_range=False))
+    assert on["stopped_fraction"] == 0.0 and on["inefficiency"] == pytest.approx(off["inefficiency"], rel=1e-12)
