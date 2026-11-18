@@ -785,7 +785,9 @@ def test_jax_cache_reaches_the_gpu_container_only(tmp_path, monkeypatch):
     line = next(l for l in body.splitlines() if l.startswith("B() { apptainer exec --nv"))
     assert '--env "JAX_COMPILATION_CACHE_DIR=$JC,JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0,CUDA_VISIBLE' in line
     assert '-B "$JC" -B "$CODE"' in line and body.count("JAX_COMPILATION_CACHE_DIR") == 1
-    assert body.splitlines()[0].startswith("mkdir -p /path/to/jaxcache && JC=$(readlink -f /path/to/jaxcache)")
+    lines = body.splitlines()                                  # after the endpoint's #SBATCH header, before B()
+    jc = next(i for i, l in enumerate(lines) if l.startswith("mkdir -p /path/to/jaxcache && JC=$(readlink -f /path/to/jaxcache)"))
+    assert jc < lines.index(line) and not any(l.startswith("#SBATCH") for l in lines[jc:])
     r = subprocess.run(["bash", "-n"], input=body.encode(), capture_output=True)
     assert r.returncode == 0, r.stderr.decode()
     cpu = edep("cpu", "beam_edep_cpu", kit_uva.BeamEdepCpuStream)  # no GPU container: unchanged
