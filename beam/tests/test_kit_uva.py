@@ -27,6 +27,7 @@ class Site:
         self.manifests = {}
         self.node_files = set()
         self.extra = {}            # job dir -> {path in the fetched tar: bytes}
+        self.prestaged = True      # the CVMFS runtime's PRESTAGED marker exists
 
     def __call__(self, cmd, stdin, timeout):
         s = cmd[-1]
@@ -57,6 +58,8 @@ class Site:
         elif s.startswith("srun") and "test -f" in s:
             path = s.split("test -f ")[1].split()[0].strip("'\"")
             out = b"have\n" if path in self.node_files else b""
+        elif s.startswith("test -f") and "PRESTAGED" in s:
+            out = b"yes\n" if self.prestaged else b""
         elif s.startswith("scancel"):
             self.state[s.split()[1]] = "CANCELLED"
         elif "tar -cf" in s:
@@ -657,6 +660,20 @@ def test_beam_centuple_writer_job_follows_the_front_and_its_file_is_the_result(t
     assert [f["kind"] for f in res["files"]] == ["root"] and res["files"][0]["name"] == kit_task.CENT_FILE
     assert res["metrics"]["efficiency"] == 0.975 and res["metrics"]["input_wait_s"] == 12.0
     assert res["metadata"]["writer_job_id"] == wj
+
+
+def test_beam_centuple_writer_waits_for_the_prestaged_cvmfs_runtime(tmp_path):
+    site, ep, kit, streamed, d = _centuple(tmp_path)
+    site.prestaged = False
+    kit.submit("ct1", PC, [], [])
+    j = _start(site, ep, "ct1")
+    kit.status("ct1")
+    site.state[j] = "COMPLETED"
+    n = site.next_id
+    st = kit.status("ct1")
+    assert st["state"] == "working" and "prestaged CVMFS runtime" in st["message"] and site.next_id == n
+    site.prestaged = True
+    assert kit.status("ct1")["message"].startswith("writer") and site.next_id == n + 1
 
 
 def test_beam_centuple_cancel_stops_both_jobs(tmp_path):

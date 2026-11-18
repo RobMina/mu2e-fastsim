@@ -559,11 +559,21 @@ class BeamCentupleStream(BeamPointStream):
             body = body.replace(f"@{a}@", b)
         return body
 
-    def ensure_writer(self, name):
-        """Submit the write stage once the front job has completed (idempotent, under the stream lock)."""
+    def prestaged(self) -> bool:
+        """True when CVMFSEXEC_DIST on the endpoint is a prestaged runtime (its PRESTAGED marker exists): the write
+        stages of parallel points must not each fill a cold CVMFS cache over the network (skill
+        prestaging-cvmfs-on-uva); the tree's config reads a read-only prestaged cache below each job's own."""
+        marker = shlex.quote(self.cvmfsexec.rstrip("/") + "/PRESTAGED")
+        return self.ep._sh(f"test -f {marker} && echo yes || true").strip() == "yes"
+
+    def ensure_writer(self, name) -> bool:
+        """Submit the write stage once the front job has completed and the CVMFS runtime is prestaged (idempotent,
+        under the stream lock). False while it waits for the prestaged runtime."""
         with submission_lock(self.dir / ".streams", name + self.WRITER):
             if self._has(name, "writer"):
-                return
+                return True
+            if not self.prestaged():
+                return False
             body = self.writer_body(name)
             try:
                 job = self.ep.submit(name + self.WRITER, body, CENT_WRITER_RESOURCES)
@@ -571,6 +581,7 @@ class BeamCentupleStream(BeamPointStream):
                 self._mark(name, "writererr", str(e))
                 raise ValueError(str(e)) from e
             self._mark(name, "writer", str(getattr(job, "job_id", "")))
+            return True
 
     def check(self, name, params) -> Dict[str, Any]:
         r = super().check(name, params)
@@ -592,9 +603,12 @@ class BeamCentupleStream(BeamPointStream):
             return {"state": "failed", "message": "writer submit failed: " + (self.dir / f"{name}.writererr").read_text()[:200],
                     "poll_ms": 0, "progress": None}
         try:
-            self.ensure_writer(name)
+            submitted = self.ensure_writer(name)
         except ValueError as e:
             return {"state": "failed", "message": f"writer submit failed: {e}", "poll_ms": 0, "progress": None}
+        if not submitted:
+            return {"state": "working", "message": f"front done; writer waits for the prestaged CVMFS runtime "
+                    f"({self.cvmfsexec}/PRESTAGED)", "poll_ms": POLL_MS, "progress": None}
         w = self.ep.status(name + self.WRITER)
         return {"state": w.state, "message": f"writer: {w.site_state} {w.message}".strip(),
                 "poll_ms": POLL_MS if w.state == "working" else 0, "progress": None}
