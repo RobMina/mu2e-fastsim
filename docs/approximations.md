@@ -139,7 +139,7 @@ behaviour and any stock-art route outside the chain's levels:
 | W9 | `primary_muon_lines` (no switch) | always on | - | no level | Geant4 transport of CRY muons with secondaries (straight primary lines here; secondaries, scattering and energy loss in the CRV are not simulated) | - |
 | W9 | `scaled_optics` (no switch) | always on | - | no level | photon lookup tables made by the stock optical simulation for each counter cross-section, fiber and length (here: the nearest stock table, scaled; fiber via the stock yield ratio) | - |
 | W9 | `expected_pe_poisson` (no switch) | always on | - | no level | stock photons, SiPM, waveforms and pulse reco on Geant4 steps (here: expected PE per counter end, Poisson, no visible-energy fluctuations, calibrated at nominal) | - |
-| W9 | `coincidence_rule` (no switch) | always on | - | no level | stock CrvCoincidenceFinder with time, slope and distance cuts (here: k-of-N layers, same-plus-adjacent PE threshold) | - |
+| W9 | `coincidence_rule` (no switch) | always on | - | no level | stock CrvCoincidenceFinder with time, slope and distance cuts (here: k-of-N layers, same-plus-adjacent PE threshold, the slope window and minimum cluster PE on the most-lit counter per layer; no time or distance cuts) | - |
 | W9 | `ce_like_proxy` (no switch) | always on | - | no level | CE-like track selection on full Geant4 + reco cosmics (here: lines through a cylinder about the DS axis) | - |
 | W9 | `deadtime_rate_model` (no switch) | always on | - | no level | stock CRV response and reco on beam-background frames in the design geometry (here: accidental and correlated rates calibrated at the nominal design) | - |
 <!-- end table -->

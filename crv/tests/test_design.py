@@ -319,6 +319,36 @@ def test_closure_against_full_chain_where_tables_are(tmp_path):
         assert s["crossings"] > 100 and abs(s["pe_ratio"] - out["pe_scale_fit"]) < 0.2
 
 
+def test_finder_positions_are_the_stock_world_coordinates(counters):
+    dg = M.build(M.Design(), counters)
+    geo = G.from_offline_config(counters)
+    b = np.arange(dg.nbars)
+    x, y = V.finder_positions(dg, b)
+    lw = geo.local_to_world                                   # Mu2e axis of (thickness, width, length) per bar
+    np.testing.assert_allclose(x, geo.center[b, lw[b, 1]], atol=1e-9)
+    np.testing.assert_allclose(y, geo.center[b, lw[b, 0]], atol=1e-9)
+
+
+def test_finder_cuts_slope_window_and_cluster_pe(counters):
+    import dataclasses as dc
+    mu = _muons(3000, seed=11)
+    wide = _ctx(counters)
+    for n in wide.cuts:
+        wide.cuts[n] = dc.replace(wide.cuts[n], min_slope=-1e9, max_slope=1e9, max_slope_diff=1e9, min_cluster_pes=0)
+    off = F.evaluate(M.Design(), mu, wide, F.FomConfig(finder_cuts=False))
+    on = F.evaluate(M.Design(), mu, wide)
+    assert on["inefficiency"] == pytest.approx(off["inefficiency"], rel=1e-12)
+    narrow = _ctx(counters)
+    for n in narrow.cuts:
+        narrow.cuts[n] = dc.replace(narrow.cuts[n], min_slope=0.0, max_slope=0.01)
+    one_sided = F.evaluate(M.Design(), mu, narrow)
+    assert one_sided["inefficiency"] > off["inefficiency"] + 0.1          # half the muon directions fail the window
+    heavy = _ctx(counters)
+    for n in heavy.cuts:
+        heavy.cuts[n] = dc.replace(heavy.cuts[n], min_cluster_pes=1e6)
+    assert F.evaluate(M.Design(), mu, heavy)["inefficiency_covered"] > 0.99 - off["uncovered_fraction"]
+
+
 def test_stockcmp_bookkeeping(counters):
     """A synthetic 'stock' arm that is the model's own expected PE (rounded) and one cluster per crossed sector:
     ratio 1 within rounding, and every crossed event has a stock coincidence."""

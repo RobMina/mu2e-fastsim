@@ -8,8 +8,9 @@ PE of the crossed counters are summed (the finder's same-plus-adjacent-counter P
 end has at least the sector's PE threshold (Poisson); the sector has a coincidence if at least k of its N layers are
 hit (Poisson-binomial), k = Design.coincidence_layers, or N - Design.spare_layers, or by default N - (4 - stock
 required layers), at least 1.
-P_miss = prod over sectors (1 - P_coinc); a muon that crosses no counter has P_miss = 1. The finder's time, slope
-and distance cuts are not applied.
+P_miss = prod over sectors (1 - P_coinc); a muon that crosses no counter has P_miss = 1. With the finder cuts
+(default in fom.evaluate) P_coinc also carries the finder's slope test and minimum cluster PE (finder_factor); its
+time and distance cuts are not applied (one muon: hits in time, neighbouring counters).
 """
 from __future__ import annotations
 
@@ -89,9 +90,73 @@ def p_coincidence(mu_layer_side, thr, k):
     return cum[np.arange(g), np.asarray(k, np.int64)]
 
 
-def p_miss(n_tracks, track, sector, layer, pe_sides, n_layers_sec, thr_sec, k_sec):
+def finder_positions(dg, bars):
+    """Hit positions of the stock finder for designed bars: (x, y) = the counter centre along the width and the
+    thickness direction, in Mu2e coordinates of the sector's stock axes (CrvCoincidenceFinder uses the world
+    components); a tilted module uses its own (rotated) width and thickness axes with the same signs."""
+    bars = np.asarray(bars, np.int64)
+    th = np.radians(dg.design.tilt_deg)
+    A = dg.axes[dg.sector[bars]]                              # rows n_t, g_t, l (tilted)
+    n0 = np.cos(th) * A[:, 0] - np.sin(th) * A[:, 1]          # untilted stock axes
+    g0 = np.sin(th) * A[:, 0] + np.cos(th) * A[:, 1]
+    sn = np.sign(n0[np.arange(len(bars)), np.abs(n0).argmax(1)])
+    sg = np.sign(g0[np.arange(len(bars)), np.abs(g0).argmax(1)])
+    c = dg.center[bars]
+    return np.einsum("mi,mi->m", c, sg[:, None] * A[:, 1]), np.einsum("mi,mi->m", c, sn[:, None] * A[:, 0])
+
+
+def _slope_ok(gid, x, y, lo, hi, msd, ng):
+    """Per group (rows sorted by group, then layer; one row per hit layer): consecutive slopes dx/dy all in [lo, hi]
+    with spread <= msd (the stock pairwise slope-difference test). Groups with one layer pass. lo/hi/msd per group."""
+    ok = np.ones(ng, bool)
+    same = gid[1:] == gid[:-1]
+    if not same.any():
+        return ok
+    pg = gid[1:][same]
+    sl = (x[1:] - x[:-1])[same] / (y[1:] - y[:-1])[same]
+    bad = (sl < lo[pg]) | (sl > hi[pg])
+    np.logical_and.at(ok, pg, ~bad)
+    smin, smax = np.full(ng, np.inf), np.full(ng, -np.inf)
+    np.minimum.at(smin, pg, sl)
+    np.maximum.at(smax, pg, sl)
+    return ok & ~((smax - smin) > msd)
+
+
+def finder_factor(grp, layer, bar, pe_sides, dg, groups, k_grp, lo, hi, msd, min_pe):
+    """Finder cuts the k-of-N rule leaves out, per (track, sector) group of `groups` (sorted keys of grp): the slope
+    test on the most-lit crossed counter of each layer (if it fails and more than k layers are crossed, the first or
+    the last layer may be dropped, as the finder may choose k of N) times P(cluster PE >= min_pe), Poisson about
+    the summed expected PE. lo, hi, msd, min_pe, k_grp per group. Returns the factor per group."""
+    gi = np.searchsorted(groups, np.asarray(grp, np.int64))
+    pet = np.asarray(pe_sides, np.float64).sum(1)
+    order = np.lexsort((-pet, np.asarray(layer), gi))
+    g_o, l_o = gi[order], np.asarray(layer)[order]
+    first = np.r_[True, (g_o[1:] != g_o[:-1]) | (l_o[1:] != l_o[:-1])]
+    rows = order[first]                                         # one crossing per (group, layer), by group, layer
+    x, y = finder_positions(dg, np.asarray(bar)[rows])
+    g = gi[rows]
+    ng = len(groups)
+    nl = np.bincount(g, minlength=ng)
+    ok = _slope_ok(g, x, y, lo, hi, msd, ng)
+    start = np.r_[0, np.cumsum(nl)[:-1]]
+    is_first, is_last = np.zeros(len(g), bool), np.zeros(len(g), bool)
+    is_first[start[nl > 0]] = True
+    is_last[(start + nl - 1)[nl > 0]] = True
+    for drop in (is_first, is_last):
+        keep = ~drop
+        ok |= _slope_ok(g[keep], x[keep], y[keep], lo, hi, msd, ng) & (nl - 1 >= k_grp)
+    tot = np.zeros(ng)
+    np.add.at(tot, gi, pet)
+    m = np.ceil(np.asarray(min_pe, np.float64))
+    p_pe = np.where(m > 0, 1.0 - pdtr(np.maximum(m - 1.0, 0.0), tot), 1.0)
+    return ok * p_pe
+
+
+def p_miss(n_tracks, track, sector, layer, pe_sides, n_layers_sec, thr_sec, k_sec, finder=None):
     """Per track P(no sector coincidence) [n_tracks] and per (track, sector) P_coinc rows (track, sector, p).
-    track, sector, layer [m] per crossing; pe_sides [m, 2]."""
+    track, sector, layer [m] per crossing; pe_sides [m, 2]. finder: None (k-of-N and threshold only) or dict(dg,
+    bar [m], min_slope, max_slope, max_slope_diff, min_pe [nsec]) to apply the finder's slope and cluster-PE cuts
+    (finder_factor)."""
     nsec = len(n_layers_sec)
     nmax = int(np.max(n_layers_sec)) if nsec else 1
     out = np.ones(n_tracks)
@@ -103,6 +168,11 @@ def p_miss(n_tracks, track, sector, layer, pe_sides, n_layers_sec, thr_sec, k_se
     np.add.at(mu, (gi, np.asarray(layer, np.int64)), np.asarray(pe_sides, np.float64))
     gs = ug % nsec
     pc = p_coincidence(mu, np.asarray(thr_sec)[gs], np.asarray(k_sec)[gs])
+    if finder is not None:
+        f = finder
+        pc = pc * finder_factor(grp, layer, f["bar"], pe_sides, f["dg"], ug, np.asarray(k_sec)[gs],
+                                np.asarray(f["min_slope"])[gs], np.asarray(f["max_slope"])[gs],
+                                np.asarray(f["max_slope_diff"])[gs], np.asarray(f["min_pe"])[gs])
     gt = ug // nsec
     np.multiply.at(out, gt, 1.0 - pc)
     return out, (gt, gs, pc)
