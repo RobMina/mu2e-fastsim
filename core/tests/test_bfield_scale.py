@@ -1,4 +1,7 @@
-"""Opt-in per-map field scales (mu2efastsim.bfield_scale): parsing, both readers, unset = unchanged."""
+"""Opt-in per-map field scales (mu2efastsim.bfield_scale): parsing, the ehelix reader, unset = unchanged.
+
+The beam reader (beamfastsim.fieldmap) is checked in beam/tests/test_fieldmap_scale.py (core imports no detector).
+"""
 import numpy as np
 import pytest
 
@@ -38,9 +41,6 @@ def test_unset_reads_are_unchanged(tmp_path, monkeypatch):
     hdr, B = write_map(tmp_path)
     lo, d, n, grid = ehelix.read_g4bl(hdr)
     assert np.array_equal(grid, B) and grid.dtype == np.float64
-    beam = pytest.importorskip("beamfastsim.fieldmap")
-    fm = beam.load(hdr, dtype=np.float32)
-    assert np.array_equal(fm.B, B.astype(np.float32))
 
 
 def test_both_readers_scale_the_named_map_only(tmp_path, monkeypatch, capsys):
@@ -50,9 +50,6 @@ def test_both_readers_scale_the_named_map_only(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(bfield_scale, "_reported", set())
     assert np.allclose(ehelix.read_g4bl(hdr)[3], 0.9 * B, rtol=0, atol=0)
     assert np.array_equal(ehelix.read_g4bl(other)[3], B2)
-    beam = pytest.importorskip("beamfastsim.fieldmap")
-    fm = beam.load(hdr, dtype=np.float32)
-    assert np.array_equal(fm.B, (B * 0.9).astype(np.float32))            # scaled in float64, then cast
     assert capsys.readouterr().err.count("bfield_scale: map DSMap scaled by 0.9") == 1
     assert bfield_scale.record() == {"DSMap": 0.9}
 
