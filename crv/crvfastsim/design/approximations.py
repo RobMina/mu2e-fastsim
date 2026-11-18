@@ -15,7 +15,8 @@ WORKFLOW = Workflow(
         "expected_pe_poisson": "stock photons, SiPM, waveforms and pulse reco on Geant4 steps (here: expected PE per "
                                "counter end, Poisson, no visible-energy fluctuations, calibrated at nominal)",
         "coincidence_rule": "stock CrvCoincidenceFinder with time, slope and distance cuts (here: k-of-N layers, "
-                            "same-plus-adjacent PE threshold)",
+                            "same-plus-adjacent PE threshold, the slope window and minimum cluster PE on the "
+                            "most-lit counter per layer; no time or distance cuts)",
         "ce_like_proxy": "CE-like track selection on full Geant4 + reco cosmics (here: lines through a cylinder "
                          "about the DS axis)",
         "deadtime_rate_model": "stock CRV response and reco on beam-background frames in the design geometry "

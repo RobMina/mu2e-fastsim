@@ -36,6 +36,7 @@ class FomConfig:
     aging_o1: float = 1.0      # light-yield factor for the inefficiency
     aging_c1: float = 0.94 ** 5   # Mu2e-II end of run (6 %/yr, 5 yr)
     aging_ref: float = 0.86    # nominal Run 2 counter at the end of Mu2e
+    finder_cuts: bool = True   # the finder's slope and minimum-cluster-PE cuts in P_coinc (veto.finder_factor)
 
 
 def proxy_hits(origin, direction, proxy=PROXY):
@@ -105,6 +106,15 @@ def _stock_required(cuts):
     return {n: int(c.coincidence_layers) for n, c in cuts.items()}
 
 
+def finder_config(dg, cuts, bars):
+    """veto.p_miss `finder` argument: the sector cuts' slope window, slope difference and minimum cluster PE."""
+    names = dg.sector_names
+    return dict(dg=dg, bar=bars, min_slope=np.array([cuts[n].min_slope for n in names], float),
+                max_slope=np.array([cuts[n].max_slope for n in names], float),
+                max_slope_diff=np.array([cuts[n].max_slope_diff for n in names], float),
+                min_pe=np.array([cuts[n].min_cluster_pes for n in names], float))
+
+
 def sector_pe(dg, ctx, idx, pos, p, cfg, dtype):
     """Expected PE [m, 2] for the crossing rows (idx [m, 2] track, bar; pos [m, 6] local in/out)."""
     pe = np.zeros((len(idx), 2), dtype)
@@ -152,7 +162,8 @@ def evaluate(design, muons, ctx=None, cfg=FomConfig(), calibration=None, dtype=n
     thr = np.full_like(thr0, design.pe_threshold) if design.pe_threshold is not None else thr0
     k = np.array([V.required_layers(int(dg.n_layers[s]), req[nm], design.coincidence_layers, design.spare_layers)
                   for s, nm in enumerate(names)])
-    pm, (gt, gs, pc) = V.p_miss(n, idx[:, 0], dg.sector[idx[:, 1]], dg.layer[idx[:, 1]], pe, dg.n_layers, thr, k)
+    pm, (gt, gs, pc) = V.p_miss(n, idx[:, 0], dg.sector[idx[:, 1]], dg.layer[idx[:, 1]], pe, dg.n_layers, thr, k,
+                                finder_config(dg, ctx.cuts, idx[:, 1]) if cfg.finder_cuts else None)
     covered = np.zeros(n, bool)
     covered[idx[:, 0]] = True
     ymax = np.full(n, -np.inf)
