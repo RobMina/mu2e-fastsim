@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mu2e-fastsim-mcp"
+version = "0.1.0"
+description = "MCP server exposing the Mu2e fast simulation as agent tools"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]>=1.27",
+    "pydantic>=2,<3",
+]
+
+[project.optional-dependencies]
+# the kit host: the endpoint adapters (run_design_point, job_status, fetch_outputs)
+kit = ["hep-endpoints @ git+https://github.com/RobMina/hep-endpoints.git@536656008f457eefb5939cdbe1095cbdf445857d"]
+
+[tool.mcp-server]
+tool_modules = ["fastsim_tools"]
+
+[tool.setuptools.packages.find]
+include = ["fastsim_mcp_server*", "fastsim_tools*"]

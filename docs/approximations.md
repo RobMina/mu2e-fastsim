@@ -74,6 +74,7 @@ Where each workflow writes it:
 | W6 | `mixing.stream_benchmark`: `configuration.json` |
 | W7 | the timer report only (the device chain has no command) |
 | W8 | `trigger.device.run decide`: the decide JSON |
+| W9 | `crvfastsim.design evaluate`: the metrics JSON (`approximations`) |
 
 Every workflow also writes the entry to the timer report.
 
@@ -88,7 +89,7 @@ python3 -m mu2efastsim.approximations crvfastsim --record W5 --approx-preset fid
 The table is generated from the declarations; a test keeps it in sync. To regenerate it:
 
 ```bash
-python3 -m mu2efastsim.approximations beamfastsim crvfastsim calofastsim mixing trigger
+python3 -m mu2efastsim.approximations beamfastsim crvfastsim crvfastsim.design calofastsim mixing trigger
 ```
 
 The alternative column says what gives the stock result. For an approximation with no switch, it gives the stock
@@ -135,6 +136,12 @@ behaviour and any stock-art route outside the chain's levels:
 | W8 | `exact_weighted_median` (no switch) | always on | - | no level | time clusters use the exact weighted median where stock uses the P2 estimate; stock trigger replay on the same digis (trigger/replay.py --straw-digi-tag, trigger/hybrid pairing) | - |
 | W8 | `tracker_path_subset` (no switch) | always on | - | no level | 20 single-helix tracker paths of 52 on the device; the replay runs all 52 | - |
 | W8 | `no_delta_finder` (no switch) | always on | - | no level | DeltaFinder skipped (exact without pileup); stock trigger replay on the same digis (trigger/replay.py --straw-digi-tag, trigger/hybrid pairing) | - |
+| W9 | `primary_muon_lines` (no switch) | always on | - | no level | Geant4 transport of CRY muons with secondaries (straight primary lines here; secondaries, scattering and energy loss in the CRV are not simulated) | - |
+| W9 | `scaled_optics` (no switch) | always on | - | no level | photon lookup tables made by the stock optical simulation for each counter cross-section, fiber and length (here: the nearest stock table, scaled; fiber via the stock yield ratio) | - |
+| W9 | `expected_pe_poisson` (no switch) | always on | - | no level | stock photons, SiPM, waveforms and pulse reco on Geant4 steps (here: expected PE per counter end, Poisson, no visible-energy fluctuations, calibrated at nominal) | - |
+| W9 | `coincidence_rule` (no switch) | always on | - | no level | stock CrvCoincidenceFinder with time, slope and distance cuts (here: k-of-N layers, same-plus-adjacent PE threshold) | - |
+| W9 | `ce_like_proxy` (no switch) | always on | - | no level | CE-like track selection on full Geant4 + reco cosmics (here: lines through a cylinder about the DS axis) | - |
+| W9 | `deadtime_rate_model` (no switch) | always on | - | no level | stock CRV response and reco on beam-background frames in the design geometry (here: accidental and correlated rates calibrated at the nominal design) | - |
 <!-- end table -->
 
 ## Notes per workflow

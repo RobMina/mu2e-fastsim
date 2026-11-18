@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "mu2e-fastsim": {
+      "command": "/path/to/mu2e-fastsim/fastsim-mcp/venv/bin/python",
+      "args": ["-m", "fastsim_mcp_server", "--site-env", "/path/to/site.env"],
+      "cwd": "/path/to/mu2e-fastsim/fastsim-mcp"
+    }
+  }
+}
