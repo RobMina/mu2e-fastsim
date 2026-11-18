@@ -67,8 +67,16 @@ def _face_best(score, ok, uf):
     return cand & (jnp.arange(H) == first[uf])
 
 
+SCAN_WIDTHS = (16, 32, NFACES)   # helices_pairs: lambda-scan slots, the narrowest holding every pair's XY-selected hits
+
+
 def _fit(hit, m0, s, lam_sign, fz):
-    x, y, z = hit["x"].astype(F64), hit["y"].astype(F64), hit["z"].astype(F64)
+    return _phiz(hit, s, lam_sign, fz, _circle(hit, m0, s))
+
+
+def _circle(hit, m0, s):
+    """The XY part of the fit: circle and its hit selection. It does not depend on the helicity (one call serves both)."""
+    x, y = hit["x"].astype(F64), hit["y"].astype(F64)
     ux, uy = hit["udx"].astype(F64), hit["udy"].astype(F64)
     werr2, terr2 = hit["uvar"].astype(F64), hit["vvar"].astype(F64)
     uf, nsh = hit["uface"], hit["nsh"].astype(F64)
@@ -105,12 +113,28 @@ def _fit(hit, m0, s, lam_sign, fz):
     selxy, pull, _ = xy_select(cx, cy, R)
     nxy = jnp.sum(selxy)
     chi2xy = jnp.sum(jnp.where(selxy, pull ** 2, 0.0)) / jnp.maximum(nxy, 1e-10)
+    return cx, cy, R, selxy, nxy, chi2xy
+
+
+def _phiz(hit, s, lam_sign, fz, circle, width=None):
+    """The phi-z part of the fit for one helicity (sign of lambda), from the circle of _circle. With `width`, the lambda
+    scan sums over the XY-selected hits only, gathered in collection order into `width` slots (width >= their count:
+    the caller's choice); the other hits carry weight 0, so the sums and the fit are the same."""
+    cx, cy, R, selxy, nxy, chi2xy = circle
+    x, y, z = hit["x"].astype(F64), hit["y"].astype(F64), hit["z"].astype(F64)
+    ux, uy = hit["udx"].astype(F64), hit["udy"].astype(F64)
+    werr2, terr2 = hit["uvar"].astype(F64), hit["vvar"].astype(F64)
+    uf, nsh = hit["uface"], hit["nsh"].astype(F64)
 
     # phi-z: signed-lambda scan of phase coherence, then unwrapped weighted line fit
     phi = jnp.arctan2(y - cy, x - cx)
     lams = lam_sign * jnp.arange(s["lmin"], s["lmax"] + 0.5 * s["lstep"], s["lstep"])
-    wz = jnp.where(selxy, nsh, 0.0)
-    ph0 = phi[None, :] - z[None, :] / lams[:, None]
+    if width is None or width >= x.shape[0]:
+        wz, phs, zs = jnp.where(selxy, nsh, 0.0), phi, z
+    else:
+        slot = jnp.nonzero(selxy, size=width, fill_value=0)[0]
+        wz, phs, zs = jnp.where(jnp.arange(width) < nxy, nsh[slot], 0.0), phi[slot], z[slot]
+    ph0 = phs[None, :] - zs[None, :] / lams[:, None]
     coh = jnp.abs(jnp.sum(wz[None, :] * jnp.exp(1j * ph0), axis=1))
     k = jnp.argmax(coh)
     lam = lams[k]
@@ -176,12 +200,11 @@ def _helix_hits(ph, bkg_mask):
     return hit, usable
 
 
-def _per_cluster(s, fz):
+def _best_helicity(s, fz, width=None):
     fzj = jnp.asarray(fz)
 
-    def per_cluster(h, use, mem, valid):
-        m0 = use & mem & valid
-        fits = [_fit(h, m0, s, float(hel), fzj) for hel in s["helicities"]]
+    def best_helicity(h, circle, valid):
+        fits = [_phiz(h, s, float(hel), fzj, circle, width) for hel in s["helicities"]]
         best = fits[0]
         for f in fits[1:]:
             better = f["ok"] & (~best["ok"] | (f["nsh"] > best["nsh"]) |
@@ -189,6 +212,14 @@ def _per_cluster(s, fz):
             best = {k: jnp.where(better, f[k], best[k]) for k in best}
         best["ok"] = best["ok"] & valid
         return best
+    return best_helicity
+
+
+def _per_cluster(s, fz):
+    finish = _best_helicity(s, fz)
+
+    def per_cluster(h, use, mem, valid):
+        return finish(h, _circle(h, use & mem & valid, s), valid)
     return per_cluster
 
 
@@ -245,8 +276,15 @@ def helices_pairs(ph, tc, s, fz, K, bkg_mask=0):
     flat = jnp.nonzero(tc["valid"].reshape(-1), size=K, fill_value=E * C)[0]
     use = flat < E * C
     e, c = jnp.minimum(flat // C, E - 1), flat % C
-    best = jax.vmap(_per_cluster(s, fz))({k: v[e] for k, v in hit.items()}, usable[e], tc["members"][e, c],
-                                        tc["valid"][e, c] & use)
+    h = {k: v[e] for k, v in hit.items()}
+    valid = tc["valid"][e, c] & use
+    circle = jax.vmap(lambda hh, m0: _circle(hh, m0, s))(h, usable[e] & tc["members"][e, c] & valid[:, None])
+    H = hit["x"].shape[1]
+    widths = [w for w in SCAN_WIDTHS if w < H] + [None]   # None: every hit (as helices)
+    branches = [lambda a, w=w: jax.vmap(_best_helicity(s, fz, w))(*a) for w in widths]
+    edges = jnp.array([w for w in widths if w is not None], jnp.int32)
+    branch = jnp.searchsorted(edges, jnp.max(circle[4]).astype(jnp.int32), side="left")
+    best = jax.lax.switch(branch, branches, (h, circle, valid))
     dst = jnp.where(use, flat, E * C)
     out = {k: jnp.zeros(E * C + 1, v.dtype).at[dst].set(v)[:E * C].reshape(E, C) for k, v in best.items()}
     out["ok"] = out["ok"] & tc["valid"]

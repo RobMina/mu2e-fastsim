@@ -347,3 +347,35 @@ def test_finder_cuts_slope_window_and_cluster_pe(counters):
     for n in heavy.cuts:
         heavy.cuts[n] = dc.replace(heavy.cuts[n], min_cluster_pes=1e6)
     assert F.evaluate(M.Design(), mu, heavy)["inefficiency_covered"] > 0.99 - off["uncovered_fraction"]
+
+
+def test_stockcmp_bookkeeping(counters):
+    """A synthetic 'stock' arm that is the model's own expected PE (rounded) and one cluster per crossed sector:
+    ratio 1 within rounding, and every crossed event has a stock coincidence."""
+    from crvfastsim.design import stockcmp as SC
+    ctx = _ctx(counters)
+    mu = _muons(500, seed=7)
+    dg = M.build(M.Design(), counters, {n: s.yield_per_mev for n, s in ctx.sectors.items()})
+    idx, pos = V.sector_crossings(dg, mu["origin"], mu["direction"])
+    pe = F.sector_pe(dg, ctx, idx, pos, mu["p"], O.OpticsConfig(), np.float64)
+    ev = idx[:, 0]
+    bar = np.repeat(idx[:, 1], 2)
+    side = np.tile([0, 1], len(idx))
+    pv = pe.reshape(-1)
+    keep = pv > 0
+    pidx = np.zeros(keep.sum(), np.int64)
+    pev = np.repeat(ev, 2)[keep]
+    for e in np.unique(pev):
+        m = pev == e
+        pidx[m] = np.arange(m.sum())
+    pulses = dict(event=pev, idx=pidx, bar=bar[keep], side=side[keep], pe=pv[keep])
+    first = np.unique(pev * 16 + dg.sector[pulses["bar"]], return_index=True)[1]
+    clusters = dict(event=pev[first], cluster=np.arange(len(first)), bar=pulses["bar"][first])
+    stock = dict(n_events=len(mu["p"]), muons=dict(event=np.arange(len(mu["p"])), **mu), pulses=pulses,
+                 clusters=clusters)
+    out = SC.compare(stock, M.Design(), ctx)
+    for s in out["sectors"].values():
+        assert s["pe_ratio"][0] == pytest.approx(1.0, rel=1e-9) and s["coinc_stock"] == 1.0
+        assert 0.0 <= s["coinc_model"] <= 1.0 and s["events"] > 5
+        for row in s["pe"]:
+            assert row["ratio_end0"] == pytest.approx(1.0, rel=1e-9)
