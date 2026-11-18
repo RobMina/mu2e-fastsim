@@ -396,6 +396,9 @@ class FastsimKit:
         if params["task"] in DELEGATED_ONLY:
             raise ValueError(f"fastsimkit: task {params['task']!r} runs only through its endpoint delegate; "
                              f"{getattr(self.ep, 'name', '?')!r} has none")
+        if any(params.get(k, 1.0) != 1.0 for k in ("ds_bscale", "tsd_bscale")):
+            raise ValueError(f"fastsimkit: {params['task']}: field-map scales (ds_bscale, tsd_bscale) run on the "
+                             f"streaming route (UVA) only; {getattr(self.ep, 'name', '?')!r} renders none")
         fnal = getattr(self.ep, "fnal_data", None)
         if params["task"] in FNAL_TASKS and not fnal:
             raise ValueError(f"fastsimkit: task {params['task']!r} reads Mu2e-internal inputs in place and needs an "

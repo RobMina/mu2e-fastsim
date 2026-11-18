@@ -673,8 +673,11 @@ def provenance(**kw):
                                     timeout=10).stdout.strip() or None
         except (OSError, subprocess.SubprocessError):
             commit = None
+    from mu2efastsim import bfield_scale
+    scaled = bfield_scale.record()          # only a scaled run records it, so an unscaled record is unchanged
     return dict(producer="mu2efastsim beamfastsim.edepana", format="Offline EdepAna EDepAna/tree (v13_39_00)",
-                code_commit=commit, created=time.strftime("%Y-%m-%dT%H:%M:%S%z"), **kw)
+                code_commit=commit, created=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                **({"bfield_mapscale": scaled} if scaled else {}), **kw)
 
 
 def _sha256(path):
