@@ -478,7 +478,7 @@ tail -c 300 "$M2FS_OUT/point.txt"
 """
 CENT_WRITER_BODY = """module load apptainer >/dev/null 2>&1
 M2FS_OUT=$(readlink -f "$M2FS_OUT")
-CODE=@code@
+CODE=$(readlink -f @code@)    # the real path: the Mu2e container binds it, not a symlinked scratch path
 G=$(readlink -f "$(dirname "$(dirname "$M2FS_OUT")")/@front@/out")
 DON=$(readlink -f @donors@)
 echo "host $(hostname) job ${SLURM_JOB_ID:-none} cpus ${SLURM_CPUS_PER_TASK:-?} out $M2FS_OUT front $G"

@@ -641,7 +641,7 @@ def test_beam_centuple_writer_job_follows_the_front_and_its_file_is_the_result(t
     w = site.body
     assert "mu2e_env.sh" in w and "centuple write" in w and "centuple finish" in w
     assert "CVMFSEXEC_DIST=/path/to/cvmfsexec" in w and "DON=$(readlink -f /path/to/donors)" in w
-    assert '/ct1/out")' in w and "--nv" not in w
+    assert '/ct1/out")' in w and "--nv" not in w and "CODE=$(readlink -f " in w
     r = subprocess.run(["bash", "-n"], input=w.encode(), capture_output=True)
     assert r.returncode == 0, r.stderr.decode()
     wj = ep.state.get("ct1.w").job_id
