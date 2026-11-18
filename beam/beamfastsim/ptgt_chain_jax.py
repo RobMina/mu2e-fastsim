@@ -52,10 +52,12 @@ class Cfg(NamedTuple):
     h_vac: float; h_near: float; near: float; h_mat: float; neutral_step: float
     ke_min_hadron: float; ke_min_pion: float; max_loss_fraction: float
     rb: float; zc: float; hl: float
+    eps: float; nudge: float; max_lane_steps: int
 
 
 class Lanes(NamedTuple):
     alive: object; sp: object; x: object; u: object; p: object; t: object; tau: object; seg: object; ev: object
+    n: object       # steps taken (a lane past Cfg.max_lane_steps is stopped and counted)
 
 
 def species_of(pdg):
@@ -82,8 +84,9 @@ def make_static(bank, target, env, fm, dtype):
     return st, nk, nmat
 
 
-def make_cfg(target, env, stp, nk, nmat):
-    return Cfg(nk=nk, nmat=nmat, nseg=len(target.mat), z_plane=float(env.z_plane), r_plane=float(env.r_plane),
+def make_cfg(target, env, stp, nk, nmat, dtype=jnp.float64, max_lane_steps=200_000):
+    f32 = jnp.dtype(dtype) == jnp.float32
+    return Cfg(eps=1e-4 if f32 else 1e-7, nudge=1e-3 if f32 else 1e-5, max_lane_steps=int(max_lane_steps),nk=nk, nmat=nmat, nseg=len(target.mat), z_plane=float(env.z_plane), r_plane=float(env.r_plane),
                z_min=float(env.z_min), axis_x=float(env.axis_x), h_vac=stp.h_vac, h_near=stp.h_near, near=stp.near,
                h_mat=stp.h_mat, neutral_step=stp.neutral_step, ke_min_hadron=stp.cuts.ke_min_hadron,
                ke_min_pion=stp.cuts.ke_min_pion, max_loss_fraction=stp.cuts.max_loss_fraction,
@@ -115,7 +118,7 @@ def locate(S, cfg, xl):
     return jnp.where(inside, i, -1).astype(jnp.int32)
 
 
-def _cone_hit(xl, dl, z0, z1, ra, rb):
+def _cone_hit(xl, dl, z0, z1, ra, rb, eps=1e-7):
     s = (rb - ra) / (z1 - z0)
     c0 = ra - s * z0
     x, y, z = xl[:, 0], xl[:, 1], xl[:, 2]
@@ -135,15 +138,15 @@ def _cone_hit(xl, dl, z0, z1, ra, rb):
     best = jnp.full(x.shape, big)
     for t in (r1, r2):
         zt = z + t * dz
-        good = ok & (t > 1e-7) & (zt >= z0) & (zt <= z1) & (c0 + s * zt >= 0) & jnp.isfinite(t)
+        good = ok & (t > eps) & (zt >= z0) & (zt <= z1) & (c0 + s * zt >= 0) & jnp.isfinite(t)
         best = jnp.where(good & (t < best), t, best)
     return best
 
 
-def _plane_hit(xl, dl, zp):
+def _plane_hit(xl, dl, zp, eps=1e-7):
     safe = jnp.where(dl[:, 2] == 0, 1.0, dl[:, 2])
     t = (zp - xl[:, 2]) / safe
-    return jnp.where((dl[:, 2] != 0) & (t > 1e-7), t, jnp.inf)
+    return jnp.where((dl[:, 2] != 0) & (t > eps), t, jnp.inf)
 
 
 def distance_out(S, cfg, xl, dl, seg):
@@ -151,10 +154,11 @@ def distance_out(S, cfg, xl, dl, seg):
     out = big
     for i in range(cfg.nseg):
         z0, z1 = S.zt[i], S.zt[i + 1]
-        ti = jnp.minimum(_plane_hit(xl, dl, z0), _plane_hit(xl, dl, z1))
-        ti = jnp.minimum(ti, _cone_hit(xl, dl, z0, z1, S.rout[i, 0], S.rout[i, 1]))
+        e = cfg.eps
+        ti = jnp.minimum(_plane_hit(xl, dl, z0, e), _plane_hit(xl, dl, z1, e))
+        ti = jnp.minimum(ti, _cone_hit(xl, dl, z0, z1, S.rout[i, 0], S.rout[i, 1], e))
         has_in = (S.rin[i, 0] > 0) | (S.rin[i, 1] > 0)
-        ti = jnp.where(has_in, jnp.minimum(ti, _cone_hit(xl, dl, z0, z1, S.rin[i, 0], S.rin[i, 1])), ti)
+        ti = jnp.where(has_in, jnp.minimum(ti, _cone_hit(xl, dl, z0, z1, S.rin[i, 0], S.rin[i, 1], e)), ti)
         out = jnp.where(seg == i, ti, out)
     return out
 
@@ -163,11 +167,11 @@ def distance_in(S, cfg, xl, dl):
     t = jnp.full(xl.shape[0], jnp.inf, xl.dtype)
     for i in range(cfg.nseg):
         z0, z1 = S.zt[i], S.zt[i + 1]
-        t = jnp.minimum(t, _cone_hit(xl, dl, z0, z1, S.rout[i, 0], S.rout[i, 1]))
+        t = jnp.minimum(t, _cone_hit(xl, dl, z0, z1, S.rout[i, 0], S.rout[i, 1], cfg.eps))
         has_in = (S.rin[i, 0] > 0) | (S.rin[i, 1] > 0)
-        t = jnp.where(has_in, jnp.minimum(t, _cone_hit(xl, dl, z0, z1, S.rin[i, 0], S.rin[i, 1])), t)
+        t = jnp.where(has_in, jnp.minimum(t, _cone_hit(xl, dl, z0, z1, S.rin[i, 0], S.rin[i, 1], cfg.eps)), t)
         for zp, k in ((z0, 0), (z1, 1)):
-            tp = _plane_hit(xl, dl, zp)
+            tp = _plane_hit(xl, dl, zp, cfg.eps)
             pp = xl + jnp.where(jnp.isfinite(tp), tp, 0.0)[:, None] * dl
             r = jnp.hypot(pp[:, 0], pp[:, 1])
             t = jnp.where((r >= S.rin[i, k]) & (r < S.rout[i, k]) & (tp < t), tp, t)
@@ -226,7 +230,8 @@ def _step(S, cfg, carry, key):
     q = jnp.asarray(CHARGE_SP, dt)[sp]
     ke = jnp.hypot(L.p, m) - m
     low = jnp.where(jnp.asarray(HADRON_SP)[sp], ke < cfg.ke_min_hadron, ke < cfg.ke_min_pion)
-    stop = L.alive & (low | (L.sp < 0))
+    capped = L.alive & (L.n >= cfg.max_lane_steps)
+    stop = L.alive & (low | (L.sp < 0) | capped)
     alive = L.alive & ~stop
     beta = L.p / jnp.hypot(L.p, m)
     finite_tau = jnp.isfinite(L.tau)
@@ -263,7 +268,7 @@ def _step(S, cfg, carry, key):
     um = um / jnp.linalg.norm(um, axis=1, keepdims=True)
     hit = inm & (t_int <= stp) & (t_int <= t_bnd)
     crossed = inm & (t_bnd <= stp) & ~hit
-    xm = jnp.where(crossed[:, None], xm + 1e-5 * um, xm)
+    xm = jnp.where(crossed[:, None], xm + cfg.nudge * um, xm)
     inel = hit & (jax.random.uniform(ks[3], (N,), dt) * s_tot < s_in)
     el = hit & ~inel
     # elastic: angle from the bank's inverse CDF
@@ -280,7 +285,7 @@ def _step(S, cfg, carry, key):
     charged = q != 0
     hv = jnp.where(near, cfg.h_near, jnp.where(charged, cfg.h_vac, cfg.neutral_step))
     tn = distance_in(S, cfg, xl, dl)                              # neutral: straight to the next entry, or out
-    hv = jnp.where(charged, hv, jnp.where(jnp.isfinite(tn), tn + 1e-5, 0.0))
+    hv = jnp.where(charged, hv, jnp.where(jnp.isfinite(tn), tn + cfg.nudge, 0.0))
     hv = jnp.minimum(hv, d_dec)
     xv, uv = _rk4(S.fm, L.x, L.u, C.K_FIELD * q / L.p, jnp.where(charged, hv, 0.0))
     xv = jnp.where(charged[:, None], xv, L.x + hv[:, None] * L.u)
@@ -290,8 +295,8 @@ def _step(S, cfg, carry, key):
     cd = chord / jnp.maximum(clen, 1e-30)[:, None]
     ti = distance_in(S, cfg, xl, dir_local(S, cd))
     enter = near & charged & (ti < clen)
-    fr = jnp.where(enter, (ti + 1e-5) / jnp.maximum(clen, 1e-30), 1.0)
-    xv = jnp.where(enter[:, None], L.x + (ti + 1e-5)[:, None] * cd, xv)
+    fr = jnp.where(enter, (ti + cfg.nudge) / jnp.maximum(clen, 1e-30), 1.0)
+    xv = jnp.where(enter[:, None], L.x + (ti + cfg.nudge)[:, None] * cd, xv)
     hv = hv * fr
     zp = cfg.z_plane
     cross = vac & (L.x[:, 2] < zp) & (xv[:, 2] >= zp)
@@ -418,8 +423,9 @@ def _step(S, cfg, carry, key):
     x_new, u_new, p_new, t_new = keep_old(x_new, L.x), keep_old(u_new, L.u), keep_old(p_new, L.p), keep_old(t_new, L.t)
     tau_new, seg_new = keep_old(tau_new, L.tau), keep_old(seg_new, L.seg)
     cnt = cnt + jnp.stack([jnp.sum(inel), jnp.sum(el & ~defer), jnp.sum(stop), jnp.sum(dec_had), jnp.sum(ab), jnp.sum(upstream),
-                           nrec, over_e, over_r]).astype(jnp.int64)
-    L = Lanes(alive=alive_new, sp=L.sp, x=x_new, u=u_new, p=p_new, t=t_new, tau=tau_new, seg=seg_new, ev=L.ev)
+                           nrec, over_e, over_r, jnp.sum(capped)]).astype(jnp.int64)
+    L = Lanes(alive=alive_new, sp=L.sp, x=x_new, u=u_new, p=p_new, t=t_new, tau=tau_new, seg=seg_new, ev=L.ev,
+              n=L.n + L.alive.astype(jnp.int32))
     return (L, emit, ecount, rec, rcount, cnt)
 
 
@@ -430,7 +436,7 @@ def cfg_emit_per_step(N):
 
 
 COUNTERS = ("inelastic", "elastic", "stopped", "decays", "absorbed", "upstream", "recorded", "emit_overflow",
-            "record_overflow")
+            "record_overflow", "step_cap")
 
 
 @partial(jax.jit, static_argnums=(1, 3))
@@ -481,7 +487,7 @@ def _refill(L, emit, ecount, key, tau_scale):
               x=L.x.at[dst].set(e_x[srcc], mode="drop"), u=L.u.at[dst].set(e_u[srcc], mode="drop"),
               p=L.p.at[dst].set(e_p[srcc], mode="drop"), t=L.t.at[dst].set(e_t[srcc], mode="drop"),
               tau=L.tau.at[dst].set(tau, mode="drop"), seg=L.seg.at[dst].set(e_seg[srcc], mode="drop"),
-              ev=L.ev.at[dst].set(e_ev[srcc], mode="drop"))
+              ev=L.ev.at[dst].set(e_ev[srcc], mode="drop"), n=L.n.at[dst].set(0, mode="drop"))
     # shift the rest of the buffer to the front
     idx = jnp.arange(E) + k
     keep = idx < ecount
@@ -504,15 +510,25 @@ def _inject(L, prim, first, n_prim):
               x=L.x.at[dst].set(prim["x"][s], mode="drop"), u=L.u.at[dst].set(prim["u"][s], mode="drop"),
               p=L.p.at[dst].set(prim["p"][s], mode="drop"), t=L.t.at[dst].set(prim["t"][s], mode="drop"),
               tau=L.tau.at[dst].set(jnp.inf, mode="drop"), seg=L.seg.at[dst].set(prim["seg"][s], mode="drop"),
-              ev=L.ev.at[dst].set(prim["ev"][s], mode="drop"))
+              ev=L.ev.at[dst].set(prim["ev"][s], mode="drop"), n=L.n.at[dst].set(0, mode="drop"))
     return L, k
 
 
 def run(bank, target, fm, env, prim, seed=1, st=C.Stepping(), pool=1 << 16, emit_cap=None, rec_cap=None,
         steps=64, dtype=jnp.float64, max_chunks=10_000_000):
     """Device chain for the primaries `prim` (host dict as ptgt_chain.primaries). Returns (record dict, counters)."""
+    # transport in a frame centred on the target (float32: millimetre coordinates near the target keep sub-micron
+    # resolution for boundary steps); records are shifted back to the Mu2e frame
+    shift = np.array([target.origin[0], 0.0, target.origin[2]])
+    target = D.Target(target.z_edges, target.r_in, target.r_out, target.mat, origin=np.asarray(target.origin) - shift,
+                      rot=target.rot)
+    env = C.Envelope(z_nodes=np.asarray(env.z_nodes) - shift[2], r_nodes=np.asarray(env.r_nodes), z_min=env.z_min - shift[2],
+                     z_plane=env.z_plane - shift[2], r_plane=env.r_plane, axis_x=env.axis_x - shift[0],
+                     annuli=tuple((a[0] - shift[2], a[1], a[2]) for a in env.annuli))
+    fm = fieldmap.FieldMap(np.asarray(fm.lo) - shift, fm.d, fm.n, fm.B)
+    prim = dict(prim, x=np.asarray(prim["x"], float) - shift)
     S, nk, nmat = make_static(bank, target, env, fm, dtype)
-    cfg = make_cfg(target, env, st, nk, nmat)
+    cfg = make_cfg(target, env, st, nk, nmat, dtype)
     N = int(pool)
     E = int(emit_cap or 8 * N)
     R = int(rec_cap or max(1 << 16, len(prim["p"]) // 4))
@@ -520,7 +536,7 @@ def run(bank, target, fm, env, prim, seed=1, st=C.Stepping(), pool=1 << 16, emit
         raise ValueError("emission buffer must hold at least two steps of emissions")
     L = Lanes(alive=jnp.zeros(N, bool), sp=jnp.zeros(N, jnp.int32), x=jnp.zeros((N, 3), dtype), u=jnp.zeros((N, 3), dtype),
               p=jnp.ones(N, dtype), t=jnp.zeros(N, dtype), tau=jnp.full(N, jnp.inf, dtype), seg=jnp.full(N, -1, jnp.int32),
-              ev=jnp.zeros(N, jnp.int64))
+              ev=jnp.zeros(N, jnp.int64), n=jnp.zeros(N, jnp.int32))
     seg0 = target.locate(target.to_local(prim["x"]))
     P = dict(sp=jnp.asarray(species_of(prim["pdg"])), x=jnp.asarray(prim["x"], dtype), u=jnp.asarray(prim["u"], dtype),
              p=jnp.asarray(prim["p"], dtype), t=jnp.asarray(prim["t"], dtype), seg=jnp.asarray(seg0, jnp.int32),
@@ -550,7 +566,7 @@ def run(bank, target, fm, env, prim, seed=1, st=C.Stepping(), pool=1 << 16, emit
     if c["emit_overflow"] or c["record_overflow"]:
         raise RuntimeError(f"buffer overflow: {c}")
     n = int(rcount)
-    out = dict(ev=np.asarray(rec[0][:n]), pdg=SPECIES[np.asarray(rec[1][:n])], x=np.asarray(rec[2][:n], float),
+    out = dict(ev=np.asarray(rec[0][:n]), pdg=SPECIES[np.asarray(rec[1][:n])], x=np.asarray(rec[2][:n], float) + shift,
                p=np.asarray(rec[3][:n], float), t=np.asarray(rec[4][:n], float))
     c["steps"] = steps_run
     return out, c

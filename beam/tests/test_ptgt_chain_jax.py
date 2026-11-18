@@ -61,7 +61,8 @@ def test_device_matches_host_on_synthetic_cascade(tmp_path, dtype):
     assert nh > 2000, (nh, nd)
     assert abs(nd - nh) < 4 * np.sqrt(nh), (nh, nd)                        # same physics, independent streams
     assert set(np.unique(rec["pdg"])) <= {13, -13, 211, -211}
-    assert np.allclose(rec["x"][:, 2], 800.0, atol=1e-3)
+    assert np.allclose(rec["x"][:, 2], 800.0, atol=1e-2)
+    assert cnt["step_cap"] == 0
     ph, pd = np.linalg.norm(host["record"]["p"], axis=1), np.linalg.norm(rec["p"], axis=1)
     assert abs(np.median(ph) - np.median(pd)) < 0.1 * np.median(ph)
 
@@ -69,7 +70,8 @@ def test_device_matches_host_on_synthetic_cascade(tmp_path, dtype):
 def test_refill_moves_emissions_into_dead_lanes():
     N, E = 8, 16
     L = J.Lanes(alive=jnp.array([True, False] * 4), sp=jnp.zeros(N, jnp.int32), x=jnp.zeros((N, 3)), u=jnp.zeros((N, 3)),
-                p=jnp.ones(N), t=jnp.zeros(N), tau=jnp.full(N, jnp.inf), seg=jnp.full(N, -1, jnp.int32), ev=jnp.zeros(N, jnp.int64))
+                p=jnp.ones(N), t=jnp.zeros(N), tau=jnp.full(N, jnp.inf), seg=jnp.full(N, -1, jnp.int32), ev=jnp.zeros(N, jnp.int64),
+                n=jnp.zeros(N, jnp.int32))
     emit = J._empty_emit(E, jnp.float64)
     emit = (emit[0], emit[1].at[:6].set(J.species_of(np.array([211] * 6))), emit[2], emit[3], emit[4].at[:6].set(7.0),
             emit[5], emit[6], emit[7].at[:6].set(jnp.arange(6)))
@@ -77,3 +79,18 @@ def test_refill_moves_emissions_into_dead_lanes():
     assert int(jnp.sum(L2.alive)) == 8 and int(left) == 2
     assert np.allclose(np.asarray(L2.p)[1::2], 7.0) and list(np.asarray(emit2[7][:2])) == [4, 5]
     assert np.all(np.isfinite(np.asarray(L2.tau)[1::2]))                   # pions get a lifetime
+
+
+def test_float32_target_far_from_origin_finishes(tmp_path):
+    """Boundary steps keep moving in float32 when the target sits at Mu2e coordinates (the frame is shifted)."""
+    bank = _bank(tmp_path, n_pim=2)
+    tgt = D.Target.rod(100.0, 10.0, 10.0, 10.0, origin=np.array([3904.0, 0.0, -6164.5]))
+    env = C.Envelope(z_nodes=np.array([-9000.0, -3000.0]), r_nodes=np.array([1900.0, 1900.0]), z_min=-8000.0,
+                     z_plane=-5300.0, r_plane=1800.0, axis_x=3904.0)
+    lo = np.array([3904.0 - 2000.0, -2000.0, -9000.0])
+    B = np.zeros((3, 3, 3, 3)); B[..., 2] = 2.0
+    fm = fieldmap.FieldMap(lo, np.array([2000.0, 2000.0, 3000.0]), np.array([3, 3, 3]), B)
+    prim = C.primaries(1000, tgt, np.random.default_rng(8))
+    rec, cnt = J.run(bank, tgt, fm, env, prim, seed=9, pool=2048, steps=32, dtype=jnp.float32, max_chunks=20000)
+    assert cnt["inelastic"] == 1000 and cnt["step_cap"] == 0
+    assert len(rec["pdg"]) > 100 and np.allclose(rec["x"][:, 2], -5300.0, atol=0.05)
