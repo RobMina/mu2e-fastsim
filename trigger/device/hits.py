@@ -307,10 +307,25 @@ def _panel_hits(h, s):
     owner = _group(h, s)
     jpos = jnp.arange(H)[None, :]
     is_seed = h["valid"] & (owner == jpos)
-    mem = (owner[:, None, :] == jnp.arange(H)[None, :, None]) & h["valid"][:, None, :]     # [E, seed, hit]
-    ncombo = jnp.sum(mem, axis=2)
+    # members of each seed in collection order, without an [E, seed, hit] matrix: a member's rank in its group is the
+    # number of earlier hits of the same owner, all within the owner's panel run (offsets below the longest run)
+    own = jnp.where(h["valid"] & (owner >= 0), owner, -1)
+    hpos = jnp.broadcast_to(jpos, (E, H))
+    span = jnp.max(jnp.where(own >= 0, hpos - own, 0))
+
+    def rank_step(st):
+        dd, rank = st
+        k = hpos - dd
+        same = (own >= 0) & (k >= own) & (jnp.take_along_axis(own, jnp.maximum(k, 0), axis=1) == own)
+        return dd + 1, rank + same.astype(rank.dtype)
+
+    _, rank = jax.lax.while_loop(lambda st: st[0] <= span, rank_step, (jnp.ones((), span.dtype), jnp.zeros((E, H), jnp.int32)))
     K = min(MAXNCOMBO, H)
-    midx = jnp.argsort(jnp.where(mem, jpos[:, None, :], H + jpos[:, None, :]), axis=2)[:, :, :K]   # members in order
+    rows = jnp.broadcast_to(jnp.arange(E)[:, None], (E, H))
+    keep = (own >= 0) & (rank < K)
+    midx = jnp.zeros((E, H, K), jnp.int32).at[rows, jnp.where(keep, own, H), jnp.where(keep, rank, 0)].set(
+        hpos.astype(jnp.int32), mode="drop")                                              # member j of each seed
+    ncombo = jnp.zeros((E, H), jnp.int32).at[rows, jnp.where(own >= 0, own, H)].add(1, mode="drop")
     d = lambda x: jnp.asarray(x).astype(F64)
     f = lambda x: jnp.asarray(x).astype(F32)
     col = lambda k, j: jnp.take_along_axis(h[k], midx[:, :, j], axis=1)                      # member j of each seed
@@ -351,7 +366,9 @@ def _panel_hits(h, s):
            "x": pick("x", mx + _m(wdist, h["udx"])), "y": pick("y", my + _m(wdist, h["udy"])),
            "z": pick("z", mz), "uvar": pick("uvar", uvar), "vvar": pick("vvar", f(vacc / nsh)),
            "udx": h["udx"], "udy": h["udy"], "sid": h["sid"]}
-    tdiv = jnp.sum(jnp.where(mem, ((h["flag"] >> FLAG["tdiv"]) & 1)[:, None, :], 0), axis=2) == ncombo
+    ntdiv = jnp.zeros((E, H), jnp.int32).at[rows, jnp.where(own >= 0, own, H)].add(
+        ((h["flag"] >> FLAG["tdiv"]) & 1).astype(jnp.int32), mode="drop")
+    tdiv = ntdiv == ncombo
     out["flag"] = _ph_flag(ncombo, out["time"], out["edep"], out["x"], out["y"], tdiv, h["spill"], s)
     # compact seeds to the front, keeping seed order (= stock output order)
     order = jnp.argsort(jnp.where(is_seed, jpos, H + jpos), axis=1)
