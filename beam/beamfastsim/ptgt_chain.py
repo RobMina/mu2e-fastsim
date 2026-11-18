@@ -446,3 +446,74 @@ def reference(rec, pot, point, shard, z_target=-4004.0):
                 helix_returned=0, species={str(s): int(np.sum(ref["pdg"] == s)) for s in RECORD},
                 yield_per_pot=yc / float(pot), yield_count=yc, generator="ptgt_chain (device model, host reference)")
     return ref, meta
+
+
+def rod_target(length, r_up, r_mid, r_dn, z_center=-6164.5, x_axis=3904.0, tilt_deg=14.0, mat=0):
+    """The G4beamline rod placed as in the deck: centre on the PS axis at z_center, rotated by tilt_deg about y."""
+    a = np.deg2rad(tilt_deg)
+    rot = np.array([[np.cos(a), 0.0, np.sin(a)], [0.0, 1.0, 0.0], [-np.sin(a), 0.0, np.cos(a)]])
+    return D.Target.rod(length, r_up, r_mid, r_dn, mat=mat, origin=np.array([x_axis, 0.0, z_center]), rot=rot)
+
+
+def main(argv=None):
+    import argparse
+    import json
+    import time
+
+    from beamfastsim import ptgt_g4bl, tsfield
+
+    ap = argparse.ArgumentParser(description="device target + PS chain for one rod design point (host reference)")
+    ap.add_argument("--bank", required=True)
+    ap.add_argument("--rod", nargs=4, type=float, metavar=("TLENGTH", "R_UP", "R_MID", "R_DN"), required=True)
+    ap.add_argument("--material", default="G4_W")
+    ap.add_argument("--maps", nargs="+", required=True, help="field map .header files, first-containing order")
+    ap.add_argument("--env-z", nargs="+", type=float, required=True)
+    ap.add_argument("--env-r", nargs="+", type=float, required=True)
+    ap.add_argument("--z-min", type=float, required=True)
+    ap.add_argument("--r-plane", type=float, required=True)
+    ap.add_argument("--z-plane", type=float, default=-4044.45)
+    ap.add_argument("--pot", type=int, required=True)
+    ap.add_argument("--chunk", type=int, default=2000)
+    ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--point", type=int, default=0)
+    ap.add_argument("--shard", type=int, default=0)
+    ap.add_argument("--h-vac", type=float, default=Stepping.h_vac)
+    ap.add_argument("--h-near", type=float, default=Stepping.h_near)
+    ap.add_argument("--out", required=True)
+    a = ap.parse_args(argv)
+    bank = D.Bank.load(a.bank)
+    if a.material not in bank.materials:
+        raise SystemExit(f"material {a.material} not in the bank {bank.materials}")
+    tgt = rod_target(*a.rod, mat=bank.materials.index(a.material))
+    fb = tsfield.FieldBank(a.maps)
+    env = Envelope(z_nodes=np.asarray(a.env_z), r_nodes=np.asarray(a.env_r), z_min=a.z_min, z_plane=a.z_plane,
+                   r_plane=a.r_plane)
+    st = Stepping(h_vac=a.h_vac, h_near=a.h_near)
+    rng = np.random.default_rng(a.seed)
+    recs, counts, edep = [], {}, np.zeros(len(tgt.mat))
+    t0 = time.time()
+    done = 0
+    while done < a.pot:
+        n = min(a.chunk, a.pot - done)
+        prim = primaries(n, tgt, rng)
+        prim["event"] = prim["event"] + done
+        out = run(bank, tgt, fb, env, prim, rng, st)
+        recs.append(out["record"])
+        edep += out["edep"]
+        for k, v in out["counts"].items():
+            counts[k] = counts.get(k, 0) + v
+        done += n
+    wall = time.time() - t0
+    rec = {k: np.concatenate([r[k] for r in recs]) for k in recs[0]}
+    ref, meta = reference(rec, a.pot, a.point, a.shard)
+    meta.update(rod=a.rod, material=a.material, seed=a.seed, counts=counts, edep_per_pot=(edep / a.pot).tolist(),
+                wall_s=wall, s_per_pot=wall / a.pot, maps=[str(m) for m in a.maps],
+                envelope=dict(z=a.env_z, r=a.env_r, z_min=a.z_min, r_plane=a.r_plane, z_plane=a.z_plane),
+                stepping=dict(h_vac=st.h_vac, h_near=st.h_near), bank=dict(path=str(a.bank),
+                                                                            content_hash=bank.lib.content_hash))
+    ptgt_g4bl.save(a.out, ref, meta)
+    print(json.dumps({k: meta[k] for k in ("pot", "entrances", "yield_per_pot", "species", "s_per_pot", "counts")}))
+
+
+if __name__ == "__main__":
+    main()

@@ -163,7 +163,7 @@ def test_chain_cascade_conserves_bookkeeping(tmp_path):
                   unrecorded=dict(config_hash="synthetic"))
     D.save_bank(tmp_path / "b.npz", MATS, EDGES, cells, trials, secs, fields)
     bank = D.Bank.load(tmp_path / "b.npz")
-    tgt = D.Target.rod(100.0, 3.0, 3.0, 3.0)
+    tgt = D.Target.rod(100.0, 10.0, 10.0, 10.0)               # wide: the 1 mm beam never misses it
     env = C.Envelope(z_nodes=np.array([-1e4, 1e4]), r_nodes=np.array([1e4, 1e4]), z_min=-500.0, z_plane=-2000.0,
                      r_plane=1e4, axis_x=0.0)
     rng = np.random.default_rng(5)

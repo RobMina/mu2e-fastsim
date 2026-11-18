@@ -122,8 +122,9 @@ class Bank:
         """Flat cell index per lane; raises on an energy outside the bank (policy refuse)."""
         e = self["log10_ke_edges"]
         lk = np.log10(ke)
-        if np.any(lk < e[0]) or np.any(lk >= e[-1]):
-            raise L.OutOfDomain(f"{self.lib.name}: kinetic energy outside [{10 ** e[0]}, {10 ** e[-1]}) MeV")
+        bad = np.flatnonzero((lk < e[0]) | (lk >= e[-1]))
+        if bad.size:
+            raise L.OutOfDomain(self.lib.name, "log10_ke", bad)
         k = L.axes.locate(e, lk)
         nm, nk = len(self.materials), e.size - 1
         return (np.asarray(sp) * nm + np.asarray(mat)) * nk + k
@@ -145,7 +146,7 @@ class Bank:
         co = self["cell_offsets"]
         n = co[cell + 1] - co[cell]
         if np.any(n == 0):
-            raise L.OutOfDomain(f"{self.lib.name}: {int(np.sum(n == 0))} lanes in cells without interactions")
+            raise L.OutOfDomain(self.lib.name, "cell (no stored interactions)", np.flatnonzero(n == 0))
         return co[cell] + np.floor(rng.random(cell.shape) * n).astype(np.int64)
 
 
