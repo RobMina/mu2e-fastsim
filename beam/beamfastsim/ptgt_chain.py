@@ -74,6 +74,7 @@ class Envelope:
     z_plane: float = -4044.45           # record plane (G4beamline Coll_01_DetIn)
     r_plane: float = np.inf             # record radius about the axis
     axis_x: float = 3904.0
+    annuli: tuple = ()                  # absorbing annuli (z, r_in, r_out) crossed in either direction (thin rings)
 
     def radius(self, x):
         return np.hypot(x[:, 0] - self.axis_x, x[:, 1])
@@ -418,6 +419,13 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None):
             if neu.size:
                 gone[neu[hv[neu] == 0.0]] = True
             ab = (env.radius(xn) > env.r_max(xn[:, 2])) & ~gone
+            for za, ra, rb_ in env.annuli:
+                hitz = ((x0v[:, 2] - za) * (xn[:, 2] - za) <= 0) & (xn[:, 2] != x0v[:, 2])
+                if np.any(hitz):
+                    fz = np.where(hitz, (za - x0v[:, 2]) / np.where(hitz, xn[:, 2] - x0v[:, 2], 1.0), 0.0)
+                    ra_ = env.radius(x0v + fz[:, None] * (xn - x0v))
+                    ab |= hitz & (ra_ >= ra) & (ra_ < rb_) & ~gone
+                    cnt["annulus"] = cnt.get("annulus", 0) + int((hitz & (ra_ >= ra) & (ra_ < rb_) & ~gone).sum())
             up_ = (xn[:, 2] < env.z_min) & ~gone & ~ab
             cnt["absorbed"] += int(ab.sum()); cnt["upstream"] += int(up_.sum())
             L["p"][i[gone | ab | up_]] = 0.0
@@ -494,6 +502,8 @@ def main(argv=None):
     ap.add_argument("--shard", type=int, default=0)
     ap.add_argument("--h-vac", type=float, default=Stepping.h_vac)
     ap.add_argument("--h-near", type=float, default=Stepping.h_near)
+    ap.add_argument("--annulus", nargs=3, type=float, action="append", default=[], metavar=("Z", "R_IN", "R_OUT"),
+                    help="absorbing thin annulus at z (repeatable)")
     ap.add_argument("--enclosure", nargs=2, type=float, metavar=("R", "H"),
                     help="diagnostic: record all species leaving this cylinder about the target, instead of the plane")
     ap.add_argument("--out", required=True)
@@ -504,7 +514,7 @@ def main(argv=None):
     tgt = rod_target(*a.rod, mat=bank.materials.index(a.material))
     fb = tsfield.FieldBank(a.maps)
     env = Envelope(z_nodes=np.asarray(a.env_z), r_nodes=np.asarray(a.env_r), z_min=a.z_min, z_plane=a.z_plane,
-                   r_plane=a.r_plane)
+                   r_plane=a.r_plane, annuli=tuple(tuple(x) for x in a.annulus))
     st = Stepping(h_vac=a.h_vac, h_near=a.h_near)
     rng = np.random.default_rng(a.seed)
     recs, counts, edep = [], {}, np.zeros(len(tgt.mat))
@@ -525,7 +535,7 @@ def main(argv=None):
     ref, meta = reference(rec, a.pot, a.point, a.shard)
     meta.update(rod=a.rod, material=a.material, seed=a.seed, counts=counts, edep_per_pot=(edep / a.pot).tolist(),
                 wall_s=wall, s_per_pot=wall / a.pot, maps=[str(m) for m in a.maps],
-                envelope=dict(z=a.env_z, r=a.env_r, z_min=a.z_min, r_plane=a.r_plane, z_plane=a.z_plane),
+                envelope=dict(z=a.env_z, r=a.env_r, z_min=a.z_min, r_plane=a.r_plane, z_plane=a.z_plane, annuli=a.annulus),
                 stepping=dict(h_vac=st.h_vac, h_near=st.h_near), bank=dict(path=str(a.bank),
                                                                             content_hash=bank.lib.content_hash))
     ptgt_g4bl.save(a.out, ref, meta)
