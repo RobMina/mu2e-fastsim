@@ -91,6 +91,7 @@ DATA = dict(library="shower_library.npz", edge="edge_library.npz", gdml="tracker
             digi_cond="digicond_onspill.npz", menu="trigger/replay.fcl", conditions="trigger/trgdump.root",
             tc_mva="trigger/TimeCluster.weights.xml", donor="donor/donor.npz")
 FILE = "nts.mu2efastsim.centuple.root"
+POINT_RECORD = "centuple_point.json"   # point --writer none: what the separate write stage and `finish` need
 
 
 def summary(path, triggers=("apr_TrkDe_80m70p", "cpr_TrkDe_80m70p")):
@@ -161,6 +162,22 @@ def cmd_point(a):
                          "--precision", a.dtype], check=True)
     plan, pmeta = assemble.build(out / record.RECORD, d["donor"], out, trigger=out / "centuple_trigger.npz",
                                  seed=a.seed, trigger_cal=tcal, dts_filter=a.dts_filter)
+    partial = dict(n_generated=float(a.electrons), births=float(cnt["events"]), beam_s=t_beam,
+                   stops_per_gen_event=stops_per_gen, stops_per_pot=stops_per_gen * cesob.UPSTREAM_EFF,
+                   stop_frac=bm["stop_frac"], **{f"class_{k}": float(v) for k, v in pmeta["classes"].items()})
+    if not a.keep:
+        for f in (stops, out / record.DIGIS):
+            if os.path.exists(f):
+                os.remove(f)
+    if a.writer == "none":
+        # the write stage runs elsewhere (a CPU job in the Mu2e environment): record what it and `finish` need
+        front_s = time.time() - t0
+        partial.update(front_s=front_s, electrons_per_s=a.electrons / max(front_s - t_beam, 1e-9))
+        rec = dict(plan=os.path.basename(str(plan)), donor_files=list(pmeta["donor_files"]),
+                   n_generated=int(a.electrons), partial=partial)
+        (out / POINT_RECORD).write_text(json.dumps(rec, indent=1) + "\n")
+        print(json.dumps(rec))
+        return
     files = [os.path.join(a.data, "donor", f) for f in pmeta["donor_files"]]
     env = dict(os.environ, CENTUPLE_PYTHONPATH=str(Path(__file__).resolve().parents[2]))
     here = Path(__file__).resolve().parent
@@ -168,15 +185,22 @@ def cmd_point(a):
                     str(plan), "--donor-files", *files, "--out", str(out / FILE), "--n-generated",
                     str(a.electrons)], check=True, env=env, cwd=out)
     m = summary(out / FILE)
-    m.update(n_generated=float(a.electrons), births=float(cnt["events"]), wall_s=time.time() - t0,
-             electrons_per_s=a.electrons / max(time.time() - t0 - t_beam, 1e-9), beam_s=t_beam,
-             stops_per_gen_event=stops_per_gen, stops_per_pot=stops_per_gen * cesob.UPSTREAM_EFF,
-             stop_frac=bm["stop_frac"], **{f"class_{k}": float(v) for k, v in pmeta["classes"].items()})
+    m.update(partial, wall_s=time.time() - t0, electrons_per_s=a.electrons / max(time.time() - t0 - t_beam, 1e-9))
     (out / "metrics.json").write_text(json.dumps({k: float(v) for k, v in m.items()}) + "\n")
-    if not a.keep:
-        for f in (stops, out / record.DIGIS):
-            if os.path.exists(f):
-                os.remove(f)
+    print(json.dumps(m))
+
+
+def cmd_finish(a):
+    """metrics.json of a point whose write stage ran apart (`point --writer none`, then `write`): the ce_chain counts
+    of the written file plus the point record's counters; wall_s is the front stage plus --writer-s."""
+    from pathlib import Path
+    rec = json.loads(Path(a.point).read_text())
+    m = summary(a.file)
+    m.update(rec["partial"])
+    m["wall_s"] = float(rec["partial"]["front_s"]) + float(a.writer_s)
+    m["writer_s"] = float(a.writer_s)
+    out = Path(a.out)
+    (out / "metrics.json").write_text(json.dumps({k: float(v) for k, v in m.items()}) + "\n")
     print(json.dumps(m))
 
 
@@ -280,7 +304,16 @@ def main(argv=None):
                    help="store only events passing the emulated dts PrimaryFilter, as the stock dts (opt-in)")
     q.add_argument("--trigger-cal", help="on-spill trigger table (default: the shipped trigcal table; 'none': the "
                                          "device trigger's binned CE response)")
+    q.add_argument("--writer", default="inline", choices=("inline", "none"),
+                   help="inline: write the EventNtuple here through mu2e_env.sh (default); none: stop after assemble "
+                        "and record centuple_point.json for a separate write stage and `finish`")
     q.set_defaults(fn=cmd_point)
+    f = sp.add_parser("finish", help="metrics.json of a point written apart (point --writer none, then write)")
+    f.add_argument("--point", required=True, help="the point's centuple_point.json")
+    f.add_argument("--file", required=True, help="the written EventNtuple file")
+    f.add_argument("--out", required=True, help="directory for metrics.json")
+    f.add_argument("--writer-s", dest="writer_s", type=float, default=0.0, help="seconds the write stage took")
+    f.set_defaults(fn=cmd_finish)
     a = p.parse_args(argv)
     a.fn(a)
 

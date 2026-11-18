@@ -26,6 +26,8 @@ class Site:
         self.cache_ok, self.result_manifest = True, None
         self.manifests = {}
         self.node_files = set()
+        self.extra = {}            # job dir -> {path in the fetched tar: bytes}
+        self.prestaged = True      # the CVMFS runtime's PRESTAGED marker exists
 
     def __call__(self, cmd, stdin, timeout):
         s = cmd[-1]
@@ -37,8 +39,9 @@ class Site:
             self.state[j] = "PENDING"
             self.dirs[j] = s.split("cd ")[1].split(" &&")[0].strip("'")
             self.body = stdin.decode()
-            line = next(line for line in self.body.splitlines() if "artifact-manifest.json" in line)
-            self.manifests[self.dirs[j]] = json.loads(shlex.split(line)[2])
+            line = next((line for line in self.body.splitlines() if "artifact-manifest.json" in line), None)
+            if line is not None:           # a write-stage job carries no artifact manifest
+                self.manifests[self.dirs[j]] = json.loads(shlex.split(line)[2])
             out = f"{j}\n".encode()
         elif s.startswith("squeue"):
             j = s.split("-j ")[1].split()[0]
@@ -55,6 +58,8 @@ class Site:
         elif s.startswith("srun") and "test -f" in s:
             path = s.split("test -f ")[1].split()[0].strip("'\"")
             out = b"have\n" if path in self.node_files else b""
+        elif s.startswith("test -f") and "PRESTAGED" in s:
+            out = b"yes\n" if self.prestaged else b""
         elif s.startswith("scancel"):
             self.state[s.split()[1]] = "CANCELLED"
         elif "tar -cf" in s:
@@ -63,8 +68,11 @@ class Site:
                      "out/wait.json": b'{"input_wait_s": 12}', "slurm.out": b"ok\n"}
             if self.cleanup:
                 files["out/cleanup.txt"] = b"deleted\n"
-            manifest = self.result_manifest if self.result_manifest is not None else self.manifests[s.split("cd ")[1].split(" &&")[0].strip("'")]
-            files["out/artifact-manifest.json"] = json.dumps(manifest).encode()
+            d = s.split("cd ")[1].split(" &&")[0].strip("'")
+            manifest = self.result_manifest if self.result_manifest is not None else self.manifests.get(d)
+            if manifest is not None:
+                files["out/artifact-manifest.json"] = json.dumps(manifest).encode()
+            files.update(self.extra.get(d, {}))
             with tarfile.open(fileobj=buf, mode="w") as t:
                 for name, data in files.items():
                     ti = tarfile.TarInfo(name)
@@ -590,6 +598,133 @@ def test_beam_edep_mounted_body_runs_the_writer_on_the_gpu():
     assert "beam_edep" in kitmod.FNAL_TASKS
     assert "-m beamfastsim.edepana point" in t.body and kit_task.EDEP_LIBRARY in t.body and "@p_dtype@" in t.body
     assert kit_task.EDEP_EDGE in t.body and '--edge-library "$EE"' in t.body
+
+
+PC = {"task": "beam_centuple", "geom": "move_extras12.txt", "muons": 0, "electrons": 2000, "seed": 1, "dtype": "float32"}
+
+
+def _centuple(tmp_path):
+    site, ep, kit, streamed = make(tmp_path)
+    d = kit_uva.BeamCentupleStream(kit, source=Source(), code="/path/to/slurm/beam", background=False,
+                                   donors="/path/to/donors", cvmfsexec="/path/to/cvmfsexec")
+    kit._delegates["beam_centuple"] = d
+    return site, ep, kit, streamed, d
+
+
+def test_beam_centuple_front_job_streams_the_inputs_and_stops_before_the_writer(tmp_path):
+    site, ep, kit, streamed, d = _centuple(tmp_path)
+    assert kit_task._UVACentupleDelegate.applies(ep)
+    assert kit_uva.validate({k: v for k, v in PC.items() if k != "dtype"}, "beam_centuple")["dtype"] == "float64"
+    assert kit.submit("ct1", PC, [], []) == {"handle": "ct1"}
+    body = site.body
+    assert "-m beamfastsim.centuple point" in body and "--writer none" in body and "--dtype float32 " in body
+    assert "--electrons 2000 " in body and '--data "$L/data"' in body and "apptainer exec --nv" in body
+    assert 'ln -s "$L/trigger__trgdump.root" "$L/data/trigger/trgdump.root"' in body
+    assert 'ln -s "$L/calo_response__Sim_crystal.txt" "$L/data/calo_response/Sim_crystal.txt"' in body
+    assert "mu2e_env.sh" not in body                     # the writer is a separate CPU job
+    r = subprocess.run(["bash", "-n"], input=body.encode(), capture_output=True)
+    assert r.returncode == 0, r.stderr.decode()
+    j = _start(site, ep, "ct1")
+    assert kit.status("ct1")["state"] == "working"
+    want = {kit_task.SOB_TABLE} | {f"{kit_task.CENT_DIR}/{v}" for v in kit_uva.CENT_LAYOUT.values()}
+    assert {s for s, _ in streamed} == want and len(streamed) == 1 + len(kit_uva.CENT_LAYOUT) == 14
+    assert site.state[j] == "RUNNING"
+
+
+def test_beam_centuple_writer_job_follows_the_front_and_its_file_is_the_result(tmp_path):
+    site, ep, kit, streamed, d = _centuple(tmp_path)
+    kit.submit("ct1", PC, [], [])
+    j = _start(site, ep, "ct1")
+    kit.status("ct1")
+    site.state[j] = "COMPLETED"
+    st = kit.status("ct1")                                # submits the write stage
+    assert st["state"] == "working" and st["message"].startswith("writer")
+    w = site.body
+    assert "mu2e_env.sh" in w and "centuple write" in w and "centuple finish" in w
+    assert "CVMFSEXEC_DIST=/path/to/cvmfsexec" in w and "DON=$(readlink -f /path/to/donors)" in w
+    assert '/ct1/out")' in w and "--nv" not in w and "CODE=$(readlink -f " in w
+    r = subprocess.run(["bash", "-n"], input=w.encode(), capture_output=True)
+    assert r.returncode == 0, r.stderr.decode()
+    wj = ep.state.get("ct1.w").job_id
+    assert wj != j and kit_uva.CENT_WRITER_RESOURCES.gpus == 0
+    n = site.next_id
+    kit.status("ct1")
+    assert site.next_id == n                              # submitted once
+    with pytest.raises(ValueError, match="write stage"):
+        kit.results("ct1")
+    site.state[wj] = "COMPLETED"
+    site.extra[site.dirs[wj]] = {f"out/{kit_task.CENT_FILE}": b"root-bytes",
+                                 "out/metrics.json": json.dumps({"n_selected": 40.0, "efficiency": 0.975,
+                                                                 "writer_s": 2600.0}).encode()}
+    assert kit.status("ct1")["state"] == "completed"
+    res = kit.results("ct1")
+    assert [f["kind"] for f in res["files"]] == ["root"] and res["files"][0]["name"] == kit_task.CENT_FILE
+    assert res["metrics"]["efficiency"] == 0.975 and res["metrics"]["input_wait_s"] == 12.0
+    assert res["metadata"]["writer_job_id"] == wj
+
+
+def test_beam_centuple_writer_waits_for_the_prestaged_cvmfs_runtime(tmp_path):
+    site, ep, kit, streamed, d = _centuple(tmp_path)
+    site.prestaged = False
+    kit.submit("ct1", PC, [], [])
+    j = _start(site, ep, "ct1")
+    kit.status("ct1")
+    site.state[j] = "COMPLETED"
+    n = site.next_id
+    st = kit.status("ct1")
+    assert st["state"] == "working" and "prestaged CVMFS runtime" in st["message"] and site.next_id == n
+    site.prestaged = True
+    assert kit.status("ct1")["message"].startswith("writer") and site.next_id == n + 1
+
+
+def test_beam_centuple_cancel_stops_both_jobs(tmp_path):
+    site, ep, kit, streamed, d = _centuple(tmp_path)
+    kit.submit("ct1", PC, [], [])
+    j = _start(site, ep, "ct1")
+    kit.status("ct1")
+    site.state[j] = "COMPLETED"
+    kit.status("ct1")
+    wj = ep.state.get("ct1.w").job_id
+    site.state[wj] = "RUNNING"
+    kit.cancel("ct1")
+    assert site.state[wj] == "CANCELLED"
+
+
+def test_beam_centuple_cancel_while_the_writer_waits_for_the_prestaged_runtime_submits_nothing(tmp_path):
+    site, ep, kit, streamed, d = _centuple(tmp_path)
+    site.prestaged = False
+    kit.submit("ct1", PC, [], [])
+    j = _start(site, ep, "ct1")
+    kit.status("ct1")
+    site.state[j] = "COMPLETED"
+    assert "prestaged CVMFS runtime" in kit.status("ct1")["message"]
+    n = site.next_id
+    assert kit.cancel("ct1")["state"] == "cancelled"
+    site.prestaged = True                                 # the runtime appears after the cancel
+    st = kit.status("ct1")
+    assert st["state"] == "cancelled" and site.next_id == n and ep.state.get("ct1.w") is None
+    assert not d.ensure_writer("ct1") and site.next_id == n
+    with pytest.raises(ValueError, match="cancelled"):
+        kit.results("ct1")
+
+
+def test_beam_centuple_front_body_is_derived_from_the_edep_body_by_checked_replacements():
+    body = kit_uva.CENT_BODY
+    assert "beamfastsim.centuple missing" in body and "edepana" not in body
+    assert "$CODE/tracker:$CODE," in body and "-m beamfastsim.centuple point" in body
+    with pytest.raises(RuntimeError, match="pattern not found"):
+        kit_uva._swap("abc", "x", "y")
+    with pytest.raises(RuntimeError, match="marker not found"):
+        kit_uva._head("abc", "x")
+
+
+def test_beam_centuple_check_names_the_missing_site_setting(tmp_path, monkeypatch):
+    site, ep, kit, streamed = make(tmp_path)
+    monkeypatch.delenv("FASTSIMKIT_CENT_DONORS", raising=False)
+    d = kit_uva.BeamCentupleStream(kit, source=Source(), code="/path/to/slurm/beam", background=False,
+                                   cvmfsexec="/path/to/cvmfsexec")
+    r = d.check("ct1", PC)
+    assert not r["ok"] and "FASTSIMKIT_CENT_DONORS" in r["message"]
 
 
 def test_beam_centuple_mounted_body_runs_the_point_on_the_gpu():

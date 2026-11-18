@@ -219,9 +219,20 @@ class _UVAEdepCpuDelegate(_UVADelegate):
         return BeamEdepCpuStream(kit)
 
 
+class _UVACentupleDelegate(_UVADelegate):
+    """beam_centuple on a Slurm-over-SSH endpoint: a GPU front job (inputs streamed in), then a CPU write job in the
+    Mu2e environment through cvmfsexec (kit_uva.BeamCentupleStream)."""
+
+    @staticmethod
+    def make(kit):
+        from .kit_uva import BeamCentupleStream
+        return BeamCentupleStream(kit)
+
+
 def register_delegate(delegates):
     """beam_point, beam_sob and beam_edep on endpoints without FNAL storage run through kit_uva (inputs streamed)."""
     delegates["beam_point"] = _UVADelegate
     delegates["beam_sob"] = _UVASobDelegate
     delegates["beam_edep"] = _UVAEdepDelegate
     delegates["beam_edep_cpu"] = _UVAEdepCpuDelegate
+    delegates["beam_centuple"] = _UVACentupleDelegate
