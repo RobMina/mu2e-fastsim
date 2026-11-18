@@ -174,3 +174,9 @@ def test_chain_cascade_conserves_bookkeeping(tmp_path):
     # the pi- go along the proton (-z): they reach the upstream plane at -500 (dropped) or decay before it
     assert c["upstream"] + c["decays"] >= 200
     assert np.isclose(out["edep"].sum(), 2.0 * 200, rtol=0.05)
+
+
+def test_decay_without_charged_daughters_returns_integer_parents():
+    rng = np.random.default_rng(9)
+    d = C.decay(np.array([2212]), np.zeros((1, 3)), np.array([[0.0, 0.0, 1.0]]), np.array([100.0]), np.zeros(1), rng)
+    assert d["parent"].dtype.kind == "i" and d["pdg"].dtype.kind == "i" and d["x"].shape == (0, 3)

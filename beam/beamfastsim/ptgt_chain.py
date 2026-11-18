@@ -209,7 +209,9 @@ def decay(pdg, x, u, p, t, rng):
                     emit(k, cc, moms)
                 else:
                     emit(k, cc, _three_body(MASS[321], ms, k.size, rng))
-    return {kk: (np.concatenate(v) if v else np.zeros((0, 3) if kk in ("x", "u") else 0)) for kk, v in out.items()}
+    empty = dict(x=np.zeros((0, 3)), u=np.zeros((0, 3)), pdg=np.zeros(0, np.int64), parent=np.zeros(0, np.int64),
+                 p=np.zeros(0), t=np.zeros(0))
+    return {kk: (np.concatenate(v) if v else empty[kk]) for kk, v in out.items()}
 
 
 def primaries(n, target, rng, sigma=1.0, ke=8000.0, offset=0.5):
