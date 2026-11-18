@@ -141,7 +141,8 @@ class BeamPointStream:
 
     def render(self, p, manifest=None, geometry=None):
         from mu2efastsim.endpoints.kit import _COMMON, APPTAINER_RUNTIME, admit_resources
-        admit_resources(self.ep, self.RESOURCES)
+        res = self.resources(p)
+        admit_resources(self.ep, res)
         if not hasattr(self.ep, "stream_in"):
             raise ValueError(f"fastsimkit: {self.TASK} streams its input into the job and needs an endpoint that can "
                              f"(slurm_ssh); {getattr(self.ep, 'name', '?')!r} cannot")
@@ -177,7 +178,11 @@ class BeamPointStream:
             body = body.replace('B python -m beamfastsim.stage',
                                 consumption_guard('"$L"', manifest["inputs"]["files"]) + 'B python -m beamfastsim.stage', 1)
             body = runtime_prefix(manifest) + body
-        return body, self.RESOURCES
+        return body, res
+
+    def resources(self, p) -> Resources:
+        """The Slurm request for these params (the class's RESOURCES unless a task sizes it from them)."""
+        return self.RESOURCES
 
     # -- contract ------------------------------------------------------------------------------------------------
     def check(self, name, params) -> Dict[str, Any]:
@@ -447,7 +452,10 @@ class BeamEdepCpuStream(BeamEdepStream):
     """beam_edep_cpu: beam_edep's streamed inputs and point on one CPU core (the CPU partition), JAX single-threaded,
     float64 by default."""
     TASK = "beam_edep_cpu"
-    RESOURCES = EDEP_CPU_RESOURCES
+    RESOURCES = EDEP_CPU_RESOURCES      # outside the measured range; resources() sizes from the electrons
+
+    def resources(self, p) -> Resources:
+        return kit_task.edep_cpu_resources(p, Resources)
 
     def __init__(self, kit, **kw):
         super().__init__(kit, **kw)

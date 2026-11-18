@@ -20,7 +20,7 @@ import os
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import EndpointError, Resources, get
 from mu2efastsim import site
@@ -40,6 +40,11 @@ class Task:
     resources: Resources
     body: str           # bash; @sif@ and @p_<param>@ are substituted (shell-quoted); writes $M2FS_OUT/metrics.json
     defaults: Dict[str, Any] = field(default_factory=dict)   # optional params (absent from a call: this value)
+    # the request for one call's validated params, when it depends on them (beam_edep_cpu: the electrons); else resources
+    sizer: Optional[Callable[[Dict[str, Any]], Resources]] = None
+
+    def resources_for(self, params: Dict[str, Any]) -> Resources:
+        return self.sizer(params) if self.sizer else self.resources
 
 
 _COMMON = """module load apptainer >/dev/null 2>&1
@@ -420,8 +425,9 @@ class FastsimKit:
         if any(s in body for s in ("@p_", "@sif@", "@tables@", "@metrics_py@", "@runtime_", "@fnal_data@")):
             raise ValueError(f"fastsimkit: unfilled placeholder in task {params['task']!r}")
         body = body.replace("@geometry_setup@", setup)
-        admit_resources(self.ep, t.resources)
-        return body, t.resources
+        res = t.resources_for(params)
+        admit_resources(self.ep, res)
+        return body, res
 
     # -- contract ------------------------------------------------------------------------------------------------
     def _admit(self, name, params, files, inputs, requested_metrics=None):
