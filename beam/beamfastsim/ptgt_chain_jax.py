@@ -44,6 +44,7 @@ class Static(NamedTuple):
     zt: object; rin: object; rout: object; mat: object; origin: object; rot: object
     env_z: object; env_r: object; annuli: object
     fm: object
+    rb: object; zc: object; hl: object          # target bounding cylinder (device scalars: no recompile per rod)
 
 
 class Cfg(NamedTuple):
@@ -51,7 +52,6 @@ class Cfg(NamedTuple):
     z_plane: float; r_plane: float; z_min: float; axis_x: float
     h_vac: float; h_near: float; near: float; h_mat: float; neutral_step: float
     ke_min_hadron: float; ke_min_pion: float; max_loss_fraction: float
-    rb: float; zc: float; hl: float
     eps: float; nudge: float; max_lane_steps: int
 
 
@@ -80,7 +80,9 @@ def make_static(bank, target, env, fm, dtype):
                 sec_p=jnp.asarray(bank["sec_p"], jnp.float32),
                 zt=f(target.z_edges), rin=f(target.r_in), rout=f(target.r_out), mat=jnp.asarray(target.mat, jnp.int32),
                 origin=f(target.origin), rot=f(target.rot), env_z=f(env.z_nodes), env_r=f(env.r_nodes), annuli=f(annuli),
-                fm=fieldmap.FieldMap(f(fm.lo), f(fm.d), jnp.asarray(fm.n), f(fm.B)))
+                fm=fieldmap.FieldMap(f(fm.lo), f(fm.d), jnp.asarray(fm.n), f(fm.B)),
+                rb=f(np.max(target.r_out)), zc=f(0.5 * (target.z_edges[0] + target.z_edges[-1])),
+                hl=f(0.5 * (target.z_edges[-1] - target.z_edges[0])))
     return st, nk, nmat
 
 
@@ -89,9 +91,7 @@ def make_cfg(target, env, stp, nk, nmat, dtype=jnp.float64, max_lane_steps=200_0
     return Cfg(eps=1e-4 if f32 else 1e-7, nudge=1e-3 if f32 else 1e-5, max_lane_steps=int(max_lane_steps),nk=nk, nmat=nmat, nseg=len(target.mat), z_plane=float(env.z_plane), r_plane=float(env.r_plane),
                z_min=float(env.z_min), axis_x=float(env.axis_x), h_vac=stp.h_vac, h_near=stp.h_near, near=stp.near,
                h_mat=stp.h_mat, neutral_step=stp.neutral_step, ke_min_hadron=stp.cuts.ke_min_hadron,
-               ke_min_pion=stp.cuts.ke_min_pion, max_loss_fraction=stp.cuts.max_loss_fraction,
-               rb=float(np.max(target.r_out)), zc=float(0.5 * (target.z_edges[0] + target.z_edges[-1])),
-               hl=float(0.5 * (target.z_edges[-1] - target.z_edges[0])))
+               ke_min_pion=stp.cuts.ke_min_pion, max_loss_fraction=stp.cuts.max_loss_fraction)
 
 
 # ------------------------------------------------------------------------------------------------ geometry (jnp)
@@ -281,7 +281,7 @@ def _step(S, cfg, carry, key):
     um = jnp.where(el[:, None], ue, um)
     # ---------------------------------------------------------------- vacuum step
     rloc = jnp.hypot(xl[:, 0], xl[:, 1])
-    near = (rloc < cfg.rb + cfg.near) & (jnp.abs(xl[:, 2] - cfg.zc) < cfg.hl + cfg.near)
+    near = (rloc < S.rb + cfg.near) & (jnp.abs(xl[:, 2] - S.zc) < S.hl + cfg.near)
     charged = q != 0
     hv = jnp.where(near, cfg.h_near, jnp.where(charged, cfg.h_vac, cfg.neutral_step))
     tn = distance_in(S, cfg, xl, dl)                              # neutral: straight to the next entry, or out
@@ -581,7 +581,9 @@ def main(argv=None):
 
     ap = argparse.ArgumentParser(description="device target + PS chain for one rod design point")
     ap.add_argument("--bank", required=True)
-    ap.add_argument("--rod", nargs=4, type=float, metavar=("TLENGTH", "R_UP", "R_MID", "R_DN"), required=True)
+    ap.add_argument("--rod", nargs=4, type=float, metavar=("TLENGTH", "R_UP", "R_MID", "R_DN"))
+    ap.add_argument("--rods-tsv", help="point table: index, Tlength, R_up, R_mid, R_dn per line (with --points)")
+    ap.add_argument("--points", nargs="+", type=int, help="rows of --rods-tsv to run in this process (one compile)")
     ap.add_argument("--material", default="G4_W")
     ap.add_argument("--map", required=True, help="field map .header (PS region)")
     ap.add_argument("--env-z", nargs="+", type=float, required=True)
@@ -600,27 +602,40 @@ def main(argv=None):
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     bank = D.Bank.load(a.bank)
-    tgt = C.rod_target(*a.rod, mat=bank.materials.index(a.material))
+    if a.rods_tsv:
+        table = {int(r[0]): r[1:5] for r in np.loadtxt(a.rods_tsv, ndmin=2)}
+        jobs = [(pt, table[pt]) for pt in a.points]
+    else:
+        jobs = [(a.point, a.rod)]
     env = C.Envelope(z_nodes=np.asarray(a.env_z), r_nodes=np.asarray(a.env_r), z_min=a.z_min, z_plane=a.z_plane,
                      r_plane=a.r_plane, annuli=tuple(tuple(x) for x in a.annulus))
     fm = fieldmap.load(a.map)
     dt = jnp.float64 if a.dtype == "float64" else jnp.float32
-    rng = np.random.default_rng(a.seed)
-    if a.warm_pot:
-        run(bank, tgt, fm, env, C.primaries(a.warm_pot, tgt, rng), seed=a.seed + 1000, pool=a.pool, steps=a.steps, dtype=dt)
-    prim = C.primaries(a.pot, tgt, rng)
-    t0 = time.perf_counter()
-    rec, cnt = run(bank, tgt, fm, env, prim, seed=a.seed, pool=a.pool, steps=a.steps, dtype=dt)
-    wall = time.perf_counter() - t0
-    ref, meta = C.reference(rec, a.pot, a.point, 0)
-    meta.update(rod=a.rod, material=a.material, seed=a.seed, counts=cnt, wall_s=wall, s_per_pot=wall / a.pot,
+    for n_job, (point, rod) in enumerate(jobs):
+        rod = [float(v) for v in rod]
+        tgt = C.rod_target(*rod, mat=bank.materials.index(a.material))
+        rng = np.random.default_rng(a.seed + 7919 * point)
+        if a.warm_pot and n_job == 0:
+            run(bank, tgt, fm, env, C.primaries(a.warm_pot, tgt, rng), seed=a.seed + 1000, pool=a.pool, steps=a.steps,
+                dtype=dt)
+        prim = C.primaries(a.pot, tgt, rng)
+        t0 = time.perf_counter()
+        rec, cnt = run(bank, tgt, fm, env, prim, seed=a.seed + point, pool=a.pool, steps=a.steps, dtype=dt)
+        wall = time.perf_counter() - t0
+        out = a.out.replace("{point}", f"{point:02d}") if "{point}" in a.out else a.out
+        _save_point(a, bank, env, rec, cnt, point, rod, wall, out, ptgt_g4bl)
+
+
+def _save_point(a, bank, env, rec, cnt, point, rod, wall, out, ptgt_g4bl):
+    import json
+    ref, meta = C.reference(rec, a.pot, point, 0)
+    meta.update(rod=rod, material=a.material, seed=a.seed + point, counts=cnt, wall_s=wall, s_per_pot=wall / a.pot,
                 dtype=a.dtype, pool=a.pool, steps=a.steps, device=str(jax.devices()[0]), generator="ptgt_chain_jax",
                 envelope=dict(z=a.env_z, r=a.env_r, z_min=a.z_min, r_plane=a.r_plane, z_plane=a.z_plane, annuli=a.annulus),
                 bank=dict(path=str(a.bank), content_hash=bank.lib.content_hash))
-    ptgt_g4bl.save(a.out, ref, meta)
-    print(json.dumps({k: meta[k] for k in ("pot", "entrances", "yield_per_pot", "species", "s_per_pot", "wall_s",
-                                           "counts", "device", "dtype")}))
-
+    ptgt_g4bl.save(out, ref, meta)
+    print(json.dumps({k: meta[k] for k in ("point", "pot", "entrances", "yield_per_pot", "species", "s_per_pot",
+                                           "wall_s", "counts", "device", "dtype")}), flush=True)
 
 if __name__ == "__main__":
     main()
