@@ -345,6 +345,9 @@ The ~81 % level is the track-pointing resolution (~24 mm at EX, as in `crvextrap
 last file (`001400_00001023`) exceeded the 4 h lifetime and reruns with 50-event batches and 8 h (cluster 30742793).
 With this row, **V-R4 is complete**.
 
+The [EX response calibration pilot](ex-calibration.md) reuses the tracker-line extraction but uses exact
+per-SiPM matches and retains silent channels. It is not a replacement for the V-R4 layer-efficiency measurement.
+
 ### R3 driver and the response objective (2026-10-21)
 
 `crvfastsim reco-r3` (`reco/r3.py`): cached G4 CrvStep tables (e.g. `prod_as_tables/crvsteps.*.root`, pdg joined at

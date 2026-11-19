@@ -65,6 +65,13 @@ missing or unscorable arm instead of failing.
 | B3 | Batched track fits against KinKal (FS-TRKFIT) | frozen stock reco inputs per track (combo hits, time cluster, seed) -> fit parameters and covariance at the tracker entrance | stock KinKal on CPU on the same inputs (agreement 1 by construction; sets the throughput basis); KinematicLine (extracted), CentralHelix cosmics, LoopHelix CE | agreement: fraction of tracks within 0.1 sigma of the stock fit in every parameter (ranking key); good-fit ratio fast/stock (paired); pulls against MC truth; throughput scaling curve at batch 10, 10^3, 10^5 tracks with the crossover batch | none yet (threshold 2) | tracks/s | defined |
 | B4 | GPU e+-/gamma transport for the flash (FS-FLASH-GPU) | flash primaries at one stage boundary fixed before any run (recommended: DS entrance) -> tracker StrawGasSteps, the DS/tracker regions offloaded through G4VTrackingManager | Mu2eG4 without offload on the same primaries and build; CPU controls for the stock behaviour the GPU cannot copy (no low-energy kill; tracks killed on leaving the DS) | StrawGasStep edep, multiplicity, time and per-plane histograms; the flash_edep objective as a yield (tolerance proposed 3 %) | stock with another seed | events/s | defined |
 
+### EX calibration pilot (synthetic only)
+
+`CRV-EX-RESPONSE` uses this scorer's reference and submission layouts at the boundary *fixed track/channel crossings
+to selected pulse charge and time*. It is not a leaderboard task or a W5 replacement. The synthetic `stock/` arm
+is an injected response, not an Offline run. Report blind parameter recovery and held-out prediction separately
+from forward replay validity; no matched stock rate is defined. See the [pilot recipe](../crv/docs/ex-calibration.md).
+
 ## Coverage on main `c03dbd13` (2026-11-18)
 
 Every fast arm is rerun on main `c03dbd13`, without #283, with each workflow's own validation recipe on the same

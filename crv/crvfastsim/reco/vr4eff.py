@@ -13,8 +13,6 @@ share the tracks and the steps, so the difference is computed per event and its 
 """
 import numpy as np
 
-from .. import chain, geometry, tables
-
 EX = 0                # EX sector index in the extracted counters file
 PE_PROBE, NWIN, DT_OFFSET, DT_HALF = 8.0, 1, 47.0, 20.0     # crvextrap exdenom / timewin defaults
 THRESH_POINTS = 0.003
@@ -99,26 +97,34 @@ def compare(hit_f, hit_r, den):
     return out
 
 
-def prep(ntuple, out_npz, trk_cuts=None):
-    """GPVM step (light, seconds per file; needs crvextrap on PYTHONPATH): one quality track line per event
-    (crvextrap.trackline.lines, from the tracker) and the stock EX seq-0 pulses, from a crvonly_v05 EventNtuple."""
+def track_pulse_rows(ntuple, trk_cuts=None, *, per_sensor=False):
+    """Read quality tracker lines and flat pulse rows from the same EventNtuple."""
     import awkward as ak
     import uproot
     from crvextrap import trackline as TL
     cuts = trk_cuts or {"nactive": 20, "fitcon": 0.01, "chi2": 3.0, "nplanes": 0}
-    t = uproot.open(ntuple)["EventNtuple/ntuple"]
-    e = t.arrays(filter_name=["evtinfo/subrun", "evtinfo/event"], library="np")
-    e = {k.split("/")[-1]: v for k, v in e.items()}
-    tk = TL.lines(t, cuts=cuts, from_tracker=True)
-    a = t.arrays(["crvpulses/crvpulses.barId", "crvpulses/crvpulses.PEs", "crvpulses/crvpulses.time",
-                  "crvpulses/crvpulses.sequenceIndex"], library="ak")
+    event_fields = ["evtinfo/subrun", "evtinfo/event"]
+    pulse_fields = {"p_bar": "barId", "p_pe": "PEs", "p_time": "time", "p_seq": "sequenceIndex"}
+    if per_sensor:
+        event_fields.append("evtinfo/run")
+        pulse_fields["p_sipm"] = "SiPMId"
+    with uproot.open(ntuple) as root:
+        t = root["EventNtuple/ntuple"]
+        e = t.arrays(filter_name=event_fields, library="np")
+        tk = TL.lines(t, cuts=cuts, from_tracker=True)
+        a = t.arrays([f"crvpulses/crvpulses.{field}" for field in pulse_fields.values()], library="ak")
     n = ak.num(a["crvpulses/crvpulses.barId"])
     flat = lambda k: ak.to_numpy(ak.flatten(a[f"crvpulses/crvpulses.{k}"]))
-    np.savez_compressed(out_npz, subrun=e["subrun"], event=e["event"],
-                        **{f"trk_{k}": tk[k] for k in ("x", "y", "z", "dx", "dy", "dz", "time")},
-                        p_ev=np.repeat(np.arange(len(n)), ak.to_numpy(n)), p_bar=flat("barId"), p_pe=flat("PEs"),
-                        p_time=flat("time"), p_seq=flat("sequenceIndex"))
-    print(f"wrote {out_npz}: {len(n)} events, {int(np.isfinite(tk['x']).sum())} with a quality track")
+    return dict(**{k.split("/")[-1]: v for k, v in e.items()},
+                **{f"trk_{k}": tk[k] for k in ("x", "y", "z", "dx", "dy", "dz", "time")},
+                p_ev=np.repeat(np.arange(len(n)), ak.to_numpy(n)), **{k: flat(v) for k, v in pulse_fields.items()})
+
+
+def prep(ntuple, out_npz, trk_cuts=None):
+    """GPVM V-R4 preparation (needs crvextrap on PYTHONPATH)."""
+    rows = track_pulse_rows(ntuple, trk_cuts)
+    np.savez_compressed(out_npz, **rows)
+    print(f"wrote {out_npz}: {len(rows['event'])} events, {int(np.isfinite(rows['trk_x']).sum())} with a quality track")
 
 
 def run(steps, prep_npz, calib, emit, deviation=None, jax=False, seed=1, batch_events=None, counters=None,
@@ -128,6 +134,7 @@ def run(steps, prep_npz, calib, emit, deviation=None, jax=False, seed=1, batch_e
     import dataclasses
     import json
     from . import vr4
+    from .. import chain, geometry, tables
     from ..response import photons as PH
     from ..response import sipm as SI
     z = np.load(prep_npz)
