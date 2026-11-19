@@ -3,7 +3,7 @@ and of the calo trigger filters: CaloClusterCounterFilter, CaloLikelihood, CaloN
 CaloCosmicCalib, and DigiFilter on the calo digi count.
 
 The port follows the stock arithmetic, as the mpr port does: float32 values with the C++ double steps (traced under
-`mpr.strict`, so float64 in both precisions of the chain), products guarded against fused multiply-add, and the
+`exact.strict`, so float64 in both precisions of the chain), products guarded against fused multiply-add, and the
 stock orders where they decide a result:
 
 - digis in (SiPM id, t0) order; hits in crystal order and, within a crystal, in pulse creation order;
@@ -25,7 +25,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .mpr import _argmax, _d, _f, _m, _stock_sort, strict
+from .exact import m as _m, strict
+from .mpr import _argmax, _d, _f, _stock_sort
 
 F32, F64 = jnp.float32, jnp.float64
 N_CRYSTALS = 1348

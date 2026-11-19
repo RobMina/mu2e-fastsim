@@ -91,6 +91,20 @@ equal the stored stock clusters in every field and the 11 paths have no discorda
 `calo_cosmic` and the two prescaled digi-count paths do not fire on these files; `CaloCosmicCalib` calls `abs` on a
 float, and the overload stock resolves (float or int) is not settled by them (`--int-abs` selects the int one).
 
+**Inputs from the calorimeter fast simulation.** The stage reads CaloDigis as the v13_41 `CaloDigiMaker` writes them
+(SiPM id, `t0` in 5 ns ticks, waveform, peak position). It does not read the clusters of the calofastsim device chain
+(`calofastsim.device_chain`): those come from the offline reconstruction (template fit, `CaloClusterMaker`), which the
+trigger does not run. To run on simulated events, the stage takes the chain's digis:
+- only the chain's `"waveform"` digi response makes digis; the default `"parametric"` response draws hits and makes
+  none;
+- the chain's digis follow the earlier `CaloDigiMaker` (`t0` in ns), and the device chain's digi dictionary has no
+  peak position (the host `digi.extract_digis` has it). The stage needs `t0` in ticks and the peak position.
+
+The per-entrant shower library (`calofastsim.showers.entrants`) replaces the chain's shower draw; digitisation and
+everything after it stay the same. When it becomes the device default, the calo stage does not change, but its
+inputs do: the library adds the inner-edge entrants (its inner-edge face), so the clusters near the inner radius, and
+with them the calo path rates, are validated again against stock on the chain's output.
+
 ## Use
 
 The response layer is chosen per process with `--response` (bench: `TRIGGER_DEVICE_RESPONSE`; `beamfastsim.centuple
