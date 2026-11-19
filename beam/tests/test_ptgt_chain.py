@@ -134,7 +134,8 @@ def test_bank_builder_round_trip(tmp_path):
     PB.main([str(d), "--out", str(out), "--commit", "0123abcd"])
     b = D.Bank.load(out)
     m = b.lib.manifest                                 # a library-core file with a complete manifest
-    assert L.manifest.complete(m) and not L.manifest.validate(m)
+    L.manifest.validate(m)                             # raises on any problem
+    assert L.manifest.complete(m)
     assert m["name"] == "beam.thin_target.TEST" and m["release"]["commit"] == "0123abcd"
     assert m["seeds"]["source"] == [1] and m["source"]["samples"][0].startswith("el_proton")
     grid = json.load(open(d / "grid.json"))
