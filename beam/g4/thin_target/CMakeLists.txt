@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.16)
+project(thin_target CXX)
+find_package(Geant4 REQUIRED)
+include(${Geant4_USE_FILE})
+add_executable(thin_target thin_target.cc)
+target_link_libraries(thin_target ${Geant4_LIBRARIES})
+target_compile_features(thin_target PRIVATE cxx_std_17)

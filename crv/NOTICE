@@ -7,5 +7,10 @@ Parts of this code re-implement or link against Mu2e Offline (https://github.com
 the CRV bar geometry in crvfastsim/geometry.py follows GeometryService/src/CosmicRayShieldMaker.cc, and the art
 modules in art/CrvFastSim use Offline data products and services.
 
+crvfastsim/lookupgen ports the lookup-table mode of Mu2e/CRVStandalone (https://github.com/Mu2e/CRVStandalone),
+Apache-2.0: its material and surface tables, counter geometry, photon sources, WLS processes and table format. It
+also re-implements the optical boundary and property-vector algorithms of Geant4 10.7 (https://geant4.web.cern.ch,
+Geant4 Software License) that the stock program uses.
+
 Mu2e-internal inputs (CRV conditions and photon lookup tables, detector data) are not part of this repository and
 must not be added to it.
