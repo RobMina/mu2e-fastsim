@@ -51,6 +51,24 @@ device builds a batch x H array for them anyway.
 A call whose demand exceeds its capacity is not truncated. It runs with the bucketed shape: the output is the same,
 but that call compiles. It is counted in `runchain.capacity.overflow`, so a file that is too small shows in the report.
 
+## Experimental sparse waveform synthesis
+
+Set `"waveform_kernel": "scatter"` in a capacity file to use the same
+finite-template scatter kernel as the resident mixing workflow. It visits only
+the samples the single-PE template can reach, rather than all samples for each
+charge. The cluster layout, sample times, template indices, per-cluster noise
+keys, and zero-suppression scan convention are unchanged. Overlapping charges
+sum in a different order, which can move an ADC bin or a threshold decision.
+The default is `"dense"`; the packing memory budgets are unchanged.
+
+`JAX_PLATFORMS=cpu python crv/scripts/bench_sparse_waveforms.py` compares the
+whole synthesis stage (including packing and unpacking) on 84,158 synthetic
+charges and the public Offline pulse template. On one AMD EPYC 9V74 core
+(JAX 0.12.1, float32), median warm time was 28.4 ms dense versus 29.9 ms scatter.
+With `--long` (spaced bunches in the same charge cluster) it was 109.9 versus
+46.8 ms. All 3,000 and 7,263 respective digi starts and ADC arrays matched.
+These are not full-chain, production-pileup, or GPU results.
+
 ## Bounded pulse scans
 
 In capacity mode both pulse fits (the 12-sample fit and the device refit of flagged waveforms) run with

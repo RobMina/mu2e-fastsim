@@ -114,6 +114,66 @@ def synth_dense(T, W, n, t_start, keep, tmpl, key, L, zs, precision, noise, min_
     return wave, adc, starts, last
 
 
+def synth_scatter(time, weight, group, use, t_start, keep, tmpl, key, C, L, zs, precision, noise, min_voltage,
+                  window_start=None, window_end=None, *, bounded=False):
+    """Accumulate each charge only into samples within the template's finite support."""
+    real = jnp.zeros(()).dtype
+    time, weight = time.astype(real), weight.astype(real)
+    span = int(np.ceil(tmpl.shape[0] * precision / PERIOD)) + 2
+    g = jnp.clip(group, 0, C - 1)
+    first = jnp.floor((time - t_start[g]) / PERIOD).astype(jnp.int64)
+    j = jnp.maximum(first, 0)[:, None] + jnp.arange(span)[None, :]
+    dt = (t_start[g][:, None] + j.astype(dprec.FLOAT) * PERIOD) - time[:, None]
+    ti = jnp.rint(dt / precision).astype(jnp.int64)
+    ok = use[:, None] & (dt >= 0) & (ti < tmpl.shape[0]) & (j < L)
+    row = jnp.where(ok, g[:, None], C)
+    col = jnp.clip(j, 0, L - 1)
+    contrib = jnp.where(ok, tmpl[jnp.clip(ti, 0, tmpl.shape[0] - 1)] * weight[:, None], 0.0)
+    wave = jnp.zeros((C, L), contrib.dtype).at[row, col].add(contrib, mode="drop")
+    last = jnp.zeros(C, jnp.int64).at[row].max(jnp.where(ok, j + 1, 0), mode="drop")
+    if key.ndim == 2:
+        z = jax.vmap(lambda k: jax.random.normal(k, (L,)))(key)
+    else:
+        z = jax.random.normal(key, wave.shape, dtype=dprec.FLOAT)
+    valid = jnp.arange(L)[None, :] < last[:, None]
+    wave = wave + noise * z * valid
+    above = (wave > min_voltage) & valid
+    pad = jnp.zeros((C, 2), bool)
+    ap = jnp.concatenate([pad, above, pad], 1)
+    win = (ap[:, 0:L] | ap[:, 1:L + 1] | ap[:, 2:L + 2] | ap[:, 3:L + 3] | ap[:, 4:L + 4]) & valid & keep[:, None]
+    ts = t_start[:, None] + jnp.arange(L, dtype=dprec.FLOAT)[None, :] * PERIOD
+
+    def step(next_i, i):
+        start = win[:, i] & (next_i <= i)
+        if window_start is not None:
+            start &= ts[:, i] >= window_start
+        if window_end is not None:
+            start &= ts[:, i] <= window_end
+        return jnp.where(start, i + zs, next_i), start
+
+    if bounded:
+        def body(i, state):
+            next_i, starts = state
+            next_i, start = step(next_i, i)
+            return next_i, lax.dynamic_update_slice(starts, start[None, :], (i, 0))
+        _, starts = lax.fori_loop(jnp.int64(0), jnp.minimum(jnp.max(last), L).astype(jnp.int64), body,
+                                  (jnp.zeros(C, jnp.int64), jnp.zeros((L, C), bool)))
+    else:
+        _, starts = lax.scan(step, jnp.zeros(C, jnp.int64), jnp.arange(L))
+    return wave, starts.T, last
+
+
+@partial(dprec.jit, static_argnames=("L", "zs", "precision"))
+def synth_scatter_packed(T, W, n, t_start, keep, tmpl, key, L, zs, precision, noise, min_voltage,
+                         window_start=None, window_end=None):
+    """Sparse synthesis for runchain's bucketed [cluster, charge] inputs and per-cluster keys."""
+    C, Q = T.shape
+    group = jnp.repeat(jnp.arange(C), Q)
+    use = (jnp.arange(Q)[None, :] < n[:, None]).ravel()
+    return synth_scatter(T.ravel(), W.ravel(), group, use, t_start, keep, tmpl, key, C, L, zs, precision,
+                         noise, min_voltage, window_start, window_end, bounded=True)
+
+
 def synthesize(chan, time, charge, tdc0_of_chan, cfg=WaveformConfig(), window=(0.0, 1e5), rng_key=None, Q=None,
                L=None, *, stock_scan=False):
     """Same contract as waveform.synthesize (noise from a JAX key; None = no noise).

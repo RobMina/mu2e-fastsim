@@ -746,12 +746,14 @@ def _synth_jax_fixed(WJ, Q, tdc0_row, cfg, caps, noise=0.0, seed=0, budget_gib=S
                 T, W = WJ.gather_tw(dev_t, w, pad(first[c], 0), pad(pk["n"], 0), Q=Qb)
                 keys = keys_of(root, jnp.asarray(pad(c.astype(np.uint32), 0)))
                 options = dict(stock_scan=True, window_start=window[0], window_end=window[1]) if stock_scan else {}
-                wave, adc, st, last = WJ.synth_dense(T, W, pad(pk["n"], 0), pad(pk["t_start"], 0.0),
-                                                     pad(pk["keep"], False), tmpl, keys, Lb, cfg.samples_zs,
-                                                     cfg.single_pe_precision, noise, cfg.min_voltage,
-                                                     cfg.adc_conversion, cfg.pedestal, cfg.min_adc, cfg.max_adc,
-                                                     **options)
-                parts.append(WJ.to_digis(pk, np.asarray(wave)[:n], np.asarray(adc)[:n], np.asarray(st)[:n],
+                args = (T, W, pad(pk["n"], 0), pad(pk["t_start"], 0.0), pad(pk["keep"], False), tmpl, keys, Lb,
+                        cfg.samples_zs, cfg.single_pe_precision, noise, cfg.min_voltage)
+                if caps.waveform_kernel == "scatter":
+                    wave, st, last = WJ.synth_scatter_packed(*args, *(window if stock_scan else ()))
+                else:
+                    wave, _, st, last = WJ.synth_dense(*args, cfg.adc_conversion, cfg.pedestal, cfg.min_adc,
+                                                       cfg.max_adc, **options)
+                parts.append(WJ.to_digis(pk, np.asarray(wave)[:n], None, np.asarray(st)[:n],
                                          np.asarray(last)[:n], cfg, window))
     out = {k: np.concatenate([p[k] for p in parts]) for k in parts[0]}
     o = np.lexsort((out["start"], out["chan"]))

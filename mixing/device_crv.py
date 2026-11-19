@@ -56,55 +56,6 @@ def _groups(new, mask):
     return jnp.cumsum(new) - 1, row - first
 
 
-def _synth_scatter(time, weight, group, use, t_start, keep, tmpl, key, C, L, zs, precision, noise, min_voltage,
-                   window_start, window_end, bounded=False):
-    """Same waveforms and digi starts as `waveform_jax.synth_dense(stock_scan=True)`, built per charge.
-
-    Each charge adds weight * template(t_sample - t_charge) to the few samples its template spans
-    (a flat scatter-add of charges x span) instead of a dense [C, Q, L] gather, so the cost no
-    longer scales with the largest cluster. Sample times, template indices, noise draws and the
-    gated scan are computed exactly as in the dense kernel; only the floating-point summation order
-    of overlapping charges differs.
-    """
-    period = WJ.PERIOD
-    real = jnp.zeros(()).dtype                       # the dense kernel's T/W matrices use the default float
-    time, weight = time.astype(real), weight.astype(real)
-    span = int(np.ceil(tmpl.shape[0] * precision / period)) + 2
-    g = jnp.clip(group, 0, C - 1)
-    first = jnp.floor((time - t_start[g]) / period).astype(jnp.int64)
-    j = jnp.maximum(first, 0)[:, None] + jnp.arange(span)[None, :]
-    dt = (t_start[g][:, None] + j.astype(dprec.FLOAT) * period) - time[:, None]
-    ti = jnp.rint(dt / precision).astype(jnp.int64)
-    ok = use[:, None] & (dt >= 0) & (ti < tmpl.shape[0]) & (j < L)
-    row = jnp.where(ok, g[:, None], C)
-    col = jnp.clip(j, 0, L - 1)
-    contrib = jnp.where(ok, tmpl[jnp.clip(ti, 0, tmpl.shape[0] - 1)] * weight[:, None], 0.0)
-    wave = jnp.zeros((C, L), contrib.dtype).at[row, col].add(contrib, mode="drop")
-    last = jnp.zeros(C, jnp.int64).at[row].max(jnp.where(ok, j + 1, 0), mode="drop")
-    wave = wave + noise * jax.random.normal(key, wave.shape, dtype=dprec.FLOAT) * (jnp.arange(L)[None, :] < last[:, None])
-    valid = jnp.arange(L)[None, :] < last[:, None]
-    above = (wave > min_voltage) & valid
-    pad = jnp.zeros((C, 2), bool)
-    ap = jnp.concatenate([pad, above, pad], 1)
-    win = (ap[:, 0:L] | ap[:, 1:L + 1] | ap[:, 2:L + 2] | ap[:, 3:L + 3] | ap[:, 4:L + 4]) & valid & keep[:, None]
-    ts = t_start[:, None] + jnp.arange(L, dtype=dprec.FLOAT)[None, :] * period
-
-    def step(next_i, i):
-        start = win[:, i] & (next_i <= i) & (ts[:, i] >= window_start) & (ts[:, i] <= window_end)
-        return jnp.where(start, i + zs, next_i), start
-
-    if bounded:   # samples past every row's last are never above threshold: the gated scan stops at max(last)
-        def body(i, state):
-            next_i, starts = state
-            next_i, start = step(next_i, i)
-            return next_i, lax.dynamic_update_slice(starts, start[None, :], (i, 0))
-        _, starts = lax.fori_loop(jnp.int64(0), jnp.minimum(jnp.max(last), L).astype(jnp.int64), body,
-                                  (jnp.zeros(C, jnp.int64), jnp.zeros((L, C), bool)))
-    else:
-        _, starts = lax.scan(step, jnp.zeros(C, jnp.int64), jnp.arange(L))
-    return wave, starts.T, last
-
-
 def _counts_draw(avg, nsub, key):
     normal, poisson = jax.random.split(key)
     avg = jnp.maximum(avg, 0.0)
@@ -337,7 +288,7 @@ class Adapter:
         keep = (counts > 0) & (counts * assets["template"].max() >= w.min_voltage)
         need = jnp.ceil((span + w.single_pe_max_time) / CH.PERIOD).astype(jnp.int64) + 2 + w.samples_zs
         if self.waveform == "scatter":
-            wave, starts, last = _synth_scatter(q["time"], q["charge"] / w.single_pe_reference_charge, group,
+            wave, starts, last = WJ.synth_scatter(q["time"], q["charge"] / w.single_pe_reference_charge, group,
                     mask & (group < C), start, keep, assets["template"], kn, C, L, w.samples_zs, w.single_pe_precision,
                     w.noise if self.cfg.noise else 0., w.min_voltage, self.cfg.window[0], self.cfg.window[1],
                     bounded=self.digi_mode == "rows")
@@ -574,7 +525,7 @@ def prepare(geom, cond, cfg, counters, capacities, tabs, pmap):
     """Prepare immutable numeric assets; caller uploads once and JITs adapter.apply.
 
     `capacities` may also carry the option `waveform`: "dense" (default, the shared
-    `synth_dense` kernel) or "scatter" (`_synth_scatter`; `charges_per_cluster` is then unused).
+    `synth_dense` kernel) or "scatter" (`waveform_jax.synth_scatter`; `charges_per_cluster` is then unused).
     Exact restructures, same results, on by default ("dense": the full scans, their equality reference): `digi_starts`
     "rows" (digi starts listed from the rows that hold one, and the scatter synthesis' gated scan stops at the longest
     waveform) and `pulse_scan` "bounded" (pulse-fit peak scans stop at the longest reco waveform, rounds stop once no

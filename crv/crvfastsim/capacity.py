@@ -52,9 +52,12 @@ class Capacities:
         spec = dict(spec or {})
         if spec and spec.get("format") != FORMAT:
             raise ValueError(f"capacity file format {spec.get('format')!r}, expected {FORMAT!r}")
-        unknown = set(spec) - set(SCALARS) - set(PER_Q) - {"format", "margin", "census", "note"}
+        unknown = set(spec) - set(SCALARS) - set(PER_Q) - {"format", "margin", "census", "note", "waveform_kernel"}
         if unknown:
             raise ValueError(f"unknown capacity entries {sorted(unknown)}")
+        self.waveform_kernel = spec.get("waveform_kernel", "dense")
+        if self.waveform_kernel not in ("dense", "scatter"):
+            raise ValueError("waveform_kernel must be dense or scatter")
         self.spec = spec
         self.record = record or not spec
         self.usage = {}

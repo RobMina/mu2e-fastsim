@@ -140,6 +140,23 @@ def test_fixed_synthesis_without_noise_equals_bucketed():
     assert np.max(np.abs(a["volt"] - b["volt"])) < 1e-12
 
 
+@pytest.mark.parametrize("stock_scan", [False, True])
+def test_fixed_scatter_synthesis_preserves_adc_and_digi_starts(stock_scan):
+    from crvfastsim.capacity import FORMAT, Capacities
+    from crvfastsim.reco import cli, waveform, waveform_jax as WJ
+    cfg = waveform.WaveformConfig()
+    Q, tdc0 = _charges(8, 7)
+    Q["time"] += 30 * (np.arange(len(tdc0))[Q["row"]] % 3)
+    window = (250., 75000.)
+    kw = dict(noise=cfg.noise, seed=72, stock_scan=stock_scan, window=window)
+    dense = cli._synth_jax_fixed(WJ, Q, tdc0, cfg, Capacities(record=True), **kw)
+    scatter = cli._synth_jax_fixed(WJ, Q, tdc0, cfg, Capacities(dict(format=FORMAT, waveform_kernel="scatter")), **kw)
+    assert len(dense["adc"]) > 0
+    for k in ("chan", "start", "starttdc", "adc"):
+        np.testing.assert_array_equal(scatter[k], dense[k])
+    np.testing.assert_allclose(scatter["volt"], dense["volt"], rtol=0., atol=1e-12)
+
+
 def test_capacity_file_derive_and_enforce(tmp_path):
     from crvfastsim import capacity
     usage = {"steps": 1000, "photon_rows": 80, "refit_samples": 33, "synth_rows/64": 40, "synth_samples/64": 41,
