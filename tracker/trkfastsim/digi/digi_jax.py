@@ -88,6 +88,11 @@ def _gamma(key, a):
 # True / False force it (read when a kernel is traced: set it before the first call).
 GAMMA_SPLIT = None
 GAMMA_CHUNK = 1024
+# Electronics response sums: each cluster lane interpolates the response table between wire-distance rows k and k + 1
+# at two sample indices (direct and reflected pulse). VOLT_PAIRS stores rows k and k + 1 side by side ([rows - 1, bins,
+# 2]), so a lane takes two gathers of two values instead of four of one: the same table values and arithmetic (read
+# when a kernel is traced: set it before the first call).
+VOLT_PAIRS = True
 
 
 def _gamma_one():
@@ -289,6 +294,7 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
         df.check_common_period(c)
         per_adc, per_tdc = int(round(df.COMMON_PERIOD / c.ADCPeriod)), int(round(df.COMMON_PERIOD / c.TDCLSB))
     tables = {k: cond["resp_" + k].astype(jnp.float32) for k in ("thresh", "adc", "sat")}
+    pairs = {k: jnp.stack([v[:-1], v[1:]], axis=-1) for k, v in tables.items()} if VOLT_PAIRS else None
     dts = c.saturationSampleFactor / sr
     sat_steps = int(np.ceil((c.ttrunc + c.nADCSamples * c.ADCPeriod + 2 * LB) / dts)) + 2
     ticks = jnp.arange(1, c.maxTOT)
@@ -314,7 +320,11 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
             ix = jnp.clip(jnp.floor(u)[:, :, None] + stride, 0, rb - 1).astype(jnp.int32)
             ir = jnp.clip(jnp.floor(u - tr * sr)[:, :, None] + stride, 0, rb - 1).astype(jnp.int32)
         k = dk[:, :, None]
-        v = aa[:, :, None] * (T[k, ix] + sc[:, :, None] * T[k, ir]) + bb[:, :, None] * (T[k + 1, ix] + sc[:, :, None] * T[k + 1, ir])
+        if pairs is None:
+            v = aa[:, :, None] * (T[k, ix] + sc[:, :, None] * T[k, ir]) + bb[:, :, None] * (T[k + 1, ix] + sc[:, :, None] * T[k + 1, ir])
+        else:       # rows k and k + 1 in one gather (VOLT_PAIRS): the same values, summed in the same order
+            px, pr = pairs[path][k, ix], pairs[path][k, ir]
+            v = aa[:, :, None] * (px[..., 0] + sc[:, :, None] * pr[..., 0]) + bb[:, :, None] * (px[..., 1] + sc[:, :, None] * pr[..., 1])
         ok = valid[:, :, None] & (t[:, :, None] - LB < tq[:, None, :])
         if cmin is not None:
             ok &= (ci >= cmin[:, None])[:, :, None]
