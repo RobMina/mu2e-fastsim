@@ -15,7 +15,7 @@ requires-python = ">=3.10"
 # mu2efastsim.library and mu2efastsim.component_response re-export with the Mu2e profile; same pin as
 # ci/requirements.txt.
 dependencies = ["numpy", "pandas", "uproot", "matplotlib", "scipy", "hep-endpoints @ git+https://github.com/RobMina/hep-endpoints.git@536656008f457eefb5939cdbe1095cbdf445857d",
-                "hep-simlib @ git+https://github.com/RobMina/hep-simlib.git@6c3d7fc0244102563c5bdf8435de5acf336f69cc"]
+                "hep-simlib @ git+https://github.com/RobMina/hep-simlib.git@c451ee6d144515bb700078441688cdda4fe9563a"]
 
 [project.optional-dependencies]
 jax = ["jax"]
