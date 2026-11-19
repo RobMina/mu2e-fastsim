@@ -198,7 +198,16 @@ def charges(steps, pdg, geom, cond, cfg, rng, key, tabs, pmap, status, event_key
     size = _bucket(total) + _bucket(min(max(total, 1), max_photons))   # room for every chunk window [a, a + NB)
     if caps is not None:
         NBmax = caps.cap("sipm_photons") or _bucket(min(max(total, 1), max_photons))
-        size = caps.size("photon_buffer", total + NBmax, size)
+        need = total + NBmax
+        if "photon_arrivals" in caps.tiers:
+            # A padded piece may be wider than the remaining window. Without room
+            # for its whole tile XLA clamps the write offset, overwriting live rows.
+            off = 0
+            for s, _, _, n in pieces:
+                need = max(need, off + s.shape[0])
+                off += n
+            size = max(size, _bucket(need))
+        size = caps.size("photon_buffer", need, size)
     (s, c, t), n = _concat(pieces, size)
     if int(jnp.max(jnp.where(jnp.arange(size) < n, c, 0))) >= chan_mult:
         raise ValueError(f"channel >= CHAN_MULT {chan_mult}: SiPM labels would overlap the next event")

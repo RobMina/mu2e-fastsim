@@ -51,6 +51,33 @@ device builds a batch x H array for them anyway.
 A call whose demand exceeds its capacity is not truncated. It runs with the bucketed shape: the output is the same,
 but that call compiles. It is counted in `runchain.capacity.overflow`, so a file that is too small shows in the report.
 
+## Experimental capacity tiers
+
+Use the optional `tiers` object to add sub-capacities for `photon_arrivals` or
+`charges`:
+
+```json
+{
+  "format": "crvfastsim-capacities-1",
+  "photon_arrivals": 65536,
+  "tiers": {"photon_arrivals": [4096, 16384, 32768]}
+}
+```
+
+In a full capacity file, keep the other buffer entries. Tiers must be strictly
+increasing and below the corresponding scalar capacity, which is the final
+tier. The smallest sufficient shape is used. Each used shape compiles once per
+signature; the existing over-capacity path is unchanged. `runchain.capacity.tier_calls`
+records how often each shape was chosen. Start with one ladder and warm it on a
+representative load rather than multiplying shape combinations across kernels.
+
+`JAX_PLATFORMS=cpu python crv/scripts/bench_capacity_tiers.py` compares the
+optical arrival-delay kernel alone on 261,848 synthetic arrivals in 24 calls.
+On one AMD EPYC 9V74 core (JAX 0.12.1, float32), the ladder reduced padded slots
+from 1.57M to 0.35M and median warm time from 47.0 to 17.6 ms. First pass
+including JIT rose from 0.59 to 2.04 s. The same-key live outputs were identical.
+This does not measure charge sorting, the full response, or GPU performance.
+
 ## Bounded pulse scans
 
 In capacity mode both pulse fits (the 12-sample fit and the device refit of flagged waveforms) run with

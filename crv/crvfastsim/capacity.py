@@ -28,6 +28,7 @@ File format (JSON)::
      "coinc_hits": {"H": N, ...}}            # hits of one device-packed coincidence batch, per tier group size H
 """
 import argparse
+from bisect import bisect_left
 import json
 import math
 from pathlib import Path
@@ -39,6 +40,8 @@ SCALARS = ("steps", "photon_block_rows", "photon_rows", "photon_substeps", "phot
 FIXED = ("sipm_photons",)   # set by hand (the SiPM chunk size), not derived from demand
 CLAMP = {"photon_substeps": 1 << 22}   # hard per-chunk limits of the kernels (photons_jax max_sub): never above
 PER_Q = ("synth_rows", "synth_samples", "coinc_hits")
+# Start with buffers whose live prefixes are independent of their padded sizes.
+TIERED = ("photon_arrivals", "charges")
 
 
 def _p2(n, lo=1):
@@ -52,10 +55,22 @@ class Capacities:
         spec = dict(spec or {})
         if spec and spec.get("format") != FORMAT:
             raise ValueError(f"capacity file format {spec.get('format')!r}, expected {FORMAT!r}")
-        unknown = set(spec) - set(SCALARS) - set(PER_Q) - {"format", "margin", "census", "note"}
+        unknown = set(spec) - set(SCALARS) - set(PER_Q) - {"format", "margin", "census", "note", "tiers"}
         if unknown:
             raise ValueError(f"unknown capacity entries {sorted(unknown)}")
         self.spec = spec
+        tiers = spec.get("tiers", {})
+        if not isinstance(tiers, dict) or set(tiers) - set(TIERED):
+            raise ValueError(f"capacity tiers are supported for {', '.join(TIERED)}")
+        self.tiers = {}
+        for name, sizes in tiers.items():
+            ceiling = spec.get(name)
+            if (type(ceiling) is not int or ceiling <= 0 or not isinstance(sizes, list) or not sizes
+                    or any(type(n) is not int or not 0 < n < ceiling for n in sizes)
+                    or sizes != sorted(set(sizes))):
+                raise ValueError(f"{name} tiers must be increasing positive integers below its fixed capacity")
+            self.tiers[name] = (*sizes, ceiling)
+        self.selected = {}
         self.record = record or not spec
         self.usage = {}
         self.overflow = {}
@@ -96,10 +111,18 @@ class Capacities:
         if demand > cap:
             self.overflow[key] = self.overflow.get(key, 0) + 1
             return bucket
+        ladder = self.tiers.get(name)
+        if ladder is not None:
+            cap = ladder[bisect_left(ladder, demand)]
+            counts = self.selected.setdefault(name, {})
+            counts[cap] = counts.get(cap, 0) + 1
         return int(cap)
 
     def report(self):
-        return {"usage": dict(sorted(self.usage.items())), "overflow": dict(sorted(self.overflow.items()))}
+        out = {"usage": dict(sorted(self.usage.items())), "overflow": dict(sorted(self.overflow.items()))}
+        if self.tiers:
+            out["tier_calls"] = {name: dict(sorted(counts.items())) for name, counts in sorted(self.selected.items())}
+        return out
 
 
 def derive(usage, margin=1.25, census="", fixed=None):

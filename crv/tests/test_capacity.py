@@ -165,6 +165,51 @@ def test_capacity_file_derive_and_enforce(tmp_path):
         capacity.derive(usage, 0.5)
 
 
+def test_tier_boundaries_and_exact_overflow_reporting():
+    from crvfastsim.capacity import Capacities, FORMAT
+    spec = dict(format=FORMAT, photon_arrivals=128, charges=256)
+    c = Capacities(dict(spec, tiers={"photon_arrivals": [32, 64], "charges": [64]}), record=True)
+    sizes = [c.size("photon_arrivals", n, 256) for n in (31, 32, 33, 64, 65, 128, 129)]
+    assert sizes == [32, 32, 64, 64, 128, 128, 256]
+    assert c.size("charges", 65, 128) == 256
+    assert c.report() == {"usage": {"photon_arrivals": 129, "charges": 65},
+                          "overflow": {"photon_arrivals": 1},
+                          "tier_calls": {"photon_arrivals": {32: 2, 64: 2, 128: 2}, "charges": {256: 1}}}
+    for bad in ([64, 32], [64, 64], [64, 128], [0, 32]):
+        with pytest.raises(ValueError, match="increasing"):
+            Capacities(dict(spec, tiers={"photon_arrivals": bad}))
+    with pytest.raises(ValueError, match="supported"):
+        Capacities(dict(spec, tiers={"sipm_photons": [32]}))
+
+
+def test_charge_tiers_preserve_live_prefix_and_order():
+    from crvfastsim.capacity import Capacities, FORMAT
+    from crvfastsim.response import resident
+    a = (jnp.array([2, 1, 2, 2, 0, 0]), jnp.array([8., 1., 8., 4., 0., 0.]),
+         jnp.arange(6, dtype=float), jnp.ones(6), jnp.arange(6))
+    b = tuple(x[::-1] for x in a)
+    pieces = [(a, 4), (b, 3)]
+    spec = dict(format=FORMAT, charges=32)
+    fixed = resident._sorted_charges(pieces, Capacities(spec))
+    tiered = resident._sorted_charges(pieces, Capacities(dict(spec, tiers={"charges": [16]})))
+    for field in fixed:
+        np.testing.assert_array_equal(tiered[field], fixed[field])
+
+
+def test_arrival_tiers_keep_same_delay_draws():
+    from crvfastsim.capacity import Capacities, FORMAT
+    from crvfastsim.response.photons_jax import _kernel_b
+    args = (jnp.array([[2, 0, 7], [5, 6, 0]]), jnp.array([[0, 0, 1], [1, 0, 1]]),
+            jnp.array([3.5, 7.]), jnp.array([20, 7]), jax.random.PRNGKey(42),
+            jnp.array([[1, 3, 5], [2, 5, 8]]), jnp.array([5, 8]))
+    spec = dict(format=FORMAT, photon_arrivals=128)
+    fixed = Capacities(spec).size("photon_arrivals", 20, 32)
+    tier = Capacities(dict(spec, tiers={"photon_arrivals": [24, 64]})).size("photon_arrivals", 20, 32)
+    first, second = _kernel_b(*args, fixed), _kernel_b(*args, tier)
+    for lhs, rhs in zip(first, second):
+        np.testing.assert_array_equal(lhs[:20], rhs[:20])
+
+
 def test_slab_crossings_padding_is_exact():
     from mu2efastsim import crossings
     rng = np.random.default_rng(1)
