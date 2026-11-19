@@ -5,6 +5,11 @@ package's StrawHitReco port (`trkfastsim.reco.hitreco_jax`) with the trigger's s
 firmware peak-minus-pedestal (FitType 5) with the per-straw scale, and the trigger's energy/radius/time windows.
 The panel combine follows the stock CombineStrawHits loop with TestFlag on (only hits with every selection bit and
 no mask bit are combined or written), one greedy pass over the event's hits.
+
+Both kernels follow the stock arithmetic, so that the hits equal stock's bit for bit (`exact.py`): they trace in
+float64 in either precision of the chain; float where the C++ computes in float (TDCTimes, ComboHit members, the
+XYZVectorF centre sum of a combo, the float cuts), double where it promotes; members are summed in collection order;
+products are not fused into the adds that follow them.
 """
 from __future__ import annotations
 
@@ -13,9 +18,11 @@ import jax.numpy as jnp
 import numpy as np
 
 from trkfastsim.reco.hitreco import CENTRAL_WIRE_POS, EBIN, ERRFAC, FLAG, SLFAC, WBUF, unique_straw
-from trkfastsim.reco.hitreco_jax import _pieceline, bucket
+from trkfastsim.reco.hitreco_jax import bucket
 
-jax.config.update("jax_enable_x64", True)
+from . import exact
+from .exact import g as _g, m as _m
+
 F32, F64 = jnp.float32, jnp.float64
 MAXNCOMBO = 8                      # ComboHit::MaxNCombo
 SPILL_OFF = 0                      # EventWindowMarker::offspill
@@ -56,13 +63,13 @@ def ph_settings(m):
 def device_conditions(cond):
     """Conditions (hitreco.load_conditions layout) -> device arrays, incl. the per-straw PMP scale."""
     sc, st = cond["scalar"], cond["straw"]
-    c = {k: jnp.asarray(np.asarray(st[k], np.float64)) for k in
+    c = {k: np.asarray(st[k], np.float64) for k in
          ("midx", "midy", "midz", "dirx", "diry", "dirz", "hlen", "toff_hv", "toff_cal", "dead", "noisy", "halfvp",
           "pmpscale")}
     for k in ("halfvpscale", "centres", "resslope", "totdtime", "totderror"):
-        c[k] = jnp.asarray(np.asarray(cond[k], np.float64))
+        c[k] = np.asarray(cond[k], np.float64)
     for k in ("tdcLSB", "adcLSB", "totLSB", "strawGain", "eionPerQ", "pmpScaleAvg", "strawOuterRadius"):
-        c[k] = jnp.float64(sc[k])
+        c[k] = np.float64(sc[k])
     return c, tuple(cond["tot_bins"])
 
 
@@ -86,62 +93,100 @@ def pack_events(ev, nh=None, hmin=64):
     return out
 
 
+def _ambient_int():
+    """The int dtype of the chain's precision (int32 with float64 off): outputs leave the float64 trace in it."""
+    return jnp.asarray(0).dtype
+
+
+def _leave(out, it):
+    """Kernel outputs for the chain: integer columns in the chain's int dtype (floats are float32 already)."""
+    return {k: (v.astype(it) if jnp.issubdtype(v.dtype, jnp.signedinteger) else v) for k, v in out.items()}
+
+
+def _piece(xv, yv, x):
+    """StrawResponse::PieceLine, in its operation order: yvals[i] + (x - xvals[i]) * slope."""
+    xbin = (xv[-1] - xv[0]) / (len(xv) - 1)
+    ib = jnp.clip(jnp.floor((x - xv[0]) / xbin).astype(jnp.int64), 0, len(xv) - 2)
+    slope = (yv[ib + 1] - yv[ib]) / xbin
+    return yv[ib] + _m(x - xv[ib], slope)
+
+
 def straw_hits(p, c, s, tot_bins):
     """[E, H] digis -> straw-hit columns, as StrawHitReco (FilterHits false: one hit per digi, flags carry cuts)."""
-    sid, valid = p["sid"], p["valid"]
-    us = unique_straw(sid)
+    it = _ambient_int()
+    with exact.strict(p["sid"]):
+        return _leave(_straw_hits(p, c, s, tot_bins), it)
+
+
+def _straw_hits(p, c, s, tot_bins):
+    """StrawHitRecoUtils::createComboHit and the StrawResponse calls it makes, in the stock types and order."""
     if s["fittype"] != 5:
         raise ValueError("device straw hits implement FitType 5 (firmware PMP) only")
-    charge = p["pmp"] * (c["adcLSB"] / c["strawGain"]) * c["pmpscale"][us]
-    energy = (c["eionPerQ"] * charge).astype(F32)
-    pbt = p["pbt"][:, None].astype(F32)
-    t_cal = ((p["tdc0"] * c["tdcLSB"] + c["toff_cal"][us]).astype(F32) - pbt).astype(F32)
-    t_hv = ((p["tdc1"] * c["tdcLSB"] + c["toff_hv"][us]).astype(F32) - pbt).astype(F32)
+    c = {k: jnp.asarray(v) for k, v in c.items()}
+    sid, valid = p["sid"].astype(jnp.int64), p["valid"]
+    us = unique_straw(sid)
+    d = lambda x: jnp.asarray(x).astype(F64)
+    f = lambda x: jnp.asarray(x).astype(F32)
+    charge = _m(d(p["pmp"]), c["adcLSB"] / c["strawGain"], c["pmpscale"][us])
+    energy = f(c["eionPerQ"] * charge)                               # float energy = ionizationEnergy(charge)
+    pbt = d(p["pbt"])[:, None]
+    # calibrateTimes into float TDCTimes, then times[iend] -= pbtOffset (float -= double)
+    t_cal = f(d(f(_m(d(p["tdc0"]), c["tdcLSB"]) + c["toff_cal"][us])) - pbt)
+    t_hv = f(d(f(_m(d(p["tdc1"]), c["tdcLSB"]) + c["toff_hv"][us])) - pbt)
     eend = (t_hv < t_cal).astype(jnp.int64)
-    tot_cal, tot_hv = (p["tot0"] * c["totLSB"]).astype(F32), (p["tot1"] * c["totLSB"]).astype(F32)
+    tot_cal, tot_hv = f(_m(d(p["tot0"]), c["totLSB"])), f(_m(d(p["tot1"]), c["totLSB"]))
     tot_sel = jnp.where(eend == 1, tot_hv, tot_cal)
-    dt = t_hv.astype(F64) - t_cal.astype(F64)
-    kedep = 1000.0 * energy.astype(F64)
+    dt = d(t_hv - t_cal)                                              # float - float, then double
+    kedep = 1000.0 * d(energy)
     egrid = jnp.arange(c["halfvpscale"].shape[0]) * EBIN
-    halfpv = _pieceline(egrid, c["halfvpscale"], kedep) * c["halfvp"][us]
-    wdist = halfpv * dt
-    wres = _pieceline(egrid, c["centres"], kedep)
-    wres = jnp.maximum(30.0, wres + jnp.where(jnp.abs(wdist) > CENTRAL_WIRE_POS,
-                                              (jnp.abs(wdist) - CENTRAL_WIRE_POS) * _pieceline(egrid, c["resslope"], kedep), 0.0))
+    halfpv = _m(_piece(egrid, c["halfvpscale"], kedep), c["halfvp"][us])
+    wdist = _m(halfpv, dt)
+    awd = jnp.abs(wdist)
+    wres = _piece(egrid, c["centres"], kedep)
+    wres = jnp.where(awd > CENTRAL_WIRE_POS, wres + _m(awd - CENTRAL_WIRE_POS, _piece(egrid, c["resslope"], kedep)), wres)
+    wres = jnp.maximum(30.0, wres)
     hlen = c["hlen"][us]
-    trunc = jnp.abs(wdist) > hlen + WBUF * wres
+    trunc = awd > hlen + _m(WBUF, wres)
     wdist = jnp.where(trunc, jnp.copysign(hlen * SLFAC, wdist), wdist)
     wres = jnp.where(trunc, wres * ERRFAC, wres)
     esign = 2.0 * (eend - 0.5)
-    ptime = ((hlen + esign * wdist).astype(F32) / (2 * halfpv)).astype(F32)
-    x = (c["midx"][us] + wdist * c["dirx"][us]).astype(F32)
-    y = (c["midy"][us] + wdist * c["diry"][us]).astype(F32)
-    z = (c["midz"][us] + wdist * c["dirz"][us]).astype(F32)
-    rho = jnp.hypot(x, y)
+    propd = f(hlen + _m(esign, wdist))
+    ptime = f(d(propd) / (2 * halfpv))
+    x = f(c["midx"][us] + _m(wdist, c["dirx"][us]))
+    y = f(c["midy"][us] + _m(wdist, c["diry"][us]))
+    z = f(c["midz"][us] + _m(wdist, c["dirz"][us]))
+    rho = jnp.sqrt(_m(x, x) + _m(y, y))                               # XYZVectorF::Rho in float
     ntb, wtb, neb, web = tot_bins
-    tbin = jnp.minimum(int(ntb) - 1, (tot_sel / F32(wtb)).astype(jnp.int64))
-    ebin = jnp.minimum(int(neb) - 1, (energy / F32(web)).astype(jnp.int64))
+    tbin = jnp.minimum(int(ntb) - 1, (d(tot_sel) / wtb).astype(jnp.int64))
+    ebin = jnp.minimum(int(neb) - 1, (d(energy) / web).astype(jnp.int64))
     dtime = c["totdtime"][tbin * int(neb) + ebin]
     tres = c["totderror"][tbin * int(neb) + ebin]
-    t_early = jnp.where(eend == 1, t_hv, t_cal).astype(F64)
-    time = (t_early - ptime - dtime).astype(F32)
-    flag = _sh_flag(valid, p["spill"], c["dead"][us] > 0, c["noisy"][us] > 0, energy, rho, time, ~trunc, s)
+    t_early = jnp.where(eend == 1, t_hv, t_cal)
+    time_d = d(t_early - ptime) - dtime                               # (float - float) - double
+    flag = _sh_flag(valid, p["spill"], c["dead"][us] > 0, c["noisy"][us] > 0, energy, rho, time_d, ~trunc, s)
     rout = c["strawOuterRadius"]
-    return {"valid": valid, "spill": p["spill"], "sid": sid, "upanel": (sid >> 10) * 6 + ((sid & 0x380) >> 7), "straw": sid & 0x7F,
-            "time": time, "et0": t_cal, "et1": t_hv, "edep": energy, "wdist": wdist.astype(F32),
-            "uvar": (wres * wres).astype(F32), "vvar": jnp.full(sid.shape, rout * rout / 3.0).astype(F32),
-            "timevar": (tres * tres).astype(F32), "x": x, "y": y, "z": z, "udx": c["dirx"][us].astype(F32),
-            "udy": c["diry"][us].astype(F32), "flag": flag}
+    inv3 = d(np.float32(1.0 / 3.0))                                   # `static const float inv3 = 1.0/3.0`
+    return {"valid": valid, "spill": p["spill"].astype(jnp.int64), "sid": sid, "upanel": (sid >> 10) * 6 + ((sid & 0x380) >> 7),
+            "straw": sid & 0x7F, "time": f(time_d), "et0": t_cal, "et1": t_hv, "edep": energy, "wdist": f(wdist),
+            "uvar": f(_m(wres, wres)), "vvar": jnp.full(sid.shape, f(_m(rout, rout, inv3))),
+            "timevar": f(_m(tres, tres)), "x": x, "y": y, "z": z, "udx": f(c["dirx"][us]),
+            "udy": f(c["diry"][us]), "flag": flag}
+
+
+def _f32(v):
+    return np.float32(v)
 
 
 def _sh_flag(valid, spill, dead, noisy, energy, rho, time, tdiv, s):
-    """StrawHitReco's flag bits of a hit under settings s (the selections are flags only: FilterHits false)."""
+    """StrawHitReco's flag bits of a hit under settings s (the selections are flags only: FilterHits false). The cut
+    values are float (StrawHitRecoUtils); energy and rho are float, the time is the double before it is stored."""
     off = (spill == SPILL_OFF)[:, None]
-    minT, maxT = jnp.where(off, s["minTOff"], s["minT"]), jnp.where(off, s["maxTOff"], s["maxT"])
+    minT = jnp.where(off, _f32(s["minTOff"]), _f32(s["minT"]))
+    maxT = jnp.where(off, _f32(s["maxTOff"]), _f32(s["maxT"]))
     flag = jnp.zeros(valid.shape, jnp.uint32)
     for bit, ok in ((FLAG["dead"], dead), (FLAG["noisy"], noisy),
-                    (FLAG["energysel"], (energy <= s["maxE"]) & (energy >= s["minE"])),
-                    (FLAG["radsel"], (rho >= s["minR"]) & (rho <= s["maxR"])),
+                    (FLAG["energysel"], (energy <= _f32(s["maxE"])) & (energy >= _f32(s["minE"]))),
+                    (FLAG["radsel"], (rho >= _f32(s["minR"])) & (rho <= _f32(s["maxR"]))),
                     (FLAG["timesel"], (time >= minT) & (time <= maxT)), (FLAG["tdiv"], tdiv)):
         flag = flag | jnp.where(ok, jnp.uint32(1 << bit), jnp.uint32(0))
     return jnp.where(valid, flag, jnp.uint32(0))
@@ -163,14 +208,17 @@ def _good(h, s):
 
 
 def _ph_flag(ncombo, time, edep, x, y, tdiv, spill, s):
+    """CombineStrawHits' flag bits of a combo: float time, energy and r^2 = Perp2() against the float cuts."""
     off = (spill == SPILL_OFF)[:, None]
-    minT, maxT = jnp.where(off, s["minTOff"], s["minT"]), jnp.where(off, s["maxTOff"], s["maxT"])
-    r2 = x.astype(F64) ** 2 + y.astype(F64) ** 2
+    minT = jnp.where(off, _f32(s["minTOff"]), _f32(s["minT"]))
+    maxT = jnp.where(off, _f32(s["maxTOff"]), _f32(s["maxT"]))
+    r2 = _m(x, x) + _m(y, y)
+    minR2, maxR2 = _f32(s["minR"]) * _f32(s["minR"]), _f32(s["maxR"]) * _f32(s["maxR"])
     flag = jnp.uint32(1 << FLAG["panelcombo"]) | jnp.where(tdiv, jnp.uint32(1 << FLAG["tdiv"]), jnp.uint32(0))
     for bit, ok in ((FLAG["nhitsel"], (ncombo >= s["minN"]) & (ncombo <= s["maxN"])),
                     (FLAG["timesel"], (time >= minT) & (time <= maxT)),
-                    (FLAG["energysel"], (edep >= s["minE"]) & (edep <= s["maxE"])),
-                    (FLAG["radsel"], (r2 >= s["minR"] ** 2) & (r2 <= s["maxR"] ** 2))):
+                    (FLAG["energysel"], (edep >= _f32(s["minE"])) & (edep <= _f32(s["maxE"]))),
+                    (FLAG["radsel"], (r2 >= minR2) & (r2 <= maxR2))):
         flag = flag | jnp.where(ok, jnp.uint32(1 << bit), jnp.uint32(0))
     return flag
 
@@ -188,7 +236,8 @@ def panel_hits_other(sh, ph, s, sh2, s2):
 
     def reuse():
         tdiv = ((ph["flag"] >> FLAG["tdiv"]) & 1) == 1
-        return {**ph, "flag": _ph_flag(ph["ncombo"], ph["time"], ph["edep"], ph["x"], ph["y"], tdiv, sh["spill"], s2)}
+        with exact.strict(sh["sid"]):
+            return {**ph, "flag": _ph_flag(ph["ncombo"], ph["time"], ph["edep"], ph["x"], ph["y"], tdiv, sh["spill"], s2)}
 
     return jax.lax.cond(jnp.all(_good(sh, s) == _good(sh2, s2)), reuse, lambda: panel_hits(sh2, s2))
 
@@ -226,8 +275,8 @@ def _group(h, s):
         seed = valid & (pos == i) & ~used
         ok = valid & (pos > i) & ~used & good & gseed
         ok &= jnp.abs(h["straw"] - g(h["straw"])) <= s["maxds"]
-        ok &= jnp.abs(g(h["time"]) - h["time"]) <= s["maxdt"]
-        ok &= (jnp.abs(g(h["wdist"]) - h["wdist"]) / jnp.sqrt(g(h["uvar"]) + h["uvar"])) <= s["maxwdchi"]
+        ok &= jnp.abs(g(h["time"]) - h["time"]) <= _f32(s["maxdt"])                     # float dt, float cut
+        ok &= (jnp.abs(g(h["wdist"]) - h["wdist"]) / jnp.sqrt(g(h["uvar"]) + h["uvar"])) <= _f32(s["maxwdchi"])
         cs = jnp.cumsum(ok, axis=1)
         before = jnp.take_along_axis(cs - ok, rs, axis=1)              # candidates of the run before its first hit
         take = ok & (cs - before <= MAXNCOMBO - 1)
@@ -242,39 +291,84 @@ def _group(h, s):
 
 
 def panel_hits(h, s):
-    """Straw hits [E, H] -> panel ComboHits [E, H] compacted to the front in stock output (seed) order.
+    """Straw hits [E, H] -> panel ComboHits [E, H] compacted to the front in stock output (seed) order."""
+    it = _ambient_int()
+    with exact.strict(h["sid"]):
+        return _leave(_panel_hits(h, s), it)
 
-    Members are summed in collection order (as the tracker port, bitwise equal to stock on CPU)."""
+
+def _panel_hits(h, s):
+    """CombineStrawHits::combineHits in its types and order: double sums over the members in collection order, the
+    XYZVectorF centre sum in float (`midpos += centerPos()`, `midpos /= nsh` as a float reciprocal), the position
+    midpos + wdist * uDir() and the wire-resolution check in float."""
     E, H = h["valid"].shape
+    h = {**h, "sid": h["sid"].astype(jnp.int64), "upanel": h["upanel"].astype(jnp.int64),
+         "straw": h["straw"].astype(jnp.int64), "spill": h["spill"].astype(jnp.int64)}
     owner = _group(h, s)
     jpos = jnp.arange(H)[None, :]
     is_seed = h["valid"] & (owner == jpos)
-    mem = (owner[:, None, :] == jnp.arange(H)[None, :, None]) & h["valid"][:, None, :]     # [E, seed, hit]
-    f64 = lambda k: h[k].astype(F64)[:, None, :]
-    acc = lambda v: jnp.sum(jnp.where(mem, v, 0.0), axis=2)
-    ncombo = jnp.sum(mem, axis=2)
-    nsh = jnp.maximum(ncombo, 1).astype(F64)
-    wd = f64("wdist")
-    twt, wwt = 1.0 / f64("timevar"), 1.0 / f64("uvar")
-    cx, cy = acc(f64("x") - wd * f64("udx")) / nsh, acc(f64("y") - wd * f64("udy")) / nsh
-    cz = acc(f64("z")) / nsh
-    wsum, wacc, wacc2 = acc(wwt), acc(wd * wwt), acc(wd * wd * wwt)
-    wdist = wacc / wsum
+    # members of each seed in collection order, without an [E, seed, hit] matrix: a member's rank in its group is the
+    # number of earlier hits of the same owner, all within the owner's panel run (offsets below the longest run)
+    own = jnp.where(h["valid"] & (owner >= 0), owner, -1)
+    hpos = jnp.broadcast_to(jpos, (E, H))
+    span = jnp.max(jnp.where(own >= 0, hpos - own, 0))
+
+    def rank_step(st):
+        dd, rank = st
+        k = hpos - dd
+        same = (own >= 0) & (k >= own) & (jnp.take_along_axis(own, jnp.maximum(k, 0), axis=1) == own)
+        return dd + 1, rank + same.astype(rank.dtype)
+
+    _, rank = jax.lax.while_loop(lambda st: st[0] <= span, rank_step, (jnp.ones((), span.dtype), jnp.zeros((E, H), jnp.int32)))
+    K = min(MAXNCOMBO, H)
+    rows = jnp.broadcast_to(jnp.arange(E)[:, None], (E, H))
+    keep = (own >= 0) & (rank < K)
+    midx = jnp.zeros((E, H, K), jnp.int32).at[rows, jnp.where(keep, own, H), jnp.where(keep, rank, 0)].set(
+        hpos.astype(jnp.int32), mode="drop")                                              # member j of each seed
+    ncombo = jnp.zeros((E, H), jnp.int32).at[rows, jnp.where(own >= 0, own, H)].add(1, mode="drop")
+    d = lambda x: jnp.asarray(x).astype(F64)
+    f = lambda x: jnp.asarray(x).astype(F32)
+    col = lambda k, j: jnp.take_along_axis(h[k], midx[:, :, j], axis=1)                      # member j of each seed
+    z32, z64 = jnp.zeros((E, H), F32), jnp.zeros((E, H), F64)
+    eacc = ctacc = twtsum = wacc = wacc2 = wwtsum = vacc = z64
+    mx = my = mz = z32
+    for j in range(K):
+        on = j < ncombo
+        acc = lambda a, v: jnp.where(on, a + v, a)
+        wd = col("wdist", j)
+        eacc = acc(eacc, d(col("edep", j)))
+        vacc = acc(vacc, d(col("vvar", j)))
+        twt = 1.0 / d(col("timevar", j))
+        twtsum = acc(twtsum, twt)
+        ctacc = acc(ctacc, _m(d(col("time", j)), twt))
+        wwt = 1.0 / d(col("uvar", j))
+        wwtsum = acc(wwtsum, wwt)
+        wacc = acc(wacc, _m(d(wd), wwt))
+        wacc2 = acc(wacc2, _m(d(_m(wd, wd)), wwt))                                      # float wd*wd, then * double
+        mx = acc(mx, col("x", j) - _m(wd, col("udx", j)))                               # centerPos() in float
+        my = acc(my, col("y", j) - _m(wd, col("udy", j)))
+        mz = acc(mz, col("z", j))
+    nsh = d(jnp.maximum(ncombo, 1))
+    inv = F32(1) / f(nsh)                                                                # DisplacementVector3D::operator/=
+    mx, my, mz = _m(mx, inv), _m(my, inv), _m(mz, inv)
+    wdist = f(wacc / wwtsum)
+    uerr = _f32(s["uerr"])
+    uvar0 = uerr * uerr                                                                  # `_uvar(uerr * uerr)`, float
+    uvar = f(1.0 / wwtsum + d(uvar0))
+    ndof = jnp.maximum(ncombo - 1, 0)
+    nc2 = f(d(ndof) ** 2)
+    wvar = jnp.maximum(uvar0, (f(wacc2 / wwtsum) - _m(wdist, wdist)) / nc2)
+    uvar = jnp.where(s["checkWres"], jnp.maximum(uvar, wvar), uvar)
     multi = ncombo > 1
-    uvar = 1.0 / wsum + s["uerr"] ** 2
-    ndof2 = (jnp.maximum(ncombo - 1, 1) ** 2).astype(F64)
-    uvar = jnp.where(s["checkWres"], jnp.maximum(uvar, jnp.maximum(s["uerr"] ** 2, (wacc2 / wsum - wdist ** 2) / ndof2)), uvar)
     pick = lambda k, v: jnp.where(multi, v, h[k])
-    out = {"ncombo": ncombo, "edep": pick("edep", acc(f64("edep")) / nsh).astype(F32),
-           "time": pick("time", acc(f64("time") * twt) / acc(twt)).astype(F32),
-           "timevar": pick("timevar", 1.0 / acc(twt)).astype(F32),
-           "wdist": pick("wdist", wdist).astype(F32),
-           "x": pick("x", cx + wdist * h["udx"].astype(F64)).astype(F32),
-           "y": pick("y", cy + wdist * h["udy"].astype(F64)).astype(F32),
-           "z": pick("z", cz).astype(F32), "uvar": pick("uvar", uvar).astype(F32),
-           "vvar": pick("vvar", acc(f64("vvar")) / nsh).astype(F32),
+    out = {"ncombo": ncombo, "edep": pick("edep", f(eacc / nsh)), "time": pick("time", f(ctacc / twtsum)),
+           "timevar": pick("timevar", f(1.0 / twtsum)), "wdist": pick("wdist", wdist),
+           "x": pick("x", mx + _m(wdist, h["udx"])), "y": pick("y", my + _m(wdist, h["udy"])),
+           "z": pick("z", mz), "uvar": pick("uvar", uvar), "vvar": pick("vvar", f(vacc / nsh)),
            "udx": h["udx"], "udy": h["udy"], "sid": h["sid"]}
-    tdiv = jnp.sum(jnp.where(mem, ((h["flag"] >> FLAG["tdiv"]) & 1)[:, None, :], 0), axis=2) == ncombo
+    ntdiv = jnp.zeros((E, H), jnp.int32).at[rows, jnp.where(own >= 0, own, H)].add(
+        ((h["flag"] >> FLAG["tdiv"]) & 1).astype(jnp.int32), mode="drop")
+    tdiv = ntdiv == ncombo
     out["flag"] = _ph_flag(ncombo, out["time"], out["edep"], out["x"], out["y"], tdiv, h["spill"], s)
     # compact seeds to the front, keeping seed order (= stock output order)
     order = jnp.argsort(jnp.where(is_seed, jpos, H + jpos), axis=1)
