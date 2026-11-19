@@ -37,6 +37,25 @@ python3 -m crvfastsim runchain gen.root --gdml world.gdml --calib calib.csv --ja
   capacities repeat exactly; NumPy and JAX draws are not paired, and a different batch size gives a different stream
   of the same law. The exit-position and generated-beta clock conventions of NumPy are kept.
 
+### Experimental module prefilter (off by default)
+
+Set `MU2EFS_CRV_MODULE_SLOTS=4` to try the device module prefilter. A prepared geometry
+stores one enclosing box per `(sector, module)` plus global bar IDs. Each track
+tests the module boxes first, then clips the bars of matching modules with the
+same slab calculation as usual. Entry ties still use ascending global bar ID.
+If any active track exceeds its module budget, the batch takes the exact dense
+route; no candidate is discarded. The final crossing capacity remains unchanged.
+
+`JAX_PLATFORMS=cpu python crv/scripts/bench_module_crossings.py` compares the
+synchronized, warm crossing kernels, without transport or I/O. On one AMD EPYC
+9V74 core (JAX 0.12.1, float32, 1,024 seeded rays), a synthetic 5,344-bar layout
+with at most one candidate module per track took 128.2 ms dense versus 34.0 ms
+indexed. The public extracted counters layout (pass `--counters` and `--slots 7`)
+took 7.3 ms dense versus 31.3 ms indexed; here the candidate set is too large to
+offset gathering and sorting. Live bar IDs and crossing intervals matched
+exactly in both comparisons. The synthetic layout is not a Run 2 validation,
+and neither measurement establishes a full-chain or GPU speedup.
+
 ## Tier-1b contract
 
 - Set `strict_v5` (context, contain, point, topology, unvisited, near-miss, chord, showers and root-coherent draws).

@@ -36,6 +36,41 @@ def test_crossings_exact_and_parallel():
     assert not x.overflow
 
 
+def test_module_crossings_ties_padding_and_dense_fallback():
+    g = geom(10)
+    g.center[:, 0] = [0., 0., 0., 0., 400., 400., 800., 800., 1200., 1200.]
+    g.center[:4, 1] = 0.  # Equal entry times, interleaved IDs and modules.
+    g.sector = np.array([3, 0, 3, 0, 1, 1, 2, 2, 4, 4])
+    g.module = np.zeros(10, int)
+    lo, hi = nc.bar_bounds(g)
+    idx = jc.module_index(lo, hi, g.sector, g.module)
+    o = np.array([[0., 150., 0.], [400., -120., 0.], [2000., 150., 0.], [1200., -255., 0.]])
+    d = np.array([[0., -1., 0.], [0., -1., 0.], [0., -1., 0.], [-1., 0.05, 0.]])
+    for active, slots, capacity in (([True, True, True, False], 2, 8),
+                                    ([True, True, True, True], 1, 8),  # crowded; dense fallback
+                                    ([True, True, True, False], 2, 3)):  # genuine crossing overflow
+        active = np.array(active)
+        a = jax.device_get(jc.crossings(o, d, lo, hi, capacity, active))
+        b = jax.device_get(jc.crossings_by_module(o, d, lo, hi, idx, capacity, active, slots))
+        for field in ("entry", "exit", "valid", "overflow"):
+            np.testing.assert_array_equal(getattr(a, field), getattr(b, field))
+        np.testing.assert_array_equal(a.bar[a.valid], b.bar[b.valid])
+        assert bool(b.overflow) == (capacity == 3)
+
+
+@pytest.mark.parametrize("stage,range_out", [("A", False), ("C", True)])
+def test_module_crossings_preserve_sampled_steps(stage, range_out):
+    g = geom(10)
+    g.sector = np.arange(10)
+    g.module = np.zeros(10, int)
+    g.center[1:, 0] = 400. * np.arange(1, 10)
+    ref = jt.DeviceTransport(g, [], stage=stage, range_out=range_out, batch_size=8, module_slots=0)
+    indexed = jt.DeviceTransport(g, [], stage=stage, range_out=range_out, batch_size=8, module_slots=2)
+    for a, b in zip(jt.transport(gen(), g, np.random.default_rng(1), stage=stage, prepared=ref),
+                    jt.transport(gen(), g, np.random.default_rng(1), stage=stage, prepared=indexed)):
+        pd.testing.assert_frame_equal(a, b, check_exact=True)
+
+
 def test_overflow_is_not_silent():
     g = geom()
     dev = jt.DeviceTransport(g, stage="A", capacity=1, batch_size=8)

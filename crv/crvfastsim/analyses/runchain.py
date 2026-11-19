@@ -100,7 +100,8 @@ def _signature(rc, cfg, gdml, spec, calib, deviation, below_margin=None):
             "tier1b": {"set": spec.name, "options": dict(spec.options), "library_sha256": spec.library_sha256},
             "below_margin": None if below_margin is None else float(below_margin),
             "asset_environment": {k: os.environ.get(k) for k in
-                                  ("CRVFS_DATA", "CRVFS_LOOKUP_DIR", "CRVFS_OFFLINE_CACHE", "MU2E_SEARCH_PATH")}}
+                                  ("CRVFS_DATA", "CRVFS_LOOKUP_DIR", "CRVFS_OFFLINE_CACHE", "MU2E_SEARCH_PATH",
+                                   "MU2EFS_CRV_MODULE_SLOTS")}}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -560,6 +561,8 @@ def run(inputs, outdir, library=None, calib=None, deviation=None, gdml=None, jax
            "events_basis": "events_with_steps" if steps_input else "generated",
            "clusters_per_generated": {stype_name.get(int(k), str(k)): float((cl_type == k).sum() / n_gen)
                                       for k in np.unique(cl_type)}}
+    if device_transport is not None and device_transport.module_slots:
+        res["transport_module_slots"] = device_transport.module_slots
     if caps is not None:
         res["capacity"] = caps.report()
     if native_receipt is not None:

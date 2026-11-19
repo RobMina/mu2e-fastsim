@@ -108,12 +108,12 @@ def bar_loss(keys, p, length, cut):
 
 
 def make_kernel(dev, air_loss, absorber_straggling):
-    from .crossings_jax import crossings, slab
+    from .crossings_jax import slab
     from .transport_jax import p_after
     ab, knots = dev.absorbers, dev.range_knots
     @dprec.jit
     def kernel(key, o, d, p, offset, active):
-        bar, ti, to, valid, overflow = crossings(o, d, dev.lo, dev.hi, dev.capacity, active)
+        bar, ti, to, valid, overflow = dev.bar_crossings(o, d, active)
         valid &= active[:, None]
         path = to - ti
         air = ej.dedx_restricted(M.AIR, p, 1e9)[:, None] * (ti + (0. if dev.stage == "C" else offset[:, None]))

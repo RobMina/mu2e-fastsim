@@ -18,7 +18,7 @@ from mu2efastsim import eloss, eloss_jax as ej, materials, transport as ct, worl
 from mu2efastsim import muradiative_jax as RJ
 from . import tables
 from . import transport as nt
-from .crossings_jax import crossings, slab
+from .crossings_jax import crossings, crossings_by_module, module_index, slab
 from . import eloss_transport_jax as sampling
 from mu2efastsim import precision as dprec
 
@@ -122,7 +122,10 @@ def scatter(key, o, d, p, y_plane, xx0, bh):
 class DeviceTransport:
     """Prepared immutable geometry/world constants; reuse for warm passes."""
     def __init__(self, geom, world=None, absorbers=None, tagger_bar=None, bar_cut=None,
-                 stage="C", air_loss=True, absorber_straggling=True, batch_size=4096, capacity=64, range_out=False):
+                 stage="C", air_loss=True, absorber_straggling=True, batch_size=4096, capacity=64, range_out=False,
+                 *, module_slots=None):
+        import os
+
         if stage not in ("A", "C"):
             raise ValueError("JAX transport supports stages A and C only")
         if batch_size < 1 or capacity < 1:
@@ -132,7 +135,12 @@ class DeviceTransport:
             raise ValueError("device range_out supports stage C only")
         self.batch_size, self.capacity = batch_size, capacity
         self.y = float(nt.msc_plane(geom))   # Python floats: weak-typed in the device kernels
-        self.lo, self.hi = (jnp.asarray(a) for a in (geom.center - geom.halflen, geom.center + geom.halflen))
+        lo, hi = geom.center - geom.halflen, geom.center + geom.halflen
+        self.lo, self.hi = jnp.asarray(lo), jnp.asarray(hi)
+        self.module_slots = int(os.environ.get("MU2EFS_CRV_MODULE_SLOTS", "0")) if module_slots is None else module_slots
+        if self.module_slots < 0:
+            raise ValueError("CRV module slots must be nonnegative")
+        self.module_index = module_index(lo, hi, geom.sector, geom.module) if self.module_slots else None
         tag = np.arange(geom.nbars) >= nt.TAGGER_FIRST_BAR if tagger_bar is None else np.asarray(tagger_bar, bool)
         cut = np.where(tag, materials.POLYSTYRENE.cuts_e_MeV["tagger"], materials.POLYSTYRENE.cuts_e_MeV["crv"])
         self.cut = jnp.asarray(cut if bar_cut is None else bar_cut)
@@ -163,6 +171,12 @@ class DeviceTransport:
             self.bar_kernel = self._make_bar_kernel(air_loss, absorber_straggling)
         self.batch_kernel = dprec.jit(self.batch)
 
+    def bar_crossings(self, o, d, active):
+        if self.module_index is None:
+            return crossings(o, d, self.lo, self.hi, self.capacity, active)
+        return crossings_by_module(o, d, self.lo, self.hi, self.module_index, self.capacity, active,
+                                   self.module_slots)
+
     def world(self, key, o, d, p, active):
         loss = jnp.zeros_like(p)
         length = jnp.maximum((o[:, 1] - self.y) / -jnp.where(d[:, 1] < 0, d[:, 1], -1.), 0.)
@@ -192,10 +206,10 @@ class DeviceTransport:
         return p_after(p, loss), alive, jnp.stack(bxx, 1), jnp.stack(bh, 1)
 
     def _make_bar_kernel(self, air_loss, absorber_straggling):
-        lo, hi, cut, capacity, ab, stage = self.lo, self.hi, self.cut, self.capacity, self.absorbers, self.stage
+        cut, ab, stage = self.cut, self.absorbers, self.stage
         @dprec.jit
         def kernel(key, o, d, p, offset, active):
-            xs = crossings(o, d, lo, hi, capacity, active)
+            xs = self.bar_crossings(o, d, active)
             bar, ti, to, valid, overflow = xs
             valid &= active[:, None]
             path = to - ti
