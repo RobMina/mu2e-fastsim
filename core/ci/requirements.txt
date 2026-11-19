@@ -10,7 +10,7 @@ pyarrow==25.0.0
 PyYAML==6.0.3
 pytest==9.1.1
 # hep-endpoints: the endpoint adapters under mu2efastsim.endpoints (kit host only); same pin as pyproject.toml
-hep-endpoints @ git+https://github.com/RobMina/hep-endpoints.git@8d7669510247039a51730d9f0446d04f5243e6c6
+hep-endpoints @ git+https://github.com/RobMina/hep-endpoints.git@ab3cd9fd4f870d463c599d7aef78773ded98c6d0
 # cryjax: the experiment-neutral CRY 1.7 tables, device sampler and shim binding (mu2efastsim.cry_* import it)
 cryjax @ git+https://github.com/RobMina/cryjax.git@3094804ba73f1d8f9b36665e30c6c64fa0a063d0
 # hep-simlib: the library core and component banks (mu2efastsim.library, component_response); same pin as pyproject.toml
