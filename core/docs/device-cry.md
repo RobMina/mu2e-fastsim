@@ -68,6 +68,20 @@ C++ CPU. A live evaluator still needs matching clean public code pins, the
 appropriate image and input accessibility; a render test is not deployment.
 Device and C++ receipts cannot be merged together as a single generator arm.
 
+## Live-time clock
+
+Each device batch starts its shower clock at 0 (`cryjax.device.raw(..., before=0)`); the source keeps the running
+live time as a float64 offset on the host and adds it to the batch-local clocks of the accepted events. Until
+2026-11-19 the running clock was a device scalar in the device float, so in float32 the live time per
+`generate` call depended on how much live time had already accumulated: by up to 8e-5 at 1 s, 5.4e-3 at 100 s and
+2.2e-2 at 1000 s (same seed, clock started at T). With the host offset the change is float64 rounding in both dtypes.
+
+The stock time column (the CosmicTimeOffset in ns plus the shower delay in s, as CosmicCRY forms it) keeps its
+arithmetic: absolute particle time minus shower clock, with the clock started at the offset in the device float.
+In float64 this is the arithmetic of the device-scalar clock exactly, so float64 outputs are bit-identical to it;
+in float32 the delay term stays rounded to the clock's resolution: at most 6e-5 in the ns column after 1000 s of live
+time.
+
 ## Bounded shapes and RNG
 
 Default raw batch 100,000 showers, flat pool 400,000 particles, selected buffer
