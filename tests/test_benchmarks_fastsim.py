@@ -230,5 +230,145 @@ def test_paired_shape_ignores_the_yield():
 def test_task_table_lists_every_task():
     from benchmarks.fastsim_score import tasks
     t = tasks.table()
-    for k in ("W1", "W8", "W9", "CRVLY", "PTGT"):
+    for k in ("W1", "W8", "W9", "CRVLY", "PTGT", "B1", "B2", "B3", "B4"):
         assert f"| {k} |" in t
+    assert all(tasks.TASKS[k]["status"] == "defined" for k in ("CRVLY", "B1", "B2", "B3", "B4"))
+
+
+# ---------------------------------------------------------------- B1-B4 extensions
+
+def test_auc_ties_and_order():
+    assert S.auc(np.array([1.0, 1.0]), np.array([1.0, 1.0])) == pytest.approx(0.5)
+    assert S.auc(np.array([2.0, 3.0]), np.array([0.0, 1.0])) == pytest.approx(1.0)
+    assert S.auc(np.array([0.0, 2.0]), np.array([1.0, 3.0])) == pytest.approx(0.25)
+
+
+def test_classifier_score_separates_shifted_arms():
+    rng = np.random.default_rng(5)
+    a, b = rng.normal(size=(4000, 3)), rng.normal(size=(4000, 3))
+    same = S.classifier_score(a, b)
+    assert same["cls_score"] > 0.85 and same["n_per_arm"] == 4000
+    wide = b.copy()
+    wide[:, 1] *= 1.6  # same mean, wider: only the quadratic features see it
+    assert S.classifier_score(a, wide)["cls_score"] < 0.5
+    assert S.classifier_score(a, b, seed=1)["auc"] != same["auc"]
+    with pytest.raises(S.ScoreError, match="same columns"):
+        S.classifier_score(a, b[:, :2])
+
+
+def _with_cfg(example, tmp_path, w, **extra):
+    ref = tmp_path / "ref"
+    shutil.copytree(example / "reference", ref)
+    cfg = json.loads((ref / w / "reference.json").read_text())
+    (ref / w / "reference.json").write_text(json.dumps({**cfg, **extra}))
+    sub = tmp_path / "sub"
+    shutil.copytree(example / "submissions" / "good", sub)
+    return ref, sub
+
+
+def test_classifier_in_score(example, tmp_path):
+    ref, sub = _with_cfg(example, tmp_path, "WA", classifier={"file": "features.npz", "seed": 3})
+    rng = np.random.default_rng(9)
+    for d in (ref / "WA" / "stock", ref / "WA" / "floor", sub / "WA" / "float32", sub / "WA" / "float64"):
+        np.savez(d / "features.npz", X=rng.normal(size=(500, 4)))
+    r = S.score(sub, ref)["workflows"]["WA"]["float64"]
+    assert r["classifier"]["cls_score"] > 0.6 and "floor_cls_score" in r["classifier"]
+    assert r["validity"] == pytest.approx(1.0)  # reported beside validity, not in it
+    assert "wa_f64_cls_score" in S.leaderboard_row(S.score(sub, ref))
+    (sub / "WA" / "float32" / "features.npz").unlink()
+    with pytest.raises(S.ScoreError, match="features.npz"):
+        S.score(sub, ref)
+
+
+def test_yield_max_se_fails_an_underpowered_yield(example, tmp_path):
+    ref, sub = _with_cfg(example, tmp_path, "WA", yield_max_se={"selected": 1e-4})
+    r = S.score(sub, ref)["workflows"]["WA"]["float32"]
+    y = r["yields"][0]
+    assert y["underpowered"] and y["pass"] is False and r["validity"] == 0.0
+
+
+def test_scaling_curve_and_crossover(example, tmp_path):
+    ref, sub = _with_cfg(example, tmp_path, "WA", scaling_batches=[10, 1000, 100000])
+    for dt in ("float32", "float64"):
+        b = json.loads((sub / "WA" / dt / "bench.json").read_text())
+        b.pop("warm_rate")
+        b["scaling"] = [{"batch": 10, "rate": 5.0}, {"batch": 1000, "rate": 50.0}, {"batch": 100000, "rate": 500.0}]
+        (sub / "WA" / dt / "bench.json").write_text(json.dumps(b))
+    r = S.score(sub, ref)["workflows"]["WA"]["float32"]
+    assert [c["multiplier"] for c in r["scaling"]] == pytest.approx([0.4, 4.0, 40.0])
+    assert r["crossover_batch"] == 1000 and r["throughput_multiplier"] == pytest.approx(40.0)
+    b = json.loads((sub / "WA" / "float32" / "bench.json").read_text())
+    b["scaling"] = b["scaling"][:2]
+    (sub / "WA" / "float32" / "bench.json").write_text(json.dumps(b))
+    with pytest.raises(S.ScoreError, match="lacks batch"):
+        S.score(sub, ref)
+
+
+def _tracks(rng, n=2000, k=5):
+    truth = rng.normal(size=(n, k))
+    sigma = np.full((n, k), 0.2)
+    params = truth + sigma * rng.normal(size=(n, k))
+    return {"id": np.arange(n) + 7, "params": params, "sigma": sigma, "truth": truth, "good": np.ones(n, bool)}
+
+
+def test_track_agreement_by_hand():
+    rng = np.random.default_rng(2)
+    st = _tracks(rng)
+    close = {"id": st["id"][::-1], "params": st["params"][::-1] + 0.001, "sigma": st["sigma"][::-1]}
+    r = S.track_agreement(st, close, 0.1, min_fraction=0.99)
+    assert r["agreement"] == pytest.approx(1.0) and r["pass"] and r["good_fit"]["ratio"] == pytest.approx(1.0)
+    assert abs(r["pulls"]["stock"]["width"][0] - 1) < 0.1 and abs(r["pulls"]["fast"]["width"][0] - 1) < 0.1
+    far = {"id": st["id"][:1000], "params": st["params"][:1000] + 0.2, "good": np.r_[np.ones(900), np.zeros(100)]}
+    r = S.track_agreement(st, far, 0.1, min_fraction=0.99)
+    assert r["agreement"] == 0.0 and r["n_matched"] == 1000 and not r["pass"]
+    assert r["good_fit"]["ratio"] == pytest.approx(0.45)
+    with pytest.raises(S.ScoreError, match="unique"):
+        S.track_agreement(st, {"id": np.zeros(3), "params": np.zeros((3, 5))})
+
+
+def test_tracks_only_task(tmp_path):
+    rng = np.random.default_rng(4)
+    st = _tracks(rng, 500)
+    ref, sub = tmp_path / "ref", tmp_path / "sub"
+    (ref / "B3line" / "stock").mkdir(parents=True)
+    np.savez(ref / "B3line" / "stock" / "tracks.npz", **st)
+    (ref / "B3line" / "reference.json").write_text(json.dumps(
+        {"stock_rate_per_slot": 200.0, "rate_unit": "tracks/s", "yield_tolerance": 0.0, "scaling_batches": [10, 1000],
+         "track_agreement": {"file": "tracks.npz", "threshold_sigma": 0.1, "min_fraction": 0.95}}))
+    for dt in ("float32", "float64"):
+        d = sub / "B3line" / dt
+        d.mkdir(parents=True)
+        np.savez(d / "tracks.npz", id=st["id"], params=st["params"] + 0.005, good=st["good"])
+        (d / "bench.json").write_text(json.dumps({"dtype": dt, "rate_unit": "tracks/s", "device": "toy-gpu",
+                                                  "scaling": [{"batch": 10, "rate": 100.0},
+                                                              {"batch": 1000, "rate": 4000.0}]}))
+    r = S.score(sub, ref)["workflows"]["B3line"]["float64"]
+    assert r["validity"] == pytest.approx(1.0) and r["n_hists"] == 0
+    assert {y["yield"] for y in r["yields"]} == {"good_fit_ratio", "track_agreement"}
+    assert r["crossover_batch"] == 1000 and r["throughput_multiplier"] == pytest.approx(20.0)
+
+
+def test_groups_portability_and_capture_budget(example, tmp_path):
+    ref, sub = tmp_path / "ref", tmp_path / "sub"
+    layouts = {"B2dev": ("dev", "good"), "B2pa": ("place", "good"), "B2pb": ("place", "shifted"),
+               "B2r41": ("design", "good")}
+    for w, (part, src) in layouts.items():
+        shutil.copytree(example / "reference" / "WA", ref / w)
+        cfg = json.loads((ref / w / "reference.json").read_text())
+        extra = {"group": "B2", "part": part, **({"capture_budget": 200000} if part == "design" else {})}
+        (ref / w / "reference.json").write_text(json.dumps({**cfg, **extra}))
+        shutil.copytree(example / "submissions" / src / "WA", sub / w)
+        for dt in ("float32", "float64"):
+            b = json.loads((sub / w / dt / "bench.json").read_text())
+            (sub / w / dt / "bench.json").write_text(json.dumps({**b, "capture_entries": 150000}))
+    res = S.score(sub, ref)
+    g = res["groups"]["B2"]["float32"]
+    assert g["dev_validity"] == pytest.approx(1.0) and g["n_place"] == 2 and g["n_design"] == 1
+    pb = res["workflows"]["B2pb"]["float32"]["validity"]
+    assert g["portability_ratio"] == pytest.approx((1.0 + pb) / 2) and g["portability_ratio"] < 1
+    assert g["adaptation_score"] == pytest.approx(1.0)
+    assert "b2_f32_portability" in S.leaderboard_row(res)
+    b = json.loads((sub / "B2r41" / "float64" / "bench.json").read_text())
+    (sub / "B2r41" / "float64" / "bench.json").write_text(json.dumps({**b, "capture_entries": 250000}))
+    with pytest.raises(S.ScoreError, match="capture budget exceeded"):
+        S.score(sub, ref)
