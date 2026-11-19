@@ -61,6 +61,8 @@ def main(argv=None):
     r.add_argument("--resume", action="store_true",
                    help="keep the complete bins of an existing --out and run only the others (same random streams)")
     sub.choices["assemble"].add_argument("pieces", nargs="+")
+    sub.choices["assemble"].add_argument("--note", action="append", default=[],
+                                         help="free-text line for the provenance file (repeatable)")
     c = sub.add_parser("compare")
     c.add_argument("npz")
     c.add_argument("reference", help="reference LookupTable file")
@@ -138,13 +140,23 @@ def main(argv=None):
         from . import writer as W
         ctr = counter_from(a)
         by = {0: [], 1: [], 2: []}
+        prov = {0: [], 1: [], 2: []}
         for f in a.pieces:
             z = np.load(f)
             if str(z["model"]) != a.model:
                 raise SystemExit(f"{f}: made with model {z['model']}, not {a.model}")
-            by[int(z["simtype"])].append({k: z[k] for k in KEYS})
+            if json.loads(str(z["counter"])) != json.loads(json.dumps(ctr.__dict__)):
+                raise SystemExit(f"{f}: made for a different counter")
+            if "complete" in z.files and not z["complete"].all():
+                raise SystemExit(f"{f}: has incomplete bins")
+            st = int(z["simtype"])
+            by[st].append({k: z[k] for k in KEYS})
+            prov[st].append(dict(W.piece_provenance(json.loads(str(z["stats"]))), file=os.path.basename(f),
+                                 photons_per_bin=int(z["nphot"]), bins=int(len(z["bins"]))))
         parts = {st: W.merge_parts(v) for st, v in by.items()}
         open(a.out, "wb").write(W.table_bytes(ctr, parts, M.MODELS[a.model].writer))
+        with open(a.out + ".provenance.json", "w") as fh:
+            json.dump(W.table_provenance(ctr, a.model, prov, a.note), fh, indent=1)
     return 0
 
 

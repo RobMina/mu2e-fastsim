@@ -112,6 +112,11 @@ python -m crvfastsim.lookupgen assemble --length 3200 --reflector 0 --out Lookup
 `--section 24.71x25` (thickness x width, mm) selects a design counter. `--dtype float32` runs the transport in single
 precision. The released tables are Mu2e-internal and are not part of this repository.
 
+`assemble` refuses pieces with incomplete bins or made for another counter or model, and writes
+`<table>.provenance.json` next to the table (the version-6 file has no metadata field): counter, optical model,
+the reproduced stock quirks, per table part the pieces with photons per bin, dtype, step limit and capped chains
+(also of the run a piece was resumed from), and `--note` lines.
+
 `--checkpoint` rewrites `--out` while running (`--checkpoint-interval` seconds apart) with the bins that are complete;
 `--resume` keeps those and runs only the others. Random numbers are keyed by bin and photon, so a resumed or split run
 gives the same counts as one run.

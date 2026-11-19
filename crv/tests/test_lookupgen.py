@@ -253,3 +253,36 @@ def test_lower_step_limit_stops_and_counts_long_chains():
     assert sum(s["len_end"]) == r["gen"].sum() and sum(s["len_end"][6:]) == 0      # no chain reaches 64 steps
     with pytest.raises(ValueError):
         generate(G.stock(1045, 1), 0, np.array([100]), 10, max_steps=(1 << 19) + 1)
+
+
+def test_assemble_writes_the_table_and_its_provenance(tmp_path):
+    import json
+    from crvfastsim.lookupgen.__main__ import main
+    c = G.stock(1045, 1)
+    pieces = []
+    for st in (0, 1, 2):
+        n = G.n_bins(c, st)
+        f = str(tmp_path / f"s{st}.npz")
+        z = {k: np.zeros(n, np.int32) for k in ("gen", "nall")}
+        z.update(bins=np.arange(n), ht=np.zeros((n, 150), np.int32), he=np.zeros((n, 10), np.int32),
+                 hta=np.zeros((n, 150), np.int32), hea=np.zeros((n, 10), np.int32))
+        stats = {"dtype": "float32", "model": "v6", "max_steps": 65536, "capped": 2,
+                 "resumed_from": {"dtype": "float32", "max_steps": 1 << 19, "capped": 0}}
+        np.savez(f, **z, complete=np.ones(n, bool), nphot=10000 if st == 2 else 100000, simtype=st, model="v6",
+                 stats=json.dumps(stats), counter=json.dumps(c.__dict__))
+        pieces.append(f)
+    out = str(tmp_path / "LookupTable_1045_1")
+    assert main(["assemble", "--length", "1045", "--reflector", "1", "--section", "stock", "--fiber-diameter", "1.4",
+                 "--out", out, "--note", "scintillator Cerenkov at 2e4 photons per bin"] + pieces) == 0
+    assert os.path.getsize(out) == len(W.table_bytes(c, {st: {"bins": np.arange(G.n_bins(c, st)),
+                                                              **{k: np.zeros((G.n_bins(c, st),) + s, np.int32)
+                                                                 for k, s in (("gen", ()), ("nall", ()),
+                                                                              ("ht", (150,)), ("he", (10,)),
+                                                                              ("hta", (150,)), ("hea", (10,)))}}
+                                                         for st in (0, 1, 2)}))
+    p = json.load(open(out + ".provenance.json"))
+    assert p["model"] == "v6" and p["name"] == "1045_1" and len(p["quirks"]) == 3
+    part = p["parts"]["Cerenkov in fiber"][0]
+    assert part["photons_per_bin"] == 10000 and part["max_steps"] == 65536
+    assert part["resumed_from"]["max_steps"] == 1 << 19
+    assert p["notes"] == ["scintillator Cerenkov at 2e4 photons per bin"]

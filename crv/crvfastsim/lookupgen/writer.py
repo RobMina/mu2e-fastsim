@@ -93,3 +93,29 @@ def merge_parts(pieces):
     if len(np.unique(bins)) != len(bins):
         raise ValueError("duplicate bins in the pieces")
     return {k: np.concatenate([np.asarray(p[k]) for p in pieces]) for k in KEYS}
+
+
+QUIRKS = (
+    "Y11 decay times are inside the stored time delays; the header's fiber decay time is 0 (stock table mode)",
+    "fiber-Cerenkov photons start in the fiber at +y; SiPM 0 reads the fiber at -y (stock)",
+    "fiber-Cerenkov start x = r_min + r: outer radius bins start in the claddings or the hole air (stock)",
+)
+
+
+def piece_provenance(stats):
+    """The run settings of one piece (and of the run it was resumed from) that change the counts."""
+    keys = ("dtype", "model", "max_steps", "capped", "forced", "badsrc", "stuck", "photons")
+    out = {k: stats.get(k) for k in keys if k in stats}
+    if "resumed_from" in stats:
+        out["resumed_from"] = piece_provenance(stats["resumed_from"])
+    return out
+
+
+def table_provenance(c, model, pieces, notes=()):
+    """Sidecar record of one table: counter, optical model, the reproduced stock quirks, per sim type the pieces with
+    photons per bin, dtype and step limit, and free-text notes. The version-6 file has no metadata field."""
+    from . import geometry as G
+    return {"format": "LookupTable version %d.%d" % VERSION, "counter": dict(c.__dict__), "name": c.name,
+            "stock_section": bool(c.is_stock_section), "model": model, "writer": M.MODELS[model].writer,
+            "fiber_decay_time_in_header": 0.0, "quirks": list(QUIRKS),
+            "parts": {G.SIM_TYPES[st]: v for st, v in pieces.items()}, "notes": list(notes)}
