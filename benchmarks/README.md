@@ -25,6 +25,18 @@ The scorer uses NumPy only and imports nothing from this repository, so a Codabe
 | values | `edges` + `values` + `errors` | sum (v1 - v2)^2 / (e1^2 + e2^2): tables and derived quantities with their own per-bin error, e.g. a lookup table, a paired comparison whose paired error sits on the reference side |
 | efficiency | `edges` + `passed` + `total` | per-bin binomial difference |
 
+A **peak** (`hists.json` key `peaks`: counts or shards) is fitted by the scorer in each arm (CAL1's Gaussian core:
+a Gaussian fitted to the bins with weights 1/n over [mu - 1.5 s, mu + 2 s], six iterations, start from
+`reference.json` `peak_fit`), and the ratio of the peak positions is scored as a yield, with the delete-one-shard
+jackknife error over the shared shards. **Statistical power:** a yield or peak named in `max_se` passes only if also
+se <= max_se, so a small sample cannot pass a tight tolerance trivially (`power_ok` per yield and per arm). The
+**classifier score** (`classifier.py`, after CaloChallenge, arXiv:2410.21611) runs when the reference has
+`stock/features.npz`: a fixed-seed logistic regression on quadratic features of per-cluster feature vectors, 50/50
+train/test of equal stock and fast samples, `cls_score = clip(2 (1 - AUC), 0, 1)` (1 = indistinguishable); it is
+reported per arm and as `cls_score` (mean over arms), next to validity, not inside it. A bench report with
+`"host": "mu2eg4"` (a model inside Geant4) is scored against its own `baseline_rate` (model off, same node and
+primaries) instead of the per-slot stock rate.
+
 A yield is a count, per-shard counts, or a measured `{"value", "error"}` (stops per POT, an accept fraction). A task
 may be yields only (per-path accept fractions); its validity is then the fraction of yields that pass. A task whose
 `reference.json` has `"stock_rate_per_slot": null` is scored on validity only. `rate_unit` names what the rate counts
@@ -49,6 +61,7 @@ missing or unscorable arm instead of failing.
 | W9 | CRV design model | CRV module design parameters -> veto (in)efficiency | full-simulation CRV veto comparison of the same design (stock arm of the design study) | inefficiency per momentum bin; efficiency per CRV sector | none yet (threshold 2) | events/s |
 | CRVLY | CRV light-yield (lookup) table generator | CRV counter geometry and optics -> photon arrival lookup tables | the v6_0 lookup tables (2019 standalone CRV optical simulation; the generator's default v6 model) | bin-by-bin arrival probability per table type (scintillation, Cerenkov in scintillator, Cerenkov in fibre), error binomial on the photons generated per bin; grid jobs and cost per table | none yet (threshold 2) | tables/s |
 | PTGT | Production-target chain | protons on target -> particles at the transport-solenoid entrance | G4beamline on the same target configurations (the design board's rods) | stopped muons per POT and mu- + pi- per POT at the TS entrance per configuration (measured yields); p, cos theta, r and t at the TS entrance (shape); throughput per POT | replicate G4beamline runs of the same configuration | POT/s |
+| CALOG4 | FS-CALO-G4 (B1): calorimeter shower model in or outside Geant4 | e+-/gamma state at the disk front -> crystal deposits -> stock calo digi + reco | full Geant4 in the calorimeter on the same primaries (CeEndpoint MDC2025ba), stock calo reco | cluster E, t, x, y, radius, size, clusters per event, hit E (paired shape per event block); events with a cluster > 10 MeV and the CE peak (tolerance 0.2 %, peak se <= 0.067 %); classifier score clip(2 (1 - AUC), 0, 1) on per-cluster features | stock with another seed | events/s |
 
 ## Coverage on the existing validation outputs (2026-11-18)
 
@@ -93,11 +106,16 @@ Mean validity 0.928 over the 17 scored arms; throughput geometric mean x135 over
 ## Layout
 
 ```
-submission/<W>/<dtype>/hists.json   fast arm: {"hists": {key: {"edges", "counts" | "shards"}}, "yields": {...}}
-submission/<W>/<dtype>/bench.json   the mu2efastsim.bench report (warm_rate, device, dtype, boundary)
-reference/<W>/stock/hists.json      stock arm on the same generated events
-reference/<W>/floor/hists.json      stock with another seed (optional)
-reference/<W>/reference.json        stock_rate_per_slot, boundary, mode, yield_tolerance, min_count, su_per_hour
+submission/<W>/<dtype>/hists.json     fast arm: {"hists": {key: {"edges", "counts" | "shards"}}, "yields": {...},
+                                      "peaks": {...}}
+submission/<W>/<dtype>/bench.json     the mu2efastsim.bench report (warm_rate, device, dtype, boundary[, host,
+                                      baseline_rate, memory_mb_per_thread, edge_rule, library_hash])
+submission/<W>/<dtype>/features.npz   per-cluster feature vectors (when the reference has them)
+reference/<W>/stock/hists.json        stock arm on the same generated events
+reference/<W>/stock/features.npz      per-cluster feature vectors of the stock arm (optional: the classifier score)
+reference/<W>/floor/hists.json        stock with another seed (optional; floor/features.npz gives the floor AUC)
+reference/<W>/reference.json          stock_rate_per_slot, boundary, mode, yield_tolerance(s), max_se, peak_fit,
+                                      classifier, min_count, su_per_hour, max_memory_mb_per_thread
 ```
 
 Reference trees hold Mu2e simulation results and are **never committed**: keep them outside the repository and
@@ -110,6 +128,9 @@ python -m benchmarks.fastsim_score.from_root fast_W5_f64.json shard_*.root --sel
 python -m benchmarks.fastsim_score.score SUBMISSION REFERENCE [--private] [--out scores.json]
 python -m benchmarks.fastsim_score.synthetic EXAMPLE && python -m benchmarks.fastsim_score.score EXAMPLE/submissions/good EXAMPLE/reference
 python -m benchmarks.codabench.build_bundle OUT [--reference DIR --solution DIR]
+python -m benchmarks.fastsim_score.calo ntuple OUT/CALOG4/stock CALO_NTUPLE.root ... --events events.npy   # B1 arm from stock calo ntuples
+python -m benchmarks.fastsim_score.calo_device OUT/CALOG4/float64 --tables EXPORT.root ... --stock CALO_NTUPLE.root ... --library library.npz --cal1-inputs DIR --dtype float64   # B1 device-host arm
+python -m benchmarks.fastsim_score.calo reference OUT/CALOG4 [--stock-rate R]                              # B1 reference.json
 ```
 
 `build_bundle` packages the scorer as a Codabench results-submission bundle (stock `codalab-legacy:py312` image).

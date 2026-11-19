@@ -81,6 +81,18 @@ TASKS: dict[str, dict] = {
         "rate_unit": "POT/s",
         "note": "reference pending: the device arm on every configuration and a settled response bank",
     },
+    "CALOG4": {
+        "title": "FS-CALO-G4 (B1): calorimeter shower model in or outside Geant4",
+        "boundary": "e+-/gamma state at the disk front -> crystal deposits -> stock calo digi + reco",
+        "stock": "full Geant4 in the calorimeter on the same primaries (CeEndpoint MDC2025ba), stock calo reco",
+        "metrics": "cluster E, t, x, y, radius, size, clusters per event, hit E (paired shape per event block); "
+                   "events with a cluster > 10 MeV and the CE peak (tolerance 0.2 %, peak se <= 0.067 %); classifier "
+                   "score clip(2 (1 - AUC), 0, 1) on per-cluster features",
+        "kind": "counts, paired shape; yield + peak with the power rule; classifier (features.npz)",
+        "floor": "stock with another seed",
+        "rate_unit": "events/s",
+        "note": "hosts: a Mu2eG4 fast-simulation model (throughput against its own model-off rate) or the device chain",
+    },
 }
 
 

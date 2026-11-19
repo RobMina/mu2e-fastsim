@@ -531,3 +531,65 @@ def test_steps_batch_ships_narrow_indices():
     with pytest.raises(ValueError, match="int16"):
         dc.steps_batch({"event": [0], "crystal": [40000], "energy_g4": [1.0], "energy_birks": [1.0],
                         "time": [600.0], "z_local": [10.0]}, 4)
+
+
+def test_cluster_shape_opt_in():
+    """shape=True adds seed_energy and the energy-weighted second moments of each cluster (the host clusters' member
+    hits give the same values) and leaves every other output bit-identical; the steps chain also returns the hits."""
+    pos, disk = _grid()
+    geom = _geom(pos, disk)
+    table = PropagationTable(np.ones((1, 1), np.float32), np.zeros(1, np.float32), np.float32(1.0))
+    resp = dc.pack_response(_sim(len(disk)), _pulse(), np.full(10000, 12.0), table, geom)
+    rng = np.random.default_rng(17)
+    n_ev = 24
+    seeds = rng.integers(0, len(disk), n_ev)
+    near = np.argsort(np.linalg.norm(pos[None, :, :] - pos[seeds][:, None, :], axis=2), axis=1)
+    counts = rng.integers(1, 12, n_ev)
+    ev = np.repeat(np.arange(n_ev), counts)
+    crystal = near[ev, np.concatenate([rng.permutation(c + 3)[:c] for c in counts]).astype(int)]
+    t = (rng.uniform(500, 1500, n_ev)[ev] + rng.normal(0, 0.6, ev.size)).astype(np.float32)
+    e = (rng.exponential(8.0, ev.size) + 0.5).astype(np.float32)
+    H, m = 512, ev.size
+    pad = lambda a, f, dt: np.concatenate([a.astype(dt), np.full(H - m, f, dt)])  # noqa: E731
+    hits = dict(ok=jnp.asarray(np.arange(H) < m), event=jnp.asarray(pad(ev, 0, np.int64)),
+                crystal=jnp.asarray(pad(crystal, 0, np.int64)), t=jnp.asarray(pad(t, 0, np.float32)),
+                e=jnp.asarray(pad(e, 0, np.float32)))
+    caps = dc.Caps(events=n_ev, hits=H, event_hits=32, rounds=8)
+    base, _ = jax.tree_util.tree_map(np.asarray, jax.jit(lambda h: dc.clusters(resp, h, n_ev, caps))(hits))
+    shp, _ = jax.tree_util.tree_map(np.asarray, jax.jit(lambda h: dc.clusters(resp, h, n_ev, caps, shape=True))(hits))
+    for k, v in base.items():
+        np.testing.assert_array_equal(shp[k], v, err_msg=k)
+    assert {"seed_energy", "mxx", "myy", "mxy"} <= set(shp)
+    ref = make_clusters({"event": ev, "crystal": crystal, "time": t, "energy": e, "energy_error": np.ones(m),
+                         "time_error": np.ones(m)}, n_ev, geom)
+    got = dc.flat_clusters(shp)
+    np.testing.assert_array_equal(got["event"], ref["event"])
+    hc = ref["hit_cluster"]
+    n_cl = len(ref["event"])
+    seed = np.zeros(n_cl)
+    np.maximum.at(seed, hc[hc >= 0], e[hc >= 0])
+    w = np.bincount(hc[hc >= 0], weights=e[hc >= 0].astype(np.float64), minlength=n_cl)
+    mom = {}
+    cx = np.bincount(hc[hc >= 0], weights=e[hc >= 0] * pos[crystal[hc >= 0], 0], minlength=n_cl) / w
+    cy = np.bincount(hc[hc >= 0], weights=e[hc >= 0] * pos[crystal[hc >= 0], 1], minlength=n_cl) / w
+    dx, dy = pos[crystal[hc >= 0], 0] - cx[hc[hc >= 0]], pos[crystal[hc >= 0], 1] - cy[hc[hc >= 0]]
+    for k, v in (("mxx", dx * dx), ("myy", dy * dy), ("mxy", dx * dy)):
+        mom[k] = np.bincount(hc[hc >= 0], weights=e[hc >= 0] * v, minlength=n_cl) / w
+    np.testing.assert_allclose(got["seed_energy"], seed, rtol=1e-6)
+    for k in ("mxx", "myy", "mxy"):
+        np.testing.assert_allclose(got[k], mom[k], rtol=1e-6, atol=1e-3)
+    assert np.any(got["mxx"] > 1.0) and np.all(got["mxx"] >= -1e-6)
+    # chains: shape=True returns the flat hits as well; clusters unchanged otherwise
+    chain_caps = dc.Caps(events=4, steps=64, photoelectrons=4096, rows=64, digis=64, digi_length=64, hits=64,
+                         event_hits=16, rounds=4)
+    tt = dc.entries_batch({k: np.zeros((0, 3) if k in ("position", "direction") else 0) for k in
+                           ("energy", "cosine", "radius", "disk", "time", "position", "direction")},
+                          _timing(4), np.zeros(0, int), chain_caps.events)[1]
+    steps = dc.steps_batch({"event": [0, 0, 1], "crystal": [5, 6, 40], "energy_g4": [20.0, 5.0, 12.0],
+                            "energy_birks": [20.0, 5.0, 12.0], "time": [700.0, 700.5, 900.0],
+                            "z_local": [50.0, 60.0, 30.0]}, chain_caps.steps)
+    a = dc.run(dc.make_steps_chain(resp, chain_caps), steps, tt, jax.random.PRNGKey(0))
+    b = dc.run(dc.make_steps_chain(resp, chain_caps, shape=True), steps, tt, jax.random.PRNGKey(0))
+    for k, v in a["clusters"].items():
+        np.testing.assert_array_equal(b["clusters"][k], v, err_msg=k)
+    assert "hits" not in a and set(b["hits"]) == {"e", "event", "ok"} and b["hits"]["ok"].sum() >= 2
