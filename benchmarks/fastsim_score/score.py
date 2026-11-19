@@ -793,13 +793,13 @@ def leaderboard_row(res: dict) -> dict:
                 row[f"{tag}_cls_score"] = r["classifier"]["cls_score"]
             if "track_agreement" in r:
                 row[f"{tag}_agreement"] = r["track_agreement"]["agreement"]
+            if "power_ok" in r:
+                row[f"{tag}_power"] = float(r["power_ok"])
     for g, by in res.get("groups", {}).items():
         for dt, r in by.items():
             tag = f"{g.lower()}_{'f32' if dt == 'float32' else 'f64'}"
             row[f"{tag}_portability"] = r["portability_ratio"]
             row[f"{tag}_adaptation"] = r["adaptation_score"]
-            if "power_ok" in r:
-                row[f"{tag}_power"] = float(r["power_ok"])
     return row
 
 
