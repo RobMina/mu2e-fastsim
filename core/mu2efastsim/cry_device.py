@@ -1,10 +1,13 @@
 """JAX CRY 1.7 correlated shower sampling and stock Mu2e selection on the device.
 
-Host code parses/uploads pinned PDF tables; it never draws showers for this backend.
+The raw-shower sampler (tables on the device, inverse-CDF draws, `raw`) lives in the experiment-neutral package
+cryjax (cryjax.device, extracted from this module on 2026-11-18); this module keeps the Mu2e part: the stock
+CosmicCRY projection onto the extracted geometry, the energy cuts, the over-energy carry and the CosmicTimeOffset,
+fused with `raw` in one program (`accepted`). The device float follows mu2efastsim.precision, passed to cryjax
+explicitly. Host code parses/uploads pinned PDF tables; it never draws showers for this backend.
 Model reference: LLNL UCRL-CODE-227323; notices in docs/third-party/cry.txt.
 """
 from functools import partial
-from typing import NamedTuple
 import time
 
 import jax
@@ -13,6 +16,8 @@ from jax import lax
 import numpy as np
 import pandas as pd
 
+from cryjax import device as _device
+from cryjax.device import DevicePdf, draw, inverse  # noqa: F401
 from . import cry_tables
 from .cosmic_cry import CosmicSource, MASS
 from . import precision as dprec
@@ -21,109 +26,28 @@ dprec.register(__name__)
 
 jax.config.update("jax_enable_x64", True)
 
-
-class DevicePdf(NamedTuple):
-    cdf: object
-    valid: object
-    low: object
-    high: object
-    mode: object
+FLOAT = dprec.FLOAT.name
 
 
 def _pdf(pdf):
-    values = pdf.weights
-    total = values.sum(axis=-1, keepdims=True)
-    safe = np.where(total > 0, values / np.maximum(total, 1e-300), 1/values.shape[-1])
-    cdf = np.cumsum(safe, axis=-1)
-    cdf[:, -1] = 1
-    lo, hi = np.log10([pdf.low, pdf.high]) if pdf.kind == "log" else (pdf.low, pdf.high)
-    return DevicePdf(jnp.asarray(cdf), jnp.asarray(total[:, 0] > 0), jnp.asarray(lo), jnp.asarray(hi),
-                     jnp.asarray({"dis": 0, "lin": 1, "log": 2}[pdf.kind]))
-
-
-def _stack(pdfs):
-    fields = list(zip(*[_pdf(pdf) for pdf in pdfs]))
-    cdf, valid, lo, hi, mode = (jnp.stack(x) for x in fields)
-    return DevicePdf(cdf.reshape(-1, cdf.shape[-1]), valid.reshape(-1), lo, hi, mode)
-
-
-def inverse(cdf, row, uniform):
-    """Per-lane upper-bound search without materialising a PDF row per particle."""
-    n = cdf.shape[-1]
-    def step(_, state):
-        lo, hi = state
-        mid = (lo+hi)//2
-        less = cdf[row, jnp.minimum(mid, n-1)] <= uniform
-        return jnp.where(less, mid+1, lo), jnp.where(less, hi, mid)
-    lo = jnp.zeros_like(row)
-    hi = jnp.full_like(row, n)
-    return lax.fori_loop(0, n.bit_length(), step, (lo, hi))[0]
-
-
-def draw(pdf, row, u, within, species=None):
-    index = inverse(pdf.cdf, row, u)
-    lo, hi, mode = (x if species is None else x[species] for x in (pdf.low, pdf.high, pdf.mode))
-    n = pdf.cdf.shape[-1]
-    linear = lo + (index+within)*(hi-lo)/n
-    value = jnp.where(mode == 0, lo + index*(hi-lo)/max(1, n-1),
-                      jnp.where(mode == 2, 10.0**linear, linear))
-    return value, pdf.valid[row] & (index < n)
+    return _device.pdf_to_device(pdf, FLOAT)
 
 
 def device_tables(path=None):
-    prepared = cry_tables.load(path)
-    t = prepared["tables"]
-    arrays = {"primary": _pdf(prepared["primary_pdf"]), "multiplicity": _pdf(t["nParticles300"]),
-              "species": _pdf(t["particleFractions"]), "primary_edges": jnp.asarray(t["primaryBins"]),
-              "secondary_edges": jnp.asarray(t["secondaryBins"]),
-              "lifetime": jnp.asarray(prepared["lifetime_s"]), "pdg": jnp.asarray(cry_tables.PDG)}
-    for key, suffix in (("energy", "KEDist"), ("time", "TimeDist"), ("angle", "CosThetaDist"), ("charge", "ChargeDist")):
-        arrays[key] = _stack([t[s+suffix] for s in cry_tables.SPECIES])
-    return arrays, {k: prepared[k] for k in ("table_sha256", "date", "latitude", "subbox_m", "lifetime_s")}
+    if path is None:      # the Mu2e default location of the sea-level table
+        import os
+        from pathlib import Path
+        path = Path(os.environ.get("CRYDATAPATH", "/opt/cry/data")) / "cosmics_0.data"
+    return _device.device_tables(path, dtype=FLOAT, altitude_m=0)
 
 
 def uniform(key, tag, shape):
-    return jax.random.uniform(jax.random.fold_in(key, tag), shape, dtype=dprec.FLOAT,
-                              minval=2.0**-53, maxval=1.0)
+    return _device.uniform(key, tag, shape, dprec.FLOAT)
 
 
-@partial(dprec.jit, static_argnames=("showers", "capacity"))
 def raw(t, key, before, *, showers, capacity):
-    """All raw-shower sampling on device; pool overflow/undefined PDF is returned, never truncated silently."""
-    primary, good = draw(t["primary"], jnp.zeros(showers, jnp.int32), uniform(key, 0, (showers,)),
-                          uniform(key, 1, (showers,)))
-    pbin = jnp.searchsorted(t["primary_edges"], primary, side="right")-1
-    mult, ok = draw(t["multiplicity"], pbin, uniform(key, 2, (showers,)), jnp.zeros(showers))
-    mult = mult.astype(jnp.int32)
-    ends = jnp.cumsum(mult)
-    count = ends[-1]
-    lane = jnp.arange(capacity)
-    shower = jnp.minimum(jnp.searchsorted(ends, lane, side="right"), showers-1)
-    mask = lane < count
-    pb = pbin[shower]
-    species, valid = draw(t["species"], pb, uniform(key, 3, (capacity,)), jnp.zeros(capacity))
-    species = species.astype(jnp.int32)-1
-    ke, energy_ok = draw(t["energy"], species*(t["primary_edges"].size-1)+pb,
-                         uniform(key, 4, (capacity,)), uniform(key, 5, (capacity,)), species)
-    sb = jnp.searchsorted(t["secondary_edges"], ke, side="right")-1
-    time_row = species*(t["secondary_edges"].size-1)+sb
-    delay, time_ok = draw(t["time"], time_row, uniform(key, 6, (capacity,)), uniform(key, 7, (capacity,)), species)
-    w, angle_ok = draw(t["angle"], time_row, uniform(key, 8, (capacity,)), uniform(key, 9, (capacity,)), species)
-    charge, charge_ok = draw(t["charge"], time_row, uniform(key, 10, (capacity,)), jnp.zeros(capacity), species)
-    phi = 2*jnp.pi*uniform(key, 11, (capacity,))
-    transverse = jnp.sqrt(jnp.maximum(1-w*w, 0))
-    direction = jnp.stack([transverse*jnp.cos(phi), transverse*jnp.sin(phi), w], axis=-1)
-    position = jnp.stack([(uniform(key, 12, (capacity,))-.5)*300,
-                          (uniform(key, 13, (capacity,))-.5)*300, jnp.zeros(capacity)], axis=-1)
-    unsigned = t["pdg"][species]
-    negative = jnp.where((unsigned == 11) | (unsigned == 13), charge > 0, charge < 0)
-    pdg = jnp.where(negative, -unsigned, unsigned)
-    clocks = before + jnp.cumsum(-t["lifetime"]*jnp.log(uniform(key, 14, (showers,))))
-    bad = jnp.any(~good | ~ok) | jnp.any(mask & ~(valid & energy_ok & time_ok & angle_ok & charge_ok))
-    return {"shower": shower, "mask": mask, "pdg": pdg, "ke": ke, "position": position,
-            "direction": direction, "t": clocks[shower]+delay, "clocks": clocks,
-            "primary_bin": pbin, "multiplicity": mult, "particles": count,
-            "overflow": count > capacity, "invalid_pdf": bad}
+    """All raw-shower sampling on device (cryjax.device.raw in the device float)."""
+    return _device.raw(t, key, before, showers=showers, capacity=capacity, dtype=FLOAT)
 
 
 def intersection(position, direction, lower, upper):

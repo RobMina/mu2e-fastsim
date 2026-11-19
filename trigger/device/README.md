@@ -5,12 +5,12 @@ and lumi-stream paths) of the production menu, from StrawDigis to per-path decis
 
 | Stage | Stock module | Device | Agreement with stock on stock digis |
 |---|---|---|---|
-| straw hits | `StrawHitReco` (TrigMakeSH, FitType 5) | port (`hits.straw_hits`) | counts, straw ids, flags exact; floats to float32 rounding |
-| panel hits | `CombineStrawHits` (TrigMakePH) | port (`hits.panel_hits`) | counts, ids, flags, combo sizes exact; floats to float32 rounding |
+| straw hits | `StrawHitReco` (TrigMakeSH, FitType 5) | port with the stock arithmetic (`hits.straw_hits`) | bit for bit |
+| panel hits | `CombineStrawHits` (TrigMakePH) | port with the stock arithmetic (`hits.panel_hits`) | bit for bit |
 | background flags | `DeltaFinder` (TrigFlagPH) | not run: no hit flagged | exact on primary-only CE digis (stock flags none); not with pileup |
 | time clusters | `TimeClusterFinder` | port (`timecluster.py`), incl. the TMVA hit MLP | see the README table of the PR / record |
 | time clusters (apr) | `TZClusterFinder` | the TimeClusterFinder port with TZ's `clusterThresh` | approximation |
-| helices | `RobustHelixFinder` (tpr), `AgnosticHelixFinder` (apr) | compact fit with the stock per-face hit selection and chi2 definitions (`helix.py`) | approximation |
+| helices | `RobustHelixFinder` (tpr), `AgnosticHelixFinder` (apr) | compact fit with the stock per-face hit selection and chi2 definitions (`helix.py`); the hit ratio over `HelixTool`'s nominal face z | approximation |
 | helix cuts | `HelixFilter` | same cuts, incl. the D0-phi prescale counter on the host | exact given the helix |
 | track fit + cuts | `KalSeedFit` + `KalSeedFilter` | response layer: the filter's cuts on helix quantities and a pass probability per path and process from development shards (shipped, `data/`) | statistical |
 | prescale | `PrescaleEvent` | event number modulo the factor; a mode the module does not configure rejects (`apr_proton`) | exact |
@@ -56,22 +56,17 @@ Device on stock digis, against the stock replay (development: 19,543 events; hel
 
 | | stock | float32 | float64 |
 |---|---|---|---|
-| development: time-cluster / helix filter passes | 17,949 / 17,452 | 17,949 / 17,453 | 17,949 / 17,452 |
-| held-out: time-cluster / helix filter passes | 18,056 / 17,562 | 18,056 / 17,563 | 18,056 / 17,563 |
-| held-out path acceptance, paired difference | 0.8831 | -0.32 +- 0.10 pp | -0.16 +- 0.10 pp |
+| development: time-cluster / helix filter passes | 17,949 / 17,452 | 17,949 / 17,452 | 17,949 / 17,452 |
+| held-out: time-cluster / helix filter passes | 18,056 / 17,562 | 18,056 / 17,562 | 18,056 / 17,562 |
+| held-out path acceptance, paired difference | 0.8831 | -0.33 +- 0.10 pp | -0.16 +- 0.10 pp |
 
-Each extra helix-filter pass is one event. The remaining differences come from the finder's inputs, not from the port:
-
-- the device panel hits agree with stock `ComboHits` to float32 rounding, not bit for bit, and a few ulps can change a
-  circle choice;
-- `HelixFilter` takes the face z positions for the hit ratio from the nominal tracker geometry, the device from the
-  aligned straw positions; the hit ratio then differs by one face in about a quarter of the helices.
-
-With the stock `ComboHits` floats substituted, all helix quantities except the hit ratio agree with the stock printout
-in about 98.5 % of the events with a time cluster. Clusters with more than 64 hits (28 development and 19 held-out
-events) and 2 development events with the sort fallback account for part of the rest. Adding the mpr paths changes no
-decision of the other paths. The port is not tuned for speed: a decide job with the mpr paths on takes 0.6-1.5 s per
-event on four CPU cores (the other paths together take about 3 ms), and its GPU rate is not measured.
+The panel hits are those of stock (bit for bit) and the hit ratio uses `HelixTool`'s nominal face z, so the finder
+sees stock's inputs. All helix quantities agree with the stock printout in about 98.6 % of the events with a time
+cluster (both precisions give the same helices); the hit ratio differs in 0.7 % of the helices. Clusters with more
+than 64 hits (28 development and 19 held-out events) and 2 development events with the sort fallback account for part
+of the rest. Adding the mpr paths changes no decision of the other paths. The port is not tuned for speed: a decide
+job with the mpr paths on takes 0.6-1.5 s per event on four CPU cores (the other paths together take about 3 ms), and
+its GPU rate is not measured.
 
 ### Calorimeter paths
 
@@ -179,8 +174,9 @@ Device digis (`trkfastsim.digi.digi_jax.digitize` output: flat `ev`, `sid`, `tdc
 StrawId) go to `Chain.decide` through `digis.blocks`, which packs them into the dense event blocks without a
 per-event loop; events without digis keep their place.
 
-`--precision float32` (bench: `TRIGGER_DEVICE_PRECISION=float32`) runs every device array in 32-bit, including
-the double-precision intermediates of the stock hit reconstruction; the default `float64` keeps the stock types.
+`--precision float32` (bench: `TRIGGER_DEVICE_PRECISION=float32`) runs the device arrays in 32-bit, except the stock
+double-precision steps of the hit reconstruction and of the mpr finder: those trace in float64 in both precisions
+(`exact.py`), so the hits are the same in both. The default `float64` keeps the stock types throughout.
 JAX's x64 flag is process-wide, so a process runs one precision. float32 also sets the process-wide
 `jax_default_matmul_precision` to `highest`, so the helix matmuls do not run on TF32 tensor cores. The time-cluster MVA
 is float32 in both precisions, as stock, and asks for `precision="highest"` itself.

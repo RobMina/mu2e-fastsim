@@ -31,8 +31,10 @@ PARAMS = KNOBS + FIXED
 DEFAULTS = {**{k: "" for k in KNOBS}, "absorber_material": "", "sample": "run2_ce_proxy_v1", "dtype": "float64",
             "pe_scale": 0.847, "kappa": 1.0, "f_acc": 0.5, "beta": 1.0, "aging_c1": 0.94 ** 5, "aging_ref": 0.86,
             "max_muons": 0}
-SAMPLES = {"run2_ce_proxy_v1": "run2_ce_proxy_v1.npz"}   # file names under the endpoint's crv_design data dir
-METRICS = ("inefficiency", "inefficiency_err", "inefficiency_covered", "uncovered_fraction", "deadtime_rate_ratio",
+# file names under the endpoint's crv_design data dir: generated lines (v1) or CRV-entry states (design.sample)
+SAMPLES = {"run2_ce_proxy_v1": "run2_ce_proxy_v1.npz", "run2_ce_entry_v1": "run2_ce_entry_v1.npz"}
+METRICS = ("inefficiency", "inefficiency_err", "inefficiency_covered", "uncovered_fraction", "stopped_fraction",
+           "deadtime_rate_ratio",
            "ly_margin", "cost", "cost_scint", "cost_channels", "cost_absorber", "cost_fiber", "n_muons", "n_bars",
            "wall_s")
 TABLES = tuple(f"LookupTable_{t}" for t in ("1045_1", "1550_1", "2100_1", "2370_1", "3040_0", "3200_0", "4550_0",
@@ -63,7 +65,7 @@ def design_dict(pairs):
 
 
 def metrics_of(r):
-    m = {k: r[k] for k in ("inefficiency", "inefficiency_err", "inefficiency_covered", "uncovered_fraction",
+    m = {k: r[k] for k in ("inefficiency", "inefficiency_err", "inefficiency_covered", "uncovered_fraction", "stopped_fraction",
                            "deadtime_rate_ratio", "ly_margin", "cost", "n_muons", "n_bars", "wall_s")}
     m.update(cost_scint=r["cost_rel"]["scint_m3"], cost_channels=r["cost_rel"]["channels"],
              cost_absorber=r["cost_rel"]["absorber_t"], cost_fiber=r["cost_rel"]["fiber_m_mm2"])

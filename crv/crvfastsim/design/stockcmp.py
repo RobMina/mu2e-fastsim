@@ -78,6 +78,9 @@ def compare(stock, design=M.Design(), ctx=None, cfg=F.FomConfig(), dtype=np.floa
     dg = M.build(design, ctx.counters, yields)
     mu = stock["muons"]
     idx, pos = V.sector_crossings(dg, mu["origin"], mu["direction"], dtype)
+    if cfg.stack_range:                          # crossings the muon reaches through the designed stack
+        keep, _ = V.stack_range(dg, mu["origin"], mu["direction"], mu["p"], idx, pos)
+        idx, pos = idx[keep], pos[keep]
     pe = F.sector_pe(dg, ctx, idx, pos, mu["p"], cfg.optics, dtype).astype(np.float64)
     names = dg.sector_names
     req = F._stock_required(ctx.cuts)
@@ -176,6 +179,9 @@ def inefficiency(stock, gen_paths, design=M.Design(), ctx=None, cfg=F.FomConfig(
     sel = np.isin(ek, np.unique(ek[F.proxy_hits(o, d, proxy) & (p > 0)]))
     o, d, p, ek = o[sel], d[sel], p[sel], ek[sel]
     idx, pos = V.sector_crossings(dg, o, d, dtype)
+    if cfg.stack_range:
+        keep, _ = V.stack_range(dg, o, d, p, idx, pos)
+        idx, pos = idx[keep], pos[keep]
     pe = F.sector_pe(dg, ctx, idx, pos, p, cfg.optics, dtype)
     names = dg.sector_names
     req = F._stock_required(ctx.cuts)

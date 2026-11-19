@@ -26,12 +26,13 @@ The quirks of the stock code are kept:
 """
 from __future__ import annotations
 
-import contextlib
 import math
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+
+from .exact import g as _g, m as _m, strict  # noqa: F401  (strict: the context mpr traces under)
 
 F32 = jnp.float32
 F64 = jnp.float64
@@ -70,39 +71,6 @@ def merge_settings(m):
 
 
 # --- stock arithmetic -----------------------------------------------------------------------------------------------
-
-_ZERO = []                           # (int32, int64) zeros of the current trace, opaque to the compiler
-
-
-@contextlib.contextmanager
-def strict(zsrc):
-    """Trace mpr code: float64 on (the stock double steps, in either precision of the chain) and the product guard
-    armed. `zsrc` is any int array of the inputs; the guard ORs products with min(|zsrc|, 0), which is 0 but not
-    known to the compiler, so no multiply is fused into the add that follows it."""
-    with jax.enable_x64(True):
-        z = jnp.minimum(jnp.min(jnp.abs(jnp.ravel(jnp.asarray(zsrc)).astype(jnp.int32))), 0)
-        _ZERO.append((z, z.astype(jnp.int64)))
-        try:
-            yield
-        finally:
-            _ZERO.pop()
-
-
-def _g(p):
-    """p, rounded as it is: a value the compiler cannot fuse into a following add."""
-    z32, z64 = _ZERO[-1]
-    if p.dtype == F64:
-        return jax.lax.bitcast_convert_type(jax.lax.bitcast_convert_type(p, jnp.int64) | z64, F64)
-    return jax.lax.bitcast_convert_type(jax.lax.bitcast_convert_type(p, jnp.int32) | z32, F32)
-
-
-def _m(*xs):
-    """Left-to-right product, rounded after every factor as in C++, and never fused into a following add."""
-    p = xs[0]
-    for x in xs[1:]:
-        p = p * x
-    return _g(jnp.asarray(p))
-
 
 def _argmax(x, axis=None):
     """jnp.argmax with int32 indices: under `strict` jnp.argmax asks for int64 ones, and the chain lowers its jit
@@ -650,14 +618,6 @@ def _merge(h, ok, mask, chi, ms):
     return alive
 
 
-def _expected_faces(nmax):
-    """HelixTool's `float expected_faces(1e-6); ... ++expected_faces;` after k faces, k = 0..nmax."""
-    t = [np.float32(1e-6)]
-    for _ in range(nmax):
-        t.append(np.float32(t[-1] + np.float32(1)))
-    return np.asarray(t, np.float32)
-
-
 def _event(h, per, idx, s, ms, fz):
     """One event: panel hits h (each [H], collection order) and the finder results of its clusters `per`
     [C, niter, ...] on the cluster slots idx [C, L] -> merged helix seeds [M] with the HelixFilter / KalSeedFilter
@@ -695,9 +655,9 @@ def _event(h, per, idx, s, ms, fz):
     px = rh["ccx"][:, None] + _m(R[:, None], _f(jnp.cos(_d(az))))
     py = rh["ccy"][:, None] + _m(R[:, None], _f(jnp.sin(_d(az))))
     rf = jnp.sqrt(_m(px, px) + _m(py, py))
-    from .helix import TRACKER_RIN, TRACKER_ROUT
+    from .helix import TRACKER_RIN, TRACKER_ROUT, expected_faces
     nface = jnp.sum(~(rf < TRACKER_RIN) & ~(rf > TRACKER_ROUT), axis=1)
-    expected = jnp.asarray(_expected_faces(len(fz)))[nface]
+    expected = jnp.asarray(expected_faces(len(fz)))[nface]
     n = seeds["ok"].shape[0]
     return {"ok": alive, "helicity": jnp.concatenate([jnp.ones(n, F32), -jnp.ones(n, F32)]),
             "R": R, "rcent": rh["rcent"], "fcent": rh["fcent"], "lambda": lam,

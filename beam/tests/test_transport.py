@@ -104,12 +104,15 @@ def test_kit_task_renders():
 
     @dataclass(frozen=True)
     class T:                                   # mu2efastsim.endpoints.kit.Task's fields
-        params: tuple; metrics: tuple; resources: object; body: str; defaults: dict = None
+        params: tuple; metrics: tuple; resources: object; body: str; defaults: dict = None; sizer: object = None
 
     tasks, fnal = {}, set()
     kit_task.register(tasks, T, R, fnal)
     assert "beam_point" in tasks and "beam_point" in fnal
     b = tasks["beam_point"].body
     for p in kit_task.PARAMS:
+        if p in kit_task.SCALE_DEFAULTS:      # field-map scales: streaming route only, never in the mounted body
+            assert f"@p_{p}@" not in b
+            continue
         assert f"@p_{p}@" in b
     assert "@fnal_data@" in b and "@runtime_a@" in b

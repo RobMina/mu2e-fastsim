@@ -17,6 +17,103 @@ already uses:
 
 The scorer uses NumPy only and imports nothing from this repository, so a Codabench worker can run it unchanged.
 
+## Histogram kinds, modes and yields
+
+| Kind | hists.json entry | Statistic |
+|---|---|---|
+| counts | `edges` + `counts`, or `edges` + `shards` | mode `same_events` (independent Poisson difference), `shape` (scaled), or paired per shard; with `shape` and shards, the **paired shape** test (candidate scaled to the reference total, chi2/ndf x (S-3)/(S-1), p from the raw sum), which is the Run 1A DQMVAL comparison exactly |
+| values | `edges` + `values` + `errors` | sum (v1 - v2)^2 / (e1^2 + e2^2): tables and derived quantities with their own per-bin error, e.g. a lookup table, a paired comparison whose paired error sits on the reference side |
+| efficiency | `edges` + `passed` + `total` | per-bin binomial difference |
+
+A yield is a count, per-shard counts, or a measured `{"value", "error"}` (stops per POT, an accept fraction). A task
+may be yields only (per-path accept fractions); its validity is then the fraction of yields that pass. A task whose
+`reference.json` has `"stock_rate_per_slot": null` is scored on validity only. `rate_unit` names what the rate counts
+(events, POT, tables); a bench report in another unit is an error. `stock_jobs_per_unit` and a bench `jobs_per_unit`
+add the grid jobs replaced per unit of work. `--allow-missing` (coverage runs only, never a leaderboard) lists a
+missing or unscorable arm instead of failing.
+
+## Tasks
+
+`python -m benchmarks.fastsim_score.tasks` prints this table (`tasks.py`). Each task is a directory of the reference tree.
+
+| task | what | boundary | stock reference | scored | floor | rate |
+|---|---|---|---|---|---|---|
+| W1 | Muon beam | TS-entrance mu/pi -> stopping-target stops | Geant4 TS + DS stages, expectation over stock re-seeds | stop foil, time, radius, DS-entrance momentum (paired per shard); stops per shard | one stock re-seed | TS-entrance mu/pi per s |
+| W2 | Conversion electrons | CE stops -> CE track observables | full Geant4 events -> stock digi + LoopHelix reco | ValKalSeed histograms, paired shape per sub-shard (yields per generated electron are a separate study) | none yet (threshold 2) | events/s |
+| W3 | DIO electrons | DIO births -> CE track observables | full Geant4 events (every tracker step of the DIO dts) -> stock OffSpill digi + LoopHelix reco | CE-selected momentum spectrum 95-106 MeV/c; tail counts above 95 and 100 MeV/c and all CE-selected | none yet (threshold 2) | generated DIO muons per s |
+| W4 | RPC electrons | RPC births -> tracker entry | Geant4 RPC sample at the tracker entrance | tracker-entry fiducial yield (no stock reco reference after the response yet) | none yet (threshold 2) | generated RPC captures per s |
+| W5 | CRV cosmics | CRY cosmics -> CRV coincidence clusters | Geant4 steps -> stock CRV response + reco | ValCrv histograms, paired shape per shard; reco pulse yield | stock with another seed | events/s |
+| W6 | Pileup mixing | primary steps + donor pools -> mixed tracker digis + CRV pulses | stock mixing of the same primaries | digis per plane, pulses per sector (paired by event); tracker and CRV totals | none yet (threshold 2) | events/s |
+| W7 | Calorimeter | CE calorimeter steps -> calo digis, hits, clusters | Geant4 calorimeter steps -> stock calo digi + reco | cluster E, t, R, N (paired shape per block); cluster yield | stock with another seed | events/s |
+| W8 | Tracker trigger | StrawDigis -> tracker trigger path decisions | the stock trigger on the same digis | accept fraction per path (measured, paired error, tolerance 2 % of the acceptance) | none yet (threshold 2) | events/s |
+| W9 | CRV design model | CRV module design parameters -> veto (in)efficiency | full-simulation CRV veto comparison of the same design (stock arm of the design study) | inefficiency per momentum bin; efficiency per CRV sector | none yet (threshold 2) | selected CE-proxy events per s |
+| CRVLY | CRV light-yield (lookup) table generator | CRV counter geometry and optics -> photon arrival lookup tables | the v6_0 lookup tables (2019 standalone CRV optical simulation; the generator's default v6 model) | bin-by-bin arrival probability per table type (scintillation, Cerenkov in scintillator, Cerenkov in fibre), error binomial on the photons generated per bin; grid jobs and cost per table | none yet (threshold 2) | tables/s |
+| PTGT | Production-target chain | protons on target -> particles at the transport-solenoid entrance | G4beamline on the same target configurations (the design board's rods) | stopped muons per POT and mu- + pi- per POT at the TS entrance per configuration (measured yields); p, cos theta, r and t at the TS entrance (shape); throughput per POT | replicate G4beamline runs of the same configuration | POT/s |
+
+## Coverage on main `c03dbd13` (2026-11-18)
+
+Every fast arm is rerun on main `c03dbd13`, without #283, with each workflow's own validation recipe on the same
+events as its frozen stock reference, and the bench timer with the published headline pass sizes. No stock jobs were
+run. The scores come from `score --allow-missing` (coverage) and cover 20 of 20 arms (W1-W9 and PTGT), with **mean validity
+0.870** and a **throughput geometric mean of x1,046**. The last column is the same task scored on the older arms. The reference trees
+are kept privately.
+
+| task | dtype | validity | flagged / histograms | yields passing | throughput x | device | before (scored 2026-11-18 on older arms) |
+|---|---|---|---|---|---|---|---|
+| W1 | float32 | 1.000 | 0 / 4 | 1 / 1 | 949 | A100-80 | 1.000, x956 |
+| W1 | float64 | 1.000 | 0 / 4 | 1 / 1 | 613 | A100-80 | 1.000, x612 |
+| W2 | float32 | 0.889 | 1 / 9 | 0 / 0 | 467 | A100-80 | 0.889, x361 |
+| W2 | float64 | 0.889 | 1 / 9 | 0 / 0 | 306 | A100-80 | 0.889, x274 |
+| W3 | float32 | 1.000 | 0 / 1 | 3 / 3 | 169 | A100-80 | 1.000, x163 (primary-only stock arm) |
+| W3 | float64 | 1.000 | 0 / 1 | 3 / 3 | 115 | A100-80 | 1.000, x60 (primary-only stock arm) |
+| W4 | float32 | 1.000 | 0 / 0 | 1 / 1 | 96 | A100-80 | 1.000, x81 |
+| W4 | float64 | 1.000 | 0 / 0 | 1 / 1 | 73 | A100-80 | 1.000, x34 |
+| W5 | float32 | 1.000 | 0 / 12 | 1 / 1 | 1299 | A100-80 | 1.000, x1310 |
+| W5 | float64 | 1.000 | 0 / 12 | 1 / 1 | 1090 | A100-80 | 1.000, x1091 |
+| W6 | float32 | 1.000 | 0 / 2 | 2 / 2 | 191 | A100-80 | 1.000, x108 |
+| W6 | float64 | 1.000 | 0 / 2 | 2 / 2 | 180 | A100-80 | 1.000, x99 |
+| W7 | float32 | 0.750 | 1 / 4 | 1 / 1 | 2582 | A100-80 | 0.750, x21 |
+| W7 | float64 | 0.750 | 1 / 4 | 1 / 1 | 2315 | A100-80 | 0.750, x15 |
+| W8 | float32 | 1.000 | 0 / 0 | 22 / 22 | 349 | A100-80 | 1.000, x44 |
+| W8 | float64 | 1.000 | 0 / 0 | 22 / 22 | 305 | A100-80 | 1.000, x38 |
+| W9 | float32 | 0.500 | 1 / 2 | 1 / 1 | 38635 | CPU, 4 cores | not scored |
+| W9 | float64 | 0.500 | 1 / 2 | 1 / 1 | 38499 | CPU, 4 cores | 0.500 |
+| PTGT | float32 | 0.561 | 0 / 4 | 37 / 66 | 88132 | A100 | not scored |
+| PTGT | float64 | 0.561 | 0 / 4 | 37 / 66 | 53064 | A100 | not scored |
+
+- **W1:**
+  - the stock arm is the expectation over 16 stock re-seeds, now compared per shard (paired, yield included);
+  - the floor is one stock re-seed;
+  - throughput is against a stock proxy.
+- **W2:** paired shape per sub-shard (70); yields are not scored from this sample (per-event yields are conditioned);
+  the NSeed flag remains.
+- **W3: the stock arm is the full-event stock reconstruction** (rebuilt 2026-11-19; the fast arms are unchanged).
+  - The first rescore scored 0 because the frozen stock arm digitised only the DIO electron's own Geant4 steps. Main's
+    default reco response (the full-event response, the default since #149) models the reconstruction of full events,
+    whose CE-selected yield is 0.93 of that primary-only arm. The 0.926 was this mismatch, not a fidelity loss.
+  - The stock arm is now every tracker step of the same DIO dts through the stock OffSpill digi + LoopHelix reco, on
+    the same 200 held-out shards. Against it, the fast arm gives CE-selected 0.994 / 0.993 (float32 / float64), above
+    95 MeV/c 0.999 / 0.997, above 100 MeV/c 1.09 / 1.08 +- 0.05; the spectrum's chi2/ndf is 0.88 / 0.94.
+  - The older arm (CE-only response) scored 1.000 only against the primary-only arm; it is about 1.08 of the full-event
+    stock arm, so its "before" entry is not comparable with this row.
+- **W4:** the tracker-entry stage only; there is no stock RPC reconstruction after the response.
+- **W5, W6, W7:**
+  - W6's float32 arm is now pure float32. W6 runs about 1.8x faster on main than on the older arm.
+  - W7 is the parametric default: x2,582 / x2,315, with the cluster-radius flag at the inner edge as before.
+- **W8:** main as is (device loops on); 22 tested paths. Under this scorer's rule (3 sigma + 2 %) all of them pass.
+- **W9:**
+  - float32 and float64 on the same paired events;
+  - throughput is against the stock Geant4 + CRV reconstruction core-seconds per selected event (existing shard
+    timings, one CPU core), with the model timed from the CRV-entry states;
+  - the sector efficiencies flag (sectors with few events).
+- **Floors:** none for W2, W3, W4, W6, W8 or W9; making one would need new stock jobs.
+- **PTGT:** 33 design-board rods at 1M POT, both dtypes. The device chain is on a development branch, not yet in main.
+  - Stops per POT pass on all 33 rods (about 0.99 of G4beamline).
+  - mu- + pi- per POT at the TS entrance passes on 4 of 33 (0.93 of G4beamline), an open modelling item of the PS stage.
+  - The TS-entrance shapes at the nominal rod pass, against G4beamline's replicate run as the floor.
+  - Throughput is per POT for the target + PS stage.
+- **CRVLY:** defined, not yet scored; its reference waits for full generated tables with a measured stock cost per table.
+
 ## Layout
 
 ```

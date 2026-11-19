@@ -78,8 +78,22 @@ endpoint versions byte for byte. Tasks:
 | `beam_point` | stop fraction and stop profile of a target geometry (umbrella `beam/` on `PYTHONPATH`) | EAF, Slurm | 65 Geant4-evaluated design points: Geant4 / fast 1.0045 +- 0.0005 (+- 0.0077 from the predicted scale), rank correlation 0.998; paired stop fraction 0.5-0.7 % low |
 | `beam_sob` | sob stand-in of a target geometry: stops, conversion electrons, calorimeter proxy, the studies' approximate sensitivity (umbrella `beam/`; CPU) | EAF, Slurm | 65 design points: Geant4 / fast 0.9920 +- 0.0006 (+- 0.0077 from the stops normalisation), rms 0.46 %, rank correlation 0.993; the calorimeter proxy keeps 1.7 % too many electrons |
 | `beam_edep` | the EdepAna file (`EDepAna/tree`) of a target geometry for the analysis server's `approx_ce_sensitivity` and `edep` readers: stops, conversion electrons through the device chain, calorimeter shower library and wall proxy, the CeEndpoint storage filter; float64 or float32 (umbrella `beam/`, `calo/`, `tracker/`; one GPU) | EAF, Slurm | see `beam/docs/edepana.md` |
-| `beam_edep_cpu` | `beam_edep` on one CPU core (no GPU): the same point and file, JAX single-threaded, float64 by default, 5,000 electrons per batch; about 1.6 core-hours per design point with 100k electrons | EAF, Slurm (CPU partition) | as `beam_edep`; CPU timing and agreement in `beam/docs/edepana.md` |
+| `beam_edep_cpu` | `beam_edep` on one CPU core (no GPU): the same point and file, JAX single-threaded, float64 by default, 5,000 electrons per batch; about 1.6 core-hours per design point with 100k electrons. The Slurm request is sized from measured jobs up to 20,000 electrons (1.5x the longest elapsed, ~2 + 4 min per 1k CE, and 12 GB; 10k CE asks 1:05), else 4:00 and 16 GB | EAF, Slurm (CPU partition) | as `beam_edep`; CPU timing and agreement in `beam/docs/edepana.md` |
 | `beam_centuple` | the stock EventNtuple file of a target geometry for the analysis server's EventNtuple analyses (Mu2eBO ce_chain): stops, conversion electrons through the device chain with digis and the reco response, calorimeter device chain, device trigger, donor events, PyROOT writer in the stock release; float64 or float32 (umbrella `beam/`, `calo/`, `tracker/`, `trigger/`; one GPU, `/cvmfs`) | EAF | see `beam/docs/eventntuple.md` |
+
+**Field-map scales (opt-in).** `beam_point`, `beam_sob`, `beam_edep` and `beam_edep_cpu` take optional `ds_bscale` and
+`tsd_bscale` (0.5-1.5, default 1), as Offline's `bfield.mapScale`:
+- `ds_bscale` scales `DSMap` and `DSExtension`, and `tsd_bscale` scales `TSdMap`.
+- A factor other than 1 sets `MU2EFS_BFIELD_MAPSCALE` (e.g. `DSMap=0.9:DSExtension=0.9`) in the job container
+  (`mu2efastsim.bfield_scale`).
+- The two map readers (`mu2efastsim.ehelix.read_g4bl`, `beamfastsim.fieldmap.load`) multiply a named map's grid as
+  they read it. Each scaled map is reported once, and the factors go into the EdepAna provenance.
+- At 1 the parameter is dropped, so the request, its records and the job script equal a call without it.
+- The scales run on the streaming route (Slurm) only; the mounted route (EAF) refuses a scaled request.
+
+Limitation: these tasks start from the Coll5_Out table, so a scale acts only downstream of it. `tsd_bscale` is only
+partly represented, because the table carries the nominal TS3-TS5 history. The faithful path for both scales is W1's
+TS-entrance chain (`tsdevice`, GPU), which reads its maps through `read_g4bl`.
 
 ## Endpoint job scripts
 

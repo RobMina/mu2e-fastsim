@@ -9,7 +9,8 @@ resources, the params it accepts and the metrics it returns.
 
 Run as an MCP stdio server (``python -m mu2efastsim.endpoints.kit``) for a kits.toml entry, or use FastsimKit directly.
 Environment: FASTSIMKIT_ENDPOINT (default uva; eaf), FASTSIMKIT_STATE_DIR (local job records and fetched outputs),
-FASTSIMKIT_MAX_SU_PER_JOB (default 500), FASTSIMKIT_SIF (image path on the site; default
+FASTSIMKIT_MAX_SU_PER_JOB (default 500), FASTSIMKIT_GPU_TYPE (uva: the endpoint's gpu_type, "auto" by default,
+"none" for each task's own card, or a type such as 1g.24gb or a100; see endpoints.slurm_ssh), FASTSIMKIT_SIF (image path on the site; default
 <FASTSIMKIT_SCRATCH>/mu2efastsim.sif, needed only by image-based endpoints). Endpoint settings: see
 mu2efastsim.site and each endpoint module.
 """
@@ -20,7 +21,7 @@ import os
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import EndpointError, Resources, get
 from mu2efastsim import site
@@ -40,6 +41,11 @@ class Task:
     resources: Resources
     body: str           # bash; @sif@ and @p_<param>@ are substituted (shell-quoted); writes $M2FS_OUT/metrics.json
     defaults: Dict[str, Any] = field(default_factory=dict)   # optional params (absent from a call: this value)
+    # the request for one call's validated params, when it depends on them (beam_edep_cpu: the electrons); else resources
+    sizer: Optional[Callable[[Dict[str, Any]], Resources]] = None
+
+    def resources_for(self, params: Dict[str, Any]) -> Resources:
+        return self.sizer(params) if self.sizer else self.resources
 
 
 _COMMON = """module load apptainer >/dev/null 2>&1
@@ -334,8 +340,13 @@ class FastsimKit:
         self.out_root = root / "out"
         self.out_root.mkdir(parents=True, exist_ok=True)
         self._sif = sif
-        self.ep = endpoint or get(os.environ.get("FASTSIMKIT_ENDPOINT", "uva"), state_dir=root / "jobs",
-                                  max_su_per_job=float(os.environ.get("FASTSIMKIT_MAX_SU_PER_JOB", "500")))
+        name = os.environ.get("FASTSIMKIT_ENDPOINT", "uva")
+        kw = {}
+        gpu_type = os.environ.get("FASTSIMKIT_GPU_TYPE")
+        if gpu_type and name in ("uva", "slurm_ssh"):     # auto (default), none (each task's own card), or a type name
+            kw["gpu_type"] = None if gpu_type == "none" else gpu_type
+        self.ep = endpoint or get(name, state_dir=root / "jobs",
+                                  max_su_per_job=float(os.environ.get("FASTSIMKIT_MAX_SU_PER_JOB", "500")), **kw)
         self._cp = None
         self._delegates: Dict[str, Any] = {}
 
@@ -396,6 +407,9 @@ class FastsimKit:
         if params["task"] in DELEGATED_ONLY:
             raise ValueError(f"fastsimkit: task {params['task']!r} runs only through its endpoint delegate; "
                              f"{getattr(self.ep, 'name', '?')!r} has none")
+        if any(params.get(k, 1.0) != 1.0 for k in ("ds_bscale", "tsd_bscale")):
+            raise ValueError(f"fastsimkit: {params['task']}: field-map scales (ds_bscale, tsd_bscale) run on the "
+                             f"streaming route (UVA) only; {getattr(self.ep, 'name', '?')!r} renders none")
         fnal = getattr(self.ep, "fnal_data", None)
         if params["task"] in FNAL_TASKS and not fnal:
             raise ValueError(f"fastsimkit: task {params['task']!r} reads Mu2e-internal inputs in place and needs an "
@@ -417,8 +431,9 @@ class FastsimKit:
         if any(s in body for s in ("@p_", "@sif@", "@tables@", "@metrics_py@", "@runtime_", "@fnal_data@")):
             raise ValueError(f"fastsimkit: unfilled placeholder in task {params['task']!r}")
         body = body.replace("@geometry_setup@", setup)
-        admit_resources(self.ep, t.resources)
-        return body, t.resources
+        res = t.resources_for(params)
+        admit_resources(self.ep, res)
+        return body, res
 
     # -- contract ------------------------------------------------------------------------------------------------
     def _admit(self, name, params, files, inputs, requested_metrics=None):
