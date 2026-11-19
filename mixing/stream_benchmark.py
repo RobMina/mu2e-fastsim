@@ -253,6 +253,9 @@ def main(argv=None):
     parser.add_argument("--occupancy-geometry", type=Path, help="bar_to_sector JSON (as counts --geometry) for occupancy output")
     parser.add_argument("--output-compression", choices=("zstd1", "lz4", "none"),
                         help="device backend ROOT output only: compression (default: uproot ZLIB 1)")
+    parser.add_argument("--sampling-receipt", choices=("full", "compact"), default="full",
+                        help="device backend ROOT output only: sampling.npz with the per-donor arrays (full, default) "
+                             "or without them (compact, as occupancy output: donors follow from counts and cursors)")
     parser.add_argument("--device-pipeline", action="store_true",
                         help="device backend only: dispatch the next batch before writing the previous one")
     parser.add_argument("--device-pipeline-writers", type=int, default=1,
