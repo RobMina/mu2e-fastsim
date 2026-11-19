@@ -42,7 +42,7 @@ def _edges(library):
     return tuple(np.asarray(library["bins_" + k], np.float64) for k in ("energy", "cosine", "front_radius", "inner_depth"))
 
 
-def _cell_tables(library, disk_ids):
+def _cell_tables(library, disk_ids, psi_bins=None):
     """Nearest occupied cell per (species, face, disk slot) group and flat query cell, as :func:`entrants.sample`.
 
     Returns table (G, ne*nc*npos) of occupied-cell indices (-1: the group has no entrants), fallback (G, ...) and the
@@ -50,21 +50,26 @@ def _cell_tables(library, disk_ids):
     e, c, r, z = _edges(library)
     ne, nc, nr, nz = len(e) - 1, len(c) - 1, len(r) - 1, len(z) - 1
     npos = max(nr, nz)
+    npsi = 1 if psi_bins is None else len(psi_bins) - 1
     group = np.column_stack((library["entry_species"], library["entry_face"], library["entry_disk"]))
     labels = np.column_stack((group, library["entry_cell"]))
+    if psi_bins is not None:
+        labels = np.column_stack((labels, E.psi_cells(library["entry_face"], library["entry_psi"], psi_bins)))
     occupied, inverse = np.unique(labels, axis=0, return_inverse=True)
     inverse = inverse.ravel()
     order = np.argsort(inverse, kind="stable")
     counts = np.bincount(inverse, minlength=len(occupied))
     starts = np.r_[0, np.cumsum(counts[:-1])].astype(np.int64)
     G = SPECIES_GROUPS * FACE_GROUPS * len(disk_ids)
-    table = np.full((G, ne * nc * npos), -1, np.int64)
-    fallback = np.ones((G, ne * nc * npos), bool)
+    table = np.full((G, ne * nc * npos * npsi), -1, np.int64)
+    fallback = np.ones((G, ne * nc * npos * npsi), bool)
     for s in range(SPECIES_GROUPS):
         for f, face in enumerate(E.SUPPORTED_FACES):
             npf = nz if face == E.INNER else nr
-            grid = np.stack(np.meshgrid(np.arange(ne), np.arange(nc), np.arange(npf), indexing="ij"), -1).reshape(-1, 3)
-            flat = (grid[:, 0] * nc + grid[:, 1]) * npos + grid[:, 2]
+            nps = npsi if face == E.FRONT else 1
+            axes_ = [np.arange(ne), np.arange(nc), np.arange(npf)] + ([np.arange(nps)] if psi_bins is not None else [])
+            grid = np.stack(np.meshgrid(*axes_, indexing="ij"), -1).reshape(-1, len(axes_))
+            flat = ((grid[:, 0] * nc + grid[:, 1]) * npos + grid[:, 2]) * npsi + (grid[:, 3] if psi_bins is not None else 0)
             for slot, disk in enumerate(disk_ids):
                 g = (s * FACE_GROUPS + f) * len(disk_ids) + slot
                 pool = np.flatnonzero(np.all(occupied[:, :3] == (s, face, disk), axis=1))
@@ -74,16 +79,17 @@ def _cell_tables(library, disk_ids):
                 near = np.argmin(distance, axis=1)
                 table[g, flat] = pool[near]
                 fallback[g, flat] = distance[np.arange(len(grid)), near] != 0
-    return table, fallback, order, starts, counts, (ne, nc, npos)
+    return table, fallback, order, starts, counts, (ne, nc, npos, npsi)
 
 
-def pack_entrants(library, *, placement="crystal", key_neighbors=0, pixel=8.0, candidate_width=12, d_edge=0.0,
-                  dtype=np.float64):
+def pack_entrants(library, *, placement="crystal", key_neighbors=0, psi_bins=None, pixel=8.0, candidate_width=12,
+                  d_edge=0.0, dtype=np.float64):
     """Pack an entrant library (:func:`entrants.build` / :func:`entrants.load`) into a
     :class:`device_chain.DeviceLibrary` for :func:`make_entrant_chain`.
 
     ``placement`` as :func:`device_chain.pack_library`; ``key_neighbors`` as :func:`entrants.sample` (opt-in: in a
-    cell with more than K entrants, draw among the K nearest in the position key); ``d_edge`` [mm] the edge rule (front entrants within this
+    cell with more than K entrants, draw among the K nearest in the position key); ``psi_bins`` as
+    :func:`entrants.sample` (opt-in psi cell axis of front entries); ``d_edge`` [mm] the edge rule (front entrants within this
     distance of the disk's inner or outer radius are not drawn); ``dtype`` the precision of positions, frames and
     geometry (cell lookup, draws and times stay double). The disks must share the global axes (the Mu2e layout):
     the host rotation about the disk axis then equals the device's rotation in global x-y."""
@@ -102,7 +108,11 @@ def pack_entrants(library, *, placement="crystal", key_neighbors=0, pixel=8.0, c
                      for a in "xyz"], axis=2)
     if not np.allclose(axes, np.eye(3)[None]):
         raise ValueError("the entrant device chain requires disks aligned with the global axes")
-    table, fallback, order, starts, counts, shape = _cell_tables(library, disk_ids)
+    if psi_bins is not None:
+        if "entry_psi" not in library:
+            raise ValueError("psi_bins needs a library built with entry_psi")
+        psi_bins = tuple(float(v) for v in psi_bins)
+    table, fallback, order, starts, counts, shape = _cell_tables(library, disk_ids, psi_bins)
     origin = np.column_stack([library["geometry_disk_origin_" + a] for a in "xyz"])
     entry_slot = np.searchsorted(disk_ids, library["entry_disk"])
     local = np.asarray(library["entry_local_position"], np.float64)
@@ -139,6 +149,7 @@ def pack_entrants(library, *, placement="crystal", key_neighbors=0, pixel=8.0, c
                                 for s0, n0 in zip(starts, counts)]) if len(counts) else np.zeros(0, np.int64)
     a = dict(
         edges_energy=e, edges_cosine=cs, edges_front_radius=r, edges_inner_depth=z,
+        edges_psi=np.asarray(psi_bins if psi_bins is not None else (-np.pi, np.pi), np.float64),
         disk_ids=disk_ids, cell_table=table, cell_fallback=fallback, order=order, starts=starts, counts=counts,
         key_order=key_order, entry_key=key, key_sorted=key[key_order], offsets=np.asarray(library["offsets"], np.int64),
         donor_frame=frame, donor_angle=phi, donor_position=origin[entry_slot] + local,
@@ -155,7 +166,8 @@ def pack_entrants(library, *, placement="crystal", key_neighbors=0, pixel=8.0, c
         a[k] = np.asarray(a[k], dtype)
     meta = dict(entrants=int(len(phi)), steps=int(len(step_crystal)), occupied_cells=int(len(counts)),
                 max_cell=int(counts.max(initial=0)), max_steps=int(np.diff(a["offsets"]).max(initial=0)),
-                d_edge=float(d_edge), key_neighbors=int(key_neighbors), dtype=np.dtype(dtype).name,
+                d_edge=float(d_edge), key_neighbors=int(key_neighbors),
+                psi_bins=psi_bins, dtype=np.dtype(dtype).name,
                 library="entrants")
     return dc.DeviceLibrary({k: jnp.asarray(v) for k, v in a.items()}, shape, int(key_neighbors), placement, n_pix,
                             float(pixel), meta)
@@ -210,7 +222,8 @@ def _features(q):
     inner = q["face"] == E.INNER
     cosine = jnp.clip(jnp.where(inner, outward, along), 0.0, 1.0)
     key = jnp.where(inner, lp[:, 2], rho)
-    return energy, cosine, key, phi, rho, species
+    psi = jnp.angle(jnp.exp(1j * (jnp.arctan2(lm[:, 1], lm[:, 0]) - phi)))
+    return energy, cosine, key, phi, rho, species, psi
 
 
 def _bsearch(values, lo, hi, x, side, iters):
@@ -236,7 +249,7 @@ def sample_entrants(lib: dc.DeviceLibrary, q, uniform):
     import jax.numpy as jnp
     a = lib.arrays
     pdt = a["centers"].dtype
-    energy, cosine, key, phi, rho, species = _features(q)
+    energy, cosine, key, phi, rho, species, psi = _features(q)
 
     def locate(edges, v):
         idx = jnp.clip(jnp.searchsorted(edges, v, side="right") - 1, 0, edges.shape[0] - 2)
@@ -248,8 +261,11 @@ def sample_entrants(lib: dc.DeviceLibrary, q, uniform):
     ir, orr = locate(a["edges_front_radius"], key)
     iz, oz = locate(a["edges_inner_depth"], key)
     ip, op = jnp.where(inner, iz, ir), jnp.where(inner, oz, orr)
-    ne, nc, npos = lib.shape
+    ne, nc, npos, npsi = lib.shape
     flat = (ie * nc + ic) * npos + ip
+    if lib.meta.get("psi_bins") is not None:
+        ips, _ = locate(a["edges_psi"], psi)
+        flat = flat * npsi + jnp.where(q["face"] == E.FRONT, ips, 0)
     nd = a["disk_ids"].shape[0]
     slot = jnp.clip(jnp.searchsorted(a["disk_ids"], q["disk"]), 0, nd - 1)
     known = (a["disk_ids"][slot] == q["disk"]) & ((q["face"] == E.FRONT) | inner)

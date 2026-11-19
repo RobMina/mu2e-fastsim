@@ -145,12 +145,12 @@ def _stages(lib, q, u):
     return jax.tree_util.tree_map(np.asarray, go(lib.arrays, {k: jnp.asarray(v) for k, v in q.items()}, jnp.asarray(u)))
 
 
-@pytest.mark.parametrize("neighbors", [0, 3])
-def test_draw_and_steps_match_host(library, neighbors):
+@pytest.mark.parametrize("neighbors,psi", [(0, None), (3, None), (3, E.PSI_BINS_15)])
+def test_draw_and_steps_match_host(library, neighbors, psi):
     query = _queries()
     u = np.random.default_rng(11).random(320)
-    host = E.sample(library, query, _Fixed(u), key_neighbors=neighbors)
-    lib = ec.pack_entrants(library, placement="geometric", key_neighbors=neighbors)
+    host = E.sample(library, query, _Fixed(u), key_neighbors=neighbors, psi_bins=psi)
+    lib = ec.pack_entrants(library, placement="geometric", key_neighbors=neighbors, psi_bins=psi)
     q, _ = _batch(query, 320)
     donor, fallback, edge, st, crystal, depth, mapped, over = _stages(lib, q, u)
     np.testing.assert_array_equal(donor[:300], host["donor"])
@@ -194,6 +194,27 @@ def test_host_key_neighbors_rule(library):
     assert moved > 0
     with pytest.raises(ValueError):
         E.sample(library, query, _Fixed(u), key_neighbors=-1)
+
+
+def test_psi_cells_split_front_entries_by_transverse_direction(library):
+    """psi bins keep a front query's donor in its transverse-direction bin (or the nearest occupied one)."""
+    query = _queries(seed=41)
+    query["face"][:] = E.FRONT
+    query["local_position"][:, 2] = Z0 - 1.0
+    query["pdg"][:] = 11
+    u = np.random.default_rng(6).random(300)
+    psi = E.transverse_angle(query["local_position"], query["local_momentum"])
+    out = E.sample(library, query, _Fixed(u), psi_bins=E.PSI_BINS_15)
+    ok = (out["donor"] >= 0) & ~out["fallback"]
+    assert ok.sum() > 20
+    np.testing.assert_array_equal(E.psi_cells(library["entry_face"][out["donor"][ok]],
+                                              library["entry_psi"][out["donor"][ok]], E.PSI_BINS_15),
+                                  E.psi_cells(query["face"][ok], psi[ok], E.PSI_BINS_15))
+    old = {k: v for k, v in library.items() if k not in ("entry_psi", "entry_local_momentum")}
+    with pytest.raises(ValueError):
+        E.sample(old, query, _Fixed(u), psi_bins=E.PSI_BINS_15)
+    with pytest.raises(ValueError):
+        ec.pack_entrants(old, psi_bins=E.PSI_BINS_15)
 
 
 def _own_uniforms(library, lib, rows):
