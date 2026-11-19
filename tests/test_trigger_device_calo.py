@@ -268,3 +268,60 @@ def test_calo_seed_sort_is_libstdcxx_on_the_tolerant_comparator():
         assert not fb[k] and perm[k, :n[k]].tolist() == want, k
         big += len(want) > 16
     assert big > 100
+
+
+def _bc(payload):
+    import struct
+    return struct.pack(">I", 0x40000000 | len(payload)) + payload
+
+
+def test_calo_art_decoders_on_memberwise_blobs():
+    """caloart decodes the memberwise CaloDigi (v10), CaloCluster (v1, with checksum), ProtonBunchTime and
+    HLTPathStatus layouts, including empty collections, and rejects a wrong length."""
+    import struct
+    from trigger.device import caloart
+    digis = [[(110, 282, 16, [13, 14, 15, 700, 12]), (111, 281, 2, [9, 8, 300])], []]
+    blobs = []
+    for ev in digis:
+        n = len(ev)
+        body = struct.pack(">HHi", 0x400A, 10, n)
+        body += b"".join(struct.pack(">i", d[0]) for d in ev) + b"".join(struct.pack(">i", d[1]) for d in ev)
+        if n:
+            wf = b"".join(struct.pack(">i", len(d[3])) + b"".join(struct.pack(">i", x) for x in d[3]) for d in ev)
+            body += _bc(struct.pack(">H", 10) + wf)
+        body += b"".join(struct.pack(">i", d[2]) for d in ev)
+        blobs.append(_bc(body))
+    data = np.frombuffer(b"".join(blobs), np.uint8)
+    off = np.r_[0, np.cumsum([len(b) for b in blobs])]
+    dg = caloart.decode_digis(data, off)
+    assert dg["n"].tolist() == [2, 0] and dg["sipm"].tolist() == [110, 111] and dg["t0"].tolist() == [282, 281]
+    assert dg["peakpos"].tolist() == [16, 2] and dg["wf_len"].tolist() == [5, 3]
+    assert dg["samples"][dg["wf_start"][1]:dg["wf_start"][1] + 3].tolist() == [9, 8, 300]
+    with pytest.raises(ValueError):
+        caloart.decode_digis(data[:-4], off - np.r_[0, 0, 4])
+
+    cl = [(1, 660.5, 14.9765625, -154.35, -445.9, 1, False), (0, 1646.75, 80.328125, -422.15, 12.9, 4, True)]
+    body = struct.pack(">HHIi", 0x400A, 0, 0xDC2D5AD4, len(cl))
+    body += b"".join(struct.pack(">i", c[0]) for c in cl)
+    for k in (1, None, 2, None):
+        body += b"".join(struct.pack(">f", c[k] if k is not None else 0.0) for c in cl)
+    body += b"".join(_bc(struct.pack(">H", 11) + struct.pack(">ddd", c[3], c[4], 0.0)) for c in cl)
+    body += _bc(struct.pack(">HH", 0x400A, 10) + b"\x00" * 20)                      # Ptr block, skipped
+    body += b"".join(struct.pack(">I", c[5]) for c in cl) + bytes(int(c[6]) for c in cl)
+    blob = _bc(body)
+    empty = _bc(struct.pack(">HHIi", 0x400A, 0, 0xDC2D5AD4, 0))
+    data = np.frombuffer(blob + empty, np.uint8)
+    c = caloart.decode_clusters(data, np.array([0, len(blob), len(blob) + len(empty)]))
+    assert c["n"].tolist() == [2, 0] and c["disk"].tolist() == [1, 0] and c["size"].tolist() == [1, 4]
+    assert c["energy"].tolist() == [np.float32(14.9765625), np.float32(80.328125)] and c["cog_x"].tolist() == [-154.35, -422.15]
+    assert c["is_split"].tolist() == [False, True]
+
+    pbt = b"".join(_bc(struct.pack(">HIff", 0, 0xD7B521F8, v, 0.5)) for v in (-217.73679, -221.5181))
+    assert caloart.decode_pbt(np.frombuffer(pbt, np.uint8), np.array([0, 18, 36])).tolist() == \
+        [np.float32(-217.73679), np.float32(-221.5181)]
+
+    words = [0x29, 0x31, 0x2E]
+    vec = _bc(struct.pack(">HHI", 0x400A, 10, len(words)) + b"".join(struct.pack(">H", w) for w in words))
+    tr = _bc(struct.pack(">H", 12) + _bc(struct.pack(">H", 10) + vec) + b"\x00" * 24)
+    got = caloart.decode_trigger(np.frombuffer(tr, np.uint8), np.array([0, len(tr)]))
+    assert got.tolist() == [words] and caloart.accepted(got).tolist() == [[True, True, False]]
