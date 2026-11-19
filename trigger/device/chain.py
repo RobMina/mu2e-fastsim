@@ -61,8 +61,9 @@ class Chain:
                  precision="float64", compact=False, pairs=True, mpr=False):
         if precision not in PRECISIONS:
             raise ValueError(f"precision must be one of {PRECISIONS}")
-        # float32: every device array, including the stock double-precision intermediates of the hit ports, in
-        # 32-bit (JAX's x64 flag is process-wide, so set it before any device array is made)
+        # float32: the device arrays in 32-bit, except the stock double steps of the hit and mpr ports, which trace
+        # in float64 in both precisions (exact.strict). JAX's x64 flag is process-wide, so set it before any device
+        # array is made.
         jax.config.update("jax_enable_x64", precision == "float64")
         if precision == "float32":   # full float32 matmuls: XLA's default runs them on TF32 tensor cores (Ampere+)
             jax.config.update("jax_default_matmul_precision", "highest")

@@ -16,7 +16,8 @@ The kit host must reach both the endpoint and the FNAL host by ssh for the point
 Environment (site.env): FASTSIMKIT_FNAL_HOST (required: the FNAL host the input is streamed from),
 FASTSIMKIT_BEAM_DATA (FNAL dir holding g4ref_full/g4ref.npz; default <M2FS_INPUTS or M2FS_DATA>/beam_fastsim),
 FASTSIMKIT_BEAM_CODE (default <FASTSIMKIT_SCRATCH>/beam_code_kit), FASTSIMKIT_CODE_REF (default main),
-FASTSIMKIT_STREAM_POLL_S (seconds between queue checks until the inputs are streamed; default 10).
+FASTSIMKIT_STREAM_POLL_S (seconds between queue checks until the inputs are streamed; default 10),
+FASTSIMKIT_JAX_CACHE (optional endpoint directory for a persistent JAX compilation cache in the GPU jobs; see jax_cache).
 They are read when the source or the code snapshot is first needed; a missing one raises site.SiteConfigError.
 """
 from __future__ import annotations
@@ -81,6 +82,26 @@ def validate(params: Dict[str, Any], task: str = "beam_point") -> Dict[str, Any]
         return validate_parameters(task, params, kit_task.CENT_PARAMS, {"dtype": "float64"})
     return validate_parameters(task, params, kit_task.SOB_PARAMS if task == "beam_sob" else kit_task.PARAMS,
                                kit_task.SCALE_DEFAULTS)
+
+
+JAX_CACHE_ENV = "FASTSIMKIT_JAX_CACHE"
+
+
+def jax_cache(body: str) -> str:
+    """body with a persistent JAX compilation cache when the site sets FASTSIMKIT_JAX_CACHE (an endpoint directory,
+    created if missing, shared by the jobs: JAX writes its entries atomically): the GPU container (the first
+    `apptainer exec --nv`) gets JAX_COMPILATION_CACHE_DIR, every compilation is cached
+    (JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0), and the directory is bound at its real path (the scratch area may
+    be a symlink). CPU bodies and an unset setting leave the body unchanged."""
+    d = site.setting(JAX_CACHE_ENV)
+    gpu = 'apptainer exec --nv --cleanenv --env "'
+    if not d or gpu not in body:
+        return body
+    i = body.index(gpu)
+    j = body.index('-B "$CODE"', i)
+    body = (body[:i] + gpu + "JAX_COMPILATION_CACHE_DIR=$JC,JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0,"
+            + body[i + len(gpu):j] + '-B "$JC" ' + body[j:])
+    return f'mkdir -p {shlex.quote(d)} && JC=$(readlink -f {shlex.quote(d)}) || {{ echo "no JAX cache {d}"; exit 3; }}\n' + body
 
 
 class BeamPointStream:
@@ -162,6 +183,7 @@ class BeamPointStream:
             if '--cleanenv --env "' not in body:
                 raise ValueError(f"fastsimkit: {self.TASK}: no container environment to carry the field scale")
             body = body.replace('--cleanenv --env "', f'--cleanenv --env "{bfield_scale.ENV}={scale},', 1)
+        body = jax_cache(body)
         subs = {"sif": shlex.quote(manifest["image"]["path"] if manifest else self.kit.sif),
                 "code": shlex.quote(manifest["code"]["path"] if manifest else self.code), "waits": str(WAIT_S),
                 "stagegeom": stagegeom, "geomarg": geomarg,
