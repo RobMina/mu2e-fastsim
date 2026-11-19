@@ -55,6 +55,13 @@ components and interior air/gaps, not just scintillator. Outside transport is no
 
 ## Checkers
 
+> The audit (`capture`), the energy accounting (`capture_accounting`) and the bank converter (`capture_library`)
+> run hep-simlib's experiment-neutral versions (`hepsimlib.capture`), which were ported from these modules. What stays
+> here is the Mu2eG4 reader (directory `dump`) and the Mu2eG4-only checks (`capture.mu2e_checks`: record identities,
+> capture and status products, StatusG4 and natural boundary stops, SimParticle overflow, step-limit kills,
+> `mu2eSpecialCutsProcess`), passed to the generic audit as framework checks. hep-simlib also has a standalone
+> Geant4 recorder writing the same tables for any GDML component.
+
 All are vectorized NumPy/pandas readers of the dumped ROOT tables; none imports a production chain.
 
 | Module | Checks |
