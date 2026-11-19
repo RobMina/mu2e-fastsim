@@ -249,8 +249,11 @@ def test_classifier_score_separates_shifted_arms():
     same = S.classifier_score(a, b)
     assert same["cls_score"] > 0.85 and same["n_per_arm"] == 4000
     wide = b.copy()
-    wide[:, 1] *= 1.6  # same mean, wider: only the quadratic features see it
-    assert S.classifier_score(a, wide)["cls_score"] < 0.5
+    wide[:, 1] *= 1.6  # same mean, wider: only the quadratic features see it; optimal AUC = (2/pi) atan(1.6)
+    assert S.classifier_score(a, wide)["auc"] == pytest.approx(2 / np.pi * np.arctan(1.6), abs=0.03)
+    moved = b.copy()
+    moved[:, 0] += 1.0  # mean shift of one sigma: optimal AUC = Phi(1/sqrt 2) = 0.760
+    assert S.classifier_score(a, moved)["auc"] == pytest.approx(0.7602, abs=0.03)
     assert S.classifier_score(a, b, seed=1)["auc"] != same["auc"]
     with pytest.raises(S.ScoreError, match="same columns"):
         S.classifier_score(a, b[:, :2])
