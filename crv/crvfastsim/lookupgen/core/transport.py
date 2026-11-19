@@ -1,8 +1,9 @@
 """On-device optical-photon transport of the CRV lookup-table generator (JAX, float32 or float64).
 
-A port of the table mode (-c) of Mu2e/CRVStandalone: per bin, photons are generated as WLSPrimaryGeneratorAction does
-and tracked through the counter with the Geant4 10.7 optical physics the stock program uses (see materials.py and the
-package doc), and the photons detected by SiPM 0 are histogrammed as WLSEventAction does.
+A port of the table mode (-c) of CRVStandalone: per bin, photons are generated as WLSPrimaryGeneratorAction does and
+tracked through the strip (counter.Counter) with the Geant4 10.7 optical physics that program uses (optics.py,
+materials.py), and the photons detected by the photodetector at -z on the fiber at -y ("SiPM 0") are histogrammed as
+WLSEventAction does. The bins come from a binning.Binning.
 
 Execution model: a fixed set of lanes, one photon chain per lane (every WLS process re-emits at most one photon, so a
 chain never branches). A step advances every live lane to its next interaction; finished lanes are refilled from a
@@ -30,8 +31,10 @@ import jax
 import jax.numpy as jnp
 from jax import lax
 
-from . import geometry as G
-from . import materials as M
+from . import materials as _materials  # noqa: F401  (registers the "current" model)
+from . import optics as M
+from .binning import Binning
+from .counter import Counter
 
 jax.config.update("jax_enable_x64", True)
 
@@ -63,7 +66,8 @@ def _vec(x):
 
 @dataclass(frozen=True)
 class Config:
-    counter: G.Counter
+    counter: Counter
+    binning: Binning
     simtype: int
     dtype: str = "float64"
     seed: int = 1
@@ -71,7 +75,7 @@ class Config:
     refill_fraction: float = 0.125
     helix: bool = True              # exact helical shortcut for totally reflected fiber rays (False: bounce by bounce)
     rough_reflection: str = "stale"  # fiber/air reflections: "stale" (Geant4: inherited), "lobe" or "lambert" (tests)
-    model: str = M.DEFAULT_MODEL    # optical model: "current" (CRVStandalone) or "v6" (made the released tables)
+    model: str = M.DEFAULT_MODEL    # name of a registered optical model (optics.get)
     max_steps: int = 1 << STEP_BITS  # chains are stopped (and counted as capped) at this many steps; <= 2**STEP_BITS
 
     def __post_init__(self):
@@ -261,7 +265,7 @@ class Kernel:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         c = cfg.counter
-        self.model = M.MODELS[cfg.model]
+        self.model = M.get(cfg.model)
         self.T = Tables(cfg.dtype, self.model)
         f = self.T.f
         self.f = f
@@ -847,7 +851,7 @@ class Kernel:
         bins = np.asarray(bins, np.int64)
         nbins = len(bins)
         gbins = jnp.asarray(bins)
-        box_np = G.bin_boxes(cfg.counter, cfg.simtype, bins)
+        box_np = cfg.binning.boxes(cfg.simtype, bins)
         box = {k: (np.asarray(v[0], np.float64), np.asarray(v[1], np.float64)) for k, v in box_np.items()}
         qend = nbins * nphot
         lanes = cfg.lanes

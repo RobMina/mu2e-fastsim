@@ -2,7 +2,12 @@
 
   run      counts for a bin set of one sim type -> .npz (bins, gen, ht, he, stats)
   compare  .npz against a reference table (bin by bin) -> JSON summary
-  assemble .npz pieces covering every bin of the three sim types -> LookupTable file
+  assemble .npz pieces covering every bin of the three sim types -> LookupTable file, its provenance and its
+           library-core manifest (<file>.manifest.json)
+  verify   a LookupTable file against its manifest (optionally a pinned content hash)
+
+The Mu2e application of the generator: Mu2e counters and bins (mu2e.sections), the v6 model (mu2e.v6), the
+version-6 writer and the manifests (mu2e.writer, mu2e.library) on the experiment-neutral core (core).
 """
 import argparse
 import json
@@ -12,9 +17,11 @@ import time
 
 import numpy as np
 
-from . import geometry as G
-from . import materials as M
-from .writer import KEYS
+from .mu2e import sections as G
+from .mu2e import v6 as _v6  # noqa: F401  (registers the "v6" model)
+from .mu2e.writer import KEYS, WRITER
+
+COMMIT_ENV = "LOOKUPGEN_COMMIT"
 
 
 def counter_from(a):
@@ -61,9 +68,19 @@ def main(argv=None):
                    help="stop chains at this many steps (default 2**19, the exact limit; see docs/lookupgen.md)")
     r.add_argument("--resume", action="store_true",
                    help="keep the complete bins of an existing --out and run only the others (same random streams)")
-    sub.choices["assemble"].add_argument("pieces", nargs="+")
-    sub.choices["assemble"].add_argument("--note", action="append", default=[],
-                                         help="free-text line for the provenance file (repeatable)")
+    for name in ("run", "assemble"):
+        sub.choices[name].add_argument("--commit", default=os.environ.get(COMMIT_ENV),
+                                       help=f"code commit recorded in the provenance (default ${COMMIT_ENV})")
+    asm = sub.choices["assemble"]
+    asm.add_argument("pieces", nargs="+")
+    asm.add_argument("--note", action="append", default=[], help="free-text line for the provenance (repeatable)")
+    asm.add_argument("--assume-seed", type=int, default=None,
+                     help="seed of pieces that do not record one (pieces made before seeds were recorded)")
+    asm.add_argument("--piece-commit", default=None,
+                     help="commit of pieces that do not record one (pieces made before commits were recorded)")
+    v = sub.add_parser("verify")
+    v.add_argument("table")
+    v.add_argument("--content-hash", default=None, help="the pinned content hash the table must have")
     c = sub.add_parser("compare")
     c.add_argument("npz")
     c.add_argument("reference", help="reference LookupTable file")
@@ -72,7 +89,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
 
     if a.cmd == "run":
-        from .run import generate
+        from .core.run import generate
         ctr = counter_from(a)
         bins = parse_bins(a.bins, G.n_bins(ctr, a.simtype))
         nphot = a.photons or (10000 if a.simtype == 2 else 100000)
@@ -106,6 +123,7 @@ def main(argv=None):
                 return
             last[0] = time.time()
             res = merged(res)
+            res["stats"] = dict(res["stats"], commit=a.commit)
             tmp = a.out + ".tmp.npz"
             np.savez_compressed(tmp, **{k: res[k] for k in KEYS}, complete=res["complete"], nphot=nphot,
                                 simtype=a.simtype, model=a.model, stats=json.dumps(res["stats"]),
@@ -115,14 +133,14 @@ def main(argv=None):
         if len(bins) == 0:
             print("resume: nothing left to run")
             return 0
-        res = generate(ctr, a.simtype, bins, nphot, a.dtype, a.seed, a.lanes, a.chunk_iters,
+        res = generate(ctr, G.binning(ctr), a.simtype, bins, nphot, a.dtype, a.seed, a.lanes, a.chunk_iters,
                        log=lambda m: print(m, flush=True), checkpoint=save if a.checkpoint else None,
                        model=a.model, max_steps=a.max_steps)
         save(res, final=True)
         print(json.dumps(res["stats"]))
     elif a.cmd == "compare":
         from crvfastsim.response import lookup
-        from .compare import compare
+        from .mu2e.compare import compare
         z = np.load(a.npz)
         keep = z["complete"] if "complete" in z.files else np.ones(len(z["bins"]), bool)
         out = {k: z[k][keep] for k in KEYS}
@@ -130,7 +148,7 @@ def main(argv=None):
         st = int(z["simtype"])
         nref = a.nphot_ref or (10000 if st == 2 else 100000)
         L = lookup.load(os.path.basename(a.reference), directory=os.path.dirname(os.path.abspath(a.reference)))
-        res = compare(L, st, out, nref, convention=M.MODELS[str(z["model"])].writer)
+        res = compare(L, st, out, nref, convention=WRITER[str(z["model"])])
         res["stats"] = json.loads(str(z["stats"]))
         res["complete_bins"] = int(keep.sum())
         s = json.dumps(res, indent=1)
@@ -138,7 +156,8 @@ def main(argv=None):
             open(a.out, "w").write(s)
         print(s)
     elif a.cmd == "assemble":
-        from . import writer as W
+        from .mu2e import library as LIB
+        from .mu2e import writer as W
         ctr = counter_from(a)
         by = {0: [], 1: [], 2: []}
         prov = {0: [], 1: [], 2: []}
@@ -152,12 +171,25 @@ def main(argv=None):
                 raise SystemExit(f"{f}: has incomplete bins")
             st = int(z["simtype"])
             by[st].append({k: z[k] for k in KEYS})
-            prov[st].append(dict(W.piece_provenance(json.loads(str(z["stats"]))), file=os.path.basename(f),
-                                 photons_per_bin=int(z["nphot"]), bins=int(len(z["bins"]))))
+            p = dict(W.piece_provenance(json.loads(str(z["stats"]))), file=os.path.basename(f),
+                     photons_per_bin=int(z["nphot"]), bins=int(len(z["bins"])))
+            if p.get("seed") is None and a.assume_seed is not None:
+                p.update(seed=a.assume_seed, seed_from="--assume-seed")
+            if p.get("commit") is None and a.piece_commit is not None:
+                p.update(commit=a.piece_commit, commit_from="--piece-commit")
+            prov[st].append(p)
         parts = {st: W.merge_parts(v) for st, v in by.items()}
-        open(a.out, "wb").write(W.table_bytes(ctr, parts, M.MODELS[a.model].writer))
+        open(a.out, "wb").write(W.table_bytes(ctr, parts, WRITER[a.model]))
         with open(a.out + ".provenance.json", "w") as fh:
             json.dump(W.table_provenance(ctr, a.model, prov, a.note), fh, indent=1)
+        m = LIB.write(a.out, ctr, a.model, prov, a.note, a.commit)
+        print(json.dumps({"table": a.out, "name": m["name"], "content_hash": m["content_hash"],
+                          "complete": not m["unrecorded"], "unrecorded": m["unrecorded"]}))
+    elif a.cmd == "verify":
+        from .mu2e import library as LIB
+        m = LIB.verify(a.table, expect={"content_hash": a.content_hash} if a.content_hash else None)
+        print(json.dumps({"table": a.table, "name": m["name"], "content_hash": m["content_hash"],
+                          "validation": m["validation"]["status"], "complete": not m["unrecorded"]}))
     return 0
 
 

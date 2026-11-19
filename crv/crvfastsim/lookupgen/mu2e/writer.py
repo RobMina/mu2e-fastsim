@@ -9,10 +9,14 @@ import struct
 
 import numpy as np
 
-from . import geometry as G
-from . import materials as M
+from ..core import materials as M
+from ..core import optics as O
+from . import sections as G
 
 VERSION = (6, 0)
+BIRKS = 0.126                            # mm/MeV, written to the table header
+# table-writer convention of each optical model (bin_record): the stock writer of the program version it comes from
+WRITER = {"v6": "v6", "current": "current"}
 
 
 def header_bytes(c):
@@ -20,8 +24,8 @@ def header_bytes(c):
     out = bytearray()
     out += struct.pack("<3i4x", VERSION[0], VERSION[1], int(c.reflector))
     out += struct.pack("<10d", c.hx, c.hy, c.half_length, c.fiber_separation, c.hole_rx, c.hole_ry, c.r_clad2, c.rc,
-                       M.BIRKS, 0.0)
-    ck = M.cerenkov_map(M.RINDEX_PS)
+                       BIRKS, 0.0)
+    ck = O.cerenkov_map(M.RINDEX_PS)
     for _ in range(2):                         # scintillator and fiber share the polystyrene RINDEX
         out += struct.pack("<Q", len(ck)) + ck.astype("<f8").tobytes()
     e = G.edges(c)
@@ -104,7 +108,7 @@ QUIRKS = (
 
 def piece_provenance(stats):
     """The run settings of one piece (and of the run it was resumed from) that change the counts."""
-    keys = ("dtype", "model", "max_steps", "capped", "forced", "badsrc", "stuck", "photons")
+    keys = ("dtype", "model", "seed", "max_steps", "capped", "forced", "badsrc", "stuck", "photons", "commit")
     out = {k: stats.get(k) for k in keys if k in stats}
     if "resumed_from" in stats:
         out["resumed_from"] = piece_provenance(stats["resumed_from"])
@@ -114,8 +118,7 @@ def piece_provenance(stats):
 def table_provenance(c, model, pieces, notes=()):
     """Sidecar record of one table: counter, optical model, the reproduced stock quirks, per sim type the pieces with
     photons per bin, dtype and step limit, and free-text notes. The version-6 file has no metadata field."""
-    from . import geometry as G
-    return {"format": "LookupTable version %d.%d" % VERSION, "counter": dict(c.__dict__), "name": c.name,
-            "stock_section": bool(c.is_stock_section), "model": model, "writer": M.MODELS[model].writer,
+    return {"format": "LookupTable version %d.%d" % VERSION, "counter": dict(c.__dict__), "name": G.name(c),
+            "stock_section": bool(G.is_stock(c)), "model": model, "writer": WRITER[model],
             "fiber_decay_time_in_header": 0.0, "quirks": list(QUIRKS),
             "parts": {G.SIM_TYPES[st]: v for st, v in pieces.items()}, "notes": list(notes)}

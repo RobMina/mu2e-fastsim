@@ -1,20 +1,25 @@
 """crvfastsim.lookupgen: Geant4 property-vector semantics, geometry and binning, the v6 writer, the device transport
-(conservation, both dtypes, the exact helical shortcut), and, when a released table is available (CRVFS_LOOKUP_DIR),
-the table header against it byte for byte."""
+(conservation, both dtypes, the exact helical shortcut), the core/adapter split (the core imports nothing
+experiment-specific and runs as a package of its own), the library-core manifests, and, when a released table is
+available (CRVFS_LOOKUP_DIR), the table header against it byte for byte."""
+import ast
 import os
 import struct
 
 import numpy as np
 import pytest
 
-from crvfastsim.lookupgen import geometry as G
-from crvfastsim.lookupgen import materials as M
-from crvfastsim.lookupgen import writer as W
+from crvfastsim.lookupgen.core import materials as M
+from crvfastsim.lookupgen.core import optics as O
+from crvfastsim.lookupgen.mu2e import sections as G
+from crvfastsim.lookupgen.mu2e import writer as W
+
+CORE = os.path.join(os.path.dirname(M.__file__))
 
 
 # ------------------------------------------------------------------------------------------------ materials
 def test_g4vector_sorts_on_insertion_like_geant4():
-    v = M.G4Vector([1.0, 3.0, 2.0, 2.0], [10.0, 30.0, 20.0, 21.0])
+    v = O.G4Vector([1.0, 3.0, 2.0, 2.0], [10.0, 30.0, 20.0, 21.0])
     assert list(v.e) == [1.0, 2.0, 2.0, 3.0]
     assert list(v.v) == [10.0, 21.0, 20.0, 30.0]      # a later equal energy is inserted before the earlier one
 
@@ -29,19 +34,19 @@ def test_psppo_out_of_order_energy_is_moved():
 
 
 def test_value_clamps_and_interpolates():
-    v = M.G4Vector([2.0, 3.0, 4.0], [1.0, 3.0, 2.0])
+    v = O.G4Vector([2.0, 3.0, 4.0], [1.0, 3.0, 2.0])
     assert v.value(1.0) == 1.0 and v.value(5.0) == 2.0
     assert v.value(2.5) == pytest.approx(2.0) and v.value(3.5) == pytest.approx(2.5)
-    cum = M.G4Vector([2.0, 3.0, 4.0], [1.0, 3.0, 5.0])        # GetEnergy inverts a non-decreasing integral
+    cum = O.G4Vector([2.0, 3.0, 4.0], [1.0, 3.0, 5.0])        # GetEnergy inverts a non-decreasing integral
     assert cum.get_energy(2.0) == pytest.approx(2.5) and cum.get_energy(0.5) == 2.0 and cum.get_energy(9.0) == 4.0
 
 
 def test_group_velocity_is_below_phase_velocity_in_polystyrene():
     for e in (2.4, 2.9, 3.3):
         vg, n = M.VG_PS.value(e), M.RINDEX_PS.value(e)
-        assert vg < M.C_LIGHT / n
-        assert 1.6 < M.C_LIGHT / vg < 1.9
-    assert M.VG_AIR.value(2.5) == pytest.approx(M.C_LIGHT)
+        assert vg < O.C_LIGHT / n
+        assert 1.6 < O.C_LIGHT / vg < 1.9
+    assert O.VG_AIR.value(2.5) == pytest.approx(O.C_LIGHT)
 
 
 def test_material_tables_have_stock_lengths():
@@ -49,7 +54,7 @@ def test_material_tables_have_stock_lengths():
             len(M.ABS_POPOP), len(M.RINDEX_PMMA)) == (61, 325, 43, 70, 45, 63, 26, 48)
     assert M.ABS_Y11.value(2.3) > 1000.0 and M.ABS_Y11.value(3.0) < 2.0     # m-scale below 2.53 eV, mm above
     assert M.REFL_TIO2.value(2.5) == pytest.approx(1 - 0.75 * 0.09)
-    v6, cur = M.MODELS["v6"], M.MODELS["current"]
+    v6, cur = O.get("v6"), O.get("current")
     assert v6.refl_tio2.value(2.5) == pytest.approx(1 - 0.9 * 0.09)
     assert (len(v6.em_ppo), len(v6.em_popop), v6.tau_y11, v6.refl_mppc, v6.fiber_end) == (100, 58, 8.7, 0.30, "contact")
     assert (cur.fiber_end, cur.rough_fiber_air, v6.rough_fiber_air) == ("gap", True, False)
@@ -57,14 +62,14 @@ def test_material_tables_have_stock_lengths():
 
 
 def test_facet_alpha_distribution():
-    a = M.facet_alpha_icdf(0.02)
+    a = O.facet_alpha_icdf(0.02)
     assert a[0] == 0 and np.all(np.diff(a) >= 0) and 0.02 < np.median(a) < 0.04
-    b = M.facet_alpha_icdf(1.5)
+    b = O.facet_alpha_icdf(1.5)
     assert b[-1] <= np.pi / 2 + 1e-12
 
 
 def test_cerenkov_map_shape():
-    ck = M.cerenkov_map()
+    ck = O.cerenkov_map(M.RINDEX_PS)
     assert ck[0, 1] == 0 and ck[-1, 0] == 1.0 and np.all(np.diff(ck[:, 1]) >= 0)
     assert 250 < ck[-1, 1] < 280                            # photons/mm at beta = 1
 
@@ -72,7 +77,7 @@ def test_cerenkov_map_shape():
 # ------------------------------------------------------------------------------------------------ geometry
 def test_stock_counter_and_bins():
     c = G.stock(3200, 0)
-    assert c.is_stock_section and (c.hx, c.hy, c.rc) == pytest.approx((9.64, 25.42, 1.75))
+    assert G.is_stock(c) and (c.hx, c.hy, c.rc) == pytest.approx((9.64, 25.42, 1.75))
     assert c.r_core == pytest.approx(0.616) and c.r_clad1 == pytest.approx(0.658)
     e = G.edges(c)
     assert (len(e["x"]), len(e["y"]), len(e["z"])) == (11, 42, 57)
@@ -84,7 +89,7 @@ def test_stock_counter_and_bins():
 @pytest.mark.parametrize("t,w", [(24.71, 25.0), (21.99, 35.93), (10.0, 25.0)])
 def test_design_counters_get_valid_edges(t, w):
     c = G.design(t, w, 3000.0, 1)
-    assert not c.is_stock_section
+    assert not G.is_stock(c)
     assert c.fiber_separation == pytest.approx(w * 26 / 51.34)
     assert (c.hole_rx, c.hole_ry, c.r_clad2) == pytest.approx((2.3, 1.3, 1.0))
     e = G.edges(c)
@@ -174,8 +179,9 @@ def test_header_identical_to_released_table():
 # ------------------------------------------------------------------------------------------------ transport
 def _gen(simtype, bins, nphot, dtype="float64", helix=True, length=1045, reflector=1, seed=3, model="v6"):
     pytest.importorskip("jax")
-    from crvfastsim.lookupgen.run import generate
-    return generate(G.stock(length, reflector), simtype, np.asarray(bins), nphot, dtype=dtype, seed=seed, lanes=512,
+    from crvfastsim.lookupgen.core.run import generate
+    c = G.stock(length, reflector)
+    return generate(c, G.binning(c), simtype, np.asarray(bins), nphot, dtype=dtype, seed=seed, lanes=512,
                     chunk_iters=400, helix=helix, model=model)
 
 
@@ -245,14 +251,15 @@ def test_cli_resume_reruns_only_incomplete_bins_with_the_same_streams(tmp_path):
 
 def test_lower_step_limit_stops_and_counts_long_chains():
     pytest.importorskip("jax")
-    from crvfastsim.lookupgen.run import generate
-    r = generate(G.stock(1045, 1), 0, np.array([100, 2000]), 300, dtype="float32", seed=3, lanes=512,
+    from crvfastsim.lookupgen.core.run import generate
+    c = G.stock(1045, 1)
+    r = generate(c, G.binning(c), 0, np.array([100, 2000]), 300, dtype="float32", seed=3, lanes=512,
                  chunk_iters=400, max_steps=64)
     s = r["stats"]
-    assert s["capped"] > 0 and s["max_steps"] == 64
+    assert s["capped"] > 0 and s["max_steps"] == 64 and s["seed"] == 3
     assert sum(s["len_end"]) == r["gen"].sum() and sum(s["len_end"][6:]) == 0      # no chain reaches 64 steps
     with pytest.raises(ValueError):
-        generate(G.stock(1045, 1), 0, np.array([100]), 10, max_steps=(1 << 19) + 1)
+        generate(c, G.binning(c), 0, np.array([100]), 10, max_steps=(1 << 19) + 1)
 
 
 def test_assemble_writes_the_table_and_its_provenance(tmp_path):
@@ -286,3 +293,100 @@ def test_assemble_writes_the_table_and_its_provenance(tmp_path):
     assert part["photons_per_bin"] == 10000 and part["max_steps"] == 65536
     assert part["resumed_from"]["max_steps"] == 1 << 19
     assert p["notes"] == ["scintillator Cerenkov at 2e4 photons per bin"]
+    # the library-core manifest: the content hash pinned loads check, the gaps of these pieces named
+    from crvfastsim.lookupgen.mu2e import library as LIB
+    from crvfastsim.response import lookup
+    from mu2efastsim.library.hashing import content_hash
+    from mu2efastsim.library.store import LibraryError
+    m = json.load(open(str(tmp_path / "LookupTable_1045_1.manifest.json")))
+    assert m["name"] == "crv.lookup.1045_1" and m["subsystem"] == "crv" and m["kind"] == "binned"
+    assert m["content_hash"] == content_hash(lookup.arrays(lookup.load("LookupTable_1045_1", str(tmp_path))))
+    assert set(m["unrecorded"]) == {"seeds", "release"} and m["validation"]["status"] == "tested, not closed"
+    assert [a["name"] for a in m["axes"]] == ["x", "y", "z", "beta", "theta", "phi", "r"]
+    assert m["generator"]["configuration"]["max_steps"] == [65536]
+    assert LIB.verify(out)["content_hash"] == m["content_hash"]
+    assert main(["verify", out, "--content-hash", m["content_hash"]]) == 0
+    with pytest.raises(LibraryError):
+        LIB.verify(out, expect={"content_hash": "0" * 64})
+    # given the seed and the commits, the manifest is complete
+    assert main(["assemble", "--length", "1045", "--reflector", "1", "--out", out, "--model", "v6", "--assume-seed",
+                 "1", "--piece-commit", "abc1234", "--commit", "def5678"] + pieces) == 0
+    m2 = json.load(open(str(tmp_path / "LookupTable_1045_1.manifest.json")))
+    assert m2["unrecorded"] == {} and m2["content_hash"] == m["content_hash"]
+    assert m2["release"]["commit"] == "def5678" and m2["generator"]["release"] == ["abc1234"]
+    assert m2["seeds"] == {"scintillation in scintillator": 1, "Cerenkov in scintillator": 1, "Cerenkov in fiber": 1}
+
+
+def test_design_tables_are_named_by_their_cross_section():
+    from crvfastsim.lookupgen.mu2e import library as LIB
+    assert LIB.table_name(G.design(24.71, 25.0, 3200.0, 0)) == "crv.lookup.t24p71_w25p00_f2p0_s12p66_3200_0"
+    assert LIB.table_name(G.stock(6000, 0)) == "crv.lookup.6000_0"
+
+
+# ------------------------------------------------------------------------------------------------ core / adapter
+_STDLIB_OK = {"bisect", "dataclasses", "math", "time", "numpy", "jax"}
+
+
+@pytest.mark.parametrize("name", sorted(f for f in os.listdir(CORE) if f.endswith(".py")))
+def test_core_imports_nothing_experiment_specific(name):
+    """The core imports only the standard library it needs, NumPy, JAX and its own modules (level-1 relative)."""
+    tree = ast.parse(open(os.path.join(CORE, name)).read())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                assert a.name.split(".")[0] in _STDLIB_OK, (name, a.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                assert node.level == 1, (name, node.module)
+            else:
+                assert node.module.split(".")[0] in _STDLIB_OK, (name, node.module)
+
+
+def test_mu2e_numbering_is_the_stock_row_major_order():
+    c = G.stock(3200)
+    e = G.edges(c)
+    n = {k: len(v) - 1 for k, v in e.items()}
+    b = 2 * n["theta"] * n["phi"] * n["r"] * n["z"] + 7 * n["phi"] * n["r"] * n["z"] + 3 * n["r"] * n["z"] + 4 * n["z"] + 9
+    box = G.bin_boxes(c, 2, [b])
+    assert [box[k][0][0] for k in ("beta", "theta", "phi", "r", "z")] == \
+        [e["beta"][2], e["theta"][7], e["phi"][3], e["r"][4], e["z"][9]]
+    b1 = ((3 * n["y"] + 5) * n["z"] + 11) * n["beta"] + 4
+    box = G.bin_boxes(c, 1, [b1])
+    assert [box[k][0][0] for k in ("x", "y", "z", "beta")] == [e["x"][3], e["y"][5], e["z"][11], e["beta"][4]]
+
+
+def test_v6_model_is_registered_by_the_adapter_only():
+    import subprocess
+    import sys
+    code = ("from crvfastsim.lookupgen.core import optics as O, materials\n"
+            "assert sorted(O.MODELS) == ['current'], O.MODELS\n"
+            "import crvfastsim.lookupgen.mu2e\n"
+            "assert sorted(O.MODELS) == ['current', 'v6']\n")
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_core_runs_as_a_package_of_its_own(tmp_path):
+    """A copy of the core under another name generates a table for a strip and bins that are not Mu2e's."""
+    pytest.importorskip("jax")
+    import shutil
+    import subprocess
+    import sys
+    shutil.copytree(CORE, tmp_path / "stripgen", ignore=shutil.ignore_patterns("__pycache__"))
+    code = """
+import numpy as np
+from stripgen.counter import Counter
+from stripgen.binning import Binning
+from stripgen.run import generate
+c = Counter(length=1000.0, thickness=10.0, width=40.0, fiber_separation=10.0, fiber_diameter=1.2, clad_fraction=0.03,
+            hole_rx=1.0, hole_ry=0.8, coating=0.2, corner_radius=1.0, guide_bar=5.0, sipm_width=1.3, sipm_window=0.1,
+            sipm_length=0.2, air_gap=0.001)
+b = Binning({"x": [0.0, 2.0, 4.8], "y": np.linspace(-19.8, 19.8, 7), "z": np.linspace(-500.0, 500.0, 5)},
+            {0: ("z", "y", "x")})
+r = generate(c, b, 0, np.arange(b.n_bins(0)), 50, dtype="float32", lanes=256, chunk_iters=400)
+assert r["gen"].sum() > 0 and np.all(r["ht"].sum(1) == r["he"].sum(1)) and r["ht"].sum() > 0, r["stats"]
+print("ok", int(r["gen"].sum()), int(r["ht"].sum()))
+"""
+    env = dict(os.environ, PYTHONPATH=str(tmp_path))
+    out = subprocess.run([sys.executable, "-c", code], cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert out.stdout.startswith("ok")

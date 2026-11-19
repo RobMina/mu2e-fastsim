@@ -10,6 +10,20 @@ CPU jobs per table. Its counter cross-section and fiber are compile-time constan
 `crvfastsim.lookupgen` is a JAX port of that table mode that runs on a GPU (or CPU) and takes the counter dimensions
 at run time. It writes the same version-6 file.
 
+## Layout: an experiment-neutral core and the Mu2e adapter
+
+| | modules | content |
+|---|---|---|
+| `lookupgen.core` | `counter`, `binning`, `optics`, `materials`, `transport`, `run` | a scintillator strip with two WLS fibers (every dimension a parameter), bins as boxes of the variables each photon source samples (row-major numbering in an order the caller gives), the Geant4 optical building blocks and a registry of optical models, the `current` optical model with the sources its constants come from, the device transport and the host driver |
+| `lookupgen.mu2e` | `sections`, `v6`, `writer`, `compare`, `library` | the CRV counters (stock and design cross-sections) and the stock bin-edge rule and numbering, the test-beam-tuned `v6` model, the version-6 file Offline reads, comparisons with released tables, library-core manifests |
+
+The core imports only the standard library, NumPy, JAX and its own modules, and a copy of it under another name
+generates tables for a strip and bins of its own (tests `test_core_imports_nothing_experiment_specific`,
+`test_core_runs_as_a_package_of_its_own`), so it can move to its own package. Mu2e-internal inputs (the released
+tables, the `v6` constants tuned to Mu2e test-beam data, the Offline table format) stay in the adapter. Splitting the
+modules changed nothing: every optical-model table of both models is equal, and the old and new trees give
+bit-identical pieces for both models, both dtypes and all three sim types (stock and design counters).
+
 ## Two optical models
 
 The released v6 tables were not made by today's CRVStandalone. The v6 format dates from December 2018, and the tables
@@ -95,10 +109,10 @@ compares both.
 
 ## Counters other than stock
 
-`geometry.design(thickness, width, length, reflector, fiber_diameter)` builds a two-fiber counter with the stock fiber
+`mu2e.sections.design(thickness, width, length, reflector, fiber_diameter)` builds a two-fiber counter with the stock fiber
 separation ratio (26 / 51.34 of the width), holes with the stock clearance around the fiber (semi-axes r + 1.3 mm
 across the thickness, r + 0.3 mm across the width) and cladding layers of 3 % of the fiber diameter each. The stock x / y bin edges are hard-coded for the 19.78 x 51.34 mm counter; other counters get the same pattern
-moved to their dimensions (`geometry.general_xy_edges`). z, beta, theta, phi and r bins follow the stock formulas.
+moved to their dimensions (`mu2e.sections.general_xy_edges`). z, beta, theta, phi and r bins follow the stock formulas.
 
 The tables are normalised as the released ones: probability per photon generated in the bin. A fiber other than
 1.4 mm therefore enters through the table, and the response uses the 1.4 mm-fiber scintillation yield.
@@ -114,10 +128,22 @@ python -m crvfastsim.lookupgen assemble --length 3200 --reflector 0 --out Lookup
 `--section 24.71x25` (thickness x width, mm) selects a design counter. `--dtype float32` runs the transport in single
 precision. The released tables are Mu2e-internal and are not part of this repository.
 
-`assemble` refuses pieces with incomplete bins or made for another counter or model, and writes
-`<table>.provenance.json` next to the table (the version-6 file has no metadata field): counter, optical model,
-the reproduced stock quirks, per table part the pieces with photons per bin, dtype, step limit and capped chains
-(also of the run a piece was resumed from), and `--note` lines.
+`assemble` refuses pieces with incomplete bins or made for another counter or model, and writes two files next to the
+table (the version-6 file has no metadata field):
+
+- `<table>.manifest.json`, the library-core manifest (`mu2efastsim.library`, core/docs/libraries.md): name
+  (`crv.lookup.<length>_<reflector>`, or `crv.lookup.<section tag>_<length>_<reflector>` for a design cross-section),
+  axes, outputs, content hash, optical model, dtypes, step limit, photons per bin, seeds, the code commit of the
+  pieces and of the assembly (`--commit`, default `$LOOKUPGEN_COMMIT`), validation status, and the `--note` lines.
+  The content hash is the one every pinned load checks (`crvfastsim.response.lookup.load(name, pin=...)`:
+  `content_hash(lookup.arrays(table))`), so run configurations and benchmarks reference a generated table by it.
+  Pieces made before seeds and commits were recorded can be given them (`--assume-seed`, `--piece-commit`); otherwise
+  the manifest lists them as unrecorded.
+- `<table>.provenance.json`: counter, optical model, the reproduced stock quirks, per table part the pieces with
+  photons per bin, dtype, step limit and capped chains (also of the run a piece was resumed from), and the notes.
+
+`python -m crvfastsim.lookupgen verify <table> [--content-hash H]` checks a table against its manifest (schema,
+arrays, content hash, axes) and, given H, against a pinned hash.
 
 `--checkpoint` rewrites `--out` while running (`--checkpoint-interval` seconds apart) with the bins that are complete;
 `--resume` keeps those and runs only the others. Random numbers are keyed by bin and photon, so a resumed or split run
