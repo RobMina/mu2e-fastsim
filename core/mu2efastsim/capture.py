@@ -165,11 +165,19 @@ AUDIT_OPTIONS = dict(resource_processes=RESOURCE_PROCESSES, checks=(mu2e_checks,
 
 def generic_view(tables):
     """The tables as the generic audit reads them: the same arrays, plus a zero generic resource-kill count (Mu2eG4
-    counts its kills in its own fields, checked by mu2e_checks)."""
+    counts its kills in its own fields, checked by mu2e_checks), and nG4Tracks as int64 when it is an integer column
+    (the Mu2eG4 schema never required int64 for it; the values are unchanged)."""
     view = dict(tables)
     e = tables.get("events")
-    if isinstance(e, dict) and "event" in e and "nResourceKills" not in e:
-        view["events"] = {**e, "nResourceKills": np.zeros(len(e["event"]), dtype=np.int64)}
+    if isinstance(e, dict) and "event" in e:
+        e = dict(e)
+        if "nResourceKills" not in e:
+            e["nResourceKills"] = np.zeros(len(e["event"]), dtype=np.int64)
+        if "nG4Tracks" in e:
+            g = np.asarray(e["nG4Tracks"])
+            if g.dtype.kind in "iu" and g.dtype != np.int64:
+                e["nG4Tracks"] = g.astype(np.int64)
+        view["events"] = e
     return view
 
 
