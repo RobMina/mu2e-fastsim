@@ -45,9 +45,9 @@ Statistics, per histogram (the same ones the repository's validation code uses):
   (e1 - e2)^2 / (var1 + var2) over bins with total > 0 in both arms.
 Flag rule (DQMVAL): chi2/ndf > max(2, 3 x floor) and p < 1e-3, where the floor is the same statistic for the floor
 arm against stock (threshold 2 without a floor). A yield passes when |ratio - 1| - 3 se <= yield_tolerance
-(per-yield tolerances in "yield_tolerances": {name: tol}). Statistical power: a yield named in "max_se":
-{name: se_max} passes only when also se <= se_max (B1: the CE peak, se <= tolerance / 3), so a small sample cannot
-pass the yield test trivially; each such yield row reports power_ok, and the arm reports power_ok (all of them).
+(per-yield tolerances in "yield_tolerances": {name: tol}). Statistical power: "yield_max_se" (below) applies to
+yields and peaks alike (B1: the CE peak, se <= tolerance / 3); an arm with such a rule reports power_ok (no yield
+underpowered).
 
 Scores per workflow and dtype: validity = (1 - flagged fraction) x (fraction of yields that pass); throughput
 multiplier = bench warm_rate / stock_rate_per_slot (in the reference's rate_unit, default events/s; bench.json
@@ -57,10 +57,24 @@ is scored on validity only (no bench.json needed); SU/event = su_per_hour[device
 --private (SU numbers are never published). A bench.json with "host": "mu2eg4" (a model inside Geant4) is scored
 against its own "baseline_rate" (model off, same node and primaries) instead of the per-slot stock rate. With
 "max_memory_mb_per_thread" in reference.json, a bench "memory_mb_per_thread" is checked (memory_ok; reported only).
-Classifier score (classifier.py, after CaloChallenge): with reference/<W>/stock/features.npz and "classifier":
-{"features": [...], "min_energy": ..., "energy_feature": "energy", "seed": ...} in reference.json, cls_score =
-clip(2 (1 - AUC), 0, 1) of a fixed logistic regression on quadratic features, fast against stock; reported per arm
-and as the mean over arms (not part of validity). A floor features.npz gives the floor AUC (stock against stock).
+The classifier score (below) is also averaged over every arm that has one ("cls_score" of the result).
+
+Optional per task (reference.json), for the B1-B4 cards:
+- "yield_max_se": {name: se}: a yield whose se exceeds it fails ("underpowered"), so a small sample cannot pass a
+  tight tolerance by its own noise;
+- "classifier": {"file": "features.npz", "seed": 0}: stock vs fast per-object feature vectors (array "X", rows =
+  objects) in <stock>/ and the arm's directory; a fixed logistic regression on quadratic features, 50/50 split, AUC on
+  the test half; cls_score = clip(2 (1 - AUC), 0, 1) (1 = indistinguishable). Reported beside validity, not in it;
+- "track_agreement": {"file": "tracks.npz", "threshold_sigma": 0.1, "min_fraction": f}: per-track fits ("id",
+  "params", "sigma" in stock; "id", "params" and optional "good", "sigma" in the arm; optional "truth" in stock).
+  agreement = fraction of stock tracks whose fast fit lies within threshold x sigma_stock in every parameter; the
+  good-fit ratio fast/stock (paired) is a yield; pulls against truth are reported; with min_fraction the agreement
+  is a pass/fail item of the yields;
+- "scaling_batches": [10, 1000, 100000]: bench.json "scaling": [{"batch", "rate"}] for every batch; multiplier per
+  batch and the crossover batch (first with multiplier > 1); the headline rate is warm_rate, else the largest batch;
+- "group" + "part" (dev, place, design): across a group's tasks, per dtype, portability ratio = mean place validity /
+  dev validity and adaptation score = mean design validity;
+- "capture_budget": entries: bench.json must declare "capture_entries" <= the budget (an adaptation budget).
 
     python -m benchmarks.fastsim_score.score SUBMISSION_DIR REFERENCE_DIR [--private] [--out scores.json]
 """
@@ -73,11 +87,6 @@ import sys
 from pathlib import Path
 
 import numpy as np
-
-try:  # package import (python -m benchmarks.fastsim_score.score) or flat (the Codabench scoring program)
-    from . import classifier as C
-except ImportError:  # pragma: no cover - exercised by the Codabench worker test
-    import classifier as C
 
 DTYPES = ("float32", "float64")
 P_FLAG = 1e-3
@@ -382,6 +391,137 @@ def _measured(y) -> bool:
     return isinstance(y, dict) and "value" in y
 
 
+def _rankdata(a: np.ndarray) -> np.ndarray:
+    """1-based ranks, ties averaged."""
+    order = np.argsort(a, kind="mergesort")
+    s = a[order]
+    starts = np.r_[0, np.flatnonzero(np.diff(s)) + 1]
+    ends = np.r_[starts[1:], len(a)]
+    ranks = np.empty(len(a))
+    ranks[order] = np.repeat((starts + ends + 1) / 2.0, ends - starts)
+    return ranks
+
+
+def auc(pos: np.ndarray, neg: np.ndarray) -> float:
+    """Area under the ROC curve (Mann-Whitney, ties counted half)."""
+    r = _rankdata(np.concatenate([pos, neg]).astype(float))
+    n1, n0 = len(pos), len(neg)
+    return float((r[:n1].sum() - n1 * (n1 + 1) / 2) / (n1 * n0))
+
+
+def _quad(X: np.ndarray) -> np.ndarray:
+    d = X.shape[1]
+    return np.hstack([X] + [X[:, i:i + 1] * X[:, i:] for i in range(d)])
+
+
+def _standardise(train: np.ndarray, *others: np.ndarray) -> list:
+    mu, sd = train.mean(axis=0), train.std(axis=0)
+    sd = np.where(sd > 0, sd, 1.0)
+    return [(x - mu) / sd for x in (train, *others)]
+
+
+def _logreg(Z: np.ndarray, y: np.ndarray, l2: float = 1e-3, iters: int = 100) -> np.ndarray:
+    """Ridge logistic regression by Newton steps (intercept unpenalised)."""
+    Z1 = np.hstack([np.ones((len(Z), 1)), Z])
+    w = np.zeros(Z1.shape[1])
+    P = l2 * len(Z) * np.eye(len(w))
+    P[0, 0] = 0.0
+    for _ in range(iters):
+        p = 1.0 / (1.0 + np.exp(-np.clip(Z1 @ w, -30, 30)))
+        g = Z1.T @ (p - y) + P @ w
+        H = (Z1 * (p * (1 - p))[:, None]).T @ Z1 + P + 1e-12 * np.eye(len(w))
+        step = np.linalg.solve(H, g)
+        w -= step
+        if np.max(np.abs(step)) < 1e-8:
+            break
+    return w
+
+
+def classifier_score(Xr, Xc, seed: int = 0, max_per_class: int = 100_000) -> dict:
+    """Stock (Xr) vs fast (Xc) per-object features: the fixed classifier of the B1/B2 cards."""
+    Xr, Xc = np.asarray(Xr, float), np.asarray(Xc, float)
+    if Xr.ndim != 2 or Xc.ndim != 2 or Xr.shape[1] != Xc.shape[1]:
+        raise ScoreError("classifier: features must be 2-d with the same columns in both arms")
+    if not (np.all(np.isfinite(Xr)) and np.all(np.isfinite(Xc))):
+        raise ScoreError("classifier: features must be finite")
+    n = min(len(Xr), len(Xc), max_per_class)
+    if n < 20:
+        raise ScoreError(f"classifier: {n} objects per arm, need at least 20")
+    rng = np.random.default_rng(seed)
+    a, b = Xr[rng.permutation(len(Xr))[:n]], Xc[rng.permutation(len(Xc))[:n]]
+    h = n // 2
+    tr = np.vstack([a[:h], b[:h]])
+    te = np.vstack([a[h:], b[h:]])
+    ytr = np.r_[np.zeros(h), np.ones(h)]
+    tr, te = _standardise(tr, te)
+    qtr, qte = _standardise(_quad(tr), _quad(te))
+    w = _logreg(qtr, ytr)
+    z = np.hstack([np.ones((len(qte), 1)), qte]) @ w
+    m = n - h
+    A = auc(z[m:], z[:m])
+    return {"auc": A, "cls_score": float(np.clip(2 * (1 - A), 0, 1)), "n_per_arm": int(n), "seed": int(seed)}
+
+
+def _npz(p: Path, keys: tuple) -> dict:
+    try:
+        with np.load(p, allow_pickle=False) as z:
+            missing = [k for k in keys if k not in z.files]
+            if missing:
+                raise ScoreError(f"{p.as_posix()}: needs {', '.join(missing)}")
+            return {k: z[k] for k in z.files}
+    except FileNotFoundError:
+        raise ScoreError(f"missing {p.as_posix()}") from None
+    except (ValueError, OSError) as e:
+        raise ScoreError(f"{p.as_posix()}: not a readable npz ({e})") from None
+
+
+def track_agreement(stock: dict, cand: dict, threshold_sigma: float = 0.1, min_fraction: float | None = None) -> dict:
+    """Per-track agreement of a fast fit with the stock fit (B3): ids matched, unmatched stock tracks disagree."""
+    sid, cid = np.asarray(stock["id"]), np.asarray(cand["id"])
+    sp, ss, cp = (np.asarray(stock["params"], float), np.asarray(stock["sigma"], float),
+                  np.asarray(cand["params"], float))
+    if sp.ndim != 2 or ss.shape != sp.shape or cp.ndim != 2 or cp.shape[1] != sp.shape[1] or len(cid) != len(cp):
+        raise ScoreError("track_agreement: params/sigma shapes differ")
+    if len(np.unique(sid)) != len(sid) or len(np.unique(cid)) != len(cid):
+        raise ScoreError("track_agreement: track ids must be unique")
+    if np.any(ss <= 0):
+        raise ScoreError("track_agreement: stock sigma must be > 0")
+    pos = {int(t): i for i, t in enumerate(cid)}
+    j = np.array([pos.get(int(t), -1) for t in sid])
+    have = j >= 0
+    within = np.zeros(len(sid), bool)
+    within[have] = np.all(np.abs(cp[j[have]] - sp[have]) <= threshold_sigma * ss[have], axis=1)
+    N = len(sid)
+    if N == 0:
+        raise ScoreError("track_agreement: no stock tracks")
+    frac = float(within.mean())
+    ee = min(max(frac, 0.5 / N), 1 - 0.5 / N)
+    out = {"n_stock": N, "n_matched": int(have.sum()), "threshold_sigma": threshold_sigma, "agreement": frac,
+           "agreement_se": math.sqrt(ee * (1 - ee) / N)}
+    gs = np.asarray(stock.get("good", np.ones(N, bool)), bool)
+    gc = np.zeros(N, bool)
+    cg = np.asarray(cand.get("good", np.ones(len(cid), bool)), bool)
+    gc[have] = cg[j[have]]
+    if gs.sum() > 0:
+        d = gc.astype(float) - gs.astype(float)
+        ratio = gc.sum() / gs.sum()
+        se = math.sqrt(N * d.var() * N / max(N - 1, 1)) / gs.sum()
+        out["good_fit"] = {"ratio": float(ratio), "se": float(se)}
+    if "truth" in stock:  # pulls against MC truth, per parameter
+        tr = np.asarray(stock["truth"], float)
+        pl = (sp - tr) / ss
+        out["pulls"] = {"stock": {"mean": pl.mean(axis=0).tolist(), "width": pl.std(axis=0).tolist()}}
+        if "sigma" in cand and have.any():
+            cs = np.asarray(cand["sigma"], float)[j[have]]
+            if np.all(cs > 0):
+                pl = (cp[j[have]] - tr[have]) / cs
+                out["pulls"]["fast"] = {"mean": pl.mean(axis=0).tolist(), "width": pl.std(axis=0).tolist()}
+    if min_fraction is not None:
+        out["min_fraction"] = float(min_fraction)
+        out["pass"] = bool(frac >= min_fraction)
+    return out
+
+
 def yield_ratio(ref, cand, tol: float, name: str = "") -> dict:
     if _measured(ref) or _measured(cand):
         if not (_measured(ref) and _measured(cand)):
@@ -419,11 +559,11 @@ def load_json(p: Path) -> dict:
         raise ScoreError(f"{p.as_posix()}: not JSON ({e})") from None
 
 
-def score_arm(cand: dict, stock: dict, floor: dict | None, refcfg: dict) -> dict:
+def score_arm(cand: dict, stock: dict, floor: dict | None, refcfg: dict, extra_yields: list | None = None) -> dict:
     mode, minc = refcfg.get("mode", "same_events"), float(refcfg.get("min_count", 0))
     tol0 = float(refcfg.get("yield_tolerance", 0.01))
     tols = {k: float(v) for k, v in (refcfg.get("yield_tolerances") or {}).items()}
-    max_se = {k: float(v) for k, v in (refcfg.get("max_se") or {}).items()}
+    max_se = {k: float(v) for k, v in (refcfg.get("yield_max_se") or {}).items()}
     names = set(stock.get("yields", {})) | set(stock.get("peaks", {}))
     if set(max_se) - names or set(tols) - names:
         raise ScoreError(f"reference.json names yields the stock arm lacks: {sorted((set(max_se) | set(tols)) - names)}")
@@ -450,11 +590,11 @@ def score_arm(cand: dict, stock: dict, floor: dict | None, refcfg: dict) -> dict
                                                    (refcfg.get("peak_fit") or {}).get(name))})
     for y in yields:
         y["tolerance"] = tols.get(y["yield"], tol0)
-        if y["yield"] in max_se:  # statistical power: the error must be small enough for the tolerance to bite
-            y["pass_tolerance"] = bool(y["pass"])
+        if y["yield"] in max_se:  # too small a sample to test the tolerance: fails ("underpowered")
             y["max_se"] = max_se[y["yield"]]
-            y["power_ok"] = bool(y["se"] <= max_se[y["yield"]])
-            y["pass"] = y["pass_tolerance"] and y["power_ok"]
+            y["underpowered"] = bool(y["se"] > max_se[y["yield"]])
+            y["pass"] = bool(y["pass"]) and not y["underpowered"]
+    yields += extra_yields or []
     n = len(rows)
     if n == 0 and not yields:
         raise ScoreError("the reference has no histograms and no yields")
@@ -463,39 +603,58 @@ def score_arm(cand: dict, stock: dict, floor: dict | None, refcfg: dict) -> dict
     out = {"n_hists": n, "n_flagged": flagged, "validity": hpass * ypass, "yield_pass": ypass,
            "hists": rows, "yields": yields}
     if max_se:
-        out["power_ok"] = all(y["power_ok"] for y in yields if "power_ok" in y)
+        out["power_ok"] = not any(y.get("underpowered") for y in yields)
     return out
 
 
-def _selected_features(path: Path, cfg: dict) -> np.ndarray:
-    names = list(cfg["features"])
-    efeat = cfg.get("energy_feature", "energy")
-    try:
-        x = C.load_features(path, names + ([efeat] if efeat not in names else []))
-    except (OSError, ValueError) as e:
-        raise ScoreError(f"{path.as_posix()}: {e}") from None
-    keep = x[:, -1 if efeat not in names else names.index(efeat)] >= float(cfg.get("min_energy", -np.inf))
-    return x[keep][:, :len(names)]
-
-
-def classifier_arm(cand_path: Path, stock_x: np.ndarray, cfg: dict) -> dict:
-    if not cand_path.is_file():
-        raise ScoreError(f"missing {cand_path.as_posix()} (the reference scores per-cluster features)")
-    try:
-        return C.classifier_score(stock_x, _selected_features(cand_path, cfg), int(cfg.get("seed", C.DEFAULT_SEED)),
-                                  float(cfg.get("l2", C.DEFAULT_L2)),
-                                  int(cfg.get("max_per_class", C.DEFAULT_MAX_PER_CLASS)))
-    except ValueError as e:
-        raise ScoreError(f"classifier: {e}") from None
+def _extras(d: Path, refdir: Path | None, cfg: dict) -> tuple[dict, list]:
+    """Classifier and track-agreement blocks (reported) and the yields they add to validity."""
+    out, ys = {}, []
+    c = cfg.get("classifier")
+    if c:
+        if refdir is None:
+            raise ScoreError("classifier: needs the reference directory")
+        f = c.get("file", "features.npz")
+        Xr = _npz(refdir / "stock" / f, ("X",))["X"]
+        out["classifier"] = classifier_score(Xr, _npz(d / f, ("X",))["X"], int(c.get("seed", 0)))
+        if (refdir / "floor" / f).is_file():
+            out["classifier"]["floor_cls_score"] = classifier_score(Xr, _npz(refdir / "floor" / f, ("X",))["X"],
+                                                                    int(c.get("seed", 0)))["cls_score"]
+    t = cfg.get("track_agreement")
+    if t:
+        if refdir is None:
+            raise ScoreError("track_agreement: needs the reference directory")
+        f = t.get("file", "tracks.npz")
+        ta = track_agreement(_npz(refdir / "stock" / f, ("id", "params", "sigma")), _npz(d / f, ("id", "params")),
+                             float(t.get("threshold_sigma", 0.1)), t.get("min_fraction"))
+        out["track_agreement"] = ta
+        tol = float(cfg.get("yield_tolerance", 0.01))
+        if "good_fit" in ta:
+            g = ta["good_fit"]
+            ys.append({"yield": "good_fit_ratio", "ratio": g["ratio"], "se": g["se"],
+                       "pass": abs(g["ratio"] - 1) - 3 * g["se"] <= tol})
+        if "pass" in ta:
+            ys.append({"yield": "track_agreement", "ratio": ta["agreement"], "se": ta["agreement_se"],
+                       "pass": ta["pass"]})
+    return out, ys
 
 
 def score_one(d: Path, w: str, dt: str, stock: dict, floor: dict | None, cfg: dict, private: bool,
-              stock_x: np.ndarray | None = None) -> dict:
-    arm = score_arm(load_json(d / "hists.json"), stock, floor, cfg)
-    res = dict(arm)
-    if stock_x is not None:
-        res["classifier"] = classifier_arm(d / "features.npz", stock_x, cfg["classifier"])
-        res["cls_score"] = res["classifier"]["cls_score"]
+              refdir: Path | None = None) -> dict:
+    extra, extra_yields = _extras(d, refdir, cfg)
+    hj = d / "hists.json"
+    need = bool(stock.get("hists") or stock.get("yields"))  # a tracks-only task (B3) needs no hists.json
+    cand = load_json(hj) if need or hj.is_file() else {}
+    arm = score_arm(cand, stock, floor, cfg, extra_yields)
+    res = {**arm, **extra}
+    budget = cfg.get("capture_budget")
+    if budget is not None:
+        used = load_json(d / "bench.json").get("capture_entries")
+        if used is None:
+            raise ScoreError(f"{w}/{dt}: bench.json must declare capture_entries (budget {budget})")
+        if float(used) > float(budget):
+            raise ScoreError(f"{w}/{dt}: capture budget exceeded ({used} > {budget})")
+        res["capture_entries"] = used
     if cfg.get("stock_rate_per_slot") is None:  # a task with no stock rate at its boundary: validity only
         res.update(throughput_multiplier=None, throughput_scored=False)
         return res
@@ -506,6 +665,17 @@ def score_one(d: Path, w: str, dt: str, stock: dict, floor: dict | None, cfg: di
     if bench.get("rate_unit") not in (None, unit):
         raise ScoreError(f"{w}/{dt}: bench.json rate is in {bench.get('rate_unit')}, the reference in {unit}")
     rate = float(bench.get("warm_rate") or 0)
+    curve = None
+    if cfg.get("scaling_batches"):
+        got = {int(r["batch"]): float(r["rate"]) for r in bench.get("scaling", [])}
+        miss = [b for b in cfg["scaling_batches"] if int(b) not in got]
+        if miss:
+            raise ScoreError(f"{w}/{dt}: bench.json scaling lacks batch {miss}")
+        stock_rate = float(cfg["stock_rate_per_slot"])
+        curve = [{"batch": int(b), "rate": got[int(b)], "multiplier": got[int(b)] / stock_rate}
+                 for b in sorted(int(x) for x in cfg["scaling_batches"])]
+        if rate <= 0:
+            rate = curve[-1]["rate"]
     if rate <= 0:
         raise ScoreError(f"{w}/{dt}: bench.json has no positive warm_rate")
     if bench.get("host") == "mu2eg4":  # a model inside Geant4: model-on over model-off on the same node and primaries
@@ -525,6 +695,9 @@ def score_one(d: Path, w: str, dt: str, stock: dict, floor: dict | None, cfg: di
         mem = bench.get("memory_mb_per_thread")
         res["memory_mb_per_thread"] = mem
         res["memory_ok"] = None if mem is None else bool(float(mem) <= float(cfg["max_memory_mb_per_thread"]))
+    if curve is not None:
+        res["scaling"] = curve
+        res["crossover_batch"] = next((c["batch"] for c in curve if c["multiplier"] > 1), None)
     if cfg.get("stock_jobs_per_unit") and bench.get("jobs_per_unit"):
         res["jobs_ratio"] = float(cfg["stock_jobs_per_unit"]) / float(bench["jobs_per_unit"])
     if private:
@@ -540,26 +713,19 @@ def score(sub: Path, ref: Path, private: bool = False, allow_missing: bool = Fal
     if not workflows:
         raise ScoreError(f"no <W>/reference.json under {ref.as_posix()}")
     out: dict = {"workflows": {}, "missing": {}}
-    vals, mults, clss = [], [], []
+    vals, mults, cfgs, clss = [], [], {}, []
     for w in workflows:
-        cfg = load_json(ref / w / "reference.json")
-        stock = load_json(ref / w / "stock" / "hists.json")
+        cfg = cfgs[w] = load_json(ref / w / "reference.json")
+        sh = ref / w / "stock" / "hists.json"
+        stock = load_json(sh) if sh.is_file() or not cfg.get("track_agreement") else {}
         floor = load_json(ref / w / "floor" / "hists.json") if (ref / w / "floor" / "hists.json").is_file() else None
-        stock_x = None
-        if (ref / w / "stock" / "features.npz").is_file():
-            if not cfg.get("classifier", {}).get("features"):
-                raise ScoreError(f"{w}: stock/features.npz without a classifier feature list in reference.json")
-            stock_x = _selected_features(ref / w / "stock" / "features.npz", cfg["classifier"])
-            if (ref / w / "floor" / "features.npz").is_file():
-                fl = classifier_arm(ref / w / "floor" / "features.npz", stock_x, cfg["classifier"])
-                out.setdefault("classifier_floor", {})[w] = {"auc": fl["auc"], "cls_score": fl["cls_score"]}
         out["workflows"][w] = {}
         for dt in DTYPES:
             d = sub / w / dt
             try:
                 if not d.is_dir():
                     raise ScoreError(f"{w}: no {dt} arm (both dtypes are required)")
-                res = score_one(d, w, dt, stock, floor, cfg, private, stock_x)
+                res = score_one(d, w, dt, stock, floor, cfg, private, ref / w)
             except ScoreError as e:
                 if not allow_missing:
                     raise
@@ -569,10 +735,13 @@ def score(sub: Path, ref: Path, private: bool = False, allow_missing: bool = Fal
             vals.append(res["validity"])
             if res["throughput_multiplier"] is not None:
                 mults.append(res["throughput_multiplier"])
-            if "cls_score" in res:
-                clss.append(res["cls_score"])
+            if "classifier" in res:
+                clss.append(res["classifier"]["cls_score"])
     if not vals:
         raise ScoreError("no arm could be scored")
+    groups = _groups(out["workflows"], cfgs)
+    if groups:
+        out["groups"] = groups
     out["validity_score"] = float(np.mean(vals))
     out["min_validity"] = float(np.min(vals))
     out["throughput_geomean"] = float(np.exp(np.mean(np.log(mults)))) if mults else None
@@ -581,6 +750,32 @@ def score(sub: Path, ref: Path, private: bool = False, allow_missing: bool = Fal
     out["n_arms_scored"] = len(vals)
     if not out["missing"]:
         del out["missing"]
+    return out
+
+
+def _groups(results: dict, cfgs: dict) -> dict:
+    """Portability ratio and adaptation score per group and dtype (B2: dev, placement moves, design moves)."""
+    parts: dict = {}
+    for w, cfg in cfgs.items():
+        if cfg.get("group"):
+            part = cfg.get("part")
+            if part not in ("dev", "place", "design"):
+                raise ScoreError(f"{w}: part must be dev, place or design")
+            parts.setdefault(cfg["group"], {}).setdefault(part, []).append(w)
+    out = {}
+    for g, by in sorted(parts.items()):
+        if len(by.get("dev", [])) > 1:
+            raise ScoreError(f"group {g}: more than one dev task")
+        out[g] = {}
+        for dt in DTYPES:
+            val = lambda ws: [results[w][dt]["validity"] for w in ws if dt in results.get(w, {})]  # noqa: E731
+            dev, place, design = val(by.get("dev", [])), val(by.get("place", [])), val(by.get("design", []))
+            r = {"dev_validity": dev[0] if dev else None, "n_place": len(place), "n_design": len(design),
+                 "place_validity": float(np.mean(place)) if place else None,
+                 "adaptation_score": float(np.mean(design)) if design else None}
+            r["portability_ratio"] = (r["place_validity"] / r["dev_validity"]
+                                      if place and dev and dev[0] > 0 else None)
+            out[g][dt] = r
     return out
 
 
@@ -594,8 +789,15 @@ def leaderboard_row(res: dict) -> dict:
             tag = f"{w.lower()}_{'f32' if dt == 'float32' else 'f64'}"
             row[f"{tag}_validity"] = r["validity"]
             row[f"{tag}_multiplier"] = r["throughput_multiplier"]  # None when the task has no stock rate
-            if "cls_score" in r:
-                row[f"{tag}_cls"] = r["cls_score"]
+            if "classifier" in r:
+                row[f"{tag}_cls_score"] = r["classifier"]["cls_score"]
+            if "track_agreement" in r:
+                row[f"{tag}_agreement"] = r["track_agreement"]["agreement"]
+    for g, by in res.get("groups", {}).items():
+        for dt, r in by.items():
+            tag = f"{g.lower()}_{'f32' if dt == 'float32' else 'f64'}"
+            row[f"{tag}_portability"] = r["portability_ratio"]
+            row[f"{tag}_adaptation"] = r["adaptation_score"]
             if "power_ok" in r:
                 row[f"{tag}_power"] = float(r["power_ok"])
     return row
@@ -619,7 +821,7 @@ def main(argv=None) -> int:
     a.out.write_text(text + "\n") if a.out else print(text)
     for w, by in res["workflows"].items():
         for dt, r in by.items():
-            extra = (f", cls {r['cls_score']:.3f}" if "cls_score" in r else "") + \
+            extra = (f", cls {r['classifier']['cls_score']:.3f}" if "classifier" in r else "") + \
                     (f", power {'ok' if r['power_ok'] else 'FAIL'}" if "power_ok" in r else "")
             print(f"{w} {dt}: flagged {r['n_flagged']}/{r['n_hists']}, yields {r['yield_pass']:.2f}, "
                   f"validity {r['validity']:.3f}{extra}, " + (f"x{r['throughput_multiplier']:.1f} on {r['device']}"

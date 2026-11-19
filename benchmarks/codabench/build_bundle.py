@@ -57,8 +57,8 @@ if __name__ == "__main__":
 
 def competition_yaml(workflows: list[str], title: str, cls_workflows=(), power_workflows=()) -> str:
     """Leaderboard columns: the overall scores, then validity and multiplier per workflow and dtype, plus the
-    classifier score (workflows whose reference has per-cluster features) and the power flag (workflows with a
-    max_se rule)."""
+    classifier score (workflows whose reference.json has a classifier) and the power flag (workflows with a
+    yield_max_se rule)."""
     cols = [("Validity score", "validity_score", "desc"), ("Min validity", "min_validity", "desc"),
             ("Throughput x (self-reported)", "throughput_geomean", "desc")]
     if cls_workflows:
@@ -68,7 +68,7 @@ def competition_yaml(workflows: list[str], title: str, cls_workflows=(), power_w
             cols += [(f"{w} {dt} validity", f"{w.lower()}_{dt}_validity", "desc"),
                      (f"{w} {dt} x", f"{w.lower()}_{dt}_multiplier", "desc")]
             if w in cls_workflows:
-                cols.append((f"{w} {dt} classifier", f"{w.lower()}_{dt}_cls", "desc"))
+                cols.append((f"{w} {dt} classifier", f"{w.lower()}_{dt}_cls_score", "desc"))
             if w in power_workflows:
                 cols.append((f"{w} {dt} power (1 = se small enough)", f"{w.lower()}_{dt}_power", "desc"))
     col_lines = "\n".join(f"      - {{title: \"{t}\", key: {k}, index: {i}, sorting: {s}, precision: 3}}"
@@ -138,14 +138,14 @@ def build(out: Path, reference: Path | None = None, title: str = "mu2e-fastsim t
     b = out / "bundle"
     (b / "scoring_program").mkdir(parents=True)
     shutil.copy(PKG / "score.py", b / "scoring_program" / "score.py")
-    shutil.copy(PKG / "classifier.py", b / "scoring_program" / "classifier.py")
     (b / "scoring_program" / "scoring.py").write_text(SCORING)
     (b / "scoring_program" / "metadata.yaml").write_text("command: python3 scoring.py\n")
     shutil.copytree(reference, b / "reference_data")
     shutil.copytree(solution, b / "solution")
     workflows = sorted(p.name for p in reference.iterdir() if (p / "reference.json").is_file())
-    cls_w = [w for w in workflows if (reference / w / "stock" / "features.npz").is_file()]
-    power_w = [w for w in workflows if json.loads((reference / w / "reference.json").read_text()).get("max_se")]
+    cfgs = {w: json.loads((reference / w / "reference.json").read_text()) for w in workflows}
+    cls_w = [w for w in workflows if cfgs[w].get("classifier")]
+    power_w = [w for w in workflows if cfgs[w].get("yield_max_se")]
     (b / "competition.yaml").write_text(competition_yaml(workflows, title, cls_w, power_w))
     (b / "pages").mkdir()
     (b / "pages" / "overview.md").write_text((HERE.parent / "README.md").read_text())

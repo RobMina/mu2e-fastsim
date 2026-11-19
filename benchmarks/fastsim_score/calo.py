@@ -6,7 +6,8 @@ arrays: clusters (event index, energy, time, x, y, size, seed_energy, mxx, myy, 
 turns them into the scorer's layout:
 
     <arm>/hists.json      histograms in event blocks (shards), the yield and the CE peak spectrum
-    <arm>/features.npz    one row per cluster: FEATURES + "event"
+    <arm>/features.npz    the classifier input: "X" (one row per cluster above E_MIN, columns FEATURES), "names",
+                          "event" (the population index of each row)
 
 Definitions (all fixed here, the same for every host):
 - shards: consecutive blocks of ``block`` events of the population (b00000, b00001, ...), identical in both arms;
@@ -35,7 +36,7 @@ from pathlib import Path
 
 import numpy as np
 
-WORKFLOW = "CALOG4"
+WORKFLOW = "B1"
 E_MIN = 10.0
 TOLERANCE = 0.002                      # CE peak and yield tolerance (user, 2026-11-18)
 MAX_SE = TOLERANCE / 3.0               # statistical power: CE peak-ratio standard error (0.067 %)
@@ -59,10 +60,9 @@ REFERENCE = {
     "mode": "shape",
     "min_count": 10,
     "yield_tolerance": TOLERANCE,
-    "max_se": {"ce_peak": MAX_SE},
+    "yield_max_se": {"ce_peak": MAX_SE},
     "peak_fit": {"ce_peak": {"start_above": 75.0, "start_width": 3.0}},
-    "classifier": {"features": list(FEATURES), "min_energy": E_MIN, "energy_feature": "energy", "seed": 20261118,
-                   "max_per_class": 100000},
+    "classifier": {"file": "features.npz", "seed": 20261118},
     "max_memory_mb_per_thread": 250,
 }
 
@@ -131,10 +131,10 @@ def arm(clusters: dict, hits: dict | None, n_events: int, block: int = 100) -> t
            "population": {"events": int(n_events), "block": int(block), "e_min": E_MIN}}
     with np.errstate(divide="ignore", invalid="ignore"):
         frac = np.where(e > 0, c["seed_energy"] / e, 0.0)
-    feats = {"energy": e, "time": c["time"], "x": c["x"], "y": c["y"], "size": c["size"], "seed_frac": frac,
-             "mxx": c["mxx"], "myy": c["myy"], "mxy": c["mxy"]}
-    feats = {k: np.asarray(v, np.float64) for k, v in feats.items()}
-    feats["event"] = ev
+    cols = {"energy": e, "time": c["time"], "x": c["x"], "y": c["y"], "size": c["size"], "seed_frac": frac,
+            "mxx": c["mxx"], "myy": c["myy"], "mxy": c["mxy"]}
+    x = np.column_stack([np.asarray(cols[k], np.float64) for k in FEATURES])
+    feats = {"X": x[sel], "names": np.array(FEATURES), "event": ev[sel]}
     return out, feats
 
 

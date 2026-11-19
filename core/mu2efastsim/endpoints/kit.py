@@ -9,7 +9,8 @@ resources, the params it accepts and the metrics it returns.
 
 Run as an MCP stdio server (``python -m mu2efastsim.endpoints.kit``) for a kits.toml entry, or use FastsimKit directly.
 Environment: FASTSIMKIT_ENDPOINT (default uva; eaf), FASTSIMKIT_STATE_DIR (local job records and fetched outputs),
-FASTSIMKIT_MAX_SU_PER_JOB (default 500), FASTSIMKIT_SIF (image path on the site; default
+FASTSIMKIT_MAX_SU_PER_JOB (default 500), FASTSIMKIT_GPU_TYPE (uva: the endpoint's gpu_type, "auto" by default,
+"none" for each task's own card, or a type such as 1g.24gb or a100; see endpoints.slurm_ssh), FASTSIMKIT_SIF (image path on the site; default
 <FASTSIMKIT_SCRATCH>/mu2efastsim.sif, needed only by image-based endpoints). Endpoint settings: see
 mu2efastsim.site and each endpoint module.
 """
@@ -339,8 +340,13 @@ class FastsimKit:
         self.out_root = root / "out"
         self.out_root.mkdir(parents=True, exist_ok=True)
         self._sif = sif
-        self.ep = endpoint or get(os.environ.get("FASTSIMKIT_ENDPOINT", "uva"), state_dir=root / "jobs",
-                                  max_su_per_job=float(os.environ.get("FASTSIMKIT_MAX_SU_PER_JOB", "500")))
+        name = os.environ.get("FASTSIMKIT_ENDPOINT", "uva")
+        kw = {}
+        gpu_type = os.environ.get("FASTSIMKIT_GPU_TYPE")
+        if gpu_type and name in ("uva", "slurm_ssh"):     # auto (default), none (each task's own card), or a type name
+            kw["gpu_type"] = None if gpu_type == "none" else gpu_type
+        self.ep = endpoint or get(name, state_dir=root / "jobs",
+                                  max_su_per_job=float(os.environ.get("FASTSIMKIT_MAX_SU_PER_JOB", "500")), **kw)
         self._cp = None
         self._delegates: Dict[str, Any] = {}
 

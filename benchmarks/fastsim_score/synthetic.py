@@ -4,7 +4,7 @@ this repository.
 
     python -m benchmarks.fastsim_score.synthetic OUTDIR
 
-writes OUTDIR/reference/ (two toy workflows, stock + reseeded floor, and a toy B1 calorimeter workflow CALOG4 with
+writes OUTDIR/reference/ (two toy workflows, stock + reseeded floor, and a toy B1 calorimeter workflow (task B1) with
 per-cluster features, the CE peak and the power rule) and OUTDIR/submissions/{good,shifted,slow}/ .
 """
 from __future__ import annotations
@@ -27,7 +27,7 @@ CALO = {"stock_rate_per_slot": 55.8, "events": 60000, "block": 1500, "feature_ev
 
 
 def _calo_arm(seed: int, shift: float = 0.0, scale: float = 1.0) -> tuple[dict, dict]:
-    """Toy CALOG4 arm: a CE-like leading cluster (88 MeV core, low tail) in 93 % of events plus soft extra clusters;
+    """Toy B1 arm: a CE-like leading cluster (88 MeV core, low tail) in 93 % of events plus soft extra clusters;
     shift moves the shape features, scale the energies. Features are kept for the first feature_events events."""
     rng = np.random.default_rng(seed)
     n = CALO["events"]
@@ -53,7 +53,7 @@ def _calo_arm(seed: int, shift: float = 0.0, scale: float = 1.0) -> tuple[dict, 
                                                                                  clusters["size"])}
     hists, feats = calo.arm(clusters, hits, n, CALO["block"])
     keep = feats["event"] < CALO["feature_events"]
-    return hists, {k: (v[keep].astype(np.float32) if k != "event" else v[keep]) for k, v in feats.items()}
+    return hists, {"X": feats["X"][keep].astype(np.float32), "names": feats["names"], "event": feats["event"][keep]}
 
 
 def _write_calo(d: Path, arm: tuple[dict, dict]) -> None:

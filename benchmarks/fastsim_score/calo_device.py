@@ -1,4 +1,4 @@
-"""B1 (CALOG4) device-host arm: the fastsim calorimeter device chain on library entries -> hists.json + features.npz.
+"""B1 (FS-CALO-G4) device-host arm: the fastsim calorimeter device chain on library entries -> hists.json + features.npz.
 
 The arm W7-CAL validated: at the first forward direct-CE disk-front entry of each stored event (calofastsim
 showers.export, primary mode), a whole-shower library draw and crystal placement (``device_chain.sample_donors``,
@@ -10,7 +10,7 @@ The draw and placement run op by op (``--draw eager``, the default): jitted, the
 5 ns grid (MC bunch time), as in W7-CAL. In float64 the step depth enters the response as float32
 (``make_steps_chain`` input), as for stock steps. The population is every exported event with a front
 entry, in export order; ``events.npy`` (run, subrun, event) beside the output fixes it, and the stock arm is made on
-the same events with ``python -m benchmarks.fastsim_score.calo ntuple REF/CALOG4/stock STOCK.root ... --events
+the same events with ``python -m benchmarks.fastsim_score.calo ntuple REF/B1/stock STOCK.root ... --events
 events.npy``.
 
     python -m benchmarks.fastsim_score.calo_device OUT --tables EXPORT.root ... --stock STOCK.root ...

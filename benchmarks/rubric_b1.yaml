@@ -1,4 +1,4 @@
-benchmark_name: FS-CALO-G4 (B1, task CALOG4) - Mu2e calorimeter shower model inside and outside Geant4
+benchmark_name: FS-CALO-G4 (B1) - Mu2e calorimeter shower model inside and outside Geant4
 scored_date: '2026-11-19'
 notes: 'Self-score after the dev-split reference run of the fastsim device chain (W7-CAL, CAL2 library), both dtypes.
   The Mu2eG4 host (P2) has no run yet; the final split is reserved and was not opened. Arithmetic by benchmark-builder
