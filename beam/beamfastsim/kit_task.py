@@ -12,6 +12,7 @@ DS-entrance muons (g4ref table made from MuBeamCat) in place, so it runs only on
 Metrics: stop_frac, stop_frac_err, stop_frac_mu_minus, stops, muons, foils, stops_foil_mean, stop_r_mean,
   stop_frac_upstream_half (fraction of stops in the upstream half of the foils), muons_per_s_warm, first_pass_s.
 """
+import math
 
 PARAMS = ("geom", "muons", "seed", "repeat", "ds_bscale", "tsd_bscale")
 METRICS = ("stop_frac", "stop_frac_err", "stop_frac_mu_minus", "stops", "muons", "foils", "stops_foil_mean",
@@ -102,8 +103,26 @@ tail -c 300 "$M2FS_OUT/point.txt"
 # Task beam_edep_cpu: beam_edep on ONE CPU core (a grid-slot-sized job, no GPU): the same point, float64 by default (on
 # a CPU float32 is slower), JAX single-threaded, edepana's CPU default batch (5,000 electrons). One Run 1A design point
 # with 100k electrons takes about 1.6 core-hours (beam/docs/edepana.md).
-EDEP_CPU_MINUTES = 240
+EDEP_CPU_MINUTES = 240      # the request outside the measured range below
 EDEP_CPU_MEM_GB = 16
+# Measured on UVA `standard` (sacct, 2026-11-18), all table muons (muons=0, the most muon work):
+#   5,000 CE: elapsed 20-22 min, MaxRSS 8.9-9.4 GB (6 jobs); 10,000 CE: elapsed 29-42 min, MaxRSS <= 10.3 GB (74 jobs).
+# Memory does not grow with the electrons (edepana's 5,000-electron batches); the longest elapsed is ~2 + 4 min per 1k CE.
+# Inside the measured range (up to twice it) the request is 1.5x that time and 12 GB, so a job fits the scheduler's
+# backfill gaps and bills 3 memory units instead of 4 (skill sizing-uva-slurm-jobs).
+EDEP_CPU_MEASURED_ELECTRONS = 20_000
+EDEP_CPU_MEASURED_MEM_GB = 12
+
+
+def edep_cpu_resources(params, resources_cls):
+    """The beam_edep_cpu request for these params: sized from the measured jobs above for 1..20,000 electrons, the
+    flat EDEP_CPU_MINUTES x EDEP_CPU_MEM_GB otherwise (a count that has not been measured)."""
+    n = int(params.get("electrons") or 0)
+    if not 0 < n <= EDEP_CPU_MEASURED_ELECTRONS:
+        return resources_cls(cores=1, mem_gb=EDEP_CPU_MEM_GB, gpus=0, gpu_type="", minutes=EDEP_CPU_MINUTES)
+    longest = 2 + 4 * n / 1000
+    minutes = min(EDEP_CPU_MINUTES, max(30, 5 * math.ceil(1.5 * longest / 5)))
+    return resources_cls(cores=1, mem_gb=EDEP_CPU_MEASURED_MEM_GB, gpus=0, gpu_type="", minutes=minutes)
 CPU_ENV = ("JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 "
            "XLA_FLAGS=--xla_cpu_multi_thread_eigen=false")
 EDEP_CPU_ARGS = EDEP_ARGS.replace("--procs " + str(EDEP_CORES - 1), "--procs 1")
@@ -170,7 +189,8 @@ def register(tasks, task_cls, resources_cls, fnal_tasks):
     tasks["beam_edep_cpu"] = task_cls(params=EDEP_PARAMS, metrics=EDEP_METRICS,
                                       resources=resources_cls(cores=1, mem_gb=EDEP_CPU_MEM_GB, gpus=0, gpu_type="",
                                                               minutes=EDEP_CPU_MINUTES),
-                                      body=EDEP_CPU_BODY, defaults={"dtype": "float64", **SCALE_DEFAULTS})
+                                      body=EDEP_CPU_BODY, defaults={"dtype": "float64", **SCALE_DEFAULTS},
+                                      sizer=lambda p: edep_cpu_resources(p, resources_cls))
     fnal_tasks.add("beam_edep_cpu")
     tasks["beam_centuple"] = task_cls(params=CENT_PARAMS, metrics=CENT_METRICS,
                                       resources=resources_cls(cores=CENT_CORES, mem_gb=96, gpus=1, gpu_type="a100",
