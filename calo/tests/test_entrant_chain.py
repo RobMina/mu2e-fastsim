@@ -398,3 +398,22 @@ def test_bench_entry_point_runs(tmp_path, monkeypatch):
     for dtype in ("float64", "float32"):
         outs = bench.bench_entrants(prepared, dtype=dtype, key_neighbors=8, rows=64, hits=64)
         assert len(outs) == 2 and not any(bench.overflow(outs).values())
+
+
+def test_read_skips_failed_events_on_request(tmp_path):
+    """entrants.read(skip_failed=True): a failed-transport event and its rows are dropped; the rest is unchanged."""
+    from test_showers_entrants import tables, write
+    data = tables()
+    write(tmp_path / "ok.root", data)
+    data["events"]["g4_status"] = np.array([0, 1, 0], dtype=np.int32)       # event 2 (inner-edge CE) failed
+    write(tmp_path / "bad.root", data)
+    with pytest.raises(ValueError):
+        E.read(tmp_path / "bad.root")
+    ent, css, _, cen = E.read(tmp_path / "bad.root", skip_failed=True)
+    ref, rcss, _, rcen = E.read(tmp_path / "ok.root")
+    assert cen["failed_events_skipped"] == 1 and rcen["failed_events_skipped"] == 0
+    assert cen["events"] == 2 and len(ent["face"]) == len(ref["face"]) - 1
+    keep = ref["event_row"] != 1
+    np.testing.assert_array_equal(ent["face"], ref["face"][keep])
+    np.testing.assert_array_equal(ent["event_row"], np.where(ref["event_row"][keep] > 1, ref["event_row"][keep] - 1,
+                                                             ref["event_row"][keep]))

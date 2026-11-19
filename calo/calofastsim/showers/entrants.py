@@ -147,18 +147,20 @@ def psi_cells(face, psi, psi_bins):
     return np.where(np.asarray(face) == FRONT, index, 0)
 
 
-def read(path):
+def read(path, *, skip_failed=False):
     """Entrants and their subtree CSS from one CaloLibraryDumper export (calo_library_tables.root).
 
     Returns (entrants, css, geometry, census). Entrants: one row per fast-simulation entrant with event_row, pdg,
     species, face, disk, global position/momentum/time and local (disk-frame) position/momentum. CSS: rows of
     supported-face entrants with entrant row, global position, absolute time, energies, crystal and disk.
+    ``skip_failed`` (opt-in) drops events whose Geant4 transport failed (``g4_status != 0``) with all their rows
+    instead of raising; event rows then index the completed events, and the census counts the dropped ones.
     """
     with uproot.open(path) as source:
         events = columns(source, "events", EVENT + ("g4_status",))
-        if np.any(events["g4_status"] != 0):
+        failed = events["g4_status"] != 0
+        if np.any(failed) and not skip_failed:
             raise ValueError("input contains failed transport events; select completed input events first")
-        event_ids = keys(events, EVENT)
         particles = columns(source, "particles", IDENTITY + ("pdg", "parent_product_id", "parent_key", "parent_valid"))
         steps = columns(source, "steps", IDENTITY + ("kind", "volume", "time") +
                         tuple(p + "_" + a for p in ("position", "momentum") for a in "xyz"))
@@ -167,6 +169,12 @@ def read(path):
         disks = columns(source, "disks", ("run", "disk") + tuple(p + "_" + a for p in ("origin", "size", "axis_x", "axis_y", "axis_z") for a in "xyz"))
         crystals = columns(source, "crystals", ("run", "crystal", "disk") + tuple(p + "_" + a for p in ("position", "size") for a in "xyz"))
         vd = columns(source, "virtualdetectors", ("run", "id") + tuple("position_" + a for a in "xyz"))
+    if np.any(failed):
+        bad = keys({k: v[failed] for k, v in events.items()}, EVENT)
+        events = {k: v[~failed] for k, v in events.items()}
+        particles, steps, showers = ({k: v[~np.isin(keys(t, EVENT), bad)] for k, v in t.items()}
+                                     for t in (particles, steps, showers))
+    event_ids = keys(events, EVENT)
 
     pid = keys(particles, IDENTITY)
     n = len(pid)
@@ -239,7 +247,7 @@ def read(path):
                energy_g4=showers["energy_g4"][keep].astype(float), energy_birks=eb[keep],
                crystal=showers["crystal"][keep], disk=crystals["disk"][crow[keep]])
     total = float(eb.sum())
-    census = dict(events=len(event_ids), particles=n, entrants=len(entrant_particles), css_rows=len(eb),
+    census = dict(events=len(event_ids), failed_events_skipped=int(np.sum(failed)), particles=n, entrants=len(entrant_particles), css_rows=len(eb),
                   css_energy_birks=total,
                   css_fraction_unresolved_particle=float(eb[prow < 0].sum()) / total if total else 0.,
                   css_fraction_no_entrant=float(eb[(prow >= 0) & (owner < 0)].sum()) / total if total else 0.,
