@@ -58,6 +58,9 @@ class Cfg(NamedTuple):
 class Lanes(NamedTuple):
     alive: object; sp: object; x: object; u: object; p: object; t: object; tau: object; seg: object; ev: object
     n: object       # steps taken (a lane past Cfg.max_lane_steps is stopped and counted)
+    # pending emission of a deferred lane (exact deferral: the sampled outcome is kept, never redrawn):
+    # pk 0 none, 1 inelastic with bank row pj, 2 hadron decay with channel pch
+    pk: object; pj: object; pch: object
 
 
 def species_of(pdg):
@@ -230,9 +233,10 @@ def _step(S, cfg, carry, key):
     q = jnp.asarray(CHARGE_SP, dt)[sp]
     ke = jnp.hypot(L.p, m) - m
     low = jnp.where(jnp.asarray(HADRON_SP)[sp], ke < cfg.ke_min_hadron, ke < cfg.ke_min_pion)
-    capped = L.alive & (L.n >= cfg.max_lane_steps)
-    stop = L.alive & (low | (L.sp < 0) | capped)
-    alive = L.alive & ~stop
+    pend = L.alive & (L.pk > 0)                    # deferred lanes: emit their kept outcome, do not move
+    capped = L.alive & ~pend & (L.n >= cfg.max_lane_steps)
+    stop = L.alive & ~pend & (low | (L.sp < 0) | capped)
+    alive = L.alive & ~stop & ~pend
     beta = L.p / jnp.hypot(L.p, m)
     finite_tau = jnp.isfinite(L.tau)
     d_dec = jnp.where(finite_tau, L.tau * C.C_MM_NS * L.p / m, jnp.inf)
@@ -324,27 +328,38 @@ def _step(S, cfg, carry, key):
     t_new = L.t + h / (beta * C.C_MM_NS)
     tau_new = jnp.where(finite_tau, L.tau - h * m / (L.p * C.C_MM_NS), L.tau)
     seg_new = locate(S, cfg, to_local(S, x_new))
+    keep = lambda new, old: jnp.where(pend.reshape((-1,) + (1,) * (new.ndim - 1)), old, new)
+    x_new, u_new, p_new, t_new = keep(x_new, L.x), keep(u_new, L.u), keep(p_new, L.p), keep(t_new, L.t)
+    tau_new, seg_new = keep(tau_new, L.tau), keep(seg_new, L.seg)
     decays = alive & finite_tau & (tau_new <= 1e-9) & ~cross & ~ab & ~upstream & ~gone_neutral & ~inel
     dec_had = decays & ((sp == I_PIP) | (sp == I_PIM) | (sp == I_KP) | (sp == I_KM))
-    end = stop | inel | cross | ab | upstream | gone_neutral | decays
+    p_inel, p_dec = pend & (L.pk == 1), pend & (L.pk == 2)
+    inel = inel | p_inel
+    dec_had = dec_had | p_dec
+    end = stop | inel | cross | ab | upstream | gone_neutral | decays | p_dec
     alive_new = L.alive & ~end
     # ---------------------------------------------------------------- emissions: inelastic secondaries
     cellc = jnp.clip(cell, 0, S.cell_off.shape[0] - 2)
     nco = S.cell_off[cellc + 1] - S.cell_off[cellc]
     j = S.cell_off[cellc] + jnp.floor(jax.random.uniform(ks[6], (N,), jnp.float64) * nco).astype(jnp.int64)
-    j = jnp.clip(j, 0, S.sec_off.shape[0] - 2)
-    n_sec = jnp.where(inel & (nco > 0), S.sec_off[j + 1] - S.sec_off[j], 0)
+    j = jnp.where(p_inel, L.pj, jnp.clip(j, 0, S.sec_off.shape[0] - 2))
+    n_sec = jnp.where(inel & ((nco > 0) | p_inel), S.sec_off[j + 1] - S.sec_off[j], 0)
     # decays: pi -> mu (1 daughter); K: channel daughters (charged mu / pi only)
     ch = jnp.searchsorted(jnp.asarray(K_BR, dt), jax.random.uniform(ks[7], (N,), dt), side="right")
+    ch = jnp.where(p_dec, L.pch, ch)
     n_dec = jnp.where(dec_had & ((sp == I_PIP) | (sp == I_PIM)), 1,
                       jnp.where(dec_had, jnp.asarray([1, 1, 3, 1, 1, 0])[jnp.clip(ch, 0, 5)], 0))
     n_emit = (n_sec + n_dec).astype(jnp.int64)
     E_CAP = emit[0].shape[0]
     M = cfg_emit_per_step(N)
-    # lanes whose emissions do not fit this step's budget are deferred: they keep their pre-step state and take the
-    # step again (exact: only the order of steps changes)
+    # lanes whose emissions do not fit this step's budget are deferred: they keep their post-step state and the
+    # sampled outcome (pk, pj, pch) and emit it on a later step. Redrawing the step instead would bias the physics:
+    # deferral is selected on the outcome (an interaction, a row with many secondaries)
     budget = jnp.minimum(M, E_CAP - ecount)
     defer = (n_emit > 0) & (jnp.cumsum(n_emit) > budget)
+    pk_new = jnp.where(defer, jnp.where(inel, 1, 2), 0).astype(jnp.int32)
+    pj_new = jnp.where(defer, j, 0).astype(jnp.int64)
+    pch_new = jnp.where(defer, ch, 0).astype(jnp.int32)
     n_emit = jnp.where(defer, 0, n_emit)
     n_sec = jnp.where(defer, 0, n_sec)
     inel = inel & ~defer
@@ -419,13 +434,11 @@ def _step(S, cfg, carry, key):
     nrec = jnp.sum(rec_ok)
     over_r = jnp.maximum(rcount + nrec - R_CAP, 0)
     rcount = jnp.minimum(rcount + nrec, R_CAP)
-    keep_old = lambda new, old: jnp.where(defer.reshape((-1,) + (1,) * (new.ndim - 1)), old, new)
-    x_new, u_new, p_new, t_new = keep_old(x_new, L.x), keep_old(u_new, L.u), keep_old(p_new, L.p), keep_old(t_new, L.t)
-    tau_new, seg_new = keep_old(tau_new, L.tau), keep_old(seg_new, L.seg)
     cnt = cnt + jnp.stack([jnp.sum(inel), jnp.sum(el & ~defer), jnp.sum(stop), jnp.sum(dec_had), jnp.sum(ab), jnp.sum(upstream),
-                           nrec, over_e, over_r, jnp.sum(capped)]).astype(jnp.int64)
+                           nrec, over_e, over_r, jnp.sum(capped),
+                           jnp.sum(defer)]).astype(jnp.int64)
     L = Lanes(alive=alive_new, sp=L.sp, x=x_new, u=u_new, p=p_new, t=t_new, tau=tau_new, seg=seg_new, ev=L.ev,
-              n=L.n + L.alive.astype(jnp.int32))
+              n=L.n + L.alive.astype(jnp.int32), pk=pk_new, pj=pj_new, pch=pch_new)
     return (L, emit, ecount, rec, rcount, cnt)
 
 
@@ -436,7 +449,7 @@ def cfg_emit_per_step(N):
 
 
 COUNTERS = ("inelastic", "elastic", "stopped", "decays", "absorbed", "upstream", "recorded", "emit_overflow",
-            "record_overflow", "step_cap")
+            "record_overflow", "step_cap", "deferred")
 
 
 @partial(jax.jit, static_argnums=(1, 3))
@@ -487,7 +500,8 @@ def _refill(L, emit, ecount, key, tau_scale):
               x=L.x.at[dst].set(e_x[srcc], mode="drop"), u=L.u.at[dst].set(e_u[srcc], mode="drop"),
               p=L.p.at[dst].set(e_p[srcc], mode="drop"), t=L.t.at[dst].set(e_t[srcc], mode="drop"),
               tau=L.tau.at[dst].set(tau, mode="drop"), seg=L.seg.at[dst].set(e_seg[srcc], mode="drop"),
-              ev=L.ev.at[dst].set(e_ev[srcc], mode="drop"), n=L.n.at[dst].set(0, mode="drop"))
+              ev=L.ev.at[dst].set(e_ev[srcc], mode="drop"), n=L.n.at[dst].set(0, mode="drop"),
+              pk=L.pk.at[dst].set(0, mode="drop"), pj=L.pj, pch=L.pch)
     # shift the rest of the buffer to the front
     idx = jnp.arange(E) + k
     keep = idx < ecount
@@ -510,7 +524,8 @@ def _inject(L, prim, first, n_prim):
               x=L.x.at[dst].set(prim["x"][s], mode="drop"), u=L.u.at[dst].set(prim["u"][s], mode="drop"),
               p=L.p.at[dst].set(prim["p"][s], mode="drop"), t=L.t.at[dst].set(prim["t"][s], mode="drop"),
               tau=L.tau.at[dst].set(jnp.inf, mode="drop"), seg=L.seg.at[dst].set(prim["seg"][s], mode="drop"),
-              ev=L.ev.at[dst].set(prim["ev"][s], mode="drop"), n=L.n.at[dst].set(0, mode="drop"))
+              ev=L.ev.at[dst].set(prim["ev"][s], mode="drop"), n=L.n.at[dst].set(0, mode="drop"),
+              pk=L.pk.at[dst].set(0, mode="drop"), pj=L.pj, pch=L.pch)
     return L, k
 
 
@@ -536,7 +551,8 @@ def run(bank, target, fm, env, prim, seed=1, st=C.Stepping(), pool=1 << 16, emit
         raise ValueError("emission buffer must hold at least two steps of emissions")
     L = Lanes(alive=jnp.zeros(N, bool), sp=jnp.zeros(N, jnp.int32), x=jnp.zeros((N, 3), dtype), u=jnp.zeros((N, 3), dtype),
               p=jnp.ones(N, dtype), t=jnp.zeros(N, dtype), tau=jnp.full(N, jnp.inf, dtype), seg=jnp.full(N, -1, jnp.int32),
-              ev=jnp.zeros(N, jnp.int64), n=jnp.zeros(N, jnp.int32))
+              ev=jnp.zeros(N, jnp.int64), n=jnp.zeros(N, jnp.int32), pk=jnp.zeros(N, jnp.int32), pj=jnp.zeros(N, jnp.int64),
+              pch=jnp.zeros(N, jnp.int32))
     seg0 = target.locate(target.to_local(prim["x"]))
     P = dict(sp=jnp.asarray(species_of(prim["pdg"])), x=jnp.asarray(prim["x"], dtype), u=jnp.asarray(prim["u"], dtype),
              p=jnp.asarray(prim["p"], dtype), t=jnp.asarray(prim["t"], dtype), seg=jnp.asarray(seg0, jnp.int32),
@@ -546,7 +562,7 @@ def run(bank, target, fm, env, prim, seed=1, st=C.Stepping(), pool=1 << 16, emit
     rec, rcount = _empty_rec(R, dtype), jnp.int64(0)
     cnt = jnp.zeros(len(COUNTERS), jnp.int64)
     key = jax.random.PRNGKey(seed)
-    first, steps_run = 0, 0
+    first, steps_run, stuck_prev = 0, 0, None
     for it in range(max_chunks):
         kr = jax.random.fold_in(key, 2 * it)
         L, emit, ecount = _refill(L, emit, ecount, kr, 1.0)
@@ -560,6 +576,11 @@ def run(bank, target, fm, env, prim, seed=1, st=C.Stepping(), pool=1 << 16, emit
         steps_run += int(i)
         if int(i) == 0 and bool(jnp.all(L.alive)):
             raise RuntimeError("emission buffer full with no free lane: raise emit_cap or pool")
+        # every lane holding a deferred emission while the buffer has no room for any of them cannot progress
+        stuck = int(ecount) if bool(jnp.all(L.alive & (L.pk > 0))) else None
+        if stuck is not None and stuck == stuck_prev:
+            raise RuntimeError("every lane holds a deferred emission and the buffer is full: raise emit_cap or pool")
+        stuck_prev = stuck
     else:
         raise RuntimeError("device chain did not finish")
     c = {k: int(v) for k, v in zip(COUNTERS, np.asarray(cnt))}

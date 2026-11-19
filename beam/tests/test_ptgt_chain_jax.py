@@ -71,7 +71,7 @@ def test_refill_moves_emissions_into_dead_lanes():
     N, E = 8, 16
     L = J.Lanes(alive=jnp.array([True, False] * 4), sp=jnp.zeros(N, jnp.int32), x=jnp.zeros((N, 3)), u=jnp.zeros((N, 3)),
                 p=jnp.ones(N), t=jnp.zeros(N), tau=jnp.full(N, jnp.inf), seg=jnp.full(N, -1, jnp.int32), ev=jnp.zeros(N, jnp.int64),
-                n=jnp.zeros(N, jnp.int32))
+                n=jnp.zeros(N, jnp.int32), pk=jnp.zeros(N, jnp.int32), pj=jnp.zeros(N, jnp.int64), pch=jnp.zeros(N, jnp.int32))
     emit = J._empty_emit(E, jnp.float64)
     emit = (emit[0], emit[1].at[:6].set(J.species_of(np.array([211] * 6))), emit[2], emit[3], emit[4].at[:6].set(7.0),
             emit[5], emit[6], emit[7].at[:6].set(jnp.arange(6)))
@@ -94,3 +94,48 @@ def test_float32_target_far_from_origin_finishes(tmp_path):
     rec, cnt = J.run(bank, tgt, fm, env, prim, seed=9, pool=2048, steps=32, dtype=jnp.float32, max_chunks=20000)
     assert cnt["inelastic"] == 1000 and cnt["step_cap"] == 0
     assert len(rec["pdg"]) > 100 and np.allclose(rec["x"][:, 2], -5300.0, atol=0.05)
+
+
+def _bank_two_rows(tmp_path, sigma_p, rows=(1, 9)):
+    """Proton cells with one trial per multiplicity in `rows`; secondaries are 150 MeV/c protons (below the nucleon
+    cut: each is counted once as stopped). No other species interacts."""
+    shape = (len(D.SPECIES), len(MATS), EDGES.size - 1)
+    cells = {k: np.zeros(shape) for k in D.CELL_ARRAYS}
+    cells["x0"][:] = 1e12
+    cells["sigma_inel"][0] = sigma_p
+    cells["el_cos_icdf"] = np.ones(shape + (D.N_EL,))
+    nb = EDGES.size - 1
+    tc = np.repeat(np.arange(nb), len(rows))                       # proton cells are the first nb flat cells
+    per = np.tile(np.asarray(rows), nb)
+    trials = dict(trial_cell=tc, sec_offsets=np.concatenate([[0], np.cumsum(per)]), edep_local=np.zeros(tc.size))
+    ns = int(per.sum())
+    secs = dict(sec_pdg=np.full(ns, 2212, np.int32), sec_p=np.tile([[0.0, 0.0, 150.0]], (ns, 1)))
+    fields = dict(name="beam.thin_target.synthetic", source=dict(samples=[], description="synthetic"),
+                  generator=dict(name="test", release="none", physics_list="none", configuration="none"),
+                  release=dict(repository="test", commit="none", entry_point="test"), seeds=dict(build=1),
+                  config_hash=None, split=dict(training="all", held_out="none", rule="synthetic"),
+                  unrecorded=dict(config_hash="synthetic"))
+    D.save_bank(tmp_path / "b2.npz", MATS, EDGES, cells, trials, secs, fields)
+    return D.Bank.load(tmp_path / "b2.npz")
+
+
+@pytest.mark.parametrize("pool,emit_cap", [(4096, None), (32, 64)])
+def test_deferral_keeps_the_sampled_outcome(tmp_path, pool, emit_cap):
+    """Interaction probability 1/2 in the rod and rows of 1 or 9 secondaries. A tiny emission buffer defers most
+    emitters; the interaction fraction and the mean multiplicity must not move (redrawing a deferred step would
+    lower both)."""
+    L_rod = 100.0
+    bank = _bank_two_rows(tmp_path, sigma_p=np.log(2.0) / L_rod)
+    tgt = D.Target.rod(L_rod, 10.0, 10.0, 10.0)
+    env = C.Envelope(z_nodes=np.array([-5000.0, 5000.0]), r_nodes=np.array([1900.0, 1900.0]), z_min=-300.0,
+                     z_plane=300.0, r_plane=1800.0, axis_x=0.0)
+    n = 8000
+    prim = C.primaries(n, tgt, np.random.default_rng(11))
+    rec, cnt = J.run(bank, tgt, _uniform_map(0.0), env, prim, seed=12, pool=pool, emit_cap=emit_cap, steps=64,
+                     dtype=jnp.float64, max_chunks=200000)
+    if emit_cap:
+        assert cnt["deferred"] > n // 4, cnt                       # the test exercises deferral
+    frac = cnt["inelastic"] / n
+    assert abs(frac - 0.5) < 4 * np.sqrt(0.25 / n), cnt
+    mult = cnt["stopped"] / cnt["inelastic"]
+    assert abs(mult - 5.0) < 4 * 4.0 / np.sqrt(cnt["inelastic"]), cnt
