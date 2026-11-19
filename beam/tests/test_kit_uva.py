@@ -759,6 +759,32 @@ def test_beam_edep_cpu_streams_the_same_inputs_into_one_cpu_core(tmp_path):
                                         kit_task.EDEP_EDGE}
 
 
+def test_beam_edep_cpu_request_is_sized_from_the_electrons():
+    size = lambda n: (lambda r: (r.minutes, r.mem_gb))(kit_task.edep_cpu_resources({"electrons": n}, kitmod.Resources))  # noqa
+    # measured: 5k CE <= 22 min, 10k CE <= 42 min, MaxRSS <= 10.3 GB; request 1.5x the longest, 12 GB
+    assert [size(n) for n in (1, 5_000, 10_000, 20_000)] == [(30, 12), (35, 12), (65, 12), (125, 12)]
+    flat = (kit_task.EDEP_CPU_MINUTES, kit_task.EDEP_CPU_MEM_GB)
+    assert size(0) == size(20_001) == size(100_000) == flat == (240, 16)     # not measured: the flat request
+    r = kit_task.edep_cpu_resources({"electrons": 10_000}, kitmod.Resources)
+    assert (r.cores, r.gpus, r.gpu_type) == (1, 0, "")
+    t = kitmod.TASKS["beam_edep_cpu"]                                       # the mounted route sizes the same way
+    assert t.resources_for({"electrons": 10_000}) == r and t.resources_for({"electrons": 100_000}) == t.resources
+    assert kitmod.TASKS["beam_edep"].resources_for({"electrons": 10_000}) == kitmod.TASKS["beam_edep"].resources
+
+
+def test_beam_edep_cpu_streamed_submit_records_the_sized_request(tmp_path):
+    site, ep, kit, streamed = make(tmp_path)
+    kit._delegates["beam_edep_cpu"] = kit_uva.BeamEdepCpuStream(kit, source=Source(), code="/path/to/slurm/beam",
+                                                               background=False)
+    assert kit.submit("bc10k", {**PE, "task": "beam_edep_cpu", "dtype": "float64", "electrons": 10_000}, [], []) == {
+        "handle": "bc10k"}
+    res = kit._delegates["beam_edep_cpu"]._rec("bc10k")["resources"]
+    assert (res["minutes"], res["mem_gb"], res["cores"]) == (65, 12, 1)
+    assert kit.submit("bc100k", {**PE, "task": "beam_edep_cpu", "dtype": "float64"}, [], []) == {"handle": "bc100k"}
+    res = kit._delegates["beam_edep_cpu"]._rec("bc100k")["resources"]
+    assert (res["minutes"], res["mem_gb"]) == (240, 16)                     # 100k CE: outside the measured range
+
+
 def test_beam_edep_cpu_mounted_body_runs_the_writer_on_one_core():
     t = kitmod.TASKS["beam_edep_cpu"]
     assert t.resources.gpus == 0 and t.resources.cores == 1
