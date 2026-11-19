@@ -32,30 +32,45 @@ may be yields only (per-path accept fractions); its validity is then the fractio
 add the grid jobs replaced per unit of work. `--allow-missing` (coverage runs only, never a leaderboard) lists a
 missing or unscorable arm instead of failing.
 
+### Extensions for the B1-B4 cards (optional keys of `reference.json`)
+
+| Key | Arm files | What the scorer does |
+|---|---|---|
+| `yield_max_se` `{name: se}` | - | a yield with a larger se fails as underpowered, so a small sample cannot pass a tight tolerance (B1's 0.2 % peak position needs se <= 0.067 %) |
+| `classifier` `{"file", "seed"}` | `features.npz` (array `X`, one row per object) in `stock/`, `floor/` and each arm | fixed NumPy logistic regression on standardised quadratic features, 50/50 train/test, AUC on the test half; `cls_score = clip(2 (1 - AUC), 0, 1)`, 1 = indistinguishable; the floor's score is the ceiling. Reported beside validity, not in it (B1, B2) |
+| `track_agreement` `{"file", "threshold_sigma", "min_fraction"}` | `tracks.npz`: stock `id`, `params`, `sigma` (+ `truth`, `good`); arm `id`, `params` (+ `sigma`, `good`) | agreement = fraction of stock tracks whose fast fit is within threshold x sigma_stock in every parameter (unmatched tracks disagree); the paired good-fit ratio is a yield; with `min_fraction` the agreement is a pass/fail yield; pulls against truth reported (B3). A tracks-only task needs no hists.json |
+| `scaling_batches` `[10, 1000, 100000]` | bench.json `scaling: [{"batch", "rate"}]` | multiplier per batch size and the crossover batch (first multiplier > 1); headline rate = `warm_rate`, else the largest batch (B3) |
+| `group` + `part` (`dev`, `place`, `design`) | - | per group and dtype: portability ratio = mean place validity / dev validity, adaptation score = mean design validity; one task per layout (B2) |
+| `capture_budget` | bench.json `capture_entries` | an arm over its adaptation budget, or not declaring it, is an error (B2 design moves) |
+
 ## Tasks
 
 `python -m benchmarks.fastsim_score.tasks` prints this table (`tasks.py`). Each task is a directory of the reference tree.
 
-| task | what | boundary | stock reference | scored | floor | rate |
-|---|---|---|---|---|---|---|
-| W1 | Muon beam | TS-entrance mu/pi -> stopping-target stops | Geant4 TS + DS stages, expectation over stock re-seeds | stop foil, time, radius, DS-entrance momentum (paired per shard); stops per shard | one stock re-seed | TS-entrance mu/pi per s |
-| W2 | Conversion electrons | CE stops -> CE track observables | full Geant4 events -> stock digi + LoopHelix reco | ValKalSeed histograms, paired shape per sub-shard (yields per generated electron are a separate study) | none yet (threshold 2) | events/s |
-| W3 | DIO electrons | DIO births -> CE track observables | full Geant4 events (every tracker step of the DIO dts) -> stock OffSpill digi + LoopHelix reco | CE-selected momentum spectrum 95-106 MeV/c; tail counts above 95 and 100 MeV/c and all CE-selected | none yet (threshold 2) | generated DIO muons per s |
-| W4 | RPC electrons | RPC births -> tracker entry | Geant4 RPC sample at the tracker entrance | tracker-entry fiducial yield (no stock reco reference after the response yet) | none yet (threshold 2) | generated RPC captures per s |
-| W5 | CRV cosmics | CRY cosmics -> CRV coincidence clusters | Geant4 steps -> stock CRV response + reco | ValCrv histograms, paired shape per shard; reco pulse yield | stock with another seed | events/s |
-| W6 | Pileup mixing | primary steps + donor pools -> mixed tracker digis + CRV pulses | stock mixing of the same primaries | digis per plane, pulses per sector (paired by event); tracker and CRV totals | none yet (threshold 2) | events/s |
-| W7 | Calorimeter | CE calorimeter steps -> calo digis, hits, clusters | Geant4 calorimeter steps -> stock calo digi + reco | cluster E, t, R, N (paired shape per block); cluster yield | stock with another seed | events/s |
-| W8 | Tracker trigger | StrawDigis -> tracker trigger path decisions | the stock trigger on the same digis | accept fraction per path (measured, paired error, tolerance 2 % of the acceptance) | none yet (threshold 2) | events/s |
-| W9 | CRV design model | CRV module design parameters -> veto (in)efficiency | full-simulation CRV veto comparison of the same design (stock arm of the design study) | inefficiency per momentum bin; efficiency per CRV sector | none yet (threshold 2) | selected CE-proxy events per s |
-| CRVLY | CRV light-yield (lookup) table generator | CRV counter geometry and optics -> photon arrival lookup tables | the v6_0 lookup tables (2019 standalone CRV optical simulation; the generator's default v6 model) | bin-by-bin arrival probability per table type (scintillation, Cerenkov in scintillator, Cerenkov in fibre), error binomial on the photons generated per bin; grid jobs and cost per table | none yet (threshold 2) | tables/s |
-| PTGT | Production-target chain | protons on target -> particles at the transport-solenoid entrance | G4beamline on the same target configurations (the design board's rods) | stopped muons per POT and mu- + pi- per POT at the TS entrance per configuration (measured yields); p, cos theta, r and t at the TS entrance (shape); throughput per POT | replicate G4beamline runs of the same configuration | POT/s |
+| task | what | boundary | stock reference | scored | floor | rate | status |
+|---|---|---|---|---|---|---|---|
+| W1 | Muon beam | TS-entrance mu/pi -> stopping-target stops | Geant4 TS + DS stages, expectation over stock re-seeds | stop foil, time, radius, DS-entrance momentum (paired per shard); stops per shard | one stock re-seed | TS-entrance mu/pi per s | scored |
+| W2 | Conversion electrons | CE stops -> CE track observables | full Geant4 events -> stock digi + LoopHelix reco | ValKalSeed histograms, paired shape per sub-shard (yields per generated electron are a separate study) | none yet (threshold 2) | events/s | scored |
+| W3 | DIO electrons | DIO births -> CE track observables | full Geant4 events (every tracker step of the DIO dts) -> stock OffSpill digi + LoopHelix reco | CE-selected momentum spectrum 95-106 MeV/c; tail counts above 95 and 100 MeV/c and all CE-selected | none yet (threshold 2) | generated DIO muons per s | scored |
+| W4 | RPC electrons | RPC births -> tracker entry | Geant4 RPC sample at the tracker entrance | tracker-entry fiducial yield (no stock reco reference after the response yet) | none yet (threshold 2) | generated RPC captures per s | scored |
+| W5 | CRV cosmics | CRY cosmics -> CRV coincidence clusters | Geant4 steps -> stock CRV response + reco | ValCrv histograms, paired shape per shard; reco pulse yield | stock with another seed | events/s | scored |
+| W6 | Pileup mixing | primary steps + donor pools -> mixed tracker digis + CRV pulses | stock mixing of the same primaries | digis per plane, pulses per sector (paired by event); tracker and CRV totals | none yet (threshold 2) | events/s | scored |
+| W7 | Calorimeter | CE calorimeter steps -> calo digis, hits, clusters | Geant4 calorimeter steps -> stock calo digi + reco | cluster E, t, R, N (paired shape per block); cluster yield | stock with another seed | events/s | scored |
+| W8 | Tracker trigger | StrawDigis -> tracker trigger path decisions | the stock trigger on the same digis | accept fraction per path (measured, paired error, tolerance 2 % of the acceptance) | none yet (threshold 2) | events/s | scored |
+| W9 | CRV design model | CRV module design parameters -> veto (in)efficiency | full-simulation CRV veto comparison of the same design (stock arm of the design study) | inefficiency per momentum bin; efficiency per CRV sector | none yet (threshold 2) | selected CE-proxy events per s | scored |
+| CRVLY | CRV light-yield (lookup) table generator | CRV counter geometry and optics -> photon arrival lookup tables | the v6_0 lookup tables (2019 standalone CRV optical simulation; the generator's default v6 model) | bin-by-bin arrival probability per table type (scintillation, Cerenkov in scintillator, Cerenkov in fibre), error binomial on the photons generated per bin; grid jobs and cost per table | none yet (threshold 2) | tables/s | defined |
+| PTGT | Production-target chain | protons on target -> particles at the transport-solenoid entrance | G4beamline on the same target configurations (the design board's rods) | stopped muons per POT and mu- + pi- per POT at the TS entrance per configuration (measured yields); p, cos theta, r and t at the TS entrance (shape); throughput per POT | replicate G4beamline runs of the same configuration | POT/s | scored |
+| B1 | Calorimeter shower model inside and outside Geant4 (FS-CALO-G4) | e+-/gamma state at a calorimeter disk front -> crystal deposits (stock calo digi + reco downstream) | Mu2eG4 with the model off on the same CeEndpoint primaries, one Offline build | cluster E, time, x, y, radius, size, clusters per event, hit E; yields: events with a cluster > 10 MeV, CE peak position (tolerance 0.2 %, se <= 0.067 %); classifier score on per-cluster features (reported beside validity) | model off with another seed | events/s | defined |
+| B2 | Geometry-portable CRV module interaction (FS-CRV-MOD) | entry state at a CRV module envelope (module frame) -> the module's CrvSteps + exiting particles | full Geant4 per layout: dev = held-out nominal-layout shards; place = placement moves of the current module type; design = the CRV design study's short-listed layouts (stock from its grid production, reused) | per layout: DQMVAL CRV histograms (steps, pulses, coincidences), exit-particle yield and spectrum; portability ratio = mean place validity / dev validity; adaptation score = mean design validity at the declared capture budget; classifier score on per-coincidence features | stock with another seed, per layout | events/s | defined |
+| B3 | Batched track fits against KinKal (FS-TRKFIT) | frozen stock reco inputs per track (combo hits, time cluster, seed) -> fit parameters and covariance at the tracker entrance | stock KinKal on CPU on the same inputs (agreement 1 by construction; sets the throughput basis); KinematicLine (extracted), CentralHelix cosmics, LoopHelix CE | agreement: fraction of tracks within 0.1 sigma of the stock fit in every parameter (ranking key); good-fit ratio fast/stock (paired); pulls against MC truth; throughput scaling curve at batch 10, 10^3, 10^5 tracks with the crossover batch | none yet (threshold 2) | tracks/s | defined |
+| B4 | GPU e+-/gamma transport for the flash (FS-FLASH-GPU) | flash primaries at one stage boundary fixed before any run (recommended: DS entrance) -> tracker StrawGasSteps, the DS/tracker regions offloaded through G4VTrackingManager | Mu2eG4 without offload on the same primaries and build; CPU controls for the stock behaviour the GPU cannot copy (no low-energy kill; tracks killed on leaving the DS) | StrawGasStep edep, multiplicity, time and per-plane histograms; the flash_edep objective as a yield (tolerance proposed 3 %) | stock with another seed | events/s | defined |
 
 ## Coverage on main `c03dbd13` (2026-11-18)
 
 Every fast arm is rerun on main `c03dbd13`, without #283, with each workflow's own validation recipe on the same
 events as its frozen stock reference, and the bench timer with the published headline pass sizes. No stock jobs were
 run. The scores come from `score --allow-missing` (coverage) and cover 20 of 20 arms (W1-W9 and PTGT), with **mean validity
-0.870** and a **throughput geometric mean of x1,046**. The last column is the same task scored on the older arms. The reference trees
+0.900** and a **throughput geometric mean of x1,009**. The last column is the same task scored on the older arms. The reference trees
 are kept privately.
 
 | task | dtype | validity | flagged / histograms | yields passing | throughput x | device | before (scored 2026-11-18 on older arms) |
@@ -78,8 +93,8 @@ are kept privately.
 | W8 | float64 | 1.000 | 0 / 0 | 22 / 22 | 305 | A100-80 | 1.000, x38 |
 | W9 | float32 | 0.500 | 1 / 2 | 1 / 1 | 38635 | CPU, 4 cores | not scored |
 | W9 | float64 | 0.500 | 1 / 2 | 1 / 1 | 38499 | CPU, 4 cores | 0.500 |
-| PTGT | float32 | 0.561 | 0 / 4 | 37 / 66 | 88132 | A100 | not scored |
-| PTGT | float64 | 0.561 | 0 / 4 | 37 / 66 | 53064 | A100 | not scored |
+| PTGT | float32 | 0.864 | 0 / 4 | 57 / 66 | 58341 | A100 | 0.561, x88132 (absorbing TS-window rings) |
+| PTGT | float64 | 0.864 | 0 / 4 | 57 / 66 | 39112 | A100 | 0.561, x53064 (absorbing TS-window rings) |
 
 - **W1:**
   - the stock arm is the expectation over 16 stock re-seeds, now compared per shard (paired, yield included);
@@ -107,12 +122,32 @@ are kept privately.
     timings, one CPU core), with the model timed from the CRV-entry states;
   - the sector efficiencies flag (sectors with few events).
 - **Floors:** none for W2, W3, W4, W6, W8 or W9; making one would need new stock jobs.
-- **PTGT:** 33 design-board rods at 1M POT, both dtypes. The device chain is on a development branch, not yet in main.
-  - Stops per POT pass on all 33 rods (about 0.99 of G4beamline).
-  - mu- + pi- per POT at the TS entrance passes on 4 of 33 (0.93 of G4beamline), an open modelling item of the PS stage.
+- **PTGT:** 33 design-board rods, two seeds of 1M POT each (pooled), both dtypes. The device chain (#293) is not yet in
+  main.
+  - The TS-window steel rings are crossed as thin steel slabs. The first freeze treated them as perfect absorbers, which
+    gave mu- + pi- at the TS entrance 0.93 of G4beamline and validity 0.561 (the "before" column).
+  - Stops per POT pass on all 33 rods (median 1.02 / 1.00, float32 / float64). The stock stops error is
+    max(spread over the G4beamline shards, Poisson), since the shard spread falls below Poisson on most rods.
+  - mu- + pi- per POT at the TS entrance passes on 24 of 33 (median 0.96); the nine failing rods are at 0.94-0.96.
   - The TS-entrance shapes at the nominal rod pass, against G4beamline's replicate run as the floor.
-  - Throughput is per POT for the target + PS stage.
+  - Throughput is per POT for the target + PS stage. The slab crossing costs about a third of the absorbing version's
+    rate.
 - **CRVLY:** defined, not yet scored; its reference waits for full generated tables with a measured stock cost per table.
+- **W8:** the next rescore moves its scored arm to the exact-hits trigger code (#283), merged after this coverage.
+
+## B1-B4: the Geant4 fast-simulation and GPU cards
+
+B1 FS-CALO-G4, B2 FS-CRV-MOD, B3 FS-TRKFIT and B4 FS-FLASH-GPU are tasks of this scorer, with a workflow key per task
+(B2 one per layout, B3 one per configuration), the same `hists.json` / `bench.json` / `reference.json` layout, both
+dtypes, and references kept privately. They are defined, not scored: no reference exists yet. The task table gives
+each card's boundary, stock arm, metrics, floor and rules; the extensions above are the scorer side.
+
+| Card | Ranking | Beside validity | Reference rule |
+|---|---|---|---|
+| B1 | validity (cluster histograms; cluster yield; CE peak position at 0.2 % with se <= 0.067 %) | classifier score; throughput on the declared host; memory increase <= 250 MB per thread | beats Gflash profiles and all-energy-in-the-entry-crystal on validity and classifier score |
+| B2 | final validity (place + design layouts) | portability ratio, adaptation score at the capture budget, classifier score, exit-particle closure | the absolute-placement hybrid passes dev and fails place; the nominal library unadapted fails design |
+| B3 | agreement with stock KinKal within 0.1 sigma | good-fit ratio, pulls, throughput scaling curve and crossover batch | a least-squares helix without material or drift fails agreement |
+| B4 | validity (StrawGasStep histograms; flash_edep yield) | throughput (job wall, CPU-only vs offload, same node); engine selected by score | the earlier direct-electron sketch fails |
 
 ## Layout
 
