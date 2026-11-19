@@ -139,3 +139,38 @@ def test_deferral_keeps_the_sampled_outcome(tmp_path, pool, emit_cap):
     assert abs(frac - 0.5) < 4 * np.sqrt(0.25 / n), cnt
     mult = cnt["stopped"] / cnt["inelastic"]
     assert abs(mult - 5.0) < 4 * 4.0 / np.sqrt(cnt["inelastic"]), cnt
+
+
+@pytest.mark.parametrize("dtype", [jnp.float64, jnp.float32])
+def test_device_matches_host_with_slab(tmp_path, dtype):
+    """Synthetic cascade with a full-disk slab before the plane (absorption 1 - exp(-0.4) at normal incidence, loss
+    and scattering): device and host agree within statistics on recorded lanes, slab absorption and momentum."""
+    bank = _bank(tmp_path, n_pim=3)
+    shape = (len(D.SPECIES), len(MATS), EDGES.size - 1)
+    cells = {k: np.zeros(shape) for k in D.CELL_ARRAYS}
+    cells["sigma_inel"][:] = 0.02; cells["dedx"][:] = 0.5; cells["x0"][:] = 20.0
+    cells["el_cos_icdf"] = np.ones(shape + (D.N_EL,))
+    fields = dict(name="beam.thin_target.synthetic", source=dict(samples=[], description="synthetic"),
+                  generator=dict(name="test", release="none", physics_list="none", configuration="none"),
+                  release=dict(repository="test", commit="none", entry_point="test"), seeds=dict(build=1),
+                  config_hash=None, split=dict(training="all", held_out="none", rule="synthetic"),
+                  unrecorded=dict(config_hash="synthetic"))
+    D.save_bank(tmp_path / "slab.npz", MATS, EDGES, cells,
+                dict(trial_cell=np.zeros(0, np.int64), sec_offsets=np.zeros(1, np.int64), edep_local=np.zeros(0)),
+                dict(sec_pdg=np.zeros(0, np.int32), sec_p=np.zeros((0, 3))), fields)
+    slab = (D.Bank.load(tmp_path / "slab.npz"), 0)
+    tgt = D.Target.rod(100.0, 10.0, 10.0, 10.0)
+    env = C.Envelope(z_nodes=np.array([-5000.0, 5000.0]), r_nodes=np.array([1900.0, 1900.0]), z_min=-2000.0,
+                     z_plane=800.0, r_plane=1800.0, axis_x=0.0, slabs=((400.0, 0.0, 1850.0, 20.0),))
+    prim = C.primaries(4000, tgt, np.random.default_rng(3))
+    host = C.run(bank, tgt, lambda x: np.tile([0.0, 0.0, 2.0], (len(x), 1)), env, prim, np.random.default_rng(4),
+                 slab=slab)
+    rec, cnt = J.run(bank, tgt, _uniform_map(2.0), env, prim, seed=5, pool=4096, steps=32, dtype=dtype, slab=slab)
+    hc = host["counts"]
+    nh, nd = hc["recorded"], len(rec["pdg"])
+    assert hc["slab_absorbed"] > 500 and nh > 1000, hc
+    assert abs(nd - nh) < 4 * np.sqrt(nh), (nh, nd)
+    assert abs(cnt["slab_absorbed"] - hc["slab_absorbed"]) < 5 * np.sqrt(hc["slab_absorbed"]), (cnt, hc)
+    ph, pd = np.linalg.norm(host["record"]["p"], axis=1), np.linalg.norm(rec["p"], axis=1)
+    assert abs(np.median(ph) - np.median(pd)) < 0.05 * np.median(ph)
+    assert np.allclose(rec["x"][:, 2], 800.0, atol=1e-2)

@@ -64,7 +64,9 @@ def _files(d, kind, species, material):
     return out
 
 
-def build(d):
+def build(d, xs_only=False):
+    """Bank of one campaign directory. xs_only: macroscopic tables only (a passive material crossed as a thin slab,
+    where an inelastic interaction absorbs the lane): no inel / el files are read, sigma_inel is kept."""
     grid = json.load(open(os.path.join(d, "grid.json")))
     edges = np.asarray(grid["log10_ke_edges"], float)
     mats = tuple(grid["materials"])
@@ -84,7 +86,7 @@ def build(d):
                 for j, key in enumerate(("sigma_inel", "sigma_el", "dedx", "x0")):
                     cells[key][si, mi, k] = v[:, j]
                 filled[si, mi, k] = True
-            if sp not in HADRONS:
+            if sp not in HADRONS or xs_only:
                 continue
             for b0, path in _files(d, "inel", name, mat):
                 r = read_inel(path)
@@ -109,6 +111,11 @@ def build(d):
     for key, chunks in el_samples.items():
         c = np.clip(np.concatenate(chunks), -1.0, 1.0)
         icdf[key] = np.maximum.accumulate(np.quantile(c, u))
+    if xs_only:
+        empty = dict(trial_cell=np.zeros(0, np.int64), sec_offsets=np.zeros(1, np.int64), edep_local=np.zeros(0))
+        return dict(edges=edges, materials=mats, cells=dict(cells, el_cos_icdf=icdf), trials=empty,
+                    secondaries=dict(sec_pdg=np.zeros(0, np.int32), sec_p=np.zeros((0, 3))), stats=dict(xs_only=True),
+                    grid=grid, el_cells=0)
     if not tc:
         raise ValueError(f"{d}: no inel files")
     tc, edep, nsec = np.concatenate(tc), np.concatenate(edep), np.concatenate(nsec)
@@ -135,8 +142,9 @@ def main(argv=None):
     ap.add_argument("dir")
     ap.add_argument("--out", required=True)
     ap.add_argument("--commit", default="unrecorded")
+    ap.add_argument("--xs-only", action="store_true", help="macroscopic tables only (passive slab material)")
     a = ap.parse_args(argv)
-    b = build(a.dir)
+    b = build(a.dir, xs_only=a.xs_only)
     g = b["grid"]
     lst = g.get("physics_list", "QGSP_BERT_HP")
     fields = dict(name=f"beam.thin_target.{lst}",

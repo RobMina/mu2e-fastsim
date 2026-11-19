@@ -75,6 +75,8 @@ class Envelope:
     r_plane: float = np.inf             # record radius about the axis
     axis_x: float = 3904.0
     annuli: tuple = ()                  # absorbing annuli (z, r_in, r_out) crossed in either direction (thin rings)
+    slabs: tuple = ()                   # passive thin rings (z, r_in, r_out, thickness) crossed in either direction:
+                                        # loss, scattering and absorption from the tables of a slab material (slab_cross)
 
     def radius(self, x):
         return np.hypot(x[:, 0] - self.axis_x, x[:, 1])
@@ -94,6 +96,48 @@ class Stepping:
     msc_scale: float = 1.0              # scale on the Highland width (diagnostic switch)
     max_iter: int = 200_000
     cuts: D.Cuts = field(default_factory=D.Cuts)
+
+
+SLAB_SUBSTEPS = 4
+SLAB_MIN_COS = 0.05                     # path through a slab capped at thickness / 0.05 (grazing crossings)
+
+
+def slab_cross(sbank, mat, pdg, p, u, thickness, rng, n_sub=SLAB_SUBSTEPS):
+    """Lanes crossing a thin slab of material `mat` (index in the bank `sbank`, which may hold cross sections only):
+    path thickness / |u_z|; inelastic interaction = absorption (no secondaries); mean ionisation loss in n_sub
+    substeps; Highland scattering over the path with the geometric mean of the entry and exit p*beta. Lateral
+    displacement inside the slab is neglected. Returns (p, u, absorbed)."""
+    pdg, p, u = np.asarray(pdg), np.asarray(p, float), np.asarray(u, float)
+    m, q = mass(pdg), charge(pdg)
+    sp = D.species_index(pdg)
+    path = thickness / np.maximum(np.abs(u[:, 2]), SLAB_MIN_COS)
+    e = sbank["log10_ke_edges"]
+    lo, hi = 10.0 ** e[0], 10.0 ** e[-1]
+
+    def cell(ke):
+        return sbank.cell(sp, np.full(sp.shape, mat), np.clip(ke, lo * (1 + 1e-9), hi * (1 - 1e-9)))
+
+    ke0 = np.hypot(p, m) - m
+    c0 = cell(ke0)
+    absorbed = rng.random(p.size) < -np.expm1(-sbank.per_cell("sigma_inel", c0) * path)
+    x0 = sbank.per_cell("x0", c0)
+    ke = ke0.copy()
+    for _ in range(n_sub):
+        ke = ke - sbank.per_cell("dedx", cell(np.maximum(ke, lo))) * path / n_sub
+    stopped = ke <= 0
+    ke = np.maximum(ke, 0.0)
+    pn = np.sqrt(np.maximum((ke + m) ** 2 - m ** 2, 0.0))
+    b0 = p / np.hypot(p, m)
+    b1 = pn / np.maximum(np.hypot(pn, m), 1e-300)
+    pb, bet = np.sqrt(np.maximum(p * b0 * pn * b1, 1e-300)), np.sqrt(b0 * b1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        th0 = 13.6 / pb * np.sqrt(path / x0) * (1 + 0.038 * np.log(np.maximum(path / (x0 * np.maximum(bet, 1e-6) ** 2),
+                                                                                1e-12)))
+    th0 = np.where((q != 0) & (pn > 0), np.abs(th0), 0.0)
+    th = np.minimum(th0 * np.sqrt(-2.0 * np.log(1.0 - rng.random(p.size))), np.pi)
+    un = D.rotate_secondaries(np.stack([np.sin(th), np.zeros(p.size), np.cos(th)], 1), u, rng.random(p.size) * 2 * np.pi)
+    un /= np.linalg.norm(un, axis=1, keepdims=True)
+    return pn, un, absorbed | stopped
 
 
 def _rk4(xx, u, p, q, h, bfield):
@@ -229,9 +273,9 @@ def primaries(n, target, rng, sigma=1.0, ke=8000.0, offset=0.5):
                 event=np.arange(n))
 
 
-def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None):
+def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, slab=None):
     """Transport primaries to the record plane. Returns recorded states (event, pdg, x, p, t), deposit per target
-    segment and counters.
+    segment and counters. slab=(bank, material index): tables for env.slabs.
 
     enclosure=(R, H) (diagnostic): instead of the plane, record every lane (all species) where it first leaves the
     cylinder of radius R and half-length H about the target axis (target frame), and stop it there."""
@@ -389,8 +433,38 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None):
                     f = (ti[enter] + 1e-6) / clen[enter]
                     xn[e] = x0v[e] + (ti[enter] + 1e-6)[:, None] * cd[enter]
                     hv[e] = hv[e] * f
+            # passive slabs: the step ends just past the first slab plane crossed inside the ring, where the lane
+            # loses energy, scatters or is absorbed
+            sl_h, sl_abs = np.zeros(0, np.int64), np.zeros(0, bool)
+            if env.slabs:
+                if slab is None:
+                    raise ValueError("envelope slabs need slab=(bank, material index)")
+                fs, sid = np.full(i.size, np.inf), np.full(i.size, -1)
+                for k_, (za, ra, rb_, _th) in enumerate(env.slabs):
+                    hz = ((x0v[:, 2] - za) * (xn[:, 2] - za) <= 0) & (xn[:, 2] != x0v[:, 2])
+                    if not np.any(hz):
+                        continue
+                    fa = np.where(hz, (za - x0v[:, 2]) / np.where(hz, xn[:, 2] - x0v[:, 2], 1.0), np.inf)
+                    ra_ = env.radius(x0v + np.where(hz, fa, 0.0)[:, None] * (xn - x0v))
+                    hit = hz & (ra_ >= ra) & (ra_ < rb_) & (fa < fs)
+                    fs[hit], sid[hit] = fa[hit], k_
+                sl_h = np.flatnonzero(sid >= 0)
+                if sl_h.size:
+                    f = fs[sl_h]
+                    us = L["u"][i[sl_h]] + f[:, None] * (un[sl_h] - L["u"][i[sl_h]])
+                    us /= np.linalg.norm(us, axis=1, keepdims=True)
+                    xs = x0v[sl_h] + f[:, None] * (xn[sl_h] - x0v[sl_h])
+                    xs[:, 2] += np.where(us[:, 2] >= 0, 1e-6, -1e-6)
+                    hv[sl_h] = hv[sl_h] * f
+                    th_ = np.asarray([env.slabs[k][3] for k in sid[sl_h]])
+                    p_sl, u_sl, sl_abs = slab_cross(slab[0], slab[1], L["pdg"][i[sl_h]], L["p"][i[sl_h]], us, th_, rng)
+                    xn[sl_h], un[sl_h] = xs, u_sl
+                    cnt["slab_crossed"] = cnt.get("slab_crossed", 0) + int(sl_h.size)
+                    cnt["slab_absorbed"] = cnt.get("slab_absorbed", 0) + int(sl_abs.sum())
             L["t"][i] += hv / (beta[i] * C_MM_NS)
             L["tau"][i] -= np.where(np.isfinite(L["tau"][i]), hv * m[i] / (L["p"][i] * C_MM_NS), 0.0)
+            if sl_h.size:
+                L["p"][i[sl_h]] = p_sl
             # record plane crossing (downstream), absorbers
             zp = env.z_plane
             cross = (x0v[:, 2] < zp) & (xn[:, 2] >= zp)
@@ -423,6 +497,8 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None):
             if neu.size:
                 gone[neu[hv[neu] == 0.0]] = True
             ab = (env.radius(xn) > env.r_max(xn[:, 2])) & ~gone
+            if sl_h.size:
+                ab[sl_h[sl_abs]] = True
             for za, ra, rb_ in env.annuli:
                 hitz = ((x0v[:, 2] - za) * (xn[:, 2] - za) <= 0) & (xn[:, 2] != x0v[:, 2])
                 if np.any(hitz):
@@ -482,6 +558,25 @@ def rod_target(length, r_up, r_mid, r_dn, z_center=-6164.5, x_axis=3904.0, tilt_
     return D.Target.rod(length, r_up, r_mid, r_dn, mat=mat, origin=np.array([x_axis, 0.0, z_center]), rot=rot)
 
 
+def load_slab(slabs, path, material):
+    """(bank, material index) for --slab, or None without slabs."""
+    if not slabs:
+        return None
+    if not path:
+        raise SystemExit("--slab needs --slab-bank")
+    sb = D.Bank.load(path)
+    mat = material or sb.materials[0]
+    if mat not in sb.materials:
+        raise SystemExit(f"slab material {mat} not in {sb.materials}")
+    return sb, sb.materials.index(mat)
+
+
+def slab_meta(slab, path):
+    if slab is None:
+        return None
+    return dict(path=str(path), material=slab[0].materials[slab[1]], content_hash=slab[0].lib.content_hash)
+
+
 def main(argv=None):
     import argparse
     import json
@@ -513,17 +608,22 @@ def main(argv=None):
                     help="p, n transport cut [MeV] (the bank must hold interactions down to it)")
     ap.add_argument("--annulus", nargs=3, type=float, action="append", default=[], metavar=("Z", "R_IN", "R_OUT"),
                     help="absorbing thin annulus at z (repeatable)")
+    ap.add_argument("--slab", nargs=4, type=float, action="append", default=[], metavar=("Z", "R_IN", "R_OUT", "THICK"),
+                    help="passive thin ring at z (repeatable): loss, scattering, absorption from --slab-bank")
+    ap.add_argument("--slab-bank", help="bank with the slab material's tables (cross sections only is enough)")
+    ap.add_argument("--slab-material", help="slab material in --slab-bank (default: its first)")
     ap.add_argument("--enclosure", nargs=2, type=float, metavar=("R", "H"),
                     help="diagnostic: record all species leaving this cylinder about the target, instead of the plane")
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
+    slab = load_slab(a.slab, a.slab_bank, a.slab_material)
     bank = D.Bank.load(a.bank)
     if a.material not in bank.materials:
         raise SystemExit(f"material {a.material} not in the bank {bank.materials}")
     tgt = rod_target(*a.rod, mat=bank.materials.index(a.material))
     fb = tsfield.FieldBank(a.maps)
     env = Envelope(z_nodes=np.asarray(a.env_z), r_nodes=np.asarray(a.env_r), z_min=a.z_min, z_plane=a.z_plane,
-                   r_plane=a.r_plane, annuli=tuple(tuple(x) for x in a.annulus))
+                   r_plane=a.r_plane, annuli=tuple(tuple(x) for x in a.annulus), slabs=tuple(tuple(x) for x in a.slab))
     st = Stepping(h_vac=a.h_vac, h_near=a.h_near, h_mat=a.h_mat, elastic=not a.no_elastic, msc_scale=a.msc_scale,
                   cuts=D.Cuts(ke_min_hadron=a.ke_min_hadron))
     rng = np.random.default_rng(a.seed)
@@ -534,7 +634,7 @@ def main(argv=None):
         n = min(a.chunk, a.pot - done)
         prim = primaries(n, tgt, rng)
         prim["event"] = prim["event"] + done
-        out = run(bank, tgt, fb, env, prim, rng, st, enclosure=a.enclosure)
+        out = run(bank, tgt, fb, env, prim, rng, st, enclosure=a.enclosure, slab=slab)
         recs.append(out["record"])
         edep += out["edep"]
         for k, v in out["counts"].items():
@@ -545,7 +645,8 @@ def main(argv=None):
     ref, meta = reference(rec, a.pot, a.point, a.shard)
     meta.update(rod=a.rod, material=a.material, seed=a.seed, counts=counts, edep_per_pot=(edep / a.pot).tolist(),
                 wall_s=wall, s_per_pot=wall / a.pot, maps=[str(m) for m in a.maps],
-                envelope=dict(z=a.env_z, r=a.env_r, z_min=a.z_min, r_plane=a.r_plane, z_plane=a.z_plane, annuli=a.annulus),
+                envelope=dict(z=a.env_z, r=a.env_r, z_min=a.z_min, r_plane=a.r_plane, z_plane=a.z_plane, annuli=a.annulus,
+                              slabs=a.slab, slab_bank=slab_meta(slab, a.slab_bank)),
                 stepping=dict(h_vac=st.h_vac, h_near=st.h_near, h_mat=st.h_mat, elastic=st.elastic,
                               msc_scale=st.msc_scale), bank=dict(path=str(a.bank),
                                                                             content_hash=bank.lib.content_hash))

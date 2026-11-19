@@ -193,3 +193,66 @@ def test_bank_builder_refuses_zero_stopping_power(tmp_path):
     _write_inel(d / "inel_proton_G4_W_b0_s1.bin", [(0, 5.0, 1.0, 0.0, [])])
     with pytest.raises(ValueError, match="stopping power"):
         PB.build(str(d))
+
+
+def test_slab_cross_absorption_loss_and_scattering(tmp_path):
+    """Constant tables: absorbed fraction 1 - exp(-sigma path), exact loss dedx * path, projected rms angle = Highland
+    with the geometric-mean p beta; the path grows as 1 / |u_z|."""
+    sb = _empty_bank(tmp_path, sigma_inel=0.01, dedx=1.0, x0=20.0)
+    rng = np.random.default_rng(21)
+    n, t, p0 = 20000, 10.0, 300.0
+    m = C.MASS[211]
+    for uz in (1.0, 0.5):
+        u = np.tile([np.sqrt(1 - uz * uz), 0.0, uz], (n, 1))
+        p, un, ab = C.slab_cross(sb, 0, np.full(n, -211), np.full(n, p0), u, np.full(n, t), rng)
+        path = t / uz
+        frac = -np.expm1(-0.01 * path)
+        assert abs(ab.mean() - frac) < 4 * np.sqrt(frac * (1 - frac) / n), (uz, ab.mean(), frac)
+        ke1 = np.hypot(p0, m) - m - 1.0 * path
+        assert np.allclose(p, np.sqrt((ke1 + m) ** 2 - m ** 2))
+        if uz == 1.0:
+            b0, b1 = p0 / np.hypot(p0, m), p[0] / np.hypot(p[0], m)
+            pb, bet = np.sqrt(p0 * b0 * p[0] * b1), np.sqrt(b0 * b1)
+            th0 = 13.6 / pb * np.sqrt(path / 20.0) * (1 + 0.038 * np.log(path / (20.0 * bet ** 2)))
+            assert abs(np.std(un[:, 0]) / th0 - 1) < 0.05, (np.std(un[:, 0]), th0)
+
+
+def test_chain_slab_ring_acts_inside_its_radii_only(tmp_path):
+    """mu- along z: the lane at r = 50 crosses the ring (40-60 mm) and is absorbed (huge sigma) or slowed (no sigma);
+    the lanes at r = 0 and r = 90 pass untouched."""
+    bank = _empty_bank(tmp_path)
+    env = C.Envelope(z_nodes=np.array([-1e4, 1e4]), r_nodes=np.array([200.0, 200.0]), z_min=-1000.0, z_plane=500.0,
+                     r_plane=150.0, axis_x=0.0, slabs=((250.0, 40.0, 60.0, 10.0),))
+    x = np.array([[0.0, 0.0, 0.0], [50.0, 0.0, 0.0], [90.0, 0.0, 0.0]])
+    prim = dict(pdg=np.full(3, 13), x=x, u=np.tile([0, 0, 1.0], (3, 1)), p=np.full(3, 200.0), t=np.zeros(3),
+                event=np.arange(3))
+    d1 = tmp_path / "a"; d1.mkdir()
+    absorber = _empty_bank(d1, sigma_inel=1e3, dedx=1.0, x0=1e12)
+    out = C.run(bank, _far_target(), _uniform(0.0), env, prim, np.random.default_rng(4), slab=(absorber, 0))
+    assert sorted(out["record"]["ev"].tolist()) == [0, 2]
+    assert out["counts"]["slab_crossed"] == 1 and out["counts"]["slab_absorbed"] == 1
+    d2 = tmp_path / "b"; d2.mkdir()
+    lossy = _empty_bank(d2, sigma_inel=0.0, dedx=2.0, x0=1e12)
+    out = C.run(bank, _far_target(), _uniform(0.0), env, prim, np.random.default_rng(4), slab=(lossy, 0))
+    r = out["record"]
+    pz = dict(zip(r["ev"].tolist(), np.linalg.norm(r["p"], axis=1)))
+    m = C.MASS[13]
+    ke1 = np.hypot(200.0, m) - m - 20.0
+    assert np.isclose(pz[1], np.sqrt((ke1 + m) ** 2 - m ** 2)) and np.isclose(pz[0], 200.0) and np.isclose(pz[2], 200.0)
+
+
+def test_bank_builder_xs_only(tmp_path):
+    d = tmp_path / "camp"
+    d.mkdir()
+    json.dump(dict(log10_ke_edges=[0.0, 1.0, 2.0], materials=["G4_STAINLESS-STEEL"]), open(d / "grid.json", "w"))
+    for sp in PB.G4NAME.values():
+        with open(d / f"xs_{sp}_G4_STAINLESS-STEEL_b0.txt", "w") as f:
+            dedx = (0.0, 0.0) if sp == "neutron" else (1.5, 2.5)
+            f.write(f"0 0.5 0.01 0.002 {dedx[0]} 17.6\n1 1.5 0.02 0.003 {dedx[1]} 17.6\n")
+    with pytest.raises(ValueError, match="no inel files"):
+        PB.build(str(d))
+    out = tmp_path / "slab.npz"
+    PB.main([str(d), "--out", str(out), "--xs-only"])
+    b = D.Bank.load(out)
+    assert b.materials == ("G4_STAINLESS-STEEL",) and b["trial_cell"].size == 0
+    assert b["sigma_inel"][0, 0].tolist() == [0.01, 0.02] and np.allclose(b["x0"], 17.6)
