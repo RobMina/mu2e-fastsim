@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 # hep-endpoints (import name hependpoints): the experiment-neutral endpoint adapters, needed on the kit host only
 # (jobs do not import it); pinned to a commit of RobMina/hep-endpoints (not on PyPI), the same pin as
 # ci/requirements.txt. For development install a local checkout with pip install -e first.
-dependencies = ["numpy", "pandas", "uproot", "matplotlib", "scipy", "hep-endpoints @ git+https://github.com/RobMina/hep-endpoints.git@536656008f457eefb5939cdbe1095cbdf445857d"]
+dependencies = ["numpy", "pandas", "uproot", "matplotlib", "scipy", "hep-endpoints @ git+https://github.com/RobMina/hep-endpoints.git@536656008f457eefb5939cdbe1095cbdf445857d", "cryjax @ git+https://github.com/RobMina/cryjax.git@3094804ba73f1d8f9b36665e30c6c64fa0a063d0"]
 
 [project.optional-dependencies]
 jax = ["jax"]

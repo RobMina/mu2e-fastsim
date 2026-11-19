@@ -28,10 +28,15 @@ def test_strict_parser_pdf_mean():
     assert data["a"].weights.shape == (2, 3)
     with pytest.raises(ValueError):
         data["a"].cdf()
-    for text in ("pdf a::b[0,1,lin] = {-1 1};", "parameter a={nan};", "unknown a={1};",
+    for text in ("pdf a::b[0,1] = {1 1};", "parameter a={nan};", "unknown a={1};",
                  "parameter a={1}; parameter a={2};"):
         with pytest.raises(ValueError):
             T.parse(text)
+    # negative weights parse (the CRY 11300 m release table has them in its small-subbox multiplicity PDFs) but are
+    # refused when a CDF is built from them (cryjax.tables.negative_pdfs)
+    negative = T.parse("pdf a::b[0,1,lin] = {-1 1};")
+    with pytest.raises(ValueError, match="negative"):
+        negative["a"].cdf()
 
 
 def test_table_signature_fail_closed(tmp_path):
@@ -81,7 +86,9 @@ def test_raw_device_bounded_pool_repeatability_and_units(setup):
     assert not a["overflow"] and not a["invalid_pdf"]
     mask = np.asarray(a["mask"])
     assert int(a["particles"]) == int(np.sum(a["multiplicity"])) == np.sum(mask)
-    np.testing.assert_allclose(np.sum(np.asarray(a["direction"])[mask]**2, axis=1), 1, atol=1e-14)
+    direction = np.asarray(a["direction"])[mask]
+    atol = 1e-14 if direction.dtype == np.float64 else 1e-6        # unit vectors built in the device float
+    np.testing.assert_allclose(np.sum(direction.astype(np.float64)**2, axis=1), 1, atol=atol)
     assert np.all(np.abs(np.asarray(a["position"])[mask, :2]) <= 150)
     assert np.all(np.diff(a["clocks"]) > 0)
     assert set(np.abs(np.asarray(a["pdg"])[mask])) <= set(T.PDG)
