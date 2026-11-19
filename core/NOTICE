@@ -16,6 +16,10 @@ mu2efastsim/data/brem_sb_G4EMLOW8.6.1.npz holds the Seltzer-Berger tables of G4E
 elements of mu2efastsim/materials.py, converted without change of values (SHA-256 of each source file inside); the
 G4EMLOW data are distributed by the Geant4 Collaboration under the Geant4 Software License (geant4.org/license).
 
+The shared library core (mu2efastsim.library) and the component interaction banks (component_response) were
+extracted into the experiment-neutral package hep-simlib (same copyright and licence), which this package depends on
+and re-exports with the Mu2e settings.
+
 Mu2e-internal inputs (conditions, calibration and lookup tables, detector data) and physics results are not part of
 this repository and must not be added to it.
 

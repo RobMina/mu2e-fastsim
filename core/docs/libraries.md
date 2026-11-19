@@ -1,5 +1,11 @@
 # Response and interaction libraries: one core, one vocabulary
 
+> The core (`mu2efastsim.library`) now lives in the experiment-neutral package
+> [hep-simlib](https://github.com/RobMina/hep-simlib) (import name `hepsimlib`, pinned in `pyproject.toml`), whose
+> `docs/libraries.md` holds sections 1-6 and the experiment profiles. `mu2efastsim.library` re-exports it with the Mu2e
+> profile, so every import path and setting below is unchanged. Sections 7-8 (the Mu2e libraries and their
+> migration) stay here.
+
 Every tabulated, pooled or fitted artifact that a fast stage loads and queries in place of a simulation step is a
 **library**: the CRV photon tables and secondary library, the calorimeter digi response and shower library, the
 tracker response tables, row pools, albedo and delta-ray libraries, the flash response, the geometry-portable
