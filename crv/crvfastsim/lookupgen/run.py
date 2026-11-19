@@ -29,12 +29,13 @@ def _compact(s, small):
 
 def generate(counter, simtype, bins, nphot, dtype="float64", seed=1, lanes=1 << 16, chunk_iters=2000,
              refill_fraction=0.125, log=None, helix=True, compact=True, checkpoint=None,
-             rough_reflection="stale", model=None):
+             rough_reflection="stale", model=None, max_steps=None):
     """Counts for `bins` of `simtype`: dict(bins, gen, ht, he, nphot, simtype, stats)."""
     def kernel(nl):
         cfg = T.Config(counter=counter, simtype=simtype, dtype=dtype, seed=seed, lanes=nl,
                        refill_fraction=refill_fraction, helix=helix,
-                       rough_reflection=rough_reflection, model=model or T.M.DEFAULT_MODEL)
+                       rough_reflection=rough_reflection, model=model or T.M.DEFAULT_MODEL,
+                       max_steps=max_steps or (1 << T.STEP_BITS))
         return T.Kernel(cfg).build(bins, nphot)
 
     run, init, done = kernel(lanes)
@@ -64,7 +65,8 @@ def generate(counter, simtype, bins, nphot, dtype="float64", seed=1, lanes=1 << 
     wall = time.time() - t0
     return _result(bins, nphot, simtype, s, aux, acc,
                    dict(wall_s=wall, first_call_s=t_first, compact_s=t_compact, calls=n_calls, lanes=lanes,
-                        dtype=dtype, photons=int(len(bins) * nphot), model=model or T.M.DEFAULT_MODEL))
+                        dtype=dtype, photons=int(len(bins) * nphot), model=model or T.M.DEFAULT_MODEL,
+                        max_steps=max_steps or (1 << T.STEP_BITS)))
 
 
 def _result(bins, nphot, simtype, s, aux, acc, extra):

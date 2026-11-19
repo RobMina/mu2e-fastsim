@@ -85,6 +85,9 @@ compares both.
   (`capped`; about 1 photon in 3 million). The step limit is set by the random-number counter (19 bits of step
   index per photon). `len_end` and `len_arr` in the run statistics histogram the chain length (bin k: 2^k to
   2^(k+1) - 1 steps) of every chain and of every SiPM-0 arrival, to measure what a lower limit would drop.
+  `--max-steps` sets a lower limit. Measured on a complete 24.71 x 25 mm, 3200 mm table part: of 2.7 million
+  scintillation arrivals, 4 come from chains of 2^16 steps or more (1.5e-6) and 143 from 2^15 or more; of 200,000
+  fiber-Cerenkov arrivals, none from 2^16 or more. `--max-steps 65536` cuts the per-job tail about 8 times.
 - Random numbers come from a counter-based generator keyed by bin and photon, so results are reproducible and
   independent of how bins are split into jobs, but not the same random sequence as Geant4.
 

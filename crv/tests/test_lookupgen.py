@@ -241,3 +241,15 @@ def test_cli_resume_reruns_only_incomplete_bins_with_the_same_streams(tmp_path):
     for k in W.KEYS:
         assert np.array_equal(a[k][oa], b[k][ob]), k
     assert main(base + ["--out", part, "--resume"]) == 0      # nothing left: no rerun
+
+
+def test_lower_step_limit_stops_and_counts_long_chains():
+    pytest.importorskip("jax")
+    from crvfastsim.lookupgen.run import generate
+    r = generate(G.stock(1045, 1), 0, np.array([100, 2000]), 300, dtype="float32", seed=3, lanes=512,
+                 chunk_iters=400, max_steps=64)
+    s = r["stats"]
+    assert s["capped"] > 0 and s["max_steps"] == 64
+    assert sum(s["len_end"]) == r["gen"].sum() and sum(s["len_end"][6:]) == 0      # no chain reaches 64 steps
+    with pytest.raises(ValueError):
+        generate(G.stock(1045, 1), 0, np.array([100]), 10, max_steps=(1 << 19) + 1)

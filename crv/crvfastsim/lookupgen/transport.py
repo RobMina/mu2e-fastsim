@@ -72,6 +72,11 @@ class Config:
     helix: bool = True              # exact helical shortcut for totally reflected fiber rays (False: bounce by bounce)
     rough_reflection: str = "stale"  # fiber/air reflections: "stale" (Geant4: inherited), "lobe" or "lambert" (tests)
     model: str = M.DEFAULT_MODEL    # optical model: "v6" (made the released tables) or "current"
+    max_steps: int = 1 << STEP_BITS  # chains are stopped (and counted as capped) at this many steps; <= 2**STEP_BITS
+
+    def __post_init__(self):
+        if not 2 < self.max_steps <= (1 << STEP_BITS):
+            raise ValueError(f"max_steps must be in (2, 2**{STEP_BITS}]")
 
 
 class Tables:
@@ -819,7 +824,7 @@ class Kernel:
         surf = jnp.where(is_d, nsurf_b, jnp.where(is_t, S_OUTER, surf))
         surf = jnp.where(is_si | is_rf, S_NONE, surf)
         reg_new = jnp.where(stuck, DEAD, reg_new)
-        long_ = alive & (s["nstep"] + 2 >= (1 << STEP_BITS))      # step budget of a chain exhausted
+        long_ = alive & (s["nstep"] + 2 >= self.cfg.max_steps)    # step budget of a chain exhausted
         reg_new = jnp.where(long_, DEAD, reg_new)
         ns = dict(s, p=p, d=d, e=pol, E=E2, t=t, reg=reg_new.astype(jnp.int32), fib=fib.astype(jnp.int32),
                   surf=surf.astype(jnp.int32), nem=nem, lobe=lobe, nstep=s["nstep"] + 1)

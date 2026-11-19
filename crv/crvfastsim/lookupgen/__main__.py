@@ -56,6 +56,8 @@ def main(argv=None):
     r.add_argument("--checkpoint", action="store_true", help="rewrite --out during the run (bins marked complete)")
     r.add_argument("--checkpoint-interval", type=float, default=0.0,
                    help="seconds between checkpoint writes (0: after every chunk)")
+    r.add_argument("--max-steps", type=int, default=None,
+                   help="stop chains at this many steps (default 2**19, the exact limit; see docs/lookupgen.md)")
     r.add_argument("--resume", action="store_true",
                    help="keep the complete bins of an existing --out and run only the others (same random streams)")
     sub.choices["assemble"].add_argument("pieces", nargs="+")
@@ -112,7 +114,7 @@ def main(argv=None):
             return 0
         res = generate(ctr, a.simtype, bins, nphot, a.dtype, a.seed, a.lanes, a.chunk_iters,
                        log=lambda m: print(m, flush=True), checkpoint=save if a.checkpoint else None,
-                       model=a.model)
+                       model=a.model, max_steps=a.max_steps)
         save(res, final=True)
         print(json.dumps(res["stats"]))
     elif a.cmd == "compare":
