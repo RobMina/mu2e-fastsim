@@ -12,8 +12,9 @@ needs a new bank. The bank is a `mu2efastsim.library` file (kind "pool", subsyst
 
 This module is the NumPy host reference: straight steps inside the target (no field), continuous loss at the step's
 start energy with a fractional step cap, Highland multiple scattering, inelastic and elastic interactions, tallies of
-deposited energy per segment, and the states that leave the target. Not yet here: the field inside the target, the
-PS stage and the device (JAX) port. Nothing imports it from a default chain.
+deposited energy per segment, and the states that leave the target (no field inside the target). It and the bank
+builder (`ptgt_bank`) name no experiment geometry; the solenoid stage and the device (JAX) chain are the experiment
+layer (`ptgt_chain`, `ptgt_chain_jax`). Nothing imports it from a default chain.
 """
 from dataclasses import dataclass, field
 
@@ -154,10 +155,10 @@ class Bank:
 
 @dataclass(frozen=True)
 class Target:
-    """Coaxial frusta along the target's local z (the G4beamline polycone frame: protons enter at the +z face and
-    travel along local -z, see ptgt_chain.primaries): segment i spans
+    """Coaxial frusta along the target's local z (the beam enters at the +z face and travels along local -z, see
+    ptgt_chain.primaries): segment i spans
     z_edges[i]..z_edges[i+1] with inner/outer radii linear between r_in/r_out[i, 0] and [i, 1], material mat[i]
-    (bank material index). Placement: local -> Mu2e is x_mu2e = origin + rot @ x_local."""
+    (bank material index). Placement: local -> global (the caller's frame) is x_global = origin + rot @ x_local."""
     z_edges: np.ndarray
     r_in: np.ndarray
     r_out: np.ndarray
@@ -180,8 +181,8 @@ class Target:
 
     @classmethod
     def rod(cls, length, r_up, r_mid, r_dn, mat=0, **placement):
-        """The G4beamline polycone rod (z = -L/2, 0, L/2; outerRadius = R_up, R_mid, R_dn): protons enter at the
-        R_dn end (+L/2, the Mu2e-downstream face) and leave at R_up; linear via r_mid."""
+        """A solid three-plane polycone rod (z = -L/2, 0, L/2; outer radii r_up, r_mid, r_dn): the beam enters at
+        the r_dn end (+L/2) and travels towards r_up; the radius is linear between the planes."""
         h = 0.5 * length
         return cls(np.array([-h, 0.0, h]), np.zeros((2, 2)), np.array([[r_up, r_mid], [r_mid, r_dn]]),
                    np.array([mat, mat]), **placement)
@@ -190,7 +191,7 @@ class Target:
         xl = (np.asarray(x) - self.origin) @ np.asarray(self.rot)
         return xl if d is None else (xl, np.asarray(d) @ np.asarray(self.rot))
 
-    def to_mu2e(self, xl, dl=None):
+    def to_global(self, xl, dl=None):
         x = np.asarray(xl) @ np.asarray(self.rot).T + self.origin
         return x if dl is None else (x, np.asarray(dl) @ np.asarray(self.rot).T)
 
@@ -294,9 +295,9 @@ class Cuts:
 
 
 def transport(bank, target, pdg, x, p, rng, cuts=Cuts(), max_iter=100_000):
-    """Host reference: transport lanes (Mu2e frame, mm, MeV/c) through the target until they leave or stop.
+    """Host reference: transport lanes (global frame, mm, MeV/c) through the target until they leave or stop.
 
-    Returns dict(exit_pdg, exit_x, exit_p (Mu2e frame, at the target boundary), edep [segments] MeV,
+    Returns dict(exit_pdg, exit_x, exit_p (global frame, at the target boundary), edep [segments] MeV,
     counts {inelastic, elastic, stopped, unknown_species})."""
     xl, dl = target.to_local(x, p)
     pdg = np.asarray(pdg, np.int64)
@@ -394,5 +395,5 @@ def transport(bank, target, pdg, x, p, rng, cuts=Cuts(), max_iter=100_000):
     else:
         raise RuntimeError("transport did not finish within max_iter")
     cat = {k: (np.concatenate(v) if v else np.zeros((0, 3) if k != "pdg" else 0)) for k, v in out.items()}
-    ex, ep = target.to_mu2e(cat["x"], cat["p"]) if len(cat["pdg"]) else (cat["x"], cat["p"])
+    ex, ep = target.to_global(cat["x"], cat["p"]) if len(cat["pdg"]) else (cat["x"], cat["p"])
     return dict(exit_pdg=cat["pdg"].astype(np.int64), exit_x=ex, exit_p=ep, edep=edep, counts=counts)

@@ -101,7 +101,7 @@ def test_placement_round_trip():
     rot = np.array([[np.cos(a), 0, np.sin(a)], [0, 1, 0], [-np.sin(a), 0, np.cos(a)]])
     t = P.Target.rod(160.0, 3.1, 3.1, 3.1, origin=np.array([3904.0, 0.0, -6164.5]), rot=rot)
     x = np.array([[3900.0, 1.0, -6170.0]])
-    assert np.allclose(t.to_mu2e(t.to_local(x)), x)
+    assert np.allclose(t.to_global(t.to_local(x)), x)
 
 
 def test_survival_through_rod_matches_attenuation(tmp_path):

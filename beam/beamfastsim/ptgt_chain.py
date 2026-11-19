@@ -267,7 +267,7 @@ def primaries(n, target, rng, sigma=1.0, ke=8000.0, offset=0.5):
     zl = 0.5 * (target.z_edges[-1] - target.z_edges[0]) + offset + 0.5 * (target.z_edges[-1] + target.z_edges[0])
     xl = np.stack([sigma * rng.standard_normal(n), sigma * rng.standard_normal(n), np.full(n, zl)], 1)
     dl = np.tile([0.0, 0.0, -1.0], (n, 1))
-    x, u = target.to_mu2e(xl, dl)
+    x, u = target.to_global(xl, dl)
     m = MASS[2212]
     return dict(pdg=np.full(n, 2212), x=x, u=u, p=np.full(n, np.sqrt((ke + m) ** 2 - m * m)), t=np.zeros(n),
                 event=np.arange(n))

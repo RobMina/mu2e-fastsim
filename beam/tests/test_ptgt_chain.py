@@ -7,6 +7,7 @@ import pytest
 from beamfastsim import ptgt_bank as PB
 from beamfastsim import ptgt_chain as C
 from beamfastsim import ptgt_device as D
+from mu2efastsim import library as L
 
 MATS = ("G4_W",)
 EDGES = np.linspace(0.0, 4.0, 9)
@@ -130,8 +131,15 @@ def test_bank_builder_round_trip(tmp_path):
     np.array([[0, np.float32(5.0).view("<i4"), np.float32(0.9).view("<i4")]] * 4, "<i4").tofile(
         d / "el_proton_G4_W_b0_s1.bin")
     out = tmp_path / "bank.npz"
-    PB.main([str(d), "--out", str(out)])
+    PB.main([str(d), "--out", str(out), "--commit", "0123abcd"])
     b = D.Bank.load(out)
+    m = b.lib.manifest                                 # a library-core file with a complete manifest
+    assert L.manifest.complete(m) and not L.manifest.validate(m)
+    assert m["name"] == "beam.thin_target.TEST" and m["release"]["commit"] == "0123abcd"
+    assert m["seeds"]["source"] == [1] and m["source"]["samples"][0].startswith("el_proton")
+    grid = json.load(open(d / "grid.json"))
+    assert m["config_hash"] == L.hashing.digest(dict(grid=grid, xs_only=False))
+    assert D.Bank.load(out, expect=dict(content_hash=m["content_hash"])).lib.content_hash == m["content_hash"]
     assert b["sigma_inel"].shape == (len(D.SPECIES), 1, 2)
     assert b["sigma_inel"][0, 0].tolist() == [0.01, 0.02]
     co = b["cell_offsets"]
@@ -252,7 +260,10 @@ def test_bank_builder_xs_only(tmp_path):
     with pytest.raises(ValueError, match="no inel files"):
         PB.build(str(d))
     out = tmp_path / "slab.npz"
-    PB.main([str(d), "--out", str(out), "--xs-only"])
+    PB.main([str(d), "--out", str(out), "--xs-only", "--commit", "0123abcd"])
     b = D.Bank.load(out)
+    m = b.lib.manifest
+    assert L.manifest.complete(m) and m["name"].endswith(".xs") and m["seeds"]["source"] == []
+    assert m["config_hash"] != L.hashing.digest(dict(grid=json.load(open(d / "grid.json")), xs_only=False))
     assert b.materials == ("G4_STAINLESS-STEEL",) and b["trial_cell"].size == 0
     assert b["sigma_inel"][0, 0].tolist() == [0.01, 0.02] and np.allclose(b["x0"], 17.6)

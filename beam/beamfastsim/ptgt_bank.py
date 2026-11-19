@@ -9,7 +9,7 @@ A campaign directory holds `grid.json` ({"log10_ke_edges": [...], "materials": [
 
 Species names are the Geant4 ones (proton neutron pi+ pi- kaon+ kaon- mu+ mu-). Muons have xs files only.
 
-    python3 -m beamfastsim.ptgt_bank DIR --out BANK.npz [--commit SHA]
+    python3 -m beamfastsim.ptgt_bank DIR --out BANK.npz --commit SHA [--xs-only]
 """
 import argparse
 import glob
@@ -20,6 +20,7 @@ import re
 import numpy as np
 
 from beamfastsim import ptgt_device as P
+from mu2efastsim import library as L
 
 G4NAME = {2212: "proton", 2112: "neutron", 211: "pi+", -211: "pi-", 321: "kaon+", -321: "kaon-", 13: "mu-", -13: "mu+"}
 HADRONS = (2212, 2112, 211, -211, 321, -321)
@@ -137,25 +138,39 @@ def build(d, xs_only=False):
                 stats=stats, grid=grid, el_cells=len(el_samples))
 
 
+def manifest_fields(d, grid, xs_only, release, split, name_prefix="beam.thin_target"):
+    """Complete manifest fields of a bank built from campaign directory d (nothing unrecorded): the source files, the
+    generator, the source seeds (from the file names; the build itself draws no random numbers), and config_hash =
+    digest of the campaign configuration (grid.json and the build mode). release: {repository, commit, entry_point}
+    of the code that built it; split: {training, held_out, rule}."""
+    files = sorted(os.path.basename(p) for p in glob.glob(os.path.join(d, "*_b*")))
+    seeds = sorted({int(m.group(1)) for f in files for m in [re.search(r"_s(\d+)\.bin$", f)] if m})
+    lst = grid.get("physics_list", "QGSP_BERT_HP")
+    config = dict(grid=grid, xs_only=bool(xs_only))
+    return dict(name=f"{name_prefix}.{lst}{'.xs' if xs_only else ''}",
+                source=dict(samples=files, description="thin_target generator outputs (Geant4 single interactions)"),
+                generator=dict(name="thin_target", release=grid.get("geant4", "unrecorded"), physics_list=lst,
+                               configuration=json.dumps({k: v for k, v in grid.items() if k != "log10_ke_edges"})),
+                release=dict(release),
+                seeds=dict(source=seeds, rule="one Geant4 seed per generator output file (_s<seed>)",
+                           build="deterministic: the builder draws no random numbers"),
+                config_hash=L.hashing.digest(config), split=dict(split), unrecorded={})
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("dir")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--commit", default="unrecorded")
+    ap.add_argument("--commit", required=True, help="commit of the code that built the bank")
+    ap.add_argument("--repository", default="mu2e-fastsim")
     ap.add_argument("--xs-only", action="store_true", help="macroscopic tables only (passive slab material)")
     a = ap.parse_args(argv)
     b = build(a.dir, xs_only=a.xs_only)
-    g = b["grid"]
-    lst = g.get("physics_list", "QGSP_BERT_HP")
-    fields = dict(name=f"beam.thin_target.{lst}",
-                  source=dict(samples=[os.path.basename(p) for p in sorted(glob.glob(os.path.join(a.dir, "*_b*")))],
-                              description="thin_target generator outputs (Geant4 single interactions)"),
-                  generator=dict(name="thin_target", release=g.get("geant4", "unrecorded"), physics_list=lst,
-                                 configuration=json.dumps({k: v for k, v in g.items() if k != "log10_ke_edges"})),
-                  release=dict(repository="mu2e-fastsim", commit=a.commit, entry_point="beam/g4/thin_target"),
-                  seeds=dict(build=g.get("seeds", "per file name")), config_hash=None,
-                  split=dict(training="all", held_out="none", rule="validated against full G4beamline references"),
-                  unrecorded=dict(config_hash="no configuration hash for a generator campaign"))
+    fields = manifest_fields(a.dir, b["grid"], a.xs_only,
+                             release=dict(repository=a.repository, commit=a.commit, entry_point="beam/g4/thin_target"),
+                             split=dict(training="all", held_out="none",
+                                        rule="no held-out bank sample: validated downstream against full-simulation "
+                                             "references (the chain's benchmark)"))
     m = P.save_bank(a.out, b["materials"], b["edges"], b["cells"], b["trials"], b["secondaries"], fields)
     print(json.dumps(dict(out=a.out, content_hash=m.get("content_hash"), trials=int(b["trials"]["trial_cell"].size),
                           secondaries=int(b["secondaries"]["sec_pdg"].size), el_cells=b["el_cells"],
