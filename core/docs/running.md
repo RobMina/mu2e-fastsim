@@ -50,7 +50,9 @@ redistribution; it never overwrites a mismatched file.
 
 `python3 -m mu2efastsim.endpoints.kit` is `fastsimkit`, an MCP server with the Mu2eBO evaluator contract
 (`submit`, `status`, `results`, `check`, `describe`, `cancel`). `FASTSIMKIT_ENDPOINT` selects the adapter: `uva`
-(any Slurm site over ssh, `endpoints/slurm_ssh.py`) or `eaf` (Fermilab EAF JupyterHub). The settings are the
+(any Slurm site over ssh, `endpoints/slurm_ssh.py`), `eaf` (Fermilab EAF JupyterHub) or `fermigrid` (the FNAL grid
+through jobsub_lite, `endpoints/jobsub.py`; `beam_edep_cpu` only, inputs staged to dCache scratch, see
+`beam/beamfastsim/kit_grid.py`). The settings are the
 `FASTSIMKIT_*` block of the umbrella's `site.env.example`; [`uva/README.md`](../uva/README.md) has the `kits.toml`
 entry. The kit host (where `fastsimkit` or any `mu2efastsim.endpoints` code runs) needs hep-endpoints installed at
 the pinned commit:

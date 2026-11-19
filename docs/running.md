@@ -128,7 +128,8 @@ A smoke run tests the setup, not physics closure or throughput; do not extrapola
 
 ## 7. Endpoints and the Mu2eBO kit
 
-`python3 -m mu2efastsim.endpoints.kit` is `fastsimkit`; `FASTSIMKIT_ENDPOINT=uva` (any Slurm site over ssh) or `eaf`.
+`python3 -m mu2efastsim.endpoints.kit` is `fastsimkit`; `FASTSIMKIT_ENDPOINT=uva` (any Slurm site over ssh), `eaf`,
+or `fermigrid` (jobsub_lite; the CPU fast tier `beam_edep_cpu`, inputs staged to dCache scratch).
 Tasks and the `kits.toml` entry: `core/docs/running.md` and `core/uva/README.md`. The EAF CRV task is `chain`
 (inputs read in place); `chain_point` (inputs streamed) runs on Slurm sites only. Art jobs (stock Offline) run on a
 Slurm cluster without host CVMFS through `container/offline/` ([README](../container/offline/README.md)).
