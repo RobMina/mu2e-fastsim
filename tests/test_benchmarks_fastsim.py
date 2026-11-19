@@ -285,13 +285,13 @@ def test_gauss_core_matches_scipy_curve_fit():
     assert abs(got["peak"] - 87.6) < 0.5          # the low tail pulls the core fit down a little
 
 
-def test_peak_ratio_jackknife_and_fit_errors():
+def test_peak_ratio_bootstrap_and_fit_errors():
     rng = np.random.default_rng(9)
     edges = calo.PEAK_EDGES
     mk = lambda m: {f"s{i}": np.histogram(rng.normal(m, 2.4, 3000), edges)[0].tolist() for i in range(20)}  # noqa
     ref, same, low = ({"edges": edges.tolist(), "shards": mk(m)} for m in (87.6, 87.6, 87.0))
     r = S.peak_ratio(ref, same, 0.002, "p", {"start_above": 75.0, "start_width": 3.0})
-    assert r["se_method"] == "jackknife_20_shards" and 0.0001 < r["se"] < 0.001 and r["pass"]
+    assert r["se_method"] == "bootstrap_200_of_20_shards" and 0.0001 < r["se"] < 0.001 and r["pass"]
     assert abs(r["ratio"] - 1) < 4 * r["se"]
     lo = S.peak_ratio(ref, low, 0.002, "p", {"start_above": 75.0, "start_width": 3.0})
     assert lo["ratio"] == pytest.approx(87.0 / 87.6, abs=0.001) and not lo["pass"]
@@ -299,6 +299,10 @@ def test_peak_ratio_jackknife_and_fit_errors():
     two = {"edges": edges.tolist(), "counts": np.sum(list(same["shards"].values()), axis=0).tolist()}
     fe = S.peak_ratio(one, two, 0.002, "p", {"start_above": 75.0, "start_width": 3.0})
     assert fe["se_method"] == "fit_errors" and fe["se"] == pytest.approx(r["se"], rel=0.5)
+    # the bootstrap agrees with the spread of the ratio over independent samples of the same size
+    reps = [S.peak_ratio({"edges": edges.tolist(), "shards": mk(87.6)}, {"edges": edges.tolist(), "shards": mk(87.6)},
+                         0.002, "p", {"start_above": 75.0, "start_width": 3.0, "n_boot": 20})["ratio"] for _ in range(30)]
+    assert float(np.std(reps, ddof=1)) == pytest.approx(r["se"], rel=0.5)
 
 
 def test_shape_from_hits_by_hand():
@@ -351,7 +355,7 @@ def test_calog4_good_and_shifted(example):
         g = good["workflows"]["CALOG4"][dt]
         assert g["validity"] == pytest.approx(1.0) and g["power_ok"] is True and g["n_hists"] == 8
         pk = next(y for y in g["yields"] if y["yield"] == "ce_peak")
-        assert pk["kind"] == "peak" and pk["se"] <= calo.MAX_SE and pk["se_method"].startswith("jackknife")
+        assert pk["kind"] == "peak" and pk["se"] <= calo.MAX_SE and pk["se_method"].startswith("bootstrap")
         assert g["cls_score"] > 0.85 and g["classifier"]["n_features"] == len(calo.FEATURES)
         sh = shifted["workflows"]["CALOG4"][dt]
         assert sh["validity"] < 0.5 and sh["cls_score"] < g["cls_score"] - 0.2

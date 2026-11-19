@@ -1,9 +1,14 @@
 """B1 (CALOG4) device-host arm: the fastsim calorimeter device chain on library entries -> hists.json + features.npz.
 
 The arm W7-CAL validated: at the first forward direct-CE disk-front entry of each stored event (calofastsim
-showers.export, primary mode), a whole-shower library draw, crystal placement and the device chain's response,
-hits and clusters (``device_chain.make_chain(..., shape=True)``); the reco bunch time of each event is the stock
-one rounded to the 5 ns grid (MC bunch time), as in W7-CAL. The population is every exported event with a front
+showers.export, primary mode), a whole-shower library draw and crystal placement (``device_chain.sample_donors``,
+``gather_steps``, ``place_steps``), then the device chain's response, hits and clusters on the placed steps
+(``device_chain.make_steps_chain(..., shape=True)``): the stages of ``make_chain``, with its own random streams.
+The draw and placement run op by op (``--draw eager``, the default): jitted, the K-neighbour radius draw of
+``sample_donors`` does not compile within an hour on CPU, while op by op it takes well under a second per batch;
+``--draw jit`` uses ``make_chain`` itself (GPU). The reco bunch time of each event is the stock one rounded to the
+5 ns grid (MC bunch time), as in W7-CAL. In float64 the step depth enters the response as float32
+(``make_steps_chain`` input), as for stock steps. The population is every exported event with a front
 entry, in export order; ``events.npy`` (run, subrun, event) beside the output fixes it, and the stock arm is made on
 the same events with ``python -m benchmarks.fastsim_score.calo ntuple REF/CALOG4/stock STOCK.root ... --events
 events.npy``.
@@ -55,7 +60,27 @@ def fast(a):
     B = a.batch
     caps = dc.Caps(events=B, steps=B * 80, photoelectrons=B * 9000, rows=B * 48, digis=B * 48, digi_length=96,
                    hits=B * 32, event_hits=64, rounds=8)
-    chain = dc.make_chain(lib, resp, caps, digi_response=a.response, shape=True)
+    import jax.numpy as jnp
+    if a.draw == "jit":
+        chain = dc.make_chain(lib, resp, caps, digi_response=a.response, shape=True)
+    else:
+        chain = dc.make_steps_chain(resp, caps, digi_response=a.response, shape=True)
+    pdt = lib.arrays["centers"].dtype
+
+    def placed_steps(q, key):
+        """Library draw and placement op by op: the steps make_chain would pass to its response."""
+        with jax.disable_jit():
+            qd = {k: jnp.asarray(v) for k, v in q.items()}
+            qd = dict(qd, position=qd["position"].astype(pdt), direction=qd["direction"].astype(pdt))
+            u = jax.random.uniform(key, qd["energy"].shape, dtype=jnp.float64)
+            donor, _, slot = dc.sample_donors(lib, qd, u)
+            st, over = dc.gather_steps(lib, qd, donor, slot, caps.steps)
+            crystal, depth, mapped = dc.place_steps(lib, qd, st)
+            steps = dict(event=qd["event"][st["row"]], crystal=jnp.where(mapped, crystal, -1),
+                         energy_g4=st["energy_g4"], energy_birks=st["energy_birks"], time=st["time"],
+                         z_local=depth.astype(jnp.float32))
+            return {k: np.asarray(v) for k, v in steps.items()}, int(over)
+
     key = jax.random.PRNGKey(a.seed)
     ids_all, cls, hts, overflow, off = [], [], [], {}, 0
     if len(a.tables) != len(a.stock):
@@ -84,7 +109,13 @@ def fast(a):
                       "marker": np.full(m, 200.0, np.float32), "crystal_length": np.full(m, 200.0, np.float32)}
             q, t = dc.entries_batch(ent, timing, np.arange(m), B)
             key, sub = jax.random.split(key)
-            out = dc.run(chain, q, t, sub, tolerate_overflow=True)
+            if a.draw == "jit":
+                out = dc.run(chain, q, t, sub, tolerate_overflow=True)
+            else:
+                k_draw, k_resp = jax.random.split(sub)
+                steps, over_steps = placed_steps(q, k_draw)
+                out = dc.run(chain, steps, t, k_resp, tolerate_overflow=True)
+                out["overflow"]["steps"] += over_steps
             for k, v in out["overflow"].items():
                 overflow[k] = overflow.get(k, 0) + int(v)
             fl = dc.flat_clusters(out["clusters"])
@@ -105,7 +136,7 @@ def fast(a):
     calo.write_arm(out, hists, feats)
     np.save(out / "events.npy", ids)
     (out / "run.json").write_text(json.dumps({"dtype": a.dtype, "response": a.response, "seed": a.seed,
-                                              "neighbors": a.neighbors, "placement": a.placement,
+                                              "neighbors": a.neighbors, "placement": a.placement, "draw": a.draw,
                                               "batch": B, "events": int(len(ids)), "clusters": int(len(cl["event"])),
                                               "overflow": overflow, "seconds": time.time() - t0}, indent=1) + "\n")
     if any(overflow.values()):
@@ -129,6 +160,8 @@ def main(argv=None):
     p.add_argument("--seed", type=int, default=20261107)
     p.add_argument("--batch", type=int, default=2048)
     p.add_argument("--block", type=int, default=100)
+    p.add_argument("--draw", default="eager", choices=("eager", "jit"),
+                   help="library draw + placement op by op (CPU) or inside make_chain's jit (GPU)")
     fast(p.parse_args(argv))
     return 0
 

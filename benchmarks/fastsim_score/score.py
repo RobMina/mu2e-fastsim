@@ -23,8 +23,10 @@ and Y is a count, {"shards": {shard_id: count}}, or a measured value {"value": v
 hists.json may also hold "peaks": {name: H} (counts or shards): the scorer fits the peak position of H in each arm
 (CAL1's Gaussian core, gauss_core: a Gaussian fitted to the bin counts with weights 1/n over the window
 [mu - 1.5 s, mu + 2 s], 6 iterations from mu = the median of the entries above "start_above" and s = "start_width",
-both from reference.json "peak_fit") and scores the ratio as a yield; its standard error is the delete-one-shard
-jackknife of the ratio over the shared shards (>= 3), else the two fit errors in quadrature.
+both from reference.json "peak_fit") and scores the ratio as a yield; its standard error is the paired bootstrap of
+the ratio over the shared shards (>= 3; "n_boot" replicates, default 200, fixed "seed"), else the two fit errors in
+quadrature. (A delete-one-shard jackknife overestimates it: the fit starts from a median and picks its window bin by
+bin, so it is not smooth in the data.)
 
 Statistics, per histogram (the same ones the repository's validation code uses):
 - mode "same_events" (default; crvfastsim.validation.compare): both arms on the same generated events, no scaling,
@@ -80,6 +82,8 @@ except ImportError:  # pragma: no cover - exercised by the Codabench worker test
 DTYPES = ("float32", "float64")
 P_FLAG = 1e-3
 PEAK_ITERATIONS = 6
+PEAK_BOOTSTRAP = 200
+PEAK_SEED = 20261118
 
 
 class ScoreError(ValueError):
@@ -326,8 +330,8 @@ def gauss_core(edges, counts, start_above: float | None = None, start_width: flo
 
 
 def peak_ratio(ref: dict, cand: dict, tol: float, name: str = "", fit: dict | None = None) -> dict:
-    """Ratio of the fitted peak positions, candidate / reference, with the paired delete-one-shard jackknife error.
-    ``fit``: {"start_above", "start_width"} of gauss_core."""
+    """Ratio of the fitted peak positions, candidate / reference, with the paired shard-bootstrap error.
+    ``fit``: {"start_above", "start_width"} of gauss_core, "n_boot", "seed"."""
     _check_edges(ref, cand, name)
     if kind_of(ref, name) != "counts" or kind_of(cand, name) != "counts":
         raise ScoreError(f"peak {name}: needs counts or shards")
@@ -345,17 +349,17 @@ def peak_ratio(ref: dict, cand: dict, tol: float, name: str = "", fit: dict | No
     if len(shared) >= 3:
         a = np.array([ref["shards"][s] for s in shared], float)
         b = np.array([cand["shards"][s] for s in shared], float)
-        ta, tb = a.sum(axis=0), b.sum(axis=0)
+        S, n_boot = len(shared), int(fit.get("n_boot", PEAK_BOOTSTRAP))
+        rng = np.random.default_rng(int(fit.get("seed", PEAK_SEED)))
         reps = []
-        for i in range(len(shared)):
+        for _ in range(n_boot):
+            w = np.bincount(rng.integers(0, S, S), minlength=S).astype(float)   # the same shards in both arms
             try:
-                reps.append(core(tb - b[i])["peak"] / core(ta - a[i])["peak"])
+                reps.append(core(w @ b)["peak"] / core(w @ a)["peak"])
             except ScoreError as e:
-                raise ScoreError(f"peak {name}: jackknife replicate {shared[i]}: {e}") from None
-        reps = np.array(reps)
-        S = len(reps)
-        se = float(np.sqrt((S - 1) / S * ((reps - reps.mean()) ** 2).sum()))
-        out["se_method"] = f"jackknife_{S}_shards"
+                raise ScoreError(f"peak {name}: bootstrap replicate: {e}") from None
+        se = float(np.std(reps, ddof=1))
+        out["se_method"] = f"bootstrap_{n_boot}_of_{S}_shards"
     else:
         if r["peak_error"] is None or c["peak_error"] is None:
             raise ScoreError(f"peak {name}: no fit error")

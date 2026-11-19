@@ -1,0 +1,137 @@
+benchmark_name: FS-CALO-G4 (B1, task CALOG4) - Mu2e calorimeter shower model inside and outside Geant4
+scored_date: '2026-11-19'
+notes: 'Self-score after the dev-split reference run of the fastsim device chain (W7-CAL, CAL2 library), both dtypes.
+  The Mu2eG4 host (P2) has no run yet; the final split is reserved and was not opened. Arithmetic by benchmark-builder
+  score_benchmark.py.'
+software_environment:
+- id: code_available
+  description: The code is available to reproduce the baseline reference solution.
+  met: true
+  evidence: 'mu2e-fastsim benchmarks/fastsim_score: scorer (score.py, classifier.py), B1 definitions and the stock-ntuple
+    converter (calo.py), the device-host arm driver (calo_device.py) over calo/calofastsim/device_chain.py.'
+- id: code_complete
+  description: The provided code is complete.
+  met: false
+  evidence: The device host is complete; the Mu2eG4 host needs the P2 model tool and its arm FHiCL, which are not written.
+- id: code_documented
+  description: The code itself is well documented.
+  met: true
+  evidence: benchmarks/README.md (layout, statistics, B1 card A-E); module docstrings of score.py, classifier.py, calo.py,
+    calo_device.py.
+- id: code_runs_unmodified
+  description: The code does not require any modifications to run.
+  met: true
+  evidence: The dev reference ran unmodified in the repository's container image on CPU (calo_device, calo ntuple, calo
+    reference, score).
+- id: env_specified
+  description: The environment is either containerized, or environment details and setup instructions are provided.
+  met: true
+  evidence: 'The repository container image (container/); the scoring program needs NumPy only (codalab/codalab-legacy:py312).'
+problem_specification:
+- id: constraints_provided
+  description: System constraints (power, latency, throughput, etc.) are provided.
+  met: true
+  evidence: 'README B1 A: Offline release, Geant4 11.3.2, single-thread CPU job for the Mu2eG4 host, <= 250 MB resident
+    memory per thread (reference.json max_memory_mb_per_thread), edge rule reported.'
+- id: task_clear
+  description: The benchmark task is clear.
+  met: true
+  evidence: 'README B1 A: from the e+-/gamma state at a disk front produce the crystal deposits the stock calo chain
+    consumes.'
+- id: dataset_format_specified
+  description: The dataset format is clearly specified.
+  met: true
+  evidence: hists.json / features.npz / bench.json / reference.json layout in README and score.py; B1 definitions in calo.py.
+- id: inputs_specified
+  description: The task inputs are clearly specified.
+  met: true
+  evidence: Primaries of production CeEndpoint MDC2025ba run 1430 files, named per split (README B1 B).
+- id: outputs_specified
+  description: The task outputs are clearly specified.
+  met: true
+  evidence: The arm's hists.json (8 histograms, yield, CE peak spectrum), features.npz (9 per-cluster features) and
+    bench.json fields (calo.py docstring, README B1 C).
+dataset:
+  fair:
+  - id: findable
+    description: Each instance is uniquely identified and documented (Findable).
+    met: true
+    evidence: Files named by dataset and run/subrun; events paired by (run, subrun, event) (events.npy beside each arm).
+  - id: accessible
+    description: Access is provided through persistent, open protocols (Accessible).
+    met: false
+    evidence: Mu2e simulation data is collaboration-internal; the public variant is the synthetic example only.
+  - id: interoperable
+    description: Formats and metadata follow community standards (Interoperable).
+    met: true
+    evidence: art/ROOT inputs; JSON histograms and NumPy npz features with fixed schemas.
+  - id: reusable
+    description: Versioning with associated preprocessing scripts enables full reproducibility (Reusable).
+    met: false
+    evidence: The converters are versioned in the repository, but the reference trees have no versioned release.
+  splits_defined:
+    description: A canonical, non-overlapping train/validation/test split is provided.
+    met: true
+    evidence: 'train 001430_000000{01,...,901}; dev 001430_00001000-1400; final 001430_00001500-1900 plus a fresh
+      ~200,000-event CeEndpoint set on reserved seeds (README B1 B).'
+performance_metrics:
+  definition_level: 3
+  definition_evidence: 'Exact formulas in score.py and classifier.py: DQMVAL flag rule, yield rule |r - 1| - 3 se <= 0.2 %,
+    CE peak by CAL1''s Gaussian core with a paired bootstrap error and the power rule se <= 0.067 %, cls_score = clip(2 (1 - AUC),
+    0, 1) of a fixed-seed quadratic logistic regression; tested in tests/test_benchmarks_fastsim.py.'
+  quality_level: 2
+  quality_evidence: 'Validity, classifier score and throughput together capture fidelity and speed; the power rule stops a
+    small sample from passing the tight peak tolerance. The dev reference shows the metrics discriminate (README B1 D).
+    Not captured: per-crystal deposit fidelity below the cluster level, and the Mu2eG4 host''s cost in production.'
+reference_solution:
+- id: publicly_available
+  description: A reference solution is publicly available.
+  met: false
+  evidence: The device chain and library loader are in the repository, but the CAL2 library is Mu2e-internal.
+- id: well_documented
+  description: The provided reference solution is well documented.
+  met: true
+  evidence: README B1 D and calo_device.py; the W7-CAL record documents the chain and the library.
+- id: requirements_listed
+  description: All hardware and/or software requirements to run the reference solution are listed.
+  met: true
+  evidence: 'README B1 D/E: container image, CPU (4 cores), inputs (library, CAL1 conditions, exports, stock ntuples).'
+- id: metrics_evaluated
+  description: All metrics defined as part of the benchmark are evaluated as part of the reference solution.
+  met: false
+  evidence: Validity and classifier score are evaluated on dev in both dtypes; throughput was not re-measured on this
+    boundary and the Mu2eG4 host has no run.
+- id: baseline_open
+  description: The baseline solution/model is openly available for study (architecture, hyperparameters, and training code
+    if a neural network).
+  met: false
+  evidence: The Gflash and entry-crystal weak baselines are defined in the card but not implemented.
+documentation:
+- id: task_explained
+  description: The task is explained and well documented.
+  met: true
+  evidence: README B1 card A-E.
+- id: background_explained
+  description: The task and benchmark background (scientific and otherwise) is clearly explained.
+  met: true
+  evidence: 'README B1: calorimeter showers are about half of the Geant4 time of CE events (measured), and the same model
+    must serve Mu2eG4 and the device chain.'
+- id: motivation_explained
+  description: The motivation for the benchmark is clearly explained.
+  met: true
+  evidence: README B1 introduction.
+- id: evaluation_explained
+  description: The evaluation criteria are clearly explained.
+  met: true
+  evidence: README B1 C and the statistics section of benchmarks/README.md.
+- id: paper_exists
+  description: An academic paper about the benchmark exists.
+  met: false
+  evidence: No paper.
+motifs:
+  scientific_motifs:
+  - High-Energy Physics
+  ai_ml_motif: Generative
+  computing_motifs:
+  - Throughput Bound
+  - Memory Bound
