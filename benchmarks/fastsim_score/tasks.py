@@ -23,7 +23,11 @@ TASKS: dict[str, dict] = {
            "shape per sub-shard (yields per generated electron are a separate study)", "kind": "counts, paired shape",
            "floor": None, "rate_unit": "events/s"},
     "W3": {"title": "DIO electrons", "boundary": "DIO births -> CE track observables",
-           "stock": "Geant4 tracker steps of the same events -> stock digi + reco", "metrics": "CE-selected momentum "
+           "stock": "full Geant4 events (every tracker step of the DIO dts) -> stock OffSpill digi + LoopHelix reco",
+           "note": "the fast arm runs the default (full-event) reco response, so the stock arm digitises every tracker "
+                   "step of the event, not only the DIO electron's own steps (that primary-only arm has 0.93 of the "
+                   "full-event CE-selected yield)",
+           "metrics": "CE-selected momentum "
            "spectrum 95-106 MeV/c; tail counts above 95 and 100 MeV/c and all CE-selected", "kind": "counts",
            "floor": None, "rate_unit": "generated DIO muons per s"},
     "W4": {"title": "RPC electrons", "boundary": "RPC births -> tracker entry",

@@ -40,7 +40,7 @@ missing or unscorable arm instead of failing.
 |---|---|---|---|---|---|---|
 | W1 | Muon beam | TS-entrance mu/pi -> stopping-target stops | Geant4 TS + DS stages, expectation over stock re-seeds | stop foil, time, radius, DS-entrance momentum (paired per shard); stops per shard | one stock re-seed | TS-entrance mu/pi per s |
 | W2 | Conversion electrons | CE stops -> CE track observables | full Geant4 events -> stock digi + LoopHelix reco | ValKalSeed histograms, paired shape per sub-shard (yields per generated electron are a separate study) | none yet (threshold 2) | events/s |
-| W3 | DIO electrons | DIO births -> CE track observables | Geant4 tracker steps of the same events -> stock digi + reco | CE-selected momentum spectrum 95-106 MeV/c; tail counts above 95 and 100 MeV/c and all CE-selected | none yet (threshold 2) | generated DIO muons per s |
+| W3 | DIO electrons | DIO births -> CE track observables | full Geant4 events (every tracker step of the DIO dts) -> stock OffSpill digi + LoopHelix reco | CE-selected momentum spectrum 95-106 MeV/c; tail counts above 95 and 100 MeV/c and all CE-selected | none yet (threshold 2) | generated DIO muons per s |
 | W4 | RPC electrons | RPC births -> tracker entry | Geant4 RPC sample at the tracker entrance | tracker-entry fiducial yield (no stock reco reference after the response yet) | none yet (threshold 2) | generated RPC captures per s |
 | W5 | CRV cosmics | CRY cosmics -> CRV coincidence clusters | Geant4 steps -> stock CRV response + reco | ValCrv histograms, paired shape per shard; reco pulse yield | stock with another seed | events/s |
 | W6 | Pileup mixing | primary steps + donor pools -> mixed tracker digis + CRV pulses | stock mixing of the same primaries | digis per plane, pulses per sector (paired by event); tracker and CRV totals | none yet (threshold 2) | events/s |
@@ -55,7 +55,7 @@ missing or unscorable arm instead of failing.
 Every fast arm is rerun on main `c03dbd13`, without #283, with each workflow's own validation recipe on the same
 events as its frozen stock reference, and the bench timer with the published headline pass sizes. No stock jobs were
 run. The scores come from `score --allow-missing` (coverage) and cover 20 of 20 arms (W1-W9 and PTGT), with **mean validity
-0.770** and a **throughput geometric mean of x1,046**. The last column is the same task scored on the older arms. The reference trees
+0.870** and a **throughput geometric mean of x1,046**. The last column is the same task scored on the older arms. The reference trees
 are kept privately.
 
 | task | dtype | validity | flagged / histograms | yields passing | throughput x | device | before (scored 2026-11-18 on older arms) |
@@ -64,8 +64,8 @@ are kept privately.
 | W1 | float64 | 1.000 | 0 / 4 | 1 / 1 | 613 | A100-80 | 1.000, x612 |
 | W2 | float32 | 0.889 | 1 / 9 | 0 / 0 | 467 | A100-80 | 0.889, x361 |
 | W2 | float64 | 0.889 | 1 / 9 | 0 / 0 | 306 | A100-80 | 0.889, x274 |
-| W3 | float32 | 0.000 | 1 / 1 | 1 / 3 | 169 | A100-80 | 1.000, x163 |
-| W3 | float64 | 0.000 | 1 / 1 | 1 / 3 | 115 | A100-80 | 1.000, x60 |
+| W3 | float32 | 1.000 | 0 / 1 | 3 / 3 | 169 | A100-80 | 1.000, x163 (primary-only stock arm) |
+| W3 | float64 | 1.000 | 0 / 1 | 3 / 3 | 115 | A100-80 | 1.000, x60 (primary-only stock arm) |
 | W4 | float32 | 1.000 | 0 / 0 | 1 / 1 | 96 | A100-80 | 1.000, x81 |
 | W4 | float64 | 1.000 | 0 / 0 | 1 / 1 | 73 | A100-80 | 1.000, x34 |
 | W5 | float32 | 1.000 | 0 / 12 | 1 / 1 | 1299 | A100-80 | 1.000, x1310 |
@@ -87,12 +87,15 @@ are kept privately.
   - throughput is against a stock proxy.
 - **W2:** paired shape per sub-shard (70); yields are not scored from this sample (per-event yields are conditioned);
   the NSeed flag remains.
-- **W3: validity 0 on main.**
-  - The CE-selected DIO yield is 0.926 / 0.925 of stock (float32 / float64), and 0.93 above 95 MeV/c.
-  - Tracker entry is unchanged.
-  - The cause is main's default reconstruction response (the full-event response), which the W3 chain now uses.
-    The spectrum's chi2 includes that yield.
-  - The tail above 100 MeV/c improves to 1.03 (1.11 / 1.14 on the older arm).
+- **W3: the stock arm is the full-event stock reconstruction** (rebuilt 2026-11-19; the fast arms are unchanged).
+  - The first rescore scored 0 because the frozen stock arm digitised only the DIO electron's own Geant4 steps. Main's
+    default reco response (the full-event response, the default since #149) models the reconstruction of full events,
+    whose CE-selected yield is 0.93 of that primary-only arm. The 0.926 was this mismatch, not a fidelity loss.
+  - The stock arm is now every tracker step of the same DIO dts through the stock OffSpill digi + LoopHelix reco, on
+    the same 200 held-out shards. Against it, the fast arm gives CE-selected 0.994 / 0.993 (float32 / float64), above
+    95 MeV/c 0.999 / 0.997, above 100 MeV/c 1.09 / 1.08 +- 0.05; the spectrum's chi2/ndf is 0.88 / 0.94.
+  - The older arm (CE-only response) scored 1.000 only against the primary-only arm; it is about 1.08 of the full-event
+    stock arm, so its "before" entry is not comparable with this row.
 - **W4:** the tracker-entry stage only; there is no stock RPC reconstruction after the response.
 - **W5, W6, W7:**
   - W6's float32 arm is now pure float32. W6 runs about 1.8x faster on main than on the older arm.

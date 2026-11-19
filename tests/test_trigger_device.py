@@ -93,6 +93,145 @@ def test_panel_combine_greedy():
 
 
 
+
+def _stock_combine(h, s, e):
+    """CombineStrawHits::combine + combineHits of event e in numpy, in the stock C++ types and order (float members,
+    double sums, the float XYZVectorF centre): the reference of the device panel combine."""
+    f, d = np.float32, np.float64
+    n = int(h["valid"][e].sum())
+    col = {k: np.asarray(h[k][e][:n]) for k in h if k not in ("valid", "spill")}
+    fl = col["flag"].astype(np.int64)
+    good = ((fl & s["sel"]) == s["sel"]) & ((fl & s["mask"]) == 0) & ((fl & (1 << 23)) == 0)
+    used, out = np.zeros(n, bool), []
+    for i in range(n):
+        if used[i]:
+            continue
+        used[i] = True
+        if not good[i]:
+            continue
+        mem = [i]
+        for j in range(i + 1, n):
+            if used[j]:
+                continue
+            if col["upanel"][j] != col["upanel"][i]:
+                break
+            if abs(int(col["straw"][j]) - int(col["straw"][i])) > s["maxds"] or not good[j]:
+                continue
+            if abs(f(col["time"][i]) - f(col["time"][j])) > f(s["maxdt"]):
+                continue
+            wderr = np.sqrt(f(col["uvar"][i]) + f(col["uvar"][j]))
+            if abs(f(col["wdist"][i]) - f(col["wdist"][j])) / wderr > f(s["maxwdchi"]):
+                continue
+            if len(mem) < 8:
+                mem.append(j)
+                used[j] = True
+        c = {k: col[k][i] for k in ("time", "edep", "wdist", "uvar", "vvar", "timevar", "x", "y", "z")}
+        if len(mem) > 1:
+            eacc = ctacc = twtsum = wacc = wacc2 = wwtsum = vacc = d(0)
+            mx = my = mz = f(0)
+            for j in mem:
+                wd = f(col["wdist"][j])
+                eacc += d(col["edep"][j]); vacc += d(col["vvar"][j])
+                twt = 1.0 / d(col["timevar"][j]); twtsum += twt; ctacc += d(col["time"][j]) * twt
+                wwt = 1.0 / d(col["uvar"][j]); wwtsum += wwt; wacc += d(wd) * wwt; wacc2 += d(f(wd * wd)) * wwt
+                mx = f(mx + f(col["x"][j] - f(wd * col["udx"][j])))
+                my = f(my + f(col["y"][j] - f(wd * col["udy"][j])))
+                mz = f(mz + f(col["z"][j]))
+            nsh = d(len(mem))
+            inv = f(1) / f(nsh)
+            c["edep"], c["time"], c["timevar"] = f(eacc / nsh), f(ctacc / twtsum), f(1.0 / twtsum)
+            c["wdist"] = wdist = f(wacc / wwtsum)
+            c["x"] = f(f(mx * inv) + f(wdist * col["udx"][i]))
+            c["y"] = f(f(my * inv) + f(wdist * col["udy"][i]))
+            c["z"] = f(mz * inv)
+            uvar0 = f(f(s["uerr"]) * f(s["uerr"]))
+            uvar = f(1.0 / wwtsum + d(uvar0))
+            wvar = max(uvar0, f(f(f(wacc2 / wwtsum) - f(wdist * wdist)) / f(d(len(mem) - 1) ** 2)))
+            c["uvar"] = max(uvar, wvar) if s["checkWres"] else uvar
+            c["vvar"] = f(vacc / nsh)
+        out.append((len(mem), c))
+    return out
+
+
+def test_panel_combine_matches_the_stock_arithmetic():
+    """Random panels with multi-hit combos: the device ComboHits equal the stock C++ arithmetic bit for bit."""
+    pytest.importorskip("jax")
+    pytest.importorskip("trkfastsim")
+    import jax.numpy as jnp
+    from trigger.device import hits
+    rng = np.random.default_rng(7)
+    E, H = 6, 64
+    h = {k: np.zeros((E, H), np.float32) for k in ("time", "edep", "wdist", "uvar", "vvar", "timevar", "x", "y", "z",
+                                                  "udx", "udy", "et0", "et1")}
+    h["valid"], h["sid"] = np.zeros((E, H), bool), np.zeros((E, H), np.int64)
+    for e in range(E):
+        n = int(rng.integers(20, H))
+        panel = np.sort(rng.integers(0, 6, n)) + 6 * int(rng.integers(0, 30))   # hits sorted by panel, as stock
+        straw = rng.integers(0, 96, n)
+        h["valid"][e, :n] = True
+        h["sid"][e, :n] = ((panel // 6) << 10) | ((panel % 6) << 7) | straw
+        ang = (panel * 0.7).astype(np.float64)
+        h["udx"][e, :n], h["udy"][e, :n] = np.cos(ang), np.sin(ang)
+        h["time"][e, :n] = 900 + rng.normal(0, 15, n)
+        h["wdist"][e, :n] = rng.uniform(-400, 400, n)
+        h["uvar"][e, :n] = rng.uniform(900, 4000, n)
+        h["timevar"][e, :n] = rng.uniform(4, 40, n)
+        h["edep"][e, :n] = rng.uniform(5e-4, 3e-3, n)
+        h["vvar"][e, :n] = np.float32(2.1226842)
+        r = rng.uniform(400, 650, n)
+        h["x"][e, :n], h["y"][e, :n], h["z"][e, :n] = r * np.cos(ang + 1), r * np.sin(ang + 1), rng.uniform(-1500, 1500, n)
+    h["upanel"], h["straw"] = (h["sid"] >> 10) * 6 + ((h["sid"] & 0x380) >> 7), h["sid"] & 0x7F
+    h["flag"] = np.where(h["valid"], (1 << 1) | (1 << 2) | (1 << 3) | (1 << 10), 0).astype(np.uint32)
+    h["spill"] = np.zeros(E, np.int64)
+    s = {"maxdt": 45.0, "maxds": 3, "maxwdchi": 5.0, "uerr": 10.0, "checkWres": True, "minN": 1, "maxN": 8,
+         "minT": 0.0, "maxT": 1e5, "minTOff": 0.0, "maxTOff": 1e5, "minE": 1e-4, "maxE": 5e-3, "minR": 380.0,
+         "maxR": 700.0, "sel": (1 << 1) | (1 << 2) | (1 << 3), "mask": 0}
+    out = {k: np.asarray(v) for k, v in hits.panel_hits({k: jnp.asarray(v) for k, v in h.items()}, s).items()}
+    multi = 0
+    for e in range(E):
+        ref = _stock_combine(h, s, e)
+        assert int(out["valid"][e].sum()) == len(ref)
+        for i, (nc, c) in enumerate(ref):
+            assert int(out["ncombo"][e, i]) == nc
+            multi += nc > 1
+            for k, v in c.items():
+                assert out[k][e, i].tobytes() == np.float32(v).tobytes(), (e, i, k, out[k][e, i], v)
+    assert multi > 20
+
+
+def test_hit_ratio_uses_the_stock_float_face_count():
+    """HelixTool counts the expected faces in float from 1e-6 and divides the int straw-hit count by it in float; at an
+    exact ratio (16 of 40 faces, 12 of 30) the result is the float 0.4, which passes HelixFilter's double cut 0.4. A
+    double count (1e-6 + 40) would give 0.39999999 and fail it."""
+    pytest.importorskip("jax")
+    from trigger.device.helix import expected_faces
+    t = expected_faces(72)
+    assert t.dtype == np.float32 and t.size == 73 and abs(float(t[40]) - 40.0) < 1e-5
+    for nsh, n in ((16, 40), (12, 30), (14, 35)):
+        r = np.float32(nsh) / t[n]
+        assert r == np.float32(0.4) and float(r) >= 0.4
+    assert 16 / (1e-6 + 40) < 0.4
+
+
+def test_nominal_face_z():
+    """HelixTool's face z on the nominal tracker (TrackerMaker): 36 planes, two faces each, the pattern repeating every
+    two stations (348 mm); a geometry that is not the conditions' is refused."""
+    pytest.importorskip("jax")
+    from trigger.device import helix
+    g = helix.TRACKER_GEOM
+    z = np.array([[helix.nominal_straw_z(g, p, f, l) for f in (0, 1) for l in (0, 1)] for p in range(36)])
+    assert z[0, 0] == pytest.approx(-1493.0733, abs=1e-3)
+    np.testing.assert_allclose(z[4:] - z[:-4], 2 * 174.0, atol=1e-9)    # the panel z pattern repeats every 2 stations
+    mid = np.zeros(36 * 6 * 96)
+    for p in range(36):
+        for f in (0, 1):
+            mid[(p * 6 + f) * 96 + 0], mid[(p * 6 + f) * 96 + 1] = z[p, 2 * f], z[p, 2 * f + 1]
+    fz = helix.face_z({"straw": {"midz": mid}})
+    assert fz.shape == (72,) and fz[0] == np.float32((z[0, 0] + z[0, 1]) / 2.)
+    with pytest.raises(ValueError):
+        helix.face_z({"straw": {"midz": mid + 10.0}})
+
+
 def test_helix_pass_rejects_the_unconfigured_helicity():
     """HelixFilter: a helix of a helicity whose selection is not configured fails (it matches no cut set)."""
     pytest.importorskip("jax")
