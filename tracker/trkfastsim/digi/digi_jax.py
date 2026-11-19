@@ -88,6 +88,13 @@ def _gamma(key, a):
 # True / False force it (read when a kernel is traced: set it before the first call).
 GAMMA_SPLIT = None
 GAMMA_CHUNK = 1024
+# Threshold searches: each loop pass of the electronics kernel evaluates the response sum (volt_lanes) of every lane
+# of a launch, though only the lanes still searching use it (in W6 batches about 0.5 % in the re-arm loop, 17 % in
+# the peak search). VOLT_COMPACT evaluates it only for those lanes, gathered into the smallest buffer of
+# VOLT_TIERS (fractions of the launch's lanes) that holds them, and the full sum when none does: the same arithmetic
+# per lane, the other lanes' values are never used (read when a kernel is traced: set it before the first call).
+VOLT_COMPACT = True
+VOLT_TIERS = (64, 16, 4, 2)    # buffer = lanes // tier
 
 
 def _gamma_one():
@@ -483,10 +490,30 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
         def volt(tq, path="thresh", cmin=None, lattice=None, lattice_origin=None, lattice_offset=0, lanes=None):
             return volt_lanes(lanes or base, tq, path, cmin, lattice, lattice_origin, lattice_offset)
 
+        def volt_on(mask, tq):
+            """volt(tq) on the rows where mask holds; the other rows' values are unspecified (VOLT_COMPACT: 0)."""
+            if not VOLT_COMPACT:
+                return volt(tq)
+            tq = tq.reshape(R, -1)
+            sizes = sorted({max(1, R // k) for k in VOLT_TIERS if R // k < R})
+            if not sizes:
+                return volt(tq)
+
+            def part(K):
+                def run():
+                    idx = jnp.nonzero(mask, size=K, fill_value=0)[0]
+                    lanes = {k: v[idx] for k, v in base.items()}
+                    v = volt_lanes(lanes, tq[idx], "thresh")
+                    return jnp.zeros((R, v.shape[1]), v.dtype).at[idx].set(v)   # fill entries repeat row 0's value
+                return run
+            n = jnp.sum(mask)
+            branch = jnp.sum(n > jnp.asarray(sizes))           # the smallest buffer that holds them; len(sizes): full
+            return lax.switch(branch, [part(K) for K in sizes] + [lambda: volt(tq)])
+
         def crosses(ic, time, thr, vcross, active):
             ic = jnp.where(active, jnp.maximum(ic, count(time + LB)), ic)
             active &= ic < n
-            vstart = volt(at(t, ic) - LB)[:, 0]
+            vstart = volt_on(active, at(t, ic) - LB)[:, 0]
             retact = active & (vstart > thr)
 
             def retbody(state):
@@ -496,7 +523,7 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
                 ic = jnp.where(act, newic, ic)
                 act &= ic < n
                 time = jnp.where(act, at(t, ic) - LB, time)
-                vs = jnp.where(act, volt(time)[:, 0], vs)
+                vs = jnp.where(act, volt_on(act, time)[:, 0], vs)
                 return ic, time, vs, act & (vs > thr), it + 1
             ic, time, vstart, stuck, _ = lax.while_loop(
                 lambda x: jnp.any(x[3]) & (x[4] <= cap), retbody,
@@ -515,7 +542,7 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
                 cand = j[:, None] + jnp.arange(8)[None, :]
                 gc = jnp.clip(cand, 0, cap - 1)
                 mt = t[rows[:, None], gc] + tmax[rows[:, None], gc]
-                v = volt(mt)
+                v = volt_on(act, mt)
                 hit = (cand < n[:, None]) & (v > thr[:, None]) & act[:, None]
                 anyhit = jnp.any(hit, 1)
                 first = jnp.argmax(hit, 1).astype(jnp.int32)
@@ -527,14 +554,14 @@ def _electronics_parts(c, cap, pair_cap, batch, entries=None, saturation_rows=No
             ic = jnp.where(active & (star < 0), n, ic)
             found = active & (star >= 0)
             pre, post = at(t, star) - LB, at(t, star) + at(tmax, star)
-            pres, posts = volt(pre)[:, 0], response
+            pres, posts = volt_on(found, pre)[:, 0], response
             tt = pre + (post - pre) / (posts - pres) * (thr - pres)
             dt = post - pre
 
             def finebody(_, state):
                 pre, post, pres, posts, tt, dt = state
                 act = found & (jnp.abs(dt) > .020)
-                smp = volt(tt)[:, 0]
+                smp = volt_on(act, tt)[:, 0]
                 up = smp > thr
                 post = jnp.where(act & up, tt, post)
                 posts = jnp.where(act & up, smp, posts)

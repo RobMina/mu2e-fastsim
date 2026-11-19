@@ -166,3 +166,31 @@ def test_gamma_split_gives_the_same_charges(cond, monkeypatch):
         out[on] = kern(jax.random.key(3), jnp.int64(0), *map(jnp.asarray, DJ.df.dev((us, pos, ne, time))))
     for x, y in zip(out[False], out[True]):
         np.testing.assert_array_equal(np.asarray(x), np.asarray(y))
+
+
+@pytest.mark.parametrize("entries,tiers", [(None, (64, 16, 4, 2)), (8, (64, 16, 4, 2)), (8, (2,)), (None, ())])
+def test_volt_compact_gives_the_same_digis(cond, monkeypatch, entries, tiers):
+    """The electronics kernel with VOLT_COMPACT on (threshold-search response sums on the searching lanes only, in
+    buffers of VOLT_TIERS or in full) and off: the same digis bit for bit (pair loop and flat entries, a saturated
+    straw next to a multi-pair one; with 4 lanes the tiers give buffers of 1 and 2 lanes and the full fallback)."""
+    import jax.numpy as jnp
+    t = np.array([[1000., 1010., 1500., 3000.], [1001., 1011., 1501., 3001.],
+                  [1200., 1205., 1210., 1215.], [1201., 1206., 1211., 1216.]])
+    q = np.array([[.5] * 4, [.5] * 4, [80.] * 4, [80.] * 4])
+    wd = np.array([[400.] * 4, [600.] * 4, [300.] * 4, [700.] * 4])
+    step = np.tile(np.arange(4), (4, 1))
+    args = tuple(map(jnp.asarray, (t, q, wd, step, np.array([4, 4, 4, 4]), np.array([520, 1000]),
+                                   np.array([False, False]), np.array([520, 1000]), np.array([True, True]),
+                                   np.array([.3, -.2]))))
+    monkeypatch.setattr(DJ, "VOLT_TIERS", tiers)
+    out = {}
+    for on in (False, True):
+        monkeypatch.setattr(DJ, "VOLT_COMPACT", on)
+        DJ._electronics_parts.cache_clear()
+        jax.clear_caches()                       # the setting is read when a kernel is traced
+        out[on] = jax.device_get(DJ._electronics_kernel(cond, 4, 4, 2, entries=entries)(jax.random.key(4), *args))
+    DJ._electronics_parts.cache_clear()
+    assert out[True]["saturated_ends"] > 0 and out[True]["pairs"] >= 3
+    assert out[False].keys() == out[True].keys()
+    for name in out[True]:
+        np.testing.assert_array_equal(np.asarray(out[True][name]), np.asarray(out[False][name]), err_msg=name)
