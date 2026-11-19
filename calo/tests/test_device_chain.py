@@ -533,13 +533,15 @@ def test_steps_batch_ships_narrow_indices():
                         "time": [600.0], "z_local": [10.0]}, 4)
 
 
-def test_cluster_shape_opt_in():
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_cluster_shape_opt_in(dtype):
     """shape=True adds seed_energy and the energy-weighted second moments of each cluster (the host clusters' member
     hits give the same values) and leaves every other output bit-identical; the steps chain also returns the hits."""
     pos, disk = _grid()
     geom = _geom(pos, disk)
     table = PropagationTable(np.ones((1, 1), np.float32), np.zeros(1, np.float32), np.float32(1.0))
-    resp = dc.pack_response(_sim(len(disk)), _pulse(), np.full(10000, 12.0), table, geom)
+    resp = dc.pack_response(_sim(len(disk)), _pulse(), np.full(10000, 12.0), table, geom, dtype=dtype)
+    tol = dict(rtol=1e-6, atol=1e-3) if dtype == np.float64 else dict(rtol=2e-4, atol=0.5)
     rng = np.random.default_rng(17)
     n_ev = 24
     seeds = rng.integers(0, len(disk), n_ev)
@@ -577,7 +579,7 @@ def test_cluster_shape_opt_in():
         mom[k] = np.bincount(hc[hc >= 0], weights=e[hc >= 0] * v, minlength=n_cl) / w
     np.testing.assert_allclose(got["seed_energy"], seed, rtol=1e-6)
     for k in ("mxx", "myy", "mxy"):
-        np.testing.assert_allclose(got[k], mom[k], rtol=1e-6, atol=1e-3)
+        np.testing.assert_allclose(got[k], mom[k], **tol)
     assert np.any(got["mxx"] > 1.0) and np.all(got["mxx"] >= -1e-6)
     # chains: shape=True returns the flat hits as well; clusters unchanged otherwise
     chain_caps = dc.Caps(events=4, steps=64, photoelectrons=4096, rows=64, digis=64, digi_length=64, hits=64,
