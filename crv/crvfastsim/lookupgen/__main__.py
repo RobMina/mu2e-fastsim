@@ -43,8 +43,9 @@ def main(argv=None):
         p.add_argument("--length", type=float, required=True)
         p.add_argument("--reflector", type=int, default=0)
         p.add_argument("--out", required=True)
-        p.add_argument("--model", default="v6", choices=("v6", "current"),
-                       help="optical model: v6 (made the released tables, default) or current CRVStandalone")
+        p.add_argument("--model", default="current", choices=("current", "v6"),
+                       help="optical model: current CRVStandalone (default) or v6 (the 2019 code that made the "
+                            "released tables; validates the transport against them)")
     r = sub.choices["run"]
     r.add_argument("--simtype", type=int, required=True)
     r.add_argument("--bins", default="all", help="a:b[:step], comma list, or all")

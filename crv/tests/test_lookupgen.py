@@ -273,7 +273,7 @@ def test_assemble_writes_the_table_and_its_provenance(tmp_path):
         pieces.append(f)
     out = str(tmp_path / "LookupTable_1045_1")
     assert main(["assemble", "--length", "1045", "--reflector", "1", "--section", "stock", "--fiber-diameter", "1.4",
-                 "--out", out, "--note", "scintillator Cerenkov at 2e4 photons per bin"] + pieces) == 0
+                 "--out", out, "--model", "v6", "--note", "scintillator Cerenkov at 2e4 photons per bin"] + pieces) == 0
     assert os.path.getsize(out) == len(W.table_bytes(c, {st: {"bins": np.arange(G.n_bins(c, st)),
                                                               **{k: np.zeros((G.n_bins(c, st),) + s, np.int32)
                                                                  for k, s in (("gen", ()), ("nall", ()),

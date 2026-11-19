@@ -16,7 +16,7 @@ The released v6 tables were not made by today's CRVStandalone. The v6 format dat
 were made by the standalone code then in Offline (January 2019, Geant4 10.3). CRVStandalone was updated in July 2021.
 Both versions are here (`--model`):
 
-| | `v6` (default: made the released tables) | `current` (CRVStandalone since 2021) |
+| | `v6` (made the released tables) | `current` (default: CRVStandalone since 2021) |
 |---|---|---|
 | TiO2 reflectivity | 1 - 0.9 (1 - R_measured) | 1 - 0.75 (1 - R_measured) |
 | Y11 attenuation, decay time | measured x 0.80, 8.7 ns | measured x 0.85, 10 ns |
@@ -27,8 +27,10 @@ Both versions are here (`--model`):
 | table writer | probability over all arrivals, histograms normalised to all arrivals | only arrivals inside both histograms (< 150 ns, < 10 emissions) |
 
 Ported from the current model alone, the generator gives 16 % more light than the released tables (3200 mm counter,
-scintillation, 58 bins: ratio 1.164 +- 0.018) with the same time and emission distributions. The `v6` model is the
-default, so that tables for other counters are made with the optics of the released ones that Offline uses.
+scintillation, 58 bins: ratio 1.164 +- 0.018) with the same time and emission distributions. `current` is the
+default: new tables follow the maintained CRVStandalone optics. `v6` reproduces the released tables bin by bin, which
+checks the port's transport against Geant4 output; Offline's photon-yield scale was set with the released tables, so
+tables of the two models are not interchangeable without checking that scale.
 
 ## Agreement with the released tables (`v6` model)
 

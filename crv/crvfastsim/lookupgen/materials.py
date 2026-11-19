@@ -321,7 +321,7 @@ def _model(name):
 
 
 MODELS = {k: _model(k) for k in ("v6", "current")}
-DEFAULT_MODEL = "v6"
+DEFAULT_MODEL = "current"
 
 # module-level aliases of the current model (tests and documentation)
 _C = MODELS["current"]

@@ -71,7 +71,7 @@ class Config:
     refill_fraction: float = 0.125
     helix: bool = True              # exact helical shortcut for totally reflected fiber rays (False: bounce by bounce)
     rough_reflection: str = "stale"  # fiber/air reflections: "stale" (Geant4: inherited), "lobe" or "lambert" (tests)
-    model: str = M.DEFAULT_MODEL    # optical model: "v6" (made the released tables) or "current"
+    model: str = M.DEFAULT_MODEL    # optical model: "current" (CRVStandalone) or "v6" (made the released tables)
     max_steps: int = 1 << STEP_BITS  # chains are stopped (and counted as capped) at this many steps; <= 2**STEP_BITS
 
     def __post_init__(self):
