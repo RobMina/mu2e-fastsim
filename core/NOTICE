@@ -23,6 +23,8 @@ and re-exports with the Mu2e settings.
 Mu2e-internal inputs (conditions, calibration and lookup tables, detector data) and physics results are not part of
 this repository and must not be added to it.
 
-The optional cry_tables/cry_device modules re-implement the published CRY 1.7 model (LLNL UCRL-CODE-227323).
+The optional cry_tables/cry_device modules re-implement the published CRY 1.7 model (LLNL UCRL-CODE-227323); since
+2026-11-18 the experiment-neutral parts (tables, device sampler, C ABI binding) live in the cryjax package and
+these modules keep the Mu2e projection, selection and defaults.
 The retained CRY redistribution and additional DOE notices are in docs/third-party/cry.txt. CRY is not Apache-2.0;
 the distribution tables are external hash-verified runtime inputs, not repository contents.
