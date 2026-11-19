@@ -16,8 +16,10 @@
 #include "Offline/CRVConditions/inc/CRVCalib.hh"
 #include "Offline/CRVConditions/inc/CRVOrdinal.hh"
 #include "Offline/CRVConditions/inc/CRVStatus.hh"
+#include "Offline/CosmicRayShieldGeom/inc/CosmicRayShield.hh"
 #include "Offline/DataProducts/inc/CRVId.hh"
 #include "Offline/DataProducts/inc/EventWindowMarker.hh"
+#include "Offline/GeometryService/inc/GeomHandle.hh"
 #include "Offline/MCDataProducts/inc/CrvDigiMC.hh"
 #include "Offline/MCDataProducts/inc/CrvSiPMCharges.hh"
 #include "Offline/ProditionsService/inc/ProditionsHandle.hh"
@@ -186,7 +188,10 @@ void CrvRecoTableDumper::dumpConditions(const art::Event& event) {
   auto const& calib = calib_h_.get(event.id());
   auto const& status = status_h_.get(event.id());
   auto const& ordinal = ordinal_h_.get(event.id());
-  for (std::size_t c = 0; c < CRVId::nChannels; ++c) {
+  // channel count of the CRV geometry (bars x SiPMs per bar), as the CRV conditions makers count it: works for the
+  // stock layout and for geometries with other layer or bar counts (no compile-time CRVId::nChannels)
+  std::size_t const nChannels = GeomHandle<CosmicRayShield>()->getAllCRSScintillatorBars().size() * CRVId::nChanPerBar;
+  for (std::size_t c = 0; c < nChannels; ++c) {
     try {
       cped_ = calib.pedestal(c);
       carea_ = calib.pulseArea(c);

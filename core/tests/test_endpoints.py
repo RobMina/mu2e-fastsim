@@ -213,6 +213,20 @@ def test_gpu_type_auto_slice_only_when_the_request_fits(tmp_path):
         ep(gpu_type="h100")
 
 
+def test_kit_gpu_type_setting_reaches_the_uva_endpoint(tmp_path, monkeypatch):
+    monkeypatch.setenv("FASTSIMKIT_ENDPOINT", "uva")
+    monkeypatch.setenv("FASTSIMKIT_WORKDIR", "/path/to/scratch/kit")
+    monkeypatch.delenv("FASTSIMKIT_GPU_TYPE", raising=False)
+    assert FastsimKit(state_dir=tmp_path / "a", sif="/x/m.sif").ep.gpu_type == "auto"
+    monkeypatch.setenv("FASTSIMKIT_GPU_TYPE", "1g.24gb")
+    assert FastsimKit(state_dir=tmp_path / "b", sif="/x/m.sif").ep.gpu_type == "1g.24gb"
+    monkeypatch.setenv("FASTSIMKIT_GPU_TYPE", "none")
+    assert FastsimKit(state_dir=tmp_path / "c", sif="/x/m.sif").ep.gpu_type is None
+    monkeypatch.setenv("FASTSIMKIT_GPU_TYPE", "h100")
+    with pytest.raises(EndpointError, match="unknown gpu_type"):
+        FastsimKit(state_dir=tmp_path / "d", sif="/x/m.sif")
+
+
 def test_submit_records_gpu_choice(tmp_path):
     site = FakeSite()
     ep = SlurmSSHEndpoint(runner=site, state_dir=tmp_path / "jobs", workdir="/path/to/scratch/kit", max_su_per_job=100)
