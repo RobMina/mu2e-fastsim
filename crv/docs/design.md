@@ -76,6 +76,28 @@ perimeter), times PE per arrival of the SiPM model and a calibration scale `pe_s
 the nominal design. A sector whose stock table is not in the lookup directory uses the closest available table of
 the same reflector kind (`table_substitutions`). Cherenkov light and visible-energy fluctuations are not modelled.
 
+### Experimental charge/time calibration
+
+`python -m crvfastsim.objective.charge_time_calib matches.npz --out calibration.json`
+fits corrections relative to a nominal response. Supply aligned arrays `channel`,
+`distance_mm`, `pe`, `expected_pe`, `time_ns`, and `expected_time_ns` for matched
+track/channel observations. Optional `charge_weight` and `time_weight` are
+inverse variances in log-PE and time, respectively.
+
+The fit profiles channel log-gains and time offsets with a zero-mean gauge,
+leaving one shared slope each for inverse attenuation length and inverse signal
+speed. Within-channel distance variation is required. Select positive,
+unsaturated observations; the fit does not estimate missed hits, model
+zero-suppression, replace `objective.timecal`, or update production conditions.
+
+`OPENBLAS_NUM_THREADS=1 python crv/scripts/bench_charge_time_calib.py` uses 128
+synthetic channels and 10,240 training / 2,560 held-out observations. Median time
+on one AMD EPYC 9V74 core (NumPy 2.5.5) was 1.03 ms profiled versus 42.4 ms for
+the equivalent dense least-squares fit, with coefficients agreeing to
+8e-15 in the model's fit units. The two injected slopes were recovered within
+0.008% and 0.11%; held-out RMS was 0.030 in log-PE and 0.102 ns. This is
+synthetic closure, not calibration against detector data.
+
 ### Deadtime model (`deadtime.py`)
 
 No beam-induced CRV simulation exists in the fast chain. Two rate components per sector carry a calibrated nominal
