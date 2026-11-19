@@ -77,17 +77,22 @@ def _cell_tables(library, disk_ids):
     return table, fallback, order, starts, counts, (ne, nc, npos)
 
 
-def pack_entrants(library, *, placement="crystal", pixel=8.0, candidate_width=12, d_edge=0.0, dtype=np.float64):
+def pack_entrants(library, *, placement="crystal", key_neighbors=0, pixel=8.0, candidate_width=12, d_edge=0.0,
+                  dtype=np.float64):
     """Pack an entrant library (:func:`entrants.build` / :func:`entrants.load`) into a
     :class:`device_chain.DeviceLibrary` for :func:`make_entrant_chain`.
 
-    ``placement`` as :func:`device_chain.pack_library`; ``d_edge`` [mm] the edge rule (front entrants within this
+    ``placement`` as :func:`device_chain.pack_library`; ``key_neighbors`` as :func:`entrants.sample` (opt-in: in a
+    cell with more than K entrants, draw among the K nearest in the position key); ``d_edge`` [mm] the edge rule (front entrants within this
     distance of the disk's inner or outer radius are not drawn); ``dtype`` the precision of positions, frames and
     geometry (cell lookup, draws and times stay double). The disks must share the global axes (the Mu2e layout):
     the host rotation about the disk axis then equals the device's rotation in global x-y."""
     import jax.numpy as jnp
     if placement not in ("crystal", "geometric"):
         raise ValueError("placement must be crystal or geometric")
+    if (isinstance(key_neighbors, (bool, np.bool_)) or not isinstance(key_neighbors, (int, np.integer))
+            or key_neighbors < 0):
+        raise ValueError("key_neighbors must be a nonnegative integer")
     if not np.isfinite(d_edge) or d_edge < 0:
         raise ValueError("d_edge must be a nonnegative distance")
     disk_ids = np.asarray(library["geometry_disk_disk"])
@@ -129,10 +134,13 @@ def pack_entrants(library, *, placement="crystal", pixel=8.0, candidate_width=12
         zmin.append(loc[:, 2].min())
         zmax.append(np.max(loc[:, 2] + sizes[pool, 2]))
     e, cs, r, z = _edges(library)
+    key = np.asarray(library["entry_key"], np.float64)
+    key_order = np.concatenate([order[s0:s0 + n0][np.argsort(key[order[s0:s0 + n0]], kind="stable")]
+                                for s0, n0 in zip(starts, counts)]) if len(counts) else np.zeros(0, np.int64)
     a = dict(
         edges_energy=e, edges_cosine=cs, edges_front_radius=r, edges_inner_depth=z,
         disk_ids=disk_ids, cell_table=table, cell_fallback=fallback, order=order, starts=starts, counts=counts,
-        offsets=np.asarray(library["offsets"], np.int64),
+        key_order=key_order, entry_key=key, key_sorted=key[key_order], offsets=np.asarray(library["offsets"], np.int64),
         donor_frame=frame, donor_angle=phi, donor_position=origin[entry_slot] + local,
         step_energy_g4=np.asarray(library["step_energy_g4"], np.float64),
         step_energy_birks=np.asarray(library["step_energy_birks"], np.float64),
@@ -147,8 +155,10 @@ def pack_entrants(library, *, placement="crystal", pixel=8.0, candidate_width=12
         a[k] = np.asarray(a[k], dtype)
     meta = dict(entrants=int(len(phi)), steps=int(len(step_crystal)), occupied_cells=int(len(counts)),
                 max_cell=int(counts.max(initial=0)), max_steps=int(np.diff(a["offsets"]).max(initial=0)),
-                d_edge=float(d_edge), dtype=np.dtype(dtype).name, library="entrants")
-    return dc.DeviceLibrary({k: jnp.asarray(v) for k, v in a.items()}, shape, 0, placement, n_pix, float(pixel), meta)
+                d_edge=float(d_edge), key_neighbors=int(key_neighbors), dtype=np.dtype(dtype).name,
+                library="entrants")
+    return dc.DeviceLibrary({k: jnp.asarray(v) for k, v in a.items()}, shape, int(key_neighbors), placement, n_pix,
+                            float(pixel), meta)
 
 
 def near_edge(face, local_position, inner, outer, d_edge):
@@ -203,6 +213,23 @@ def _features(q):
     return energy, cosine, key, phi, rho, species
 
 
+def _bsearch(values, lo, hi, x, side, iters):
+    """:func:`device_chain._bsearch` (segmented searchsorted, absolute index) as a device loop: the same steps and
+    result. The unrolled version fused with the entry features makes the XLA CPU compile take hours."""
+    import jax
+    import jax.numpy as jnp
+
+    def step(_, carry):
+        lo, hi = carry
+        mid = (lo + hi) // 2
+        v = values[jnp.clip(mid, 0, values.shape[0] - 1)]
+        go = (v < x) if side == "left" else (v <= x)
+        active = lo < hi
+        return jnp.where(active & go, mid + 1, lo), jnp.where(active & ~go, mid, hi)
+    lo, hi = jax.lax.fori_loop(0, iters, step, (lo, jnp.broadcast_to(hi, lo.shape)))
+    return lo
+
+
 def sample_entrants(lib: dc.DeviceLibrary, q, uniform):
     """Donor row per entrant (-1: no donor), fallback (another cell or outside the bins), edge (left to full
     simulation by the edge rule), entry-disk slot and the global entry position (library dtype)."""
@@ -236,7 +263,33 @@ def sample_entrants(lib: dc.DeviceLibrary, q, uniform):
     else:
         edge = jnp.zeros(q["valid"].shape, bool)
     o = jnp.maximum(occ, 0)
-    donor = a["order"][a["starts"][o] + (uniform * a["counts"][o]).astype(jnp.int64)]
+    start, count = a["starts"][o], a["counts"][o]
+    donor = a["order"][start + (uniform * count).astype(jnp.int64)]
+    K = lib.radius_neighbors          # key_neighbors (DeviceLibrary's neighbour field)
+    if K:
+        # the K nearest in the position key within the cell, as device_chain.sample_donors' radius neighbours
+        draw = (uniform * K).astype(jnp.int64)
+        kk = a["key_sorted"]          # packed on the host: a device gather here makes the CPU compile take hours
+        iters = int(max(lib.meta["max_cell"], 1)).bit_length() + 1
+        split = _bsearch(kk, start, start + count, key, "left", iters) - start
+        ar = jnp.arange(K)
+        left = split[:, None] - K + ar
+        right = split[:, None] + ar
+        valid_left = left >= 0
+        valid_right = right < count[:, None]
+        left = jnp.maximum(left, 0)
+        lv = kk[jnp.clip(start[:, None] + left, 0, kk.shape[0] - 1)]
+        first = _bsearch(kk, jnp.broadcast_to(start[:, None], left.shape),
+                            jnp.broadcast_to((start + count)[:, None], left.shape), lv, "left", iters) - start[:, None]
+        left = first + left - jnp.maximum(first, jnp.maximum(split - K, 0)[:, None])
+        pos = jnp.concatenate([left, jnp.minimum(right, count[:, None] - 1)], axis=1)
+        cand = a["key_order"][jnp.clip(start[:, None] + pos, 0, a["key_order"].shape[0] - 1)]
+        dist = jnp.abs(a["entry_key"][cand] - key[:, None])
+        dist = jnp.where(jnp.concatenate([valid_left, valid_right], axis=1), dist, jnp.inf)
+        rank = jnp.lexsort((cand, dist), axis=1)[:, :K]
+        eligible = jnp.sort(jnp.take_along_axis(cand, rank, axis=1), axis=1)
+        pooled = jnp.take_along_axis(eligible, jnp.minimum(draw, K - 1)[:, None], axis=1)[:, 0]
+        donor = jnp.where(count <= K, donor, pooled)
     donor = jnp.where((occ >= 0) & q["valid"] & ~edge, donor, -1)
     position = a["origin"][slot] + q["local_position"].astype(pdt)
     return donor, fallback & q["valid"], edge, slot, position

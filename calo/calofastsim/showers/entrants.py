@@ -306,13 +306,23 @@ def _binning(library):
     return Binning(*(tuple(library["bins_" + k]) for k in ("energy", "cosine", "front_radius", "inner_depth")))
 
 
-def sample(library, queries, rng, *, dtype=np.float64):
+def sample(library, queries, rng, *, dtype=np.float64, key_neighbors=0):
     """Draw one donor per query and place its CSS at the query entry.
 
     queries: disk, face, pdg, time, local_position (N,3) and local_momentum (N,3) in the disk frame. Returns the
     placed steps (global position, absolute time, energies, donor crystal), per-query donor (-1 when the
     species/face/disk group has no entrants), supported, fallback (another cell or outside the bins) and offsets.
+
+    ``key_neighbors=0`` keeps the uniform draw over the cell. A positive K (opt-in) draws, in a cell with more than K
+    entrants, among the K whose position key (front radius or inner-edge depth) is nearest the query's (ties by
+    library row; the eligible rows sorted by library row, then the same uniform), the rule of
+    :func:`calofastsim.showers.library.sample`'s ``radius_neighbors``: the donor pattern then moves by at most the
+    key spread of those K instead of the cell width (a front entry near the inner edge or an inner-edge entry near
+    the crystals' back face otherwise lands partly outside the crystals).
     """
+    if (isinstance(key_neighbors, (bool, np.bool_)) or not isinstance(key_neighbors, (int, np.integer))
+            or key_neighbors < 0):
+        raise ValueError("key_neighbors must be a nonnegative integer")
     face = np.asarray(queries["face"])
     n = len(face)
     disk = np.asarray(queries["disk"])
@@ -341,6 +351,15 @@ def sample(library, queries, rng, *, dtype=np.float64):
         bins = pool[near]
         fallback[where] |= distance[np.arange(len(where)), near] != 0
         donors[where] = order[starts[bins] + (uniform[where] * counts[bins]).astype(np.int64)]
+        if key_neighbors:
+            from .library import _radius_pool
+            for cell in np.unique(bins[counts[bins] > key_neighbors]):
+                local = np.flatnonzero(bins == cell)
+                target = where[local]
+                rows = order[starts[cell]:starts[cell] + counts[cell]]
+                eligible = _radius_pool(rows, np.asarray(library["entry_key"], float), key[target], key_neighbors)
+                draw = (uniform[target] * key_neighbors).astype(np.int64)
+                donors[target] = eligible[np.arange(len(target)), draw]
     supported = donors >= 0
     length = np.zeros(n, dtype=np.int64)
     length[supported] = np.diff(library["offsets"])[donors[supported]]

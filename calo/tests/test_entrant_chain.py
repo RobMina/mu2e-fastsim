@@ -145,11 +145,12 @@ def _stages(lib, q, u):
     return jax.tree_util.tree_map(np.asarray, go(lib.arrays, {k: jnp.asarray(v) for k, v in q.items()}, jnp.asarray(u)))
 
 
-def test_draw_and_steps_match_host(library):
+@pytest.mark.parametrize("neighbors", [0, 3])
+def test_draw_and_steps_match_host(library, neighbors):
     query = _queries()
     u = np.random.default_rng(11).random(320)
-    host = E.sample(library, query, _Fixed(u))
-    lib = ec.pack_entrants(library, placement="geometric")
+    host = E.sample(library, query, _Fixed(u), key_neighbors=neighbors)
+    lib = ec.pack_entrants(library, placement="geometric", key_neighbors=neighbors)
     q, _ = _batch(query, 320)
     donor, fallback, edge, st, crystal, depth, mapped, over = _stages(lib, q, u)
     np.testing.assert_array_equal(donor[:300], host["donor"])
@@ -170,6 +171,29 @@ def test_draw_and_steps_match_host(library):
     np.testing.assert_array_equal(np.where(mapped[:n], crystal[:n], -1), want)
     np.testing.assert_allclose(depth[:n][mapped[:n]], host["position"][want >= 0, 2] - pos[want[want >= 0], 2], atol=1e-9)
     assert 0 < mapped[:n].sum() < n
+
+
+def test_host_key_neighbors_rule(library):
+    """K >= every cell size keeps the uniform draw; K = 1 takes the entrant nearest in the key (ties: lowest row)."""
+    query = _queries(seed=31)
+    u = np.random.default_rng(5).random(300)
+    plain = E.sample(library, query, _Fixed(u))
+    wide = E.sample(library, query, _Fixed(u), key_neighbors=10_000)
+    np.testing.assert_array_equal(wide["donor"], plain["donor"])
+    one = E.sample(library, query, _Fixed(u), key_neighbors=1)
+    _, _, key, _ = E.entry_features(query["face"], query["local_position"], query["local_momentum"], query["pdg"])
+    labels = np.column_stack((library["entry_species"], library["entry_face"], library["entry_disk"],
+                              library["entry_cell"]))
+    moved = 0
+    for i in np.flatnonzero(one["donor"] >= 0):
+        pool = np.flatnonzero(np.all(labels == labels[plain["donor"][i]], axis=1))
+        d = np.abs(library["entry_key"][pool] - key[i])
+        best = pool[np.flatnonzero(d == d.min())[0]]
+        assert one["donor"][i] == best
+        moved += one["donor"][i] != plain["donor"][i]
+    assert moved > 0
+    with pytest.raises(ValueError):
+        E.sample(library, query, _Fixed(u), key_neighbors=-1)
 
 
 def _own_uniforms(library, lib, rows):
@@ -326,3 +350,30 @@ def test_g4_steps_join_the_drawn_steps(library):
     assert len(got["event"]) > 0
     # visible energy is conserved into clusters on the same scale as the steps
     assert 0.3 < got["energy"].sum() / host["energy_birks"][ok].sum() < 1.5
+
+
+def test_bench_entry_point_runs(tmp_path, monkeypatch):
+    """calofastsim.bench entrant entry points: entrants of export tables -> clusters through the shared-timer path."""
+    from calofastsim import bench
+    from test_showers_entrants import tables, write
+    write(tmp_path / "a.root", tables())
+    ent, css, geo, _ = E.read(tmp_path / "a.root")
+    E.save(tmp_path / "lib.npz", E.build(ent, css, geo), dict(name="bench-test"))
+    monkeypatch.setenv("CALO_BENCH_TABLES", str(tmp_path / "a.root"))
+    monkeypatch.setenv("CALO_BENCH_LIBRARY", str(tmp_path / "lib.npz"))
+    events = bench.load_entrants([tmp_path / "a.root"])
+    assert [len(e["face"]) for e in events] == [2, 1, 0]       # event 1: CE front + photon inner; event 2: CE inner
+    pos = np.column_stack([geo["crystal_position_" + a] for a in "xyz"])
+    geom = Geometry(pos, geo["crystal_disk"], np.zeros((3, 3), bool), np.array([[0.0, 0.0, 100.0], [0.0, 0.0, 200.0]]))
+
+    def conditions(dtype="float64", directory=None, fit_hessian="analytic"):
+        return dc.pack_response(_sim(3), _pulse(), np.full(10000, 12.0),
+                                PropagationTable(np.array([[0.5, 1.0]], np.float32), np.array([0.5, 1.5], np.float32),
+                                                 np.float32(400.0)), geom, dtype=np.dtype(dtype), fit_hessian=fit_hessian)
+    monkeypatch.setattr(bench, "conditions", conditions)
+    monkeypatch.setattr(bench, "_ENTRANT_CHAINS", {})
+    prepared = bench.bench_prepare_entrants(6, seed=5, batch=4)
+    assert len(prepared["batches"]) == 2
+    for dtype in ("float64", "float32"):
+        outs = bench.bench_entrants(prepared, dtype=dtype, key_neighbors=8, rows=64, hits=64)
+        assert len(outs) == 2 and not any(bench.overflow(outs).values())
