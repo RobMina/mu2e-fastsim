@@ -47,13 +47,20 @@ interpreter startup. `stock_rate_per_slot` is null: there is no matched Offline 
 Both seeds and injected parameters are public and drawn from the fitted model. The `final` fixture is a second
 closure check, not an independent or blind validation, and says nothing about detector fidelity by itself.
 
-## Private detector-side recipe
+## Detector-side recipe (keep inputs and outputs private)
 
-Use an extracted, field-off **stock EventNtuple TTree** covering one run, with tracker lines available through
-`crvextrap.trackline` on `PYTHONPATH`. ROOT ingestion also needs uproot and Awkward. Select runs recorded without a
-CRV requirement, including events with no CRV pulse collection entries. Use the same extracted counter geometry
-and per-channel `CRVCalib` CSV as the sample; choose the nominal response, pointing margin, and timing/PE cuts on
-independent control data before looking at holdout runs. No detector-specific values are assumed here.
+Use an extracted, field-off stock EventNtuple covering one run. The reader needs uproot and Awkward and uses the
+public EventNtuple schema: [`TrkInfo`](https://github.com/Mu2e/EventNtuple/blob/v06_15_00/inc/TrkInfo.hh) and
+[`TrkSegInfo`](https://github.com/Mu2e/EventNtuple/blob/v06_15_00/inc/TrkSegInfo.hh).
+It selects a quality KinematicLine fit with a valid in-bounds tracker outer-surface (`TT_Outer`) crossing, ranking
+by most active hits, then lowest chi-square per degree of freedom, then input order. The earliest usable crossing
+of that track supplies position, momentum direction, and time; signed flight time is extrapolated at the speed of
+light. CRV pulses and CRV crossings do not enter track selection. An event without a usable tracker state supplies
+no candidate crossings; one with a usable tracker state but no pulses can supply silent crossings.
+
+Select runs recorded without a CRV requirement. Use the same extracted counter geometry and per-channel `CRVCalib`
+CSV as the sample; choose the nominal response, pointing margin, and timing/PE cuts on independent control data
+before looking at holdout runs. No detector-specific values are assumed here.
 
 ```bash
 python -m crvfastsim.objective.ex_observations "$NTUPLE" "$COUNTERS" "$CRVCALIB" "$TRAIN_NPZ" \

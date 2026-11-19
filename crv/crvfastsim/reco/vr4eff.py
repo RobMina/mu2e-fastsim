@@ -3,8 +3,7 @@
 The stock arm is the crvonly_v05 EventNtuple (timing-fixed CRV-only MC: CRVTime applied with scale -1, one FEB clock
 phase per event): its KKLine tracks and its `crvpulses`. The fast arm runs the fast chain (crvfastsim.chain, numpy or
 JAX) on the CrvSteps of the same production dts file (CrvStepTableDumper table) with the v05 settings (common FEB
-phase). The track lines (one quality track per event, from the tracker, crvextrap.trackline) are identical for both
-arms, so the difference is the CRV response and reco only.
+phase). Both arms use the same quality tracker line per event, so the difference is the CRV response and reco only.
 
 Per EX layer L (0-3): denominator = events whose track crosses the EX layer-L plane inside the sector; numerator = an
 in-time pulse (PE >= pe_probe, |t - t_track - offset| <= window) on a counter of layer L within `nwin` counters of the
@@ -14,10 +13,12 @@ share the tracks and the steps, so the difference is computed per event and its 
 import numpy as np
 
 EX = 0                # EX sector index in the extracted counters file
-PE_PROBE, NWIN, DT_OFFSET, DT_HALF = 8.0, 1, 47.0, 20.0     # crvextrap exdenom / timewin defaults
+PE_PROBE, NWIN, DT_OFFSET, DT_HALF = 8.0, 1, 47.0, 20.0
 THRESH_POINTS = 0.003
 # EventNtuple stores detector coordinates (tracker centre): z_mu2e = z_det + 24171, x_mu2e = x_det - 3904 (extracted)
 DET_Z0, SOLENOID_OFFSET = 24171.0, 3904.0
+KKLINE, TT_OUTER = 3, 4
+TRACK_CUTS = {"nactive": 20, "fitcon": 0.01, "chi2": 3.0, "nplanes": 0}
 
 
 def ex_layers(geom):
@@ -97,31 +98,75 @@ def compare(hit_f, hit_r, den):
     return out
 
 
+def _tracker_lines(tracks, segments, cuts):
+    """One line per event from an in-bounds TT_Outer state of a quality KKLine fit."""
+    import awkward as ak
+
+    def track(leaf):
+        return ak.to_numpy(ak.flatten(tracks[f"trk.{leaf}"]))
+
+    counts = ak.num(tracks["trk.status"], axis=1)
+    if not ak.all(counts == ak.num(segments, axis=1)):
+        raise ValueError("EventNtuple trk and trksegs track counts do not match")
+    event = np.repeat(np.arange(len(tracks)), ak.to_numpy(counts))
+    ns = ak.to_numpy(ak.flatten(ak.num(segments, axis=2)))
+    owner = np.repeat(np.arange(len(event)), ns)
+    rows = ak.flatten(ak.flatten(segments, axis=1), axis=1)
+    pos = rows["pos"]["fCoordinates"]
+    mom = rows["mom"]["fCoordinates"]
+    p = np.column_stack([ak.to_numpy(pos[f"f{k}"]) for k in "XYZ"]).astype(float)
+    d = np.column_stack([ak.to_numpy(mom[f"f{k}"]) for k in "XYZ"]).astype(float)
+    time = ak.to_numpy(rows["time"])
+    norm = np.linalg.norm(d, axis=1)
+    nactive, fitcon, ndof, chisq = (track(k) for k in ("nactive", "fitcon", "ndof", "chisq"))
+    chi2ndof = np.divide(chisq, ndof, out=np.full(len(ndof), np.inf), where=ndof > 0)
+    quality = ((track("fitalg") == KKLINE) & (track("status") > 0) & (track("goodfit") > 0)
+               & (nactive >= cuts["nactive"]) & (track("nplanes") >= cuts["nplanes"])
+               & np.isfinite(fitcon) & (fitcon >= cuts["fitcon"])
+               & (chi2ndof >= 0) & (chi2ndof <= cuts["chi2"]))
+    keep = np.flatnonzero(quality[owner] & ak.to_numpy((rows["sid"] == TT_OUTER) & rows["inbounds"])
+                          & np.isfinite(p).all(axis=1) & np.isfinite(time) & np.isfinite(norm) & (norm > 0))
+    out = np.full((len(tracks), 7), np.nan)
+    if keep.size:
+        # Rank tracks without using CRV data; take the earliest usable crossing within the chosen track.
+        q = owner[keep]
+        order = np.lexsort((time[keep], q, chi2ndof[q], -nactive[q].astype(np.int64), event[q]))
+        events = event[q[order]]
+        first = np.r_[True, events[1:] != events[:-1]]
+        idx = keep[order[first]]
+        out[events[first]] = np.column_stack((p[idx], d[idx] / norm[idx, None], time[idx]))
+    return {f"trk_{k}": col for k, col in zip(("x", "y", "z", "dx", "dy", "dz", "time"), out.T)}
+
+
 def track_pulse_rows(ntuple, trk_cuts=None, *, per_sensor=False):
-    """Read quality tracker lines and flat pulse rows from the same EventNtuple."""
+    """Read tracker-only lines and flat CRV pulse rows using the public EventNtuple schema."""
     import awkward as ak
     import uproot
-    from crvextrap import trackline as TL
-    cuts = trk_cuts or {"nactive": 20, "fitcon": 0.01, "chi2": 3.0, "nplanes": 0}
-    event_fields = ["evtinfo/subrun", "evtinfo/event"]
+
+    cuts = dict(TRACK_CUTS, **(trk_cuts or {}))
+    event_fields = ["subrun", "event"]
     pulse_fields = {"p_bar": "barId", "p_pe": "PEs", "p_time": "time", "p_seq": "sequenceIndex"}
     if per_sensor:
-        event_fields.append("evtinfo/run")
+        event_fields.append("run")
         pulse_fields["p_sipm"] = "SiPMId"
     with uproot.open(ntuple) as root:
         t = root["EventNtuple/ntuple"]
-        e = t.arrays(filter_name=event_fields, library="np")
-        tk = TL.lines(t, cuts=cuts, from_tracker=True)
-        a = t.arrays([f"crvpulses/crvpulses.{field}" for field in pulse_fields.values()], library="ak")
-    n = ak.num(a["crvpulses/crvpulses.barId"])
-    flat = lambda k: ak.to_numpy(ak.flatten(a[f"crvpulses/crvpulses.{k}"]))
-    return dict(**{k.split("/")[-1]: v for k, v in e.items()},
-                **{f"trk_{k}": tk[k] for k in ("x", "y", "z", "dx", "dy", "dz", "time")},
-                p_ev=np.repeat(np.arange(len(n)), ak.to_numpy(n)), **{k: flat(v) for k, v in pulse_fields.items()})
+        branches = set(t.keys(recursive=False))
+
+        def record(name):
+            return t[name if name in branches else name + "."].array()
+
+        evt = record("evtinfo")
+        tk = _tracker_lines(record("trk"), record("trksegs"), cuts)
+        p = record("crvpulses")
+    n = ak.to_numpy(ak.num(p["crvpulses.barId"]))
+    flat = {key: ak.to_numpy(ak.flatten(p[f"crvpulses.{leaf}"])) for key, leaf in pulse_fields.items()}
+    return dict(**{key: ak.to_numpy(evt[key]) for key in event_fields}, **tk,
+                p_ev=np.repeat(np.arange(len(n)), n), **flat)
 
 
 def prep(ntuple, out_npz, trk_cuts=None):
-    """GPVM V-R4 preparation (needs crvextrap on PYTHONPATH)."""
+    """Prepare a V-R4 NPZ from a field-off KKLine EventNtuple."""
     rows = track_pulse_rows(ntuple, trk_cuts)
     np.savez_compressed(out_npz, **rows)
     print(f"wrote {out_npz}: {len(rows['event'])} events, {int(np.isfinite(rows['trk_x']).sum())} with a quality track")

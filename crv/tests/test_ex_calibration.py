@@ -1,8 +1,6 @@
 """Track-tagged EX labels and the censored response likelihood."""
 
 import json
-import sys
-from types import SimpleNamespace
 
 import awkward as ak
 import numpy as np
@@ -16,28 +14,66 @@ from crvfastsim.objective import ex_response as response
 from crvfastsim.reco import vr4eff
 
 
-def test_export_tracks_and_exact_sensor_labels(tmp_path, monkeypatch):
+def _crossing(pos, mom, time=100., sid=4, inbounds=True):
+    def vector(v):
+        return {"fCoordinates": dict(zip(("fX", "fY", "fZ"), v))}
+
+    return dict(pos=vector(pos), mom=vector(mom), time=time, sid=sid, inbounds=inbounds)
+
+
+def _quality(*, nactive, **overrides):
+    return dict(dict(status=1, goodfit=1, fitalg=3, nactive=nactive, nplanes=12, ndof=16, chisq=19., fitcon=0.25),
+                **overrides)
+
+
+def _track_record(events):
+    tracks = ak.Array(events)
+    return ak.zip({f"trk.{k}": tracks[k] for k in tracks.fields}, depth_limit=1)
+
+
+def test_tracker_rank_uses_only_valid_kkline_tracker_states():
+    q = _quality(nactive=32)
+    tracks = _track_record([[q, q, _quality(nactive=48, fitalg=2), _quality(nactive=60, ndof=0),
+                             _quality(nactive=20), _quality(nactive=32, chisq=18.)],
+                            [q], [_quality(nactive=19)], []])
+    start = _crossing([1, 2, 3], [0, -20, 0], time=50.)
+    wrong = _crossing([10, 20, 30], [0, -20, 0], time=10.)
+    crv = dict(wrong, sid=201)
+    bad = dict(wrong, inbounds=False)
+    zero = _crossing([0, 0, 0], [0, 0, 0], time=48.)
+    segments = ak.Array([[[wrong], [wrong], [crv], [wrong], [wrong], [dict(start, time=70.), start, crv, bad, zero]],
+                         [[crv, bad, zero]], [[wrong]], []])
+    lines = vr4eff._tracker_lines(tracks, segments, vr4eff.TRACK_CUTS)
+    np.testing.assert_array_equal(lines["trk_x"], [1., np.nan, np.nan, np.nan])
+    np.testing.assert_array_equal(lines["trk_time"], [50., np.nan, np.nan, np.nan])
+    np.testing.assert_array_equal(lines["trk_dy"], [-1., np.nan, np.nan, np.nan])
+    with pytest.raises(ValueError, match="track counts"):
+        vr4eff._tracker_lines(tracks, segments[[0, 1, 3, 2]], vr4eff.TRACK_CUTS)
+
+
+def test_export_tracks_and_exact_sensor_labels(tmp_path):
     geom = CRVGeometry(
         ["EX", "T1"], np.array([0, 0, 1]), np.zeros(3, int), np.array([2, 2, 0]), np.arange(3),
         np.array([[-3904, 100, 24171], [-3904, 100, 24231], [-3904, 100, 24171]]),
         np.tile([500, 10, 26], (3, 1)), np.tile([1, 2, 0], (3, 1)),
     )
-    tk = dict(x=np.array([200, -100, 0, 0]), y=np.array([80, 120, 100, 100]), z=np.array([0, 0, 21, 0]),
-              dx=np.array([0, 0, 0, 1]), dy=np.array([2, 1, 1, 0]), dz=np.array([0, 0, 0.8, 0]),
-              time=np.full(4, 100.))
-    line_module = SimpleNamespace(DEFAULT_CUTS={}, lines=lambda *args, **kwargs: tk)
-    monkeypatch.setitem(sys.modules, "crvextrap", SimpleNamespace(trackline=line_module))
     f = tmp_path / "events.root"
-    pulse_fields = {"barId": [[0, 0, 0, 0, 0, 1], [0, 0, 0], [], []],
-                    "SiPMId": [[0, 1, 1, 2, 3, 1], [0, 0, 1], [], []],
-                    "sequenceIndex": [[0, 0, 1, 0, 0, 0], [0, 0, 0], [], []],
-                    "PEs": [[8., 10., 10., 15., 15., 10.], [8., 9., 7.], [], []],
-                    "time": [[109., 125., 107., 109., 107., 107.], [106., 107., 108.], [], []]}
-    fields = {f"evtinfo/{k}": np.array(v) for k, v in
-              dict(run=[19]*4, subrun=[2]*4, event=[10, 11, 12, 13]).items()}
-    fields.update({f"crvpulses/crvpulses.{k}": ak.Array(v) for k, v in pulse_fields.items()})
+    pulse_fields = {"barId": [[0, 0, 0, 0, 0, 1], [0, 0, 0], [], [], []],
+                    "SiPMId": [[0, 1, 1, 2, 3, 1], [0, 0, 1], [], [], []],
+                    "sequenceIndex": [[0, 0, 1, 0, 0, 0], [0, 0, 0], [], [], []],
+                    "PEs": [[8., 10., 10., 15., 15., 10.], [8., 9., 7.], [], [], []],
+                    "time": [[109., 125., 107., 109., 107., 107.], [106., 107., 108.], [], [], []]}
+    evt = ak.Array(dict(run=[19]*5, subrun=[2]*5, event=[10, 11, 12, 13, 14]))
+    q = _quality(nactive=25)
+    tracks = _track_record([[q], [q], [q], [q], [q]])
+    segments = ak.Array([[[_crossing(p, d)]] for p, d in (
+        ([200, 80, 0], [0, 2, 0]), ([-100, 120, 0], [0, 1, 0]), ([0, 100, 21], [0, 1, 0.8]),
+        ([0, 100, 0], [1, 0, 0]), ([0, 100, 0], [0, 1, 0]))])
+    pulses = ak.Array({f"crvpulses.{k}": ak.Array(v) for k, v in pulse_fields.items()})
+    # Uproot writes the nested stock EventNtuple schema as an RNTuple.
     with uproot.recreate(f) as root:
-        root.mktree("EventNtuple/ntuple", fields)
+        root.mkrntuple("EventNtuple/ntuple", ak.zip(
+            dict(evtinfo=evt, trk=tracks, trksegs=segments, crvpulses=pulses), depth_limit=1))
     rows = vr4eff.track_pulse_rows(f, per_sensor=True)
 
     legacy_file = tmp_path / "legacy.npz"
@@ -53,20 +89,21 @@ def test_export_tracks_and_exact_sensor_labels(tmp_path, monkeypatch):
     settings = dict(run=19, margin_mm=2., threshold_pe=8., time_window_ns=2., pe_per_mm=1.,
                     attenuation_mm=2000., speed_mm_ns=200., delay_ns=5.)
     r = obs.observations(geom, present, status, rows, **settings)
-    np.testing.assert_array_equal(r["event"], [10]*4 + [11]*4)
-    np.testing.assert_array_equal(r["layer"], [2]*8)
-    np.testing.assert_array_equal(r["channel"], [0, 1, 2, 3]*2)
-    np.testing.assert_allclose(r["track_time_ns"], np.repeat([100 + 20/299.792458, 100 - 20/299.792458], 4))
+    np.testing.assert_array_equal(r["event"], [10]*4 + [11]*4 + [14]*4)
+    np.testing.assert_array_equal(r["layer"], [2]*12)
+    np.testing.assert_array_equal(r["channel"], [0, 1, 2, 3]*3)
+    np.testing.assert_allclose(r["track_time_ns"], np.repeat([100 + 20/299.792458, 100 - 20/299.792458, 100], 4))
     np.testing.assert_allclose(r["path_mm"], 20.)
-    np.testing.assert_allclose(r["distance_mm"], [700, 300, 700, 300, 400, 600, 400, 600])
+    np.testing.assert_allclose(r["distance_mm"], [700, 300, 700, 300, 400, 600, 400, 600] + [500]*4)
     np.testing.assert_allclose(r["nominal_log_pe"], np.log(20) - r["distance_mm"]/2000)
     np.testing.assert_allclose(r["nominal_time_ns"], r["track_time_ns"] + 5 + r["distance_mm"]/200)
-    np.testing.assert_array_equal(r["ambiguous"], [False]*4 + [True, False, False, False])
-    np.testing.assert_array_equal(r["present"], [True, True, False, True]*2)
-    np.testing.assert_array_equal(r["status"], [0, 0, 0, 2]*2)
-    np.testing.assert_array_equal(r["eligible"], [True, True, False, False, False, True, False, False])
-    np.testing.assert_array_equal(r["seen"], [True] + [False]*7)
-    np.testing.assert_array_equal(r["pe"], [8.] + [np.nan]*7)
+    np.testing.assert_array_equal(r["ambiguous"], [False]*4 + [True] + [False]*7)
+    np.testing.assert_array_equal(r["present"], [True, True, False, True]*3)
+    np.testing.assert_array_equal(r["status"], [0, 0, 0, 2]*3)
+    np.testing.assert_array_equal(r["eligible"], [True, True, False, False, False, True, False, False,
+                                                  True, True, False, False])
+    np.testing.assert_array_equal(r["seen"], [True] + [False]*11)
+    np.testing.assert_array_equal(r["pe"], [8.] + [np.nan]*11)
     assert r["time_ns"][0] == 109.
     with pytest.raises(ValueError, match="only the specified run"):
         obs.observations(geom, present, status, rows, **dict(settings, run=20))
