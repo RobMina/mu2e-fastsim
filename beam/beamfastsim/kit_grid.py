@@ -32,11 +32,10 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict
 
-from hependpoints.apptainer import sandbox_fallback
-
 from mu2efastsim import site
 from mu2efastsim.endpoints import EndpointError, Resources
 from mu2efastsim.endpoints import geometry as geometry_artifacts
+from mu2efastsim.endpoints.jobsub import sandbox_fallback   # hependpoints.apptainer, through the core package
 from mu2efastsim.endpoints.artifacts import (binding, consumption_guard, make_manifest, parse_fingerprint,
                                            fingerprint_command, resolve_inputs, validate_manifest)
 from mu2efastsim.endpoints.snapshots import prepare_code

@@ -25,6 +25,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Sequence
 
+from hependpoints.apptainer import sandbox_fallback  # noqa: F401  (re-exported for the task packages)
 from hependpoints.jobsub import JobsubEndpoint, token_path  # noqa: F401  (token_path: re-exported for callers)
 
 from mu2efastsim import site
