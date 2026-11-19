@@ -16,8 +16,8 @@ import sys
 TASKS: dict[str, dict] = {
     "W1": {"title": "Muon beam", "boundary": "TS-entrance mu/pi -> stopping-target stops",
            "stock": "Geant4 TS + DS stages, expectation over stock re-seeds", "metrics": "stop foil, time, radius, "
-           "DS-entrance momentum (paired per shard); stops per input (measured)", "kind": "values + measured yield",
-           "floor": None, "rate_unit": "TS-entrance mu/pi per s"},
+           "DS-entrance momentum (paired per shard); stops per shard", "kind": "counts, paired per shard",
+           "floor": "one stock re-seed", "rate_unit": "TS-entrance mu/pi per s"},
     "W2": {"title": "Conversion electrons", "boundary": "CE stops -> CE track observables",
            "stock": "full Geant4 events -> stock digi + LoopHelix reco", "metrics": "ValKalSeed histograms, paired "
            "shape per sub-shard (yields per generated electron are a separate study)", "kind": "counts, paired shape",
@@ -49,14 +49,16 @@ TASKS: dict[str, dict] = {
     "W9": {
         "title": "CRV design model",
         "note": "the model returns expected misses (mean miss probability), so both quantities are values with the "
-                "paired error on the reference side; validity only (no warm rate at a stock-slot boundary yet)",
+                "paired error on the reference side",
         "boundary": "CRV module design parameters -> veto (in)efficiency",
         "stock": "full-simulation CRV veto comparison of the same design (stock arm of the design study)",
         "metrics": "inefficiency per momentum bin; efficiency per CRV sector",
         "kind": "values (per momentum bin and per sector, paired error) + measured inefficiency; the efficiency "
                 "kind (passed/total) serves a model that returns counts",
         "floor": None,
-        "rate_unit": "events/s",
+        "rate_unit": "selected CE-proxy events per s",
+        "stock_rate": "Geant4 + CRV reconstruction core-seconds per selected event of the stock comparison sample (one "
+                      "CPU core); the model is timed from the CRV-entry states",
     },
     "CRVLY": {
         "title": "CRV light-yield (lookup) table generator",
@@ -79,7 +81,8 @@ TASKS: dict[str, dict] = {
         "kind": "yields: measured (value, error) per configuration; hists: counts in shape mode",
         "floor": "replicate G4beamline runs of the same configuration",
         "rate_unit": "POT/s",
-        "note": "reference pending: the device arm on every configuration and a settled response bank",
+        "note": "stock = G4beamline on the 33 design-board rods; stops via the same muon transport on both arms; TS-entrance "
+                "shapes at the nominal rod with G4beamline's replicate as the floor; rate per POT for the target + PS stage",
     },
 }
 

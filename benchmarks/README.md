@@ -38,7 +38,7 @@ missing or unscorable arm instead of failing.
 
 | task | what | boundary | stock reference | scored | floor | rate |
 |---|---|---|---|---|---|---|
-| W1 | Muon beam | TS-entrance mu/pi -> stopping-target stops | Geant4 TS + DS stages, expectation over stock re-seeds | stop foil, time, radius, DS-entrance momentum (paired per shard); stops per input (measured) | none yet (threshold 2) | TS-entrance mu/pi per s |
+| W1 | Muon beam | TS-entrance mu/pi -> stopping-target stops | Geant4 TS + DS stages, expectation over stock re-seeds | stop foil, time, radius, DS-entrance momentum (paired per shard); stops per shard | one stock re-seed | TS-entrance mu/pi per s |
 | W2 | Conversion electrons | CE stops -> CE track observables | full Geant4 events -> stock digi + LoopHelix reco | ValKalSeed histograms, paired shape per sub-shard (yields per generated electron are a separate study) | none yet (threshold 2) | events/s |
 | W3 | DIO electrons | DIO births -> CE track observables | Geant4 tracker steps of the same events -> stock digi + reco | CE-selected momentum spectrum 95-106 MeV/c; tail counts above 95 and 100 MeV/c and all CE-selected | none yet (threshold 2) | generated DIO muons per s |
 | W4 | RPC electrons | RPC births -> tracker entry | Geant4 RPC sample at the tracker entrance | tracker-entry fiducial yield (no stock reco reference after the response yet) | none yet (threshold 2) | generated RPC captures per s |
@@ -46,49 +46,70 @@ missing or unscorable arm instead of failing.
 | W6 | Pileup mixing | primary steps + donor pools -> mixed tracker digis + CRV pulses | stock mixing of the same primaries | digis per plane, pulses per sector (paired by event); tracker and CRV totals | none yet (threshold 2) | events/s |
 | W7 | Calorimeter | CE calorimeter steps -> calo digis, hits, clusters | Geant4 calorimeter steps -> stock calo digi + reco | cluster E, t, R, N (paired shape per block); cluster yield | stock with another seed | events/s |
 | W8 | Tracker trigger | StrawDigis -> tracker trigger path decisions | the stock trigger on the same digis | accept fraction per path (measured, paired error, tolerance 2 % of the acceptance) | none yet (threshold 2) | events/s |
-| W9 | CRV design model | CRV module design parameters -> veto (in)efficiency | full-simulation CRV veto comparison of the same design (stock arm of the design study) | inefficiency per momentum bin; efficiency per CRV sector | none yet (threshold 2) | events/s |
+| W9 | CRV design model | CRV module design parameters -> veto (in)efficiency | full-simulation CRV veto comparison of the same design (stock arm of the design study) | inefficiency per momentum bin; efficiency per CRV sector | none yet (threshold 2) | selected CE-proxy events per s |
 | CRVLY | CRV light-yield (lookup) table generator | CRV counter geometry and optics -> photon arrival lookup tables | the v6_0 lookup tables (2019 standalone CRV optical simulation; the generator's default v6 model) | bin-by-bin arrival probability per table type (scintillation, Cerenkov in scintillator, Cerenkov in fibre), error binomial on the photons generated per bin; grid jobs and cost per table | none yet (threshold 2) | tables/s |
 | PTGT | Production-target chain | protons on target -> particles at the transport-solenoid entrance | G4beamline on the same target configurations (the design board's rods) | stopped muons per POT and mu- + pi- per POT at the TS entrance per configuration (measured yields); p, cos theta, r and t at the TS entrance (shape); throughput per POT | replicate G4beamline runs of the same configuration | POT/s |
 
-## Coverage on the existing validation outputs (2026-11-18)
+## Coverage on main `c03dbd13` (2026-11-18)
 
-Scored with `--allow-missing` from the validation arms each workflow already delivered and their recorded bench rows;
-no new stock or fast jobs. The reference trees are kept privately. The arms are **not all on current main**: each row
-names the commit of its fast arm and, where different, of its throughput row.
+Every fast arm is rerun on main `c03dbd13`, without #283, with each workflow's own validation recipe on the same
+events as its frozen stock reference, and the bench timer with the published headline pass sizes. No stock jobs were
+run. The scores come from `score --allow-missing` (coverage) and cover 20 of 20 arms (W1-W9 and PTGT), with **mean validity
+0.770** and a **throughput geometric mean of x1,046**. The last column is the same task scored on the older arms. The reference trees
+are kept privately.
 
-| task | dtype | validity | flagged / histograms | yields passing | throughput x | device | fast-arm commit (rate commit) |
+| task | dtype | validity | flagged / histograms | yields passing | throughput x | device | before (scored 2026-11-18 on older arms) |
 |---|---|---|---|---|---|---|---|
-| W1 | float32 | 1.000 | 0 / 4 | 1 / 1 | 956 | A100-80 | a282de98 |
-| W1 | float64 | 1.000 | 0 / 4 | 1 / 1 | 612 | A100-80 | a282de98 |
-| W2 | float32 | 0.889 | 1 / 9 | 0 / 0 | 361 | A100-80 | 1845918 (8064739) |
-| W2 | float64 | 0.889 | 1 / 9 | 0 / 0 | 274 | A100-80 | 1845918 (8064739) |
-| W3 | float32 | 1.000 | 0 / 1 | 3 / 3 | 163 | RTX PRO 6000 MIG 1g | 6b1f2c2 |
-| W3 | float64 | 1.000 | 0 / 1 | 3 / 3 | 60 | RTX PRO 6000 MIG 1g | 6b1f2c2 |
-| W4 | float32 | 1.000 | 0 / 0 | 1 / 1 | 81 | RTX PRO 6000 MIG 1g | 6b1f2c2 |
-| W4 | float64 | 1.000 | 0 / 0 | 1 / 1 | 34 | RTX PRO 6000 MIG 1g | 6b1f2c2 |
-| W5 | float32 | 1.000 | 0 / 12 | 1 / 1 | 1310 | A100-80 | 862eb05 (c8ce9a1c) |
-| W5 | float64 | 1.000 | 0 / 12 | 1 / 1 | 1091 | A100-80 | 862eb05 (c8ce9a1c) |
-| W6 | float32 | 1.000 | 0 / 2 | 2 / 2 | 108 | A100-80 | a05e15e |
-| W6 | float64 | 1.000 | 0 / 2 | 2 / 2 | 99 | A100-80 | a05e15e |
-| W7 | float32 | 0.750 | 1 / 4 | 1 / 1 | 21 | A100-80 | 862eb05 (#86 a542786) |
-| W7 | float64 | 0.750 | 1 / 4 | 1 / 1 | 15 | A100-80 | 862eb05 (#86 d56250e) |
-| W8 | float32 | 1.000 | 0 / 0 | 20 / 20 | 44 | A100-80 | 390ea7d |
-| W8 | float64 | 1.000 | 0 / 0 | 20 / 20 | 38 | A100-80 | 390ea7d |
-| W9 | float32 | not scored: no float32 arm (both dtypes are required) | | | | | |
-| W9 | float64 | 0.500 | 1 / 2 | 1 / 1 | not scored |  | 67bfc9cd |
+| W1 | float32 | 1.000 | 0 / 4 | 1 / 1 | 949 | A100-80 | 1.000, x956 |
+| W1 | float64 | 1.000 | 0 / 4 | 1 / 1 | 613 | A100-80 | 1.000, x612 |
+| W2 | float32 | 0.889 | 1 / 9 | 0 / 0 | 467 | A100-80 | 0.889, x361 |
+| W2 | float64 | 0.889 | 1 / 9 | 0 / 0 | 306 | A100-80 | 0.889, x274 |
+| W3 | float32 | 0.000 | 1 / 1 | 1 / 3 | 169 | A100-80 | 1.000, x163 |
+| W3 | float64 | 0.000 | 1 / 1 | 1 / 3 | 115 | A100-80 | 1.000, x60 |
+| W4 | float32 | 1.000 | 0 / 0 | 1 / 1 | 96 | A100-80 | 1.000, x81 |
+| W4 | float64 | 1.000 | 0 / 0 | 1 / 1 | 73 | A100-80 | 1.000, x34 |
+| W5 | float32 | 1.000 | 0 / 12 | 1 / 1 | 1299 | A100-80 | 1.000, x1310 |
+| W5 | float64 | 1.000 | 0 / 12 | 1 / 1 | 1090 | A100-80 | 1.000, x1091 |
+| W6 | float32 | 1.000 | 0 / 2 | 2 / 2 | 191 | A100-80 | 1.000, x108 |
+| W6 | float64 | 1.000 | 0 / 2 | 2 / 2 | 180 | A100-80 | 1.000, x99 |
+| W7 | float32 | 0.750 | 1 / 4 | 1 / 1 | 2582 | A100-80 | 0.750, x21 |
+| W7 | float64 | 0.750 | 1 / 4 | 1 / 1 | 2315 | A100-80 | 0.750, x15 |
+| W8 | float32 | 1.000 | 0 / 0 | 22 / 22 | 349 | A100-80 | 1.000, x44 |
+| W8 | float64 | 1.000 | 0 / 0 | 22 / 22 | 305 | A100-80 | 1.000, x38 |
+| W9 | float32 | 0.500 | 1 / 2 | 1 / 1 | 38635 | CPU, 4 cores | not scored |
+| W9 | float64 | 0.500 | 1 / 2 | 1 / 1 | 38499 | CPU, 4 cores | 0.500 |
+| PTGT | float32 | 0.561 | 0 / 4 | 37 / 66 | 88132 | A100 | not scored |
+| PTGT | float64 | 0.561 | 0 / 4 | 37 / 66 | 53064 | A100 | not scored |
 
-Mean validity 0.928 over the 17 scored arms; throughput geometric mean x135 over the 16 with a rate.
-
-- **W1:** stock is the expectation over stock re-seeds; values with the paired error per bin. Throughput is against a stock proxy.
-- **W2:** paired shape per sub-shard (70); the per-event yield of this sample is conditioned, so W2 is scored on shapes only (NSeed flags). No floor (threshold 2).
-- **W3:** one spectrum and three tail counts on the same generated muons; old umbrella code and a stock proxy (the CE rate). The 3-sigma yield rule passes the above-100 MeV/c tail (1.11 / 1.14), which a 2-sigma rule would not.
-- **W4:** tracker entry only: there is no stock RPC reconstruction to compare after the response.
-- **W6:** the float32 arm is float32 CRV with a float64 tracker; there is no pure float32 arm.
-- **W7:** the validated arm is the waveform chain, and so is its rate row; the parametric default on main has no same-events stock comparison yet. The cluster-radius flag is the inner edge.
-- **W8:** per-path accept fractions with the thread's 2 % tolerance; under this scorer's rule (3 sigma + tolerance) all 20 paths pass, where the thread's own rule (2 % or 2 sigma) passes 19.
-- **W9:** float64 only (both dtypes exist only for an earlier model definition); no floor and no warm rate at a stock-slot boundary, so validity only. The sector efficiencies flag, driven by sectors with few events.
-- **CRVLY, PTGT:** defined, not scored: their references wait for the generator's full tables and a measured stock cost per table, and for the device arm on every configuration with a settled response bank.
-- Missing everywhere: a reseeded-stock floor for W1, W2, W3, W4, W6, W8 and W9, and bench reports from current main for most workflows.
+- **W1:**
+  - the stock arm is the expectation over 16 stock re-seeds, now compared per shard (paired, yield included);
+  - the floor is one stock re-seed;
+  - throughput is against a stock proxy.
+- **W2:** paired shape per sub-shard (70); yields are not scored from this sample (per-event yields are conditioned);
+  the NSeed flag remains.
+- **W3: validity 0 on main.**
+  - The CE-selected DIO yield is 0.926 / 0.925 of stock (float32 / float64), and 0.93 above 95 MeV/c.
+  - Tracker entry is unchanged.
+  - The cause is main's default reconstruction response (the full-event response), which the W3 chain now uses.
+    The spectrum's chi2 includes that yield.
+  - The tail above 100 MeV/c improves to 1.03 (1.11 / 1.14 on the older arm).
+- **W4:** the tracker-entry stage only; there is no stock RPC reconstruction after the response.
+- **W5, W6, W7:**
+  - W6's float32 arm is now pure float32. W6 runs about 1.8x faster on main than on the older arm.
+  - W7 is the parametric default: x2,582 / x2,315, with the cluster-radius flag at the inner edge as before.
+- **W8:** main as is (device loops on); 22 tested paths. Under this scorer's rule (3 sigma + 2 %) all of them pass.
+- **W9:**
+  - float32 and float64 on the same paired events;
+  - throughput is against the stock Geant4 + CRV reconstruction core-seconds per selected event (existing shard
+    timings, one CPU core), with the model timed from the CRV-entry states;
+  - the sector efficiencies flag (sectors with few events).
+- **Floors:** none for W2, W3, W4, W6, W8 or W9; making one would need new stock jobs.
+- **PTGT:** 33 design-board rods at 1M POT, both dtypes. The device chain is on a development branch, not yet in main.
+  - Stops per POT pass on all 33 rods (about 0.99 of G4beamline).
+  - mu- + pi- per POT at the TS entrance passes on 4 of 33 (0.93 of G4beamline), an open modelling item of the PS stage.
+  - The TS-entrance shapes at the nominal rod pass, against G4beamline's replicate run as the floor.
+  - Throughput is per POT for the target + PS stage.
+- **CRVLY:** defined, not yet scored; its reference waits for full generated tables with a measured stock cost per table.
 
 ## Layout
 
