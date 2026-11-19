@@ -17,7 +17,7 @@ from mu2efastsim.library import manifest as LM
 from mu2efastsim.library.hashing import digest
 
 from ..core import optics as O
-from ..core import transport as T
+from ..core.limits import STEP_BITS
 from . import sections as G
 from . import writer as W
 
@@ -121,7 +121,7 @@ def fields(c, model, pieces, arrays, notes=(), commit=None, created_utc=None):
         interpolation=dict(method="nearest", axes=list(AXES)),
         assumptions=[dict(name="step limit", tested=True,
                           description=f"photon chains stopped at {', '.join(map(str, steps))} steps (exact limit "
-                                      f"{1 << T.STEP_BITS}); stopped chains are counted, see docs/lookupgen.md"),
+                                      f"{1 << STEP_BITS}); stopped chains are counted, see docs/lookupgen.md"),
                      dict(name="optical model", tested=status != "not validated",
                           description=f"{model!r}: {MODEL_SOURCES[O.get(model).name]}")]
         + [dict(name=f"stock quirk {i + 1}", description=q, tested=True) for i, q in enumerate(W.QUIRKS)],

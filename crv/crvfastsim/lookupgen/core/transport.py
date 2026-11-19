@@ -35,6 +35,7 @@ from . import materials as _materials  # noqa: F401  (registers the "current" mo
 from . import optics as M
 from .binning import Binning
 from .counter import Counter
+from .limits import DRAW_BITS, LEN_BINS, STEP_BITS  # noqa: F401  (re-exported)
 
 jax.config.update("jax_enable_x64", True)
 
@@ -52,9 +53,6 @@ TWO_PI = 2.0 * math.pi
 NT, NE = 150, 10                 # LookupBin::maxTimeDelays, maxFiberEmissions
 K_FACET = 8                      # facet candidates drawn per boundary sub-iteration
 MAX_SUB = 24                     # boundary sub-iterations per step (unfinished lanes are counted)
-STEP_BITS = 19                   # steps per photon chain < 2**19 (longer chains are stopped and counted)
-DRAW_BITS = 10                   # random draws per step < 2**10
-LEN_BINS = STEP_BITS             # chain-length histograms: bin k holds chains of 2**k ... 2**(k+1) - 1 steps
 # draw offsets inside one step
 R_PROC, R_SKIP, R_WLS, R_METAL, R_SUB = 0, 4, 8, 20, 32
 SUB_STRIDE = 2 * K_FACET + 6
