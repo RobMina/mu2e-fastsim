@@ -86,7 +86,8 @@ TASKS: dict[str, dict] = {
         "floor": "replicate G4beamline runs of the same configuration",
         "rate_unit": "POT/s",
         "note": "stock = G4beamline on the 33 design-board rods; stops via the same muon transport on both arms; TS-entrance "
-                "shapes at the nominal rod with G4beamline's replicate as the floor; rate per POT for the target + PS stage",
+                "shapes at the nominal rod with G4beamline's replicate as the floor; rate per POT for the target + PS stage; "
+                "the fast arm crosses the TS-window steel rings as thin slabs (two seeds of 1M POT per rod, pooled)",
     },
 }
 

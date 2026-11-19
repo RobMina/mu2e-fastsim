@@ -55,7 +55,7 @@ missing or unscorable arm instead of failing.
 Every fast arm is rerun on main `c03dbd13`, without #283, with each workflow's own validation recipe on the same
 events as its frozen stock reference, and the bench timer with the published headline pass sizes. No stock jobs were
 run. The scores come from `score --allow-missing` (coverage) and cover 20 of 20 arms (W1-W9 and PTGT), with **mean validity
-0.870** and a **throughput geometric mean of x1,046**. The last column is the same task scored on the older arms. The reference trees
+0.899** and a **throughput geometric mean of x1,009**. The last column is the same task scored on the older arms. The reference trees
 are kept privately.
 
 | task | dtype | validity | flagged / histograms | yields passing | throughput x | device | before (scored 2026-11-18 on older arms) |
@@ -78,8 +78,8 @@ are kept privately.
 | W8 | float64 | 1.000 | 0 / 0 | 22 / 22 | 305 | A100-80 | 1.000, x38 |
 | W9 | float32 | 0.500 | 1 / 2 | 1 / 1 | 38635 | CPU, 4 cores | not scored |
 | W9 | float64 | 0.500 | 1 / 2 | 1 / 1 | 38499 | CPU, 4 cores | 0.500 |
-| PTGT | float32 | 0.561 | 0 / 4 | 37 / 66 | 88132 | A100 | not scored |
-| PTGT | float64 | 0.561 | 0 / 4 | 37 / 66 | 53064 | A100 | not scored |
+| PTGT | float32 | 0.848 | 0 / 4 | 56 / 66 | 58341 | A100 | 0.561, x88132 (absorbing TS-window rings) |
+| PTGT | float64 | 0.848 | 0 / 4 | 56 / 66 | 39112 | A100 | 0.561, x53064 (absorbing TS-window rings) |
 
 - **W1:**
   - the stock arm is the expectation over 16 stock re-seeds, now compared per shard (paired, yield included);
@@ -107,11 +107,15 @@ are kept privately.
     timings, one CPU core), with the model timed from the CRV-entry states;
   - the sector efficiencies flag (sectors with few events).
 - **Floors:** none for W2, W3, W4, W6, W8 or W9; making one would need new stock jobs.
-- **PTGT:** 33 design-board rods at 1M POT, both dtypes. The device chain is on a development branch, not yet in main.
-  - Stops per POT pass on all 33 rods (about 0.99 of G4beamline).
-  - mu- + pi- per POT at the TS entrance passes on 4 of 33 (0.93 of G4beamline), an open modelling item of the PS stage.
+- **PTGT:** 33 design-board rods, two seeds of 1M POT each (pooled), both dtypes. The device chain (#293) is not yet in
+  main.
+  - The TS-window steel rings are crossed as thin steel slabs. The first freeze treated them as perfect absorbers, which
+    gave mu- + pi- at the TS entrance 0.93 of G4beamline and validity 0.561 (the "before" column).
+  - Stops per POT pass on 32 of 33 rods (median 1.02 / 1.00, float32 / float64); one rod is at 1.19 +- 0.06.
+  - mu- + pi- per POT at the TS entrance passes on 24 of 33 (median 0.96); the nine failing rods are at 0.94-0.96.
   - The TS-entrance shapes at the nominal rod pass, against G4beamline's replicate run as the floor.
-  - Throughput is per POT for the target + PS stage.
+  - Throughput is per POT for the target + PS stage. The slab crossing costs about a third of the absorbing version's
+    rate.
 - **CRVLY:** defined, not yet scored; its reference waits for full generated tables with a measured stock cost per table.
 
 ## Layout
