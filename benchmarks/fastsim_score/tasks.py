@@ -81,7 +81,8 @@ TASKS: dict[str, dict] = {
         "kind": "yields: measured (value, error) per configuration; hists: counts in shape mode",
         "floor": "replicate G4beamline runs of the same configuration",
         "rate_unit": "POT/s",
-        "note": "reference pending: the device arm on every configuration and a settled response bank",
+        "note": "stock = G4beamline on the 33 design-board rods; stops via the same muon transport on both arms; TS-entrance "
+                "shapes at the nominal rod with G4beamline's replicate as the floor; rate per POT for the target + PS stage",
     },
 }
 

@@ -54,8 +54,8 @@ missing or unscorable arm instead of failing.
 
 Every fast arm is rerun on main `c03dbd13`, without #283, with each workflow's own validation recipe on the same
 events as its frozen stock reference, and the bench timer with the published headline pass sizes. No stock jobs were
-run. The scores come from `score --allow-missing` (coverage) and cover 18 of 18 arms, with **mean validity 0.793** and
-a **throughput geometric mean of x657**. The last column is the same task scored on the older arms. The reference trees
+run. The scores come from `score --allow-missing` (coverage) and cover 20 of 20 arms (W1-W9 and PTGT), with **mean validity
+0.770** and a **throughput geometric mean of x1,046**. The last column is the same task scored on the older arms. The reference trees
 are kept privately.
 
 | task | dtype | validity | flagged / histograms | yields passing | throughput x | device | before (scored 2026-11-18 on older arms) |
@@ -78,6 +78,8 @@ are kept privately.
 | W8 | float64 | 1.000 | 0 / 0 | 22 / 22 | 305 | A100-80 | 1.000, x38 |
 | W9 | float32 | 0.500 | 1 / 2 | 1 / 1 | 38635 | CPU, 4 cores | not scored |
 | W9 | float64 | 0.500 | 1 / 2 | 1 / 1 | 38499 | CPU, 4 cores | 0.500 |
+| PTGT | float32 | 0.561 | 0 / 4 | 37 / 66 | 88132 | A100 | not scored |
+| PTGT | float64 | 0.561 | 0 / 4 | 37 / 66 | 53064 | A100 | not scored |
 
 - **W1:**
   - the stock arm is the expectation over 16 stock re-seeds, now compared per shard (paired, yield included);
@@ -102,8 +104,12 @@ are kept privately.
     timings, one CPU core), with the model timed from the CRV-entry states;
   - the sector efficiencies flag (sectors with few events).
 - **Floors:** none for W2, W3, W4, W6, W8 or W9; making one would need new stock jobs.
-- **CRVLY and PTGT:** defined, not yet scored. Their references wait for full generated tables with a measured stock
-  cost, and for the target chain's validated rerun.
+- **PTGT:** 33 design-board rods at 1M POT, both dtypes. The device chain is on a development branch, not yet in main.
+  - Stops per POT pass on all 33 rods (about 0.99 of G4beamline).
+  - mu- + pi- per POT at the TS entrance passes on 4 of 33 (0.93 of G4beamline), an open modelling item of the PS stage.
+  - The TS-entrance shapes at the nominal rod pass, against G4beamline's replicate run as the floor.
+  - Throughput is per POT for the target + PS stage.
+- **CRVLY:** defined, not yet scored; its reference waits for full generated tables with a measured stock cost per table.
 
 ## Layout
 
