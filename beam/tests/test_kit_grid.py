@@ -14,8 +14,9 @@ import pytest
 from mu2efastsim.endpoints import kit as kitmod
 from mu2efastsim.endpoints import capabilities, chainpoint
 from mu2efastsim.endpoints import jobsub as jobsubmod
-from mu2efastsim.endpoints.jobsub import FermiGridEndpoint, quiet_ssh_runner, token_path
+from mu2efastsim.endpoints.jobsub import FermiGridEndpoint, token_path
 from mu2efastsim.endpoints.kit import FastsimKit
+from hependpoints import runners as hepep_runners
 from hependpoints.runners import local_runner
 
 from beamfastsim import kit_grid, kit_task, kit_uva
@@ -204,7 +205,7 @@ def test_submit_host_commands_run_after_the_mu2e_setup_and_never_read_stdin(monk
     def fake_run(argv, **kw):
         seen.append((argv, kw))
         return subprocess.CompletedProcess(argv, 0, b"ok\n", b"")
-    monkeypatch.setattr(jobsubmod.subprocess, "run", fake_run)
+    monkeypatch.setattr(hepep_runners.subprocess, "run", fake_run)        # hependpoints' ssh runner
     ep = FermiGridEndpoint(host="fnal-host.example", workdir="/path/to/submit", output_dir="/path/to/out",
                            stage_dir="/path/to/stage", state_dir=tmp_path)
     assert ep._sh("echo hi") == "ok\n"
@@ -213,8 +214,13 @@ def test_submit_host_commands_run_after_the_mu2e_setup_and_never_read_stdin(monk
     assert kw["stdin"] is subprocess.DEVNULL and "input" not in kw         # an MCP client's requests stay unread
     remote = argv[-1]
     assert remote.index("setupmu2e-art.sh") < remote.index("muse setup ops") < remote.index("echo hi")
-    quiet_ssh_runner("h")(["bash", "-c", "cat"], b"data", 5)
-    assert seen[-1][1]["input"] == b"data"
+
+
+def test_the_grid_body_runs_the_image_through_the_upstream_sandbox_fallback():
+    from hependpoints.apptainer import sandbox_fallback
+    assert sandbox_fallback(check='python3 -c "$CHECK"') in kit_grid.BODY
+    assert kit_grid.BODY.index('CHECK="import jax') < kit_grid.BODY.index('IMG="$W/img.sif"; MODE=sif')
+    assert kit_grid.BODY.index("MODE=sandbox") < kit_grid.BODY.index('"image_mode\\": \\"$MODE')
 
 
 # -- end to end on the fake grid ------------------------------------------------------------------------------------

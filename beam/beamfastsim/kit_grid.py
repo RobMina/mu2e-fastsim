@@ -32,6 +32,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict
 
+from hependpoints.apptainer import sandbox_fallback
+
 from mu2efastsim import site
 from mu2efastsim.endpoints import EndpointError, Resources
 from mu2efastsim.endpoints import geometry as geometry_artifacts
@@ -67,16 +69,11 @@ ifdh cp @code_pnfs@ "$W/code.tgz" >/dev/null || { echo "code copy failed"; exit 
 @input_guard@printf '%s\\n' @manifest@ > "$M2FS_OUT/artifact-manifest.json" || exit 5
 tar -xzf "$W/code.tgz" -C "$CODE" && rm -f "$W/code.tgz" || { echo "code unpack failed"; exit 3; }
 CHECK="import jax; print('nested apptainer ok', jax.__version__, jax.devices())"
-IMG="$W/img.sif"; MODE=sif
-if ! "$APPT" exec --cleanenv "$IMG" python3 -c "$CHECK"; then
-  echo "SIF mount failed (no /dev/fuse on this worker?): building a sandbox"; t1=$SECONDS
-  export APPTAINER_TMPDIR="$W/apptmp"; mkdir -p "$APPTAINER_TMPDIR"
-  "$APPT" build --sandbox "$W/img" "$IMG" > "$W/sandbox.log" 2>&1 || { tail -5 "$W/sandbox.log"; echo "sandbox build failed"; exit 4; }
-  rm -f "$IMG"; rm -rf "$APPTAINER_TMPDIR"; IMG="$W/img"; MODE=sandbox
-  echo "sandbox $((SECONDS-t1)) s"
-  "$APPT" exec --cleanenv "$IMG" python3 -c "$CHECK" || { echo "nested apptainer failed (sandbox)"; exit 4; }
-fi
-echo "{\\"stage_in_s\\": $((SECONDS-t0)), \\"image_mode\\": \\"$MODE\\"}" > "$M2FS_OUT/grid.json"
+"""
+# The image: the staged SIF, or a sandbox unpacked from it where the worker has no /dev/fuse (hependpoints).
+BODY += sandbox_fallback(apptainer='"$APPT"', sif='"$W/img.sif"', sandbox='"$W/img"', tmpdir='"$W/apptmp"',
+                         log='"$W/sandbox.log"', check='python3 -c "$CHECK"', image_var="IMG", mode_var="MODE", fail_rc=4)
+BODY += """echo "{\\"stage_in_s\\": $((SECONDS-t0)), \\"image_mode\\": \\"$MODE\\"}" > "$M2FS_OUT/grid.json"
 BENV="PYTHONDONTWRITEBYTECODE=1"; RUNPFX=()
 B() { "${RUNPFX[@]}" "$APPT" exec --cleanenv --env "JAX_PLATFORMS=cpu,OMP_NUM_THREADS=1,OPENBLAS_NUM_THREADS=1,MKL_NUM_THREADS=1,XLA_FLAGS=--xla_cpu_multi_thread_eigen=false,PYTHONPATH=$CODE/core:$CODE/beam:$CODE/calo:$CODE/tracker,$BENV" -B /cvmfs -B "$L" -B "$M2FS_OUT" -B "$CODE" --pwd "$CODE" "$IMG" "$@"; }
 B python -c "import beamfastsim.stage, beamfastsim.edepana" || { echo "beamfastsim.edepana missing in $CODE"; exit 5; }
