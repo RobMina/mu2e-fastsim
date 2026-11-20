@@ -351,7 +351,18 @@ def _optimize(theta, free, d, nchan, ref):
     result = minimize(loss, np.zeros(free.sum()), jac=True, method="L-BFGS-B", bounds=bounds,
                       options={"maxiter": 3000, "ftol": 1e-15, "gtol": 1e-7, "maxcor": 30})
     theta = full(result.x)
-    at_bound = [k for k in (4, 5) if free[k] and min(abs(theta[k] - lim) for lim in limits[k]) <= 1e-9 * max(1, abs(theta[k]))]
+    # A boxed parameter within 1e-3 of its (scaled) sigma of an edge, with the gradient pushing outward, is at it.
+    grad = _nll(theta, d, nchan, ref)[1]
+    index = {k: i for i, k in enumerate(np.flatnonzero(free))}
+    at_bound = []
+    for k in (4, 5):
+        if not free[k]:
+            continue
+        lo, hi = limits[k]
+        sk = scale[index[k]]
+        if ((theta[k] - lo) / sk < 1e-3 and grad[k] > 0) or ((hi - theta[k]) / sk < 1e-3 and grad[k] < 0):
+            at_bound.append(k)
+            theta[k] = lo if (theta[k] - lo) / sk < 1e-3 else hi
     return theta, dict(scale=np.r_[scale], free=free.copy(), message=result.message, nit=result.nit), at_bound
 
 
