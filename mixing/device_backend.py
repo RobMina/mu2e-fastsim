@@ -5,6 +5,7 @@ as kernels. Synthetic kernels require explicit opt-in and never advertise physic
 tracker/CRV support. By default ROOT serialization and final-output compaction stay on
 the host; the opt-in occupancy output reduces the detector tables on the device instead.
 """
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -112,6 +113,10 @@ class Backend:
         self.sampling_receipt = getattr(args, "sampling_receipt", None) or "full"
         if self.sampling_receipt not in ("full", "compact"):
             raise ValueError("sampling receipt must be full or compact")
+        self.dispatch_threads = getattr(args, "device_dispatch_threads", None)
+        self.dispatch_threads = 1 if self.dispatch_threads is None else self.dispatch_threads
+        if type(self.dispatch_threads) is not int or self.dispatch_threads < 1:
+            raise ValueError("device dispatch threads must be a positive integer")
         if self.output_mode not in ("root", "occupancy"):
             raise ValueError("device output must be root or occupancy")
         if self.output_mode == "occupancy":
@@ -166,6 +171,15 @@ class Backend:
                       for value, dtype in ((0, np.uint64), (0, np.uint64), (args.batch_events, np.int64)))
         _audit_program(jax.make_jaxpr(execute)(*self._arguments, *probe))
         self.execute = jax.jit(execute)
+        self.advance, self._dispatcher = None, None
+        if self.dispatch_threads > 1:
+            def advance(pools, state, seeds, ordinal, batch_index, size):
+                # the sampler's next donor cursors alone: the same draws as execute's, without the overlay or response
+                return sample_overlay(pools, state, domain(seeds[0], batch_index), ordinal, size, layout=self.layout,
+                                      law=law)[2]
+            _audit_program(jax.make_jaxpr(advance)(self.pools, self.state, self._seeds, *probe))
+            self.advance = jax.jit(advance)
+            self._dispatcher = ThreadPoolExecutor(max_workers=self.dispatch_threads, thread_name_prefix="w6-dispatch")
         self.metadata = {
             "name": "mixing.device_backend:Backend", "support": list(model.support),
             "residency": "device-resident sampling, overlay and response; one terminal device_get for output/receipt; host ROOT serialization",
@@ -199,11 +213,16 @@ class Backend:
         if request.ordinal_start + request.count > np.iinfo(np.int64).max:
             raise ValueError("realization ordinal exceeds int64")
 
-    def _dispatch(self, request):
-        scalars = tuple(self.jax.device_put(np.array(value, dtype=dtype), self.device) for value, dtype in
-                        ((request.ordinal_start, np.uint64), (request.batch_index, np.uint64), (request.count, np.int64)))
+    def _scalars(self, request):
+        return tuple(self.jax.device_put(np.array(value, dtype=dtype), self.device) for value, dtype in
+                     ((request.ordinal_start, np.uint64), (request.batch_index, np.uint64), (request.count, np.int64)))
+
+    def _execute(self, state, scalars):
         with self.jax.transfer_guard("disallow"):
-            return self.execute(self.pools, self.state, self.assets, self._seeds, *scalars)
+            return self.execute(self.pools, state, self.assets, self._seeds, *scalars)
+
+    def _dispatch(self, request):
+        return self._execute(self.state, self._scalars(request))
 
     @staticmethod
     def _path(outdir):
@@ -234,17 +253,36 @@ class Backend:
         """Pipelined use: dispatch one batch without waiting for it; the source and the device state advance now.
 
         collect() downloads, checks and writes it; call it in dispatch order, after dispatching the next batch, so
-        the host work overlaps the device. The outputs are those of run(); a rejected batch raises in collect()."""
+        the host work overlaps the device. The outputs are those of run(); a rejected batch raises in collect().
+
+        With device_dispatch_threads N > 1 the batch program runs on one of N dispatch threads (a GPU execution holds
+        its calling thread), and the next batch's donor cursors come from a small separate program (`advance`, the
+        sampler's own draws), so batch k + 1 is queued while batch k still runs. The batch program is unchanged;
+        collect() checks that the cursors it returns equal advance's."""
         self._check(request)
-        result, state = self._dispatch(request)
+        if self._dispatcher is None:
+            result, state = self._dispatch(request)
+            self.source.commit(request)
+            self.state = state
+            return SimpleNamespace(request=request, result=result)
+        scalars, state = self._scalars(request), self.state
+        with self.jax.transfer_guard("disallow"):
+            following = self.advance(self.pools, state, self._seeds, *scalars)
+        result = self._dispatcher.submit(self._execute, state, scalars)
         self.source.commit(request)
-        self.state = state
-        return SimpleNamespace(request=request, result=result)
+        self.state = following
+        return SimpleNamespace(request=request, result=result, state=following)
 
     def collect(self, pending, outdir):
         path = self._path(outdir)
         started = time.perf_counter()
-        usage = self._finish(pending.request, self.jax.device_get(pending.result), path)
+        result = pending.result
+        if isinstance(result, Future):        # dispatch threads: the batch's own next state must equal advance's
+            result, state = result.result()
+            ours, theirs = self.jax.device_get((state, pending.state))
+            if not all(np.array_equal(ours[k], theirs[k]) for k in ours):
+                raise RuntimeError("device dispatch: the batch program's next cursors differ from advance's")
+        usage = self._finish(pending.request, self.jax.device_get(result), path)
         return {"events": pending.request.count, "capacity_usage": usage, "pipelined": True,
                 "wait_transfer_and_write_s": time.perf_counter() - started, "terminal_device_get_calls": 1,
                 "model_kind": self.metadata["model_kind"]}

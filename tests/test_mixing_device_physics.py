@@ -355,6 +355,47 @@ def test_compact_sampling_receipt_same_outputs(template, cond, tmp_path):
             lambda manifest, **kwargs: source(c, **kwargs), Backend)
 
 
+def test_dispatch_threads_same_outputs(template, cond, tmp_path):
+    """device_dispatch_threads 2 (pipelined; batch programs on dispatch threads, the next cursors from `advance`):
+    the same fast.root trees and sampling receipts as one dispatch thread, batch by batch."""
+    from types import SimpleNamespace
+    from trkfastsim.digi.digicond import Conditions
+    from mixing.device_backend import Backend
+    from mixing.stream_benchmark import run
+
+    c = Conditions(cond.s, cond.a)
+    c.s["onspill"] = True
+    capacity = tmp_path / "capacities.json"
+    capacity.write_text(json.dumps(CAPACITY))
+    outs = {}
+    for threads in (1, 2):
+        outs[threads] = tmp_path / f"out_{threads}"
+        args = SimpleNamespace(out=outs[threads], frames_manifest=None, device_platform="cpu",
+                               device_kernel="mixing.device_integration:model", device_capacities=capacity,
+                               synthetic=False, backend="mixing.device_backend:Backend", events=7, batch_events=2,
+                               max_selected_rows=448, chunk=2, warmup_batches=1, seed=17, tracker_seed=19,
+                               sampling_seed=23, require_stage=[], template=template, device_pipeline=True,
+                               device_pipeline_writers=2, device_dispatch_threads=threads)
+        run(args, lambda manifest, **kwargs: source(c, **kwargs), Backend)
+    paths = sorted(outs[1].glob("*/fast.root"))
+    assert len(paths) >= 4
+    assert sorted(p.parent.name for p in outs[2].glob("*/fast.root")) == [p.parent.name for p in paths]
+    for a in paths:
+        b = outs[2] / a.parent.name / "fast.root"
+        with uproot.open(a) as ra, uproot.open(b) as rb:
+            for name, tree in ra.items(filter_classname="TTree"):
+                for branch in tree.keys():
+                    assert (ak.to_list(tree[branch].array(library="ak"))
+                            == ak.to_list(rb[name][branch].array(library="ak"))), f"{name}/{branch}"
+        with np.load(a.parent / "sampling.npz") as one, np.load(b.parent / "sampling.npz") as two:
+            assert one.files == two.files
+            for k in one.files:
+                np.testing.assert_array_equal(two[k], one[k], err_msg=k)
+    with pytest.raises(ValueError, match="dispatch threads"):
+        run(SimpleNamespace(**{**vars(args), "out": tmp_path / "bad", "device_dispatch_threads": 0}),
+            lambda manifest, **kwargs: source(c, **kwargs), Backend)
+
+
 def test_output_capacities_validated():
     from mixing.device_physics import compact_rows, output_capacities
     assert output_capacities(None) == {} and output_capacities({"tracker_rows": 4}) == {"tracker_rows": 4}

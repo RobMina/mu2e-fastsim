@@ -17,7 +17,9 @@ written on one worker thread while batch k + 1 runs on the device. The outputs a
 compressed with ZSTD level 1 by default here (`"output_compression"`; `null` keeps uproot's ZLIB 1, as
 `stream_benchmark` does by default): the same decoded trees, different file bytes. The sampling receipt is compact by
 default here (`"sampling_receipt"`, as occupancy output: no per-donor arrays, which follow from counts and cursors;
-`"full"` keeps them, as `stream_benchmark` does by default): the same detector outputs.
+`"full"` keeps them, as `stream_benchmark` does by default): the same detector outputs. `"device_dispatch_threads": N`
+(default 1) keeps up to N batch programs in flight, each on its own thread, with the next batch's donor cursors from a
+small separate program: the same outputs (each batch checks its own cursors against it).
 
 - `prepare(N)` reads and validates the five frame pools into host memory once (timer `prepare_s`).
 - `prepare(N, seed=S)` (the timer's `--fresh-inputs`, called before every pass) reads the pools on its first call

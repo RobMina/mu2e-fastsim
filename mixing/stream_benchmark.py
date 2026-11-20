@@ -261,6 +261,10 @@ def main(argv=None):
     parser.add_argument("--device-pipeline-writers", type=int, default=1,
                         help="with --device-pipeline: batches downloaded and written at once, each on its own thread "
                              "(default 1)")
+    parser.add_argument("--device-dispatch-threads", type=int, default=1,
+                        help="with --device-pipeline: batch programs in flight, each on its own thread; above 1 the next "
+                             "batch's donor cursors come from a small separate program so it can start before the "
+                             "previous batch ends (default 1)")
     from mu2efastsim import approximations
     from .approximations import WORKFLOW
     approximations.add_arguments(parser)
