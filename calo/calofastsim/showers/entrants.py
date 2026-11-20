@@ -367,7 +367,15 @@ def nearest_entries(face, key, azimuth, rho, rows, donor_key, donor_azimuth, nei
     for lo in range(0, n, step):
         sl = slice(lo, min(n, lo + step))
         d2 = entry_distance2(face, key[sl], azimuth[sl], rho[sl], donor_key, donor_azimuth)
-        near = np.argpartition(d2, k - 1, axis=1)[:, :k] if k < len(rows) else np.tile(np.arange(len(rows)), (d2.shape[0], 1))
+        if k < len(rows):
+            # the k smallest by (distance, row): all below the k-th distance, then the lowest rows at it
+            kth = np.partition(d2, k - 1, axis=1)[:, k - 1:k]
+            below = d2 < kth
+            at = d2 == kth
+            chosen = below | (at & (np.cumsum(at, axis=1) <= k - below.sum(axis=1, keepdims=True)))
+            near = np.nonzero(chosen)[1].reshape(-1, k)
+        else:
+            near = np.tile(np.arange(len(rows)), (d2.shape[0], 1))
         nd2 = np.take_along_axis(d2, near, axis=1)
         order = np.lexsort((rows[near], nd2), axis=1)
         near, nd2 = np.take_along_axis(near, order, axis=1), np.take_along_axis(nd2, order, axis=1)
