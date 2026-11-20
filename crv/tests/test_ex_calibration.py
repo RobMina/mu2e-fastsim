@@ -135,6 +135,9 @@ def test_association_export_tracks_and_exact_sensor_labels(tmp_path):
     np.testing.assert_array_equal(kept["eligible"][12:16], [True, True, False, False])
     with pytest.raises(ValueError, match="only the specified run"):
         obs.observations(geom, present, status, rows, **dict(SETTINGS, run=20))
+    # The commissioning geometry moves the detector frame 1236 mm upstream: a wrong origin is caught.
+    with pytest.raises(ValueError, match="detector frame origin"):
+        obs.observations(geom, present, status, rows, **SETTINGS, detector_z0_mm=obs.DET_Z0_NOMINAL - 1236)
 
 
 def test_association_export_refuses_clustered_only_and_missing_branches(tmp_path):

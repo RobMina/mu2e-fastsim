@@ -22,8 +22,10 @@ import numpy as np
 
 from .. import geometry, readout
 
-# EventNtuple detector frame (tracker centre) to Mu2e coordinates, extracted geometry (same as reco.vr4eff).
-DET_TO_MU2E = np.array([-3904.0, 0.0, 24171.0])
+# EventNtuple detector frame (tracker centre) to Mu2e coordinates: x - 3904 (extracted) and z + the reco geometry's
+# mu2e.detectorSystemZ0: 24171 for the v04 nominal tracker, 22935 for the commissioning geometry (Offline#2051).
+DET_X_OFFSET, DET_Z0_NOMINAL = -3904.0, 24171.0
+FRAME_MIN_INSIDE = 0.5    # share of probe bars whose chord centre must lie inside the bar, else the frame is wrong
 KKLINE = 3
 TRACK_CUTS = {"nactive": 20, "fitcon": 0.01, "chi2": 3.0, "nplanes": 0}
 NO_PULSE_DBAR = 127
@@ -146,8 +148,12 @@ def association_rows(ntuple, fit="trk", trk_cuts=None):
 
 
 def observations(geom, present, status, rows, *, run, margin_mm, threshold_pe, time_window_ns, pe_per_mm,
-                 attenuation_mm, speed_mm_ns, delay_ns, exclude_neighbour=True, allow_clustered_only=False):
-    """One row per (association EX crossing, layer probe bar, SiPM). Side 0 is the low length-axis end."""
+                 attenuation_mm, speed_mm_ns, delay_ns, detector_z0_mm=DET_Z0_NOMINAL, exclude_neighbour=True,
+                 allow_clustered_only=False):
+    """One row per (association EX crossing, layer probe bar, SiPM). Side 0 is the low length-axis end.
+
+    ``detector_z0_mm`` is the reco geometry's ``mu2e.detectorSystemZ0`` (the association's detector frame origin).
+    """
     positive = (threshold_pe, time_window_ns, pe_per_mm, attenuation_mm, speed_mm_ns)
     if (run < 0 or not np.isfinite((*positive, margin_mm, delay_ns)).all()
             or min(positive) <= 0 or margin_mm < 0):
@@ -179,7 +185,7 @@ def observations(geom, present, status, rows, *, run, margin_mm, threshold_pe, t
         raise ValueError("association probe bar outside the geometry")
     use = geom.sector[bar] == ex
     ix, il, bar = ix[use], il[use], bar[use]
-    p = np.asarray(rows["x_pos"], float)[ix] + DET_TO_MU2E
+    p = np.asarray(rows["x_pos"], float)[ix] + [DET_X_OFFSET, 0., detector_z0_mm]
     d = np.asarray(rows["x_dir"], float)[ix]
     upred = np.asarray(rows["x_probe_upred"], float)[ix, il]
     tpred = np.asarray(rows["x_probe_tpred"], float)[ix, il]
@@ -204,6 +210,10 @@ def observations(geom, present, status, rows, *, run, margin_mm, threshold_pe, t
                 & (np.abs(a[k, width]) + dh * np.abs(d[k, width]) < half[k, width] - margin_mm)
                 & (np.abs(upred) + dh * np.abs(d[k, along]) < half[k, along] - margin_mm))
         du_line = a[k, along] - upred
+        inside = np.abs(a[k, width]) < half[k, width]
+    if len(bar) and inside.mean() < FRAME_MIN_INSIDE:
+        raise ValueError(f"only {inside.mean():.0%} of the association's crossings lie inside their predicted bar: "
+                         "the detector frame origin (detector_z0_mm) does not match the reco geometry")
     half_along = half[k, along]
     ix, il, bar, upred, tpred, dbar, dh, du_line, half_along = (
         v[keep] for v in (ix, il, bar, upred, tpred, dbar, dh, du_line, half_along))
@@ -257,6 +267,8 @@ def main(argv=None):
     parser.add_argument("out", help="output NPZ (contains detector data; keep private)")
     parser.add_argument("--run", type=int, required=True, help="run identifier for the single-run input file")
     parser.add_argument("--fit-branch", default="trk", help="EventNtuple track branch holding the KKLine fits")
+    parser.add_argument("--detector-z0-mm", type=float, required=True,
+                        help="mu2e.detectorSystemZ0 of the reco geometry (24171 v04 nominal, 22935 commissioning)")
     parser.add_argument("--keep-neighbour", action="store_true",
                         help="keep crossings whose association probe pulse is on a neighbouring bar")
     parser.add_argument("--allow-clustered-only", action="store_true",
