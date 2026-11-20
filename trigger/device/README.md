@@ -7,7 +7,7 @@ and lumi-stream paths) of the production menu, from StrawDigis to per-path decis
 |---|---|---|---|
 | straw hits | `StrawHitReco` (TrigMakeSH, FitType 5) | port with the stock arithmetic (`hits.straw_hits`) | bit for bit |
 | panel hits | `CombineStrawHits` (TrigMakePH) | port with the stock arithmetic (`hits.panel_hits`) | bit for bit |
-| background flags | `DeltaFinder` (TrigFlagPH) | not run: no hit flagged | exact on primary-only CE digis (stock flags none); not with pileup |
+| background flags | `DeltaFinder` (TrigFlagPH) | port with the stock arithmetic and orders (`deltafinder.py`); opt-in (off: no hit flagged) | bit for bit; see [Background flags](#background-flags-deltafinder) |
 | time clusters | `TimeClusterFinder` | port (`timecluster.py`), incl. the TMVA hit MLP | see the README table of the PR / record |
 | time clusters (apr) | `TZClusterFinder` | the TimeClusterFinder port with TZ's `clusterThresh` | approximation |
 | helices | `RobustHelixFinder` (tpr), `AgnosticHelixFinder` (apr) | compact fit with the stock per-face hit selection and chi2 definitions (`helix.py`); the hit ratio over `HelixTool`'s nominal face z | approximation |
@@ -24,6 +24,41 @@ and lumi-stream paths) of the production menu, from StrawDigis to per-path decis
 Not evaluated on the device: the calorimeter-seeded tracker paths (`cpr_*`), `apr_TC_calo` (its `TZClusterFinder`
 attaches and recovers calo clusters; always false on the device), `cst_CosmicTrackSeed` (`LineFinder` +
 `CosmicSeedFilter`), paths with `MultiHelixFilter` or `minNHelices > 1`.
+
+### Background flags (DeltaFinder)
+
+`deltafinder.py` ports DeltaFinder (Offline v13_41_01, CalPatRec: `DeltaFinderAlg`, `DeltaSeed`, `DeltaCandidate`,
+`ProtonCandidate`), the menu's `TrigFlagPH`. It sets `Background` (StrawHitFlag bit 6) on the panel hits of delta
+electrons, sets `EnergySelection` on every hit and clears it on the hits of proton candidates; every hit is written,
+so only the flags change. It is off by default and runs with `Chain(deltafinder=True)`, `decide --deltafinder` or
+`TRIGGER_DEVICE_DELTAFINDER=1` (bench); with it off, no hit carries `Background` (as before). With it on, the stages
+that read the flags see them: `CalTimePeakFinder` (cpr, `BkgSelBits`) and the helix fits (`HitBackgroundBits`).
+`TimeClusterFinder` runs with `TestFlag: false` and reads no flag, so the tpr and apr time clusters do not change.
+
+The port follows the stock containers and orders: hits time-ordered by the radix sort's key (the early-end time,
+`ComboHit::time()`, which the panel hits now carry as `etime`), the per-face time bins with the out-of-range reads of
+an OnSpill job, seeds in creation order per station, the delta-candidate vector, the proton candidates sorted with
+libstdc++'s `std::sort`; float members in float32, double members and promotions in float64, products not fused
+(`exact.py`). DeltaFinder reads the nominal tracker (`GeomHandle<Tracker>`), not the aligned one the hits are made with:
+the straw-0/1 positions of each panel are shipped in `data/tracker_nominal_panels.json`. An event where stock reads
+outside its arrays, or a table overflows, gets error bits (`TrigFlagPH:err` in the aux arrays; none on the
+production files). `tests/deltafinder_reference.py` is a literal transcription; the unit test requires the port to
+match it bit for bit.
+
+On the production CE files (Offline v13_41, OnSpill, all secondaries; development 14,052 events, held-out 13,992),
+the TrigFlagPH flags from the stored StrawDigis equal the stock ones on every hit of every event, in both precisions
+(stock flags `Background` on about 1,500 hits per 1,000 events, in 8 % of them). With the port on:
+
+| time-cluster stage, events discordant with stock (dev / held-out) | off | on |
+|---|---|---|
+| cpr (`CalTimePeakFinder` peak counts and `TimeClusterFilter`, 11 paths) | 8 (De paths), 44 (`cpr_HlxUe_40`) on file 1 | 0 / 0 |
+| tpr (`TimeClusterFinder`) | 57-205 / 67-173 per path | unchanged |
+| apr (`TZClusterFinder`, device: `TimeClusterFinder`) | 124 / 132 | unchanged |
+
+The tpr discordance comes from the calo-seeded time clusters (`UseCaloCluster: true`), which the device does not make:
+against a stock replay with `UseCaloCluster: false` it is 0 on every tpr path (2 held-out events on
+`tpr_HlxUe_50m30p`). The apr one comes from the time-clustering approximation. The port costs about 0.15-0.2 s per
+event on four CPU cores (compiles included); its GPU rate is not measured.
 
 ### Multi-helix paths (mpr)
 
