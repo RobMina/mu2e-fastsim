@@ -1,0 +1,94 @@
+"""Calorimeter-seeded tracker trigger (cpr) on the device: port of the stock CalTimePeakFinder (Offline v13_41_01,
+CalPatRec), with its arithmetic.
+
+For each calo cluster (collection order) with energy >= MinClusterEnergy and size >= MinClusterSize, the time peak
+takes the panel hits (collection order) that carry a HitSelBits flag and none of BkgSelBits, whose time residual
+dt = (cluster time + DtOffset) - (hit time + (z_cluster - z_hit) / sin(PitchAngle) / (c * Beta)) lies in
+[DtMin, DtMax), and whose polyAtan2 azimuth is within pi/2 of the cluster's. It becomes a TimeCluster when the hits'
+straw-hit count reaches MinNHits.
+
+The cluster position is the cog in the disk frame (cog z = 0) moved to Mu2e (disk origin; the disks are not rotated)
+and then to the tracker frame (minus the tracker centre: -solenoidOffset, 0, detectorSystemZ0). Types as stock: float
+hit and cluster fields, double positions, times and residuals, the float polyAtan2 azimuths subtracted in double.
+"""
+from __future__ import annotations
+
+import math
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+
+from .exact import strict
+from .hits import STRAW_FLAGS
+from .mpr import _d, _f, poly_atan2
+
+C_LIGHT = 299.792458                 # CLHEP::c_light [mm/ns]
+DETECTOR_SYSTEM_Z0 = 10171.0         # mu2e.detectorSystemZ0 (geom_run1_a.txt) [mm]
+BKG_FLAGS = {"Background": None}     # DeltaFinder's background bit: the device does not run DeltaFinder (no bit set)
+
+
+def _bits(names):
+    m = 0
+    for n in names:
+        if n in BKG_FLAGS:
+            continue
+        if n not in STRAW_FLAGS:
+            raise ValueError(f"CalTimePeakFinder: flag {n} not on the device")
+        m |= 1 << STRAW_FLAGS[n]
+    return m
+
+
+def settings(cfg, geo):
+    """Static settings of one CalTimePeakFinder module (menu table) and the calorimeter geometry (`calogeom.build`)."""
+    if float(cfg.get("Beta", 1)) <= 0:
+        raise ValueError("CalTimePeakFinder: Beta must be positive")
+    centre = np.array([-3904.0, 0.0, DETECTOR_SYSTEM_Z0])
+    if not np.isclose(-geo["origin"][0, 0], 3904.0):
+        raise ValueError("CalTimePeakFinder: tracker centre assumes solenoidOffset 3904 mm")
+    return {"hsel": _bits(cfg["HitSelBits"]), "bkg": _bits(cfg["BkgSelBits"]),
+            "dtmin": float(cfg["DtMin"]), "dtmax": float(cfg["DtMax"]), "dtoff": float(cfg["DtOffset"]),
+            "minnhits": int(cfg["MinNHits"]), "mine": float(cfg["MinClusterEnergy"]),
+            "minsize": int(cfg["MinClusterSize"]), "sinpitch": math.sin(float(cfg["PitchAngle"])),
+            "beta": float(cfg["Beta"]), "disk_origin": np.asarray(geo["origin"], np.float64) - centre}
+
+
+def time_peaks(ph, cl, s):
+    """Panel hits [E, H] (valid, flag, time, x, y, z, ncombo: the straw-hit count) and calo clusters [E, C] (valid, disk, time, energy, size,
+    cog_x, cog_y) -> time peaks [E, C]: `tc` (a TimeCluster), `nsh`, `t0`, `pos` [E, C, 3] (tracker frame) and the
+    hit mask `hits` [E, C, H]. Peaks come in cluster order, as stock's TimeClusterCollection."""
+    with strict(ph["flag"]):
+        flag = jnp.asarray(ph["flag"]).astype(jnp.int64)
+        sel = ph["valid"] & ((flag & s["hsel"]) != 0) & ((flag & s["bkg"]) == 0)
+        t_hit = _d(_f(ph["time"]))[:, None, :]
+        z_hit = _d(_f(ph["z"]))[:, None, :]
+        phi_hit = _d(poly_atan2(ph["y"], ph["x"]))[:, None, :]
+        org = jnp.asarray(s["disk_origin"])[jnp.asarray(cl["disk"]).astype(jnp.int32)]          # [E, C, 3]
+        xcl = org[..., 0] + _d(cl["cog_x"])
+        ycl = org[..., 1] + _d(cl["cog_y"])
+        zcl = org[..., 2] + 0.0
+        cl_time = _d(_f(cl["time"])) + s["dtoff"]
+        mphi = _d(poly_atan2(_f(ycl), _f(xcl)))[..., None]
+        tof = (zcl[..., None] - z_hit) / s["sinpitch"] / (C_LIGHT * s["beta"])
+        dt = cl_time[..., None] - (t_hit + tof)
+        dphi = phi_hit - mphi
+        dphi = jnp.where(dphi > math.pi, dphi - 2 * math.pi, dphi)
+        dphi = jnp.where(dphi < -math.pi, dphi + 2 * math.pi, dphi)
+        ok_cl = cl["valid"] & (_d(_f(cl["energy"])) >= s["mine"]) & (jnp.asarray(cl["size"]) >= s["minsize"])
+        take = (ok_cl[..., None] & sel[:, None, :] & (dt < s["dtmax"]) & (dt >= s["dtmin"])
+                & (jnp.abs(dphi) <= math.pi / 2.0))
+        nsh = jnp.sum(jnp.where(take, jnp.asarray(ph["ncombo"])[:, None, :], 0), axis=-1)
+        tc = ok_cl & (nsh >= s["minnhits"])
+        return {"tc": tc, "nsh": nsh, "t0": cl_time, "pos": jnp.stack([xcl, ycl, zcl], -1), "hits": take & tc[..., None]}
+
+
+def tc_filter_pass(peaks, cfg):
+    """TimeClusterFilter on the time peaks: a peak (all have a calo cluster) with nsh >= minNStrawHits; the plane
+    requirements are not supported."""
+    if int(cfg.get("minNPlanes", 0)) > 0 or int(cfg.get("minPlaneSpan", 0)) > 0:
+        raise ValueError("TimeClusterFilter plane requirements not on the device")
+    return jnp.any(peaks["tc"] & (peaks["nsh"] >= int(cfg["minNStrawHits"])), axis=-1)
+
+
+def jit_time_peaks(s):
+    return jax.jit(lambda ph, cl: time_peaks(ph, cl, s))
