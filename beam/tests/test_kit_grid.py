@@ -151,28 +151,33 @@ def _jid(ep, name):
 
 # -- sizing, routing, endpoint configuration -----------------------------------------------------------------------
 
-def test_grid_request_is_sized_from_the_measured_uva_envelope():
+def test_grid_request_is_sized_from_the_measured_envelope_and_refuses_outside_it(grid, tmp_path):
     size = lambda n: (lambda r: (r.minutes, r.mem_gb, r.cores, r.gpus))(  # noqa: E731
         kit_task.edep_cpu_grid_resources({"electrons": n}, kitmod.Resources))
-    # 2 (grid node) x 1.5 (margin) x the longest UVA elapsed (22 / 42 / 115 min at 5k / 10k / 50k CE), 30-min steps
+    # 2 (grid node) x 1.5 (margin) x the longest measured elapsed (22 / 42 / 115 min at 5k / 10k / 50k CE), 30-min steps
     assert [size(n)[0] for n in (1, 5_000, 10_000, 20_000, 50_000)] == [60, 90, 150, 210, 360]
     assert {size(n)[1:] for n in (1, 10_000, 50_000)} == {(13, 1, 0)}       # MaxRSS <= 11.1 GB at 50k CE
-    assert size(0)[:2] == size(50_001)[:2] == (720, 16)                    # not measured: the flat request
+    for n in (0, 50_001, 10_000_000):                                       # not measured: refused, never guessed
+        with pytest.raises(ValueError, match="sized for 1..50,000 electrons"):
+            size(n)
+    ep, kit = make(tmp_path, grid)
+    res = kit.check("big", {**PE, "electrons": 50_001.0}, [], [])
+    assert not res["ok"] and "sized for 1..50,000 electrons" in res["message"] and not grid.calls
 
 
 def test_beam_edep_cpu_routes_to_the_grid_on_a_jobsub_endpoint(grid, tmp_path):
     ep, kit = make(tmp_path, grid)
     d = kitmod.DELEGATES["beam_edep_cpu"]
     assert d.applies(ep) and isinstance(d.make(kit), kit_grid.BeamEdepCpuGrid)
-    uva = type("UVA", (), {"stream_in": 1, "fnal_data": None})()
+    slurm = type("Slurm", (), {"stream_in": 1, "fnal_data": None})()
     eaf = type("EAF", (), {"fnal_data": "/path/to/fnal"})()
-    assert d.applies(uva) and not d.applies(eaf)
+    assert d.applies(slurm) and not d.applies(eaf)
     assert "fermigrid" in FastsimKit.describe()["tasks"]["beam_edep_cpu"]["endpoints"]
     p = kit_uva.validate(PE, "beam_edep_cpu")
     cap = capabilities.resolve("beam_edep_cpu", p, ep, kitmod.TASKS, chainpoint)
     assert cap["route"]["name"] == "staged" and cap["route"]["supported"]
     assert cap["metrics"]["input_wait_s"]["availability"] == "unavailable"   # nothing streams on the grid
-    assert capabilities.resolve("beam_edep_cpu", p, uva, kitmod.TASKS, chainpoint)["route"]["name"] == "streaming"
+    assert capabilities.resolve("beam_edep_cpu", p, slurm, kitmod.TASKS, chainpoint)["route"]["name"] == "streaming"
     assert ["staged"] == [r["name"] for r in capabilities._routes("beam_edep_cpu") if "stage_file" in r["requires"]]
     assert not any("stage_file" in r["requires"] for r in capabilities._routes("beam_edep"))
 
@@ -186,7 +191,7 @@ def test_endpoint_settings_from_the_environment(monkeypatch, tmp_path):
         FermiGridEndpoint(state_dir=tmp_path)
     monkeypatch.setenv("FASTSIMKIT_JOBSUB_STAGE_DIR", mount + "vo/scratch/area/stage")
     monkeypatch.setenv("FASTSIMKIT_ENDPOINT", "fermigrid")
-    kit = FastsimKit(state_dir=tmp_path / "kit")                          # through endpoints.get, with the UVA cap
+    kit = FastsimKit(state_dir=tmp_path / "kit")                          # through endpoints.get, with the kit's per-job budget cap
     ep = kit.ep
     assert isinstance(ep, FermiGridEndpoint) and ep.name == "fermigrid"
     assert (ep.host, ep.group, ep.role, ep.disk) == ("fnal-host.example", "mu2e", "Analysis", "4GB")
@@ -320,6 +325,34 @@ def test_staging_is_reused_and_a_changed_source_is_refused(grid, tmp_path, code_
     pinned = kit._delegates["beam_edep_cpu"]._rec("g5")["manifest"]["inputs"]["files"][0]
     with pytest.raises(Exception, match="not the pinned file"):
         ep.stage_file(str(root / pinned["src"]), "inputs", "x.npz", "0" * 64, pinned["size"])
+
+
+def test_a_commit_ref_is_snapshotted_and_packed_once_and_a_changed_archive_is_rebuilt(grid, tmp_path, code_tree,
+                                                                                      monkeypatch):
+    monkeypatch.setenv("FASTSIMKIT_CODE_REF", "a" * 40)              # the fake snapshot's commit
+    ep, kit = make(tmp_path, grid)
+    kit.submit("c1", PE, [], [])
+    kit.submit("c2", {**PE, "seed": 7.0}, [], [])
+    assert len(code_tree) == 1                                       # one snapshot for both points
+    d = kit._delegates["beam_edep_cpu"]
+    arc = Path(d._rec("c1")["manifest"]["code"]["archive"]["path"])
+    assert d._rec("c2")["manifest"]["code"]["archive"] == d._rec("c1")["manifest"]["code"]["archive"]
+    assert not [p for p in arc.parent.iterdir() if p.name.startswith(".")]   # no temporary left behind
+    good = arc.read_bytes()
+    arc.write_bytes(b"changed")                                       # a changed archive is never reused
+    kit.submit("c3", {**PE, "seed": 8.0}, [], [])
+    assert len(code_tree) == 2 and arc.read_bytes() == good
+    assert d._rec("c3")["manifest"]["code"]["archive"]["sha256"] == d._rec("c1")["manifest"]["code"]["archive"]["sha256"]
+
+
+def test_a_branch_ref_resolves_each_time_but_reuses_the_archive(grid, tmp_path, code_tree, monkeypatch):
+    monkeypatch.delenv("FASTSIMKIT_CODE_REF", raising=False)          # the default ref, main
+    ep, kit = make(tmp_path, grid)
+    kit.submit("b1", PE, [], [])
+    arc = Path(kit._delegates["beam_edep_cpu"]._rec("b1")["manifest"]["code"]["archive"]["path"])
+    mtime = arc.stat().st_mtime_ns
+    kit.submit("b2", {**PE, "seed": 7.0}, [], [])
+    assert len(code_tree) == 2 and arc.stat().st_mtime_ns == mtime     # resolved again, not repacked
 
 
 def test_retry_is_idempotent_and_changed_params_are_refused(grid, tmp_path, code_tree):

@@ -13,7 +13,7 @@ The worker copies the three in with ``ifdh cp``, checks every digest against the
 cvmfs apptainer nested in the jobsub container (FermiGrid workers have no /dev/fuse, so when the SIF cannot be mounted
 it is unpacked once to a sandbox directory, about 20 s), and runs the same ``beamfastsim.edepana point`` command line
 as the streaming route on one core. The public inputs (field maps, Offline geometry) are read from the worker's /cvmfs
-(bound into the container); if that is not visible they are fetched from a Stratum-1 as on UVA. On exit the inputs,
+(bound into the container); if that is not visible they are fetched from a Stratum-1 as on the streaming route. On exit the inputs,
 image and code are deleted from the worker and the deletion recorded in out/cleanup.txt (``results`` refuses
 without it); the jobsub endpoint then copies out/ to dCache, and ``results`` fetches it like the streaming route's.
 
@@ -25,6 +25,7 @@ FASTSIMKIT_JOBSUB_CODE (submit-host snapshot base; default <workdir>/beam_code_k
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import time
@@ -45,6 +46,7 @@ from .kit_uva import EDEP_CPU_BODY, BeamEdepCpuStream, _head, validate
 
 APPTAINER = "/cvmfs/oasis.opensciencegrid.org/mis/apptainer/current/bin/apptainer"
 CVMFS_PROBE = "/cvmfs/mu2e.opensciencegrid.org/DataFiles/BFieldMaps/Mau13/DSMap.header"
+_COMMIT = re.compile(r"[0-9a-f]{40}")
 _RUN_MARK = "B python -m beamfastsim.edepana point"
 # The point's command line, exactly as on the streaming route (kit_uva.EDEP_CPU_BODY): same flags, one process.
 RUN = EDEP_CPU_BODY[EDEP_CPU_BODY.index(_RUN_MARK):] if _RUN_MARK in EDEP_CPU_BODY else _head("", _RUN_MARK)
@@ -146,7 +148,7 @@ class BeamEdepCpuGrid(BeamEdepCpuStream):
         res = self.resources(p)
         admit_resources(self.ep, res)
         if any(p.get(k, 1.0) != 1.0 for k in kit_task.SCALE_DEFAULTS):
-            raise ValueError(f"fastsimkit: {self.TASK}: field-map scales run on the streaming route (UVA) only; "
+            raise ValueError(f"fastsimkit: {self.TASK}: field-map scales run on the Slurm streaming route only; "
                              "the grid route renders none yet")
         if not hasattr(self.ep, "stage_file"):
             raise ValueError(f"fastsimkit: {self.TASK} on the grid needs a jobsub endpoint with a dCache stage area")
@@ -177,18 +179,48 @@ class BeamEdepCpuGrid(BeamEdepCpuStream):
     # -- staging -----------------------------------------------------------------------------------------------------
     def ensure_code(self):
         """A retained snapshot at the code ref on the submit host, packed into a deterministic tarball there; returns
-        the snapshot record with its archive (sha256, size, submit-host path)."""
+        the snapshot record with its archive (sha256, size, submit-host path).
+
+        A full commit ref is snapshotted and packed once: later points reuse the recorded snapshot and archive (the
+        archive is re-fingerprinted; a missing or changed one is rebuilt from a new snapshot). A branch ref is
+        resolved by a new snapshot each time (the branch may have moved), but an archive already built for the
+        resolved commit is reused. The archive is written to a unique temporary name and renamed into place, so
+        concurrent submits at one commit never write the same file."""
+        cache = self.dir / "code"
+        key = self.code_ref if _COMMIT.fullmatch(self.code_ref) else None
+        rec_path = cache / f"{key}.json" if key else None
+        stale = False
+        if rec_path is not None and rec_path.exists():
+            rec = json.loads(rec_path.read_text())
+            arc = rec["archive"]
+            try:
+                fp = parse_fingerprint(self.ep._sh(fingerprint_command(arc["path"]), timeout=900))
+            except (EndpointError, ValueError):
+                fp = None
+            if fp and fp["sha256"] == arc["sha256"] and fp["size"] == arc["size"]:
+                return rec
+            stale = True                                      # missing or changed: rebuilt below, never reused
         snap = prepare_code(self.ep, self.code, self.code_ref)
         q = shlex.quote(snap["path"])
+        archives = shlex.quote(self.code + ".archives")
         tgz = f"{self.code}.archives/{snap['umbrella_commit']}.tgz"
+        qt = shlex.quote(tgz)
         out = self.ep._sh(
-            f"set -e -o pipefail; mkdir -p {shlex.quote(self.code + '.archives')}; "
+            f"set -e -o pipefail; mkdir -p {archives}; {'rm -f ' + qt + '; ' if stale else ''}"
+            f"if [ ! -s {qt} ]; then t=$(mktemp {archives}/.{snap['umbrella_commit']}.tgz.XXXXXX); "
+            f"trap 'rm -f \"$t\"' EXIT; "
             f"tar -C {q} --exclude=.git --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - . "
-            f"| gzip -n > {shlex.quote(tgz)}.tmp; mv {shlex.quote(tgz)}.tmp {shlex.quote(tgz)}; "
+            f"| gzip -n > \"$t\"; chmod 644 \"$t\"; mv -f \"$t\" {qt}; trap - EXIT; fi; "
             f"{fingerprint_command(tgz)}", timeout=900)
         fp = parse_fingerprint(out.strip().splitlines()[-1])
-        return {**snap, "archive": {"path": tgz, "sha256": fp["sha256"], "size": fp["size"],
-                                    "format": "tar.gz, no .git, sorted, mtime 0"}}
+        rec = {**snap, "archive": {"path": tgz, "sha256": fp["sha256"], "size": fp["size"],
+                                   "format": "tar.gz, no .git, sorted, mtime 0"}}
+        if rec_path is not None and snap["umbrella_commit"] == key:
+            cache.mkdir(parents=True, exist_ok=True)
+            tmp = rec_path.with_suffix(f".{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(rec, sort_keys=True))
+            os.replace(tmp, rec_path)
+        return rec
 
     def resolve_image(self):
         fp = parse_fingerprint(self.ep._sh(fingerprint_command(self.sif), timeout=900))

@@ -51,7 +51,7 @@ class FermiGridEndpoint(JobsubEndpoint):
                  disk: str | None = None, host_setup: str | None = None, worker_setup: str | None = None,
                  extra_args: Sequence[str] = (AUTO_RELEASE,), state_dir: str | Path = "~/.mu2efastsim/fermigrid",
                  runner=None, name: str = "fermigrid", timeout_s: float = 300.0, **kw):
-        kw.pop("max_su_per_job", None)            # the kit passes the UVA budget cap; FNAL slots carry no SU charge
+        kw.pop("max_su_per_job", None)            # the kit passes its per-job budget cap; grid slots carry no such charge
         host = host or site.setting("FASTSIMKIT_JOBSUB_HOST") or site.require("FASTSIMKIT_FNAL_HOST")
         group = group or site.setting("FASTSIMKIT_JOBSUB_GROUP", "mu2e")
         role = role or site.setting("FASTSIMKIT_JOBSUB_ROLE", "Analysis")
