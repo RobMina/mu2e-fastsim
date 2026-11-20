@@ -127,8 +127,8 @@ behaviour and any stock-art route outside the chain's levels:
 | W6 | `independent_sampler_draws` (no switch) | always on | - | no level | one shared intensity and four conditional Poissons from the JAX RNG, no event replay; stock seeded replay: fcl/four_stream_fast_inputs.fcl | - |
 | W6 | `tracker_crv_only` (no switch) | always on | - | no level | calorimeter and trigger not mixed; native art mixing (fcl/four_stream_response.fcl) | - |
 | W7 | `digi_response`: crystal hits: drawn per (event, crystal) from a table of the full chain's outcome (hit, energy ratio, time offset) per bin of the main deposit's visible energy, without digis (calofastsim.param_response, default), or photoelectrons, waveforms, digis and the template fit | parametric, waveform | parametric | waveform | none: stock CaloDigiMaker and CaloRecoDigiMaker; the waveform response is the closer model (the table is built from it) | device_chain.make_chain / make_steps_chain(digi_response=) |
-| W7 | `shower_library` (no switch) | always on | - | no level | per-entrant library (calofastsim.entrant_chain): each particle's first crossing into a disk envelope through the front face or inner edge draws one of the 8 library entries nearest in entry radius (front) or depth (inner edge) within its (species, face, disk, energy, cosine) cell; stock CaloShowerSteps through device_chain.make_steps_chain / steps_batch (exact on stock steps) | - |
-| W7 | `crystal_placement` (no switch) | always on | - | no level | the donor pattern turned about the disk axis to the entry azimuth and moved onto the crystal grid at the entry; the inner crystal ring is only 180-degree symmetric, so innermost-ring deposits can land one ring out (cluster radius at 380-460 mm); stock CaloShowerSteps through device_chain.make_steps_chain / steps_batch (exact on stock steps) | - |
+| W7 | `shower_library` (no switch) | always on | - | no level | per-entrant library (calofastsim.entrant_chain): each particle's first crossing into a disk envelope through the front face or inner edge draws the library entry nearest in entry point, counting its 180-degree image, within its (species, face, disk, energy, cosine) bins; with none within 20 mm (about 4 % of CE entrants), one of the 8 entries nearest in entry radius (front) or depth (inner edge) within its cell; stock CaloShowerSteps through device_chain.make_steps_chain / steps_batch (exact on stock steps) | - |
+| W7 | `crystal_placement` (no switch) | always on | - | no level | the donor pattern turned about the disk axis to the entry azimuth (about 0 or 180 degrees from the donor's own, a symmetry of the crystal lattice, for nearest draws) and moved onto the crystal grid at the entry; stock CaloShowerSteps through device_chain.make_steps_chain / steps_batch (exact on stock steps) | - |
 | W7 | `entry_faces_front_inner` (no switch) | always on | - | no level | only front and inner-edge entrants get a response (back and outer-edge crossings are not in the library); stock CaloShowerSteps through device_chain.make_steps_chain / steps_batch (exact on stock steps) | - |
 | W7 | `template_fit_single_pass` (no switch) | always on | - | no level | Newton template fit without the second pass for chi2/ndf > 1 (stock: TMinuit with the refit) | - |
 | W8 | `compact_helix_fit` (no switch) | always on | - | no level | compact device helix fit in place of RobustHelixFinder/AgnosticHelixFinder; stock trigger replay on the same digis (trigger/replay.py --straw-digi-tag, trigger/hybrid pairing) | - |
@@ -190,6 +190,13 @@ behaviour and any stock-art route outside the chain's levels:
   [mixing/DEVICE_TRACKER.md](../mixing/DEVICE_TRACKER.md)) and CRV thermal noise only on counters with steps
   (`thermal_counters: "hit"`, [mixing/DEVICE_CRV.md](../mixing/DEVICE_CRV.md)). `run1a_mix1bb_batch256_exact.json` is
   the same file without either. The run records the capacity file it used.
+- **W6 Neutrals reuse (opt-in file).** `run1a_mix1bb_batch256_neutrals.json` is the default with NeutralsFlash added
+  to the reused tracker streams; the default file does not reuse NeutralsFlash. Gain on one 80 GB A100 (same job,
+  median of 3): +12.6 % events/s in float32, +9.9 % in float64. Fidelity cost (held-out subrun 1194, three pileup
+  realizations per dtype, against stock and the exact file): digi totals within 0.03 % of the default; float64 TOT0
+  and TOT1 further from stock than the default and the exact runs in all three realizations (TOT1 chi2/ndf 1.5-2.2,
+  default 1.1-1.8, exact at most 1.35); in one realization the ADC peak index per TDC phase (float32) and TDC1-TDC0
+  (float64) are outside the exact runs' range. See [mixing/capacities/README.md](../mixing/capacities/README.md).
 - **W6 shared reuse table** (`reuse_table`, `mixing.device_reuse_table`; approved for W6 production by the user,
   2026-11-16). The reuse setup is made once and loaded by every job, so each donor frame repeats its setup draws over
   the whole production instead of within one job. Fidelity cost at 10^6 events (a MuStopPileup frame drawn about 377
@@ -217,20 +224,24 @@ behaviour and any stock-art route outside the chain's levels:
     cluster above 10 MeV (chi2 153/4). The table cannot carry the second hit of a cell (deposits more than
     `time4merge` apart) or hits without a deposit (noise alone). The stock alternative of the other approximations
     is stock steps through `make_steps_chain`.
-- **W7 shower source.** The default (since 2026-11-20) is the per-entrant library (`calofastsim.entrant_chain`,
-  `entrant_chain.W7_DEFAULT`; library content hash `406bd7b4...`, the one the Mu2eG4 P2 model loads): every front and
-  inner-edge entrant of an event draws a library shower (8 nearest entries in entry radius or depth), turned to the
-  entry azimuth, crystal placement, no edge rule. It replaced the front-only library at one disk-front entry per
-  event (`device_chain.make_chain`, still available). Validation arm: `python3 -m calofastsim.w7_arm`.
-  - **Coverage gain** (held-out CE files without failed transport, 11,387 events, the same events and stock / floor
-    for both): every event gets a response; on all events validity 0.000 -> 0.750 in both dtypes (cluster yield
-    0.873 -> 0.997). On the 9,713 events with a primary disk-front entry both pass (1.000), the entrant library
-    slightly further from stock (radius chi2/ndf 2.27 vs 1.87, threshold 2.40; cluster count 3.69 vs 0.26, below
-    the flag p-value).
-  - **Fidelity cost:** the cluster radius at 380-460 mm (innermost crystal ring) misses in both libraries; on all
-    events the radius is flagged (3.55, threshold 2.60). Cause: the arbitrary azimuth turn onto a crystal grid whose
-    inner boundary is only 180-degree symmetric (`crystal_placement`).
-  - **Speed** (one A100-SXM4-80GB, 163,840 events, batches of 65,536, medians of 3): entrants -> clusters 1.50 M
-    (float32) and 1.24 M ev/s (float64), 0.90x and 0.79x the stock-steps entry (1.67 M, 1.58 M ev/s); 2,300x and
-    1,920x the stock calorimeter digi + reco stage (650 ev/s per grid slot). Clusters bitwise identical run twice
-    and after a fresh compile, both dtypes.
+- **W7 shower source.** The default is the per-entrant library (`calofastsim.entrant_chain`, `entrant_chain.W7_DEFAULT`;
+  library content hash `406bd7b4...`, the one the Mu2eG4 P2 model loads) with the Mu2eG4 host's nearest-donor rule:
+  every front and inner-edge entrant of an event draws the library entry nearest in entry point (counting its
+  180-degree image) within its species, face, disk, energy and cosine bins, so a donor is turned by about 0 or 180
+  degrees and moved a few mm; entrants with no donor within 20 mm (about 4 %) use the cell rule (8 nearest entries
+  in entry radius or depth). Crystal placement, no edge rule. Alternatives: `selection="cell"` (the default from
+  2026-11-20 until the switch) and the front-only library at one disk-front entry per event (`device_chain.make_chain`).
+  Validation arm: `python3 -m calofastsim.w7_arm`.
+  - **Gain** (held-out CE files never opened for the calorimeter, 13,941 events, 11,893 with a primary disk-front
+    entry; stock and reseeded-floor arms on the same events): validity 1.000 in both populations and both dtypes for
+    both rules, but the cluster radius at 380-460 mm (innermost crystal ring) misses with the cell rule (chi2/ndf
+    6.1 / 11.0, flagged) and passes with the nearest rule (1.36 / 1.88); radius chi2/ndf 2.37 -> 1.24 (front
+    population) and 3.60 -> 1.43 (all events). On the W7 development files: validity 0.750 -> 1.000.
+  - **Against the front-only library** (held-out files without failed transport, 11,387 events): the per-entrant
+    library gives every event a response (cluster yield 0.873 -> 0.997).
+  - **Speed** (one A100-SXM4-80GB, 163,840 events, batches of 65,536, medians of 3): 1.34 M (float32) and 1.15 M
+    ev/s (float64), 0.86x and 0.88x the cell rule (1.56 M, 1.30 M) and about 0.8x and 0.7x the stock-steps entry
+    (1.67 M, 1.58 M on an earlier job); 2,065x and 1,767x the stock calorimeter digi + reco stage (650 ev/s per grid
+    slot). Clusters bitwise identical run twice and after a fresh compile, both dtypes.
+  - **Caveat:** on a second look at already-used held-out files the nearest rule flagged the cluster count per event
+    on the front population (chi2/ndf 7.22, threshold 3.08); not seen on the development files or the fresh split.

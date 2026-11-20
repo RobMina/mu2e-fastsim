@@ -58,9 +58,59 @@ time and emission distributions); ratio = generated / released arrivals, summed 
 | Cerenkov in the scintillator | 3200_0 | 61 / 38 | 0.999 +- 0.038, 0.993 +- 0.034 | 0.90 +- 0.08, 0.96 +- 0.04 |
 | Cerenkov in the fiber | 3200_0 | 296 / 125 | 1.22 +- 0.065 | 1.21 +- 0.13 |
 
-Time and emission pulls average within +-0.4 in every set. The fiber-Cerenkov excess is not understood yet: it
-comes entirely from the bins that start their photons in the hole air (the third quirk below) and is largest for the
-fastest particles (1/beta < 1.24).
+Time and emission pulls average within +-0.4 in every set. The fiber-Cerenkov excess comes entirely from the bins
+that start their photons in the hole air (the third quirk below) and is largest for the fastest particles
+(1/beta < 1.24). A CRVStandalone build of today's code gives as much light in those bins as the port (next section),
+so the deficit is in the 2019 code or its Geant4 10.3, which made the released tables; it is not understood beyond
+that.
+
+## Agreement with CRVStandalone (`current` model)
+
+A CRVStandalone build of the current optics (Geant4 11, EL9), run in its table mode one bin per job, against
+`--model current` on the same bins (float64), with the same `compare` statistics. Both write identical headers (every
+constant and bin edge) for the stock and the 24.71 x 25 mm cross-sections.
+
+| table part | counter | bins (photons per bin) | generated / CRVStandalone | prob pull mean (rms) |
+|---|---|---|---|---|
+| scintillation | 24.71 x 25 mm, 3200_0 | 30 spread (1e5) | 1.018 +- 0.020 | 0.12 +- 0.15 (0.82) |
+| scintillation | stock, 3200_0 | 10 spread (1e5) | 1.026 +- 0.042 | 0.18 +- 0.34 (1.01) |
+| Cerenkov in the scintillator | 24.71 x 25 mm, 3200_0 | 30 spread (1e5) | 0.990 +- 0.026 | -0.15 +- 0.15 (0.82) |
+| Cerenkov in the fiber | 24.71 x 25 mm, 3200_0 | 30 spread (1e4) | 1.31 +- 0.13 | 0.39 +- 0.26 (1.01) |
+| Cerenkov in the fiber, hole air, 1/beta bins 3-4 | stock, 3200_0 | 10 (1e4) | 1.21 +- 0.22 | 0.31 +- 0.21 |
+
+Time and emission pulls average within +-0.6 (largest: scintillation time, 0.52 +- 0.24). The fiber-Cerenkov sets are
+small (a few hundred arrivals in all): their pulls agree, the summed ratio is 2.4 sigma high. Manifests of `current`
+tables written from now on carry the status **tested, not closed** (core/docs/libraries.md): the comparison was made
+without criteria declared before it, and the fiber-Cerenkov part is measured on few photons. Tables written earlier say
+`not validated` in their file; this section is their record.
+
+## Photons per bin and the time distributions
+
+Each bin stores its arrival-time and emission distributions as uint8 weights, `uchar(255 k / n + 0.5)` over the n
+arrivals of the bin, as the stock writer does. The encoding loses nothing (the decoded distributions equal the
+generator's counts), but a bin with few arrivals stores a few-arrival sample. Offline samples the photons of one hit
+from the few bins its track crosses, so sparse bins give narrower, spikier photon-time distributions, hence narrower
+pulses that split more often and carry fewer PE per pulse, although the average over all bins is unbiased. At 1e4
+scintillation photons per bin (median 9 arrivals per bin against 95 in the released 3200_0 table) the per-bin rms of
+the arrival time is 0.89 of the released table's; sampling the released distributions at the same counts gives the
+same. Keep scintillation at the stock 1e5 photons per bin or more (a 24.71 x 25 mm, 3200 mm table then has a median
+of 181 arrivals per bin).
+
+## Float32, float64 and the device
+
+At the physics level the generator gives the same tables in float32 and float64 and on every GPU type tried. Test:
+one fiber-Cerenkov table part (24.71 x 25 mm, 1700_1; 56,375 bins x 1e4 photons), compared per observable (per-bin
+yield; yield along z, in the last 100 mm at each end, and in r, phi, theta and beta; per-bin mean arrival time and
+emission count; summed time and emission shapes) by chi2/ndf; floor: float32 with another seed, 0.46 to 1.60.
+
+| run | time vs A100 float32 | worst chi2/ndf against | |
+|---|---|---|---|
+| A6000, A40, RTX Pro 6000 (float32) | 1.45, 1.43, 0.55 | A100 float32, same seed | 0.10, 0.08, 0.008 |
+| float64 (A100; A6000 / A40; RTX Pro 6000) | 2.0; 5.4; 6.8 x float32 on the card | float32 on the card, same seed | 0.84, 0.67 / 0.82, 0.58 |
+
+Peak device memory is under 1 GB. Since the device does not change the table, the manifest records it per piece
+(`devices`, from the run stats; the runs a piece was resumed from are listed too). On CPU the lane wavefront is slow:
+2,000 to 3,600 core-hours per A100-hour of the same work.
 
 ## What is ported
 
