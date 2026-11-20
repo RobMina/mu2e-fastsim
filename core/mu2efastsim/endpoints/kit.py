@@ -8,7 +8,7 @@ params, submits it through an endpoint (``mu2efastsim.endpoints``), and on compl
 resources, the params it accepts and the metrics it returns.
 
 Run as an MCP stdio server (``python -m mu2efastsim.endpoints.kit``) for a kits.toml entry, or use FastsimKit directly.
-Environment: FASTSIMKIT_ENDPOINT (default uva; eaf), FASTSIMKIT_STATE_DIR (local job records and fetched outputs),
+Environment: FASTSIMKIT_ENDPOINT (default uva; eaf; fermigrid, the FNAL grid through jobsub_lite: endpoints.jobsub), FASTSIMKIT_STATE_DIR (local job records and fetched outputs),
 FASTSIMKIT_MAX_SU_PER_JOB (default 500), FASTSIMKIT_GPU_TYPE (uva: the endpoint's gpu_type, "auto" by default,
 "none" for each task's own card, or a type such as 1g.24gb or a100; see endpoints.slurm_ssh), FASTSIMKIT_SIF (image path on the site; default
 <FASTSIMKIT_SCRATCH>/mu2efastsim.sif, needed only by image-based endpoints). Endpoint settings: see
@@ -634,7 +634,7 @@ class FastsimKit:
         for name, task in TASKS.items():
             routes = ["eaf"] if name in FNAL_TASKS else ["eaf", "uva"]
             if name in DELEGATES:
-                routes = ["eaf", "uva"]
+                routes = ["eaf", "uva", *getattr(DELEGATES[name], "routes", ())]
             tasks[name] = {"params": {k: v.describe() for k, v in schema(name, task.params).items()},
                            "defaults": dict(task.defaults), "required": sorted(set(task.params) - set(task.defaults)),
                            "endpoints": routes, "file_kinds": [], "inputs_supported": False,

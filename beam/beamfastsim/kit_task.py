@@ -123,6 +123,35 @@ def edep_cpu_resources(params, resources_cls):
     longest = 2 + 4 * n / 1000
     minutes = min(EDEP_CPU_MINUTES, max(30, 5 * math.ceil(1.5 * longest / 5)))
     return resources_cls(cores=1, mem_gb=EDEP_CPU_MEASURED_MEM_GB, gpus=0, gpu_type="", minutes=minutes)
+
+
+# beam_edep_cpu on the FNAL grid (kit_grid). Longest elapsed on one core of the Slurm streaming route's cluster (sacct,
+# all table muons): 5,000 CE 22 min, 10,000 CE 42 min, 50,000 CE 115 min (6 board jobs, 2026-11-17: 86-115 min, MaxRSS
+# 7.4-11.1 GB). A FermiGrid core ran the CPU fast chains at 0.5-0.9x that core (CPU bench grid test, 2026-11-10); two
+# 50,000-CE grid test jobs took 56 and 151 min (2026-11-19). The lifetime is 2 (node speed) x 1.5 (margin) x the
+# envelope, rounded up to 30 min. Memory does not grow with the electrons (5,000-electron batches): 13 GB covers the
+# 11.1 GB peak. Requests outside the measured 1..50,000 electrons are refused: there is nothing to size them from.
+EDEP_CPU_GRID_ENVELOPE = ((0, 0.0), (5_000, 22.0), (10_000, 42.0), (50_000, 115.0))
+EDEP_CPU_GRID_MEM_GB = 13
+EDEP_CPU_GRID_SLOWDOWN = 2.0
+EDEP_CPU_GRID_MARGIN = 1.5
+
+
+def edep_cpu_grid_resources(params, resources_cls):
+    """The FermiGrid request (one core) for these params: lifetime from the measured envelope above (linear between
+    the measured counts), times the grid slowdown and the margin. Outside 1..50,000 electrons: ValueError."""
+    n = int(params.get("electrons") or 0)
+    pts = EDEP_CPU_GRID_ENVELOPE
+    if not 0 < n <= pts[-1][0]:
+        raise ValueError(f"fastsimkit: beam_edep_cpu on the grid is sized for 1..{pts[-1][0]:,} electrons per job "
+                         f"(measured); {n:,} is outside it: split the point into jobs of at most {pts[-1][0]:,} "
+                         "electrons or run it on the Slurm streaming route")
+    (n0, t0), (n1, t1) = next((a, b) for a, b in zip(pts, pts[1:]) if n <= b[0])
+    longest = t0 + (t1 - t0) * (n - n0) / (n1 - n0)
+    minutes = max(60, 30 * math.ceil(EDEP_CPU_GRID_SLOWDOWN * EDEP_CPU_GRID_MARGIN * longest / 30))
+    return resources_cls(cores=1, mem_gb=EDEP_CPU_GRID_MEM_GB, gpus=0, gpu_type="", minutes=minutes)
+
+
 CPU_ENV = ("JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 "
            "XLA_FLAGS=--xla_cpu_multi_thread_eigen=false")
 EDEP_CPU_ARGS = EDEP_ARGS.replace("--procs " + str(EDEP_CORES - 1), "--procs 1")
@@ -284,11 +313,28 @@ class _UVAEdepDelegate(_UVADelegate):
         return BeamEdepStream(kit)
 
 
+class _GridDelegate:
+    """A task on the FNAL grid (a jobsub endpoint with a dCache stage area): inputs staged to dCache scratch."""
+
+    @staticmethod
+    def applies(endpoint):
+        return not getattr(endpoint, "fnal_data", None) and hasattr(endpoint, "stage_file")
+
+
 class _UVAEdepCpuDelegate(_UVADelegate):
-    """beam_edep_cpu on a Slurm-over-SSH endpoint: the same inputs streamed in, one CPU core."""
+    """beam_edep_cpu on a Slurm-over-SSH endpoint (the same inputs streamed in, one CPU core) or on the FNAL grid
+    (kit_grid: the inputs, the code and the image staged to dCache scratch, one grid slot)."""
+    routes = ("fermigrid",)
+
+    @staticmethod
+    def applies(endpoint):
+        return _UVADelegate.applies(endpoint) or _GridDelegate.applies(endpoint)
 
     @staticmethod
     def make(kit):
+        if _GridDelegate.applies(kit.ep):
+            from .kit_grid import BeamEdepCpuGrid
+            return BeamEdepCpuGrid(kit)
         from .kit_uva import BeamEdepCpuStream
         return BeamEdepCpuStream(kit)
 

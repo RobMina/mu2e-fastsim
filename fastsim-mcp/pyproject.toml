@@ -14,7 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # the kit host: the endpoint adapters (run_design_point, job_status, fetch_outputs)
-kit = ["hep-endpoints @ git+https://github.com/RobMina/hep-endpoints.git@536656008f457eefb5939cdbe1095cbdf445857d"]
+kit = ["hep-endpoints @ git+https://github.com/RobMina/hep-endpoints.git@56309634ecba3208846c515da5b5f04c7a3a4808"]
 
 [tool.mcp-server]
 tool_modules = ["fastsim_tools"]
