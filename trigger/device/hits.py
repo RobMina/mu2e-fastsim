@@ -29,8 +29,8 @@ SPILL_OFF = 0                      # EventWindowMarker::offspill
 
 STRAW_FLAGS = {"TimeSelection": FLAG["timesel"], "EnergySelection": FLAG["energysel"],
                "RadiusSelection": FLAG["radsel"], "Dead": FLAG["dead"], "Noisy": FLAG["noisy"],
-               "TimeDivision": FLAG["tdiv"], "PanelCombo": FLAG["panelcombo"]}
-BACKGROUND_BIT = 13                # StrawHitFlag::bkg (never set by the device: no DeltaFinder port, see README)
+               "TimeDivision": FLAG["tdiv"], "PanelCombo": FLAG["panelcombo"], "Background": 6}
+BACKGROUND_BIT = 6                 # StrawHitFlag::bkg (set by the DeltaFinder port, deltafinder.py)
 
 
 def bits(names):
