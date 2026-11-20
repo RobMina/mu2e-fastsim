@@ -197,3 +197,39 @@ def test_device_locate_and_cascade_on_a_clad_rod(tmp_path, dtype):
     assert cnt["inelastic"] == host["counts"]["inelastic"] == 3000
     nh, nd = host["counts"]["recorded"], len(rec["pdg"])
     assert nh > 1500 and abs(nd - nh) < 4 * np.sqrt(nh), (nh, nd)
+
+
+@pytest.mark.parametrize("dtype", [jnp.float64, jnp.float32])
+def test_device_boxes_match_host(tmp_path, dtype):
+    bank = _bank(tmp_path, n_pim=3)
+    tgt = D.Target(np.array([-50.0, 50.0]), np.zeros((1, 2)), np.full((1, 2), 6.0), np.array([0, 0, 0, 0]),
+                   boxes=np.array([[-1.0, 1.0, 6.0, 20.0, -50.0, 50.0], [6.0, 20.0, -1.0, 1.0, -50.0, 50.0],
+                                   [-1.0, 1.0, -20.0, -6.0, -40.0, 40.0]]))
+    env = C.Envelope(z_nodes=np.array([-5000.0, 5000.0]), r_nodes=np.array([1900.0, 1900.0]), z_min=-2000.0,
+                     z_plane=800.0, r_plane=1800.0, axis_x=0.0)
+    fm = _uniform_map(2.0)
+    S, nk, nmat = J.make_static(bank, tgt, env, fm, dtype)
+    cfg = J.make_cfg(tgt, env, C.Stepping(), nk, nmat, dtype)
+    assert cfg.ncone == 1 and cfg.nseg == 4
+    rng = np.random.default_rng(6)
+    xl = np.stack([rng.uniform(-25, 25, 6000), rng.uniform(-25, 25, 6000), rng.uniform(-60, 60, 6000)], 1)
+    host = tgt.locate(xl)
+    edges = np.array([-50, -40, -20, -6, -1, 1, 6, 20, 40, 50.0])
+    far = np.all(np.abs(xl[:, :, None] - edges[None, None, :]) > 1e-3, axis=(1, 2))
+    dev = np.asarray(J.locate(S, cfg, jnp.asarray(xl, dtype)))
+    assert np.array_equal(dev[far], host[far]) and set(host.tolist()) == {-1, 0, 1, 2, 3}
+    dl = rng.normal(size=xl.shape); dl /= np.linalg.norm(dl, axis=1, keepdims=True)
+    inside = far & (host >= 0)
+    do = np.asarray(J.distance_out(S, cfg, jnp.asarray(xl, dtype), jnp.asarray(dl, dtype), jnp.asarray(host, jnp.int32)))
+    assert np.allclose(do[inside], tgt.distance_out(xl[inside], dl[inside], host[inside]), rtol=1e-4, atol=1e-3)
+    out = far & (host < 0)
+    di = np.asarray(J.distance_in(S, cfg, jnp.asarray(xl, dtype), jnp.asarray(dl, dtype)))
+    dh = tgt.distance_in(xl[out], dl[out])
+    fin = np.isfinite(dh)
+    assert np.array_equal(np.isfinite(di[out]), fin) and np.allclose(di[out][fin], dh[fin], rtol=1e-4, atol=1e-3)
+    prim = C.primaries(3000, tgt, np.random.default_rng(3))
+    hr = C.run(bank, tgt, lambda x: np.tile([0.0, 0.0, 2.0], (len(x), 1)), env, prim, np.random.default_rng(4))
+    rec, cnt = J.run(bank, tgt, fm, env, prim, seed=5, pool=4096, steps=32, dtype=dtype)
+    assert cnt["inelastic"] == hr["counts"]["inelastic"] == 3000
+    nh, nd = hr["counts"]["recorded"], len(rec["pdg"])
+    assert nh > 1500 and abs(nd - nh) < 4 * np.sqrt(nh), (nh, nd)
