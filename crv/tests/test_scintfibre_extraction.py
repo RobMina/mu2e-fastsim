@@ -10,7 +10,16 @@ def test_core_modules_are_scintfibrefastsim():
     from crvfastsim.lookupgen import core as lg_core
     import scintfibrefastsim.core as sf_core
 
-    for name in ("binning", "counter", "limits", "materials", "optics", "run", "transport"):
+    for name in ("binning", "counter", "limits", "materials", "optics"):
+        assert getattr(lg_core, name) is getattr(sf_core, name), name
+
+
+def test_jax_core_modules_are_scintfibrefastsim():
+    pytest.importorskip("jax")
+    from crvfastsim.lookupgen import core as lg_core
+    import scintfibrefastsim.core as sf_core
+
+    for name in ("run", "transport"):
         assert getattr(lg_core, name) is getattr(sf_core, name), name
 
 
