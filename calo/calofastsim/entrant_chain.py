@@ -1,4 +1,4 @@
-"""Opt-in device chain on the per-entrant shower library (:mod:`calofastsim.showers.entrants`, g4fastsim P2).
+"""W7's default device chain: the per-entrant shower library (:mod:`calofastsim.showers.entrants`, g4fastsim P2).
 
 The same library file (LIBSPEC npz, :func:`calofastsim.showers.entrants.load`) that the Mu2eG4 host loads drives the
 W7 device chain: per batch, calorimeter entrants (front or inner-edge entry, several per event) -> donor draw ->
@@ -20,7 +20,11 @@ radius are not drawn (``edge``); a host gives them to full simulation. In this c
 Geant4 CaloShowerSteps as ``g4`` (:func:`device_chain.steps_batch` layout), which join the drawn steps before the
 response, the stand-in for Geant4 used when validating against stock. ``d_edge=0`` (default) draws every entrant.
 
-Nothing here changes a default: :mod:`calofastsim.device_chain` and the front-only library path are untouched.
+W7 default (:data:`W7_DEFAULT`, :data:`W7_LIBRARY_HASH`): library ``406bd7b4...`` (the Mu2eG4 P2 library, front and
+inner-edge faces), crystal placement, draws among the 8 entries nearest in the position key, no edge rule, every
+front and inner-edge entrant of an event drawn. The front-only library path (:func:`device_chain.make_chain`, one
+disk-front entry per event) stays available unchanged; :func:`pack_entrants`' own keyword defaults are the host
+sampler's (:func:`entrants.sample`), so the W7 setting is passed explicitly.
 """
 from __future__ import annotations
 
@@ -31,7 +35,13 @@ import numpy as np
 from . import device_chain as dc
 from .showers import entrants as E
 
-__all__ = ["pack_entrants", "entrants_batch", "sample_entrants", "near_edge", "make_entrant_chain", "STAT_NAMES"]
+__all__ = ["pack_entrants", "entrants_batch", "sample_entrants", "near_edge", "make_entrant_chain", "STAT_NAMES",
+           "W7_DEFAULT", "W7_LIBRARY_HASH"]
+
+# W7's default shower source (decision 2026-11-20, after the held-out comparison and the A100 rate check): the
+# pack_entrants settings and the content hash of the library they were validated with
+W7_DEFAULT = dict(placement="crystal", key_neighbors=8, d_edge=0.0, psi_bins=None)
+W7_LIBRARY_HASH = "406bd7b463e3e0a6fb74764da73ee6bb2d4464992ec8d953fdf68a730c09e898"
 
 SPECIES_GROUPS = len(E.SPECIES_NAMES)        # e-, e+, gamma, other
 FACE_GROUPS = len(E.SUPPORTED_FACES)         # front, inner

@@ -44,7 +44,7 @@ TASKS: dict[str, dict] = {
            "stock": "stock mixing of the same primaries", "metrics": "digis per plane, pulses per sector (paired by "
            "event); tracker and CRV totals", "kind": "values + measured yields", "floor": None,
            "rate_unit": "events/s"},
-    "W7": {"title": "Calorimeter", "boundary": "CE calorimeter steps -> calo digis, hits, clusters",
+    "W7": {"title": "Calorimeter", "boundary": "CE calorimeter entrants (disk front, inner edge) -> calo hits, clusters",
            "stock": "Geant4 calorimeter steps -> stock calo digi + reco", "metrics": "cluster E, t, R, N (paired shape "
            "per block); cluster yield", "kind": "counts, paired shape", "floor": "stock with another seed",
            "rate_unit": "events/s"},
@@ -77,7 +77,9 @@ TASKS: dict[str, dict] = {
         "floor": None,
         "rate_unit": "tables/s",
         "jobs": "stock_jobs_per_unit = grid jobs per stock table",
-        "note": "reference pending: the generator's full tables and a measured stock cost per table",
+        "note": "reference pending: a stock table at the generator's current optics. Measured cost per table (design "
+                "counter, stock statistics): stock about 1,400 core-h in 1,916 grid jobs; the generator about 1.3 A100-h "
+                "in float32 at production statistics (about 2.7 A100-h at stock statistics, extrapolated)",
         "status": "defined",
     },
     "PTGT": {

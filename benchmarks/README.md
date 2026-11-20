@@ -61,12 +61,12 @@ The result also carries `cls_score`, the mean classifier score over the arms tha
 | W4 | RPC electrons | RPC births -> tracker entry | Geant4 RPC sample at the tracker entrance | tracker-entry fiducial yield (no stock reco reference after the response yet) | none yet (threshold 2) | generated RPC captures per s | scored |
 | W5 | CRV cosmics | CRY cosmics -> CRV coincidence clusters | Geant4 steps -> stock CRV response + reco | ValCrv histograms, paired shape per shard; reco pulse yield | stock with another seed | events/s | scored |
 | W6 | Pileup mixing | primary steps + donor pools -> mixed tracker digis + CRV pulses | stock mixing of the same primaries | digis per plane, pulses per sector (paired by event); tracker and CRV totals | none yet (threshold 2) | events/s | scored |
-| W7 | Calorimeter | CE calorimeter steps -> calo digis, hits, clusters | Geant4 calorimeter steps -> stock calo digi + reco | cluster E, t, R, N (paired shape per block); cluster yield | stock with another seed | events/s | scored |
+| W7 | Calorimeter | CE calorimeter entrants (disk front, inner edge) -> calo hits, clusters | Geant4 calorimeter steps -> stock calo digi + reco | cluster E, t, R, N (paired shape per block); cluster yield | stock with another seed | events/s | scored |
 | W8 | Tracker trigger | StrawDigis -> tracker trigger path decisions | the stock trigger on the same digis | accept fraction per path (measured, paired error, tolerance 2 % of the acceptance) | none yet (threshold 2) | events/s | scored |
 | W9 | CRV design model | CRV module design parameters -> veto (in)efficiency | full-simulation CRV veto comparison of the same design (stock arm of the design study) | inefficiency per momentum bin; efficiency per CRV sector | none yet (threshold 2) | selected CE-proxy events per s | scored |
 | CRVLY | CRV light-yield (lookup) table generator | CRV counter geometry and optics -> photon arrival lookup tables | the v6_0 lookup tables (2019 standalone CRV optical simulation; the generator's default v6 model) | bin-by-bin arrival probability per table type (scintillation, Cerenkov in scintillator, Cerenkov in fibre), error binomial on the photons generated per bin; grid jobs and cost per table | none yet (threshold 2) | tables/s | defined |
 | PTGT | Production-target chain | protons on target -> particles at the transport-solenoid entrance | G4beamline on the same target configurations (the design board's rods) | stopped muons per POT and mu- + pi- per POT at the TS entrance per configuration (measured yields); p, cos theta, r and t at the TS entrance (shape); throughput per POT | replicate G4beamline runs of the same configuration | POT/s | scored |
-| B1 | Calorimeter shower model inside and outside Geant4 (FS-CALO-G4) | e+-/gamma state at a calorimeter disk front -> crystal deposits (stock calo digi + reco downstream) | Mu2eG4 with the model off on the same CeEndpoint primaries, one Offline build | cluster E, time, x, y, radius, size, clusters per event, hit E; yields: events with a cluster > 10 MeV, CE peak position (tolerance 0.2 %, se <= 0.067 %); classifier score on per-cluster features (reported beside validity) | model off with another seed | events/s | defined |
+| B1 | Calorimeter shower model inside and outside Geant4 (FS-CALO-G4) | e+-/gamma state at a calorimeter disk front -> crystal deposits (stock calo digi + reco downstream) | Mu2eG4 with the model off on the same CeEndpoint primaries, one Offline build | cluster E, time, x, y, radius, size, clusters per event, hit E; yields: events with a cluster > 10 MeV, CE peak position (tolerance 0.2 %, se <= 0.067 %); classifier score on per-cluster features (reported beside validity) | model off with another seed | events/s | scored |
 | B2 | Geometry-portable CRV module interaction (FS-CRV-MOD) | entry state at a CRV module envelope (module frame) -> the module's CrvSteps + exiting particles | full Geant4 per layout: dev = held-out nominal-layout shards; place = placement moves of the current module type; design = the CRV design study's short-listed layouts (stock from its grid production, reused) | per layout: DQMVAL CRV histograms (steps, pulses, coincidences), exit-particle yield and spectrum; portability ratio = mean place validity / dev validity; adaptation score = mean design validity at the declared capture budget; classifier score on per-coincidence features | stock with another seed, per layout | events/s | defined |
 | B3 | Batched track fits against KinKal (FS-TRKFIT) | frozen stock reco inputs per track (combo hits, time cluster, seed) -> fit parameters and covariance at the tracker entrance | stock KinKal on CPU on the same inputs (agreement 1 by construction; sets the throughput basis); KinematicLine (extracted), CentralHelix cosmics, LoopHelix CE | agreement: fraction of tracks within 0.1 sigma of the stock fit in every parameter (ranking key); good-fit ratio fast/stock (paired); pulls against MC truth; throughput scaling curve at batch 10, 10^3, 10^5 tracks with the crossover batch | none yet (threshold 2) | tracks/s | defined |
 | B4 | GPU e+-/gamma transport for the flash (FS-FLASH-GPU) | flash primaries at one stage boundary fixed before any run (recommended: DS entrance) -> tracker StrawGasSteps, the DS/tracker regions offloaded through G4VTrackingManager | Mu2eG4 without offload on the same primaries and build; CPU controls for the stock behaviour the GPU cannot copy (no low-energy kill; tracks killed on leaving the DS) | StrawGasStep edep, multiplicity, time and per-plane histograms; the flash_edep objective as a yield (tolerance proposed 3 %) | stock with another seed | events/s | defined |
@@ -77,11 +77,10 @@ Every fast arm runs with its workflow's own validation recipe, on the same event
 the bench timer uses the published headline pass sizes. No stock jobs were run.
 - **Commits:** the first scoring was the full rescore on main `c03dbd13`. The final rescore then reran only the arms
   whose code changed, on merged main. The **commit** column says which commit each row was scored on.
-- **PTGT** was scored on #293's head before it merged. Its chain code (`ptgt_chain_jax`, `tsdevice`, the slab and
-  G4beamline readers) is identical to main `32eea930`. The merge only renamed one method and completed the bank
-  manifest builder.
+- **PTGT** is rerun on main `32eea930` (#293). The chain is bit-identical to the run scored before the merge (every
+  per-rod counter on all 33 rods), and the yields are unchanged.
 - **Scores:** from `score --allow-missing` (coverage) over 20 of 20 arms (W1-W9 and PTGT): **mean validity 0.900**
-  and a **throughput geometric mean of x1,012**.
+  and a **throughput geometric mean of x1,018**.
 - The last column is the same task scored on the older arms. The reference trees are kept privately.
 
 | task | dtype | commit | validity | flagged / histograms | yields passing | throughput x | device | before (scored 2026-11-18 on older arms) |
@@ -96,16 +95,16 @@ the bench timer uses the published headline pass sizes. No stock jobs were run.
 | W4 | float64 | c03dbd13 | 1.000 | 0 / 0 | 1 / 1 | 73 | A100-80 | 1.000, x34 |
 | W5 | float32 | c03dbd13 | 1.000 | 0 / 12 | 1 / 1 | 1299 | A100-80 | 1.000, x1310 |
 | W5 | float64 | c03dbd13 | 1.000 | 0 / 12 | 1 / 1 | 1090 | A100-80 | 1.000, x1091 |
-| W6 | float32 | c03dbd13 | 1.000 | 0 / 2 | 2 / 2 | 191 | A100-80 | 1.000, x108 |
-| W6 | float64 | c03dbd13 | 1.000 | 0 / 2 | 2 / 2 | 180 | A100-80 | 1.000, x99 |
+| W6 | float32 | 36362f7b | 1.000 | 0 / 2 | 2 / 2 | 198 | A100-80 | 1.000, x191 (c03dbd13) |
+| W6 | float64 | 36362f7b | 1.000 | 0 / 2 | 2 / 2 | 198 | A100-80 | 1.000, x180 (c03dbd13) |
 | W7 | float32 | c03dbd13 | 0.750 | 1 / 4 | 1 / 1 | 2582 | A100-80 | 0.750, x21 |
 | W7 | float64 | c03dbd13 | 0.750 | 1 / 4 | 1 / 1 | 2315 | A100-80 | 0.750, x15 |
 | W8 | float32 | 213edff8 | 1.000 | 0 / 0 | 22 / 22 | 350 | A100-80 | 1.000, x349 (c03dbd13, before #283) |
 | W8 | float64 | 213edff8 | 1.000 | 0 / 0 | 22 / 22 | 320 | A100-80 | 1.000, x305 (c03dbd13, before #283) |
 | W9 | float32 | c03dbd13 | 0.500 | 1 / 2 | 1 / 1 | 38635 | CPU, 4 cores | not scored |
 | W9 | float64 | c03dbd13 | 0.500 | 1 / 2 | 1 / 1 | 38499 | CPU, 4 cores | 0.500 |
-| PTGT | float32 | 32eea930 | 0.864 | 0 / 4 | 57 / 66 | 58341 | A100 | 0.561, x88132 (absorbing TS-window rings) |
-| PTGT | float64 | 32eea930 | 0.864 | 0 / 4 | 57 / 66 | 39112 | A100 | 0.561, x53064 (absorbing TS-window rings) |
+| PTGT | float32 | 32eea930 | 0.864 | 0 / 4 | 57 / 66 | 58473 | A100 | 0.561, x88132 (absorbing TS-window rings) |
+| PTGT | float64 | 32eea930 | 0.864 | 0 / 4 | 57 / 66 | 39188 | A100 | 0.561, x53064 (absorbing TS-window rings) |
 
 - **W1:**
   - the stock arm is the expectation over 16 stock re-seeds, now compared per shard (paired, yield included);
@@ -124,7 +123,8 @@ the bench timer uses the published headline pass sizes. No stock jobs were run.
     stock arm, so its "before" entry is not comparable with this row.
 - **W4:** the tracker-entry stage only; there is no stock RPC reconstruction after the response.
 - **W5, W6, W7:**
-  - W6's float32 arm is now pure float32. W6 runs about 1.8x faster on main than on the older arm.
+  - W6's float32 arm is now pure float32. On main `36362f7b` (#301: the bench defaults to the compact sampling receipt;
+    detector outputs unchanged) W6 runs at x198 in both dtypes.
   - W7 is the parametric default: x2,582 / x2,315, with the cluster-radius flag at the inner edge as before.
 - **W8:** main as is (device loops on); 22 tested paths. Under this scorer's rule (3 sigma + 2 %) all of them pass.
 - **W9:**
