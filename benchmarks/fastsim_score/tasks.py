@@ -44,7 +44,7 @@ TASKS: dict[str, dict] = {
            "stock": "stock mixing of the same primaries", "metrics": "digis per plane, pulses per sector (paired by "
            "event); tracker and CRV totals", "kind": "values + measured yields", "floor": None,
            "rate_unit": "events/s"},
-    "W7": {"title": "Calorimeter", "boundary": "CE calorimeter steps -> calo digis, hits, clusters",
+    "W7": {"title": "Calorimeter", "boundary": "CE calorimeter entrants (disk front, inner edge) -> calo hits, clusters",
            "stock": "Geant4 calorimeter steps -> stock calo digi + reco", "metrics": "cluster E, t, R, N (paired shape "
            "per block); cluster yield", "kind": "counts, paired shape", "floor": "stock with another seed",
            "rate_unit": "events/s"},
@@ -52,8 +52,7 @@ TASKS: dict[str, dict] = {
            "stock": "the stock trigger on the same digis", "metrics": "accept fraction per path (measured, paired "
            "error, tolerance 2 % of the acceptance)", "kind": "measured yields", "floor": None,
            "rate_unit": "events/s",
-           "note": "next rescore: the scored arm moves to the exact-hits trigger code (#283, merged after the "
-                   "c03dbd13 coverage); the coverage table is still on c03dbd13 without it"},
+           "note": "scored on main 213edff8 with the exact-hits trigger code (#283)"},
     "W9": {
         "title": "CRV design model",
         "note": "the model returns expected misses (mean miss probability), so both quantities are values with the "
@@ -78,7 +77,9 @@ TASKS: dict[str, dict] = {
         "floor": None,
         "rate_unit": "tables/s",
         "jobs": "stock_jobs_per_unit = grid jobs per stock table",
-        "note": "reference pending: the generator's full tables and a measured stock cost per table",
+        "note": "reference pending: a stock table at the generator's current optics. Measured cost per table (design "
+                "counter, stock statistics): stock about 1,400 core-h in 1,916 grid jobs; the generator about 1.3 A100-h "
+                "in float32 at production statistics (about 2.7 A100-h at stock statistics, extrapolated)",
         "status": "defined",
     },
     "PTGT": {
@@ -111,7 +112,7 @@ TASKS: dict[str, dict] = {
                  "splits by file (train, dev, reserved final + fresh primaries on reserved seeds); the reference "
                  "must beat two weak baselines (Gflash profiles; all energy in the entry crystal) on validity and "
                  "classifier score",
-        "status": "defined",
+        "status": "scored",
     },
     "B2": {
         "title": "Geometry-portable CRV module interaction (FS-CRV-MOD)",

@@ -5,9 +5,17 @@ the fastest. On a shared or busy GPU the timings, and so the choices, change fro
 choices sum in a different order, and float results then differ in the last bits (in float32 this can move a discrete
 outcome, e.g. a threshold crossing). With the setting on, `--xla_gpu_autotune_level=0` is appended to XLA_FLAGS: XLA
 uses its default kernel configuration for the device instead of timing candidates, so the same program gives the
-same result in every process on one GPU model. It has no effect on CPU backends. Turning autotuning off is enough
-because the fast-simulation kernels use no floating-point scatter-add (atomics); `--xla_gpu_deterministic_ops=true`
-would also cover those, at a large cost in the integer scatters of the SiPM kernel (see the CRV device-precision doc).
+same result in every process on one GPU model. It has no effect on CPU backends.
+
+Turning autotuning off is enough for kernels without a floating-point scatter-add. A scatter-add on a GPU sums the
+values that land on one element with atomics, in an order that is not fixed, so its float result may differ in the
+last bits between runs. Two device paths use one:
+- the CRV waveform synthesis in scatter mode (`mixing.device_crv._synth_scatter`, the W6 default): 24 same-seed pairs
+  of W6 runs (240 batches, A100, autotuning off, float32 and float64) gave bit-identical outputs. That is a measured
+  repeatability, not a guarantee;
+- the calorimeter waveforms (`calofastsim.device_chain._waveforms`): not yet checked.
+`--xla_gpu_deterministic_ops=true` would cover both, at a large cost in the integer scatters of the SiPM kernel (see
+the CRV device-precision doc).
 
 XLA reads XLA_FLAGS when JAX creates its first backend, so `apply()` runs when the `mu2efastsim` package is imported;
 every device module of the fast simulation imports it before using JAX. A value the user already put in XLA_FLAGS for

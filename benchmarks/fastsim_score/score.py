@@ -11,6 +11,8 @@ Layout (one directory per workflow; the reference side is never in this reposito
     reference/<W>/floor/hists.json        stock with another seed (optional: without it the threshold is 2)
     reference/<W>/reference.json          {"stock_rate_per_slot": events/s, "boundary": "...", "mode": ...,
                                            "yield_tolerance": 0.01, "min_count": 0, "su_per_hour": {device: SU}}
+    reference/<W>/stock/features.npz      per-cluster feature vectors (optional: turns on the classifier score;
+                                           then submission/<W>/<dtype>/features.npz is required)
 
 hists.json: {"hists": {key: H}, "yields": {name: Y}}, where H is one of
 - counts: {"edges": [...], "counts": [...]} or {"edges": [...], "shards": {shard_id: [...]}};
@@ -18,6 +20,13 @@ hists.json: {"hists": {key: H}, "yields": {name: Y}}, where H is one of
   error, e.g. a light-yield table, a rate per POT; a flattened N-d table takes edges 0..n and may carry "shape");
 - efficiency: {"edges": [...], "passed": [...], "total": [...]} (per-bin binomial, e.g. inefficiency per momentum bin);
 and Y is a count, {"shards": {shard_id: count}}, or a measured value {"value": v, "error": e} (e.g. stops per POT).
+hists.json may also hold "peaks": {name: H} (counts or shards): the scorer fits the peak position of H in each arm
+(CAL1's Gaussian core, gauss_core: a Gaussian fitted to the bin counts with weights 1/n over the window
+[mu - 1.5 s, mu + 2 s], 6 iterations from mu = the median of the entries above "start_above" and s = "start_width",
+both from reference.json "peak_fit") and scores the ratio as a yield; its standard error is the paired bootstrap of
+the ratio over the shared shards (>= 3; "n_boot" replicates, default 200, fixed "seed"), else the two fit errors in
+quadrature. (A delete-one-shard jackknife overestimates it: the fit starts from a median and picks its window bin by
+bin, so it is not smooth in the data.)
 
 Statistics, per histogram (the same ones the repository's validation code uses):
 - mode "same_events" (default; crvfastsim.validation.compare): both arms on the same generated events, no scaling,
@@ -35,14 +44,20 @@ Statistics, per histogram (the same ones the repository's validation code uses):
 - efficiency: e = passed / total per arm, var = e (1 - e) / total with e moved to 1/(2 total) at 0 and 1, chi2 = sum
   (e1 - e2)^2 / (var1 + var2) over bins with total > 0 in both arms.
 Flag rule (DQMVAL): chi2/ndf > max(2, 3 x floor) and p < 1e-3, where the floor is the same statistic for the floor
-arm against stock (threshold 2 without a floor). A yield passes when |ratio - 1| - 3 se <= yield_tolerance.
+arm against stock (threshold 2 without a floor). A yield passes when |ratio - 1| - 3 se <= yield_tolerance
+(per-yield tolerances in "yield_tolerances": {name: tol}). Statistical power: "yield_max_se" (below) applies to
+yields and peaks alike (B1: the CE peak, se <= tolerance / 3); an arm with such a rule reports power_ok (no yield
+underpowered).
 
 Scores per workflow and dtype: validity = (1 - flagged fraction) x (fraction of yields that pass); throughput
 multiplier = bench warm_rate / stock_rate_per_slot (in the reference's rate_unit, default events/s; bench.json
 may name its own unit, which must match); jobs ratio = stock_jobs_per_unit / bench jobs_per_unit when both are given
 (grid jobs replaced per unit of work, e.g. per table); a task whose reference has "stock_rate_per_slot": null
 is scored on validity only (no bench.json needed); SU/event = su_per_hour[device] / (3600 warm_rate), only with
---private (SU numbers are never published).
+--private (SU numbers are never published). A bench.json with "host": "mu2eg4" (a model inside Geant4) is scored
+against its own "baseline_rate" (model off, same node and primaries) instead of the per-slot stock rate. With
+"max_memory_mb_per_thread" in reference.json, a bench "memory_mb_per_thread" is checked (memory_ok; reported only).
+The classifier score (below) is also averaged over every arm that has one ("cls_score" of the result).
 
 Optional per task (reference.json), for the B1-B4 cards:
 - "yield_max_se": {name: se}: a yield whose se exceeds it fails ("underpowered"), so a small sample cannot pass a
@@ -75,6 +90,9 @@ import numpy as np
 
 DTYPES = ("float32", "float64")
 P_FLAG = 1e-3
+PEAK_ITERATIONS = 6
+PEAK_BOOTSTRAP = 200
+PEAK_SEED = 20261118
 
 
 class ScoreError(ValueError):
@@ -247,6 +265,117 @@ def statistic(ref: dict, cand: dict, mode: str = "same_events", min_count: float
     else:
         raise ScoreError(f"unknown mode {mode!r}")
     return _finish(chi2, ndf, kind)
+
+
+# ---------------------------------------------------------------- peak position (CAL1's Gaussian core, NumPy only)
+
+def _gauss_lsq(c: np.ndarray, h: np.ndarray, p0) -> tuple[np.ndarray, np.ndarray]:
+    """Least-squares Gaussian a exp(-(x-m)^2 / 2 s^2) to counts h at c, weights 1/h (Levenberg-Marquardt)."""
+    wt = 1.0 / h
+    p = np.array(p0, dtype=float)
+
+    def model(p):
+        z = (c - p[1]) / p[2]
+        g = np.exp(-0.5 * z * z)
+        return p[0] * g, np.column_stack([g, p[0] * g * z / p[2], p[0] * g * z * z / p[2]])
+
+    f, j = model(p)
+    chi = float((wt * (h - f) ** 2).sum())
+    lam = 1e-3
+    for _ in range(500):
+        jw = j.T * wt
+        a, g = jw @ j, jw @ (h - f)
+        try:
+            step = np.linalg.solve(a + lam * np.diag(np.diag(a)) + 1e-300 * np.eye(3), g)
+        except np.linalg.LinAlgError:
+            break
+        pn = p + step
+        if pn[2] == 0:
+            lam *= 10
+            continue
+        fn, jn = model(pn)
+        chin = float((wt * (h - fn) ** 2).sum())
+        if chin <= chi:
+            done = np.all(np.abs(step) <= 1e-12 * np.maximum(np.abs(p), 1e-12)) or chi - chin <= 1e-14 * max(chi, 1)
+            p, f, j, chi = pn, fn, jn, chin
+            lam = max(lam * 0.3, 1e-12)
+            if done:
+                break
+        else:
+            lam *= 10
+            if lam > 1e12:
+                break
+    jw = j.T * wt
+    try:
+        cov = np.linalg.inv(jw @ j)
+    except np.linalg.LinAlgError:
+        cov = np.full((3, 3), np.nan)
+    return p, cov
+
+
+def gauss_core(edges, counts, start_above: float | None = None, start_width: float | None = None) -> dict:
+    """Peak of a binned spectrum, CAL1's rule: a Gaussian fitted to the bins (weights 1/n) over the window
+    [mu - 1.5 s, mu + 2 s] of filled bins, 6 iterations from mu = the median of the entries in bins centred above
+    start_above (default: the lower edge) and s = start_width (default 4 % of the range). B1: 1 MeV bins 40-115 MeV,
+    start above 75 MeV, start width 3 MeV. Returns the peak, the width and the peak's fit error."""
+    e, h = np.asarray(edges, float), np.asarray(counts, float)
+    c = 0.5 * (e[1:] + e[:-1])
+    above = c > (e[0] if start_above is None else float(start_above))
+    if h[above].sum() <= 0:
+        raise ScoreError("peak: no entries above the start of the fit")
+    cum = np.cumsum(h[above])
+    mu = float(c[above][np.searchsorted(cum, 0.5 * cum[-1])])
+    sig = 0.04 * (e[-1] - e[0]) if start_width is None else float(start_width)
+    p = cov = None
+    for _ in range(PEAK_ITERATIONS):
+        w = (c > mu - 1.5 * sig) & (c < mu + 2.0 * sig) & (h > 0)
+        if w.sum() < 4:
+            raise ScoreError("peak: fewer than 4 filled bins in the fit window")
+        p, cov = _gauss_lsq(c[w], h[w], [h[w].max(), mu, sig])
+        if not (np.all(np.isfinite(p)) and e[0] < p[1] < e[-1] and p[2] != 0):
+            raise ScoreError("peak: the Gaussian core fit failed")
+        mu, sig = float(p[1]), float(abs(p[2]))
+    return {"peak": mu, "width": sig, "peak_error": float(np.sqrt(cov[1, 1])) if np.isfinite(cov[1, 1]) else None}
+
+
+def peak_ratio(ref: dict, cand: dict, tol: float, name: str = "", fit: dict | None = None) -> dict:
+    """Ratio of the fitted peak positions, candidate / reference, with the paired shard-bootstrap error.
+    ``fit``: {"start_above", "start_width"} of gauss_core, "n_boot", "seed"."""
+    _check_edges(ref, cand, name)
+    if kind_of(ref, name) != "counts" or kind_of(cand, name) != "counts":
+        raise ScoreError(f"peak {name}: needs counts or shards")
+    edges = ref["edges"]
+    fit = fit or {}
+    core = lambda h: gauss_core(edges, h, fit.get("start_above"), fit.get("start_width"))  # noqa: E731
+    try:
+        r, c = core(_bins(ref, name)), core(_bins(cand, name))
+    except ScoreError as e:
+        raise ScoreError(f"peak {name}: {e}") from None
+    ratio = c["peak"] / r["peak"]
+    shared = sorted(set(ref.get("shards", {})) & set(cand.get("shards", {})))
+    out = {"kind": "peak", "ratio": ratio, "peak_reference": r["peak"], "peak_submission": c["peak"],
+           "width_reference": r["width"], "width_submission": c["width"]}
+    if len(shared) >= 3:
+        a = np.array([ref["shards"][s] for s in shared], float)
+        b = np.array([cand["shards"][s] for s in shared], float)
+        S, n_boot = len(shared), int(fit.get("n_boot", PEAK_BOOTSTRAP))
+        rng = np.random.default_rng(int(fit.get("seed", PEAK_SEED)))
+        reps = []
+        for _ in range(n_boot):
+            w = np.bincount(rng.integers(0, S, S), minlength=S).astype(float)   # the same shards in both arms
+            try:
+                reps.append(core(w @ b)["peak"] / core(w @ a)["peak"])
+            except ScoreError as e:
+                raise ScoreError(f"peak {name}: bootstrap replicate: {e}") from None
+        se = float(np.std(reps, ddof=1))
+        out["se_method"] = f"bootstrap_{n_boot}_of_{S}_shards"
+    else:
+        if r["peak_error"] is None or c["peak_error"] is None:
+            raise ScoreError(f"peak {name}: no fit error")
+        se = abs(ratio) * math.hypot(r["peak_error"] / r["peak"], c["peak_error"] / c["peak"])
+        out["se_method"] = "fit_errors"
+    out.update(se=se, **{"pass": abs(ratio - 1) - 3 * se <= tol})
+    return out
 
 
 def _count(y, name: str) -> tuple[float, dict | None]:
@@ -432,7 +561,12 @@ def load_json(p: Path) -> dict:
 
 def score_arm(cand: dict, stock: dict, floor: dict | None, refcfg: dict, extra_yields: list | None = None) -> dict:
     mode, minc = refcfg.get("mode", "same_events"), float(refcfg.get("min_count", 0))
-    tol = float(refcfg.get("yield_tolerance", 0.01))
+    tol0 = float(refcfg.get("yield_tolerance", 0.01))
+    tols = {k: float(v) for k, v in (refcfg.get("yield_tolerances") or {}).items()}
+    max_se = {k: float(v) for k, v in (refcfg.get("yield_max_se") or {}).items()}
+    names = set(stock.get("yields", {})) | set(stock.get("peaks", {}))
+    if set(max_se) - names or set(tols) - names:
+        raise ScoreError(f"reference.json names yields the stock arm lacks: {sorted((set(max_se) | set(tols)) - names)}")
     rows, flagged = [], 0
     for key, h_ref in sorted(stock.get("hists", {}).items()):
         if key not in cand.get("hists", {}):
@@ -448,19 +582,29 @@ def score_arm(cand: dict, stock: dict, floor: dict | None, refcfg: dict, extra_y
     for name, y_ref in sorted(stock.get("yields", {}).items()):
         if name not in cand.get("yields", {}):
             raise ScoreError(f"yield {name} missing from the submission")
-        y = {"yield": name, **yield_ratio(y_ref, cand["yields"][name], tol, name)}
-        max_se = (refcfg.get("yield_max_se") or {}).get(name)
-        if max_se is not None and y["se"] > float(max_se):  # too small a sample to test the tolerance
-            y["pass"], y["underpowered"], y["max_se"] = False, True, float(max_se)
-        yields.append(y)
+        yields.append({"yield": name, **yield_ratio(y_ref, cand["yields"][name], tols.get(name, tol0), name)})
+    for name, h_ref in sorted(stock.get("peaks", {}).items()):
+        if name not in cand.get("peaks", {}):
+            raise ScoreError(f"peak {name} missing from the submission")
+        yields.append({"yield": name, **peak_ratio(h_ref, cand["peaks"][name], tols.get(name, tol0), name,
+                                                   (refcfg.get("peak_fit") or {}).get(name))})
+    for y in yields:
+        y["tolerance"] = tols.get(y["yield"], tol0)
+        if y["yield"] in max_se:  # too small a sample to test the tolerance: fails ("underpowered")
+            y["max_se"] = max_se[y["yield"]]
+            y["underpowered"] = bool(y["se"] > max_se[y["yield"]])
+            y["pass"] = bool(y["pass"]) and not y["underpowered"]
     yields += extra_yields or []
     n = len(rows)
     if n == 0 and not yields:
         raise ScoreError("the reference has no histograms and no yields")
     ypass = sum(y["pass"] for y in yields) / len(yields) if yields else 1.0
     hpass = 1 - flagged / n if n else 1.0  # a yields-only task (e.g. per-path accept fractions) scores the yields
-    return {"n_hists": n, "n_flagged": flagged, "validity": hpass * ypass, "yield_pass": ypass,
-            "hists": rows, "yields": yields}
+    out = {"n_hists": n, "n_flagged": flagged, "validity": hpass * ypass, "yield_pass": ypass,
+           "hists": rows, "yields": yields}
+    if max_se:
+        out["power_ok"] = not any(y.get("underpowered") for y in yields)
+    return out
 
 
 def _extras(d: Path, refdir: Path | None, cfg: dict) -> tuple[dict, list]:
@@ -534,9 +678,23 @@ def score_one(d: Path, w: str, dt: str, stock: dict, floor: dict | None, cfg: di
             rate = curve[-1]["rate"]
     if rate <= 0:
         raise ScoreError(f"{w}/{dt}: bench.json has no positive warm_rate")
+    if bench.get("host") == "mu2eg4":  # a model inside Geant4: model-on over model-off on the same node and primaries
+        base = float(bench.get("baseline_rate") or 0)
+        if base <= 0:
+            raise ScoreError(f"{w}/{dt}: a mu2eg4 bench.json needs a positive baseline_rate (model off)")
+        mult, basis = rate / base, "same node, model off"
+    else:
+        mult, basis = rate / float(cfg["stock_rate_per_slot"]), "stock rate per grid slot"
     res.update(throughput_scored=True, warm_rate=rate, rate_unit=unit, device=bench.get("device"), inputs=bench.get("inputs"),
-               throughput_multiplier=rate / float(cfg["stock_rate_per_slot"]), throughput_verified=False,
+               throughput_multiplier=mult, throughput_basis=basis, throughput_verified=False,
                boundary_match=(bench.get("boundary") in (None, cfg.get("boundary"))))
+    for k in ("host", "edge_rule", "library_hash", "offline", "envset", "image"):
+        if k in bench:
+            res[k] = bench[k]
+    if cfg.get("max_memory_mb_per_thread") is not None:
+        mem = bench.get("memory_mb_per_thread")
+        res["memory_mb_per_thread"] = mem
+        res["memory_ok"] = None if mem is None else bool(float(mem) <= float(cfg["max_memory_mb_per_thread"]))
     if curve is not None:
         res["scaling"] = curve
         res["crossover_batch"] = next((c["batch"] for c in curve if c["multiplier"] > 1), None)
@@ -555,7 +713,7 @@ def score(sub: Path, ref: Path, private: bool = False, allow_missing: bool = Fal
     if not workflows:
         raise ScoreError(f"no <W>/reference.json under {ref.as_posix()}")
     out: dict = {"workflows": {}, "missing": {}}
-    vals, mults, cfgs = [], [], {}
+    vals, mults, cfgs, clss = [], [], {}, []
     for w in workflows:
         cfg = cfgs[w] = load_json(ref / w / "reference.json")
         sh = ref / w / "stock" / "hists.json"
@@ -577,6 +735,8 @@ def score(sub: Path, ref: Path, private: bool = False, allow_missing: bool = Fal
             vals.append(res["validity"])
             if res["throughput_multiplier"] is not None:
                 mults.append(res["throughput_multiplier"])
+            if "classifier" in res:
+                clss.append(res["classifier"]["cls_score"])
     if not vals:
         raise ScoreError("no arm could be scored")
     groups = _groups(out["workflows"], cfgs)
@@ -585,6 +745,7 @@ def score(sub: Path, ref: Path, private: bool = False, allow_missing: bool = Fal
     out["validity_score"] = float(np.mean(vals))
     out["min_validity"] = float(np.min(vals))
     out["throughput_geomean"] = float(np.exp(np.mean(np.log(mults)))) if mults else None
+    out["cls_score"] = float(np.mean(clss)) if clss else None
     out["n_workflows"] = len(workflows)
     out["n_arms_scored"] = len(vals)
     if not out["missing"]:
@@ -621,6 +782,8 @@ def _groups(results: dict, cfgs: dict) -> dict:
 def leaderboard_row(res: dict) -> dict:
     """The flat keys a Codabench leaderboard shows: overall scores plus validity and multiplier per workflow/dtype."""
     row = {k: res[k] for k in ("validity_score", "min_validity", "throughput_geomean")}
+    if res.get("cls_score") is not None:
+        row["cls_score"] = res["cls_score"]
     for w, by in res["workflows"].items():
         for dt, r in by.items():
             tag = f"{w.lower()}_{'f32' if dt == 'float32' else 'f64'}"
@@ -630,6 +793,8 @@ def leaderboard_row(res: dict) -> dict:
                 row[f"{tag}_cls_score"] = r["classifier"]["cls_score"]
             if "track_agreement" in r:
                 row[f"{tag}_agreement"] = r["track_agreement"]["agreement"]
+            if "power_ok" in r:
+                row[f"{tag}_power"] = float(r["power_ok"])
     for g, by in res.get("groups", {}).items():
         for dt, r in by.items():
             tag = f"{g.lower()}_{'f32' if dt == 'float32' else 'f64'}"
@@ -656,8 +821,10 @@ def main(argv=None) -> int:
     a.out.write_text(text + "\n") if a.out else print(text)
     for w, by in res["workflows"].items():
         for dt, r in by.items():
+            extra = (f", cls {r['classifier']['cls_score']:.3f}" if "classifier" in r else "") + \
+                    (f", power {'ok' if r['power_ok'] else 'FAIL'}" if "power_ok" in r else "")
             print(f"{w} {dt}: flagged {r['n_flagged']}/{r['n_hists']}, yields {r['yield_pass']:.2f}, "
-                  f"validity {r['validity']:.3f}, " + (f"x{r['throughput_multiplier']:.1f} on {r['device']}"
+                  f"validity {r['validity']:.3f}{extra}, " + (f"x{r['throughput_multiplier']:.1f} on {r['device']}"
                   if r["throughput_scored"] else "throughput not scored"), file=sys.stderr)
     for w, by in res.get("missing", {}).items():
         for dt, why in by.items():

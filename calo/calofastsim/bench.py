@@ -1,8 +1,13 @@
 """Shared-timer entry points for the calorimeter device chain (``python3 -m mu2efastsim.bench``).
 
-Boundary: stock CaloShowerSteps -> calorimeter hits and clusters (:func:`device_chain.make_steps_chain`) with the
-default crystal response (``digi_response="parametric"``, hits drawn per crystal, no digis); ``digi_response=
-"waveform"`` runs photoelectrons, digis and the template fit (digis, hits and clusters).
+W7's default (since 2026-11-20): ``bench_entrants`` with ``--prepare calofastsim.bench:bench_prepare_entrants``,
+calorimeter entrants (front and inner-edge entry states of the bench tables' events) -> library draw -> hits and
+clusters through :mod:`calofastsim.entrant_chain` with :data:`entrant_chain.W7_DEFAULT` and the per-entrant library
+``CALO_BENCH_LIBRARY`` (W7's: content hash :data:`entrant_chain.W7_LIBRARY_HASH`).
+
+Stock-steps entry (the response alone): ``bench_steps``, stock CaloShowerSteps -> calorimeter hits and clusters
+(:func:`device_chain.make_steps_chain`). Both use the default crystal response (``digi_response="parametric"``,
+hits drawn per crystal, no digis); ``digi_response="waveform"`` runs photoelectrons, digis and the template fit.
 
 Inputs come from environment variables, so no path is built into the code:
 
@@ -16,11 +21,16 @@ Inputs come from environment variables, so no path is built into the code:
 and the per-event bunch times are drawn from the seed, so every pass sees other events. ``bench_steps`` runs the
 batches through the chain (built once per process and configuration) and returns the device outputs.
 
-Example::
+- ``CALO_BENCH_LIBRARY`` (entrant entry points): the per-entrant library npz.
 
-    python3 -m mu2efastsim.bench calofastsim.bench:bench_steps --prepare calofastsim.bench:bench_prepare \\
+W7 default, example::
+
+    python3 -m mu2efastsim.bench calofastsim.bench:bench_entrants --prepare calofastsim.bench:bench_prepare_entrants \\
         --events 163840 --fresh-inputs --dtype float32 --kwargs '{"dtype": "float32"}' --workflow W7 \\
-        --boundary "CE CaloShowerSteps -> calo hits + clusters" --out bench.json
+        --boundary "CE calorimeter entrants -> calo hits + clusters" --out bench.json
+
+The stock-steps entry: ``calofastsim.bench:bench_steps --prepare calofastsim.bench:bench_prepare``, boundary
+"CE CaloShowerSteps -> calo hits + clusters".
 
 Batches: ``BATCH`` (65,536 events) for the default parametric response, which runs fastest at large batches;
 the waveform response runs fastest at ``WAVEFORM_BATCH`` (4,096): ``--prepare calofastsim.bench:
@@ -169,6 +179,93 @@ def bench_steps(prepared, dtype="float64", digi_response="parametric", seed=1, f
     outs = []
     for i, (s, t) in enumerate(prepared["batches"]):
         r = run({k: jnp.asarray(v) for k, v in s.items()}, {k: jnp.asarray(v) for k, v in t.items()},
+                jax.random.fold_in(key, i))
+        outs.append({"clusters": r["clusters"], "overflow": r["overflow"]})
+    return outs
+
+
+# ------------------------------------------------- entrant library (opt-in shower source: entrants -> clusters)
+# Boundary: calorimeter entrants (front and inner-edge entry states in the disk frame, every entrant of the bench
+# events, calofastsim.showers.entrants.read of the CALO_BENCH_TABLES exports) -> library draw -> placement -> hits ->
+# clusters (calofastsim.entrant_chain). The library is ``CALO_BENCH_LIBRARY`` (an entrants LIBSPEC npz).
+ENTRANTS_PER_EVENT = 2          # entrant rows per batch event (CE: 1.0 per stored event, at most 2 in 14,218)
+ENTRANT_STEPS = 64              # drawn steps per event (CE: 41 per entrant on average, at most 93)
+_ENTRANTS = {}
+_ENTRANT_CHAINS = {}
+
+
+def load_entrants(tables):
+    """Per-event entrant states of every stored event of the export ``tables`` (host memory, in file order)."""
+    from .showers import entrants as E
+    events = []
+    for path in tables:
+        ent, _, _, cen = E.read(path)
+        order = np.argsort(ent["event_row"], kind="stable")
+        bounds = np.searchsorted(ent["event_row"][order], np.arange(cen["events"] + 1))
+        for e in range(cen["events"]):
+            s = order[bounds[e]:bounds[e + 1]]
+            events.append({k: ent[k][s] for k in ("pdg", "face", "disk", "time", "local_position", "local_momentum")})
+    if not events:
+        raise ValueError("no events in the bench tables")
+    return events
+
+
+def pack_entrant_batches(events, n, batch=BATCH, seed=None):
+    """``n`` events (wrapping around ``events``) as padded host batches ``(q, timing)`` for the entrant chain."""
+    from .entrant_chain import entrants_batch
+    rng = np.random.default_rng(seed)
+    start = 0 if seed is None else int(rng.integers(len(events)))
+    idx = (start + np.arange(n)) % len(events)
+    out = []
+    for b0 in range(0, n, batch):
+        parts = [events[i] for i in idx[b0:b0 + batch]]
+        cnt = np.array([len(p["face"]) for p in parts])
+        e = {k: np.concatenate([p[k] for p in parts]) for k in parts[0]}
+        e["event"] = np.repeat(np.arange(len(parts)), cnt)
+        out.append(entrants_batch(e, _timing(len(parts), rng), ENTRANTS_PER_EVENT * batch, batch))
+    return out
+
+
+def bench_prepare_entrants(n, seed=None, batch=BATCH):
+    """mu2efastsim.bench --prepare for :func:`bench_entrants`: ``n`` events of the bench tables' entrants."""
+    tables = tuple(os.environ["CALO_BENCH_TABLES"].split(":"))
+    if tables not in _ENTRANTS:
+        _ENTRANTS[tables] = load_entrants(tables)
+    return {"batches": pack_entrant_batches(_ENTRANTS[tables], int(n), batch, seed), "seed": seed, "batch": batch}
+
+
+def entrant_chain(dtype="float64", batch=BATCH, digi_response="parametric", key_neighbors=8, placement="crystal",
+                  fit_hessian="analytic", **cap_override):
+    """The jitted entrant chain on ``CALO_BENCH_LIBRARY`` for this configuration, built once per process and library
+    path (a library swapped within one process gets its own chain)."""
+    library_path = os.path.abspath(os.environ["CALO_BENCH_LIBRARY"])
+    key = (library_path, np.dtype(dtype).name, batch, digi_response, key_neighbors, placement, fit_hessian,
+           tuple(sorted(cap_override.items())))
+    if key not in _ENTRANT_CHAINS:
+        import jax
+        jax.config.update("jax_enable_x64", True)
+        from .entrant_chain import make_entrant_chain, pack_entrants
+        from .showers.entrants import load
+        library, _ = load(library_path)
+        lib = pack_entrants(library, placement=placement, key_neighbors=key_neighbors, dtype=np.dtype(dtype))
+        over = dict(steps=ENTRANT_STEPS * batch)
+        over.update(cap_override)
+        _ENTRANT_CHAINS[key] = make_entrant_chain(lib, conditions(dtype, fit_hessian=fit_hessian), caps(batch, **over),
+                                                  digi_response=digi_response)
+    return _ENTRANT_CHAINS[key]
+
+
+def bench_entrants(prepared, dtype="float64", digi_response="parametric", key_neighbors=8, placement="crystal",
+                   seed=1, fit_hessian="analytic", **cap_override):
+    """mu2efastsim.bench entry point: every batch of ``prepared`` through the entrant chain (entrants -> clusters);
+    returns the per-batch clusters and overflow counts (device arrays)."""
+    import jax
+    import jax.numpy as jnp
+    run = entrant_chain(dtype, prepared["batch"], digi_response, key_neighbors, placement, fit_hessian, **cap_override)
+    key = jax.random.PRNGKey(prepared["seed"] if prepared["seed"] is not None else seed)
+    outs = []
+    for i, (q, t) in enumerate(prepared["batches"]):
+        r = run({k: jnp.asarray(v) for k, v in q.items()}, {k: jnp.asarray(v) for k, v in t.items()},
                 jax.random.fold_in(key, i))
         outs.append({"clusters": r["clusters"], "overflow": r["overflow"]})
     return outs

@@ -21,7 +21,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 PKG = HERE.parent / "fastsim_score"
 
-SCORING = '''"""Codabench scoring program: the submission zip holds <W>/<dtype>/{hists.json,bench.json}."""
+SCORING = '''"""Codabench scoring program: the submission zip holds <W>/<dtype>/{hists.json,bench.json[,features.npz]}."""
 import json
 import os
 import sys
@@ -55,21 +55,31 @@ if __name__ == "__main__":
 '''
 
 
-def competition_yaml(workflows: list[str], title: str) -> str:
+def competition_yaml(workflows: list[str], title: str, cls_workflows=(), power_workflows=()) -> str:
+    """Leaderboard columns: the overall scores, then validity and multiplier per workflow and dtype, plus the
+    classifier score (workflows whose reference.json has a classifier) and the power flag (workflows with a
+    yield_max_se rule)."""
     cols = [("Validity score", "validity_score", "desc"), ("Min validity", "min_validity", "desc"),
             ("Throughput x (self-reported)", "throughput_geomean", "desc")]
+    if cls_workflows:
+        cols.append(("Classifier score", "cls_score", "desc"))
     for w in workflows:
         for dt in ("f32", "f64"):
             cols += [(f"{w} {dt} validity", f"{w.lower()}_{dt}_validity", "desc"),
                      (f"{w} {dt} x", f"{w.lower()}_{dt}_multiplier", "desc")]
+            if w in cls_workflows:
+                cols.append((f"{w} {dt} classifier", f"{w.lower()}_{dt}_cls_score", "desc"))
+            if w in power_workflows:
+                cols.append((f"{w} {dt} power (1 = se small enough)", f"{w.lower()}_{dt}_power", "desc"))
     col_lines = "\n".join(f"      - {{title: \"{t}\", key: {k}, index: {i}, sorting: {s}, precision: 3}}"
                           for i, (t, k, s) in enumerate(cols))
     return f"""version: 2
 # PLACEHOLDERS before any use: logo.png, terms, dates. The reference data is private: unpublished competition only.
 title: "{title}"
 description: >-
-  Validity (DQM-style histogram flag rule against stock with a reseeded-stock floor, plus yields) and the throughput
-  multiplier against stock grid slots for a fast-simulation commit, both float32 and float64.
+  Validity (DQM-style histogram flag rule against stock with a reseeded-stock floor, plus yields with a
+  statistical-power rule where set), the classifier score where the reference has per-cluster features, and the
+  throughput multiplier against stock grid slots for a fast-simulation commit, both float32 and float64.
 image: logo.png
 terms: pages/terms.md
 docker_image: codalab/codalab-legacy:py312
@@ -133,7 +143,10 @@ def build(out: Path, reference: Path | None = None, title: str = "mu2e-fastsim t
     shutil.copytree(reference, b / "reference_data")
     shutil.copytree(solution, b / "solution")
     workflows = sorted(p.name for p in reference.iterdir() if (p / "reference.json").is_file())
-    (b / "competition.yaml").write_text(competition_yaml(workflows, title))
+    cfgs = {w: json.loads((reference / w / "reference.json").read_text()) for w in workflows}
+    cls_w = [w for w in workflows if cfgs[w].get("classifier")]
+    power_w = [w for w in workflows if cfgs[w].get("yield_max_se")]
+    (b / "competition.yaml").write_text(competition_yaml(workflows, title, cls_w, power_w))
     (b / "pages").mkdir()
     (b / "pages" / "overview.md").write_text((HERE.parent / "README.md").read_text())
     (b / "pages" / "terms.md").write_text("# Terms (PLACEHOLDER)\n\nNot real terms; to be replaced before any use.\n")

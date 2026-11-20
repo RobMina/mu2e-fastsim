@@ -2,6 +2,8 @@
 
 For endpoints without /cvmfs (UVA): the field map (.header + .bin) and a geometry file with its whole #include tree,
 laid out as on CVMFS so the defaults of beamfastsim work with BEAMFS_OFFLINE_ROOT and BEAMFS_MAPS pointed at it.
+A map name is one of the Mau13 set (DSMap, TSdMap, ...), or SET/NAME for another set under DataFiles/BFieldMaps
+(e.g. GA05/PSMap), staged to maps/SET/NAME.{header,bin}.
   python3 -m beamfastsim.stage OUT [--geom Offline/Mu2eG4/geom/geom_common.txt] [--map DSMap] [--extra-map TSdMap]
       [--file Offline/...] [--workers 16]
 Prints the two environment settings to export. An overlay geometry (absolute path, e.g. beam/geom/*.txt) is read from
@@ -20,6 +22,16 @@ REPO = "mu2e.opensciencegrid.org"
 OFFLINE = "/Musings/Offline/v10_47_00"
 MAPS = "/DataFiles/BFieldMaps/Mau13"
 _INC = re.compile(r'^\s*#include\s+"([^"]+)"', re.M)
+_MAP = re.compile(r"(?:[A-Za-z0-9_]+/)?[A-Za-z0-9_]+")
+
+
+def map_path(name):
+    """(path on CVMFS without extension, path under maps/ without extension) of a map name (see the module doc)."""
+    if not _MAP.fullmatch(name):
+        raise ValueError(f"map name {name!r}: NAME or SET/NAME (letters, digits, underscore)")
+    if "/" in name:
+        return f"/DataFiles/BFieldMaps/{name}", name
+    return f"{MAPS}/{name}", name
 
 
 def _includes(text):
@@ -52,7 +64,7 @@ def stage(out, geom="Offline/Mu2eG4/geom/geom_common.txt", map_name="DSMap", wor
     repo = _Repos()
     off_root, maps_dir = os.path.join(out, "offline"), os.path.join(out, "maps")
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = [ex.submit(repo.fetch, f"{MAPS}/{m}.{ext}", os.path.join(maps_dir, f"{m}.{ext}"))
+        futs = [ex.submit(repo.fetch, f"{map_path(m)[0]}.{ext}", os.path.join(maps_dir, f"{map_path(m)[1]}.{ext}"))
                 for m in (map_name,) + tuple(extra_maps) for ext in ("header", "bin")]
         futs += [ex.submit(repo.fetch, f"{offline}/{p}", os.path.join(off_root, p)) for p in extra_files]
         seen, frontier = set(), []
