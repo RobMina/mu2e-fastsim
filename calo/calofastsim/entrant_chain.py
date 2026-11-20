@@ -98,7 +98,8 @@ def _cell_tables(library, disk_ids, psi_bins=None):
 
 
 def pack_entrants(library, *, placement="crystal", key_neighbors=0, psi_bins=None, pixel=8.0, candidate_width=12,
-                  d_edge=0.0, selection="cell", nearest_k=1, max_entry_distance=20.0, far="g4", dtype=np.float64):
+                  d_edge=0.0, selection="cell", nearest_k=1, max_entry_distance=20.0, far="g4",
+                  max_energy_deviation=None, dtype=np.float64):
     """Pack an entrant library (:func:`entrants.build` / :func:`entrants.load`) into a
     :class:`device_chain.DeviceLibrary` for :func:`make_entrant_chain`.
 
@@ -106,7 +107,8 @@ def pack_entrants(library, *, placement="crystal", key_neighbors=0, psi_bins=Non
     cell with more than K entrants, draw among the K nearest in the position key); ``psi_bins`` as
     :func:`entrants.sample` (opt-in psi cell axis of front entries); ``selection``, ``nearest_k``,
     ``max_entry_distance`` and ``far`` as :func:`entrants.sample` (``selection="nearest"``: the Mu2eG4 host's nearest
-    donor in entry point; far entrants are edge entrants with ``far="g4"``); ``d_edge`` [mm] the edge rule (front entrants within this
+    donor in entry point; far entrants are edge entrants with ``far="g4"``); ``max_energy_deviation`` as
+    :func:`entrants.sample` (entrants it cuts are edge entrants, left to full simulation); ``d_edge`` [mm] the edge rule (front entrants within this
     distance of the disk's inner or outer radius are not drawn); ``dtype`` the precision of positions, frames and
     geometry (cell lookup, draws and times stay double). The disks must share the global axes (the Mu2e layout):
     the host rotation about the disk axis then equals the device's rotation in global x-y."""
@@ -128,6 +130,10 @@ def pack_entrants(library, *, placement="crystal", key_neighbors=0, psi_bins=Non
             raise ValueError("the device nearest rule needs a finite max_entry_distance")
         if psi_bins is not None:
             raise ValueError("psi_bins applies to the cell rule only")
+    if max_energy_deviation is not None:
+        if not (np.isfinite(max_energy_deviation) and max_energy_deviation >= 0):
+            raise ValueError("max_energy_deviation must be a nonnegative fraction or None")
+        max_energy_deviation = float(max_energy_deviation)
     disk_ids = np.asarray(library["geometry_disk_disk"])
     if np.any(np.diff(disk_ids) <= 0):
         raise ValueError("disk geometry must be sorted")
@@ -195,11 +201,14 @@ def pack_entrants(library, *, placement="crystal", key_neighbors=0, psi_bins=Non
     if selection == "nearest":
         a.update(_nearest_tables(library, disk_ids, shape, float(max_entry_distance)))
         nearest_meta = dict(max_group=int(a["near_count"].max(initial=0)), window=int(a.pop("near_window")))
+    if max_energy_deviation is not None:
+        a["entry_energy"] = np.asarray(library["entry_energy"], np.float64)
     meta = dict(entrants=int(len(phi)), steps=int(len(step_crystal)), occupied_cells=int(len(counts)),
                 max_cell=int(counts.max(initial=0)), max_steps=int(np.diff(a["offsets"]).max(initial=0)),
                 d_edge=float(d_edge), key_neighbors=int(key_neighbors),
                 psi_bins=psi_bins, dtype=np.dtype(dtype).name, selection=selection, nearest_k=int(nearest_k),
-                max_entry_distance=float(max_entry_distance), far=far, library="entrants", **nearest_meta)
+                max_entry_distance=float(max_entry_distance), far=far, max_energy_deviation=max_energy_deviation,
+                library="entrants", **nearest_meta)
     return dc.DeviceLibrary({k: jnp.asarray(v) for k, v in a.items()}, shape, int(key_neighbors), placement, n_pix,
                             float(pixel), meta)
 
@@ -411,6 +420,12 @@ def sample_entrants(lib: dc.DeviceLibrary, q, uniform, return_far=False):
             donor = nearest
             fallback = oe | oc | op | ~known
             edge = edge | far
+    dev = lib.meta.get("max_energy_deviation")
+    if dev is not None:
+        # the host's energy_cut: the drawn donor's total entry energy too far from the query's -> full simulation
+        drawn = jnp.clip(donor, 0, a["entry_energy"].shape[0] - 1)
+        cut = (occ >= 0) & q["valid"] & ~edge & (jnp.abs(a["entry_energy"][drawn] - energy) > dev * energy)
+        edge = edge | cut
     donor = jnp.where((occ >= 0) & q["valid"] & ~edge, donor, -1)
     position = a["origin"][slot] + q["local_position"].astype(pdt)
     if return_far:

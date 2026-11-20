@@ -356,7 +356,7 @@ def entry_distance2(face, key, phi, rho, donor_key, donor_phi):
 
 
 def sample(library, queries, rng, *, dtype=np.float64, key_neighbors=0, psi_bins=None, selection="cell",
-           nearest_k=1, max_entry_distance=20.0, far="g4"):
+           nearest_k=1, max_entry_distance=20.0, far="g4", max_energy_deviation=None):
     """Draw one donor per query and place its CSS at the query entry.
 
     queries: disk, face, pdg, time, local_position (N,3) and local_momentum (N,3) in the disk frame. Returns the
@@ -385,6 +385,11 @@ def sample(library, queries, rng, *, dtype=np.float64, key_neighbors=0, psi_bins
     Geant4); with ``far="cell"`` it is drawn by the cell rule (``key_neighbors`` applies). ``key_neighbors`` and
     ``psi_bins`` otherwise do not apply to nearest draws. Unlike the C++ host, entries outside the bins are drawn
     (flagged ``fallback``), as with the cell rule.
+
+    ``max_energy_deviation`` (opt-in, either rule; the Mu2eG4 host's ``maxEnergyDeviation``, default 0.1 there):
+    a query whose drawn donor's total entry energy differs from its own by more than this fraction gets no donor
+    and is flagged ``energy_cut`` (the Mu2eG4 host leaves it to Geant4; energies are never rescaled). It applies
+    after every other rule, ``far="cell"`` draws included, and never falls back to another donor.
     """
     if selection not in SELECTIONS:
         raise ValueError(f"selection must be one of {SELECTIONS}")
@@ -401,6 +406,8 @@ def sample(library, queries, rng, *, dtype=np.float64, key_neighbors=0, psi_bins
     if (isinstance(key_neighbors, (bool, np.bool_)) or not isinstance(key_neighbors, (int, np.integer))
             or key_neighbors < 0):
         raise ValueError("key_neighbors must be a nonnegative integer")
+    if max_energy_deviation is not None and not (np.isfinite(max_energy_deviation) and max_energy_deviation >= 0):
+        raise ValueError("max_energy_deviation must be a nonnegative fraction or None")
     face = np.asarray(queries["face"])
     n = len(face)
     disk = np.asarray(queries["disk"])
@@ -451,6 +458,12 @@ def sample(library, queries, rng, *, dtype=np.float64, key_neighbors=0, psi_bins
                                             uniform, nearest_k, max_entry_distance)
         donors = np.where(far_mask, donors if far == "cell" else -1, nearest)
         fallback = np.where(far_mask & (far == "cell"), fallback, outside)       # nearest draws: outside the bins
+    energy_cut = np.zeros(n, bool)
+    if max_energy_deviation is not None:
+        has = np.flatnonzero(donors >= 0)
+        energy_cut[has] = (np.abs(np.asarray(library["entry_energy"], float)[donors[has]] - energy[has])
+                           > max_energy_deviation * energy[has])
+        donors = np.where(energy_cut, -1, donors)
     supported = donors >= 0
     length = np.zeros(n, dtype=np.int64)
     length[supported] = np.diff(library["offsets"])[donors[supported]]
@@ -475,7 +488,8 @@ def sample(library, queries, rng, *, dtype=np.float64, key_neighbors=0, psi_bins
                 energy_g4=library["step_energy_g4"][source].astype(dtype),
                 energy_birks=library["step_energy_birks"][source].astype(dtype),
                 donor_crystal=library["step_crystal"][source], disk=library["step_disk"][source],
-                entry=row, offsets=offsets, donor=donors, supported=supported, fallback=fallback, far=far_mask)
+                entry=row, offsets=offsets, donor=donors, supported=supported, fallback=fallback, far=far_mask,
+                energy_cut=energy_cut)
 
 
 def _nearest_donors(library, species, face, disk, query, key, phi, rho, uniform, k, max_distance):

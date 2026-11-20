@@ -159,3 +159,26 @@ def test_save_load_and_root_export(export, tmp_path):
         np.testing.assert_array_equal(e["step_end"] - e["step_begin"], np.diff(library["offsets"]))
         np.testing.assert_allclose(s["x"], library["step_relative_position"][:, 0])
         np.testing.assert_allclose(f["bins_inner_depth"]["edge"].array(library="np"), library["bins_inner_depth"])
+
+
+def test_energy_cut(export):
+    """max_energy_deviation: a donor whose total entry energy is too far from the query's is not used (energy_cut)."""
+    entrants, css, geometry, _ = E.read(export)
+    library = E.build(entrants, css, geometry)
+    q = _self_queries(entrants)
+    hot = dict(q, local_momentum=q["local_momentum"] * 1.02)          # 2 % more energy, same cells
+    for selection in ("cell", "nearest"):
+        own = E.sample(library, q, np.random.default_rng(1), selection=selection, max_entry_distance=1e9,
+                       max_energy_deviation=0.0)
+        assert own["supported"].all() and not own["energy_cut"].any()
+        tight = E.sample(library, hot, np.random.default_rng(1), selection=selection, max_entry_distance=1e9,
+                         max_energy_deviation=0.01)
+        loose = E.sample(library, hot, np.random.default_rng(1), selection=selection, max_entry_distance=1e9,
+                         max_energy_deviation=0.05)
+        assert tight["energy_cut"].all() and not tight["supported"].any() and len(tight["entry"]) == 0
+        assert loose["supported"].all() and not loose["energy_cut"].any()
+        off = E.sample(library, hot, np.random.default_rng(1), selection=selection, max_entry_distance=1e9)
+        np.testing.assert_array_equal(off["donor"], loose["donor"])
+    for bad in (-0.1, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            E.sample(library, q, np.random.default_rng(1), max_energy_deviation=bad)

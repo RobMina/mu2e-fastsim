@@ -571,3 +571,28 @@ def test_w7_arm_writes_the_scoring_clusters(tmp_path, monkeypatch):
     # the cell rule on request
     s = w7_arm.main([str(tmp_path / "cell")] + args + ["--any-library", "--selection", "cell"])
     assert s["stats"]["draws"] == 6 and s["stats"]["far"] == 0 and s["settings"]["selection"] == "cell"
+
+
+@pytest.mark.parametrize("selection,far", [("cell", "g4"), ("nearest", "g4"), ("nearest", "cell")])
+def test_energy_cut_matches_host(library, selection, far):
+    """max_energy_deviation: the device leaves the host's energy_cut entrants to full simulation (edge) and draws the
+    same donors for the rest."""
+    query = _queries(seed=41)
+    u = np.random.default_rng(13).random(320)
+    opts = dict(selection=selection, far=far, max_entry_distance=60.0)
+    base = E.sample(library, query, _Fixed(u), **opts)
+    host = E.sample(library, query, _Fixed(u), max_energy_deviation=0.05, **opts)
+    energy_q = E.entry_features(query["face"], query["local_position"], query["local_momentum"], query["pdg"])[0]
+    had = base["donor"] >= 0
+    want = np.zeros(300, bool)
+    want[had] = np.abs(library["entry_energy"][base["donor"][had]] - energy_q[had]) > 0.05 * energy_q[had]
+    np.testing.assert_array_equal(host["energy_cut"], want)
+    np.testing.assert_array_equal(host["donor"], np.where(want, -1, base["donor"]))
+    assert want.any() and (had & ~want).any()
+    lib = ec.pack_entrants(library, placement="geometric", max_energy_deviation=0.05, **opts)
+    q, _ = _batch(query, 320)
+    donor, fallback, edge, *_ = _stages(lib, q, u)
+    np.testing.assert_array_equal(donor[:300], host["donor"])
+    assert edge[:300][host["energy_cut"]].all()
+    with pytest.raises(ValueError):
+        ec.pack_entrants(library, max_energy_deviation=-1.0)
