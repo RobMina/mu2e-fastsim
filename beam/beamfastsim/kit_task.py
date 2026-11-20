@@ -164,6 +164,57 @@ tail -c 300 "$M2FS_OUT/point.txt"
 '''
 
 
+# Task ptgt_point: one production-target design of the rod family (beamfastsim.ptgt_point): the device target + PS
+# chain from the Geant4 thin-target bank to the TS-entrance states (cached per design on the endpoint), then tsdevice
+# (the W1 TS + DS stage) to stops. Knobs Tlength, R_up, R_mid, R_dn (mm: the deck's polycone rod; R_up at the end the
+# protons leave); pot per point; platform cpu or gpu (JAX backend); dtype float64 or float32. Inputs: the public
+# Offline files and field maps (Mau13 for TS + DS, the G4beamline GA05 PSMap for the PS) staged from CVMFS, and three
+# public-derived files in the endpoint data directory FASTSIMKIT_PTGT_DATA, checked against PTGT_DATA_SHA256: the
+# thin-target bank (Geant4 11.3, QGSP_BERT_HP), the xs-only steel bank of the TS-window rings, the TS GDML (an export
+# of the Offline Run 1A geometry). Metrics: stops_per_pot (+ Poisson error), the TS-entrance yields, timings.
+PTGT_PARAMS = ("Tlength", "R_up", "R_mid", "R_dn", "pot", "seed", "dtype", "platform")
+PTGT_DEFAULTS = {"pot": 100_000, "seed": 1, "dtype": "float64", "platform": "cpu"}
+PTGT_METRICS = ("stops_per_pot", "stops_per_pot_err", "mu_minus_stops_per_pot", "stops", "pot", "ts_entrances",
+                "ts_mu_minus_pi_minus_per_pot", "ts_mu_minus_pi_minus_per_pot_err", "ts_mu_pi_per_pot", "cached",
+                "chain_s", "ts_s")
+PTGT_DATA_SHA256 = {
+    "bank.npz": "d44c7ca1a3357ed369b78202bd6eb8df3a567b9b18d8fb54810c2c30dfd53020",       # W thin-target bank v3
+    "slab_bank.npz": "8019e6b77b6c40a752dfaaa87a2041fe4004b9e4001f6244cf3a8fa4b127d57e",  # G4_STAINLESS-STEEL, xs only
+    "ts.gdml": "da1dbb04ad6973b633510241f6859af8ee06cfaa2312455b6aa151acddbe1fda",        # TS geometry, Run 1A
+}
+PTGT_MAPS = ("DSMap", "PSMap", "TSuMap_fix", "TSdMap", "PStoDumpAreaMap", "ProtonDumpAreaMap", "PSAreaMap", "WorldMap",
+             "GA05/PSMap")
+PTGT_FIELD_CONFIG = "Offline/Mu2eG4/geom/bfgeom_no_ds_v01.txt"
+PTGT_FIELD_FILES = (PTGT_FIELD_CONFIG, "Offline/Mu2eG4/geom/bfgeom_v01.txt")   # the config and its include
+PTGT_DS_GEOM = "Offline/Mu2eG4/geom/geom_run1_a.txt"
+# Request sizing. CPU (measured, UVA standard, 8 threads, nominal rod, 20k POT): chain 3.5 ms/POT (float64) and
+# 3.1 ms/POT (float32); tsdevice ~180 s fixed + ~0.02 s per TS entrant (~0.04 entrants/POT): 4.5 ms/POT with
+# margin; MaxRSS 7.4 GB. GPU (A100, 1M-POT runs): chain 16-24 us/POT, tsdevice 13 us/POT, compile ~1-2 min.
+# PTGT_FIXED_MINUTES covers staging, compile and the fixed tsdevice pass; the request is 1.5x the estimate.
+PTGT_CPU_CORES = 8
+PTGT_CPU_MEM_GB = 16
+PTGT_CPU_S_PER_POT = 4.5e-3
+PTGT_GPU_S_PER_POT = 1e-4
+PTGT_FIXED_MINUTES = 10
+PTGT_MAX_MINUTES = 24 * 60
+
+
+def ptgt_resources(params, resources_cls):
+    """The ptgt_point request for these params: 1.5x the estimated time, in 5-minute steps."""
+    pot = int(params.get("pot") or PTGT_DEFAULTS["pot"])
+    gpu = params.get("platform", PTGT_DEFAULTS["platform"]) == "gpu"
+    est = PTGT_FIXED_MINUTES + pot * (PTGT_GPU_S_PER_POT if gpu else PTGT_CPU_S_PER_POT) / 60
+    minutes = min(PTGT_MAX_MINUTES, 5 * math.ceil(1.5 * est / 5))
+    if gpu:
+        return resources_cls(cores=4, mem_gb=64, gpus=1, gpu_type="a100", minutes=minutes)
+    return resources_cls(cores=PTGT_CPU_CORES, mem_gb=PTGT_CPU_MEM_GB, gpus=0, gpu_type="", minutes=minutes)
+
+
+# ptgt_point needs the endpoint data directory and the staging of kit_uva (PtgtPointStream): it is delegate-only
+# (endpoints.kit.DELEGATED_ONLY refuses a plain render); this body is never rendered.
+PTGT_MOUNTED_BODY = 'echo "ptgt_point runs on the Slurm-over-SSH route (kit_uva.PtgtPointStream) only"; exit 3\n'
+
+
 # Optional field-map scales of the beam tasks (default 1 = unscaled). They scale the maps the job reads (DSMap and
 # DSExtension for ds_bscale, TSdMap for tsd_bscale), so they act only downstream of the task's start table: the
 # Coll5_Out table of beam_sob / beam_edep(_cpu) carries the nominal TS3-TS5 history, so tsd_bscale is only partly
@@ -197,6 +248,9 @@ def register(tasks, task_cls, resources_cls, fnal_tasks):
                                                               minutes=90),
                                       body=CENT_BODY, defaults={"dtype": "float64"})
     fnal_tasks.add("beam_centuple")
+    tasks["ptgt_point"] = task_cls(params=PTGT_PARAMS, metrics=PTGT_METRICS,
+                                   resources=ptgt_resources(PTGT_DEFAULTS, resources_cls), body=PTGT_MOUNTED_BODY,
+                                   defaults=dict(PTGT_DEFAULTS), sizer=lambda p: ptgt_resources(p, resources_cls))
 
 
 class _UVADelegate:
@@ -249,6 +303,15 @@ class _UVACentupleDelegate(_UVADelegate):
         return BeamCentupleStream(kit)
 
 
+class _UVAPtgtDelegate(_UVADelegate):
+    """ptgt_point on a Slurm-over-SSH endpoint: public inputs staged in the job, no stream (kit_uva.PtgtPointStream)."""
+
+    @staticmethod
+    def make(kit):
+        from .kit_uva import PtgtPointStream
+        return PtgtPointStream(kit)
+
+
 def register_delegate(delegates):
     """beam_point, beam_sob and beam_edep on endpoints without FNAL storage run through kit_uva (inputs streamed)."""
     delegates["beam_point"] = _UVADelegate
@@ -256,3 +319,4 @@ def register_delegate(delegates):
     delegates["beam_edep"] = _UVAEdepDelegate
     delegates["beam_edep_cpu"] = _UVAEdepCpuDelegate
     delegates["beam_centuple"] = _UVACentupleDelegate
+    delegates["ptgt_point"] = _UVAPtgtDelegate
