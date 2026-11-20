@@ -170,3 +170,219 @@ def test_path_stage_from_the_status_index():
     assert strawart.stage_passed(words, 2, n).tolist() == [True, False, True, True]
     assert strawart.stage_passed(words, 3, n).tolist() == [True, False, False, True]
     assert strawart.stage_passed(words, n, n).tolist() == [True, False, False, True]
+
+
+# --- CalHelixFinder + MergeHelices (trigger/device/calhelix.py) against the literal transcriptions ----------------
+
+CHF = {"Helicities": [-1, 1], "maxEDepAvg": 2.5e-3, "minNHitsTimeCluster": 10,
+       "HelixFinderAlg": {"BackgroundSelectionBits": ["Background", "Noisy", "Dead"], "HelixFitSelectionBits": [],
+                          "chi2hel3DMax": 9, "chi2xyMax": 5, "chi2zphiMax": 5, "dfdzErr": 1e-1, "distPatRec": 100,
+                          "filter": True, "hitChi2Max": 25, "initDfDz": 0, "maxAbsTanDip": 2, "maxDfDz": 2.5e-2,
+                          "maxElectronHitEnergy": 5e-3, "maxNHitsRatio": 1.5, "maxP": 150,
+                          "maxPanelToHelixDPhi": 1.309, "maxXDPhi": 5, "minAbsTanDip": 3e-1, "minArea": 5000,
+                          "minDfDz": 2e-3, "minNHit": 10, "minP": 50, "mindist": 500, "mostProbableDfDz": 4.75e-3,
+                          "procAllTCs": False, "sigmaPhi": 1.636e-1, "slopeRatioLimit": 8e-1, "targetconsistent": 0,
+                          "weight3D": 1.2e-1, "weightXY": 1.11, "weightZPhi": 7.5e-1}}
+MERGE = {"MinHitOverlapFraction": 5e-1, "MinNHitOverlap": 10, "deltanh": 5, "scaleXY": 1.1, "scaleZPhi": 7.5e-1}
+HELIX_FIELDS = ("rcent", "fcent", "radius", "lambda", "fz0", "chi2xy", "chi2zphi", "eDepAvg")
+
+
+def _chf_geometry():
+    """zFace from the nominal straws, a synthetic panel layout (three panels 120 degrees apart per face), the stock
+    calorimeter disks and offset; and the HelixTool face z."""
+    import cal_helix_reference as CH
+    from trigger.device import calhelix, calogeom, helix
+    g = helix.TRACKER_GEOM
+    mz = [[[helix.nominal_straw_z(g, p, q, s) for s in (0, 1)] for q in range(6)] for p in range(36)]
+    po, inv = [], {}
+    for p in range(36):
+        row = []
+        for q in range(6):
+            st, of, op = CH.order_id(p // 2, p % 2, q)
+            fid = of + st * 4
+            a = op * 2 * math.pi / 3 + 0.37 * fid
+            row.append((600 * math.cos(a), 600 * math.sin(a)))
+            inv[(fid, op)] = (p, q)
+        po.append(row)
+    zf, pp = CH.module_geometry(mz, po)
+    zf2, pp2 = calhelix.module_geometry(mz, po)
+    assert np.array_equal(np.asarray(zf, np.float32), zf2) and np.array_equal(np.asarray(pp, np.float32), pp2)
+    geo = calogeom.build()
+    cg = calogeom.CALO_GEOM
+    off = CH.calo_offset(cg["crystalZLength"] + cg["crystalCapZLength"], cg["BPPipeZOffset"], cg["BPHoleZLength"],
+                         cg["FEEZLength"], cg["FPCarbonZLength"], cg["FPFoamZLength"])
+    G = {"zFace": zf2, "phiPanel": pp2, "bz": 1.0, "fCaloOffset": np.float32(off),
+         "disk_origin": np.asarray(geo["origin"], np.float64), "tracker_center": np.array([-3904.0, 0.0, 10171.0])}
+    fz = np.array([[np.float32((helix.nominal_straw_z(g, p, f, 0) + helix.nominal_straw_z(g, p, f, 1)) / 2.)
+                    for f in (0, 1)] for p in range(36)]).ravel().astype(np.float64)
+    return G, inv, fz
+
+
+def _chf_hit(rng, G, inv, fid, x, y, flag=0):
+    a = math.atan2(y, x)
+    pp = G["phiPanel"][fid * 3:fid * 3 + 3].astype(float)
+    op = int(np.argmin([abs((a - p + math.pi) % (2 * math.pi) - math.pi) for p in pp]))
+    plane, panel = inv[(fid, op)]
+    w = pp[op]
+    ux, uy = -math.sin(w), math.cos(w)
+    along, across = rng.normal(0, 20), rng.normal(0, 2)
+    return {"x": np.float32(x + along * ux - across * uy), "y": np.float32(y + along * uy + across * ux),
+            "z": np.float32(G["zFace"][fid] + rng.uniform(-6, 6)), "time": np.float32(rng.uniform(500, 600)),
+            "edep": np.float32(rng.uniform(0.0008, 0.0024)), "uvar": np.float32(rng.uniform(400, 2500)),
+            "vvar": np.float32(rng.uniform(2, 8)), "udx": np.float32(ux), "udy": np.float32(uy),
+            "sid": (plane << 10) | (panel << 7) | int(rng.integers(0, 96)), "flag": flag,
+            "nsh": int(rng.integers(1, 3))}
+
+
+def _chf_track(rng, G, inv, Q, zc, hel, eff=0.92):
+    """A helix through the target axis and the calo point Q at z = zc: the circle of radius R through (0, 0) and Q
+    on the side that `hel` picks, dphi/dz of the helicity's sign."""
+    R = rng.uniform(260, 320)
+    q = np.asarray(Q, float)
+    d = np.linalg.norm(q)
+    mid, perp = q / 2, np.array([-q[1], q[0]]) / d
+    h = math.sqrt(max(R * R - d * d / 4, 1.0))
+    c = mid + (h if hel > 0 else -h) * perp
+    dfdz = hel / rng.uniform(170, 250)
+    phic = math.atan2(q[1] - c[1], q[0] - c[0])
+    hits = []
+    for fid in range(72):
+        z = float(G["zFace"][fid])
+        phi = phic + dfdz * (z - zc)
+        x, y = c[0] + R * math.cos(phi), c[1] + R * math.sin(phi)
+        if 390 < math.hypot(x, y) < 690 and rng.random() < eff:
+            hits.append(_chf_hit(rng, G, inv, fid, x, y))
+    return hits
+
+
+def _chf_events(rng, G, inv, n):
+    """Synthetic events of panel hits, calo clusters and time peaks (members): noise only, one track, two tracks of
+    opposite helicity on one cluster, the same track in two peaks (MergeHelices removes one), and noise peaks."""
+    evs = []
+    for i in range(n):
+        kind = i % 5
+        disk = int(rng.integers(0, 2))
+        zc = float(G["disk_origin"][disk][2] - G["tracker_center"][2] - float(G["fCaloOffset"]))
+        a = rng.uniform(-math.pi, math.pi)
+        Q = (rng.uniform(420, 600) * math.cos(a), rng.uniform(420, 600) * math.sin(a))
+        noise = [_chf_hit(rng, G, inv, int(rng.integers(0, 72)), *(r * np.array([math.cos(b), math.sin(b)])),
+                          flag=(1 << 24) if rng.random() < 0.1 else 0)
+                 for r, b in zip(rng.uniform(390, 690, 30), rng.uniform(-math.pi, math.pi, 30))]
+        if kind == 0:
+            hits, peaks = noise, [list(range(len(noise)))]
+        elif kind in (1, 4):
+            t = _chf_track(rng, G, inv, Q, zc, 1 if rng.random() < 0.5 else -1)
+            hits = t + noise[:int(rng.integers(0, 12))]
+            peaks = [list(range(len(hits)))]
+            if kind == 4:
+                peaks.append(list(range(len(t), len(hits))) + [0, 1])
+        elif kind == 2:
+            t1, t2 = _chf_track(rng, G, inv, Q, zc, 1), _chf_track(rng, G, inv, Q, zc, -1)
+            hits = t1 + t2 + noise[:4]
+            peaks = [list(range(len(hits)))]
+        else:
+            t = _chf_track(rng, G, inv, Q, zc, 1 if rng.random() < 0.5 else -1)
+            hits = t + noise[:6]
+            peaks = [list(range(len(hits))), list(range(len(t)))]
+        cls = [{"disk": disk, "time": np.float32(rng.uniform(560, 640)), "cog_x": Q[0] + rng.normal(0, 3) * k,
+                "cog_y": Q[1] + rng.normal(0, 3) * k} for k in range(len(peaks))]
+        evs.append((hits, peaks, cls))
+    return evs
+
+
+def _chf_reference(evs, G):
+    import cal_helix_reference as CH
+    import merge_helices_reference as MH
+    geom = {**G, "zFace": list(G["zFace"]), "phiPanel": list(G["phiPanel"])}
+    bad = 1 << CH.SHF_BITS["Outlier"]
+    out, per_peak, merged_away = [], [], 0
+    for hits, peaks, cls in evs:
+        seeds = []
+        for mem, c in zip(peaks, cls):
+            tc = {"hits": sorted(mem), "has_calo": True, **c}
+            s = CH.cal_helix_finder(hits, tc, CHF, geom)
+            per_peak.append(len(s))
+            seeds += [{**x, "hit_copies": x["hhits"], "has_calo": True} for x in s]
+        m = MH.merge_helices(seeds, hits, MERGE, bad)
+        merged_away += len(seeds) - len(m)
+        out.append(m)
+    return out, per_peak, merged_away
+
+
+def _chf_device(evs, G, fz, precision):
+    from trigger.device import calhelix
+    import jax
+    E, H, C = len(evs), max(len(h) for h, _, _ in evs), max(len(p) for _, p, _ in evs)
+    ph = {k: np.zeros((E, H), np.float32) for k in ("x", "y", "z", "time", "edep", "uvar", "vvar", "udx", "udy")}
+    ph.update(sid=np.zeros((E, H), np.int64), flag=np.zeros((E, H), np.uint32), ncombo=np.zeros((E, H), np.int64),
+              valid=np.zeros((E, H), bool))
+    tc = {"valid": np.zeros((E, C), bool), "members": np.zeros((E, C, H), bool)}
+    cl = {"disk": np.zeros((E, C), np.int32), "time": np.zeros((E, C), np.float32),
+          "cog_x": np.zeros((E, C), np.float64), "cog_y": np.zeros((E, C), np.float64)}
+    for e, (hits, peaks, cls) in enumerate(evs):
+        for i, h in enumerate(hits):
+            for k in ("x", "y", "z", "time", "edep", "uvar", "vvar", "udx", "udy", "sid", "flag"):
+                ph[k][e, i] = h[k]
+            ph["ncombo"][e, i], ph["valid"][e, i] = h["nsh"], True
+        for j, (mem, c) in enumerate(zip(peaks, cls)):
+            tc["valid"][e, j] = True
+            tc["members"][e, j, mem] = True
+            for k in cl:
+                cl[k][e, j] = c[k]
+    ft = np.float64 if precision == "float64" else np.float32
+    ph = {k: (v.astype(ft) if v.dtype == np.float32 else v) for k, v in ph.items()}
+    S = calhelix.settings(CHF, MERGE)
+    fn = jax.jit(lambda ph, tc, cl: calhelix.helices(ph, [tc], cl, S, G, fz, K=8, L=128)[0])
+    return jax.device_get(fn(ph, tc, cl))
+
+
+def _chf_compare(ref, dev, precision):
+    """Seed-by-seed bit equality of the merged seeds; returns (seeds compared, first mismatches)."""
+    bad, n = [], 0
+    f32 = lambda v: np.asarray(v, np.float32).view(np.uint32)
+    for e, m in enumerate(ref):
+        slots = np.flatnonzero(dev["ok"][e])
+        if len(slots) != len(m):
+            bad.append((e, "count", len(m), len(slots)))
+            continue
+        for s, j in zip(m, slots):
+            n += 1
+            hits = [int(i) for i in dev["hits"][e, j] if i >= 0]
+            if hits != [int(i) for i in s["hits"]]:
+                bad.append((e, "hits", s["hits"], hits))
+                continue
+            for k in HELIX_FIELDS:
+                dk = {"radius": "R", "eDepAvg": "edep"}.get(k, k)
+                if f32(dev[dk][e, j]) != f32(s[k]):
+                    bad.append((e, k, float(s[k]), float(dev[dk][e, j])))
+            if int(dev["helicity"][e, j]) != s["helicity"]:
+                bad.append((e, "helicity"))
+            if precision == "float64" and np.float64(dev["t0"][e, j]) != np.float64(s["t0"]):
+                bad.append((e, "t0", float(s["t0"]), float(dev["t0"][e, j])))
+            k = len(hits)
+            for name, dname in (("hphi", "hphi"), ("xyWeight", "xyw"), ("zphiWeight", "zw")):
+                r_ = np.array([hh[name] for hh in s["hhits"]], np.float32)
+                d_ = np.asarray(dev[dname][e, j][dev["hits"][e, j] >= 0][:k], np.float32)
+                if not np.array_equal(r_.view(np.uint32), d_.view(np.uint32)):
+                    bad.append((e, name, r_.tolist()[:6], d_.tolist()[:6]))
+            fl = [int(hh["flag"]) for hh in s["hhits"]]
+            if fl != [int(v) & 0xFFFFFFFF for v in dev["flag"][e, j][dev["hits"][e, j] >= 0][:k]]:
+                bad.append((e, "flag"))
+    return n, bad
+
+
+@pytest.mark.parametrize("precision", ["float64", "float32"])
+def test_cal_helix_finder_matches_the_transcriptions(precision):
+    """CalHelixFinder + MergeHelices on synthetic events (no seed, one, two per peak, and duplicate peaks that
+    MergeHelices reduces): the device seeds equal the literal transcriptions' bit for bit."""
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", precision == "float64")
+    sys.path.insert(0, str(ROOT / "tests"))
+    G, inv, fz = _chf_geometry()
+    evs = _chf_events(np.random.default_rng(11), G, inv, 30)
+    ref, per_peak, merged_away = _chf_reference(evs, G)
+    assert {0, 1, 2} <= set(per_peak) and merged_away > 0, (per_peak, merged_away)
+    dev = _chf_device(evs, G, fz, precision)
+    n, bad = _chf_compare(ref, dev, precision)
+    assert n > 10 and not bad, (n, bad[:10])
+    assert not np.any(dev["err"]) and not np.any(dev["overflow"])

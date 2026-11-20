@@ -18,10 +18,11 @@ and lumi-stream paths) of the production menu, from StrawDigis to per-path decis
 | lumi stream | `LumiStreamFilter` | event counter per subrun on the host, in event order | exact |
 | off-spill hits, time clusters (`cst_TimeCluster`) | off-spill `StrawHitReco` / `CombineStrawHits`, `SimpleTimeCluster` | the hit ports with the off-spill settings, `simpletc.py` | exact on the held-out shards |
 | multi-helix finder (`mpr_*`) | `RobustMultiHelixFinder` + `MergeHelices` | port with the stock arithmetic (`mpr.py`); opt-in | see [Multi-helix paths](#multi-helix-paths-mpr) |
+| cpr helices | `CalHelixFinder` + `MergeHelices` (on the `CalTimePeakFinder` peaks) | port with the stock arithmetic (`calhelix.py`); with the cpr paths (opt-in) | see [Calorimeter-seeded helices](#calorimeter-seeded-helices-cpr) |
 | calo hits, clusters | `CaloHitMakerFast`, `CaloClusterFast` | port with the stock arithmetic and orders (`calo.py`), from CaloDigis | bit for bit; see [Calorimeter paths](#calorimeter-paths) |
 | calo filters | `CaloClusterCounterFilter`, `CaloLikelihood`, `CaloNNEval` + `FilterEcalNNTrigger`, `CaloCosmicCalib`, `DigiFilter` (calo digis) | ports (`calo.py`, `calopaths.py`) | exact on the development and held-out files |
 
-Not evaluated on the device: the calorimeter-seeded tracker paths (`cpr_*`), `apr_TC_calo` (its `TZClusterFinder`
+Not evaluated on the device: `apr_TC_calo` (its `TZClusterFinder`
 attaches and recovers calo clusters; always false on the device), `cst_CosmicTrackSeed` (`LineFinder` +
 `CosmicSeedFilter`), paths with `MultiHelixFilter` or `minNHelices > 1`.
 
@@ -67,6 +68,22 @@ than 64 hits (28 development and 19 held-out events) and 2 development events wi
 of the rest. Adding the mpr paths changes no decision of the other paths. The port is not tuned for speed: a decide
 job with the mpr paths on takes 0.6-1.5 s per event on four CPU cores (the other paths together take about 3 ms), and
 its GPU rate is not measured.
+
+### Calorimeter-seeded helices (cpr)
+
+With `Chain(cpr=True)` the cpr paths run the calo stage, `CalTimePeakFinder` (`cpr.py`) and then `calhelix.py`: the
+port of `CalHelixFinder` (with `CalHelixFinderAlg`) per (event, time peak), both helicities, and `MergeHelices` per
+event over the finder's seeds in time-peak order. `HelixFilter` reads the merged seeds through `HelixTool` (non-outlier
+hits, the nominal face z), with MergeHelices' recomputed chi2dXY / chi2dZPhi. The port equals the literal
+transcriptions `tests/cal_helix_reference.py` and `tests/merge_helices_reference.py` bit for bit, as the mpr port does
+(float32 values, the double steps in float64, no fused multiply-add, chained divisions kept as written, libstdc++
+`std::sort` for the face-ordered hits, the walk order of every face/panel/hit loop for the sums), including the stock
+state that crosses calls (the triplet search's shared slope, the rescue trials' add/remove rounding and counters).
+
+Geometry inputs (`calhelix.geometry`): face z from the nominal straws, panel azimuths from the aligned straw-0
+midpoints and the field at the tracker origin (1 T) are provisional; the calorimeter offset, disk origins and tracker
+centre follow Offline. A peak keeps at most `CHF_HITS` selected hits (more: `:hxoverflow`); stock behaviour the port
+flags instead of reproducing (a findDfDz throw, a non-terminating phi-z cleanup) is in `:hxerr`.
 
 ### Calorimeter paths
 

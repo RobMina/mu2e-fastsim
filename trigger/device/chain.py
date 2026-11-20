@@ -12,7 +12,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from . import calo, calogeom, cpr as cprmod, helix, hits, menu, mpr, mva, paths, simpletc, timecluster
+from . import calhelix, calo, calogeom, cpr as cprmod, helix, hits, menu, mpr, mva, paths, simpletc, timecluster
 
 HELIX_TYPES = ("RobustHelixFinder", "AgnosticHelixFinder", "CalHelixFinder")
 KSF_TYPES = ("LoopHelixFit", "KinKalSeedFit", "LoopHelixDeFit")
@@ -93,6 +93,8 @@ class Chain:
         self.mprs = {}                           # RobustMultiHelixFinder label -> (finder, merge) settings (mpr paths)
         self.mpr = mpr                           # mpr paths are opt-in: the finder costs ~0.5 s per event on a CPU
         self.cpr = cpr                           # cpr paths are opt-in: they need the event's CaloDigis in the batch
+        self.chfs = {}                           # MergeHelices label -> (CalHelixFinder label, settings) (cpr paths)
+        self.chf_geom = None                     # CalHelixFinder geometry inputs (calhelix.geometry)
         for entry in phys["trigger_paths"]:
             name = entry.split(":", 1)[-1]
             if path_names and name not in path_names:
@@ -125,6 +127,7 @@ class Chain:
             geo = calogeom.build()
             self.calo_s = calo.settings(self.mods["CaloHitMakerFast"], self.mods["CaloClusterFast"], calib, geo)
             self.cpr_tp = {lbl: cprmod.settings(self.mods[lbl], geo) for lbl in cpr_tc}
+            self.chf_geom = calhelix.geometry(cond)
             if compact:
                 raise ValueError("cpr paths run on the one-call path only (compact=False)")
         # off-spill hit reconstruction (cst paths): the TrigOffSpMakeSH/PH settings on the same digis
@@ -210,12 +213,25 @@ class Chain:
         if (has_hs and hel is None) or "proton" in name or p["unsupported"] or p["min_helices"] > 1:
             self.skipped[name] = p["unsupported"] or ["proton, multi-helix finder or minNHelices > 1"]
             return                               # e.g. MultiHelixFilter (several helices per cluster): not on the device
-        hcfg_label = self._helix_label(hel) if hel else None
+        chf = None
+        if p["family"] == "cpr":                 # CalHelixFinder + MergeHelices (calhelix.py)
+            chf = next((lbl for lbl in labels if self.mods.get(lbl, {}).get("module_type") == "MergeHelices"), None)
+            fins = [f.split(":")[0] for f in self.mods[chf]["HelixFinders"]] if chf else []
+            if hel is None or fins != [hel] or self.mods[hel].get("module_type") != "CalHelixFinder" or \
+                    self.mods[hel]["TimeClusterCollectionLabel"] != tcl:
+                self.skipped[name] = [f"cpr layout not supported: {hel} {chf} {fins}"]
+                return
+            try:
+                self.chfs[chf] = (hel, calhelix.settings(self.mods[hel], self.mods[chf]))
+            except ValueError as e:
+                self.skipped[name] = [str(e)]
+                return
+        hcfg_label = self._helix_label(hel) if hel and chf is None else None
         if p["family"] == "cpr":                 # CalSeedFit (TrigCalSeedFitDe): found by its type
             ksf = next((lbl for lbl in labels if self.mods.get(lbl, {}).get("module_type") in KSF_TYPES), None)
         else:
             ksf = next((lbl for lbl in labels if lbl.startswith("Trig") and "KSF" in lbl and "MC" not in lbl), None)
-        self.plan[name] = {"tc": tcl, "helix": hcfg_label, "ksf": ksf, "filters": p["filters"],
+        self.plan[name] = {"tc": tcl, "helix": hcfg_label, "chf": chf, "ksf": ksf, "filters": p["filters"],
                            "family": p["family"], "min_helices": p["min_helices"], "ps": ps}
 
     def _tc_label(self, p):
@@ -229,14 +245,6 @@ class Chain:
         m = self.mods[hel]
         if m["module_type"] == "RobustHelixFinder":
             return hel
-        if m["module_type"] == "CalHelixFinder":
-            # not ported: the compact fit with the RobustHelixFinder settings of the same direction (as apr's
-            # AgnosticHelixFinder); the direction from the time-peak finder's pitch
-            pitch = float(self.mods[m["TimeClusterCollectionLabel"]]["PitchAngle"])
-            lbl = "TrigHelixFinderUe" if pitch < 0 else "TrigHelixFinder"
-            if self.mods.get(lbl, {}).get("module_type") != "RobustHelixFinder":
-                raise ValueError(f"cpr helix stage: no RobustHelixFinder {lbl} in the menu")
-            return lbl
         return "TrigHelixFinder"
 
     def _tc_settings(self, lbl):
@@ -254,7 +262,7 @@ class Chain:
         sh = hits.straw_hits(batch, self.cond_dev, self.sh, self.tot_bins)
         ph = hits.panel_hits(sh, self.ph)
         E = batch["valid"].shape[0]
-        tcs = {}
+        tcs, hxs = {}, {}
         for group in self._tc_groups():              # producers that differ only in pitch share one batched call
             ss = [self._tc_settings(lbl) for lbl in group]
             res = (timecluster.time_clusters_multi_pairs(ph, ss, self.net, K=E * len(group)) if self.pairs else
@@ -267,8 +275,18 @@ class Chain:
                 pk = cprmod.time_peaks(ph, cl, s)
                 # overflow: more clusters than CPR_CLUSTERS (the later ones are not seen), reported per path
                 tcs[lbl] = {"valid": pk["tc"], "nsh": pk["nsh"], "t0": pk["t0"], "members": pk["hits"],
-                            "overflow": cl["overflow"]}
-        hxs = {}
+                            "overflow": cl["overflow"],
+                            "cl": {k: cl[k] for k in ("disk", "time", "cog_x", "cog_y")}}
+            # CalHelixFinder per (event, time peak), then MergeHelices per event over its seeds in peak order;
+            # mergers whose settings agree share one batched call
+            groups = {}
+            for mlbl, (hlbl, s) in sorted(self.chfs.items()):
+                groups.setdefault(tuple(sorted(s.items())), []).append(mlbl)
+            for group in groups.values():
+                s = self.chfs[group[0]][1]
+                sets = [tcs[self.mods[self.chfs[m][0]]["TimeClusterCollectionLabel"]] for m in group]
+                res = calhelix.helices(ph, sets, cl, s, self.chf_geom, self.fz)
+                hxs.update({("cpr", m): r for m, r in zip(group, res)})
         for group in self._helix_groups():           # helix finders with the same settings share one batched call
             s = helix.settings(self.mods[group[0][1]])
             sets = [tcs[key[0]] for key in group]
@@ -384,11 +402,14 @@ class Chain:
                 out[name] = ok if p["family"] != "disabled" else jnp.zeros_like(ok)
                 continue
             tc = tcs[p["tc"]]
-            hx = hxs.get(("mpr", p["mpr"]) if p["family"] == "mpr" else (p["tc"], p["helix"]))
+            hx = hxs.get(("mpr", p["mpr"]) if p["family"] == "mpr" else
+                         ("cpr", p["chf"]) if p.get("chf") else (p["tc"], p["helix"]))
             if p["family"] == "mpr":
                 aux[name + ":overflow"] = hx["overflow"]           # time clusters with more hits than the finder's slots
             if p["family"] == "cpr":
                 aux[name + ":overflow"] = tc["overflow"]           # events with more calo clusters than CPR_CLUSTERS
+                aux[name + ":hxoverflow"] = hx["overflow"]        # time peaks with more hits than the finder's slots
+                aux[name + ":hxerr"] = hx["err"]                 # stock behaviour the finder flags (calhelix.py)
             hs_mask = None
             binned = self.response.get(name, {}).get("final")
             for role, lbl, fc in p["filters"]:
