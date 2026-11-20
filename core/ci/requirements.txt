@@ -14,4 +14,4 @@ hep-endpoints @ git+https://github.com/RobMina/hep-endpoints.git@56309634ecba320
 # cryjax: the experiment-neutral CRY 1.7 tables, device sampler and shim binding (mu2efastsim.cry_* import it)
 cryjax @ git+https://github.com/RobMina/cryjax.git@8ca6f546c817cf311fd4a4c15fa31288fba31fb6
 # hep-simlib: the library core and component banks (mu2efastsim.library, component_response); same pin as pyproject.toml
-hep-simlib @ git+https://github.com/RobMina/hep-simlib.git@c451ee6d144515bb700078441688cdda4fe9563a
+hep-simlib @ git+https://github.com/RobMina/hep-simlib.git@670478ff759b090245088a1375b348fb717ae5ac

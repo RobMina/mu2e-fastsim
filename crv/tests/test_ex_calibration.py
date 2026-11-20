@@ -195,11 +195,14 @@ def test_marked_likelihood_matches_closed_form_without_walk(crossings):
 
 
 def test_miss_probability_with_walk_matches_numerical_integral():
+    # Strong walk (|corr| up to 0.45) and both signs, against direct integration over the log PE.
     a = np.array([-2.0, 0.3, 1.5, 4.0])
     c = np.array([1.0, -0.5, 2.5, 0.2])
     lo, hi = np.full(4, -4.), np.full(4, 4.)
     lsq, lst, walk = np.full(4, np.log(0.4)), np.full(4, np.log(2.0)), np.array([1.5, -1.5, 2.0, -2.5])
-    log_miss = response._miss_logp(a, c, lsq, lst, walk, lo, hi)
+    # Standardized threshold a and time mean c at the mean log PE, with mu_q = 0 and log_pe_ref = 0.
+    pred = response._prediction(np.zeros(4), c, lsq, lst, walk, 0.)
+    log_miss = np.log1p(-response.p_selected(pred, response.Selection(0.4 * a, lo, hi)))
     for i in range(4):
         def passes(z):
             m = c[i] - walk[i] * 0.4 * z

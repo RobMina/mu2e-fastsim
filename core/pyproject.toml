@@ -12,11 +12,11 @@ requires-python = ">=3.10"
 # (jobs do not import it); pinned to a commit of RobMina/hep-endpoints (not on PyPI), the same pin as
 # ci/requirements.txt. For development install a local checkout with pip install -e first.
 # hep-simlib (import name hepsimlib): the experiment-neutral library core and component banks that
-# mu2efastsim.library and mu2efastsim.component_response re-export with the Mu2e profile; same pin as
-# ci/requirements.txt.
+# mu2efastsim.library and mu2efastsim.component_response re-export with the Mu2e profile, and the censored crossing
+# likelihood of the CRV EX calibration (crvfastsim.objective.ex_response); same pin as ci/requirements.txt.
 dependencies = ["numpy", "pandas", "uproot", "matplotlib", "scipy", "hep-endpoints @ git+https://github.com/RobMina/hep-endpoints.git@56309634ecba3208846c515da5b5f04c7a3a4808",
                 "cryjax @ git+https://github.com/RobMina/cryjax.git@8ca6f546c817cf311fd4a4c15fa31288fba31fb6",
-                "hep-simlib @ git+https://github.com/RobMina/hep-simlib.git@c451ee6d144515bb700078441688cdda4fe9563a"]
+                "hep-simlib @ git+https://github.com/RobMina/hep-simlib.git@670478ff759b090245088a1375b348fb717ae5ac"]
 
 [project.optional-dependencies]
 jax = ["jax"]

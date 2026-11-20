@@ -20,7 +20,8 @@ A pulse is selected when PE >= threshold and |time - t0| <= half window. ``alpha
 ``beta`` (inverse signal speed) are shared corrections; ``g`` and ``o`` are per-channel absolute log gains and time
 offsets, reported as a mean (``log_scale``, ``time_zero_ns``) plus zero-mean channel terms. ``sigma_0``
 (``sigma_log_pe``), ``excess_noise``, ``sigma_t`` and ``walk`` (time walk, ns per unit log PE) are fitted unless
-fixed. With walk the miss probability is a bivariate normal orthant sum, evaluated exactly (Genz/Plackett rule).
+fixed. The seen/silent terms are hepsimlib's censored crossing likelihood (``hepsimlib.likelihood.censored``): with walk
+the miss probability is a bivariate normal orthant sum, evaluated exactly (Genz), with an analytic gradient.
 The expected ``q0``/``t0`` columns can come from any forward model (the analytic nominal of ``ex_observations``
 today, an expected-mode fastsim response later).
 
@@ -34,16 +35,13 @@ import hashlib
 import json
 
 import numpy as np
+from hepsimlib.likelihood.censored import CrossingPrediction, Selection, censored_nll, p_selected
 from scipy.optimize import minimize
-from scipy.special import log_ndtr, logsumexp
 
-LOG_SQRT_2PI = 0.5 * np.log(2 * np.pi)
 SCHEMA = "mu2e-crv-ex-response-v2"
 GLOBAL = ("inv_attenuation_per_m", "slowness_ns_per_m", "log_sigma_log_pe", "log_sigma_time_ns",
           "walk_ns_per_log_pe", "excess_noise")
-_GL = np.polynomial.legendre.leggauss(20)   # bivariate normal: Gauss-Legendre in the correlation angle (Genz)
-_GL_T, _GL_LOGW = (_GL[0] + 1) / 2, np.log(_GL[1] / 2)
-MAX_CORRELATION = 0.95                        # |corr(log PE, time)| supported by the bivariate normal rule
+MAX_CORRELATION = 0.99                        # walk box: |corr(log PE, time)| at the start widths stays below this
 # Row-level predictors (same order as the globals): mu_q, mu_t, log sigma_0, log sigma_t, walk, excess noise.
 NG = 6
 
@@ -167,98 +165,15 @@ def _charge_width(mu_q, ls0, excess):
     return 0.5 * np.log(v), v
 
 
-class CorrelationRangeError(ValueError):
-    """The log PE - time correlation implied by the walk is beyond the bivariate normal rule's range."""
-
-
-def _log_bvn(h, k, rho):
-    """log P(X <= h, Y <= k) for a standard bivariate normal of correlation rho (|rho| <= MAX_CORRELATION).
-
-    Plackett's identity in the angle, P = Phi(h) Phi(k) + 1/(2 pi) int_0^asin(rho) exp(-(h^2 + k^2 - 2 h k sin t) /
-    (2 cos^2 t)) dt, by 20-point Gauss-Legendre (Genz's rule for |rho| < 0.925), summed in log space.
-    """
-    lp = log_ndtr(h) + log_ndtr(k)
-    angle = np.arcsin(rho)
-    t = angle[:, None] * _GL_T[None, :]
-    st, ct2 = np.sin(t), np.cos(t) ** 2
-    e = -(h[:, None] ** 2 + k[:, None] ** 2 - 2 * (h * k)[:, None] * st) / (2 * ct2)
-    with np.errstate(divide="ignore"):
-        log_j = logsumexp(_GL_LOGW[None, :] + e, axis=1) + np.log(np.abs(angle)) - np.log(2 * np.pi)
-        neg = np.log1p(-np.minimum(np.exp(log_j - lp), 1.))
-    return np.where(rho > 0, np.logaddexp(lp, log_j), np.where(rho < 0, lp + neg, lp))
-
-
-def _log_phi2(h, k, rho):
-    one = 1 - rho * rho
-    return -(h * h - 2 * rho * h * k + k * k) / (2 * one) - np.log(2 * np.pi) - 0.5 * np.log(one)
-
-
-def _miss_terms(mu_q, mu_t, lsq, lst, walk, lthr, lo, hi, ref):
-    """log P(miss) and the pieces of its gradient.
-
-    With Z the standardized log PE and T = c - walk * sigma_q * Z + sigma_t * E the time, a miss is
-    Z < a, or Z >= a and T outside [lo, hi]: P = Phi(a) + Phi2(-a, kL; r) + Phi2(-a, -kU; -r), with
-    r = corr(-Z, T) = walk sigma_q / sigma_T and k = (edge - c) / sigma_T. Without walk Phi2 factorizes (exact).
-    """
-    sq, st = np.exp(lsq), np.exp(lst)
-    a = (lthr - mu_q) / sq
-    c = mu_t - walk * (mu_q - ref)
-    sT = np.sqrt((walk * sq) ** 2 + st * st)
-    r = walk * sq / sT
-    if np.any(np.abs(r) > MAX_CORRELATION):
-        raise CorrelationRangeError(f"time-walk correlation |r| > {MAX_CORRELATION}: outside the supported range")
-    h, kL, kU = -a, (lo - c) / sT, (hi - c) / sT
-    terms = np.stack([log_ndtr(a), _log_bvn(h, kL, r), _log_bvn(h, -kU, -r)])
-    log_miss = logsumexp(terms, axis=0)
-    return log_miss, dict(a=a, c=c, sT=sT, r=r, h=h, kL=kL, kU=kU, sq=sq, st=st)
-
-
-def _miss_logp(a, c, lsq, lst, walk, lo, hi):
-    """log P(miss) from the standardized threshold a and the time mean c at the mean log PE (for predict)."""
-    sq, st = np.exp(lsq), np.exp(lst)
-    sT = np.sqrt((walk * sq) ** 2 + st * st)
-    r = walk * sq / sT
-    h, kL, kU = -a, (lo - c) / sT, (hi - c) / sT
-    return logsumexp(np.stack([log_ndtr(a), _log_bvn(h, kL, r), _log_bvn(h, -kU, -r)]), axis=0)
+def _prediction(mu_q, mu_t, lsq, lst, walk, ref):
+    return CrossingPrediction(mu_logq=mu_q, mu_t=mu_t, log_sigma_q=lsq, log_sigma_t=lst, walk=walk, logq_ref=ref)
 
 
 def _core(mu_q, mu_t, lsq, lst, walk, d, ref):
-    """Per-crossing NLL and its gradient in (mu_q, mu_t, log sigma_q, log sigma_t, walk) at fixed sigma_q."""
-    sq, st = np.exp(lsq), np.exp(lst)
-    seen = d["seen"]
-    terms = np.empty(len(mu_q))
-    grad = np.zeros((len(mu_q), 5))
-
-    s = seen
-    z = (d["lpe"][s] - mu_q[s]) / sq[s]
-    r = (d["tm"][s] - mu_t[s] + walk[s] * (d["lpe"][s] - ref)) / st[s]
-    terms[s] = 0.5 * (z * z + r * r) + lsq[s] + lst[s] + 2 * LOG_SQRT_2PI
-    grad[s] = np.column_stack([-z / sq[s], -r / st[s], 1 - z * z, 1 - r * r, r * (d["lpe"][s] - ref) / st[s]])
-
-    u = ~seen
-    if u.any():
-        mq, w = mu_q[u], walk[u]
-        log_miss, p = _miss_terms(mq, mu_t[u], lsq[u], lst[u], w, d["lthr"][u], d["lo"][u], d["hi"][u], ref)
-        terms[u] = -log_miss
-        a, sT, rr, h = p["a"], p["sT"], p["r"], p["h"]
-        sq_u, st_u = p["sq"], p["st"]
-        one = np.sqrt(1 - rr * rr)
-        zero = np.zeros_like(a)
-        # Derivatives of the intermediates in the order mu_q, mu_t, log sigma_q, log sigma_t, walk.
-        da = np.stack([-1 / sq_u, zero, -a, zero, zero])
-        dc = np.stack([-w, zero + 1, zero, zero, -(mq - ref)])
-        dsT = np.stack([zero, zero, (w * sq_u) ** 2 / sT, st_u ** 2 / sT, w * sq_u ** 2 / sT])
-        dr = np.stack([zero, zero, rr * (1 - rr ** 2), -rr * (1 - rr ** 2), sq_u / sT * (1 - rr ** 2)])
-        total = np.exp(-0.5 * a * a - LOG_SQRT_2PI - log_miss) * da          # d Phi(a)
-        for k, sign in ((p["kL"], 1.), (-p["kU"], -1.)):
-            rho = sign * rr
-            dk = sign * (-dc / sT - (sign * k) * dsT / sT)
-            fh = np.exp(-0.5 * h * h - LOG_SQRT_2PI + log_ndtr((k - rho * h) / one) - log_miss)
-            fk = np.exp(-0.5 * k * k - LOG_SQRT_2PI + log_ndtr((h - rho * k) / one) - log_miss)
-            fr = np.exp(_log_phi2(h, k, rho) - log_miss)
-            total = total + fh * (-da) + fk * dk + fr * (sign * dr)
-        grad[u] = -total.T
-    return terms, grad
+    """Per-crossing NLL and its gradient in (mu_q, mu_t, log sigma_q, log sigma_t, walk): hepsimlib's censored
+    crossing likelihood (exact bivariate-normal miss probability, analytic gradient)."""
+    return censored_nll(_prediction(mu_q, mu_t, lsq, lst, walk, ref), Selection(d["lthr"], d["lo"], d["hi"]),
+                        d["seen"], d["lpe"], d["tm"], grad=True)
 
 
 def _rows(eta, d, ref):
@@ -419,21 +334,14 @@ def _optimize(theta, free, d, nchan, ref):
     diag = np.diag(H0)[free]
     scale = 1 / np.sqrt(np.where(np.isfinite(diag) & (diag > 0), diag, 1.))
     base = theta.copy()
-    last = {}
-
     def full(u):
         t = base.copy()
         t[free] = base[free] + scale * u
         return t
 
     def loss(u):
-        try:
-            terms, grad = _nll(full(u), d, nchan, ref)
-        except CorrelationRangeError:
-            # A probe beyond the supported correlation (widths moved with the walk): reject the step.
-            return 1e20, last.get("grad", np.zeros(free.sum()))
-        last["grad"] = grad[free] * scale
-        return terms.sum(), last["grad"]
+        terms, grad = _nll(full(u), d, nchan, ref)
+        return terms.sum(), grad[free] * scale
 
     sq_max = float(np.exp(_charge_width(_eta(theta, d, nchan)[:, 0], theta[2], theta[5])[0]).max())
     walk_max = 0.9 * MAX_CORRELATION / np.sqrt(1 - MAX_CORRELATION ** 2) * np.exp(theta[3]) / sq_max
@@ -494,6 +402,7 @@ def fit(rows, *, sigma_log_pe=None, sigma_time_ns=None, excess_noise="fit", fit_
             theta[k] = np.log(v)
     free = np.ones(len(theta), bool)
     free[2:4] = fit_widths
+    free[4] = False
     free[5] = fit_excess
     if walk:
         # Two stages: without walk first (the start is far from the censored optimum), then with it.
@@ -536,10 +445,8 @@ def predict(cal, rows, dtype=np.float64):
     mu_q, mu_t, ls0, lst, walk, excess = eta.T
     lsq, _ = _charge_width(mu_q, ls0, excess)
     ref = dtype(cal.get("log_pe_ref", 0.))
-    lthr, lo, hi = (d[k].astype(dtype) for k in ("lthr", "lo", "hi"))
-    a = (lthr - mu_q) / np.exp(lsq)
     c = mu_t - walk * (mu_q - ref)
-    prob = -np.expm1(_miss_logp(a, c, lsq, lst, walk, lo, hi))
+    prob = p_selected(_prediction(mu_q, mu_t, lsq, lst, walk, ref), Selection(d["lthr"], d["lo"], d["hi"]))
     return dict(probability=prob.astype(dtype), log_pe=mu_q.astype(dtype), sigma_log_pe=np.exp(lsq).astype(dtype),
                 time_ns=c.astype(dtype), walk_ns_per_log_pe=dtype(cal.get("walk_ns_per_log_pe", 0.)))
 
