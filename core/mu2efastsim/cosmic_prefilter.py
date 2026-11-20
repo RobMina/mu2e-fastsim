@@ -34,6 +34,7 @@ range table itself is built in float64 and read with linear interpolation). Inpu
 """
 from dataclasses import asdict, dataclass, field
 import re
+import warnings
 import xml.etree.ElementTree as ET
 
 import numpy as np
@@ -128,6 +129,7 @@ def _corners(solid, solids, R, t):
         _mm(solid)
     pieces = world_mod._pieces_of(solid, solids, R, t, "")
     if not pieces:
+        warnings.warn(f"solid {solid.get('name')} ({solid.tag}) unsupported; left out of the envelope bounding box")
         return np.empty((0, 3))
     return np.vstack([np.vstack([q[2], q[3]]) for q in pieces])
 

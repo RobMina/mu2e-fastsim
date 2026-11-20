@@ -37,10 +37,21 @@ DEFAULT_MARGINS = (0.0, 100.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0)
 TRK = dict(min_edep=1e-6, min_p=50.0, max_p=1e6, min_steps=12)
 CRV = dict(min_edep=0.1, min_p=50.0, max_p=1e6, min_steps=1)
 MAX_PRIMARIES = 63                 # primaries per event representable in the accepting-primary bit masks
+KEY_STRIDE = 1_000_000             # particle id = event key * KEY_STRIDE + SimParticle key
 
 
 def event_key(subrun, event):
     return np.asarray(subrun, np.int64) * EVENT_STRIDE + np.asarray(event, np.int64)
+
+
+def particle_id(ev, key):
+    """ev * KEY_STRIDE + key as int64; raises if a key is >= KEY_STRIDE or the packed id would overflow int64."""
+    ev, key = np.asarray(ev, np.int64), np.asarray(key, np.int64)
+    if key.size and key.max() >= KEY_STRIDE:
+        raise ValueError(f"SimParticle key {int(key.max())} >= {KEY_STRIDE}: particle ids would collide")
+    if ev.size and np.abs(ev).max() > (np.iinfo(np.int64).max - KEY_STRIDE) // KEY_STRIDE:
+        raise ValueError(f"event key {int(np.abs(ev).max())} too large: particle ids would overflow int64")
+    return ev * KEY_STRIDE + key
 
 
 # ----------------------------------------------------------------------------------------------- readers
@@ -91,14 +102,14 @@ def read_printgen(path):
 # ----------------------------------------------------------------------------------------------- census
 def _primary_of(ev, key, parent, genidx):
     """Gen index of the primary ancestor of every (event, key) particle (-1 when the chain breaks)."""
-    gid = ev * 1_000_000 + key
+    gid = particle_id(ev, key)
     order = np.argsort(gid)
     gs = gid[order]
     n = len(gid)
     pidx = np.full(n, -1, np.int64)
     has = parent >= 0
     if n and has.any():
-        pg = ev[has] * 1_000_000 + parent[has]
+        pg = particle_id(ev[has], parent[has])
         pos = np.minimum(np.searchsorted(gs, pg), n - 1)
         pidx[has] = np.where(gs[pos] == pg, order[pos], -1)
     cur = np.arange(n)
@@ -113,10 +124,10 @@ def _primary_of(ev, key, parent, genidx):
 
 def _accepting(ev, sp, n_ok, min_steps):
     """(event, sp) pairs with at least min_steps good steps."""
-    key = ev[n_ok] * 1_000_000 + sp[n_ok]
+    key = particle_id(ev[n_ok], sp[n_ok])
     u, c = np.unique(key, return_counts=True)
     u = u[c >= min_steps]
-    return u // 1_000_000, u % 1_000_000
+    return u // KEY_STRIDE, u % KEY_STRIDE
 
 
 def census(crv_path, trk_path):
@@ -144,9 +155,9 @@ def census(crv_path, trk_path):
         pk = event_key(parts["subrun"], parts["event"])
         prim = _primary_of(pk, parts["key"].astype(np.int64), parts["parent"].astype(np.int64),
                            parts["genidx"].astype(np.int64))
-        pid = pk * 1_000_000 + parts["key"].astype(np.int64)
+        pid = particle_id(pk, parts["key"])
         o = np.argsort(pid)
-        want = e_acc * 1_000_000 + sp_acc
+        want = particle_id(e_acc, sp_acc)
         pos = np.searchsorted(pid[o], want)
         hit = (pos < len(pid)) & (pid[o][np.minimum(pos, len(pid) - 1)] == want)
         g = np.where(hit, prim[o][np.minimum(pos, len(pid) - 1)], -1)
