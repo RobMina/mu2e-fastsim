@@ -1,8 +1,32 @@
-"""Fit an opt-in EX response surrogate on fixed track/channel crossings.
+"""Censored per-crossing EX response calibration: one estimator family.
 
-Preselection log PE and time residual are independent Gaussians conditional on
-the crossing. A pulse is seen only when it passes both the PE and time cuts.
-The model has exact CPU gradients, including the probability of missing a pulse.
+Two estimators share the parameters and the output format:
+
+- ``profile_fit`` / ``fit(..., include_missing=False)``: the closed-form positive-only estimator (weighted least
+  squares with the per-channel intercepts profiled out). It uses recorded pulses only, ignores the selection, and is
+  the start point of the censored fit.
+- ``fit(...)``: the censored marked likelihood. Each eligible track/channel crossing contributes either the joint
+  density of the selected pulse's log PE and time, or, when no pulse passed the frozen selection, the probability of
+  missing it.
+
+Response model for one crossing at fibre distance ``x`` on channel ``c``, relative to the expected (nominal) log PE
+``q0`` and time ``t0`` supplied per crossing::
+
+    log PE      ~ Normal(mu_q, sigma_q),   mu_q = q0 + g[c] - alpha * x,
+                  sigma_q^2 = sigma_0^2 + excess_noise * exp(-mu_q)       (photostatistics: wider at low PE)
+    time | PE   ~ Normal(mu_t - walk * (log PE - log_pe_ref), sigma_t),   mu_t = t0 + o[c] + beta * x
+
+A pulse is selected when PE >= threshold and |time - t0| <= half window. ``alpha`` (inverse attenuation length) and
+``beta`` (inverse signal speed) are shared corrections; ``g`` and ``o`` are per-channel absolute log gains and time
+offsets, reported as a mean (``log_scale``, ``time_zero_ns``) plus zero-mean channel terms. ``sigma_0``
+(``sigma_log_pe``), ``excess_noise``, ``sigma_t`` and ``walk`` (time walk, ns per unit log PE) are fitted unless
+fixed. With walk the miss probability is a bivariate normal orthant sum, evaluated exactly (Genz/Plackett rule).
+The expected ``q0``/``t0`` columns can come from any forward model (the analytic nominal of ``ex_observations``
+today, an expected-mode fastsim response later).
+
+Uncertainties: the observed information (Hessian of the summed negative log likelihood at the optimum) is assembled
+from analytic per-crossing gradients; its inverse is the covariance, transformed to the reported gauge (zero-mean
+channel terms). The fit is float64; ``predict`` evaluates in float32 or float64 for replay.
 """
 
 import argparse
@@ -11,14 +35,83 @@ import json
 
 import numpy as np
 from scipy.optimize import minimize
-from scipy.special import log_ndtr, ndtr
+from scipy.special import log_ndtr, logsumexp
 
 LOG_SQRT_2PI = 0.5 * np.log(2 * np.pi)
+SCHEMA = "mu2e-crv-ex-response-v2"
+GLOBAL = ("inv_attenuation_per_m", "slowness_ns_per_m", "log_sigma_log_pe", "log_sigma_time_ns",
+          "walk_ns_per_log_pe", "excess_noise")
+_GL = np.polynomial.legendre.leggauss(20)   # bivariate normal: Gauss-Legendre in the correlation angle (Genz)
+_GL_T, _GL_LOGW = (_GL[0] + 1) / 2, np.log(_GL[1] / 2)
+MAX_CORRELATION = 0.95                        # |corr(log PE, time)| supported by the bivariate normal rule
+# Row-level predictors (same order as the globals): mu_q, mu_t, log sigma_0, log sigma_t, walk, excess noise.
+NG = 6
 
 
-def _design(rows, channel_ids, sigma_log_pe, sigma_time_ns, dtype):
-    if not np.isfinite([sigma_log_pe, sigma_time_ns]).all() or min(sigma_log_pe, sigma_time_ns) <= 0:
-        raise ValueError("fixed response widths must be finite and positive")
+# ---------------------------------------------------------------------------------------------------------------
+# Positive-only closed form (formerly charge_time_calib)
+
+def _profile(index, nchan, distance, residual, weights):
+    """Weighted least squares of residual = intercept[channel] + slope * distance, intercepts profiled."""
+    weight_sum = np.bincount(index, weights=weights, minlength=nchan)
+    if not np.isfinite(weight_sum).all() or np.any(weight_sum <= 0):
+        raise ValueError("each fitted channel needs a recorded pulse with finite positive weight; "
+                         "exclude unsupported channels using fit data only")
+    xd = np.bincount(index, weights=weights * distance, minlength=nchan) / weight_sum
+    yd = np.bincount(index, weights=weights * residual, minlength=nchan) / weight_sum
+    x, y = distance - xd[index], residual - yd[index]
+    denominator = np.dot(weights, x * x)
+    if not np.isfinite(denominator) or denominator <= np.finfo(float).eps * np.dot(weights, distance * distance):
+        raise ValueError("the shared slope requires within-channel distance variation")
+    slope = np.dot(weights * x, y) / denominator
+    intercepts = yd - slope * xd
+    errors = y - slope * x
+    rms = np.sqrt(np.average(errors**2, weights=weights))
+    dof = max(len(index) - nchan - 1, 1)
+    slope_err = np.sqrt(np.dot(weights, errors**2) / dof / denominator)
+    return slope, intercepts, rms, slope_err
+
+
+def profile_fit(channel, distance_mm, pe, expected_pe, time_ns, expected_time_ns, *, charge_weight=None,
+                time_weight=None):
+    """Positive-only shared slopes and per-channel gains/offsets from matched pulses (closed form).
+
+    ``log(pe / expected_pe) = log_scale + log_gain[c] - delta_attenuation * d`` and
+    ``time - expected_time = time_zero + time_offset[c] + delta_slowness * d``. Weights, when given, are relative
+    inverse variances in log PE and ns. Select finite, unsaturated observations before calling. The slope errors use
+    the residual scatter (weighted least squares with an estimated scale). No threshold or missed-pulse model.
+    """
+    channel = np.asarray(channel)
+    if channel.ndim != 1 or channel.size == 0 or channel.dtype.kind not in "iu" or np.any(channel < 0):
+        raise ValueError("channel must contain nonnegative integer IDs")
+
+    def values(array, name, *, positive=False):
+        out = np.asarray(array, dtype=float)
+        if out.shape != channel.shape or not np.isfinite(out).all() or (positive and np.any(out <= 0)):
+            raise ValueError(f"{name} must be finite and aligned with channel" + (" and positive" if positive else ""))
+        return out
+
+    distance = values(distance_mm, "distance_mm")
+    if np.any(distance < 0):
+        raise ValueError("distance_mm must be nonnegative")
+    channels, index = np.unique(channel, return_inverse=True)
+    log_pe = np.log(values(pe, "pe", positive=True)) - np.log(values(expected_pe, "expected_pe", positive=True))
+    dt = values(time_ns, "time_ns") - values(expected_time_ns, "expected_time_ns")
+    wc = np.ones(len(channel)) if charge_weight is None else values(charge_weight, "charge_weight", positive=True)
+    wt = np.ones(len(channel)) if time_weight is None else values(time_weight, "time_weight", positive=True)
+    q_slope, g, q_rms, q_err = _profile(index, len(channels), distance, log_pe, wc)
+    t_slope, o, t_rms, t_err = _profile(index, len(channels), distance, dt, wt)
+    return dict(channel=channels.tolist(), log_scale=float(g.mean()), log_gain=(g - g.mean()).tolist(),
+                delta_attenuation_per_mm=float(-q_slope), time_zero_ns=float(o.mean()),
+                time_offset_ns=(o - o.mean()).tolist(), delta_slowness_ns_per_mm=float(t_slope),
+                rms_log_pe=float(q_rms), rms_time_ns=float(t_rms),
+                errors=dict(delta_attenuation_per_mm=float(q_err), delta_slowness_ns_per_mm=float(t_err)))
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Design
+
+def _design(rows, channel_ids):
     seen = np.asarray(rows["seen"])
     eligible = np.asarray(rows["eligible"])
     channels = np.asarray(rows["channel"])
@@ -32,6 +125,7 @@ def _design(rows, channel_ids, sigma_log_pe, sigma_time_ns, dtype):
     if channel_ids is None:
         channel_ids, index = np.unique(live, return_inverse=True)
     else:
+        channel_ids = np.asarray(channel_ids)
         if channel_ids.ndim != 1 or np.any(channel_ids[1:] <= channel_ids[:-1]):
             raise ValueError("candidate channels must be sorted and unique")
         index = np.searchsorted(channel_ids, live)
@@ -54,149 +148,447 @@ def _design(rows, channel_ids, sigma_log_pe, sigma_time_ns, dtype):
             or np.any(pe[seen] < threshold[seen])
             or np.any(np.abs(tm[seen] - t0[seen]) > window[seen] + 4 * np.spacing(np.abs(t0[seen])))):
         raise ValueError("seen observations must have finite PE and time that pass the frozen selection")
-    zpe = (np.log(np.where(seen, pe, 1)) - q0) / sigma_log_pe
-    ztime = (np.where(seen, tm, t0) - t0) / sigma_time_ns
-    inputs = (distance / 1000, (np.log(threshold) - q0) / sigma_log_pe, window / sigma_time_ns, seen, zpe, ztime)
-    return channel_ids, (index, *(v if v.dtype.kind == "b" else v.astype(dtype, copy=False) for v in inputs))
+    return channel_ids, dict(index=index, x=distance / 1000, q0=q0, t0=t0, lthr=np.log(threshold),
+                             lo=t0 - window, hi=t0 + window, seen=seen,
+                             lpe=np.log(np.where(seen, pe, 1.)), tm=np.where(seen, tm, t0))
 
 
-def _interval_logp(lo, hi):
-    # Subtract normal tails on the side where CDFs are not both ~1.
-    large = log_ndtr(np.where(lo > 0, -lo, hi))
-    small = log_ndtr(np.where(lo > 0, -hi, lo))
+def _eta(theta, d, nchan):
+    g, o = theta[NG:NG + nchan], theta[NG + nchan:]
+    n = len(d["x"])
+    return np.column_stack([d["q0"] + g[d["index"]] - theta[0] * d["x"], d["t0"] + o[d["index"]] + theta[1] * d["x"],
+                            *(np.full(n, v) for v in theta[2:NG])])
+
+
+def _charge_width(mu_q, ls0, excess):
+    """log sigma_q per crossing: sigma_q^2 = sigma_0^2 + excess / expected PE (photostatistics)."""
+    with np.errstate(over="ignore"):
+        v = np.exp(2 * ls0) + excess * np.exp(-mu_q)
+    return 0.5 * np.log(v), v
+
+
+def _log_bvn(h, k, rho):
+    """log P(X <= h, Y <= k) for a standard bivariate normal of correlation rho (|rho| <= MAX_CORRELATION).
+
+    Plackett's identity in the angle, P = Phi(h) Phi(k) + 1/(2 pi) int_0^asin(rho) exp(-(h^2 + k^2 - 2 h k sin t) /
+    (2 cos^2 t)) dt, by 20-point Gauss-Legendre (Genz's rule for |rho| < 0.925), summed in log space.
+    """
+    lp = log_ndtr(h) + log_ndtr(k)
+    angle = np.arcsin(rho)
+    t = angle[:, None] * _GL_T[None, :]
+    st, ct2 = np.sin(t), np.cos(t) ** 2
+    e = -(h[:, None] ** 2 + k[:, None] ** 2 - 2 * (h * k)[:, None] * st) / (2 * ct2)
     with np.errstate(divide="ignore"):
-        return large + np.log(-np.expm1(small - large))
+        log_j = logsumexp(_GL_LOGW[None, :] + e, axis=1) + np.log(np.abs(angle)) - np.log(2 * np.pi)
+        neg = np.log1p(-np.minimum(np.exp(log_j - lp), 1.))
+    return np.where(rho > 0, np.logaddexp(lp, log_j), np.where(rho < 0, lp + neg, lp))
 
 
-def _model(par, design):
-    index, x, threshold, window, *_ = design
-    q, t = par.reshape(2, -1)
-    a = threshold - (q[0] * x + q[1:][index])
-    mt = t[0] * x + t[1:][index]
-    lo, hi = -window - mt, window - mt
-    return a, lo, hi, mt
+def _log_phi2(h, k, rho):
+    one = 1 - rho * rho
+    return -(h * h - 2 * rho * h * k + k * k) / (2 * one) - np.log(2 * np.pi) - 0.5 * np.log(one)
 
 
-def _nll(par, design):
-    index, x, threshold, _, seen, zpe, ztime = design
-    a, lo, hi, mt = _model(par, design)
-    qt = a - threshold + zpe
-    tt = ztime - mt
-    log_q_pass = log_ndtr(-a)
-    log_t_fail = np.logaddexp(log_ndtr(lo), log_ndtr(-hi))
-    log_miss = np.logaddexp(log_ndtr(a), log_q_pass + log_t_fail)
-    terms = np.where(seen, 0.5 * (qt**2 + tt**2) + 2 * LOG_SQRT_2PI, -log_miss)
-    qgrad = np.where(seen, -qt, np.exp(-0.5 * a**2 - LOG_SQRT_2PI + _interval_logp(lo, hi) - log_miss))
-    tgrad = np.where(seen, -tt, np.exp(log_q_pass - 0.5 * lo**2 - LOG_SQRT_2PI - log_miss)
-                     - np.exp(log_q_pass - 0.5 * hi**2 - LOG_SQRT_2PI - log_miss))
-    nchan = par.size // 2 - 1
-    grad = np.r_[np.dot(x, qgrad), np.bincount(index, qgrad, minlength=nchan),
-                 np.dot(x, tgrad), np.bincount(index, tgrad, minlength=nchan)]
+def _miss_terms(mu_q, mu_t, lsq, lst, walk, lthr, lo, hi, ref):
+    """log P(miss) and the pieces of its gradient.
+
+    With Z the standardized log PE and T = c - walk * sigma_q * Z + sigma_t * E the time, a miss is
+    Z < a, or Z >= a and T outside [lo, hi]: P = Phi(a) + Phi2(-a, kL; r) + Phi2(-a, -kU; -r), with
+    r = corr(-Z, T) = walk sigma_q / sigma_T and k = (edge - c) / sigma_T. Without walk Phi2 factorizes (exact).
+    """
+    sq, st = np.exp(lsq), np.exp(lst)
+    a = (lthr - mu_q) / sq
+    c = mu_t - walk * (mu_q - ref)
+    sT = np.sqrt((walk * sq) ** 2 + st * st)
+    r = walk * sq / sT
+    if np.any(np.abs(r) > MAX_CORRELATION):
+        raise ValueError(f"time-walk correlation |r| > {MAX_CORRELATION}: outside the supported range")
+    h, kL, kU = -a, (lo - c) / sT, (hi - c) / sT
+    terms = np.stack([log_ndtr(a), _log_bvn(h, kL, r), _log_bvn(h, -kU, -r)])
+    log_miss = logsumexp(terms, axis=0)
+    return log_miss, dict(a=a, c=c, sT=sT, r=r, h=h, kL=kL, kU=kU, sq=sq, st=st)
+
+
+def _miss_logp(a, c, lsq, lst, walk, lo, hi):
+    """log P(miss) from the standardized threshold a and the time mean c at the mean log PE (for predict)."""
+    sq, st = np.exp(lsq), np.exp(lst)
+    sT = np.sqrt((walk * sq) ** 2 + st * st)
+    r = walk * sq / sT
+    h, kL, kU = -a, (lo - c) / sT, (hi - c) / sT
+    return logsumexp(np.stack([log_ndtr(a), _log_bvn(h, kL, r), _log_bvn(h, -kU, -r)]), axis=0)
+
+
+def _core(mu_q, mu_t, lsq, lst, walk, d, ref):
+    """Per-crossing NLL and its gradient in (mu_q, mu_t, log sigma_q, log sigma_t, walk) at fixed sigma_q."""
+    sq, st = np.exp(lsq), np.exp(lst)
+    seen = d["seen"]
+    terms = np.empty(len(mu_q))
+    grad = np.zeros((len(mu_q), 5))
+
+    s = seen
+    z = (d["lpe"][s] - mu_q[s]) / sq[s]
+    r = (d["tm"][s] - mu_t[s] + walk[s] * (d["lpe"][s] - ref)) / st[s]
+    terms[s] = 0.5 * (z * z + r * r) + lsq[s] + lst[s] + 2 * LOG_SQRT_2PI
+    grad[s] = np.column_stack([-z / sq[s], -r / st[s], 1 - z * z, 1 - r * r, r * (d["lpe"][s] - ref) / st[s]])
+
+    u = ~seen
+    if u.any():
+        mq, w = mu_q[u], walk[u]
+        log_miss, p = _miss_terms(mq, mu_t[u], lsq[u], lst[u], w, d["lthr"][u], d["lo"][u], d["hi"][u], ref)
+        terms[u] = -log_miss
+        a, sT, rr, h = p["a"], p["sT"], p["r"], p["h"]
+        sq_u, st_u = p["sq"], p["st"]
+        one = np.sqrt(1 - rr * rr)
+        zero = np.zeros_like(a)
+        # Derivatives of the intermediates in the order mu_q, mu_t, log sigma_q, log sigma_t, walk.
+        da = np.stack([-1 / sq_u, zero, -a, zero, zero])
+        dc = np.stack([-w, zero + 1, zero, zero, -(mq - ref)])
+        dsT = np.stack([zero, zero, (w * sq_u) ** 2 / sT, st_u ** 2 / sT, w * sq_u ** 2 / sT])
+        dr = np.stack([zero, zero, rr * (1 - rr ** 2), -rr * (1 - rr ** 2), sq_u / sT * (1 - rr ** 2)])
+        total = np.exp(-0.5 * a * a - LOG_SQRT_2PI - log_miss) * da          # d Phi(a)
+        for k, sign in ((p["kL"], 1.), (-p["kU"], -1.)):
+            rho = sign * rr
+            dk = sign * (-dc / sT - (sign * k) * dsT / sT)
+            fh = np.exp(-0.5 * h * h - LOG_SQRT_2PI + log_ndtr((k - rho * h) / one) - log_miss)
+            fk = np.exp(-0.5 * k * k - LOG_SQRT_2PI + log_ndtr((h - rho * k) / one) - log_miss)
+            fr = np.exp(_log_phi2(h, k, rho) - log_miss)
+            total = total + fh * (-da) + fk * dk + fr * (sign * dr)
+        grad[u] = -total.T
     return terms, grad
 
 
-def _positive_only(design, nchan):
-    index, x, _, _, seen, zpe, ztime = design
-    index, x = index[seen], x[seen]
-    n = np.bincount(index, minlength=nchan)
+def _rows(eta, d, ref):
+    """Per-crossing NLL terms and their gradient with respect to the row predictors (n, NG)."""
+    mu_q, mu_t, ls0, lst, walk, excess = eta.T
+    lsq, v = _charge_width(mu_q, ls0, excess)
+    terms, g = _core(mu_q, mu_t, lsq, lst, walk, d, ref)
+    e = np.exp(-mu_q) / (2 * v)
+    grad = np.column_stack([g[:, 0] - g[:, 2] * excess * e, g[:, 1], g[:, 2] * np.exp(2 * ls0) / v, g[:, 3],
+                            g[:, 4], g[:, 2] * e])
+    return terms, grad
+
+
+# Global k acts on row predictor k with coefficient COEF[k] (alpha: -x, beta: +x, the others: 1).
+def _coef(x):
+    one = np.ones_like(x)
+    return np.column_stack([-x, x] + [one] * (NG - 2))
+
+
+def _assemble_grad(geta, d, nchan):
+    c = _coef(d["x"])
+    return np.r_[(c * geta).sum(axis=0), np.bincount(d["index"], geta[:, 0], minlength=nchan),
+                 np.bincount(d["index"], geta[:, 1], minlength=nchan)]
+
+
+def _nll(theta, d, nchan, ref):
+    terms, geta = _rows(_eta(theta, d, nchan), d, ref)
+    return terms, _assemble_grad(geta, d, nchan)
+
+
+def _row_hessian(eta, d, ref, free_eta):
+    """Per-crossing Hessian in the row predictors by central differences of the analytic gradient (n, NG, NG)."""
+    n = len(eta)
+    st = np.exp(eta[0, 3])
+    h = 1e-5 * np.array([1., st, 1., 1., st, 1.])
+    hess = np.zeros((n, NG, NG))
+    for k in np.flatnonzero(free_eta):
+        step = np.zeros(NG)
+        step[k] = h[k]
+        gp = _rows(eta + step, d, ref)[1]
+        gm = _rows(eta - step, d, ref)[1]
+        hess[:, :, k] = (gp - gm) / (2 * h[k])
+    hess = 0.5 * (hess + hess.transpose(0, 2, 1))
+    return hess * np.outer(free_eta, free_eta)
+
+
+def _hessian(theta, d, nchan, ref, free_global):
+    """Full Hessian of the summed NLL in (globals, g, o), from the per-row predictor Hessians."""
+    free_eta = np.r_[True, True, np.asarray(free_global[2:], bool)]
+    hr = _row_hessian(_eta(theta, d, nchan), d, ref, free_eta)
+    c, idx = _coef(d["x"]), d["index"]
+    P = NG + 2 * nchan
+    H = np.zeros((P, P))
+    H[:NG, :NG] = np.einsum("ni,nj,nij->ij", c, c, hr)
+    for i in range(NG):
+        H[i, NG:NG + nchan] = np.bincount(idx, c[:, i] * hr[:, i, 0], minlength=nchan)
+        H[i, NG + nchan:] = np.bincount(idx, c[:, i] * hr[:, i, 1], minlength=nchan)
+    H[NG:, :NG] = H[:NG, NG:].T
+    ch = np.arange(nchan)
+    H[NG + ch, NG + ch] = np.bincount(idx, hr[:, 0, 0], minlength=nchan)
+    H[NG + nchan + ch, NG + nchan + ch] = np.bincount(idx, hr[:, 1, 1], minlength=nchan)
+    H[NG + ch, NG + nchan + ch] = H[NG + nchan + ch, NG + ch] = np.bincount(idx, hr[:, 0, 1], minlength=nchan)
+    return H
+
+
+def _gauge(nchan):
+    """Linear map from (globals, g, o) to the reported (globals, log_scale, log_gain, time_zero, time_offset)."""
+    P = NG + 2 * nchan
+    T = np.zeros((P + 2, P))
+    T[:NG, :NG] = np.eye(NG)
+    mean = np.full(nchan, 1 / nchan)
+    T[NG, NG:NG + nchan] = mean
+    T[NG + 1:NG + 1 + nchan, NG:NG + nchan] = np.eye(nchan) - mean
+    T[NG + 1 + nchan, NG + nchan:] = mean
+    T[NG + 2 + nchan:, NG + nchan:] = np.eye(nchan) - mean
+    return T
+
+
+def _covariance(H, free):
+    cov = np.zeros_like(H)
+    Hf = H[np.ix_(free, free)]
+    try:
+        chol = np.linalg.cholesky(Hf)
+    except np.linalg.LinAlgError:
+        return None
+    inv = np.linalg.inv(chol)
+    cov[np.ix_(free, free)] = inv.T @ inv
+    return cov
+
+
+REPORTED = ("delta_attenuation_per_mm", "delta_slowness_ns_per_mm", "sigma_log_pe", "sigma_time_ns",
+            "walk_ns_per_log_pe", "excess_noise")
+
+
+def _report(theta, cov, channels, ref, free_global, n_eligible, n_seen, include_missing):
+    nchan = len(channels)
+    alpha, beta, ls0, lst, walk, excess = theta[:NG]
+    g, o = theta[NG:NG + nchan], theta[NG + nchan:]
+    out = dict(schema=SCHEMA, candidate_only=True, channel=[int(c) for c in channels],
+               sigma_log_pe=float(np.exp(ls0)), excess_noise=float(excess), sigma_time_ns=float(np.exp(lst)),
+               walk_ns_per_log_pe=float(walk), log_pe_ref=float(ref),
+               delta_attenuation_per_mm=float(alpha / 1000), delta_slowness_ns_per_mm=float(beta / 1000),
+               log_scale=float(g.mean()), log_gain=(g - g.mean()).tolist(),
+               time_zero_ns=float(o.mean()), time_offset_ns=(o - o.mean()).tolist(),
+               fitted={k: bool(f) for k, f in zip(REPORTED[2:], free_global[2:])},
+               eligible=int(n_eligible), seen=int(n_seen), include_missing=bool(include_missing))
+    if cov is None:
+        out["errors"] = None
+        out["hessian_positive_definite"] = False
+        return out
+    T = _gauge(nchan)
+    c = T @ cov @ T.T
+    se = np.sqrt(np.clip(np.diag(c), 0, None))
+    # Physical units of the globals (delta method for the log widths).
+    scale = np.array([1e-3, 1e-3, np.exp(ls0), np.exp(lst), 1., 1.])
+    se_g = se[:NG] * scale
+    out["hessian_positive_definite"] = True
+    out["errors"] = dict({k: float(v) for k, v in zip(REPORTED, se_g)},
+                         log_scale=float(se[NG]), log_gain=se[NG + 1:NG + 1 + nchan].tolist(),
+                         time_zero_ns=float(se[NG + 1 + nchan]), time_offset_ns=se[NG + 2 + nchan:].tolist())
+    keep = list(range(NG)) + [NG, NG + 1 + nchan]
+    s = np.r_[scale, 1., 1.]
+    out["covariance_global"] = dict(names=list(REPORTED) + ["log_scale", "time_zero_ns"],
+                                    matrix=(c[np.ix_(keep, keep)] * np.outer(s, s)).tolist())
+    return out
+
+
+def _positive_only_theta(d, nchan, weights=(None, None)):
+    s = d["seen"]
+    n = np.bincount(d["index"][s], minlength=nchan)
     if (n == 0).any():
         raise ValueError("each fitted channel needs a recorded pulse; exclude unsupported channels using fit data only")
-    xm = np.bincount(index, x, minlength=nchan) / n
-    dx = x - xm[index]
-    var = np.dot(dx, dx)
-    if var <= np.finfo(float).eps * np.dot(x, x):
-        raise ValueError("shared slopes need within-channel fibre-distance variation")
-    out = []
-    for z in (zpe[seen], ztime[seen]):
-        zm = np.bincount(index, z, minlength=nchan) / n
-        slope = np.dot(dx, z - zm[index]) / var
-        out.extend(np.r_[slope, zm - slope * xm])
-    return np.asarray(out)
+    wc = np.ones(s.sum()) if weights[0] is None else weights[0]
+    wt = np.ones(s.sum()) if weights[1] is None else weights[1]
+    idx, x = d["index"][s], d["x"][s]
+    qs, g, qrms, qerr = _profile(idx, nchan, x, d["lpe"][s] - d["q0"][s], wc)
+    ts, o, trms, terr = _profile(idx, nchan, x, d["tm"][s] - d["t0"][s], wt)
+    return np.r_[-qs, ts, np.log(qrms), np.log(trms), 0., 0., g, o], (qerr, terr)
 
 
-def fit(rows, *, sigma_log_pe, sigma_time_ns, include_missing=True):
-    """Return candidate corrections relative to the nominal response; does not write conditions."""
-    channels, design = _design(rows, None, sigma_log_pe, sigma_time_ns, np.float64)
-    start = _positive_only(design, len(channels))
-    if include_missing:
-        def loss(par):
-            terms, gradient = _nll(par, design)
-            return terms.mean(), gradient / len(terms)
+def _weights(rows, key, eligible_seen):
+    if key is None:
+        return None
+    w = np.asarray(rows[key], dtype=float) if isinstance(key, str) else np.asarray(key, dtype=float)
+    w = w[eligible_seen]
+    if not np.isfinite(w).all() or np.any(w <= 0):
+        raise ValueError("weights must be finite and positive on the recorded pulses")
+    return w
 
-        result = minimize(loss, start, jac=True, method="L-BFGS-B", options={"maxiter": 300, "ftol": 1e-13, "gtol": 1e-8})
-        if not result.success or not np.isfinite(result.x).all():
-            raise RuntimeError(f"EX fit did not converge: {result.message}")
-        par = result.x
+
+def fit(rows, *, sigma_log_pe=None, sigma_time_ns=None, excess_noise="fit", fit_widths=True, walk=True,
+        include_missing=True, charge_weight=None, time_weight=None):
+    """Return candidate corrections relative to the expected response; does not write conditions.
+
+    ``include_missing=False`` is the positive-only closed form (``charge_weight``/``time_weight``: column names or
+    arrays of relative inverse variances, applied to the recorded pulses). Otherwise the censored likelihood, started
+    from the positive-only solution. Widths: ``sigma_q^2 = sigma_log_pe^2 + excess_noise / expected PE``;
+    ``sigma_log_pe``/``sigma_time_ns`` are start values, fixed (and required) with ``fit_widths=False``.
+    ``excess_noise`` is "fit" (default; 0 with fixed widths) or a fixed value (0: constant charge width, 1: Poisson
+    photostatistics). ``walk`` fits the time-walk slope (False fixes it at zero).
+    """
+    channels, d = _design(rows, None)
+    nchan = len(channels)
+    elig = np.asarray(rows["eligible"])
+    eligible_seen = elig & np.asarray(rows["seen"])
+    weights = (_weights(rows, charge_weight, eligible_seen), _weights(rows, time_weight, eligible_seen))
+    theta, (qerr, terr) = _positive_only_theta(d, nchan, weights)
+    ref = float(np.median(d["lpe"][d["seen"]]))
+    n_eligible, n_seen = len(d["x"]), int(d["seen"].sum())
+    if not include_missing:
+        out = _report(theta, None, channels, ref, np.zeros(NG, bool), n_eligible, n_seen, False)
+        out["errors"] = dict(delta_attenuation_per_mm=float(qerr / 1000), delta_slowness_ns_per_mm=float(terr / 1000))
+        out["hessian_positive_definite"] = None
+        out["fitted"] = dict(sigma_log_pe="rms", sigma_time_ns="rms", walk_ns_per_log_pe=False, excess_noise=False)
+        out["weighted"] = dict(charge=charge_weight is not None, time=time_weight is not None)
+        return out
+    if not fit_widths and (sigma_log_pe is None or sigma_time_ns is None):
+        raise ValueError("fixed widths need sigma_log_pe and sigma_time_ns")
+    fit_excess = fit_widths and isinstance(excess_noise, str)
+    if isinstance(excess_noise, str):
+        if excess_noise != "fit":
+            raise ValueError('excess_noise must be "fit" or a number')
+        theta[5] = 0.5 if fit_excess else 0.
     else:
-        par = start
-    q, t = par.reshape(2, -1)
-    dq, dt = q[1:] * sigma_log_pe, t[1:] * sigma_time_ns
-    return dict(schema="mu2e-crv-ex-response-v1", candidate_only=True, channel=channels.tolist(),
-                sigma_log_pe=float(sigma_log_pe), sigma_time_ns=float(sigma_time_ns),
-                delta_attenuation_per_mm=float(-q[0] * sigma_log_pe / 1000),
-                delta_slowness_ns_per_mm=float(t[0] * sigma_time_ns / 1000),
-                log_scale=float(dq.mean()), log_gain=(dq - dq.mean()).tolist(),
-                time_zero_ns=float(dt.mean()), time_offset_ns=(dt - dt.mean()).tolist(),
-                eligible=int(len(design[0])), seen=int(design[4].sum()), include_missing=bool(include_missing))
+        if not np.isfinite(excess_noise) or excess_noise < 0:
+            raise ValueError("excess_noise must be finite and nonnegative")
+        theta[5] = excess_noise
+    if fit_excess:
+        # Start the constant term from the pulse RMS less the start photostatistics term (median seen PE).
+        theta[2] = 0.5 * np.log(max(np.exp(2 * theta[2]) - theta[5] * np.exp(-ref), 0.09 * np.exp(2 * theta[2])))
+    for k, v in ((2, sigma_log_pe), (3, sigma_time_ns)):
+        if v is not None:
+            if not np.isfinite(v) or v <= 0:
+                raise ValueError("response widths must be finite and positive")
+            theta[k] = np.log(v)
+    free = np.ones(len(theta), bool)
+    free[2:4] = fit_widths
+    free[4] = bool(walk)
+    free[5] = fit_excess
+    H0 = _hessian(theta, d, nchan, ref, free[:NG])
+    diag = np.diag(H0)[free]
+    scale = 1 / np.sqrt(np.where(np.isfinite(diag) & (diag > 0), diag, 1.))
+    base = theta.copy()
+
+    def full(u):
+        t = base.copy()
+        t[free] = base[free] + scale * u
+        return t
+
+    def loss(u):
+        terms, grad = _nll(full(u), d, nchan, ref)
+        return terms.sum(), grad[free] * scale
+
+    limits = {2: (-7., 3.), 3: (-7., 3.), 5: (0., 20.)}
+    bounds = [tuple((b - base[k]) / scale[i] for b in limits[k]) if k in limits else (None, None)
+              for i, k in enumerate(np.flatnonzero(free))]
+    result = minimize(loss, np.zeros(free.sum()), jac=True, method="L-BFGS-B", bounds=bounds,
+                      options={"maxiter": 3000, "ftol": 1e-15, "gtol": 1e-7, "maxcor": 30})
+    theta = full(result.x)
+    terms, grad = _nll(theta, d, nchan, ref)
+    sgrad = grad * np.where(free, 1., 0.)
+    sgrad[free] *= scale
+    at_bound = fit_excess and theta[5] <= 1e-9
+    if at_bound:
+        free[5] = False      # constrained at zero: no curvature-based error for it
+    gnorm = float(np.max(np.abs(sgrad[free])))
+    if not np.isfinite(theta).all() or not np.isfinite(terms).all() or (not result.success and gnorm > 1e-3):
+        raise RuntimeError(f"EX fit did not converge: {result.message}")
+    gfree = free[:NG].copy()
+    gfree[5] = fit_excess and not at_bound
+    H = _hessian(theta, d, nchan, ref, gfree)
+    cov = _covariance(H, free)
+    out = _report(theta, cov, channels, ref, gfree, n_eligible, n_seen, True)
+    if at_bound:
+        out["fitted"]["excess_noise"] = "at_bound"
+    out["optimizer"] = dict(iterations=int(result.nit), max_scaled_gradient=gnorm)
+    return out
 
 
-def _parameters(cal, dtype):
-    sq, st = cal["sigma_log_pe"], cal["sigma_time_ns"]
-    q = np.r_[-1000 * cal["delta_attenuation_per_mm"], cal["log_scale"] + np.asarray(cal["log_gain"])] / sq
-    t = np.r_[1000 * cal["delta_slowness_ns_per_mm"], cal["time_zero_ns"] + np.asarray(cal["time_offset_ns"])] / st
-    return np.concatenate([q, t]).astype(dtype)
+# ---------------------------------------------------------------------------------------------------------------
+# Prediction and diagnostics
 
-
-def _probability(a, lo, hi):
-    return ndtr(-a) * np.exp(_interval_logp(lo, hi))
+def _parameters(cal):
+    g = cal["log_scale"] + np.asarray(cal["log_gain"], dtype=float)
+    o = cal["time_zero_ns"] + np.asarray(cal["time_offset_ns"], dtype=float)
+    return np.r_[1000 * cal["delta_attenuation_per_mm"], 1000 * cal["delta_slowness_ns_per_mm"],
+                 np.log(cal["sigma_log_pe"]), np.log(cal["sigma_time_ns"]), cal.get("walk_ns_per_log_pe", 0.),
+                 cal.get("excess_noise", 0.), g, o]
 
 
 def predict(cal, rows, dtype=np.float64):
-    """Return detection probabilities and preselection Gaussian means for eligible rows."""
-    sq, st = cal["sigma_log_pe"], cal["sigma_time_ns"]
-    _, design = _design(rows, np.asarray(cal["channel"]), sq, st, dtype)
-    threshold, use = design[2], np.asarray(rows["eligible"])
-    a, lo, hi, mt = _model(_parameters(cal, dtype), design)
-    return dict(probability=_probability(a, lo, hi),
-                log_pe=np.asarray(rows["nominal_log_pe"], dtype=dtype)[use] + (threshold - a) * sq,
-                time_ns=np.asarray(rows["nominal_time_ns"], dtype=dtype)[use] + mt * st)
+    """Selection probabilities, mean log PE, its width, and the mean time at the mean log PE for the eligible rows."""
+    dtype = np.dtype(dtype).type
+    channels, d = _design(rows, np.asarray(cal["channel"]))
+    eta = _eta(_parameters(cal), d, len(channels)).astype(dtype)
+    mu_q, mu_t, ls0, lst, walk, excess = eta.T
+    lsq, _ = _charge_width(mu_q, ls0, excess)
+    ref = dtype(cal.get("log_pe_ref", 0.))
+    lthr, lo, hi = (d[k].astype(dtype) for k in ("lthr", "lo", "hi"))
+    a = (lthr - mu_q) / np.exp(lsq)
+    c = mu_t - walk * (mu_q - ref)
+    prob = -np.expm1(_miss_logp(a, c, lsq, lst, walk, lo, hi))
+    return dict(probability=prob.astype(dtype), log_pe=mu_q.astype(dtype), sigma_log_pe=np.exp(lsq).astype(dtype),
+                time_ns=c.astype(dtype), walk_ns_per_log_pe=dtype(cal.get("walk_ns_per_log_pe", 0.)))
 
 
 def diagnostics(cal, rows):
-    sq, st = cal["sigma_log_pe"], cal["sigma_time_ns"]
-    _, design = _design(rows, np.asarray(cal["channel"]), sq, st, np.float64)
-    par = _parameters(cal, np.float64)
-    terms, _ = _nll(par, design)
-    a, lo, hi, _ = _model(par, design)
-    prob = _probability(a, lo, hi)
-    return dict(nll_per_crossing=float(terms.mean()),
-                detection_brier=float(np.mean((prob - design[4])**2)))
+    channels, d = _design(rows, np.asarray(cal["channel"]))
+    terms, _ = _nll(_parameters(cal), d, len(channels), cal.get("log_pe_ref", 0.))
+    prob = predict(cal, rows)["probability"]
+    return dict(nll_per_crossing=float(terms.mean()), detection_brier=float(np.mean((prob - d["seen"]) ** 2)))
+
+
+def covariance(cal, rows):
+    """Full gauge-fixed covariance (globals, log_scale, log_gain, time_zero, time_offset) at ``cal`` on ``rows``."""
+    channels, d = _design(rows, np.asarray(cal["channel"]))
+    nchan = len(channels)
+    fitted = cal.get("fitted", {})
+    gfree = np.array([True, True] + [fitted.get(k) is True for k in REPORTED[2:]])
+    free = np.r_[gfree, np.ones(2 * nchan, bool)]
+    H = _hessian(_parameters(cal), d, nchan, cal.get("log_pe_ref", 0.), gfree)
+    cov = _covariance(H, free)
+    if cov is None:
+        raise RuntimeError("Hessian is not positive definite at the given calibration")
+    T = _gauge(nchan)
+    return T @ cov @ T.T
+
+
+COVARIANCE_NAMES = ["inv_attenuation_per_m", "slowness_ns_per_m", "log_sigma_log_pe", "log_sigma_time_ns",
+                    "walk_ns_per_log_pe", "excess_noise", "log_scale"]
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("observations")
     parser.add_argument("out", help="candidate calibration JSON, not an Offline conditions file")
-    parser.add_argument("--sigma-log-pe", type=float, required=True)
-    parser.add_argument("--sigma-time-ns", type=float, required=True)
-    parser.add_argument("--positive-only", action="store_true", help="fit only pulses as an uncensored baseline")
+    parser.add_argument("--sigma-log-pe", type=float, help="start value (fixed with --fix-widths)")
+    parser.add_argument("--sigma-time-ns", type=float, help="start value (fixed with --fix-widths)")
+    parser.add_argument("--fix-widths", action="store_true", help="hold the widths at the given values")
+    parser.add_argument("--excess-noise", default="fit",
+                        help='"fit" (default) or a fixed photostatistics factor (0: constant charge width)')
+    parser.add_argument("--no-walk", action="store_true", help="fix the time-walk slope at zero")
+    parser.add_argument("--positive-only", action="store_true", help="closed-form fit of recorded pulses only")
+    parser.add_argument("--charge-weight", help="positive-only: column of relative inverse variances in log PE")
+    parser.add_argument("--time-weight", help="positive-only: column of relative inverse variances in time")
+    parser.add_argument("--covariance-out", help="write the full gauge-fixed covariance to this NPZ")
     parser.add_argument("--holdout", help="optional observation NPZ with separate runs for predictive diagnostics")
     args = parser.parse_args(argv)
-    with np.load(args.observations, allow_pickle=False) as rows:
-        cal = fit(rows, sigma_log_pe=args.sigma_log_pe, sigma_time_ns=args.sigma_time_ns,
-                  include_missing=not args.positive_only)
-        cal["fit_runs"] = np.unique(rows["run"][rows["eligible"]]).tolist()
+    with np.load(args.observations, allow_pickle=False) as data:
+        rows = {k: data[k] for k in data.files}
+    excess = args.excess_noise if args.excess_noise == "fit" else float(args.excess_noise)
+    cal = fit(rows, sigma_log_pe=args.sigma_log_pe, sigma_time_ns=args.sigma_time_ns, excess_noise=excess,
+              fit_widths=not args.fix_widths, walk=not args.no_walk, include_missing=not args.positive_only,
+              charge_weight=args.charge_weight, time_weight=args.time_weight)
+    cal["fit_runs"] = np.unique(rows["run"][rows["eligible"]]).tolist()
     with open(args.observations, "rb") as stream:
         digest = hashlib.sha256()
         for chunk in iter(lambda: stream.read(1 << 20), b""):
             digest.update(chunk)
         cal["observations_sha256"] = digest.hexdigest()
     if args.holdout:
-        with np.load(args.holdout, allow_pickle=False) as rows:
-            runs = np.unique(rows["run"][rows["eligible"]]).tolist()
-            if set(runs) & set(cal["fit_runs"]):
-                raise ValueError("held-out observations must come from separate runs")
-            cal["holdout"] = dict(runs=runs, **diagnostics(cal, rows))
+        with np.load(args.holdout, allow_pickle=False) as data:
+            hold = {k: data[k] for k in data.files}
+        runs = np.unique(hold["run"][hold["eligible"]]).tolist()
+        if set(runs) & set(cal["fit_runs"]):
+            raise ValueError("held-out observations must come from separate runs")
+        cal["holdout"] = dict(runs=runs, **diagnostics(cal, hold))
+    if args.covariance_out:
+        if args.positive_only:
+            raise ValueError("--covariance-out needs the censored fit")
+        np.savez_compressed(args.covariance_out, covariance=covariance(cal, rows),
+                            names=np.array(COVARIANCE_NAMES + [f"log_gain_{c}" for c in cal["channel"]]
+                                           + ["time_zero_ns"]
+                                           + [f"time_offset_ns_{c}" for c in cal["channel"]]))
     with open(args.out, "w") as stream:
         json.dump(cal, stream, indent=2, allow_nan=False)
         stream.write("\n")

@@ -327,7 +327,7 @@ ratio within +-3 % after 2 sigma, coincidence clusters per event within 1 % afte
 timing-fixed CRV-only MC `crvonly_v05` (CRVTime applied with scale -1, one FEB clock phase per event). Stock arm: its
 EventNtuples (`crvpulses`); fast arm: the fast chain (JAX, CPU container on the grid) on the CrvSteps of the same
 production dts files, with the v05 settings (common FEB phase, CRVTime net zero). Both arms use the same quality
-KKLine track per event (tracker only; detector frame converted to Mu2e coordinates). Per EX
+KKLine track per event (`crvextrap.trackline`, from the tracker; detector frame converted to Mu2e coordinates). Per EX
 layer: denominator = tracks crossing the layer inside the sector; hit = seq-0 pulse >= 8 PE within one counter of the
 predicted one and within +-20 ns of the track time + 54.4 ns (offset measured on the stock arm). The difference error
 comes from the discordant tracks (same tracks in both arms).
@@ -341,14 +341,9 @@ comes from the discordant tracks (same tracks in both arms).
 | 2 | 2,154 | 80.97 % | 81.01 % | +0.05 +- 0.08 |
 | 3 | 2,140 | 80.05 % | 80.09 % | +0.05 +- 0.08 |
 
-The ~81 % level is the track-pointing resolution (~24 mm at EX), common to both arms. The
+The ~81 % level is the track-pointing resolution (~24 mm at EX, as in `crvextrap exdenom`), common to both arms. The
 last file (`001400_00001023`) exceeded the 4 h lifetime and reruns with 50-event batches and 8 h (cluster 30742793).
 With this row, **V-R4 is complete**.
-
-The [EX response calibration pilot](ex-calibration.md) and new V-R4 preparations read tracker-only `TT_Outer`
-states from the public EventNtuple schema. The table above is historical; recompute before comparing new
-preparations with it. Existing V-R4 NPZs can still be replayed. The pilot uses exact per-SiPM matches and retains
-silent channels; it is not a replacement for the V-R4 layer-efficiency measurement.
 
 ### R3 driver and the response objective (2026-10-21)
 
