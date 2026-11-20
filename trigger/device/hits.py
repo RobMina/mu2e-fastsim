@@ -337,8 +337,9 @@ def _panel_hits(h, s):
         acc = lambda a, v: jnp.where(on, a + v, a)
         wd = col("wdist", j)
         eacc = acc(eacc, d(col("edep", j)))
-        et0acc = acc(et0acc, d(col("et0", j)))
-        et1acc = acc(et1acc, d(col("et1", j)))
+        if "et0" in h:
+            et0acc = acc(et0acc, d(col("et0", j)))
+            et1acc = acc(et1acc, d(col("et1", j)))
         vacc = acc(vacc, d(col("vvar", j)))
         twt = 1.0 / d(col("timevar", j))
         twtsum = acc(twtsum, twt)
@@ -369,8 +370,9 @@ def _panel_hits(h, s):
            "z": pick("z", mz), "uvar": pick("uvar", uvar), "vvar": pick("vvar", f(vacc / nsh)),
            "udx": h["udx"], "udy": h["udy"], "sid": h["sid"]}
     # ComboHit::time(): the end time of the seed hit's early end, the member average of that end for a combo
-    hv_early = h["et1"] < h["et0"]
-    out["etime"] = jnp.where(hv_early, pick("et1", f(et1acc / nsh)), pick("et0", f(et0acc / nsh)))
+    if "et0" in h:
+        hv_early = h["et1"] < h["et0"]
+        out["etime"] = jnp.where(hv_early, pick("et1", f(et1acc / nsh)), pick("et0", f(et0acc / nsh)))
     ntdiv = jnp.zeros((E, H), jnp.int32).at[rows, jnp.where(own >= 0, own, H)].add(
         ((h["flag"] >> FLAG["tdiv"]) & 1).astype(jnp.int32), mode="drop")
     tdiv = ntdiv == ncombo
