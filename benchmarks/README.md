@@ -15,7 +15,10 @@ already uses:
 - a scaled shape test (mode `shape`);
 - the paired per-shard test when both arms carry shards (`trkfastsim.validation.chain_pair`).
 
-The scorer uses NumPy only and imports nothing from this repository, so a Codabench worker can run it unchanged.
+The scorer is [hep-simbench](https://github.com/RobMina/hep-simbench)'s `hepsimbench.score` (pinned in
+`core/ci/requirements.txt`; `benchmarks.fastsim_score.score` is that module). It uses NumPy only and imports nothing
+from this repository, so a Codabench worker can run it unchanged. The task table, the calorimeter converters and the
+synthetic example stay here.
 
 ## Histogram kinds, modes and yields
 
