@@ -111,3 +111,19 @@ def test_capacity_file_contract(path):
     if path.name in ("run1a_mix1bb_batch256.json", "run1a_mix1bb_batch256_cpu.json"):   # W6 defaults: thermal on hit counters
         expected["thermal_counters"] = "hit"
     assert options == expected
+
+
+def test_batch256_neutrals_changes_only_the_reuse_sizes_and_streams():
+    """The opt-in Neutrals file is the default with NeutralsFlash reused: only the reuse `compute` sizes, the reused
+    straws and the stream list differ; setup (`precompute`), layout choices and every other buffer are the default's."""
+    folder = FILES[0].parent
+    default = json.loads((folder / "run1a_mix1bb_batch256.json").read_text())
+    neutrals = json.loads((folder / "run1a_mix1bb_batch256_neutrals.json").read_text())
+    a, b = default["response"].pop("tracker_reuse"), neutrals["response"].pop("tracker_reuse")
+    assert neutrals == default
+    assert b["streams"] == a["streams"] + ["NeutralsFlash"]
+    assert b["precompute"] == a["precompute"]
+    sized = {"long_steps", "drift_clusters", "straws", "flat_clusters", "minion_steps", "end_tiers"}
+    assert {k for k in a["compute"] if a["compute"][k] != b["compute"][k]} <= sized
+    assert [w for _, w in b["compute"]["end_tiers"]] == [w for _, w in a["compute"]["end_tiers"]]
+    assert {k for k in a if k not in ("compute", "straws", "streams") and a[k] != b[k]} == set()

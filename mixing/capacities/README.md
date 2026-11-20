@@ -13,6 +13,7 @@ NeutralsFlash pools at the stock intensity law.
 | `run1a_mix1bb_batch256_exact.json` | 256 events | the exact reference for the default: the same file without either approximation (every straw digitised per batch, thermal noise on every counter, CRV buffers at their earlier sizes) |
 | `run1a_mix1bb_batch256_cpu.json` | 256 events | **the W6 default on CPU**: `run1a_mix1bb_batch256.json` with finer tracker end tiers (below) |
 | `run1a_mix1bb_batch256_exact_cpu.json` | 256 events | the exact reference on CPU: `run1a_mix1bb_batch256_exact.json` with the same finer end tiers |
+| `run1a_mix1bb_batch256_neutrals.json` | 256 events | opt-in, a further approximation: the default with NeutralsFlash donor frames reused as well (below) |
 
 ## How they were made
 
@@ -85,6 +86,10 @@ NeutralsFlash pools at the stock intensity law.
   batch; `streams` lists the reused donor streams; `shifts: "events"` digitises one setup copy per distinct event
   time shift of the signal events (5 in Run 1A), so a reused digi is never moved in time; `event_jitter` gives a
   reused digi its event's ROC jitter.
+- **`run1a_mix1bb_batch256_neutrals.json`** (opt-in): the default with `NeutralsFlash` added to the reused streams.
+  The reuse `compute` tracker (`long_steps`, `drift_clusters`, `straws`, the 192-cluster tier, `flat_clusters`,
+  `minion_steps`) and the reused `straws` per batch are 1.25 times their demand with Neutrals reused, over full
+  development and held-out passes in float32 and float64; `precompute` is unchanged (Neutrals frames fit it).
 
 - **CPU end tiers** (`*_cpu.json`): on a GPU a launch costs little more for padded straws; on one CPU core every
   padded straw costs its full width. The CPU files keep each file's sizes and options and change only the tracker
