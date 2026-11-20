@@ -13,6 +13,8 @@ transcriptions tests/cal_helix_reference.py and tests/merge_helices_reference.py
   panel, `mpr._stock_sort`), then laid out in the order every stock face/panel/hit walk visits them (faces
   descending, panels ascending, sorted order within a panel): a walk "from a seed hit" is then the suffix that starts
   at the seed, and every float or double sum runs in that order;
+- XLA's division rewrites are blocked where they would change a rounding: (a / b) / c and x / sqrt(y) keep their
+  intermediate (`exact.g`);
 - stock state that crosses calls is kept: the triplet search's shared `_hdfdz` (the use-mpv search starts each track
   from the slope the last findDfDz left), the trial add/remove rounding of rescueHits, the counters rescueHits does
   not take back, and the hit buffer of the Helix copy (see the reference's docstring).
@@ -275,7 +277,7 @@ def _lsq(s):
     sX2X2, sX2Y2, sY2Y2 = x4m - _m(x2m, x2m), x2y2m - _m(x2m, y2m), y4m - _m(y2m, y2m)
     det = _m(sXX, sYY) - _m(sXY, sXY)
     a, b = sX2X + sXY2, sX2Y + sYY2
-    # every chained division is guarded: XLA rewrites (a / b) / c as a / (b * c)
+    # chained divisions are guarded: XLA rewrites (a / b) / c as a / (b * c) (and x / sqrt(y) as x * rsqrt(y))
     x0 = _g((_m(sYY, a) - _m(sXY, b)) / 2.0) / det
     y0 = _g((_m(sXX, b) - _m(sXY, a)) / 2.0) / det
     dx, dy = xm - x0, ym - y0
@@ -504,7 +506,7 @@ def _dlfp(P, A, S, T, s0, uiw, on):
     phih = poly_atan2(P["y"] - hcy, P["x"] - hcx)
     if uiw:
         wv = _calc_phi_weight(P, hcx, hcy, rad, S)
-        err = jnp.where(_d(wv) > 0, _f(1.0 / _d(jnp.sqrt(wv))), S["sigphi"])
+        err = jnp.where(_d(wv) > 0, _f(1.0 / _d(_g(jnp.sqrt(wv)))), S["sigphi"])
     else:
         wv = jnp.full(L, S["wphi0"], F32)
         err = jnp.full(L, S["sigphi"], F32)
@@ -1018,7 +1020,7 @@ def _helicity(P, A, S, G, R):
     fcent = jnp.where((x0 == 0) & (y0 == 0), 0.0, jnp.arctan2(y0, x0))
     mm2mev = (3.0 / 10.0) * float(G["bz"])
     mom = _m(Rd, mm2mev) / jnp.cos(jnp.arctan(td))
-    beta = jnp.abs(mom) / jnp.sqrt(_m(mom, mom) + E_MASS * E_MASS)
+    beta = jnp.abs(mom) / _g(jnp.sqrt(_m(mom, mom) + E_MASS * E_MASS))     # opaque: XLA makes x / sqrt(y) x * rsqrt(y)
     pitch = PI / 2.0 - jnp.arctan(td)
     t0 = _d(P["ct"]) - _g((P["tz"] - z0) / jnp.sin(pitch)) / _m(beta, C_LIGHT)
     good = (H["used"] == 1) & P["valid"]
