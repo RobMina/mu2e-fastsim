@@ -1187,3 +1187,12 @@ def run(hits, geo, cfg, spill_on=True):
     fd = Finder(hits, geo, cfg, spill_on)
     fd.run()
     return fd.flags()
+
+
+def geo_from(g):
+    """`deltafinder.geometry()` arrays -> this module's geometry (float atan2 for the proton azimuths)."""
+    at = lambda y, x: f(math.atan2(float(f(y)), float(f(x))))
+    return {"pz": [[[{"wx": g["wx"][a, b, c], "wy": g["wy"][a, b, c], "nx": g["nx"][a, b, c], "ny": g["ny"][a, b, c]}
+                     for c in range(3)] for b in range(NFACE)] for a in range(NST)],
+            "fz": g["fz"], "stationZ": g["stationZ"], "atan2": at,
+            "seed_phi": lambda y, x: f(0) if (y == 0 and x == 0) else at(y, x)}
