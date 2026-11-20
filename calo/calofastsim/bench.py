@@ -1,8 +1,13 @@
 """Shared-timer entry points for the calorimeter device chain (``python3 -m mu2efastsim.bench``).
 
-Boundary: stock CaloShowerSteps -> calorimeter hits and clusters (:func:`device_chain.make_steps_chain`) with the
-default crystal response (``digi_response="parametric"``, hits drawn per crystal, no digis); ``digi_response=
-"waveform"`` runs photoelectrons, digis and the template fit (digis, hits and clusters).
+W7's default (since 2026-11-20): ``bench_entrants`` with ``--prepare calofastsim.bench:bench_prepare_entrants``,
+calorimeter entrants (front and inner-edge entry states of the bench tables' events) -> library draw -> hits and
+clusters through :mod:`calofastsim.entrant_chain` with :data:`entrant_chain.W7_DEFAULT` and the per-entrant library
+``CALO_BENCH_LIBRARY`` (W7's: content hash :data:`entrant_chain.W7_LIBRARY_HASH`).
+
+Stock-steps entry (the response alone): ``bench_steps``, stock CaloShowerSteps -> calorimeter hits and clusters
+(:func:`device_chain.make_steps_chain`). Both use the default crystal response (``digi_response="parametric"``,
+hits drawn per crystal, no digis); ``digi_response="waveform"`` runs photoelectrons, digis and the template fit.
 
 Inputs come from environment variables, so no path is built into the code:
 
@@ -16,15 +21,16 @@ Inputs come from environment variables, so no path is built into the code:
 and the per-event bunch times are drawn from the seed, so every pass sees other events. ``bench_steps`` runs the
 batches through the chain (built once per process and configuration) and returns the device outputs.
 
-Example::
+- ``CALO_BENCH_LIBRARY`` (entrant entry points): the per-entrant library npz.
 
-    python3 -m mu2efastsim.bench calofastsim.bench:bench_steps --prepare calofastsim.bench:bench_prepare \\
+W7 default, example::
+
+    python3 -m mu2efastsim.bench calofastsim.bench:bench_entrants --prepare calofastsim.bench:bench_prepare_entrants \\
         --events 163840 --fresh-inputs --dtype float32 --kwargs '{"dtype": "float32"}' --workflow W7 \\
-        --boundary "CE CaloShowerSteps -> calo hits + clusters" --out bench.json
+        --boundary "CE calorimeter entrants -> calo hits + clusters" --out bench.json
 
-Entrant library (opt-in shower source): ``bench_entrants`` with ``--prepare calofastsim.bench:bench_prepare_entrants``
-times calorimeter entrants (front and inner-edge entry states of the bench tables' events) -> clusters through
-:mod:`calofastsim.entrant_chain`, with the per-entrant library ``CALO_BENCH_LIBRARY`` (key_neighbors 8).
+The stock-steps entry: ``calofastsim.bench:bench_steps --prepare calofastsim.bench:bench_prepare``, boundary
+"CE CaloShowerSteps -> calo hits + clusters".
 
 Batches: ``BATCH`` (65,536 events) for the default parametric response, which runs fastest at large batches;
 the waveform response runs fastest at ``WAVEFORM_BATCH`` (4,096): ``--prepare calofastsim.bench:
