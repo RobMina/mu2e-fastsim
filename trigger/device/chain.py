@@ -385,7 +385,7 @@ class Chain:
         diag_off = {}
         if self.stc:                             # cst paths: off-spill hits and SimpleTimeCluster clusters
             sh2 = hits.reflag_straw_hits(sh, self.sh_off)
-            ph2 = hits.panel_hits_other(sh, ph, self.ph, sh2, self.ph_off)
+            ph2 = hits.panel_hits_other(sh, {k: v for k, v in ph.items() if k != "df_err"}, self.ph, sh2, self.ph_off)
             tcs = {**tcs, **{lbl: simpletc.clusters(ph2, s) for lbl, s in self.stc.items()}}
             diag_off = {"sh_offsp": sh2, "ph_offsp": ph2}
         if self.mprs:                            # mpr paths: RobustMultiHelixFinder + MergeHelices on their clusters
