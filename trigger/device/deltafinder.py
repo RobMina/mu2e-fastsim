@@ -1158,7 +1158,7 @@ def _resolve_overlaps(ev, S, perp, n, K):
             hit_g = jnp.where(ev.valid, ev.g, G)
             m = S["p_mem"][p1] & S["p_mem"][p2] & gst[jnp.minimum(hit_g, G - 1)] & (hit_g < G)
             key = jnp.where(m, hit_g.astype(jnp.int64) * (2 ** 31) + S["p_stamp"][p1], 2 ** 62)
-            o = jnp.argsort(key, stable=True)
+            o = _i(jnp.argsort(key, stable=True))
             cnt = jnp.zeros(G + 1, I32).at[jnp.where(m, hit_g, G)].add(1)[:G]
             start = jnp.concatenate([jnp.zeros(1, I32), _i(jnp.cumsum(cnt))[:-1]])
             ck = jnp.minimum(cnt, 100)
