@@ -108,7 +108,8 @@ QUIRKS = (
 
 def piece_provenance(stats):
     """The run settings of one piece (and of the run it was resumed from) that change the counts."""
-    keys = ("dtype", "model", "seed", "max_steps", "capped", "forced", "badsrc", "stuck", "photons", "commit")
+    keys = ("dtype", "model", "seed", "max_steps", "capped", "forced", "badsrc", "stuck", "photons", "commit", "device",
+            "platform")
     out = {k: stats.get(k) for k in keys if k in stats}
     if "resumed_from" in stats:
         out["resumed_from"] = piece_provenance(stats["resumed_from"])

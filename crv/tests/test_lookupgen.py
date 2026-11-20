@@ -197,6 +197,9 @@ def test_transport_runs_and_conserves(dtype, model):
     # chain-length histograms: one entry per generated photon, one per SiPM-0 arrival
     assert len(s["len_end"]) == len(s["len_arr"]) == 19
     assert sum(s["len_end"]) == r["gen"].sum() and sum(s["len_arr"]) == r["nall"].sum()
+    # the device the kernel ran on is recorded (the manifests name it per piece)
+    import jax
+    assert s["device"] == jax.devices()[0].device_kind and s["platform"] == jax.devices()[0].platform
 
 
 def test_bins_outside_the_scintillator_generate_nothing():
@@ -273,8 +276,8 @@ def test_assemble_writes_the_table_and_its_provenance(tmp_path):
         z = {k: np.zeros(n, np.int32) for k in ("gen", "nall")}
         z.update(bins=np.arange(n), ht=np.zeros((n, 150), np.int32), he=np.zeros((n, 10), np.int32),
                  hta=np.zeros((n, 150), np.int32), hea=np.zeros((n, 10), np.int32))
-        stats = {"dtype": "float32", "model": "v6", "max_steps": 65536, "capped": 2,
-                 "resumed_from": {"dtype": "float32", "max_steps": 1 << 19, "capped": 0}}
+        stats = {"dtype": "float32", "model": "v6", "max_steps": 65536, "capped": 2, "device": "gpu B",
+                 "resumed_from": {"dtype": "float32", "max_steps": 1 << 19, "capped": 0, "device": "gpu A"}}
         np.savez(f, **z, complete=np.ones(n, bool), nphot=10000 if st == 2 else 100000, simtype=st, model="v6",
                  stats=json.dumps(stats), counter=json.dumps(c.__dict__))
         pieces.append(f)
@@ -304,6 +307,10 @@ def test_assemble_writes_the_table_and_its_provenance(tmp_path):
     assert set(m["unrecorded"]) == {"seeds", "release"} and m["validation"]["status"] == "tested, not closed"
     assert [a["name"] for a in m["axes"]] == ["x", "y", "z", "beta", "theta", "phi", "r"]
     assert m["generator"]["configuration"]["max_steps"] == [65536]
+    # devices per piece, newest run first (this piece was resumed on another device)
+    assert m["generator"]["configuration"]["devices"] == ["gpu A", "gpu B"]
+    assert m["generator"]["configuration"]["pieces"]["Cerenkov in fiber"][0]["devices"] == ["gpu B", "gpu A"]
+    assert part["device"] == "gpu B" and part["resumed_from"]["device"] == "gpu A"
     assert LIB.verify(out)["content_hash"] == m["content_hash"]
     assert main(["verify", out, "--content-hash", m["content_hash"]]) == 0
     with pytest.raises(LibraryError):
@@ -315,6 +322,24 @@ def test_assemble_writes_the_table_and_its_provenance(tmp_path):
     assert m2["unrecorded"] == {} and m2["content_hash"] == m["content_hash"]
     assert m2["release"]["commit"] == "def5678" and m2["generator"]["release"] == ["abc1234"]
     assert m2["seeds"] == {"scintillation in scintillator": 1, "Cerenkov in scintillator": 1, "Cerenkov in fiber": 1}
+    # a piece made before devices were recorded: None in its list (not a manifest gap field)
+    z = dict(np.load(pieces[2]))
+    z["stats"] = json.dumps({"dtype": "float32", "model": "v6", "max_steps": 65536, "capped": 0})
+    np.savez(pieces[2], **z)
+    assert main(["assemble", "--length", "1045", "--reflector", "1", "--out", out, "--model", "v6", "--assume-seed",
+                 "1", "--piece-commit", "abc1234", "--commit", "def5678"] + pieces) == 0
+    m3 = json.load(open(str(tmp_path / "LookupTable_1045_1.manifest.json")))
+    assert m3["unrecorded"] == {} and m3["content_hash"] == m["content_hash"]
+    assert m3["generator"]["configuration"]["pieces"]["Cerenkov in fiber"][0]["devices"] == [None]
+    assert m3["generator"]["configuration"]["devices"] == ["gpu A", "gpu B"]
+
+
+def test_validation_status_of_each_model():
+    """The status a new manifest is written with (core/docs/libraries.md): the current model was measured against a
+    CRVStandalone build of the same optics, without criteria declared before the comparison."""
+    from crvfastsim.lookupgen.mu2e import library as LIB
+    assert LIB.VALIDATION["current"][0] == "tested, not closed"
+    assert LIB.VALIDATION["v6"][0] == "tested, not closed"
 
 
 def test_design_tables_are_named_by_their_cross_section():
