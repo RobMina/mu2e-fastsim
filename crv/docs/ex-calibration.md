@@ -48,8 +48,22 @@ the probe on all pulses (`probe = 3`) in the ntuple-stage matchers, which run on
 ```bash
 python -m crvfastsim.objective.ex_observations "$NTUPLE" "$COUNTERS" "$CRVCALIB" "$TRAIN_NPZ" \
   --run "$RUN" --margin-mm "$MARGIN" --threshold-pe "$PE_CUT" --time-window-ns "$HALF_WINDOW" \
-  --pe-per-mm "$PE_PER_MM" --attenuation-mm "$ATTENUATION" --speed-mm-ns "$FIBRE_SPEED" --delay-ns "$DELAY"
+  --pe-per-mm "$PE_PER_MM" --attenuation-mm "$ATTENUATION" --speed-mm-ns "$FIBRE_SPEED" --delay-ns "$DELAY" \
+  --detector-z0-mm "$DETECTOR_Z0"
 ```
+
+`--detector-z0-mm` is the reco geometry's `mu2e.detectorSystemZ0`, the origin of the association's detector frame:
+24171 mm for the v04 nominal tracker, 22935 mm for the commissioning geometry (Offline#2051, which KPP data reco now
+uses). The exporter refuses when fewer than half of the crossings lie inside their predicted bar, the signature of a
+wrong origin.
+
+**Check on one KPP data ntuple** (CRT run of the v14 association re-reco, commissioning geometry, all pulses kept):
+the reader selects one track in about 1 % of the events, the association's probe ran on all pulses (`probe = 3`), and
+the chord through the predicted bar agrees with `probe_upred` to 1e-4 mm. About 31 % of the EX sensor rows are
+`neighbour` (the probe's pulse on an adjacent bar), so the neighbour rule removes a large share of crossings; its
+cause (pointing, or the probe's choice between bars) is an open question for the association. The censored fit
+converges on that file's supported channels with a positive-definite Hessian. No fitted constants from detector data are
+quoted here.
 
 Use an extracted, field-off EventNtuple of one run with the association branches and unclustered pulses, recorded
 without a CRV requirement, with the same counters file and per-channel `CRVCalib` CSV as the sample. `present` is
@@ -100,7 +114,41 @@ uncensored baseline; its slope errors come from the residual scatter.
 `crv/scripts/ex_calibration_closure.py` (60 toys per case, 8 channels x 1,200 events = 9,600 crossings, threshold
 9 PE, window +-4 ns, true `sigma_t` 2 ns). Pull = (fit - truth) / Hessian error; mean +- sd over the toys.
 
-CLOSURE_TABLE
+| Generator | Fit | Attenuation pull | Slowness pull | sigma_0 pull | sigma_t pull | walk pull | 1-sigma coverage (att / slow) | Gain RMSE | Fit time (s) |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| fitted model, constant width | widths fitted | +0.09 +- 1.07 | +0.28 +- 0.90 | -0.38 +- 0.94 | -0.19 +- 0.90 | - | 0.68 / 0.68 | 1.2 % | 5.1 |
+| fitted model, PE-dependent width | widths fitted | -0.02 +- 1.00 | +0.21 +- 0.94 | +0.07 +- 0.95 | -0.19 +- 0.86 | - | 0.70 / 0.73 | 1.5 % | 4.0 |
+| fitted model, PE-dependent width, walk 0.8 ns | widths and walk fitted | +0.05 +- 1.00 | +0.15 +- 0.86 | +0.03 +- 0.93 | -0.20 +- 0.90 | -0.15 +- 0.83 | 0.72 / 0.79 | 1.5 % | 4.5 |
+| fitted model, walk 0.8 ns | walk fixed at 0 | +0.23 +- 1.04 | +1.43 +- 0.86 | -0.02 +- 0.98 | +0.21 +- 0.90 | - | 0.65 / 0.28 | 1.6 % | 4.1 |
+| fitted model, constant width | widths fixed at 0.8x true | -4.40 +- 2.12 | -0.19 +- 1.34 | - | - | - | 0.07 / 0.48 | 1.3 % | 1.8 |
+| fitted model, constant width | widths fixed at true | -0.03 +- 1.08 | +0.27 +- 0.94 | - | - | - | 0.72 / 0.67 | 1.2 % | 1.4 |
+| fitted model, constant width | widths fixed at 1.2x true | +3.30 +- 1.36 | +0.48 +- 0.95 | - | - | - | 0.03 / 0.65 | 1.6 % | 1.2 |
+| fitted model, PE-dependent width | constant width fitted | -4.26 +- 2.16 | +0.58 +- 0.98 | +31.28 +- 2.44 | -0.72 +- 0.90 | - | 0.07 / 0.57 | 1.6 % | 2.7 |
+| Poisson counts on log-normal yield | widths fixed (0.36, 2 ns) | -5.80 +- 2.44 | +0.17 +- 1.02 | - | - | - | 0.03 / 0.70 | 1.5 % | 1.1 |
+| Poisson counts on log-normal yield | constant width fitted | -6.80 +- 2.82 | +0.08 +- 1.02 | -4.15 +- 1.09 | -0.67 +- 0.84 | - | 0.00 / 0.73 | 1.6 % | 1.7 |
+| Poisson counts on log-normal yield | widths fitted | -5.83 +- 2.24 | +0.08 +- 1.05 | -2.76 +- 1.27 | -0.62 +- 0.84 | - | 0.02 / 0.72 | 1.5 % | 3.9 |
+| Poisson counts, walk 0.8 ns | widths and walk fitted | -5.46 +- 2.25 | +0.08 +- 0.99 | -2.76 +- 1.22 | -0.78 +- 0.93 | -0.82 +- 1.26 | 0.02 / 0.69 | 1.5 % | 4.6 |
+| Poisson counts on log-normal yield | widths fitted, threshold 8.5 (continuity) | -1.89 +- 1.31 | -0.00 +- 1.12 | -1.85 +- 0.86 | +1.58 +- 1.08 | - | 0.15 / 0.67 | 1.3 % | 4.5 |
+| Poisson + single-PE gain spread (continuous) | widths fixed (0.36, 2 ns) | -4.15 +- 2.11 | +0.01 +- 1.06 | - | - | - | 0.05 / 0.67 | 1.4 % | 1.4 |
+| Poisson + single-PE gain spread (continuous) | widths fitted | -2.06 +- 1.32 | -0.04 +- 1.08 | -1.71 +- 0.80 | +1.23 +- 0.98 | - | 0.13 / 0.72 | 1.3 % | 4.8 |
+| fitted model, constant width | positive-only closed form | bias -2.6e-04 /mm | +0.28 +- 4.05 | - | - | - | 0.00 / 0.15 | 4.3 % | 0.0 |
+
+- **The fitted model closes.** Pulls are centred with unit spread and the 1-sigma coverage is near 0.68, with
+  constant or PE-dependent charge width and with walk; channel gains are recovered to 1.2-1.5 % RMS (positive-only:
+  4.3 %, and an attenuation bias of -2.6e-4 /mm, about 25 times the censored error).
+- **Width sensitivity.** Widths fixed at 0.8x / 1.2x true bias the attenuation by -4.4 / +3.3 sigma; fitting them
+  removes it. A constant width fitted to a PE-dependent truth is biased as much (-4.3 sigma), which is why the charge
+  width has the photostatistics term.
+- **Walk.** Ignoring a 0.8 ns walk biases the slowness (+1.4 sigma, coverage 0.28); fitting it restores the closure.
+- **Model mismatch (Poisson + log-normal) is not a width problem.** With integer counts the attenuation stays biased
+  by about -5.8 sigma (-7e-5 /mm) whether the widths are fixed or fitted. Most of it is the count threshold:
+  `n >= 9` is `PE >= 8.5` for a continuous model, and the continuity-corrected threshold brings it to -1.9 sigma.
+  With a continuous charge (single-PE gain spread 0.15, as a reconstructed PE), fitted widths halve the bias,
+  -4.2 to -2.1 sigma (-4.8e-5 to -3.0e-5 /mm), at a 4.8 s fit. The remaining bias comes from the charge shape,
+  which the log-normal surrogate cannot describe; the forward model, not the widths, has to (see below).
+- 2 of 60 toys with walk did not converge (reported as fit failures, not in the table).
+- Fits take 1-5 s for 9,600 crossings on one core (fixed widths 1-2 s). `predict` in float32 agrees with float64 to
+  1.6e-6 in probability, 1.2e-7 in log PE and 1.5e-5 ns.
 
 Earlier validation of the fixed-width fit (2026-11-19, same toys): attenuation pulls -3.5 +- 2.0 and +2.6 +- 1.4 for
 fit widths 0.8x and 1.2x true, and -4.1 +- 3.0 under the Poisson + log-normal mismatch.
@@ -129,7 +177,18 @@ channel RMSE, held-out NLL per crossing and detection Brier score, and, for the 
 pulls. The replay draws the held-out crossings from the same standardized noise at each arm's widths, in float32 and
 float64, into the common scorer format. The censored arm fits widths and walk.
 
-FIXTURE_TABLE
+| Fixture | Method | Held-out NLL | Brier | Inverse attenuation error (1/mm) | Slowness error (ns/mm) | Gain RMSE |
+|---|---|---:|---:|---:|---:|---:|
+| dev | Nominal | 1.249 | 0.245 | 2.40e-4 | 1.50e-3 | 7.0 % |
+| dev | Positive-only | 1.341 | 0.304 | 4.08e-4 | 4.86e-4 | 3.5 % |
+| dev | Censored | **0.878** | **0.140** | **2.5e-6** (pull +0.1) | **7.8e-5** (pull +0.5) | **1.6 %** |
+| final | Nominal | 1.730 | 0.216 | 1.70e-4 | 1.10e-3 | 8.7 % |
+| final | Positive-only | 1.921 | 0.275 | 1.34e-4 | 3.10e-4 | 3.8 % |
+| final | Censored | **1.669** | **0.206** | **1.23e-5** (pull -1.3) | **4.9e-5** (pull +0.7) | **0.7 %** |
+
+The censored arm passes every histogram and the yield in both fixtures and both precisions (validity 1.0); the
+nominal and positive-only arms do not (validity 0 and 0.33 / 0). The held-out NLL now includes the fitted widths
+(log PE and ns units), so it is not comparable with the fixed-width numbers of the first version of this pilot.
 
 ## Gate before using candidate constants
 

@@ -59,7 +59,7 @@ def run_case(name, toys, events):
                             "time_offset_ns_rmse", "sigma_log_pe", "sigma_time_ns", "walk_ns_per_log_pe",
                             "excess_noise")}
     cover = {k: [] for k in ("delta_attenuation_per_mm", "delta_slowness_ns_per_mm")}
-    fails, times = 0, []
+    fails, reasons, times = 0, [], []
     for s in range(toys):
         truth = synthetic.truth(np.random.default_rng(5000 + s), 8, **dict(dict(sigma_log_pe=SQ, sigma_time_ns=ST),
                                                                            **topts),
@@ -73,8 +73,9 @@ def run_case(name, toys, events):
         start = time.perf_counter()
         try:
             cal = response.fit(rows, **fit_opts)
-        except (RuntimeError, ValueError):
+        except (RuntimeError, ValueError) as exc:
             fails += 1
+            reasons.append(f"toy {s}: {exc}")
             continue
         times.append(time.perf_counter() - start)
         dev = synthetic.errors(cal, truth)
@@ -87,7 +88,7 @@ def run_case(name, toys, events):
             if e:
                 cover[k].append(abs(dev[k]) < e)
     return dict(model=model, truth=topts, fit={k: v for k, v in opts.items()}, toys=toys, crossings=8 * events,
-                fit_failures=fails, fit_time_s=stats(times),
+                fit_failures=fails, failure_reasons=reasons, fit_time_s=stats(times),
                 pulls={k: stats(v) for k, v in pulls.items() if v},
                 errors={k: stats(v) for k, v in errs.items()},
                 coverage_1sigma={k: float(np.mean(v)) for k, v in cover.items() if v})

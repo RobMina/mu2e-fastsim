@@ -9,6 +9,9 @@
 # reco chain on the production tiers, dispatch fallbacks, on-spill waveform
 ^crvfastsim/reco/(chain_jax|coinc_jax|waveform_jax)\.py$
 ^crvfastsim/onspill\.py$
+# EX response calibration: width-sensitivity and model-mismatch closures
+^crvfastsim/objective/ex_(response|synthetic|observations)\.py$
+^tests/test_ex_calibration\.py$
 # campaign and validation tooling
 ^crvfastsim/(validation|analyses)/
 ^ci/runslow

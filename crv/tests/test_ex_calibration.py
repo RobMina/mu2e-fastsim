@@ -278,6 +278,7 @@ def test_censored_closure_with_fitted_widths_walk_and_pulls():
     assert no_walk["walk_ns_per_log_pe"] == 0 and not no_walk["fitted"]["walk_ns_per_log_pe"]
 
 
+@pytest.mark.slow
 def test_fixed_widths_bias_the_attenuation_and_fitted_widths_do_not():
     # Validation 2026-11-19 (60 toys): fit widths 0.8x / 1.2x true gave attenuation pulls -3.5 / +2.6.
     truth, rows = _fixture(n=4800)
@@ -292,16 +293,24 @@ def test_fixed_widths_bias_the_attenuation_and_fitted_widths_do_not():
     assert pull(low) < -3 and pull(high) > 2
 
 
+@pytest.mark.slow
 def test_poisson_lognormal_mismatch_closure():
-    # Poisson PE counts on a log-normal yield (smear 0.25), the threshold on the count: the fitted log-normal widths
-    # absorb most of the mismatch that biased the fixed-width fit (pull -4.1 in the 2026-11-19 validation).
-    truth, rows = _fixture(n=4800, model="poisson")
-    fitted = response.fit(rows, walk=False)
+    # Poisson photoelectrons on a log-normal yield (smear 0.25) is not the fitted model. The fixed-width fit gave an
+    # attenuation pull of -4.1 (2026-11-19 validation). With a continuous charge (single-PE gain spread) the fitted
+    # widths remove most of that bias; with integer counts most of it is the count threshold (n >= 9 is PE >= 8.5),
+    # which the continuity-corrected threshold removes. A residual bias stays (ex-calibration.md): the forward model,
+    # not the widths, has to describe the charge shape.
+    err = lambda cal, truth: abs(synthetic.errors(cal, truth)["delta_attenuation_per_mm"])
+    truth, rows = _fixture(n=4800, model="poisson_spe")
     fixed = response.fit(rows, sigma_log_pe=truth["sigma_log_pe"], sigma_time_ns=truth["sigma_time_ns"],
                          fit_widths=False, walk=False)
-    err = lambda cal: abs(synthetic.errors(cal, truth)["delta_attenuation_per_mm"])
-    assert abs(synthetic.pulls(fitted, truth)["delta_attenuation_per_mm"]) < 3
-    assert err(fitted) < err(fixed)
+    fitted = response.fit(rows, walk=False)
+    assert err(fitted, truth) < 0.7 * err(fixed, truth)
+
+    truth, rows = _fixture(n=4800, model="poisson")
+    counts = response.fit(rows, walk=False)
+    corrected = response.fit(dict(rows, threshold_pe=rows["threshold_pe"] - 0.5), walk=False)
+    assert err(corrected, truth) < 0.5 * err(counts, truth)
 
 
 def test_fit_rejects_unsupported_response_and_scores_eligible_only(crossings):

@@ -167,6 +167,10 @@ def _charge_width(mu_q, ls0, excess):
     return 0.5 * np.log(v), v
 
 
+class CorrelationRangeError(ValueError):
+    """The log PE - time correlation implied by the walk is beyond the bivariate normal rule's range."""
+
+
 def _log_bvn(h, k, rho):
     """log P(X <= h, Y <= k) for a standard bivariate normal of correlation rho (|rho| <= MAX_CORRELATION).
 
@@ -202,7 +206,7 @@ def _miss_terms(mu_q, mu_t, lsq, lst, walk, lthr, lo, hi, ref):
     sT = np.sqrt((walk * sq) ** 2 + st * st)
     r = walk * sq / sT
     if np.any(np.abs(r) > MAX_CORRELATION):
-        raise ValueError(f"time-walk correlation |r| > {MAX_CORRELATION}: outside the supported range")
+        raise CorrelationRangeError(f"time-walk correlation |r| > {MAX_CORRELATION}: outside the supported range")
     h, kL, kU = -a, (lo - c) / sT, (hi - c) / sT
     terms = np.stack([log_ndtr(a), _log_bvn(h, kL, r), _log_bvn(h, -kU, -r)])
     log_miss = logsumexp(terms, axis=0)
@@ -405,6 +409,44 @@ def _weights(rows, key, eligible_seen):
     return w
 
 
+MAX_SCALED_GRADIENT = 1e-2   # convergence: largest |gradient| x (start curvature)^-1/2, in units of one sigma
+
+
+def _optimize(theta, free, d, nchan, ref):
+    """L-BFGS-B on the summed NLL in parameters scaled by their start curvature, with box limits on the widths,
+    the excess noise and the walk (the walk box keeps corr(log PE, time) inside the bivariate rule's range)."""
+    H0 = _hessian(theta, d, nchan, ref, free[:NG])
+    diag = np.diag(H0)[free]
+    scale = 1 / np.sqrt(np.where(np.isfinite(diag) & (diag > 0), diag, 1.))
+    base = theta.copy()
+    last = {}
+
+    def full(u):
+        t = base.copy()
+        t[free] = base[free] + scale * u
+        return t
+
+    def loss(u):
+        try:
+            terms, grad = _nll(full(u), d, nchan, ref)
+        except CorrelationRangeError:
+            # A probe beyond the supported correlation (widths moved with the walk): reject the step.
+            return 1e20, last.get("grad", np.zeros(free.sum()))
+        last["grad"] = grad[free] * scale
+        return terms.sum(), last["grad"]
+
+    sq_max = float(np.exp(_charge_width(_eta(theta, d, nchan)[:, 0], theta[2], theta[5])[0]).max())
+    walk_max = 0.9 * MAX_CORRELATION / np.sqrt(1 - MAX_CORRELATION ** 2) * np.exp(theta[3]) / sq_max
+    limits = {2: (-7., 3.), 3: (-7., 3.), 4: (-walk_max, walk_max), 5: (0., 20.)}
+    bounds = [tuple((b - base[k]) / scale[i] for b in limits[k]) if k in limits else (None, None)
+              for i, k in enumerate(np.flatnonzero(free))]
+    result = minimize(loss, np.zeros(free.sum()), jac=True, method="L-BFGS-B", bounds=bounds,
+                      options={"maxiter": 3000, "ftol": 1e-15, "gtol": 1e-7, "maxcor": 30})
+    theta = full(result.x)
+    at_bound = [k for k in (4, 5) if free[k] and min(abs(theta[k] - lim) for lim in limits[k]) <= 1e-9 * max(1, abs(theta[k]))]
+    return theta, dict(scale=np.r_[scale], free=free.copy(), message=result.message, nit=result.nit), at_bound
+
+
 def fit(rows, *, sigma_log_pe=None, sigma_time_ns=None, excess_noise="fit", fit_widths=True, walk=True,
         include_missing=True, charge_weight=None, time_weight=None):
     """Return candidate corrections relative to the expected response; does not write conditions.
@@ -452,45 +494,26 @@ def fit(rows, *, sigma_log_pe=None, sigma_time_ns=None, excess_noise="fit", fit_
             theta[k] = np.log(v)
     free = np.ones(len(theta), bool)
     free[2:4] = fit_widths
-    free[4] = bool(walk)
     free[5] = fit_excess
-    H0 = _hessian(theta, d, nchan, ref, free[:NG])
-    diag = np.diag(H0)[free]
-    scale = 1 / np.sqrt(np.where(np.isfinite(diag) & (diag > 0), diag, 1.))
-    base = theta.copy()
-
-    def full(u):
-        t = base.copy()
-        t[free] = base[free] + scale * u
-        return t
-
-    def loss(u):
-        terms, grad = _nll(full(u), d, nchan, ref)
-        return terms.sum(), grad[free] * scale
-
-    limits = {2: (-7., 3.), 3: (-7., 3.), 5: (0., 20.)}
-    bounds = [tuple((b - base[k]) / scale[i] for b in limits[k]) if k in limits else (None, None)
-              for i, k in enumerate(np.flatnonzero(free))]
-    result = minimize(loss, np.zeros(free.sum()), jac=True, method="L-BFGS-B", bounds=bounds,
-                      options={"maxiter": 3000, "ftol": 1e-15, "gtol": 1e-7, "maxcor": 30})
-    theta = full(result.x)
+    if walk:
+        # Two stages: without walk first (the start is far from the censored optimum), then with it.
+        free[4] = False
+        theta, _, _ = _optimize(theta, free, d, nchan, ref)
+        free[4] = True
+    theta, result, at_bound = _optimize(theta, free, d, nchan, ref)
+    for k in at_bound:
+        free[k] = False      # held at a bound: no curvature-based error for it
     terms, grad = _nll(theta, d, nchan, ref)
-    sgrad = grad * np.where(free, 1., 0.)
-    sgrad[free] *= scale
-    at_bound = fit_excess and theta[5] <= 1e-9
-    if at_bound:
-        free[5] = False      # constrained at zero: no curvature-based error for it
-    gnorm = float(np.max(np.abs(sgrad[free])))
-    if not np.isfinite(theta).all() or not np.isfinite(terms).all() or (not result.success and gnorm > 1e-3):
-        raise RuntimeError(f"EX fit did not converge: {result.message}")
+    gnorm = float(np.max(np.abs(grad[free] * result["scale"][free[result["free"]]]))) if free.any() else 0.
+    if not np.isfinite(theta).all() or not np.isfinite(terms).all() or gnorm > MAX_SCALED_GRADIENT:
+        raise RuntimeError(f"EX fit did not converge: {result['message']} (max scaled gradient {gnorm:.2g})")
     gfree = free[:NG].copy()
-    gfree[5] = fit_excess and not at_bound
     H = _hessian(theta, d, nchan, ref, gfree)
     cov = _covariance(H, free)
     out = _report(theta, cov, channels, ref, gfree, n_eligible, n_seen, True)
-    if at_bound:
-        out["fitted"]["excess_noise"] = "at_bound"
-    out["optimizer"] = dict(iterations=int(result.nit), max_scaled_gradient=gnorm)
+    for k in at_bound:
+        out["fitted"][REPORTED[k]] = "at_bound"
+    out["optimizer"] = dict(iterations=int(result["nit"]), max_scaled_gradient=gnorm)
     return out
 
 
