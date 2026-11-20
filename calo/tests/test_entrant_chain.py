@@ -145,6 +145,75 @@ def _stages(lib, q, u):
     return jax.tree_util.tree_map(np.asarray, go(lib.arrays, {k: jnp.asarray(v) for k, v in q.items()}, jnp.asarray(u)))
 
 
+@pytest.mark.parametrize("k,dmax,far", [(1, 20.0, "g4"), (3, 20.0, "cell"), (1, 1e4, "g4"), (2, 60.0, "g4")])
+def test_nearest_draw_matches_host(library, k, dmax, far):
+    """selection="nearest" (the Mu2eG4 host's donorSelection: nearest): device donors, far flags and placed steps
+    equal the host sampler's."""
+    query = _queries()
+    u = np.random.default_rng(13).random(320)
+    host = E.sample(library, query, _Fixed(u), selection="nearest", nearest_k=k, max_entry_distance=dmax, far=far,
+                    key_neighbors=3)
+    lib = ec.pack_entrants(library, placement="geometric", key_neighbors=3, selection="nearest", nearest_k=k,
+                           max_entry_distance=dmax, far=far)
+    assert lib.meta["window"] >= 1 and lib.meta["selection"] == "nearest"
+    q, _ = _batch(query, 320)
+
+    @jax.jit
+    def go(arrays, q, u):
+        import dataclasses
+        lb = dataclasses.replace(lib, arrays=arrays)
+        return ec.sample_entrants(lb, q, u, return_far=True)
+    donor, fallback, edge, slot, position, far_dev = jax.tree_util.tree_map(
+        np.asarray, go(lib.arrays, {kk: jnp.asarray(v) for kk, v in q.items()}, jnp.asarray(u)))
+    np.testing.assert_array_equal(donor[:300], host["donor"])
+    np.testing.assert_array_equal(far_dev[:300], host["far"])
+    np.testing.assert_array_equal(edge[:300], host["far"] if far == "g4" else np.zeros(300, bool))
+    ok = host["donor"] >= 0
+    np.testing.assert_array_equal(fallback[:300][ok], host["fallback"][ok])
+    assert ok.sum() > (100 if far == "cell" or dmax > 1e3 else 0)
+    if far == "g4":
+        assert (host["donor"][host["far"]] == -1).all()
+    _, _, _, st, _, _, _, over = _stages(lib, q, u)
+    n = len(host["entry"])
+    assert int(over) == 0 and st["valid"].sum() == n
+    np.testing.assert_allclose(st["position"][:n], host["position"], rtol=0, atol=1e-9)
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_nearest_k1_argmin_picks_the_lexsort_donors(library, dtype):
+    """k = 1: the device's argmin path (default) gives the same donors and far flags as the sorted-window path, in
+    both dtypes, for several distances and both far rules, and the host's donors."""
+    import dataclasses
+    query = _queries(300, seed=17)
+    u = np.random.default_rng(19).random(320)
+    q, _ = _batch(query, 320)
+    qd = {kk: jnp.asarray(v) for kk, v in q.items()}
+    for dmax, far in ((5.0, "g4"), (20.0, "cell"), (80.0, "g4"), (1e4, "cell")):
+        lib = ec.pack_entrants(library, key_neighbors=3, selection="nearest", nearest_k=1, max_entry_distance=dmax,
+                               far=far, dtype=dtype)
+        sorted_lib = dataclasses.replace(lib, meta=dict(lib.meta, nearest_argmin=False))
+        out = [jax.tree_util.tree_map(np.asarray, jax.jit(
+            lambda arrays, q, u, lb=lb: ec.sample_entrants(dataclasses.replace(lb, arrays=arrays), q, u,
+                                                           return_far=True))(lb.arrays, qd, jnp.asarray(u)))
+               for lb in (lib, sorted_lib)]
+        for got, want in zip(out[0], out[1]):
+            np.testing.assert_array_equal(got, want)
+        host = E.sample(library, query, _Fixed(u), selection="nearest", nearest_k=1, max_entry_distance=dmax,
+                        far=far, key_neighbors=3, dtype=dtype)
+        np.testing.assert_array_equal(out[0][0][:300], host["donor"])
+        assert (out[0][0][:300] >= 0).sum() > 0
+
+
+def test_nearest_distance_counts_the_half_turn_image():
+    """entry_distance2: the 180-degree image of a donor is at distance 0; front distances are chords on the face,
+    inner-edge distances sqrt(dz^2 + (rho dphi)^2) with dphi folded into [-pi/2, pi/2]."""
+    d = E.entry_distance2(np.array([E.FRONT, E.FRONT, E.INNER, E.INNER]), np.array([400.0, 400.0, 30.0, 30.0]),
+                          np.array([0.1, 0.1, 0.2, 0.2]), np.array([400.0, 400.0, 336.0, 336.0]),
+                          np.array([400.0, 410.0, 30.0, 25.0]), np.array([0.1 + np.pi, 0.1, 0.2 - np.pi, 0.21]))
+    np.testing.assert_allclose(np.sqrt(d), [0.0, 10.0, 0.0, np.hypot(5.0, 336.0 * 0.01)], atol=1e-9)
+    assert E.fold_half_turn(np.array([3 * np.pi / 4]))[0] == pytest.approx(-np.pi / 4)
+
+
 @pytest.mark.parametrize("neighbors,psi", [(0, None), (3, None), (3, E.PSI_BINS_15)])
 def test_draw_and_steps_match_host(library, neighbors, psi):
     query = _queries()
@@ -371,6 +440,14 @@ def test_g4_steps_join_the_drawn_steps(library):
     assert len(got["event"]) > 0
     # visible energy is conserved into clusters on the same scale as the steps
     assert 0.3 < got["energy"].sum() / host["energy_birks"][ok].sum() < 1.5
+    # steps tagged with their entrant row: only the steps of entrants left to Geant4 join
+    tagged = dict(g4, entrant=np.full(2048, -1, np.int32))
+    tagged["entrant"][:ok.sum()] = host["entry"][ok]
+    out_t = ec.run(chain, q, t, jax.random.PRNGKey(3), g4=tagged)
+    assert out_t["stats"]["g4_steps"] == ok.sum()
+    drawn = ec.make_entrant_chain(ec.pack_entrants(library), resp, caps)        # no edge entrants
+    out_d = ec.run(drawn, q, t, jax.random.PRNGKey(3), g4=tagged)
+    assert out_d["stats"]["g4_steps"] == 0 and out_d["stats"]["edge"] == 0
 
 
 def test_bench_entry_point_runs(tmp_path, monkeypatch):
@@ -398,6 +475,8 @@ def test_bench_entry_point_runs(tmp_path, monkeypatch):
     for dtype in ("float64", "float32"):
         outs = bench.bench_entrants(prepared, dtype=dtype, key_neighbors=8, rows=64, hits=64)
         assert len(outs) == 2 and not any(bench.overflow(outs).values())
+        cell = bench.bench_entrants(prepared, dtype=dtype, key_neighbors=8, rows=64, hits=64, selection="cell")
+        assert len(cell) == 2 and not any(bench.overflow(cell).values())
     # the chain cache is keyed by the library path: a library swapped within the process is not silently reused
     import shutil
     shutil.copy(tmp_path / "lib.npz", tmp_path / "lib2.npz")
@@ -440,6 +519,8 @@ def test_w7_default_settings_match_the_bench():
     assert sig["key_neighbors"].default == ec.W7_DEFAULT["key_neighbors"] == 8
     assert sig["placement"].default == ec.W7_DEFAULT["placement"] == "crystal"
     assert ec.W7_DEFAULT["d_edge"] == 0.0 and ec.W7_DEFAULT["psi_bins"] is None
+    for k, v in (("selection", "nearest"), ("far", "cell"), ("nearest_k", 1), ("max_entry_distance", 20.0)):
+        assert sig[k].default == ec.W7_DEFAULT[k] == v
     assert len(ec.W7_LIBRARY_HASH) == 64 and ec.W7_LIBRARY_HASH.startswith("406bd7b4")
 
 
@@ -480,6 +561,13 @@ def test_w7_arm_writes_the_scoring_clusters(tmp_path, monkeypatch):
         assert s["front_definition"] == ["primary disk-front entry", "front-face e- entrant"]
         assert [c["failed_events_skipped"] for c in s["census"]] == [0, 1]
         assert s["stats"]["draws"] == 6 and not s["w7_library"] and not any(s["overflow"].values())
-        assert s["settings"] == {"placement": "crystal", "key_neighbors": 8, "d_edge": 0.0}
+        assert s["settings"] == {k: v for k, v in ec.W7_DEFAULT.items() if k != "psi_bins"}
         ids = {tuple(r) for r in z["all_ids"]}
         assert len(z["ids"]) == len(z["energy"]) and all(tuple(r) in ids for r in z["ids"])
+    # the nearest rule with Geant4 steps for far entrants: each entrant finds its own library entry (distance 0)
+    s = w7_arm.main([str(tmp_path / "nearest_g4")] + args + ["--any-library", "--far", "g4"])
+    assert s["stats"]["draws"] == 6 and s["stats"]["far"] == 0 and s["stats"]["g4_steps"] == 0
+    assert s["settings"]["selection"] == "nearest" and s["settings"]["far"] == "g4" and not any(s["overflow"].values())
+    # the cell rule on request
+    s = w7_arm.main([str(tmp_path / "cell")] + args + ["--any-library", "--selection", "cell"])
+    assert s["stats"]["draws"] == 6 and s["stats"]["far"] == 0 and s["settings"]["selection"] == "cell"

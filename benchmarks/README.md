@@ -80,7 +80,7 @@ the bench timer uses the published headline pass sizes. No stock jobs were run.
 - **PTGT** is rerun on main `32eea930` (#293). The chain is bit-identical to the run scored before the merge (every
   per-rod counter on all 33 rods), and the yields are unchanged.
 - **Scores:** from `score --allow-missing` (coverage) over 20 of 20 arms (W1-W9 and PTGT): **mean validity 0.900**
-  and a **throughput geometric mean of x1,018**.
+  and a **throughput geometric mean of x1,007**.
 - The last column is the same task scored on the older arms. The reference trees are kept privately.
 
 | task | dtype | commit | validity | flagged / histograms | yields passing | throughput x | device | before (scored 2026-11-18 on older arms) |
@@ -97,8 +97,8 @@ the bench timer uses the published headline pass sizes. No stock jobs were run.
 | W5 | float64 | c03dbd13 | 1.000 | 0 / 12 | 1 / 1 | 1090 | A100-80 | 1.000, x1091 |
 | W6 | float32 | 36362f7b | 1.000 | 0 / 2 | 2 / 2 | 198 | A100-80 | 1.000, x191 (c03dbd13) |
 | W6 | float64 | 36362f7b | 1.000 | 0 / 2 | 2 / 2 | 198 | A100-80 | 1.000, x180 (c03dbd13) |
-| W7 | float32 | c03dbd13 | 0.750 | 1 / 4 | 1 / 1 | 2582 | A100-80 | 0.750, x21 |
-| W7 | float64 | c03dbd13 | 0.750 | 1 / 4 | 1 / 1 | 2315 | A100-80 | 0.750, x15 |
+| W7 | float32 | cfe4c13d | 0.750 | 1 / 4 | 1 / 1 | 2369 | A100-80 | 0.750, x2582 (c03dbd13, parametric) |
+| W7 | float64 | cfe4c13d | 0.750 | 1 / 4 | 1 / 1 | 2003 | A100-80 | 0.750, x2315 (c03dbd13, parametric) |
 | W8 | float32 | 213edff8 | 1.000 | 0 / 0 | 22 / 22 | 350 | A100-80 | 1.000, x349 (c03dbd13, before #283) |
 | W8 | float64 | 213edff8 | 1.000 | 0 / 0 | 22 / 22 | 320 | A100-80 | 1.000, x305 (c03dbd13, before #283) |
 | W9 | float32 | c03dbd13 | 0.500 | 1 / 2 | 1 / 1 | 38635 | CPU, 4 cores | not scored |
@@ -125,7 +125,9 @@ the bench timer uses the published headline pass sizes. No stock jobs were run.
 - **W5, W6, W7:**
   - W6's float32 arm is now pure float32. On main `36362f7b` (#301: the bench defaults to the compact sampling receipt;
     detector outputs unchanged) W6 runs at x198 in both dtypes.
-  - W7 is the parametric default: x2,582 / x2,315, with the cluster-radius flag at the inner edge as before.
+  - W7 on main `cfe4c13d` runs the per-entrant library chain (the default since #313), on the frozen arm's events (front
+    population). The cluster-radius histogram is still flagged, but closer: chi2/ndf 3.30 / 2.97 (4.08 / 4.02 with the
+    parametric chain), threshold 2. Cluster yield 0.9986 / 0.9987.
 - **W8:** main as is (device loops on); 22 tested paths. Under this scorer's rule (3 sigma + 2 %) all of them pass.
 - **W9:**
   - float32 and float64 on the same paired events;
