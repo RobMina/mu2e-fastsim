@@ -5,8 +5,8 @@ from this module. What stays here is what only the Mu2eG4 recorder writes or nee
 "dump", art event and record identities), its event fields (capture and status products, StatusG4, SimParticle
 overflow, step-limit and field-propagator kill counts, validation errors), the natural-boundary-stop rule of
 Mu2eG4TrackingAction and its resource-kill process. ``audit`` runs the generic audit on a view of the tables (the
-generic resource-kill count is supplied as zero: Mu2eG4 counts its kills in its own fields) with MU2E_CHECKS as its
-framework checks. Passing never certifies a physics bank.
+generic resource-kill count is supplied as zero: Mu2eG4 counts its kills in its own fields) with mu2e_checks as its
+framework checks (passed in AUDIT_OPTIONS). Passing never certifies a physics bank.
 """
 from __future__ import annotations
 
