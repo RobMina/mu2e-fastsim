@@ -798,7 +798,7 @@ class Finder:
         best, closest = c["maxChi2SeedDelta"], None
         dt = self._dts(c["maxSeedDt"], st, last)
         for s in self.compton[st]:
-            if s.good == 0:
+            if not s.is_good():
                 continue
             if s.used():
                 continue
