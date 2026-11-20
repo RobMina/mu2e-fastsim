@@ -91,6 +91,45 @@ def stage_passed(word, position, n_modules):
     return passed | (state == 0) | (index > position + off)
 
 
+HELIX_FIELDS = ("rcent", "fcent", "radius", "lambda", "fz0", "chi2xy", "chi2zphi")
+
+
+def decode_helix_seeds(data, offsets):
+    """Stock HelixSeeds (memberwise: header 16, then per member over the n seeds: ``_t0`` 26 bytes each (two doubles),
+    ``_hhits`` (a bytecounted ComboHitCollection each; its ComboHits memberwise, ``_pos`` first, 32 bytes per hit with
+    x, y, z float at 20), ``_helix`` 52 bytes each (7 floats at 10, helicity int at 48), the rest skipped).
+    Returns per event a list of seeds {t0, helicity, rcent ... chi2zphi, pos [nh, 3]}."""
+    out = []
+    bc = lambda at: int(_be(data, np.array([at]), ">u4")[0] & 0x3FFFFFFF)
+    for s, e in zip(offsets[:-1], offsets[1:]):
+        s, e = int(s), int(e)
+        if bc(s) + 4 != e - s or int(_be(data, np.array([s + 4]), ">u2")[0]) != 0x400A:
+            raise ValueError("unexpected HelixSeed collection header")
+        n = int(_be(data, np.array([s + 12]), ">i4")[0])
+        at = s + 16
+        seeds = [{"t0": float(_be(data, np.array([at + 26 * k + 10]), ">f8")[0])} for k in range(n)]
+        at += 26 * n
+        for k in range(n):
+            b, inner = bc(at), at + 10
+            if int(_be(data, np.array([inner + 4]), ">u2")[0]) != 0x400A:
+                raise ValueError("unexpected ComboHitCollection layout")
+            nh = int(_be(data, np.array([inner + 12]), ">i4")[0])
+            h0 = inner + 16 + 32 * np.arange(nh)
+            if nh and np.any(_be(data, h0, ">u4") != 0x4000001C):
+                raise ValueError("unexpected ComboHit position layout")
+            seeds[k]["pos"] = np.stack([_be(data, h0 + 20 + 4 * j, ">f4") for j in range(3)], 1) if nh else np.zeros((0, 3), np.float32)
+            at += 4 + b
+        for k in range(n):
+            if bc(at) != 48:
+                raise ValueError("unexpected RobustHelix layout")
+            for j, name in enumerate(HELIX_FIELDS):
+                seeds[k][name] = float(_be(data, np.array([at + 10 + 4 * j]), ">f4")[0])
+            seeds[k]["helicity"] = int(_be(data, np.array([at + 48]), ">i4")[0])
+            at += 52
+        out.append(seeds)
+    return out
+
+
 def path_status(words):
     """HLTPathStatus words -> (state, index): state 0 ready, 1 pass, 2 fail, 3 exception; index = the path's module
     that decided (the last module run)."""
