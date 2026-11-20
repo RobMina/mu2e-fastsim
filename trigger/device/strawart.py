@@ -11,6 +11,10 @@ version 0, checksum 4, n 4), then, member by member over the n digis:
 - ``_pmp``: n x uint16.
 
 So a blob is 16 + 47 n bytes; the decoder checks every length and header.
+
+Fixed-size products (``EventWindowMarker``: 22 bytes, ``_spillType`` int32 at 10; ``IntensityInfoTimeCluster``:
+8 bytes, the count uint16 at 6) are decoded from their big-endian bytes too: uproot's strided interpretation of these
+classes reads their members with the wrong byte order.
 """
 from __future__ import annotations
 
@@ -51,6 +55,42 @@ def decode_straw_digis(data, offsets):
     return cols
 
 
+def _fixed(branch, size):
+    """Concatenated entries of a fixed-size object branch; each starts with its bytecount (size - 4)."""
+    data = np.concatenate([np.frombuffer(bytes(branch.basket(i).data), np.uint8) for i in range(branch.num_baskets)])
+    n = int(branch.num_entries)
+    if data.size != n * size:
+        raise ValueError(f"{branch.name}: {data.size} bytes for {n} entries of {size}")
+    at = np.arange(n) * size
+    if np.any((_be(data, at, ">u4") & 0x3FFFFFFF) != size - 4):
+        raise ValueError(f"{branch.name}: unexpected bytecount")
+    return data, at
+
+
+def decode_spill(branch):
+    data, at = _fixed(branch, 22)
+    return _be(data, at + 10, ">i4").astype(np.int64)
+
+
+def decode_intensity_tc(branch):
+    """IntensityInfoTimeCluster: the time-cluster count of each event."""
+    data, at = _fixed(branch, 8)
+    return _be(data, at + 6, ">u2").astype(np.int64)
+
+
+def stage_passed(word, position, n_modules):
+    """Events that got past the module at `position` of a path of `n_modules` (the expanded configuration's list),
+    from the HLTPathStatus words of that path. art's index runs one ahead of the listed sequence (a passed path ends at
+    index n_modules); the offset is taken from the passed events and must be 0 or 1."""
+    state, index = path_status(word)
+    passed = state == 1
+    off = set((index[passed] - (n_modules - 1)).tolist())
+    if len(off) > 1 or not off <= {0, 1}:
+        raise ValueError(f"unexpected path index offset {sorted(off)}")
+    off = off.pop() if off else 1
+    return passed | (state == 0) | (index > position + off)
+
+
 def path_status(words):
     """HLTPathStatus words -> (state, index): state 0 ready, 1 pass, 2 fail, 3 exception; index = the path's module
     that decided (the last module run)."""
@@ -68,8 +108,7 @@ def read(path, digis="makeSD__Digitize", pbt="EWMProducer__Digitize", ewm="EWMPr
         ids = decode_event_ids(t["EventAuxiliary"])
         ev = decode_straw_digis(*_blobs(t[DIGIS.format(label=digis)]))
         ev["pbt"] = decode_pbt(*_blobs(t[PBT.format(label=pbt)])).astype(np.float64)
-        obj = t[EWM.format(label=ewm) + ".obj"].array(library="np")      # strided objects: one per event
-        ev["spill"] = np.array([int(o.member("_spillType")) for o in obj], np.int64)
+        ev["spill"] = decode_spill(t[EWM.format(label=ewm) + ".obj"])
         words = decode_trigger(*_blobs(t[TRIGGER.format(process=process)])) if process else None
     del ev["flag"]
     keys = [tuple(int(x) for x in r) for r in ids]
