@@ -179,6 +179,31 @@ def test_nearest_draw_matches_host(library, k, dmax, far):
     np.testing.assert_allclose(st["position"][:n], host["position"], rtol=0, atol=1e-9)
 
 
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_nearest_k1_argmin_picks_the_lexsort_donors(library, dtype):
+    """k = 1: the device's argmin path (default) gives the same donors and far flags as the sorted-window path, in
+    both dtypes, for several distances and both far rules, and the host's donors."""
+    import dataclasses
+    query = _queries(300, seed=17)
+    u = np.random.default_rng(19).random(320)
+    q, _ = _batch(query, 320)
+    qd = {kk: jnp.asarray(v) for kk, v in q.items()}
+    for dmax, far in ((5.0, "g4"), (20.0, "cell"), (80.0, "g4"), (1e4, "cell")):
+        lib = ec.pack_entrants(library, key_neighbors=3, selection="nearest", nearest_k=1, max_entry_distance=dmax,
+                               far=far, dtype=dtype)
+        sorted_lib = dataclasses.replace(lib, meta=dict(lib.meta, nearest_argmin=False))
+        out = [jax.tree_util.tree_map(np.asarray, jax.jit(
+            lambda arrays, q, u, lb=lb: ec.sample_entrants(dataclasses.replace(lb, arrays=arrays), q, u,
+                                                           return_far=True))(lb.arrays, qd, jnp.asarray(u)))
+               for lb in (lib, sorted_lib)]
+        for got, want in zip(out[0], out[1]):
+            np.testing.assert_array_equal(got, want)
+        host = E.sample(library, query, _Fixed(u), selection="nearest", nearest_k=1, max_entry_distance=dmax,
+                        far=far, key_neighbors=3, dtype=dtype)
+        np.testing.assert_array_equal(out[0][0][:300], host["donor"])
+        assert (out[0][0][:300] >= 0).sum() > 0
+
+
 def test_nearest_distance_counts_the_half_turn_image():
     """entry_distance2: the 180-degree image of a donor is at distance 0; front distances are chords on the face,
     inner-edge distances sqrt(dz^2 + (rho dphi)^2) with dphi folded into [-pi/2, pi/2]."""
@@ -450,6 +475,9 @@ def test_bench_entry_point_runs(tmp_path, monkeypatch):
     for dtype in ("float64", "float32"):
         outs = bench.bench_entrants(prepared, dtype=dtype, key_neighbors=8, rows=64, hits=64)
         assert len(outs) == 2 and not any(bench.overflow(outs).values())
+        near = bench.bench_entrants(prepared, dtype=dtype, key_neighbors=8, rows=64, hits=64, selection="nearest",
+                                    far="cell")
+        assert len(near) == 2 and not any(bench.overflow(near).values())
     # the chain cache is keyed by the library path: a library swapped within the process is not silently reused
     import shutil
     shutil.copy(tmp_path / "lib.npz", tmp_path / "lib2.npz")

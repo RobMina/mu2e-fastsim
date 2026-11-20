@@ -235,19 +235,21 @@ def bench_prepare_entrants(n, seed=None, batch=BATCH):
 
 
 def entrant_chain(dtype="float64", batch=BATCH, digi_response="parametric", key_neighbors=8, placement="crystal",
-                  fit_hessian="analytic", **cap_override):
+                  fit_hessian="analytic", *, selection="cell", far="g4", nearest_k=1, max_entry_distance=20.0,
+                  **cap_override):
     """The jitted entrant chain on ``CALO_BENCH_LIBRARY`` for this configuration, built once per process and library
     path (a library swapped within one process gets its own chain)."""
     library_path = os.path.abspath(os.environ["CALO_BENCH_LIBRARY"])
     key = (library_path, np.dtype(dtype).name, batch, digi_response, key_neighbors, placement, fit_hessian,
-           tuple(sorted(cap_override.items())))
+           selection, far, nearest_k, max_entry_distance, tuple(sorted(cap_override.items())))
     if key not in _ENTRANT_CHAINS:
         import jax
         jax.config.update("jax_enable_x64", True)
         from .entrant_chain import make_entrant_chain, pack_entrants
         from .showers.entrants import load
         library, _ = load(library_path)
-        lib = pack_entrants(library, placement=placement, key_neighbors=key_neighbors, dtype=np.dtype(dtype))
+        lib = pack_entrants(library, placement=placement, key_neighbors=key_neighbors, selection=selection, far=far,
+                            nearest_k=nearest_k, max_entry_distance=max_entry_distance, dtype=np.dtype(dtype))
         over = dict(steps=ENTRANT_STEPS * batch)
         over.update(cap_override)
         _ENTRANT_CHAINS[key] = make_entrant_chain(lib, conditions(dtype, fit_hessian=fit_hessian), caps(batch, **over),
@@ -256,12 +258,16 @@ def entrant_chain(dtype="float64", batch=BATCH, digi_response="parametric", key_
 
 
 def bench_entrants(prepared, dtype="float64", digi_response="parametric", key_neighbors=8, placement="crystal",
-                   seed=1, fit_hessian="analytic", **cap_override):
+                   seed=1, fit_hessian="analytic", selection="cell", far="g4", nearest_k=1, max_entry_distance=20.0,
+                   **cap_override):
     """mu2efastsim.bench entry point: every batch of ``prepared`` through the entrant chain (entrants -> clusters);
-    returns the per-batch clusters and overflow counts (device arrays)."""
+    returns the per-batch clusters and overflow counts (device arrays). ``selection``/``far``/``nearest_k``/
+    ``max_entry_distance`` as :func:`entrant_chain.pack_entrants` (opt-in nearest-donor rule)."""
     import jax
     import jax.numpy as jnp
-    run = entrant_chain(dtype, prepared["batch"], digi_response, key_neighbors, placement, fit_hessian, **cap_override)
+    run = entrant_chain(dtype, prepared["batch"], digi_response, key_neighbors, placement, fit_hessian,
+                        selection=selection, far=far, nearest_k=nearest_k, max_entry_distance=max_entry_distance,
+                        **cap_override)
     key = jax.random.PRNGKey(prepared["seed"] if prepared["seed"] is not None else seed)
     outs = []
     for i, (q, t) in enumerate(prepared["batches"]):

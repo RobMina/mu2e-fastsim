@@ -385,12 +385,21 @@ def sample_entrants(lib: dc.DeviceLibrary, q, uniform, return_far=False):
                        kk_ * kk_ + dk * dk - 2.0 * kk_ * dk * jnp.cos(dphi))
         d2 = jnp.where(inwin, jnp.maximum(d2, 0.0), jnp.inf)
         rows = a["near_order"][ci]
-        rank = jnp.lexsort((rows, d2), axis=1)
-        m = jnp.minimum(kq, ct5)
-        pick = jnp.minimum((uniform * m).astype(jnp.int64), jnp.maximum(m - 1, 0))
-        chosen = jnp.take_along_axis(rank, jnp.minimum(pick, W - 1)[:, None], axis=1)[:, 0]
-        d2c = jnp.take_along_axis(d2, chosen[:, None], axis=1)[:, 0]
-        nearest = jnp.take_along_axis(rows, chosen[:, None], axis=1)[:, 0]
+        if kq == 1 and lib.meta.get("nearest_argmin", True):
+            # k = 1: the nearest donor, ties to the lowest library row; the same donor as the sort below without
+            # sorting the window (the window can hold thousands of candidates)
+            d2c = jnp.min(d2, axis=1)
+            tie = (d2 == d2c[:, None]) & inwin
+            nearest = jnp.min(jnp.where(tie, rows, jnp.iinfo(rows.dtype).max), axis=1)
+            pick = jnp.zeros_like(ct5)
+        else:
+            rank = jnp.lexsort((rows, d2), axis=1)
+            m = jnp.minimum(kq, ct5)
+            pick = jnp.minimum((uniform * m).astype(jnp.int64), jnp.maximum(m - 1, 0))
+            chosen = jnp.take_along_axis(rank, jnp.minimum(pick, W - 1)[:, None], axis=1)[:, 0]
+            d2c = jnp.take_along_axis(d2, chosen[:, None], axis=1)[:, 0]
+            nearest = jnp.take_along_axis(rows, chosen[:, None], axis=1)[:, 0]
+        nearest = jnp.clip(nearest, 0, a["near_order"].shape[0] - 1)
         far = (~(d2c <= dmax * dmax) | (pick >= W) | (ct5 == 0)) & q["valid"]
         if lib.meta["far"] == "cell":
             donor = jnp.where(far, donor, nearest)
