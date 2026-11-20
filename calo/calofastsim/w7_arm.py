@@ -17,7 +17,10 @@ settings, overflow and draw counts, census.
 
 The library must be W7's (:data:`entrant_chain.W7_LIBRARY_HASH`) unless ``--any-library`` is given. ``--d-edge`` > 0
 leaves front entrants within D_edge of the disk inner or outer radius undrawn and passes their own Geant4
-CaloShowerSteps from the export instead (the Mu2eG4 host's edge rule, for validation).
+CaloShowerSteps from the export instead (the Mu2eG4 host's edge rule, for validation). ``--selection nearest``
+(opt-in) draws by the Mu2eG4 host's nearest entry point (:func:`entrants.sample`); with ``--far g4`` entrants with no
+donor within ``--max-entry-distance`` get their own Geant4 steps from the export (the host's behaviour), with ``--far
+cell`` the cell rule.
 """
 from __future__ import annotations
 
@@ -69,12 +72,16 @@ def run(a):
         raise SystemExit(f"{a.library}: content hash {lib_hash[:12]}... is not W7's library "
                          f"({ec.W7_LIBRARY_HASH[:12]}...); pass --any-library to run it anyway")
     settings = dict(ec.W7_DEFAULT, d_edge=a.d_edge)
+    if a.selection != "cell":
+        settings.update(selection=a.selection, nearest_k=a.nearest_k, max_entry_distance=a.max_entry_distance,
+                        far=a.far)
+    g4_far = a.selection == "nearest" and a.far == "g4"
     lib = ec.pack_entrants(library, dtype=np.dtype(a.dtype), **settings)
     resp = response(a.cal1_inputs, a.dtype)
     B = a.batch
     caps = dc.Caps(events=B, steps=B * 80, photoelectrons=B * 9000, rows=B * 48, digis=B * 48, digi_length=96,
                    hits=B * 32, event_hits=64, rounds=8)
-    n_entrants, n_g4 = 2 * B, B * 64
+    n_entrants, n_g4, n_g4_all = 2 * B, B * 64, B * 192
     chain = ec.make_entrant_chain(lib, resp, caps, digi_response=a.digi_response)
     inner, outer = library["geometry_disk_size_x"], library["geometry_disk_size_y"]
     cpos_z = library["geometry_crystal_position_z"]
@@ -122,7 +129,18 @@ def run(a):
                       "marker": np.full(m, 200.0, np.float32), "crystal_length": np.full(m, 200.0, np.float32)}
             q, t = ec.entrants_batch(e, timing, n_entrants, B)
             g4 = None
-            if a.d_edge > 0:
+            if g4_far:
+                # every entrant's own Geant4 steps, tagged with its batch row: the chain keeps those of far entrants
+                pos_in_batch = np.full(len(ent["face"]), -1, np.int64)
+                pos_in_batch[sel] = np.arange(len(sel))
+                r = np.flatnonzero(pos_in_batch[css["entrant"]] >= 0)
+                g4 = dc.steps_batch(dict(event=ent["event_row"][css["entrant"][r]] - b0, crystal=css["crystal"][r],
+                                         energy_g4=css["energy_g4"][r], energy_birks=css["energy_birks"][r],
+                                         time=css["time"][r],
+                                         z_local=css["position"][r, 2] - cpos_z[css["crystal"][r]]), n_g4_all)
+                g4["entrant"] = np.full(n_g4_all, -1, np.int32)
+                g4["entrant"][:len(r)] = pos_in_batch[css["entrant"][r]]
+            elif a.d_edge > 0:
                 ev_of = ent["event_row"][css["entrant"][g4_rows]]
                 r = g4_rows[(ev_of >= b0) & (ev_of < b0 + m)]
                 g4 = dc.steps_batch(dict(event=ent["event_row"][css["entrant"][r]] - b0, crystal=css["crystal"][r],
@@ -168,6 +186,13 @@ def main(argv=None):
     p.add_argument("--seed", type=int, default=20261107)
     p.add_argument("--batch", type=int, default=2048)
     p.add_argument("--d-edge", type=float, default=0.0)
+    p.add_argument("--selection", default="cell", choices=("cell", "nearest"),
+                   help="donor rule: W7's cell rule (default) or the Mu2eG4 host's nearest entry point")
+    p.add_argument("--nearest-k", type=int, default=1)
+    p.add_argument("--max-entry-distance", type=float, default=20.0, help="mm, nearest rule")
+    p.add_argument("--far", default="g4", choices=("g4", "cell"),
+                   help="nearest rule, no donor within the distance: the entrant's own Geant4 steps (the Mu2eG4 "
+                        "host's behaviour, validation only) or the cell rule")
     p.add_argument("--any-library", action="store_true", help="allow a library other than W7's")
     return run(p.parse_args(argv))
 
