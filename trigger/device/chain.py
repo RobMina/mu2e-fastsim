@@ -12,12 +12,14 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from . import helix, hits, menu, mpr, mva, paths, simpletc, timecluster
+from . import calo, calogeom, cpr, helix, hits, menu, mpr, mva, paths, simpletc, timecluster
 
-HELIX_TYPES = ("RobustHelixFinder", "AgnosticHelixFinder")
+HELIX_TYPES = ("RobustHelixFinder", "AgnosticHelixFinder", "CalHelixFinder")
 KSF_TYPES = ("LoopHelixFit", "KinKalSeedFit", "LoopHelixDeFit")
 PRECISIONS = ("float64", "float32")
 MPR_DRAW_BASE = 500           # response-draw keys of the mpr paths (the tpr/apr paths use 0, 1, ...)
+CPR_DRAW_BASE = 600           # response-draw keys of the cpr paths
+CALO_KEYS = ("valid", "sipm", "t0", "peakpos", "wf_len", "s0", "s1", "s2", "s3", "s_peak", "n")
 
 
 def pack_layout(out, aux):
@@ -58,7 +60,7 @@ def pair_bucket(n, total):
 
 class Chain:
     def __init__(self, cfg, cond, tc_mva_path, response=None, path_names=None, salt=20261107, debug=False,
-                 precision="float64", compact=False, pairs=True, mpr=False):
+                 precision="float64", compact=False, pairs=True, mpr=False, cpr=False):
         if precision not in PRECISIONS:
             raise ValueError(f"precision must be one of {PRECISIONS}")
         # float32: the device arrays in 32-bit, except the stock double steps of the hit and mpr ports, which trace
@@ -89,6 +91,7 @@ class Chain:
         self.stc = {}                            # SimpleTimeCluster label -> settings (cst paths)
         self.mprs = {}                           # RobustMultiHelixFinder label -> (finder, merge) settings (mpr paths)
         self.mpr = mpr                           # mpr paths are opt-in: the finder costs ~0.5 s per event on a CPU
+        self.cpr = cpr                           # cpr paths are opt-in: they need the event's CaloDigis in the batch
         for entry in phys["trigger_paths"]:
             name = entry.split(":", 1)[-1]
             if path_names and name not in path_names:
@@ -111,6 +114,18 @@ class Chain:
                                    "filters": [(t_, lbl, cf) for t_, lbl, cf in o["filters"] if t_ != "PrescaleEvent"]}
             else:
                 self.skipped[name] = ["no TimeClusterFilter with a device time-cluster producer"]
+        # cpr paths: the calo stage (calo.reconstruct, from the batch's packed CaloDigis "cd_*") and CalTimePeakFinder
+        self.cpr_tp, self.calo_s = {}, None
+        cpr_tc = sorted({p["tc"] for p in self.plan.values() if p["family"] == "cpr"})
+        if cpr_tc:
+            calib = cfg["services"]["ProditionsService"]["calCalib"]
+            if calib.get("useDb"):
+                raise ValueError("cpr paths need calCalib from the configuration (useDb false)")
+            geo = calogeom.build()
+            self.calo_s = calo.settings(self.mods["CaloHitMakerFast"], self.mods["CaloClusterFast"], calib, geo)
+            self.cpr_tp = {lbl: cpr.settings(self.mods[lbl], geo) for lbl in cpr_tc}
+            if compact:
+                raise ValueError("cpr paths run on the one-call path only (compact=False)")
         # off-spill hit reconstruction (cst paths): the TrigOffSpMakeSH/PH settings on the same digis
         self.sh_off = self.ph_off = None
         if self.stc:
@@ -127,6 +142,8 @@ class Chain:
                                                               if p["family"] in ("tpr", "apr")))}
         self.draw_index.update({n: MPR_DRAW_BASE + i for i, n in enumerate(sorted(n for n, p in self.plan.items()
                                                                                    if p["family"] == "mpr"))})
+        self.draw_index.update({n: CPR_DRAW_BASE + i for i, n in enumerate(sorted(n for n, p in self.plan.items()
+                                                                                   if p["family"] == "cpr"))})
         # compact (opt-in, for CPUs): time-cluster refinement and helix fits run only on the (event, cluster) pairs
         # that have a candidate / a valid cluster, in three device calls with one host read of the counts between
         # them; the same computation per cluster as the one-call path, and the same decisions
@@ -162,6 +179,9 @@ class Chain:
             self.plan[name] = {"tc": p["tc_producer"], "helix": None, "ksf": None, "filters": p["filters"],
                                "family": "cst", "min_helices": 1, "ps": ps}
             return
+        if p["family"] == "cpr" and not self.cpr:
+            self.skipped[name] = ["calorimeter-seeded: opt-in (Chain(cpr=True), with CaloDigis in the batch)"]
+            return
         labels = phys[name]
         tcl = self._tc_label(p)
         mlbl = next((lbl for lbl in labels if self.mods.get(lbl, {}).get("module_type") == "RobustMultiHelixFinder"),
@@ -190,14 +210,17 @@ class Chain:
             self.skipped[name] = p["unsupported"] or ["proton, multi-helix finder or minNHelices > 1"]
             return                               # e.g. MultiHelixFilter (several helices per cluster): not on the device
         hcfg_label = self._helix_label(hel) if hel else None
-        ksf = next((lbl for lbl in labels if lbl.startswith("Trig") and "KSF" in lbl and "MC" not in lbl), None)
+        if p["family"] == "cpr":                 # CalSeedFit (TrigCalSeedFitDe): found by its type
+            ksf = next((lbl for lbl in labels if self.mods.get(lbl, {}).get("module_type") in KSF_TYPES), None)
+        else:
+            ksf = next((lbl for lbl in labels if lbl.startswith("Trig") and "KSF" in lbl and "MC" not in lbl), None)
         self.plan[name] = {"tc": tcl, "helix": hcfg_label, "ksf": ksf, "filters": p["filters"],
                            "family": p["family"], "min_helices": p["min_helices"], "ps": ps}
 
     def _tc_label(self, p):
         """Device time-cluster settings: the path's TimeClusterFinder, or the matching-pitch one for TZClusterFinder."""
         m = self.mods[p["tc_producer"]]
-        if m["module_type"] == "TimeClusterFinder":
+        if m["module_type"] in ("TimeClusterFinder", "CalTimePeakFinder"):
             return p["tc_producer"]
         return "TrigTimeClusterFinder"
 
@@ -205,6 +228,14 @@ class Chain:
         m = self.mods[hel]
         if m["module_type"] == "RobustHelixFinder":
             return hel
+        if m["module_type"] == "CalHelixFinder":
+            # not ported: the compact fit with the RobustHelixFinder settings of the same direction (as apr's
+            # AgnosticHelixFinder); the direction from the time-peak finder's pitch
+            pitch = float(self.mods[m["TimeClusterCollectionLabel"]]["PitchAngle"])
+            lbl = "TrigHelixFinderUe" if pitch < 0 else "TrigHelixFinder"
+            if self.mods.get(lbl, {}).get("module_type") != "RobustHelixFinder":
+                raise ValueError(f"cpr helix stage: no RobustHelixFinder {lbl} in the menu")
+            return lbl
         return "TrigHelixFinder"
 
     def _tc_settings(self, lbl):
@@ -228,6 +259,12 @@ class Chain:
             res = (timecluster.time_clusters_multi_pairs(ph, ss, self.net, K=E * len(group)) if self.pairs else
                    timecluster.time_clusters_multi(ph, ss, self.net))
             tcs.update(zip(group, res))
+        if self.cpr_tp:                              # cpr: calo clusters, then CalTimePeakFinder on the panel hits
+            dg = {k: batch["cd_" + k] for k in CALO_KEYS}
+            _, cl = calo.reconstruct(dg, batch["pbt"].astype(jnp.float32), self.calo_s)
+            for lbl, s in self.cpr_tp.items():
+                pk = cpr.time_peaks(ph, cl, s)
+                tcs[lbl] = {"valid": pk["tc"], "nsh": pk["nsh"], "t0": pk["t0"], "members": pk["hits"]}
         hxs = {}
         for group in self._helix_groups():           # helix finders with the same settings share one batched call
             s = helix.settings(self.mods[group[0][1]])
@@ -250,7 +287,8 @@ class Chain:
         groups = {}
         for key in self._helix_keys():
             s = helix.settings(self.mods[key[1]])
-            groups.setdefault(tuple(sorted(s.items())), []).append(key)
+            # cpr time peaks have another slot count than the time clusters: their own batched call
+            groups.setdefault((key[0] in self.cpr_tp,) + tuple(sorted(s.items())), []).append(key)
         return list(groups.values())
 
     # compact path: candidates -> (host: counts) -> refined clusters on candidate pairs -> (host: counts) -> helices on
@@ -355,6 +393,8 @@ class Chain:
                     if p["family"] == "apr":   # TZClusterFinder makes no cluster below clusterThresh straw hits
                         thr = int(self.mods[self.dpaths[name]["tc_producer"]].get("clusterThresh", 0))
                         fc = {**fc, "minNStrawHits": max(int(fc["minNStrawHits"]), thr)}
+                    if p["family"] == "cpr":   # every time peak has its calo cluster
+                        fc = {**fc, "requireCaloCluster": False}
                     tc_ok = paths.tc_pass(tc, fc)
                     ok = ok & tc_ok
                     aux[name + ":tc"] = ok

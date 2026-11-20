@@ -90,5 +90,28 @@ def tc_filter_pass(peaks, cfg):
     return jnp.any(peaks["tc"] & (peaks["nsh"] >= int(cfg["minNStrawHits"])), axis=-1)
 
 
+def calo_batch(digis, rows, n_events):
+    """The batch's CaloDigis for the tracker chain: flat stock digis (`caloart.decode_digis`) of the events `rows`
+    (input indices, in the block's order) packed per event (`calo.pack_digis`) as "cd_*" arrays [n_events, D], padded
+    to n_events rows and to a power-of-two digi axis (>= 16), so a few shapes compile."""
+    from . import calo
+    rows = np.asarray(rows, np.int64)
+    start = np.r_[0, np.cumsum(digis["n"])]
+    take = np.concatenate([np.arange(start[r], start[r + 1]) for r in rows]) if rows.size else np.zeros(0, np.int64)
+    sub = {k: digis[k][take] for k in ("sipm", "t0", "peakpos", "wf_len", "wf_start")}
+    sub["entry"] = np.repeat(np.arange(rows.size), digis["n"][rows])
+    sub["samples"] = digis["samples"]
+    sub["n"] = np.r_[digis["n"][rows], np.zeros(n_events - rows.size, np.int64)]
+    pk = calo.pack_digis(sub, n_events)
+    D = pk["sipm"].shape[1]
+    Dp = max(16, 1 << (D - 1).bit_length())
+    out = {}
+    for k, v in pk.items():
+        if isinstance(v, np.ndarray) and v.ndim == 2 and Dp != D:
+            v = np.pad(v, ((0, 0), (0, Dp - D)))
+        out["cd_" + k] = v
+    return out
+
+
 def jit_time_peaks(s):
     return jax.jit(lambda ph, cl: time_peaks(ph, cl, s))
