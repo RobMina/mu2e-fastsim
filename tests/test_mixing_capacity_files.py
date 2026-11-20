@@ -108,7 +108,8 @@ def test_capacity_file_contract(path):
     assert set(crv) == set(device_crv.CAPACITIES)
     assert all(type(v) is int and v > 0 for v in crv.values())
     expected = {"waveform": "scatter", "digi_starts": "rows", "pulse_scan": "bounded"}
-    if path.name in ("run1a_mix1bb_batch256.json", "run1a_mix1bb_batch256_cpu.json"):   # W6 defaults: thermal on hit counters
+    if path.name in ("run1a_mix1bb_batch256.json", "run1a_mix1bb_batch256_cpu.json",   # W6 defaults: thermal on hit
+                     "run1a_mix1bb_batch256_neutrals.json"):                            # counters (and the opt-in file)
         expected["thermal_counters"] = "hit"
     assert options == expected
 
