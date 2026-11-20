@@ -71,9 +71,11 @@ class LsqSums4:
 
 
 def _center(seed):
-    """RobustHelix::centerx/centery: float _rcent * cos(float _fcent) (cos in double, as the mpr port found)."""
+    """RobustHelix::centerx/centery: float _rcent * cos(float _fcent); libstdc++ resolves cos / sin of a float to the
+    float functions (cal_helix_reference.cosf / sinf: the platform cosf / sinf)."""
+    from cal_helix_reference import cosf, sinf
     rc, fc = f(seed["rcent"]), f(seed["fcent"])
-    return rc * f(math.cos(float(fc))), rc * f(math.sin(float(fc)))
+    return rc * f(cosf(fc)), rc * f(sinf(fc))
 
 
 def findchisq(seed, hits, cfg, bad):
