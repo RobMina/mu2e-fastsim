@@ -1,4 +1,25 @@
-"""Experiment-neutral core of the strip optical-photon table generator: counter, binning, optics, materials,
-transport, run. Imports only the standard library, NumPy, JAX and modules of this package (tests enforce it), so it
-can move to its own package. An experiment adapter supplies the counters, the bin edges and numbering, any further
-optical models (optics.register) and the table format."""
+"""Experiment-neutral core of the strip optical-photon table generator.
+
+The implementation lives in the public package scint-fibre-fastsim (import name
+``scintfibrefastsim``, pinned in ``crv/pyproject.toml`` and ``core/ci/requirements.txt``).
+Importing this package makes ``crvfastsim.lookupgen.core.<module>`` the same module
+object as ``scintfibrefastsim.core.<module>``, so every existing import path stays valid.
+
+Modules: counter, binning, optics, materials, transport, run, limits.
+"""
+import importlib
+import sys
+
+MODULES = ("binning", "counter", "limits", "materials", "optics", "run", "transport")
+for _name in MODULES:
+    sys.modules[f"{__name__}.{_name}"] = importlib.import_module(f"scintfibrefastsim.core.{_name}")
+
+from scintfibrefastsim.core import (  # noqa: E402,F401
+    binning,
+    counter,
+    limits,
+    materials,
+    optics,
+    run,
+    transport,
+)
