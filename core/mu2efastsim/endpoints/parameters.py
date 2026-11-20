@@ -113,6 +113,12 @@ def schema(task: str, names) -> dict[str, Parameter]:
     elif task in ("beam_edep", "beam_edep_cpu", "beam_centuple"):
         specs = {"geom": Parameter("geometry", role="physics_design"), "muons": integer(0, 10 ** 7),
                  "electrons": integer(1000, 10 ** 7), "seed": seed, "dtype": enum("float64", "float32", role="fidelity")}
+    elif task == "ptgt_point":
+        def length(lo, hi):
+            return Parameter("number", "mm", "physics_design", lo, hi)
+        specs = {"Tlength": length(20, 1000), "R_up": length(0.2, 50), "R_mid": length(0.2, 50),
+                 "R_dn": length(0.2, 50), "pot": integer(1000, 10 ** 8), "seed": seed,
+                 "dtype": enum("float64", "float32", role="fidelity"), "platform": enum("cpu", "gpu", role="execution")}
     elif task == "veto_c4":
         specs = {"selection": enum("run1a_dev"), "dt_lo": number(unit="ns"), "dt_hi": number(unit="ns"),
                  "min_pe": number(0, unit="PE"), "min_layers": integer(0, 4, role="analysis"),
