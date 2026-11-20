@@ -235,7 +235,7 @@ def bench_prepare_entrants(n, seed=None, batch=BATCH):
 
 
 def entrant_chain(dtype="float64", batch=BATCH, digi_response="parametric", key_neighbors=8, placement="crystal",
-                  fit_hessian="analytic", *, selection="cell", far="g4", nearest_k=1, max_entry_distance=20.0,
+                  fit_hessian="analytic", *, selection="nearest", far="cell", nearest_k=1, max_entry_distance=20.0,
                   **cap_override):
     """The jitted entrant chain on ``CALO_BENCH_LIBRARY`` for this configuration, built once per process and library
     path (a library swapped within one process gets its own chain)."""
@@ -258,11 +258,11 @@ def entrant_chain(dtype="float64", batch=BATCH, digi_response="parametric", key_
 
 
 def bench_entrants(prepared, dtype="float64", digi_response="parametric", key_neighbors=8, placement="crystal",
-                   seed=1, fit_hessian="analytic", selection="cell", far="g4", nearest_k=1, max_entry_distance=20.0,
+                   seed=1, fit_hessian="analytic", selection="nearest", far="cell", nearest_k=1, max_entry_distance=20.0,
                    **cap_override):
     """mu2efastsim.bench entry point: every batch of ``prepared`` through the entrant chain (entrants -> clusters);
     returns the per-batch clusters and overflow counts (device arrays). ``selection``/``far``/``nearest_k``/
-    ``max_entry_distance`` as :func:`entrant_chain.pack_entrants` (opt-in nearest-donor rule)."""
+    ``max_entry_distance`` as :func:`entrant_chain.pack_entrants` (defaults: W7's, :data:`entrant_chain.W7_DEFAULT`)."""
     import jax
     import jax.numpy as jnp
     run = entrant_chain(dtype, prepared["batch"], digi_response, key_neighbors, placement, fit_hessian,

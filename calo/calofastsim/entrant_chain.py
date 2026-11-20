@@ -23,8 +23,9 @@ step's entrant, -1 padding) only the steps of entrants the chain leaves to Geant
 can be passed. ``d_edge=0`` (default) draws every entrant.
 
 W7 default (:data:`W7_DEFAULT`, :data:`W7_LIBRARY_HASH`): library ``406bd7b4...`` (the Mu2eG4 P2 library, front and
-inner-edge faces), crystal placement, draws among the 8 entries nearest in the position key, no edge rule, every
-front and inner-edge entrant of an event drawn. The front-only library path (:func:`device_chain.make_chain`, one
+inner-edge faces), crystal placement, the nearest-donor rule (the donor nearest in entry point counting its 180-degree
+image, within 20 mm; entrants with none drawn by the cell rule among the 8 entries nearest in the position key), no
+edge rule, every front and inner-edge entrant of an event drawn. The front-only library path (:func:`device_chain.make_chain`, one
 disk-front entry per event) stays available unchanged; :func:`pack_entrants`' own keyword defaults are the host
 sampler's (:func:`entrants.sample`), so the W7 setting is passed explicitly.
 """
@@ -40,9 +41,11 @@ from .showers import entrants as E
 __all__ = ["pack_entrants", "entrants_batch", "sample_entrants", "near_edge", "make_entrant_chain", "STAT_NAMES",
            "W7_DEFAULT", "W7_LIBRARY_HASH"]
 
-# W7's default shower source (decision 2026-11-20, after the held-out comparison and the A100 rate check): the
-# pack_entrants settings and the content hash of the library they were validated with
-W7_DEFAULT = dict(placement="crystal", key_neighbors=8, d_edge=0.0, psi_bins=None)
+# W7's default shower source: the per-entrant library (decision 2026-11-20 after the held-out comparison and the A100
+# rate check) with the nearest-donor rule, far entrants on the cell rule (decision 2026-11-20 after the fresh held-out
+# split and its A100 rate check): the pack_entrants settings and the content hash of the library they were validated with
+W7_DEFAULT = dict(placement="crystal", key_neighbors=8, d_edge=0.0, psi_bins=None, selection="nearest", nearest_k=1,
+                  max_entry_distance=20.0, far="cell")
 W7_LIBRARY_HASH = "406bd7b463e3e0a6fb74764da73ee6bb2d4464992ec8d953fdf68a730c09e898"
 
 SPECIES_GROUPS = len(E.SPECIES_NAMES)        # e-, e+, gamma, other

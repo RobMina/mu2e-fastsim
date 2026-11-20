@@ -475,9 +475,8 @@ def test_bench_entry_point_runs(tmp_path, monkeypatch):
     for dtype in ("float64", "float32"):
         outs = bench.bench_entrants(prepared, dtype=dtype, key_neighbors=8, rows=64, hits=64)
         assert len(outs) == 2 and not any(bench.overflow(outs).values())
-        near = bench.bench_entrants(prepared, dtype=dtype, key_neighbors=8, rows=64, hits=64, selection="nearest",
-                                    far="cell")
-        assert len(near) == 2 and not any(bench.overflow(near).values())
+        cell = bench.bench_entrants(prepared, dtype=dtype, key_neighbors=8, rows=64, hits=64, selection="cell")
+        assert len(cell) == 2 and not any(bench.overflow(cell).values())
     # the chain cache is keyed by the library path: a library swapped within the process is not silently reused
     import shutil
     shutil.copy(tmp_path / "lib.npz", tmp_path / "lib2.npz")
@@ -520,6 +519,8 @@ def test_w7_default_settings_match_the_bench():
     assert sig["key_neighbors"].default == ec.W7_DEFAULT["key_neighbors"] == 8
     assert sig["placement"].default == ec.W7_DEFAULT["placement"] == "crystal"
     assert ec.W7_DEFAULT["d_edge"] == 0.0 and ec.W7_DEFAULT["psi_bins"] is None
+    for k, v in (("selection", "nearest"), ("far", "cell"), ("nearest_k", 1), ("max_entry_distance", 20.0)):
+        assert sig[k].default == ec.W7_DEFAULT[k] == v
     assert len(ec.W7_LIBRARY_HASH) == 64 and ec.W7_LIBRARY_HASH.startswith("406bd7b4")
 
 
@@ -560,10 +561,13 @@ def test_w7_arm_writes_the_scoring_clusters(tmp_path, monkeypatch):
         assert s["front_definition"] == ["primary disk-front entry", "front-face e- entrant"]
         assert [c["failed_events_skipped"] for c in s["census"]] == [0, 1]
         assert s["stats"]["draws"] == 6 and not s["w7_library"] and not any(s["overflow"].values())
-        assert s["settings"] == {"placement": "crystal", "key_neighbors": 8, "d_edge": 0.0}
+        assert s["settings"] == {k: v for k, v in ec.W7_DEFAULT.items() if k != "psi_bins"}
         ids = {tuple(r) for r in z["all_ids"]}
         assert len(z["ids"]) == len(z["energy"]) and all(tuple(r) in ids for r in z["ids"])
     # the nearest rule with Geant4 steps for far entrants: each entrant finds its own library entry (distance 0)
-    s = w7_arm.main([str(tmp_path / "nearest")] + args + ["--any-library", "--selection", "nearest"])
+    s = w7_arm.main([str(tmp_path / "nearest_g4")] + args + ["--any-library", "--far", "g4"])
     assert s["stats"]["draws"] == 6 and s["stats"]["far"] == 0 and s["stats"]["g4_steps"] == 0
-    assert s["settings"]["selection"] == "nearest" and not any(s["overflow"].values())
+    assert s["settings"]["selection"] == "nearest" and s["settings"]["far"] == "g4" and not any(s["overflow"].values())
+    # the cell rule on request
+    s = w7_arm.main([str(tmp_path / "cell")] + args + ["--any-library", "--selection", "cell"])
+    assert s["stats"]["draws"] == 6 and s["stats"]["far"] == 0 and s["settings"]["selection"] == "cell"

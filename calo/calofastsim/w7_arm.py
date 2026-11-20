@@ -17,10 +17,11 @@ settings, overflow and draw counts, census.
 
 The library must be W7's (:data:`entrant_chain.W7_LIBRARY_HASH`) unless ``--any-library`` is given. ``--d-edge`` > 0
 leaves front entrants within D_edge of the disk inner or outer radius undrawn and passes their own Geant4
-CaloShowerSteps from the export instead (the Mu2eG4 host's edge rule, for validation). ``--selection nearest``
-(opt-in) draws by the Mu2eG4 host's nearest entry point (:func:`entrants.sample`); with ``--far g4`` entrants with no
-donor within ``--max-entry-distance`` get their own Geant4 steps from the export (the host's behaviour), with ``--far
-cell`` the cell rule.
+CaloShowerSteps from the export instead (the Mu2eG4 host's edge rule, for validation). The donor rule is W7's
+(:data:`entrant_chain.W7_DEFAULT`: the Mu2eG4 host's nearest entry point, :func:`entrants.sample`, far entrants on the
+cell rule) unless ``--selection``, ``--nearest-k``, ``--max-entry-distance`` or ``--far`` override it: ``--far g4``
+gives entrants with no donor within the distance their own Geant4 steps from the export (the host's behaviour),
+``--selection cell`` the cell rule for every entrant.
 """
 from __future__ import annotations
 
@@ -72,10 +73,9 @@ def run(a):
         raise SystemExit(f"{a.library}: content hash {lib_hash[:12]}... is not W7's library "
                          f"({ec.W7_LIBRARY_HASH[:12]}...); pass --any-library to run it anyway")
     settings = dict(ec.W7_DEFAULT, d_edge=a.d_edge)
-    if a.selection != "cell":
-        settings.update(selection=a.selection, nearest_k=a.nearest_k, max_entry_distance=a.max_entry_distance,
-                        far=a.far)
-    g4_far = a.selection == "nearest" and a.far == "g4"
+    settings.update({k: v for k, v in (("selection", a.selection), ("nearest_k", a.nearest_k),
+                                       ("max_entry_distance", a.max_entry_distance), ("far", a.far)) if v is not None})
+    g4_far = settings["selection"] == "nearest" and settings["far"] == "g4"
     lib = ec.pack_entrants(library, dtype=np.dtype(a.dtype), **settings)
     resp = response(a.cal1_inputs, a.dtype)
     B = a.batch
@@ -192,13 +192,13 @@ def main(argv=None):
     p.add_argument("--seed", type=int, default=20261107)
     p.add_argument("--batch", type=int, default=2048)
     p.add_argument("--d-edge", type=float, default=0.0)
-    p.add_argument("--selection", default="cell", choices=("cell", "nearest"),
-                   help="donor rule: W7's cell rule (default) or the Mu2eG4 host's nearest entry point")
-    p.add_argument("--nearest-k", type=int, default=1)
-    p.add_argument("--max-entry-distance", type=float, default=20.0, help="mm, nearest rule")
-    p.add_argument("--far", default="g4", choices=("g4", "cell"),
-                   help="nearest rule, no donor within the distance: the entrant's own Geant4 steps (the Mu2eG4 "
-                        "host's behaviour, validation only) or the cell rule")
+    p.add_argument("--selection", default=None, choices=("cell", "nearest"),
+                   help="donor rule (default W7's: nearest): the cell rule or the Mu2eG4 host's nearest entry point")
+    p.add_argument("--nearest-k", type=int, default=None, help="nearest rule (default W7's: 1)")
+    p.add_argument("--max-entry-distance", type=float, default=None, help="mm, nearest rule (default W7's: 20)")
+    p.add_argument("--far", default=None, choices=("g4", "cell"),
+                   help="nearest rule, no donor within the distance (default W7's: cell): the entrant's own Geant4 "
+                        "steps (the Mu2eG4 host's behaviour, validation only) or the cell rule")
     p.add_argument("--any-library", action="store_true", help="allow a library other than W7's")
     return run(p.parse_args(argv))
 
