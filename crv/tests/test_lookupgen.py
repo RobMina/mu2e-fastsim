@@ -349,7 +349,7 @@ def test_design_tables_are_named_by_their_cross_section():
 
 
 # ------------------------------------------------------------------------------------------------ core / adapter
-_STDLIB_OK = {"bisect", "dataclasses", "math", "time", "numpy", "jax"}
+_STDLIB_OK = {"bisect", "dataclasses", "importlib", "math", "time", "numpy", "jax"}
 
 
 @pytest.mark.parametrize("name", sorted(
