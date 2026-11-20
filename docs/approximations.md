@@ -190,6 +190,13 @@ behaviour and any stock-art route outside the chain's levels:
   [mixing/DEVICE_TRACKER.md](../mixing/DEVICE_TRACKER.md)) and CRV thermal noise only on counters with steps
   (`thermal_counters: "hit"`, [mixing/DEVICE_CRV.md](../mixing/DEVICE_CRV.md)). `run1a_mix1bb_batch256_exact.json` is
   the same file without either. The run records the capacity file it used.
+- **W6 Neutrals reuse (opt-in file).** `run1a_mix1bb_batch256_neutrals.json` is the default with NeutralsFlash added
+  to the reused tracker streams; the default file does not reuse NeutralsFlash. Gain on one 80 GB A100 (same job,
+  median of 3): +12.6 % events/s in float32, +9.9 % in float64. Fidelity cost (held-out subrun 1194, three pileup
+  realizations per dtype, against stock and the exact file): digi totals within 0.03 % of the default; float64 TOT0
+  and TOT1 further from stock than the default and the exact runs in all three realizations (TOT1 chi2/ndf 1.5-2.2,
+  default 1.1-1.8, exact at most 1.35); in one realization the ADC peak index per TDC phase (float32) and TDC1-TDC0
+  (float64) are outside the exact runs' range. See [mixing/capacities/README.md](../mixing/capacities/README.md).
 - **W6 shared reuse table** (`reuse_table`, `mixing.device_reuse_table`; approved for W6 production by the user,
   2026-11-16). The reuse setup is made once and loaded by every job, so each donor frame repeats its setup draws over
   the whole production instead of within one job. Fidelity cost at 10^6 events (a MuStopPileup frame drawn about 377
