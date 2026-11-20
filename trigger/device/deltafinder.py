@@ -220,7 +220,7 @@ class _Ev:
         rank = jnp.zeros(H, I32).at[jnp.argsort(tkey, stable=True)].set(jnp.arange(H, dtype=I32))
         self.fl = _i(jnp.argsort(g.astype(jnp.int64) * H + rank, stable=True))       # hits by (face, time)
         self.fn = jnp.zeros(NST * NFACE + 1, I32).at[g].add(1)[:NST * NFACE]
-        self.fs = jnp.concatenate([jnp.zeros(1, I32), jnp.cumsum(self.fn)[:-1]])
+        self.fs = jnp.concatenate([jnp.zeros(1, I32), _i(jnp.cumsum(self.fn))[:-1]])
         self.nbins = jnp.where(ph["spill"] == SPILL_OFF, NTBMAX, c["nbins_on"])
         tb, bad = _trunc_i(self.t / c["timeBin"])
         self.tb = tb
@@ -1027,9 +1027,9 @@ def _p_append(ev, S, p, h, st, go, add_mode):
     S["p_pid"] = S["p_pid"].at[:, g].set(jnp.where(setpid, ev.pid[h], S["p_pid"][:, g]))
     add = go & (S["p_pid"][:, g] == ev.pid[h]) if not add_mode else go
     S["p_mem"] = S["p_mem"].at[:, h].set(S["p_mem"][:, h] | add)
-    stamp = S["stamp"] + jnp.cumsum(add.astype(I32)) - 1
+    stamp = S["stamp"] + _i(jnp.cumsum(add.astype(I32))) - 1
     S["p_stamp"] = S["p_stamp"].at[:, h].set(jnp.where(add, stamp, S["p_stamp"][:, h]))
-    S["stamp"] = S["stamp"] + jnp.sum(add.astype(I32))
+    S["stamp"] = S["stamp"] + _i(jnp.sum(add.astype(I32)))
     S["p_cnt"] = S["p_cnt"].at[:, g].add(jnp.where(add, 1, 0))
     S["p_ntot"] = jnp.where(add, S["p_ntot"] + 1, S["p_ntot"])
     S["p_nshtot"] = jnp.where(add, S["p_nshtot"] + ev.nsh[h], S["p_nshtot"])
@@ -1160,9 +1160,9 @@ def _resolve_overlaps(ev, S, perp, n, K):
             key = jnp.where(m, hit_g.astype(jnp.int64) * (2 ** 31) + S["p_stamp"][p1], 2 ** 62)
             o = jnp.argsort(key, stable=True)
             cnt = jnp.zeros(G + 1, I32).at[jnp.where(m, hit_g, G)].add(1)[:G]
-            start = jnp.concatenate([jnp.zeros(1, I32), jnp.cumsum(cnt)[:-1]])
+            start = jnp.concatenate([jnp.zeros(1, I32), _i(jnp.cumsum(cnt))[:-1]])
             ck = jnp.minimum(cnt, 100)
-            nov = jnp.sum(jnp.where(gst, ck, 0))
+            nov = _i(jnp.sum(jnp.where(gst, ck, 0)))
             kk = jnp.arange(K)
             newo = o[jnp.clip(start[:, None] + kk[None, :], 0, H - 1)]
             novr = jnp.where(gst, ck, novr)
@@ -1180,7 +1180,7 @@ def _resolve_overlaps(ev, S, perp, n, K):
                 gg, k = order[j] // K, order[j] % K
                 return _p_remove_hit(ev, S, drop, gg // NFACE, ohit[gg, k], jnp.bool_(True)), jnp.bool_(False)
 
-            S = _loop(0, jnp.where(dropit, jnp.sum(ent), 0), rem, S)
+            S = _loop(0, jnp.where(dropit, _i(jnp.sum(ent)), 0), rem, S)
             S = _p_update_time(ev, S, drop, dropit)
             return (S, novr, ohit), brk | (dropit & (drop == p1))
 
@@ -1238,7 +1238,7 @@ def _station_lists(S, mask, ns):
     key = jnp.where(m, S["s_st"].astype(jnp.int64) * NS + jnp.arange(NS), 2 ** 40)
     lst = _i(jnp.argsort(key, stable=True))
     cnt = jnp.zeros(NST + 1, I32).at[jnp.where(m, S["s_st"], NST)].add(1)[:NST]
-    start = jnp.concatenate([jnp.zeros(1, I32), jnp.cumsum(cnt)[:-1]])
+    start = jnp.concatenate([jnp.zeros(1, I32), _i(jnp.cumsum(cnt))[:-1]])
     return lst, start, cnt
 
 
