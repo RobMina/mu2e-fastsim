@@ -246,8 +246,6 @@ python -m benchmarks.codabench.build_bundle OUT --reference REF --solution SUB
 The exports are `CaloLibraryDumper` primary-mode dumps of the DTS files; the stock ntuples are the stock calorimeter
 chain's `prd` ntuples of the same files. Every `bench.json` names the Offline commit, envset, library hash and image.
 
-## Coverage on the existing validation outputs (2026-11-18)
-
 ## Layout
 
 ```
