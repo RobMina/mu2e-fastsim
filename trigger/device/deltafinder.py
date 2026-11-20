@@ -1110,7 +1110,7 @@ def _create_protons(ev, c, S, pl, pstart, pcount):
         def body(j, S):
             i = pl[pstart[st] + j]
             gd = S["s_good"][i]
-            skip = ((gd < 0) & (gd > -2000)) | (jax.lax.rem(S["s_delta"][i], 10000) >= 0)
+            skip = ((gd < 0) & (gd > -2000)) | (jax.lax.rem(S["s_delta"][i], I32(10000)) >= 0)
             t = _tmean(S["s_nh"][i], S["s_v"][i])
             act = (pv < S["npc"]) & ~skip & ~(S["p_first"] - st > 1) & ~(jnp.abs(_p_t0(ev, S, st) - t) > F32(30))
             phi, err = _p_predict_phi(S, st)
@@ -1287,7 +1287,7 @@ def _event(ph, c, geo, caps):
         clash = act & (hdl >= 0) & (did >= 0) & (did != hdl)
         did = jnp.where(setd, hdl, jnp.where(clash, -1, did))
         done = done | clash
-    seg = (jnp.arange(NS) < S["ns"]) & ~(jax.lax.rem(S["s_delta"], 10000) >= 0) & (did >= 0)
+    seg = (jnp.arange(NS) < S["ns"]) & ~(jax.lax.rem(S["s_delta"], I32(10000)) >= 0) & (did >= 0)
     S["s_delta"] = jnp.where(seg, 10000 + did, S["s_delta"])
     # protons
     if c["flagProtonHits"]:
