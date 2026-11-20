@@ -90,6 +90,12 @@ NeutralsFlash pools at the stock intensity law.
   The reuse `compute` tracker (`long_steps`, `drift_clusters`, `straws`, the 192-cluster tier, `flat_clusters`,
   `minion_steps`) and the reused `straws` per batch are 1.25 times their demand with Neutrals reused, over full
   development and held-out passes in float32 and float64; `precompute` is unchanged (Neutrals frames fit it).
+  Measured against the default on one 80 GB A100 (same job, median of 3 runs): +12.6 % events/s in float32,
+  +9.9 % in float64. Fidelity cost (held-out subrun 1194, three pileup realizations per dtype, against the stock
+  reference): digi totals within 0.03 % of the default; TDC, ADC and planes as the default; float64 TOT0/TOT1 shapes
+  further from stock than the default and the exact runs in all three realizations (TOT1 chi2/ndf 1.5-2.2 against
+  1.1-1.8 for the default and at most 1.35 for the exact runs), and one realization outside the exact runs' range on the
+  ADC peak index per TDC phase (float32) and on TDC1-TDC0 (float64). The default is unchanged.
 
 - **CPU end tiers** (`*_cpu.json`): on a GPU a launch costs little more for padded straws; on one CPU core every
   padded straw costs its full width. The CPU files keep each file's sizes and options and change only the tracker
