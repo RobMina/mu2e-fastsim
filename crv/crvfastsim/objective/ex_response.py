@@ -363,14 +363,18 @@ def _optimize(theta, free, d, nchan, ref):
         if ((theta[k] - lo) / sk < 1e-3 and grad[k] > 0) or ((hi - theta[k]) / sk < 1e-3 and grad[k] < 0):
             at_bound.append(k)
             theta[k] = lo if (theta[k] - lo) / sk < 1e-3 else hi
-    return theta, dict(scale=np.r_[scale], free=free.copy(), message=result.message, nit=result.nit), at_bound
+    return theta, dict(scale=np.r_[scale], free=free.copy(), message=result.message, nit=result.nit,
+                       limits={k: limits[k] for k in (4, 5)}), at_bound
 
 
-def _newton_polish(theta, free, gfree, d, nchan, ref, steps=3):
-    """A few Newton steps with the assembled Hessian after L-BFGS-B (kept only while the NLL decreases)."""
+def _newton_polish(theta, free, d, nchan, ref, limits, steps=4):
+    """Active-set Newton steps with the assembled Hessian after L-BFGS-B, kept while the NLL decreases. A boxed
+    parameter whose step would cross its edge is held at the edge (returned in the second list)."""
+    free = free.copy()
+    pinned = []
     f = _nll(theta, d, nchan, ref)[0].sum()
-    for _ in range(steps):
-        H = _hessian(theta, d, nchan, ref, gfree)[np.ix_(free, free)]
+    for _ in range(steps + 2):
+        H = _hessian(theta, d, nchan, ref, free[:NG])[np.ix_(free, free)]
         g = _nll(theta, d, nchan, ref)[1][free]
         try:
             step = np.linalg.solve(H, g)
@@ -378,13 +382,19 @@ def _newton_polish(theta, free, gfree, d, nchan, ref, steps=3):
             break
         trial = theta.copy()
         trial[free] -= step
-        if free[5]:
-            trial[5] = max(trial[5], 0.)    # excess noise stays physical
+        crossed = [k for k in limits if free[k] and not limits[k][0] <= trial[k] <= limits[k][1]]
+        if crossed:
+            for k in crossed:
+                theta[k] = min(max(trial[k], limits[k][0]), limits[k][1])
+                free[k] = False
+                pinned.append(k)
+            f = _nll(theta, d, nchan, ref)[0].sum()
+            continue
         ft = _nll(trial, d, nchan, ref)[0].sum()
         if not np.isfinite(ft) or ft > f:
             break
         theta, f = trial, ft
-    return theta
+    return theta, pinned
 
 
 def fit(rows, *, sigma_log_pe=None, sigma_time_ns=None, excess_noise="fit", fit_widths=True, walk=True,
@@ -444,8 +454,11 @@ def fit(rows, *, sigma_log_pe=None, sigma_time_ns=None, excess_noise="fit", fit_
     theta, result, at_bound = _optimize(theta, free, d, nchan, ref)
     for k in at_bound:
         free[k] = False      # held at a bound: no curvature-based error for it
+    theta, pinned = _newton_polish(theta, free, d, nchan, ref, result["limits"])
+    for k in pinned:
+        free[k] = False
+        at_bound.append(k)
     gfree = free[:NG].copy()
-    theta = _newton_polish(theta, free, gfree, d, nchan, ref)
     terms, grad = _nll(theta, d, nchan, ref)
     gnorm = float(np.max(np.abs(grad[free] * result["scale"][free[result["free"]]]))) if free.any() else 0.
     if not np.isfinite(theta).all() or not np.isfinite(terms).all() or gnorm > MAX_SCALED_GRADIENT:
