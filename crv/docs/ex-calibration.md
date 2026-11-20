@@ -82,16 +82,22 @@ time | PE ~ Normal(mu_t - walk (log PE - log_pe_ref), sigma_t),     mu_t = t0 + 
 
 A selected pulse contributes the joint density at its log PE and time; an eligible crossing without one contributes
 the probability of failing `PE >= threshold` or `|time - t0| <= window`. With walk, log PE and time are correlated
-and that probability is `Phi(a) + Phi2(-a, kL; r) + Phi2(-a, -kU; -r)`, evaluated exactly with the bivariate normal
-CDF (Plackett/Genz rule, `|r| <= 0.95`); without walk it factorizes. The analytic gradient matches central finite
-differences to 1e-6 relative in the tests, at ordinary points and in the far tails.
+and that probability is `Phi(a)` plus two bivariate-normal orthant probabilities, evaluated exactly (Genz); without
+walk it factorizes. These seen/silent terms and their analytic gradient in the five row predictors (mean and log
+width of log PE, mean and log width of time, walk) are hep-simlib's experiment-neutral censored crossing likelihood
+(`hepsimlib.likelihood.censored`); this module adds the Mu2e parameters (slopes, channel terms, the photostatistics
+width) and chains the gradient to them. The gradient matches central finite differences to 1e-6 relative in the
+tests, at ordinary points and in the far tails.
 
 Fitted parameters: the shared slopes `alpha` (inverse attenuation length) and `beta` (inverse signal speed), the
 per-channel log gains `g` and time offsets `o`, the widths `sigma_0` (`sigma_log_pe`) and `sigma_t`, the
 photostatistics factor `excess_noise` (0 = constant charge width, 1 = Poisson counting), and the time walk (ns per
 unit log PE). Options fix the widths (`--fix-widths` with `--sigma-log-pe/--sigma-time-ns`; the old behaviour),
 fix `excess_noise`, or fix the walk at zero (`--no-walk`). The fit starts from the positive-only closed form, scales
-each parameter by the inverse square root of its start curvature, and runs L-BFGS-B in float64.
+each parameter by the inverse square root of its start curvature, and runs L-BFGS-B in float64, first without walk
+and then with it (the walk is boxed so that corr(log PE, time) stays below 0.99). A fit whose largest scaled
+gradient exceeds 0.01 sigma is an error; a walk or excess noise held at a box edge is reported `at_bound` and left
+out of the covariance.
 
 **Uncertainties.** The covariance is the inverse of the observed information: the Hessian of the summed NLL at the
 optimum, assembled from per-crossing Hessians in the row predictors (central differences of the analytic gradient)

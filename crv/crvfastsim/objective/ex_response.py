@@ -355,6 +355,27 @@ def _optimize(theta, free, d, nchan, ref):
     return theta, dict(scale=np.r_[scale], free=free.copy(), message=result.message, nit=result.nit), at_bound
 
 
+def _newton_polish(theta, free, gfree, d, nchan, ref, steps=3):
+    """A few Newton steps with the assembled Hessian after L-BFGS-B (kept only while the NLL decreases)."""
+    f = _nll(theta, d, nchan, ref)[0].sum()
+    for _ in range(steps):
+        H = _hessian(theta, d, nchan, ref, gfree)[np.ix_(free, free)]
+        g = _nll(theta, d, nchan, ref)[1][free]
+        try:
+            step = np.linalg.solve(H, g)
+        except np.linalg.LinAlgError:
+            break
+        trial = theta.copy()
+        trial[free] -= step
+        if free[5]:
+            trial[5] = max(trial[5], 0.)    # excess noise stays physical
+        ft = _nll(trial, d, nchan, ref)[0].sum()
+        if not np.isfinite(ft) or ft > f:
+            break
+        theta, f = trial, ft
+    return theta
+
+
 def fit(rows, *, sigma_log_pe=None, sigma_time_ns=None, excess_noise="fit", fit_widths=True, walk=True,
         include_missing=True, charge_weight=None, time_weight=None):
     """Return candidate corrections relative to the expected response; does not write conditions.
@@ -412,11 +433,12 @@ def fit(rows, *, sigma_log_pe=None, sigma_time_ns=None, excess_noise="fit", fit_
     theta, result, at_bound = _optimize(theta, free, d, nchan, ref)
     for k in at_bound:
         free[k] = False      # held at a bound: no curvature-based error for it
+    gfree = free[:NG].copy()
+    theta = _newton_polish(theta, free, gfree, d, nchan, ref)
     terms, grad = _nll(theta, d, nchan, ref)
     gnorm = float(np.max(np.abs(grad[free] * result["scale"][free[result["free"]]]))) if free.any() else 0.
     if not np.isfinite(theta).all() or not np.isfinite(terms).all() or gnorm > MAX_SCALED_GRADIENT:
         raise RuntimeError(f"EX fit did not converge: {result['message']} (max scaled gradient {gnorm:.2g})")
-    gfree = free[:NG].copy()
     H = _hessian(theta, d, nchan, ref, gfree)
     cov = _covariance(H, free)
     out = _report(theta, cov, channels, ref, gfree, n_eligible, n_seen, True)
