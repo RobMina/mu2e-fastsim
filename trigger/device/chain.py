@@ -19,6 +19,7 @@ KSF_TYPES = ("LoopHelixFit", "KinKalSeedFit", "LoopHelixDeFit")
 PRECISIONS = ("float64", "float32")
 MPR_DRAW_BASE = 500           # response-draw keys of the mpr paths (the tpr/apr paths use 0, 1, ...)
 CPR_DRAW_BASE = 600           # response-draw keys of the cpr paths
+CPR_CLUSTERS = 32             # calo-cluster slots of the cpr time peaks (fixed, so the per-slot outputs keep one shape)
 CALO_KEYS = ("valid", "sipm", "t0", "peakpos", "wf_len", "s0", "s1", "s2", "s3", "s_peak", "n")
 
 
@@ -261,10 +262,12 @@ class Chain:
             tcs.update(zip(group, res))
         if self.cpr_tp:                              # cpr: calo clusters, then CalTimePeakFinder on the panel hits
             dg = {k: batch["cd_" + k] for k in CALO_KEYS}
-            _, cl = calo.reconstruct(dg, batch["pbt"].astype(jnp.float32), self.calo_s)
+            _, cl = calo.reconstruct(dg, batch["pbt"].astype(jnp.float32), self.calo_s, C=CPR_CLUSTERS)
             for lbl, s in self.cpr_tp.items():
                 pk = cprmod.time_peaks(ph, cl, s)
-                tcs[lbl] = {"valid": pk["tc"], "nsh": pk["nsh"], "t0": pk["t0"], "members": pk["hits"]}
+                # overflow: more clusters than CPR_CLUSTERS (the later ones are not seen), reported per path
+                tcs[lbl] = {"valid": pk["tc"], "nsh": pk["nsh"], "t0": pk["t0"], "members": pk["hits"],
+                            "overflow": cl["overflow"]}
         hxs = {}
         for group in self._helix_groups():           # helix finders with the same settings share one batched call
             s = helix.settings(self.mods[group[0][1]])
@@ -384,6 +387,8 @@ class Chain:
             hx = hxs.get(("mpr", p["mpr"]) if p["family"] == "mpr" else (p["tc"], p["helix"]))
             if p["family"] == "mpr":
                 aux[name + ":overflow"] = hx["overflow"]           # time clusters with more hits than the finder's slots
+            if p["family"] == "cpr":
+                aux[name + ":overflow"] = tc["overflow"]           # events with more calo clusters than CPR_CLUSTERS
             hs_mask = None
             binned = self.response.get(name, {}).get("final")
             for role, lbl, fc in p["filters"]:
