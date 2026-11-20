@@ -12,7 +12,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from . import calo, calogeom, cpr, helix, hits, menu, mpr, mva, paths, simpletc, timecluster
+from . import calo, calogeom, cpr as cprmod, helix, hits, menu, mpr, mva, paths, simpletc, timecluster
 
 HELIX_TYPES = ("RobustHelixFinder", "AgnosticHelixFinder", "CalHelixFinder")
 KSF_TYPES = ("LoopHelixFit", "KinKalSeedFit", "LoopHelixDeFit")
@@ -123,7 +123,7 @@ class Chain:
                 raise ValueError("cpr paths need calCalib from the configuration (useDb false)")
             geo = calogeom.build()
             self.calo_s = calo.settings(self.mods["CaloHitMakerFast"], self.mods["CaloClusterFast"], calib, geo)
-            self.cpr_tp = {lbl: cpr.settings(self.mods[lbl], geo) for lbl in cpr_tc}
+            self.cpr_tp = {lbl: cprmod.settings(self.mods[lbl], geo) for lbl in cpr_tc}
             if compact:
                 raise ValueError("cpr paths run on the one-call path only (compact=False)")
         # off-spill hit reconstruction (cst paths): the TrigOffSpMakeSH/PH settings on the same digis
@@ -263,7 +263,7 @@ class Chain:
             dg = {k: batch["cd_" + k] for k in CALO_KEYS}
             _, cl = calo.reconstruct(dg, batch["pbt"].astype(jnp.float32), self.calo_s)
             for lbl, s in self.cpr_tp.items():
-                pk = cpr.time_peaks(ph, cl, s)
+                pk = cprmod.time_peaks(ph, cl, s)
                 tcs[lbl] = {"valid": pk["tc"], "nsh": pk["nsh"], "t0": pk["t0"], "members": pk["hits"]}
         hxs = {}
         for group in self._helix_groups():           # helix finders with the same settings share one batched call
