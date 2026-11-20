@@ -71,7 +71,9 @@ Every fast arm runs with its workflow's own validation recipe, on the same event
 the bench timer uses the published headline pass sizes. No stock jobs were run.
 - **Commits:** the first scoring was the full rescore on main `c03dbd13`. The final rescore then reran only the arms
   whose code changed, on merged main. The **commit** column says which commit each row was scored on.
-- **PTGT** is scored on the device chain of draft #293, not yet in main.
+- **PTGT** was scored on #293's head before it merged. Its chain code (`ptgt_chain_jax`, `tsdevice`, the slab and
+  G4beamline readers) is identical to main `32eea930`. The merge only renamed one method and completed the bank
+  manifest builder.
 - **Scores:** from `score --allow-missing` (coverage) over 20 of 20 arms (W1-W9 and PTGT): **mean validity 0.900**
   and a **throughput geometric mean of x1,012**.
 - The last column is the same task scored on the older arms. The reference trees are kept privately.
@@ -96,8 +98,8 @@ the bench timer uses the published headline pass sizes. No stock jobs were run.
 | W8 | float64 | 213edff8 | 1.000 | 0 / 0 | 22 / 22 | 320 | A100-80 | 1.000, x305 (c03dbd13, before #283) |
 | W9 | float32 | c03dbd13 | 0.500 | 1 / 2 | 1 / 1 | 38635 | CPU, 4 cores | not scored |
 | W9 | float64 | c03dbd13 | 0.500 | 1 / 2 | 1 / 1 | 38499 | CPU, 4 cores | 0.500 |
-| PTGT | float32 | #293 (draft) | 0.864 | 0 / 4 | 57 / 66 | 58341 | A100 | 0.561, x88132 (absorbing TS-window rings) |
-| PTGT | float64 | #293 (draft) | 0.864 | 0 / 4 | 57 / 66 | 39112 | A100 | 0.561, x53064 (absorbing TS-window rings) |
+| PTGT | float32 | 32eea930 | 0.864 | 0 / 4 | 57 / 66 | 58341 | A100 | 0.561, x88132 (absorbing TS-window rings) |
+| PTGT | float64 | 32eea930 | 0.864 | 0 / 4 | 57 / 66 | 39112 | A100 | 0.561, x53064 (absorbing TS-window rings) |
 
 - **W1:**
   - the stock arm is the expectation over 16 stock re-seeds, now compared per shard (paired, yield included);
@@ -125,8 +127,7 @@ the bench timer uses the published headline pass sizes. No stock jobs were run.
     timings, one CPU core), with the model timed from the CRV-entry states;
   - the sector efficiencies flag (sectors with few events).
 - **Floors:** none for W2, W3, W4, W6, W8 or W9; making one would need new stock jobs.
-- **PTGT:** 33 design-board rods, two seeds of 1M POT each (pooled), both dtypes. The device chain (#293) is not yet in
-  main.
+- **PTGT:** 33 design-board rods, two seeds of 1M POT each (pooled), both dtypes.
   - The TS-window steel rings are crossed as thin steel slabs. The first freeze treated them as perfect absorbers, which
     gave mu- + pi- at the TS entrance 0.93 of G4beamline and validity 0.561 (the "before" column).
   - Stops per POT pass on all 33 rods (median 1.02 / 1.00, float32 / float64). The stock stops error is
