@@ -65,36 +65,41 @@ missing or unscorable arm instead of failing.
 | B3 | Batched track fits against KinKal (FS-TRKFIT) | frozen stock reco inputs per track (combo hits, time cluster, seed) -> fit parameters and covariance at the tracker entrance | stock KinKal on CPU on the same inputs (agreement 1 by construction; sets the throughput basis); KinematicLine (extracted), CentralHelix cosmics, LoopHelix CE | agreement: fraction of tracks within 0.1 sigma of the stock fit in every parameter (ranking key); good-fit ratio fast/stock (paired); pulls against MC truth; throughput scaling curve at batch 10, 10^3, 10^5 tracks with the crossover batch | none yet (threshold 2) | tracks/s | defined |
 | B4 | GPU e+-/gamma transport for the flash (FS-FLASH-GPU) | flash primaries at one stage boundary fixed before any run (recommended: DS entrance) -> tracker StrawGasSteps, the DS/tracker regions offloaded through G4VTrackingManager | Mu2eG4 without offload on the same primaries and build; CPU controls for the stock behaviour the GPU cannot copy (no low-energy kill; tracks killed on leaving the DS) | StrawGasStep edep, multiplicity, time and per-plane histograms; the flash_edep objective as a yield (tolerance proposed 3 %) | stock with another seed | events/s | defined |
 
-## Coverage on main `c03dbd13` (2026-11-18)
+## Coverage (final rescore of the sprint, 2026-11-19)
 
-Every fast arm is rerun on main `c03dbd13`, without #283, with each workflow's own validation recipe on the same
-events as its frozen stock reference, and the bench timer with the published headline pass sizes. No stock jobs were
-run. The scores come from `score --allow-missing` (coverage) and cover 20 of 20 arms (W1-W9 and PTGT), with **mean validity
-0.900** and a **throughput geometric mean of x1,009**. The last column is the same task scored on the older arms. The reference trees
-are kept privately.
+Every fast arm runs with its workflow's own validation recipe, on the same events as its frozen stock reference, and
+the bench timer uses the published headline pass sizes. No stock jobs were run.
+- **Commits:** the first scoring was the full rescore on main `c03dbd13`. The final rescore then reran only the arms
+  whose code changed, on merged main. The **commit** column says which commit each row was scored on.
+- **PTGT** was scored on #293's head before it merged. Its chain code (`ptgt_chain_jax`, `tsdevice`, the slab and
+  G4beamline readers) is identical to main `32eea930`. The merge only renamed one method and completed the bank
+  manifest builder.
+- **Scores:** from `score --allow-missing` (coverage) over 20 of 20 arms (W1-W9 and PTGT): **mean validity 0.900**
+  and a **throughput geometric mean of x1,012**.
+- The last column is the same task scored on the older arms. The reference trees are kept privately.
 
-| task | dtype | validity | flagged / histograms | yields passing | throughput x | device | before (scored 2026-11-18 on older arms) |
-|---|---|---|---|---|---|---|---|
-| W1 | float32 | 1.000 | 0 / 4 | 1 / 1 | 949 | A100-80 | 1.000, x956 |
-| W1 | float64 | 1.000 | 0 / 4 | 1 / 1 | 613 | A100-80 | 1.000, x612 |
-| W2 | float32 | 0.889 | 1 / 9 | 0 / 0 | 467 | A100-80 | 0.889, x361 |
-| W2 | float64 | 0.889 | 1 / 9 | 0 / 0 | 306 | A100-80 | 0.889, x274 |
-| W3 | float32 | 1.000 | 0 / 1 | 3 / 3 | 169 | A100-80 | 1.000, x163 (primary-only stock arm) |
-| W3 | float64 | 1.000 | 0 / 1 | 3 / 3 | 115 | A100-80 | 1.000, x60 (primary-only stock arm) |
-| W4 | float32 | 1.000 | 0 / 0 | 1 / 1 | 96 | A100-80 | 1.000, x81 |
-| W4 | float64 | 1.000 | 0 / 0 | 1 / 1 | 73 | A100-80 | 1.000, x34 |
-| W5 | float32 | 1.000 | 0 / 12 | 1 / 1 | 1299 | A100-80 | 1.000, x1310 |
-| W5 | float64 | 1.000 | 0 / 12 | 1 / 1 | 1090 | A100-80 | 1.000, x1091 |
-| W6 | float32 | 1.000 | 0 / 2 | 2 / 2 | 191 | A100-80 | 1.000, x108 |
-| W6 | float64 | 1.000 | 0 / 2 | 2 / 2 | 180 | A100-80 | 1.000, x99 |
-| W7 | float32 | 0.750 | 1 / 4 | 1 / 1 | 2582 | A100-80 | 0.750, x21 |
-| W7 | float64 | 0.750 | 1 / 4 | 1 / 1 | 2315 | A100-80 | 0.750, x15 |
-| W8 | float32 | 1.000 | 0 / 0 | 22 / 22 | 349 | A100-80 | 1.000, x44 |
-| W8 | float64 | 1.000 | 0 / 0 | 22 / 22 | 305 | A100-80 | 1.000, x38 |
-| W9 | float32 | 0.500 | 1 / 2 | 1 / 1 | 38635 | CPU, 4 cores | not scored |
-| W9 | float64 | 0.500 | 1 / 2 | 1 / 1 | 38499 | CPU, 4 cores | 0.500 |
-| PTGT | float32 | 0.864 | 0 / 4 | 57 / 66 | 58341 | A100 | 0.561, x88132 (absorbing TS-window rings) |
-| PTGT | float64 | 0.864 | 0 / 4 | 57 / 66 | 39112 | A100 | 0.561, x53064 (absorbing TS-window rings) |
+| task | dtype | commit | validity | flagged / histograms | yields passing | throughput x | device | before (scored 2026-11-18 on older arms) |
+|---|---|---|---|---|---|---|---|---|
+| W1 | float32 | c03dbd13 | 1.000 | 0 / 4 | 1 / 1 | 949 | A100-80 | 1.000, x956 |
+| W1 | float64 | c03dbd13 | 1.000 | 0 / 4 | 1 / 1 | 613 | A100-80 | 1.000, x612 |
+| W2 | float32 | c03dbd13 | 0.889 | 1 / 9 | 0 / 0 | 467 | A100-80 | 0.889, x361 |
+| W2 | float64 | c03dbd13 | 0.889 | 1 / 9 | 0 / 0 | 306 | A100-80 | 0.889, x274 |
+| W3 | float32 | c03dbd13 | 1.000 | 0 / 1 | 3 / 3 | 169 | A100-80 | 1.000, x163 (primary-only stock arm) |
+| W3 | float64 | c03dbd13 | 1.000 | 0 / 1 | 3 / 3 | 115 | A100-80 | 1.000, x60 (primary-only stock arm) |
+| W4 | float32 | c03dbd13 | 1.000 | 0 / 0 | 1 / 1 | 96 | A100-80 | 1.000, x81 |
+| W4 | float64 | c03dbd13 | 1.000 | 0 / 0 | 1 / 1 | 73 | A100-80 | 1.000, x34 |
+| W5 | float32 | c03dbd13 | 1.000 | 0 / 12 | 1 / 1 | 1299 | A100-80 | 1.000, x1310 |
+| W5 | float64 | c03dbd13 | 1.000 | 0 / 12 | 1 / 1 | 1090 | A100-80 | 1.000, x1091 |
+| W6 | float32 | c03dbd13 | 1.000 | 0 / 2 | 2 / 2 | 191 | A100-80 | 1.000, x108 |
+| W6 | float64 | c03dbd13 | 1.000 | 0 / 2 | 2 / 2 | 180 | A100-80 | 1.000, x99 |
+| W7 | float32 | c03dbd13 | 0.750 | 1 / 4 | 1 / 1 | 2582 | A100-80 | 0.750, x21 |
+| W7 | float64 | c03dbd13 | 0.750 | 1 / 4 | 1 / 1 | 2315 | A100-80 | 0.750, x15 |
+| W8 | float32 | 213edff8 | 1.000 | 0 / 0 | 22 / 22 | 350 | A100-80 | 1.000, x349 (c03dbd13, before #283) |
+| W8 | float64 | 213edff8 | 1.000 | 0 / 0 | 22 / 22 | 320 | A100-80 | 1.000, x305 (c03dbd13, before #283) |
+| W9 | float32 | c03dbd13 | 0.500 | 1 / 2 | 1 / 1 | 38635 | CPU, 4 cores | not scored |
+| W9 | float64 | c03dbd13 | 0.500 | 1 / 2 | 1 / 1 | 38499 | CPU, 4 cores | 0.500 |
+| PTGT | float32 | 32eea930 | 0.864 | 0 / 4 | 57 / 66 | 58341 | A100 | 0.561, x88132 (absorbing TS-window rings) |
+| PTGT | float64 | 32eea930 | 0.864 | 0 / 4 | 57 / 66 | 39112 | A100 | 0.561, x53064 (absorbing TS-window rings) |
 
 - **W1:**
   - the stock arm is the expectation over 16 stock re-seeds, now compared per shard (paired, yield included);
@@ -122,8 +127,7 @@ are kept privately.
     timings, one CPU core), with the model timed from the CRV-entry states;
   - the sector efficiencies flag (sectors with few events).
 - **Floors:** none for W2, W3, W4, W6, W8 or W9; making one would need new stock jobs.
-- **PTGT:** 33 design-board rods, two seeds of 1M POT each (pooled), both dtypes. The device chain (#293) is not yet in
-  main.
+- **PTGT:** 33 design-board rods, two seeds of 1M POT each (pooled), both dtypes.
   - The TS-window steel rings are crossed as thin steel slabs. The first freeze treated them as perfect absorbers, which
     gave mu- + pi- at the TS entrance 0.93 of G4beamline and validity 0.561 (the "before" column).
   - Stops per POT pass on all 33 rods (median 1.02 / 1.00, float32 / float64). The stock stops error is
@@ -133,7 +137,7 @@ are kept privately.
   - Throughput is per POT for the target + PS stage. The slab crossing costs about a third of the absorbing version's
     rate.
 - **CRVLY:** defined, not yet scored; its reference waits for full generated tables with a measured stock cost per table.
-- **W8:** the next rescore moves its scored arm to the exact-hits trigger code (#283), merged after this coverage.
+- **W8:** scored on main `213edff8` with the exact-hits trigger code (#283); all 22 tested paths pass in both dtypes.
 
 ## B1-B4: the Geant4 fast-simulation and GPU cards
 

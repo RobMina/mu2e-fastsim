@@ -52,8 +52,7 @@ TASKS: dict[str, dict] = {
            "stock": "the stock trigger on the same digis", "metrics": "accept fraction per path (measured, paired "
            "error, tolerance 2 % of the acceptance)", "kind": "measured yields", "floor": None,
            "rate_unit": "events/s",
-           "note": "next rescore: the scored arm moves to the exact-hits trigger code (#283, merged after the "
-                   "c03dbd13 coverage); the coverage table is still on c03dbd13 without it"},
+           "note": "scored on main 213edff8 with the exact-hits trigger code (#283)"},
     "W9": {
         "title": "CRV design model",
         "note": "the model returns expected misses (mean miss probability), so both quantities are values with the "
