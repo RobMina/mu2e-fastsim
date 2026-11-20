@@ -12,7 +12,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from . import calhelix, calo, calogeom, cpr as cprmod, helix, hits, menu, mpr, mva, paths, simpletc, timecluster
+from . import (calhelix, calo, calogeom, cpr as cprmod, deltafinder as dfmod, helix, hits, menu, mpr, mva, paths,
+               simpletc, timecluster)
 
 HELIX_TYPES = ("RobustHelixFinder", "AgnosticHelixFinder", "CalHelixFinder")
 KSF_TYPES = ("LoopHelixFit", "KinKalSeedFit", "LoopHelixDeFit")
@@ -61,7 +62,7 @@ def pair_bucket(n, total):
 
 class Chain:
     def __init__(self, cfg, cond, tc_mva_path, response=None, path_names=None, salt=20261107, debug=False,
-                 precision="float64", compact=False, pairs=True, mpr=False, cpr=False):
+                 precision="float64", compact=False, pairs=True, mpr=False, cpr=False, deltafinder=False):
         if precision not in PRECISIONS:
             raise ValueError(f"precision must be one of {PRECISIONS}")
         # float32: the device arrays in 32-bit, except the stock double steps of the hit and mpr ports, which trace
@@ -95,6 +96,13 @@ class Chain:
         self.cpr = cpr                           # cpr paths are opt-in: they need the event's CaloDigis in the batch
         self.chfs = {}                           # MergeHelices label -> (CalHelixFinder label, settings) (cpr paths)
         self.chf_geom = None                     # CalHelixFinder geometry inputs (calhelix.geometry)
+        # TrigFlagPH (DeltaFinder port, opt-in): its flags replace the panel hits' for every stage that reads them
+        self.df = None
+        if deltafinder:
+            m = self.mods.get("TrigFlagPH", {})
+            if m.get("module_type") != "DeltaFinder":
+                raise ValueError("deltafinder: the menu has no DeltaFinder TrigFlagPH")
+            self.df = (dfmod.settings(m), dfmod.geometry())
         for entry in phys["trigger_paths"]:
             name = entry.split(":", 1)[-1]
             if path_names and name not in path_names:
@@ -260,7 +268,7 @@ class Chain:
 
     def _decide(self, batch):
         sh = hits.straw_hits(batch, self.cond_dev, self.sh, self.tot_bins)
-        ph = hits.panel_hits(sh, self.ph)
+        ph = self._flag(hits.panel_hits(sh, self.ph), batch)
         E = batch["valid"].shape[0]
         tcs, hxs = {}, {}
         for group in self._tc_groups():              # producers that differ only in pitch share one batched call
@@ -290,8 +298,9 @@ class Chain:
         for group in self._helix_groups():           # helix finders with the same settings share one batched call
             s = helix.settings(self.mods[group[0][1]])
             sets = [tcs[key[0]] for key in group]
-            res = (helix.helices_multi_pairs(ph, sets, s, self.fz, K=E * len(group)) if self.pairs else
-                   helix.helices_multi(ph, sets, s, self.fz))
+            bkg = self._hbkg(group[0][1])
+            res = (helix.helices_multi_pairs(ph, sets, s, self.fz, K=E * len(group), bkg_mask=bkg) if self.pairs else
+                   helix.helices_multi(ph, sets, s, self.fz, bkg_mask=bkg))
             hxs.update(zip(group, res))
         return self._paths(batch, sh, ph, tcs, hxs)
 
@@ -316,7 +325,7 @@ class Chain:
     # valid pairs and the path decisions
     def _stage_candidates(self, batch):
         sh = hits.straw_hits(batch, self.cond_dev, self.sh, self.tot_bins)
-        ph = hits.panel_hits(sh, self.ph)
+        ph = self._flag(hits.panel_hits(sh, self.ph), batch)
         cands = {lbl: timecluster.candidates(ph, self._tc_settings(lbl)) for lbl in self._tc_labels()}
         return sh, ph, cands, {lbl: jnp.sum(c[2]) for lbl, c in cands.items()}
 
@@ -325,7 +334,20 @@ class Chain:
         return tc, jnp.sum(tc["valid"])
 
     def _helix_one(self, ph, tc, key, k):
-        return helix.helices_pairs(ph, tc, helix.settings(self.mods[key[1]]), self.fz, k)
+        return helix.helices_pairs(ph, tc, helix.settings(self.mods[key[1]]), self.fz, k, bkg_mask=self._hbkg(key[1]))
+
+    def _flag(self, ph, batch):
+        """TrigFlagPH: DeltaFinder's flags on the panel hits, when the port is on (its error bits ride along)."""
+        if self.df is None:
+            return ph
+        fl, _, err, _ = dfmod.flag_hits({**ph, "spill": batch["spill"]}, *self.df)
+        return {**ph, "flag": fl.astype(ph["flag"].dtype), "df_err": err}
+
+    def _hbkg(self, lbl):
+        """A helix finder's HitBackgroundBits as a mask, when DeltaFinder flags the hits (else 0, as before)."""
+        if self.df is None:
+            return 0
+        return hits.bits([b for b in self.mods[lbl].get("HitBackgroundBits", []) if b in hits.STRAW_FLAGS])
 
     def _packed(self, batch, res):
         out, aux, _ = res
@@ -376,11 +398,13 @@ class Chain:
 
     def _paths(self, batch, sh, ph, tcs, hxs):
         out, aux = {}, {}
+        if "df_err" in ph:                       # events where DeltaFinder reaches a case stock leaves undefined
+            aux["TrigFlagPH:err"] = ph["df_err"]
         ev = batch["event"]
         diag_off = {}
         if self.stc:                             # cst paths: off-spill hits and SimpleTimeCluster clusters
             sh2 = hits.reflag_straw_hits(sh, self.sh_off)
-            ph2 = hits.panel_hits_other(sh, ph, self.ph, sh2, self.ph_off)
+            ph2 = hits.panel_hits_other(sh, {k: v for k, v in ph.items() if k != "df_err"}, self.ph, sh2, self.ph_off)
             tcs = {**tcs, **{lbl: simpletc.clusters(ph2, s) for lbl, s in self.stc.items()}}
             diag_off = {"sh_offsp": sh2, "ph_offsp": ph2}
         if self.mprs:                            # mpr paths: RobustMultiHelixFinder + MergeHelices on their clusters

@@ -156,18 +156,23 @@ def module_geometry(straw_mid_z, panel_origin):
     return zface, phipanel
 
 
-def geometry(cond, bz=1.0):
+def geometry(cond=None, bz=1.0):
     """The geometry inputs of the finder, in one place:
-    - zFace from the nominal straw midpoint z (helix.nominal_straw_z, the geometry HelixTool reads);
-    - phiPanel from the aligned straw-0 midpoints of the conditions (PROVISIONAL: stock reads Panel::origin());
-    - bz: the field at the tracker origin (PROVISIONAL 1.0 T; stock reads the BFieldManager);
+    - zFace and phiPanel from the nominal tracker (`data/tracker_nominal_panels.json`, shared with the DeltaFinder
+      port: straw 0 midpoint x, y, z and straw 1 z per (plane, panel)), as CalHelixFinder::beginRun reads them;
+      stock takes the panel azimuth from Panel::straw0MidPoint() / origin(); on production events this reproduces
+      every stock seed;
+    - bz: the field at the tracker origin (PROVISIONAL 1.0 T; stock reads the BFieldManager; no seed has depended on
+      it so far);
     - fCaloOffset from the calorimeter G4 parameters (calogeom.CALO_GEOM) as CalHelixFinderAlg::setCalorimeter;
-    - the disk origins (calogeom.build) and the tracker centre (-solenoidOffset, 0, detectorSystemZ0)."""
-    from . import calogeom, cpr, helix
-    g = helix.TRACKER_GEOM
-    mz = [[[helix.nominal_straw_z(g, p, q, s) for s in (0, 1)] for q in range(6)] for p in range(36)]
-    sx, sy = np.asarray(cond["straw"]["midx"]), np.asarray(cond["straw"]["midy"])
-    po = [[(float(sx[(p * 6 + q) * 96]), float(sy[(p * 6 + q) * 96])) for q in range(6)] for p in range(36)]
+    - the disk origins (calogeom.build) and the tracker centre (-solenoidOffset, 0, detectorSystemZ0).
+    `cond` is not used (kept for the call signature)."""
+    import json
+    from pathlib import Path
+    from . import calogeom, cpr
+    pan = json.loads((Path(__file__).parent / "data" / "tracker_nominal_panels.json").read_text())["panels"]
+    mz = [[[pan[p * 6 + q][2], pan[p * 6 + q][3]] for q in range(6)] for p in range(36)]
+    po = [[(pan[p * 6 + q][0], pan[p * 6 + q][1]) for q in range(6)] for p in range(36)]
     zf, pp = module_geometry(mz, po)
     cg = calogeom.CALO_GEOM
     case = cg["crystalZLength"] + cg["crystalCapZLength"]

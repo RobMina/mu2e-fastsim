@@ -25,14 +25,11 @@ from .mpr import _d, _f, poly_atan2
 
 C_LIGHT = 299.792458                 # CLHEP::c_light [mm/ns]
 DETECTOR_SYSTEM_Z0 = 10171.0         # mu2e.detectorSystemZ0 (geom_run1_a.txt) [mm]
-BKG_FLAGS = {"Background": None}     # DeltaFinder's background bit: the device does not run DeltaFinder (no bit set)
 
 
 def _bits(names):
     m = 0
     for n in names:
-        if n in BKG_FLAGS:
-            continue
         if n not in STRAW_FLAGS:
             raise ValueError(f"CalTimePeakFinder: flag {n} not on the device")
         m |= 1 << STRAW_FLAGS[n]
