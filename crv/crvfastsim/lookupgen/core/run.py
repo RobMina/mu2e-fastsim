@@ -9,6 +9,7 @@ import time
 
 import numpy as np
 
+import jax
 import jax.numpy as jnp
 
 from . import transport as T
@@ -25,6 +26,13 @@ def _compact(s, small):
             b[len(alive):] = T.DEAD
         out[k] = jnp.asarray(b)
     return out
+
+
+def device():
+    """The device the kernel runs on, for the run stats: {"device": kind (e.g. "NVIDIA A100-SXM4-80GB", "cpu"),
+    "platform": "gpu" / "cpu"}. Tables made on different devices agree within statistics; the record says which."""
+    d = jax.devices()[0]
+    return {"device": str(d.device_kind), "platform": str(d.platform)}
 
 
 def generate(counter, binning, simtype, bins, nphot, dtype="float64", seed=1, lanes=1 << 16, chunk_iters=2000,
@@ -68,7 +76,7 @@ def generate(counter, binning, simtype, bins, nphot, dtype="float64", seed=1, la
                    dict(wall_s=wall, first_call_s=t_first, compact_s=t_compact, calls=n_calls, lanes=lanes,
                         dtype=dtype, seed=int(seed), photons=int(len(bins) * nphot),
                         model=model or T.M.DEFAULT_MODEL,
-                        max_steps=max_steps or (1 << T.STEP_BITS)))
+                        max_steps=max_steps or (1 << T.STEP_BITS), **device()))
 
 
 def _result(bins, nphot, simtype, s, aux, acc, extra):
