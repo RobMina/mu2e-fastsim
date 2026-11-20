@@ -7,8 +7,8 @@ dt = (cluster time + DtOffset) - (hit time + (z_cluster - z_hit) / sin(PitchAngl
 [DtMin, DtMax), and whose polyAtan2 azimuth is within pi/2 of the cluster's. It becomes a TimeCluster when the hits'
 straw-hit count reaches MinNHits.
 
-The cluster position is the cog in the disk frame (cog z = 0) moved to Mu2e (disk origin; the disks are not rotated)
-and then to the tracker frame (minus the tracker centre: -solenoidOffset, 0, detectorSystemZ0). Types as stock: float
+The cluster position is the cog in the disk frame (cog z = 0) moved to Mu2e (disk origin + cog; the disks are not
+rotated) and then to the tracker frame (minus the tracker centre: -solenoidOffset, 0, detectorSystemZ0), in that order. Types as stock: float
 hit and cluster fields, double positions, times and residuals, the float polyAtan2 azimuths subtracted in double.
 """
 from __future__ import annotations
@@ -50,7 +50,7 @@ def settings(cfg, geo):
             "dtmin": float(cfg["DtMin"]), "dtmax": float(cfg["DtMax"]), "dtoff": float(cfg["DtOffset"]),
             "minnhits": int(cfg["MinNHits"]), "mine": float(cfg["MinClusterEnergy"]),
             "minsize": int(cfg["MinClusterSize"]), "sinpitch": math.sin(float(cfg["PitchAngle"])),
-            "beta": float(cfg["Beta"]), "disk_origin": np.asarray(geo["origin"], np.float64) - centre}
+            "beta": float(cfg["Beta"]), "disk_origin": np.asarray(geo["origin"], np.float64), "centre": centre}
 
 
 def time_peaks(ph, cl, s):
@@ -64,9 +64,10 @@ def time_peaks(ph, cl, s):
         z_hit = _d(_f(ph["z"]))[:, None, :]
         phi_hit = _d(poly_atan2(ph["y"], ph["x"]))[:, None, :]
         org = jnp.asarray(s["disk_origin"])[jnp.asarray(cl["disk"]).astype(jnp.int32)]          # [E, C, 3]
-        xcl = org[..., 0] + _d(cl["cog_x"])
-        ycl = org[..., 1] + _d(cl["cog_y"])
-        zcl = org[..., 2] + 0.0
+        c = s["centre"]                          # diskToMu2e (origin + cog, cog z 0), then mu2eToTracker (- centre)
+        xcl = (org[..., 0] + _d(cl["cog_x"])) - c[0]
+        ycl = (org[..., 1] + _d(cl["cog_y"])) - c[1]
+        zcl = (org[..., 2] + 0.0) - c[2]
         cl_time = _d(_f(cl["time"])) + s["dtoff"]
         mphi = _d(poly_atan2(_f(ycl), _f(xcl)))[..., None]
         tof = (zcl[..., None] - z_hit) / s["sinpitch"] / (C_LIGHT * s["beta"])
