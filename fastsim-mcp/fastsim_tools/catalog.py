@@ -61,8 +61,8 @@ WORKFLOWS: Tuple[Workflow, ...] = (
         ("mixing",), ("python3 -m mixing.stream_benchmark",),
         ("W6",), ("mixing/README.md", "mixing/DEVICE_BACKEND.md")),
     Workflow(
-        "W7", "calorimeter: disk-front entries to crystal hits and clusters",
-        "electrons at the calorimeter disk fronts (or stock CaloShowerSteps)",
+        "W7", "calorimeter: disk entrants (front face, inner edge) to crystal hits and clusters",
+        "particles entering a calorimeter disk through the front face or inner edge (or stock CaloShowerSteps)",
         "crystal hits and clusters (parametric response by default; digis with the waveform response)",
         ("calofastsim",), (), ("W7",), ("docs/performance.md", "docs/approximations.md"),
         kit_tasks=("beam_edep", "beam_edep_cpu", "beam_centuple"),

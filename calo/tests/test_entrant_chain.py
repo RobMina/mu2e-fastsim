@@ -430,3 +430,56 @@ def test_read_skips_failed_events_on_request(tmp_path):
     assert [c["failed_events_skipped"] for c in mcen] == [1, 0]
     np.testing.assert_array_equal(many["event_row"], np.concatenate([ent["event_row"], ref["event_row"] + 2]))
     assert len(mcss["entrant"]) == len(css["entrant"]) + len(rcss["entrant"])
+
+
+def test_w7_default_settings_match_the_bench():
+    """W7's default shower source: the bench entry point's defaults are entrant_chain.W7_DEFAULT."""
+    import inspect
+    from calofastsim import bench
+    sig = inspect.signature(bench.bench_entrants).parameters
+    assert sig["key_neighbors"].default == ec.W7_DEFAULT["key_neighbors"] == 8
+    assert sig["placement"].default == ec.W7_DEFAULT["placement"] == "crystal"
+    assert ec.W7_DEFAULT["d_edge"] == 0.0 and ec.W7_DEFAULT["psi_bins"] is None
+    assert len(ec.W7_LIBRARY_HASH) == 64 and ec.W7_LIBRARY_HASH.startswith("406bd7b4")
+
+
+def test_w7_arm_writes_the_scoring_clusters(tmp_path, monkeypatch):
+    """calofastsim.w7_arm: entrants of exports -> clusters.npz with the W7 populations; failed events dropped; the
+    library hash is checked."""
+    from calofastsim import w7_arm
+    from calofastsim.showers import export
+    from test_showers_entrants import tables, write
+    data = tables()
+    write(tmp_path / "a.root", data)
+    ent, css, geo, _ = E.read(tmp_path / "a.root")
+    E.save(tmp_path / "lib.npz", E.build(ent, css, geo), dict(name="w7-arm-test"))
+    data["events"]["g4_status"] = np.array([0, 0, 1], dtype=np.int32)          # event 3 failed in the second export
+    write(tmp_path / "b.root", data)
+    pos = np.column_stack([geo["crystal_position_" + a] for a in "xyz"])
+    geom = Geometry(pos, geo["crystal_disk"], np.zeros((3, 3), bool), np.array([[0.0, 0.0, 100.0], [0.0, 0.0, 200.0]]))
+
+    def response(ci, dtype):
+        return dc.pack_response(_sim(3), _pulse(), np.full(10000, 12.0),
+                                PropagationTable(np.array([[0.5, 1.0]], np.float32), np.array([0.5, 1.5], np.float32),
+                                                 np.float32(400.0)), geom, dtype=np.dtype(dtype))
+    monkeypatch.setattr(w7_arm, "response", response)
+    monkeypatch.setattr(w7_arm, "stock_bunch_times",
+                        lambda path: (np.array([[1, 0, 1], [1, 0, 2], [1, 0, 3]]), np.array([-210.0, -205.0, -201.0])))
+    # primary mode needs the production primary identity, absent from these tables: event 1 is the primary front entry
+    monkeypatch.setattr(export, "read", lambda path, input_mode: ({"event_row": np.array([0])}, None, None, None, None))
+    args = ["--tables", str(tmp_path / "a.root"), str(tmp_path / "b.root"), "--stock", "sa", "sb",
+            "--library", str(tmp_path / "lib.npz"), "--cal1-inputs", str(tmp_path), "--batch", "4"]
+    with pytest.raises(SystemExit):
+        w7_arm.main([str(tmp_path / "refused")] + args)                       # not W7's library
+    for dtype in ("float64", "float32"):
+        out = tmp_path / dtype
+        s = w7_arm.main([str(out)] + args + ["--any-library", "--dtype", dtype])
+        z = np.load(out / "clusters.npz")
+        np.testing.assert_array_equal(z["all_ids"], [[1, 0, 1], [1, 0, 2], [1, 0, 3], [1, 0, 1], [1, 0, 2]])
+        np.testing.assert_array_equal(z["front_ids"], [[1, 0, 1], [1, 0, 1]])
+        assert s["front_definition"] == ["primary disk-front entry", "front-face e- entrant"]
+        assert [c["failed_events_skipped"] for c in s["census"]] == [0, 1]
+        assert s["stats"]["draws"] == 6 and not s["w7_library"] and not any(s["overflow"].values())
+        assert s["settings"] == {"placement": "crystal", "key_neighbors": 8, "d_edge": 0.0}
+        ids = {tuple(r) for r in z["all_ids"]}
+        assert len(z["ids"]) == len(z["energy"]) and all(tuple(r) in ids for r in z["ids"])

@@ -44,7 +44,7 @@ TASKS: dict[str, dict] = {
            "stock": "stock mixing of the same primaries", "metrics": "digis per plane, pulses per sector (paired by "
            "event); tracker and CRV totals", "kind": "values + measured yields", "floor": None,
            "rate_unit": "events/s"},
-    "W7": {"title": "Calorimeter", "boundary": "CE calorimeter steps -> calo digis, hits, clusters",
+    "W7": {"title": "Calorimeter", "boundary": "CE calorimeter entrants (disk front, inner edge) -> calo hits, clusters",
            "stock": "Geant4 calorimeter steps -> stock calo digi + reco", "metrics": "cluster E, t, R, N (paired shape "
            "per block); cluster yield", "kind": "counts, paired shape", "floor": "stock with another seed",
            "rate_unit": "events/s"},
