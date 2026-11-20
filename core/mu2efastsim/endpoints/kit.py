@@ -283,6 +283,8 @@ if _beam_task is not None:
 
 TABLE_TASKS = {"response_bench", "v4_response", "chain", "regression"}   # stage Mu2e-internal tables: cleanup record required
 DELEGATED_ONLY: set = set()   # tasks whose job body only their endpoint delegate renders (plain render refuses them)
+if "ptgt_point" in TASKS:      # beam: the body needs the delegate's staging and the endpoint data directory
+    DELEGATED_ONLY.add("ptgt_point")
 
 # CRV response tuning (crv package, crvfastsim.kit_task): task crv_response, one point of every chain.KNOBS knob scored
 # against the KPP data reference. Registered when crvfastsim is importable: inputs read in place on FNAL endpoints (EAF),

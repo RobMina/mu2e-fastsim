@@ -77,11 +77,10 @@ Every fast arm runs with its workflow's own validation recipe, on the same event
 the bench timer uses the published headline pass sizes. No stock jobs were run.
 - **Commits:** the first scoring was the full rescore on main `c03dbd13`. The final rescore then reran only the arms
   whose code changed, on merged main. The **commit** column says which commit each row was scored on.
-- **PTGT** was scored on #293's head before it merged. Its chain code (`ptgt_chain_jax`, `tsdevice`, the slab and
-  G4beamline readers) is identical to main `32eea930`. The merge only renamed one method and completed the bank
-  manifest builder.
+- **PTGT** is rerun on main `32eea930` (#293). The chain is bit-identical to the run scored before the merge (every
+  per-rod counter on all 33 rods), and the yields are unchanged.
 - **Scores:** from `score --allow-missing` (coverage) over 20 of 20 arms (W1-W9 and PTGT): **mean validity 0.900**
-  and a **throughput geometric mean of x1,012**.
+  and a **throughput geometric mean of x1,018**.
 - The last column is the same task scored on the older arms. The reference trees are kept privately.
 
 | task | dtype | commit | validity | flagged / histograms | yields passing | throughput x | device | before (scored 2026-11-18 on older arms) |
@@ -96,16 +95,16 @@ the bench timer uses the published headline pass sizes. No stock jobs were run.
 | W4 | float64 | c03dbd13 | 1.000 | 0 / 0 | 1 / 1 | 73 | A100-80 | 1.000, x34 |
 | W5 | float32 | c03dbd13 | 1.000 | 0 / 12 | 1 / 1 | 1299 | A100-80 | 1.000, x1310 |
 | W5 | float64 | c03dbd13 | 1.000 | 0 / 12 | 1 / 1 | 1090 | A100-80 | 1.000, x1091 |
-| W6 | float32 | c03dbd13 | 1.000 | 0 / 2 | 2 / 2 | 191 | A100-80 | 1.000, x108 |
-| W6 | float64 | c03dbd13 | 1.000 | 0 / 2 | 2 / 2 | 180 | A100-80 | 1.000, x99 |
+| W6 | float32 | 36362f7b | 1.000 | 0 / 2 | 2 / 2 | 198 | A100-80 | 1.000, x191 (c03dbd13) |
+| W6 | float64 | 36362f7b | 1.000 | 0 / 2 | 2 / 2 | 198 | A100-80 | 1.000, x180 (c03dbd13) |
 | W7 | float32 | c03dbd13 | 0.750 | 1 / 4 | 1 / 1 | 2582 | A100-80 | 0.750, x21 |
 | W7 | float64 | c03dbd13 | 0.750 | 1 / 4 | 1 / 1 | 2315 | A100-80 | 0.750, x15 |
 | W8 | float32 | 213edff8 | 1.000 | 0 / 0 | 22 / 22 | 350 | A100-80 | 1.000, x349 (c03dbd13, before #283) |
 | W8 | float64 | 213edff8 | 1.000 | 0 / 0 | 22 / 22 | 320 | A100-80 | 1.000, x305 (c03dbd13, before #283) |
 | W9 | float32 | c03dbd13 | 0.500 | 1 / 2 | 1 / 1 | 38635 | CPU, 4 cores | not scored |
 | W9 | float64 | c03dbd13 | 0.500 | 1 / 2 | 1 / 1 | 38499 | CPU, 4 cores | 0.500 |
-| PTGT | float32 | 32eea930 | 0.864 | 0 / 4 | 57 / 66 | 58341 | A100 | 0.561, x88132 (absorbing TS-window rings) |
-| PTGT | float64 | 32eea930 | 0.864 | 0 / 4 | 57 / 66 | 39112 | A100 | 0.561, x53064 (absorbing TS-window rings) |
+| PTGT | float32 | 32eea930 | 0.864 | 0 / 4 | 57 / 66 | 58473 | A100 | 0.561, x88132 (absorbing TS-window rings) |
+| PTGT | float64 | 32eea930 | 0.864 | 0 / 4 | 57 / 66 | 39188 | A100 | 0.561, x53064 (absorbing TS-window rings) |
 
 - **W1:**
   - the stock arm is the expectation over 16 stock re-seeds, now compared per shard (paired, yield included);
@@ -124,7 +123,8 @@ the bench timer uses the published headline pass sizes. No stock jobs were run.
     stock arm, so its "before" entry is not comparable with this row.
 - **W4:** the tracker-entry stage only; there is no stock RPC reconstruction after the response.
 - **W5, W6, W7:**
-  - W6's float32 arm is now pure float32. W6 runs about 1.8x faster on main than on the older arm.
+  - W6's float32 arm is now pure float32. On main `36362f7b` (#301: the bench defaults to the compact sampling receipt;
+    detector outputs unchanged) W6 runs at x198 in both dtypes.
   - W7 is the parametric default: x2,582 / x2,315, with the cluster-radius flag at the inner edge as before.
 - **W8:** main as is (device loops on); 22 tested paths. Under this scorer's rule (3 sigma + 2 %) all of them pass.
 - **W9:**
