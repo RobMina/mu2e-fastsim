@@ -10,6 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
+jax = pytest.importorskip("jax")                  # deltafinder.py is a JAX module
+
 from trigger.device import deltafinder as dfm  # noqa: E402
 
 # TrigFlagPH of the Run 1A trigger menu (Offline v13_41_01)
@@ -109,7 +111,6 @@ def _arrays(evs, H):
 
 @pytest.mark.slow
 def test_port_matches_the_stock_transcription():
-    pytest.importorskip("jax")
     import deltafinder_reference as ref
     g = dfm.geometry()
     s = dfm.settings(MODULE)
