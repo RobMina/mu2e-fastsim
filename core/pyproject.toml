@@ -16,10 +16,13 @@ requires-python = ">=3.10"
 # ci/requirements.txt.
 # hep-simbench (import name hepsimbench): the experiment-neutral scorer, warm-rate timer, approximation registry and
 # robust statistics behind mu2efastsim.bench, .approximations, .stats and benchmarks/; same pin as ci/requirements.txt.
+# hep-simkernels (import name hepsimkernels): the Geant4-matched physics kernels behind mu2efastsim.eloss, .emsc,
+# .ebrem, .eslab*, .transport, .world, .precision, ... (Mu2e materials and hooks in mu2efastsim); same pin as ci/.
 dependencies = ["numpy", "pandas", "uproot", "matplotlib", "scipy", "hep-endpoints @ git+https://github.com/RobMina/hep-endpoints.git@56309634ecba3208846c515da5b5f04c7a3a4808",
                 "cryjax @ git+https://github.com/RobMina/cryjax.git@8ca6f546c817cf311fd4a4c15fa31288fba31fb6",
                 "hep-simlib @ git+https://github.com/RobMina/hep-simlib.git@c451ee6d144515bb700078441688cdda4fe9563a",
-                "hep-simbench @ git+https://github.com/RobMina/hep-simbench.git@f00be7cde515d237fb305064dc714347a78db991"]
+                "hep-simbench @ git+https://github.com/RobMina/hep-simbench.git@f00be7cde515d237fb305064dc714347a78db991",
+                "hep-simkernels @ git+https://github.com/RobMina/hep-simkernels.git@4077b4e653d91253e19a7957a6c97fd629768dad"]
 
 [project.optional-dependencies]
 jax = ["jax"]
