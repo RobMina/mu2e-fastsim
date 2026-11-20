@@ -330,13 +330,15 @@ def _panel_hits(h, s):
     f = lambda x: jnp.asarray(x).astype(F32)
     col = lambda k, j: jnp.take_along_axis(h[k], midx[:, :, j], axis=1)                      # member j of each seed
     z32, z64 = jnp.zeros((E, H), F32), jnp.zeros((E, H), F64)
-    eacc = ctacc = twtsum = wacc = wacc2 = wwtsum = vacc = z64
+    eacc = ctacc = twtsum = wacc = wacc2 = wwtsum = vacc = et0acc = et1acc = z64
     mx = my = mz = z32
     for j in range(K):
         on = j < ncombo
         acc = lambda a, v: jnp.where(on, a + v, a)
         wd = col("wdist", j)
         eacc = acc(eacc, d(col("edep", j)))
+        et0acc = acc(et0acc, d(col("et0", j)))
+        et1acc = acc(et1acc, d(col("et1", j)))
         vacc = acc(vacc, d(col("vvar", j)))
         twt = 1.0 / d(col("timevar", j))
         twtsum = acc(twtsum, twt)
@@ -366,6 +368,9 @@ def _panel_hits(h, s):
            "x": pick("x", mx + _m(wdist, h["udx"])), "y": pick("y", my + _m(wdist, h["udy"])),
            "z": pick("z", mz), "uvar": pick("uvar", uvar), "vvar": pick("vvar", f(vacc / nsh)),
            "udx": h["udx"], "udy": h["udy"], "sid": h["sid"]}
+    # ComboHit::time(): the end time of the seed hit's early end, the member average of that end for a combo
+    hv_early = h["et1"] < h["et0"]
+    out["etime"] = jnp.where(hv_early, pick("et1", f(et1acc / nsh)), pick("et0", f(et0acc / nsh)))
     ntdiv = jnp.zeros((E, H), jnp.int32).at[rows, jnp.where(own >= 0, own, H)].add(
         ((h["flag"] >> FLAG["tdiv"]) & 1).astype(jnp.int32), mode="drop")
     tdiv = ntdiv == ncombo
