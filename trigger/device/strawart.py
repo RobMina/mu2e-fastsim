@@ -68,11 +68,8 @@ def read(path, digis="makeSD__Digitize", pbt="EWMProducer__Digitize", ewm="EWMPr
         ids = decode_event_ids(t["EventAuxiliary"])
         ev = decode_straw_digis(*_blobs(t[DIGIS.format(label=digis)]))
         ev["pbt"] = decode_pbt(*_blobs(t[PBT.format(label=pbt)])).astype(np.float64)
-        b = t[EWM.format(label=ewm) + "."]
-        leaf = [k for k in b.keys(recursive=True) if k.endswith("_spillType")]
-        if len(leaf) != 1:
-            raise ValueError("EventWindowMarker spill type not found")
-        ev["spill"] = np.asarray(b[leaf[0]].array(library="np"), np.int64)
+        obj = t[EWM.format(label=ewm) + ".obj"].array(library="np")      # strided objects: one per event
+        ev["spill"] = np.array([int(o.member("_spillType")) for o in obj], np.int64)
         words = decode_trigger(*_blobs(t[TRIGGER.format(process=process)])) if process else None
     del ev["flag"]
     keys = [tuple(int(x) for x in r) for r in ids]
