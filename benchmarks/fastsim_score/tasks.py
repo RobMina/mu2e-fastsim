@@ -110,7 +110,7 @@ TASKS: dict[str, dict] = {
                  "splits by file (train, dev, reserved final + fresh primaries on reserved seeds); the reference "
                  "must beat two weak baselines (Gflash profiles; all energy in the entry crystal) on validity and "
                  "classifier score",
-        "status": "defined",
+        "status": "scored",
     },
     "B2": {
         "title": "Geometry-portable CRV module interaction (FS-CRV-MOD)",

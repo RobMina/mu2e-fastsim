@@ -42,6 +42,12 @@ missing or unscorable arm instead of failing.
 | `scaling_batches` `[10, 1000, 100000]` | bench.json `scaling: [{"batch", "rate"}]` | multiplier per batch size and the crossover batch (first multiplier > 1); headline rate = `warm_rate`, else the largest batch (B3) |
 | `group` + `part` (`dev`, `place`, `design`) | - | per group and dtype: portability ratio = mean place validity / dev validity, adaptation score = mean design validity; one task per layout (B2) |
 | `capture_budget` | bench.json `capture_entries` | an arm over its adaptation budget, or not declaring it, is an error (B2 design moves) |
+| `peak_fit` `{name: {"start_above", "start_width", "n_boot", "seed"}}` | hists.json `peaks: {name: counts or shards}` | the peak position in each arm by CAL1's Gaussian core (a Gaussian fitted to the bins, weights 1/n, window [mu - 1.5 s, mu + 2 s], six iterations); the ratio is a yield, error by a fixed-seed paired bootstrap over the shards (200 replicates); `yield_max_se` applies to it, and the arm reports `power_ok` (B1's CE peak) |
+| `yield_tolerances` `{name: tol}` | - | per-yield tolerance instead of `yield_tolerance` |
+| `max_memory_mb_per_thread` | bench.json `memory_mb_per_thread` | `memory_ok`, reported (B1: 250 MB) |
+| - | bench.json `"host": "mu2eg4"` + `baseline_rate` | a model inside Geant4: multiplier = rate / its own model-off rate on the same node and primaries (B1 Mu2eG4 host) |
+
+The result also carries `cls_score`, the mean classifier score over the arms that have one.
 
 ## Tasks
 
@@ -143,8 +149,9 @@ the bench timer uses the published headline pass sizes. No stock jobs were run.
 
 B1 FS-CALO-G4, B2 FS-CRV-MOD, B3 FS-TRKFIT and B4 FS-FLASH-GPU are tasks of this scorer, with a workflow key per task
 (B2 one per layout, B3 one per configuration), the same `hists.json` / `bench.json` / `reference.json` layout, both
-dtypes, and references kept privately. They are defined, not scored: no reference exists yet. The task table gives
-each card's boundary, stock arm, metrics, floor and rules; the extensions above are the scorer side.
+dtypes, and references kept privately. The task table gives
+each card's boundary, stock arm, metrics, floor and rules; the extensions above are the scorer side. B1 has a
+dev reference (below); B2-B4 are defined, not scored.
 
 | Card | Ranking | Beside validity | Reference rule |
 |---|---|---|---|
@@ -153,10 +160,102 @@ each card's boundary, stock arm, metrics, floor and rules; the extensions above 
 | B3 | agreement with stock KinKal within 0.1 sigma | good-fit ratio, pulls, throughput scaling curve and crossover batch | a least-squares helix without material or drift fails agreement |
 | B4 | validity (StrawGasStep histograms; flash_edep yield) | throughput (job wall, CPU-only vs offload, same node); engine selected by score | the earlier direct-electron sketch fails |
 
+### B1 card (FS-CALO-G4, task `B1`)
+
+One calorimeter shower model, two hosts: a Geant4 fast-simulation model inside Mu2eG4, or the fastsim device chain.
+Calorimeter showers are about half of the Geant4 time of a conversion-electron event (measured by killing every
+track at the calorimeter entry), so a model that holds the stock calorimeter observables is worth up to 2x in Geant4.
+B1 scores any such model against stock with one card, whichever library or network it uses. Format: the five
+elements of the MLCommons Science benchmark ontology, motifs, a rubric self-score (`rubric_b1.yaml`), and the
+Codabench results-submission bundle of this directory.
+
+**Motifs.** Scientific: High-Energy Physics. AI/ML: Generative. Computing: Throughput Bound, Memory Bound.
+
+**Rubric self-score** (`rubric_b1.yaml`, benchmark-builder `score_benchmark.py`, after the dev reference): software
+4, specification 5, dataset 3, metrics 5, reference 2, documentation 4; **mean 3.83** (below the 4.5 endorsement:
+Mu2e-internal data, no Mu2eG4-host reference, weak baselines not run, no paper).
+
+**A. Problem specification and constraints.** Given the state of an e+-, e- or photon at the front of a calorimeter
+disk (position and direction in the disk frame, energy, time, species), produce the crystal deposits (crystal,
+energy, Birks energy, time, longitudinal position) of its shower, which the stock calorimeter digitisation and
+reconstruction consume unchanged. A submission names its host (`bench.json` `host`: `mu2eg4` or `device`) and runs
+float32 and float64. Fixed constraints: the Offline release and envset named per result; Geant4 11.3.2; a
+single-thread CPU job for the Mu2eG4 host; resident-memory increase **<= 250 MB per thread**
+(`max_memory_mb_per_thread`, reported as `memory_ok`); entries the model leaves to Geant4 near the disk edges (the
+edge rule) are part of the submission and reported (`edge_rule`).
+
+**B. Dataset.** Primaries of the production `CeEndpoint` MDC2025ba files of run 1430; both arms are simulated from
+the same primaries (stock = model off, floor = model off with another seed).
+
+| Split | Files | Use |
+|---|---|---|
+| train | `001430_000000{01,101,...,901}` | building a library or training a model |
+| dev | `001430_00001000, 1100, 1200, 1300, 1400` | public practice; results may be iterated on |
+| final | `001430_00001500 ... 1900` plus a fresh ~200,000-event CeEndpoint set on reserved seeds | scored once per submission version |
+
+The final split is larger because of the power rule (C). Mu2e simulation data is collaboration-internal (FAIR:
+findable, interoperable, not accessible); the public variant is the synthetic `B1` example of `synthetic.py`.
+
+**C. Metrics** (definitions fixed in `calo.py`, statistics in `score.py` and `classifier.py`).
+- **Validity** (ranking key). Histograms in 100-event blocks, paired shape test per block, DQMVAL flag rule: cluster
+  energy (every cluster); time, x, y, radius and size of clusters above 10 MeV; clusters above 10 MeV per event;
+  reconstructed-hit energy. Yields: events with a cluster above 10 MeV, and the **CE peak**, the ratio of the
+  leading-cluster peak positions (CAL1's Gaussian core, 1 MeV bins 40-115 MeV), both with tolerance **0.2 %**
+  (|ratio - 1| - 3 se <= 0.002). **Power rule:** the CE peak passes only if its standard error (paired bootstrap
+  over the event blocks) is also **<= 0.067 %** (tolerance / 3), about 200,000 paired CE events; `power_ok` reports it.
+- **Classifier score** (after CaloChallenge, arXiv:2410.21611): per cluster above 10 MeV the vector (energy, time, x,
+  y, size, seed-crystal energy fraction, mxx, myy, mxy: energy-weighted second moments of the member crystals),
+  stock against fast, a fixed-seed logistic regression on quadratic features, 50/50 train/test of equal samples;
+  `cls_score = clip(2 (1 - AUC), 0, 1)` (1 = indistinguishable). Reported next to validity.
+- **Throughput multiplier.** Mu2eG4 host: Mu2eG4 time per event model off / model on, same node and primaries
+  (`baseline_rate`). Device host: the bench warm rate over the stock rate per grid slot at the same boundary.
+- **SU per event:** private scoring only.
+
+**D. Reference solution and baselines.** Reference: the fastsim device chain (`calo/calofastsim/device_chain.py`)
+at the first forward direct-CE disk-front entry of each event, with the CAL2 whole-shower library (K8 neighbours,
+crystal placement), as validated by W7-CAL; arm driver `calo_device.py`. The Mu2eG4 host has no reference run yet.
+Weak baselines (defined, not implemented): Gflash longitudinal and radial profiles with CsI parameters, and all
+energy in the entry crystal. Floor: stock with another seed (not produced yet; the flag threshold is then 2).
+
+**Reference on the dev split (2026-11-19).** Device chain at main plus this card's opt-in cluster shape outputs,
+CAL2 library, 12,195 paired events (every dev event with a disk-front entry, as W7-CAL), 100-event blocks, CPU,
+draw and placement op by op (`calo_device.py --draw eager`), throughput not scored in this run, no floor yet
+(flag threshold 2):
+
+| response | dtype | validity | flagged (chi2/ndf) | events > 10 MeV | CE peak ratio | power | cls_score (AUC) |
+|---|---|---|---|---|---|---|---|
+| parametric (default) | float32 | 0.31 | radius 6.1, size 5.8, hit E 2.7 | 1.0008 +- 0.0029 | 0.9985 +- 0.0030 | fail | 0.86 (0.572) |
+| parametric (default) | float64 | 0.31 | radius 6.3, size 5.4, hit E 3.0 | 1.0010 +- 0.0028 | 0.9955 +- 0.0030 | fail | 0.84 (0.582) |
+| waveform | float32 | 0.38 | radius 6.2, size 4.5 | 1.0005 +- 0.0028 | 0.9997 +- 0.0033 | fail | 0.87 (0.564) |
+| waveform | float64 | 0.38 | radius 6.3, size 5.0 | 1.0001 +- 0.0028 | 0.9996 +- 0.0029 | fail | 0.87 (0.567) |
+
+Both yields are within the 0.2 % tolerance at 3 se, but the CE peak error (0.3 %) is far above the 0.067 % the
+power rule asks for, so the peak fails by construction on dev: the dev split is too small to certify the
+tolerance (the final split is sized for it). Cluster energy, time, x, y and clusters per event pass. The radius flag
+is W7-CAL's inner-edge miss (front-only library; the per-entrant library with an inner-edge face addresses it); the
+cluster-size flag is new with this card; the parametric response also flags the hit energy. The weak baselines
+are not run yet, so the card cannot yet say the reference beats them.
+
+**E. Documentation and reproduction.**
+
+```bash
+python -m benchmarks.fastsim_score.calo_device SUB/B1/float64 --tables EXPORT.root ... --stock CALO_NTUPLE.root ... \
+    --library library.npz --cal1-inputs DIR --dtype float64 [--response parametric]     # and float32
+python -m benchmarks.fastsim_score.calo ntuple REF/B1/stock CALO_NTUPLE.root ... --events SUB/B1/float64/events.npy
+python -m benchmarks.fastsim_score.calo reference REF/B1 [--stock-rate R]
+python -m benchmarks.fastsim_score.score SUB REF [--out scores.json]
+python -m benchmarks.codabench.build_bundle OUT --reference REF --solution SUB
+```
+
+The exports are `CaloLibraryDumper` primary-mode dumps of the DTS files; the stock ntuples are the stock calorimeter
+chain's `prd` ntuples of the same files. Every `bench.json` names the Offline commit, envset, library hash and image.
+
 ## Layout
 
 ```
-submission/<W>/<dtype>/hists.json   fast arm: {"hists": {key: {"edges", "counts" | "shards"}}, "yields": {...}}
+submission/<W>/<dtype>/hists.json   fast arm: {"hists": {key: {"edges", "counts" | "shards"}}, "yields": {...},
+                                    "peaks": {...}}
+submission/<W>/<dtype>/features.npz per-object features "X" (tasks with a classifier)
 submission/<W>/<dtype>/bench.json   the mu2efastsim.bench report (warm_rate, device, dtype, boundary)
 reference/<W>/stock/hists.json      stock arm on the same generated events
 reference/<W>/floor/hists.json      stock with another seed (optional)
@@ -173,6 +272,9 @@ python -m benchmarks.fastsim_score.from_root fast_W5_f64.json shard_*.root --sel
 python -m benchmarks.fastsim_score.score SUBMISSION REFERENCE [--private] [--out scores.json]
 python -m benchmarks.fastsim_score.synthetic EXAMPLE && python -m benchmarks.fastsim_score.score EXAMPLE/submissions/good EXAMPLE/reference
 python -m benchmarks.codabench.build_bundle OUT [--reference DIR --solution DIR]
+python -m benchmarks.fastsim_score.calo ntuple OUT/B1/stock CALO_NTUPLE.root ... --events events.npy   # B1 arm from stock calo ntuples
+python -m benchmarks.fastsim_score.calo_device OUT/B1/float64 --tables EXPORT.root ... --stock CALO_NTUPLE.root ... --library library.npz --cal1-inputs DIR --dtype float64   # B1 device-host arm
+python -m benchmarks.fastsim_score.calo reference OUT/B1 [--stock-rate R]                              # B1 reference.json
 ```
 
 `build_bundle` packages the scorer as a Codabench results-submission bundle (stock `codalab-legacy:py312` image).
