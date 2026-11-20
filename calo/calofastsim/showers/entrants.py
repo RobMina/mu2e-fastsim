@@ -267,12 +267,13 @@ def read(path, *, skip_failed=False):
     return entrants, css, geometry, census
 
 
-def read_many(paths):
-    """Concatenate several exports (one geometry); event rows are offset per file."""
+def read_many(paths, *, skip_failed=False):
+    """Concatenate several exports (one geometry); event rows are offset per file. ``skip_failed`` as in :func:`read`
+    (the offsets count the completed events)."""
     parts, geometry, census = [], None, []
     offset = 0
     for path in paths:
-        entrants, css, geo, cen = read(path)
+        entrants, css, geo, cen = read(path, skip_failed=skip_failed)
         if geometry is None:
             geometry = geo
         elif any(not np.array_equal(geometry[k], geo[k]) for k in geometry if not k.endswith("_run")):
@@ -528,8 +529,10 @@ def main(argv=None):
     parser.add_argument("exports", type=Path, nargs="+")
     parser.add_argument("--root", type=Path, help="also write the ROOT export for Mu2eG4")
     parser.add_argument("--name", default="unnamed")
+    parser.add_argument("--skip-failed", action="store_true",
+                        help="drop failed-transport events instead of raising (counted in the census)")
     args = parser.parse_args(argv)
-    entrants, css, geometry, census = read_many(args.exports)
+    entrants, css, geometry, census = read_many(args.exports, skip_failed=args.skip_failed)
     library = build(entrants, css, geometry)
     metadata = dict(name=args.name, exports=[str(p) for p in args.exports], census=census,
                     entrants=int(len(entrants["face"])), steps=int(len(css["entrant"])))

@@ -230,15 +230,17 @@ def bench_prepare_entrants(n, seed=None, batch=BATCH):
 
 def entrant_chain(dtype="float64", batch=BATCH, digi_response="parametric", key_neighbors=8, placement="crystal",
                   fit_hessian="analytic", **cap_override):
-    """The jitted entrant chain on ``CALO_BENCH_LIBRARY`` for this configuration, built once per process."""
-    key = (np.dtype(dtype).name, batch, digi_response, key_neighbors, placement, fit_hessian,
+    """The jitted entrant chain on ``CALO_BENCH_LIBRARY`` for this configuration, built once per process and library
+    path (a library swapped within one process gets its own chain)."""
+    library_path = os.path.abspath(os.environ["CALO_BENCH_LIBRARY"])
+    key = (library_path, np.dtype(dtype).name, batch, digi_response, key_neighbors, placement, fit_hessian,
            tuple(sorted(cap_override.items())))
     if key not in _ENTRANT_CHAINS:
         import jax
         jax.config.update("jax_enable_x64", True)
         from .entrant_chain import make_entrant_chain, pack_entrants
         from .showers.entrants import load
-        library, _ = load(os.environ["CALO_BENCH_LIBRARY"])
+        library, _ = load(library_path)
         lib = pack_entrants(library, placement=placement, key_neighbors=key_neighbors, dtype=np.dtype(dtype))
         over = dict(steps=ENTRANT_STEPS * batch)
         over.update(cap_override)

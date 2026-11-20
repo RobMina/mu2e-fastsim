@@ -398,6 +398,12 @@ def test_bench_entry_point_runs(tmp_path, monkeypatch):
     for dtype in ("float64", "float32"):
         outs = bench.bench_entrants(prepared, dtype=dtype, key_neighbors=8, rows=64, hits=64)
         assert len(outs) == 2 and not any(bench.overflow(outs).values())
+    # the chain cache is keyed by the library path: a library swapped within the process is not silently reused
+    import shutil
+    shutil.copy(tmp_path / "lib.npz", tmp_path / "lib2.npz")
+    first = bench.entrant_chain("float64", batch=4, key_neighbors=8, rows=64, hits=64)
+    monkeypatch.setenv("CALO_BENCH_LIBRARY", str(tmp_path / "lib2.npz"))
+    assert bench.entrant_chain("float64", batch=4, key_neighbors=8, rows=64, hits=64) is not first
 
 
 def test_read_skips_failed_events_on_request(tmp_path):
@@ -417,3 +423,10 @@ def test_read_skips_failed_events_on_request(tmp_path):
     np.testing.assert_array_equal(ent["face"], ref["face"][keep])
     np.testing.assert_array_equal(ent["event_row"], np.where(ref["event_row"][keep] > 1, ref["event_row"][keep] - 1,
                                                              ref["event_row"][keep]))
+    # read_many threads skip_failed through; event rows of the second file are offset by the completed events
+    with pytest.raises(ValueError):
+        E.read_many([tmp_path / "ok.root", tmp_path / "bad.root"])
+    many, mcss, _, mcen = E.read_many([tmp_path / "bad.root", tmp_path / "ok.root"], skip_failed=True)
+    assert [c["failed_events_skipped"] for c in mcen] == [1, 0]
+    np.testing.assert_array_equal(many["event_row"], np.concatenate([ent["event_row"], ref["event_row"] + 2]))
+    assert len(mcss["entrant"]) == len(css["entrant"]) + len(rcss["entrant"])
