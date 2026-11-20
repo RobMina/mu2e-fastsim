@@ -13,6 +13,7 @@ Differences to the host reference (statistical, not bitwise): random streams; mu
 species with daughters (K decays use the same channel table); the chord re-entry, plane and annulus tests are the
 same geometry evaluated per step.
 """
+import dataclasses
 from functools import partial
 from typing import NamedTuple
 
@@ -41,7 +42,7 @@ class Static(NamedTuple):
     """Device constants: bank, target, envelope, field."""
     edges: object; sig_in: object; sig_el: object; dedx: object; x0: object; el_icdf: object
     cell_off: object; sec_off: object; sec_sp: object; sec_p: object
-    zt: object; rin: object; rout: object; mat: object; origin: object; rot: object
+    z0: object; z1: object; rin: object; rout: object; mat: object; origin: object; rot: object   # per segment
     env_z: object; env_r: object; annuli: object
     fm: object
     rb: object; zc: object; hl: object          # target bounding cylinder (device scalars: no recompile per rod)
@@ -92,11 +93,11 @@ def make_static(bank, target, env, fm, dtype, slab=None):
                 el_icdf=f(bank["el_cos_icdf"].reshape(-1, D.N_EL)), cell_off=jnp.asarray(bank["cell_offsets"], jnp.int64),
                 sec_off=jnp.asarray(bank["sec_offsets"], jnp.int64), sec_sp=jnp.asarray(sec_sp, jnp.int32),
                 sec_p=jnp.asarray(bank["sec_p"], jnp.float32),
-                zt=f(target.z_edges), rin=f(target.r_in), rout=f(target.r_out), mat=jnp.asarray(target.mat, jnp.int32),
+                z0=f(target.zr[:, 0]), z1=f(target.zr[:, 1]), rin=f(target.r_in), rout=f(target.r_out), mat=jnp.asarray(target.mat, jnp.int32),
                 origin=f(target.origin), rot=f(target.rot), env_z=f(env.z_nodes), env_r=f(env.r_nodes), annuli=f(annuli),
                 fm=fieldmap.FieldMap(f(fm.lo), f(fm.d), jnp.asarray(fm.n), f(fm.B)),
-                rb=f(np.max(target.r_out)), zc=f(0.5 * (target.z_edges[0] + target.z_edges[-1])),
-                hl=f(0.5 * (target.z_edges[-1] - target.z_edges[0])),
+                rb=f(np.max(target.r_out)), zc=f(0.5 * (target.z_lo + target.z_hi)),
+                hl=f(0.5 * (target.z_hi - target.z_lo)),
                 slabs=f(slabs), sl_edges=f(sl_edges), sl_sig_in=f(sl["sigma_inel"]), sl_dedx=f(sl["dedx"]),
                 sl_x0=f(sl["x0"]))
     return st, nk, nmat
@@ -121,17 +122,19 @@ def dir_local(S, u):
 
 
 def _radii(S, i, z):
-    z0, z1 = S.zt[i], S.zt[i + 1]
+    z0, z1 = S.z0[i], S.z1[i]
     f = (z - z0) / (z1 - z0)
     return (S.rin[i, 0] + f * (S.rin[i, 1] - S.rin[i, 0]), S.rout[i, 0] + f * (S.rout[i, 1] - S.rout[i, 0]))
 
 
 def locate(S, cfg, xl):
     z, r = xl[:, 2], jnp.hypot(xl[:, 0], xl[:, 1])
-    i = jnp.clip(jnp.searchsorted(S.zt, z, side="right") - 1, 0, cfg.nseg - 1)
-    rin, rout = _radii(S, i, z)
-    inside = (z >= S.zt[0]) & (z < S.zt[-1]) & (r >= rin) & (r < rout)
-    return jnp.where(inside, i, -1).astype(jnp.int32)
+    seg = jnp.full(z.shape, -1, jnp.int32)
+    for i in range(cfg.nseg - 1, -1, -1):              # the first segment wins where several hold the point
+        rin, rout = _radii(S, i, z)
+        inside = (z >= S.z0[i]) & (z < S.z1[i]) & (r >= rin) & (r < rout)
+        seg = jnp.where(inside, i, seg)
+    return seg
 
 
 def _cone_hit(xl, dl, z0, z1, ra, rb, eps=1e-7):
@@ -169,7 +172,7 @@ def distance_out(S, cfg, xl, dl, seg):
     big = jnp.full(xl.shape[0], jnp.inf, xl.dtype)
     out = big
     for i in range(cfg.nseg):
-        z0, z1 = S.zt[i], S.zt[i + 1]
+        z0, z1 = S.z0[i], S.z1[i]
         e = cfg.eps
         ti = jnp.minimum(_plane_hit(xl, dl, z0, e), _plane_hit(xl, dl, z1, e))
         ti = jnp.minimum(ti, _cone_hit(xl, dl, z0, z1, S.rout[i, 0], S.rout[i, 1], e))
@@ -182,7 +185,7 @@ def distance_out(S, cfg, xl, dl, seg):
 def distance_in(S, cfg, xl, dl):
     t = jnp.full(xl.shape[0], jnp.inf, xl.dtype)
     for i in range(cfg.nseg):
-        z0, z1 = S.zt[i], S.zt[i + 1]
+        z0, z1 = S.z0[i], S.z1[i]
         t = jnp.minimum(t, _cone_hit(xl, dl, z0, z1, S.rout[i, 0], S.rout[i, 1], cfg.eps))
         has_in = (S.rin[i, 0] > 0) | (S.rin[i, 1] > 0)
         t = jnp.where(has_in, jnp.minimum(t, _cone_hit(xl, dl, z0, z1, S.rin[i, 0], S.rin[i, 1], cfg.eps)), t)
@@ -612,8 +615,7 @@ def run(bank, target, fm, env, prim, seed=1, st=C.Stepping(), pool=1 << 16, emit
     # transport in a frame centred on the target (float32: millimetre coordinates near the target keep sub-micron
     # resolution for boundary steps); records are shifted back to the Mu2e frame
     shift = np.array([target.origin[0], 0.0, target.origin[2]])
-    target = D.Target(target.z_edges, target.r_in, target.r_out, target.mat, origin=np.asarray(target.origin) - shift,
-                      rot=target.rot)
+    target = dataclasses.replace(target, origin=np.asarray(target.origin) - shift)
     env = C.Envelope(z_nodes=np.asarray(env.z_nodes) - shift[2], r_nodes=np.asarray(env.r_nodes), z_min=env.z_min - shift[2],
                      z_plane=env.z_plane - shift[2], r_plane=env.r_plane, axis_x=env.axis_x - shift[0],
                      annuli=tuple((a[0] - shift[2], a[1], a[2]) for a in env.annuli),
@@ -684,6 +686,7 @@ def main(argv=None):
     ap.add_argument("--rods-tsv", help="point table: index, Tlength, R_up, R_mid, R_dn per line (with --points)")
     ap.add_argument("--points", nargs="+", type=int, help="rows of --rods-tsv to run in this process (one compile)")
     ap.add_argument("--material", default="G4_W")
+    C.add_design_arguments(ap)
     ap.add_argument("--map", required=True, help="field map .header (PS region)")
     ap.add_argument("--env-z", nargs="+", type=float, required=True)
     ap.add_argument("--env-r", nargs="+", type=float, required=True)
@@ -720,12 +723,12 @@ def main(argv=None):
     dt = jnp.float64 if a.dtype == "float64" else jnp.float32
     for n_job, (point, rod) in enumerate(jobs):
         rod = [float(v) for v in rod]
-        tgt = C.rod_target(*rod, mat=bank.materials.index(a.material))
+        tgt, beam_tgt = C.design_targets(a, bank, rod)
         rng = np.random.default_rng(a.seed + 7919 * point)
         if a.warm_pot and n_job == 0:
-            run(bank, tgt, fm, env, C.primaries(a.warm_pot, tgt, rng), st=st, seed=a.seed + 1000, pool=a.pool,
+            run(bank, tgt, fm, env, C.primaries(a.warm_pot, beam_tgt, rng), st=st, seed=a.seed + 1000, pool=a.pool,
                 steps=a.steps, dtype=dt, slab=slab)
-        prim = C.primaries(a.pot, tgt, rng)
+        prim = C.primaries(a.pot, beam_tgt, rng)
         t0 = time.perf_counter()
         rec, cnt = run(bank, tgt, fm, env, prim, st=st, seed=a.seed + point, pool=a.pool, steps=a.steps, dtype=dt,
                        slab=slab)

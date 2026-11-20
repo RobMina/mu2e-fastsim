@@ -79,6 +79,34 @@ def test_rod_locate_and_distances():
     assert np.allclose(t.distance_in(out, dout), [20.0, 7.0, np.inf])
 
 
+def test_clad_rod_locate_and_distances():
+    t = P.Target.clad_rod(100.0, 3.0, 0.25, mat_core=0, mat_clad=1)
+    pts = np.array([[1.0, 0, 0], [3.1, 0, 0], [0, 3.2, -49.0], [3.3, 0, 0], [0, 0, 51.0], [2.9, 0, 50.0]])
+    assert list(t.locate(pts)) == [0, 1, 1, -1, -1, -1] and list(t.mat) == [0, 1]
+    assert (t.z_lo, t.z_hi) == (-50.0, 50.0)
+    x = np.array([[0.0, 0, 0], [3.1, 0, 0], [3.1, 0, 0], [3.1, 0, 0]])
+    d = np.array([[1.0, 0, 0], [1.0, 0, 0], [-1.0, 0, 0], [0, 0, 1.0]])
+    assert np.allclose(t.distance_out(x, d, t.locate(x)), [3.0, 0.15, 0.1, 50.0])   # core wall; sleeve out / in; end
+    out = np.array([[5.0, 0, 0], [0.0, 0, 80.0]])
+    dout = np.array([[-1.0, 0, 0], [0, 0, -1.0]])
+    assert np.allclose(t.distance_in(out, dout), [1.75, 30.0])
+    with pytest.raises(ValueError):
+        P.Target(np.array([-1.0, 1.0]), np.zeros((1, 2)), np.ones((1, 2)), np.array([0]), z_ranges=np.array([[1.0, -1.0]]))
+
+
+def test_contiguous_segments_locate_as_before():
+    t = P.Target(np.array([-50.0, -10.0, 20.0, 50.0]), np.zeros((3, 2)), np.array([[2, 3], [3, 3], [3, 1.5]]),
+                 np.array([0, 1, 0]))
+    rng = np.random.default_rng(1)
+    xl = np.stack([rng.uniform(-4, 4, 5000), rng.uniform(-4, 4, 5000), rng.uniform(-60, 60, 5000)], 1)
+    xl[:50, 2] = np.repeat([-50.0, -10.0, 20.0, 50.0, 0.0], 10)          # on the planes
+    z, r = xl[:, 2], np.hypot(xl[:, 0], xl[:, 1])                          # the reference: one segment per z slice
+    i = np.clip(np.searchsorted(t.z_edges, z, side="right") - 1, 0, 2)
+    rin, rout = t._radii(i, z)
+    ref = np.where((z >= -50) & (z < 50) & (r >= rin) & (r < rout), i, -1)
+    assert np.array_equal(t.locate(xl), ref)
+
+
 def test_tapered_radius_distance():
     t = P.Target.rod(100.0, r_up=2.0, r_mid=4.0, r_dn=6.0)            # r_up at local z=-50, r_dn at +50
     x = np.array([[0.0, 0.0, -25.0], [0.0, 0.0, 25.0]])

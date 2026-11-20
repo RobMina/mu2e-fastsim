@@ -174,3 +174,26 @@ def test_device_matches_host_with_slab(tmp_path, dtype):
     ph, pd = np.linalg.norm(host["record"]["p"], axis=1), np.linalg.norm(rec["p"], axis=1)
     assert abs(np.median(ph) - np.median(pd)) < 0.05 * np.median(ph)
     assert np.allclose(rec["x"][:, 2], 800.0, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", [jnp.float64, jnp.float32])
+def test_device_locate_and_cascade_on_a_clad_rod(tmp_path, dtype):
+    bank = _bank(tmp_path, n_pim=3)
+    tgt = D.Target.clad_rod(100.0, 6.0, 4.0, mat_core=0, mat_clad=0)       # two segments over one z range
+    env = C.Envelope(z_nodes=np.array([-5000.0, 5000.0]), r_nodes=np.array([1900.0, 1900.0]), z_min=-2000.0,
+                     z_plane=800.0, r_plane=1800.0, axis_x=0.0)
+    fm = _uniform_map(2.0)
+    S, nk, nmat = J.make_static(bank, tgt, env, fm, dtype)
+    cfg = J.make_cfg(tgt, env, C.Stepping(), nk, nmat, dtype)
+    rng = np.random.default_rng(5)
+    xl = np.stack([rng.uniform(-12, 12, 4000), rng.uniform(-12, 12, 4000), rng.uniform(-60, 60, 4000)], 1)
+    r = np.hypot(xl[:, 0], xl[:, 1])
+    far = (np.abs(r - 6.0) > 1e-3) & (np.abs(r - 10.0) > 1e-3) & (np.abs(np.abs(xl[:, 2]) - 50.0) > 1e-3)
+    dev = np.asarray(J.locate(S, cfg, jnp.asarray(xl, dtype)))
+    assert np.array_equal(dev[far], tgt.locate(xl)[far]) and {0, 1, -1} <= set(dev.tolist())
+    prim = C.primaries(3000, tgt, np.random.default_rng(3))
+    host = C.run(bank, tgt, lambda x: np.tile([0.0, 0.0, 2.0], (len(x), 1)), env, prim, np.random.default_rng(4))
+    rec, cnt = J.run(bank, tgt, fm, env, prim, seed=5, pool=4096, steps=32, dtype=dtype)
+    assert cnt["inelastic"] == host["counts"]["inelastic"] == 3000
+    nh, nd = host["counts"]["recorded"], len(rec["pdg"])
+    assert nh > 1500 and abs(nd - nh) < 4 * np.sqrt(nh), (nh, nd)

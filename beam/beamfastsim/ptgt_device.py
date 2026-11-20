@@ -17,6 +17,7 @@ builder (`ptgt_bank`) name no experiment geometry; the solenoid stage and the de
 layer (`ptgt_chain`, `ptgt_chain_jax`). Nothing imports it from a default chain.
 """
 from dataclasses import dataclass, field
+from typing import Optional
 
 import numpy as np
 
@@ -156,21 +157,26 @@ class Bank:
 @dataclass(frozen=True)
 class Target:
     """Coaxial frusta along the target's local z (the beam enters at the +z face and travels along local -z, see
-    ptgt_chain.primaries): segment i spans
-    z_edges[i]..z_edges[i+1] with inner/outer radii linear between r_in/r_out[i, 0] and [i, 1], material mat[i]
-    (bank material index). Placement: local -> global (the caller's frame) is x_global = origin + rot @ x_local."""
+    ptgt_chain.primaries): segment i spans z_edges[i]..z_edges[i+1] (or z_ranges[i], for segments that share a z
+    range, e.g. a core and its sleeve) with inner/outer radii linear between r_in/r_out[i, 0] and [i, 1], material
+    mat[i] (bank material index). Segments must not overlap; a point inside several is in the first. Placement: local
+    -> global (the caller's frame) is x_global = origin + rot @ x_local."""
     z_edges: np.ndarray
     r_in: np.ndarray
     r_out: np.ndarray
     mat: np.ndarray
     origin: np.ndarray = field(default_factory=lambda: np.zeros(3))
     rot: np.ndarray = field(default_factory=lambda: np.eye(3))
+    z_ranges: Optional[np.ndarray] = None
 
     def __post_init__(self):
         z = np.asarray(self.z_edges, float)
-        n = z.size - 1
-        if n < 1 or np.any(np.diff(z) <= 0):
-            raise ValueError("z_edges must increase")
+        if self.z_ranges is None:
+            if z.size < 2 or np.any(np.diff(z) <= 0):
+                raise ValueError("z_edges must increase")
+        elif np.asarray(self.z_ranges).ndim != 2 or np.any(np.diff(np.asarray(self.z_ranges, float), axis=1) <= 0):
+            raise ValueError("z_ranges must be (segments, 2) with z0 < z1")
+        n = len(self.zr)
         for k in ("r_in", "r_out"):
             if np.asarray(getattr(self, k)).shape != (n, 2):
                 raise ValueError(f"{k} must be (segments, 2)")
@@ -178,6 +184,29 @@ class Target:
             raise ValueError("need 0 <= r_in < r_out")
         if not np.allclose(np.asarray(self.rot) @ np.asarray(self.rot).T, np.eye(3), atol=1e-12):
             raise ValueError("rot must be orthonormal")
+
+    @property
+    def zr(self):
+        """(segments, 2): the z range of each segment."""
+        if self.z_ranges is not None:
+            return np.asarray(self.z_ranges, float)
+        z = np.asarray(self.z_edges, float)
+        return np.stack([z[:-1], z[1:]], 1)
+
+    @property
+    def z_lo(self):
+        return float(self.zr[:, 0].min())
+
+    @property
+    def z_hi(self):
+        return float(self.zr[:, 1].max())
+
+    @classmethod
+    def clad_rod(cls, length, r_core, t_clad, mat_core=0, mat_clad=1, **placement):
+        """A cylindrical rod of radius r_core in a sleeve r_core..r_core + t_clad (no end caps), both of length."""
+        h, r1 = 0.5 * length, r_core + t_clad
+        return cls(np.array([-h, h]), np.array([[0.0, 0.0], [r_core, r_core]]), np.array([[r_core, r_core], [r1, r1]]),
+                   np.array([mat_core, mat_clad]), z_ranges=np.array([[-h, h], [-h, h]]), **placement)
 
     @classmethod
     def rod(cls, length, r_up, r_mid, r_dn, mat=0, **placement):
@@ -196,7 +225,7 @@ class Target:
         return x if dl is None else (x, np.asarray(dl) @ np.asarray(self.rot).T)
 
     def _radii(self, i, z):
-        z0, z1 = self.z_edges[i], self.z_edges[i + 1]
+        z0, z1 = self.zr[i, 0], self.zr[i, 1]
         f = (z - z0) / (z1 - z0)
         return (self.r_in[i, 0] + f * (self.r_in[i, 1] - self.r_in[i, 0]),
                 self.r_out[i, 0] + f * (self.r_out[i, 1] - self.r_out[i, 0]))
@@ -205,10 +234,13 @@ class Target:
         """Segment index per local point, -1 outside the material."""
         xl = np.asarray(xl, float)
         z, r = xl[:, 2], np.hypot(xl[:, 0], xl[:, 1])
-        i = np.clip(np.searchsorted(self.z_edges, z, side="right") - 1, 0, len(self.mat) - 1)
-        rin, rout = self._radii(i, z)
-        inside = (z >= self.z_edges[0]) & (z < self.z_edges[-1]) & (r >= rin) & (r < rout)
-        return np.where(inside, i, -1)
+        seg = np.full(len(z), -1)
+        zr = self.zr
+        for i in range(len(self.mat) - 1, -1, -1):          # the first segment wins where several hold the point
+            rin, rout = self._radii(i, z)
+            inside = (z >= zr[i, 0]) & (z < zr[i, 1]) & (r >= rin) & (r < rout)
+            seg = np.where(inside, i, seg)
+        return seg
 
     @staticmethod
     def _cone_hits(xl, dl, z0, z1, ra, rb):
@@ -243,7 +275,7 @@ class Target:
         t = np.full(len(xl), np.inf)
         for i in np.unique(seg):
             m = seg == i
-            z0, z1 = self.z_edges[i], self.z_edges[i + 1]
+            z0, z1 = self.zr[i]
             ti = np.minimum(self._plane_hits(xl[m], dl[m], z0), self._plane_hits(xl[m], dl[m], z1))
             ti = np.minimum(ti, self._cone_hits(xl[m], dl[m], z0, z1, *self.r_out[i]))
             if np.any(self.r_in[i] > 0):
@@ -255,7 +287,7 @@ class Target:
         """Distance to the first entry into any segment for points outside the material (inf: never)."""
         t = np.full(len(xl), np.inf)
         for i in range(len(self.mat)):
-            z0, z1 = self.z_edges[i], self.z_edges[i + 1]
+            z0, z1 = self.zr[i]
             for tc in (self._cone_hits(xl, dl, z0, z1, *self.r_out[i]),
                        self._cone_hits(xl, dl, z0, z1, *self.r_in[i]) if np.any(self.r_in[i] > 0) else t + np.inf):
                 t = np.minimum(t, tc)
