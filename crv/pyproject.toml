@@ -9,7 +9,7 @@ description = "Geant4-free CRV simulation and fast CRV reconstruction for the Mu
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
 dependencies = ["mu2efastsim", "numpy", "pandas", "uproot", "awkward", "matplotlib", "scipy", "pyyaml", "pyarrow",
-                "scint-fibre-fastsim @ git+https://github.com/RobMina/scint-fibre-fastsim.git@8013167748517be297d0061b5a3b1428cdb637de"]
+                "scint-fibre-fastsim @ git+https://github.com/RobMina/scint-fibre-fastsim.git@69af8bbd2c3eb3f3f2e01d7850f723f7794e22b4"]
 
 [project.optional-dependencies]
 jax = ["jax"]
