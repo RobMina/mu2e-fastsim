@@ -166,3 +166,40 @@ def test_gamma_split_gives_the_same_charges(cond, monkeypatch):
         out[on] = kern(jax.random.key(3), jnp.int64(0), *map(jnp.asarray, DJ.df.dev((us, pos, ne, time))))
     for x, y in zip(out[False], out[True]):
         np.testing.assert_array_equal(np.asarray(x), np.asarray(y))
+
+
+@pytest.mark.parametrize("entries,bounded", [(None, False), (8, False), (8, True)])
+def test_half_saturation_tables_move_only_adc(cond, monkeypatch, entries, bounded):
+    """TABLE_FLOAT=float16 (saturation tables only, the opt-in approximation): the same pairs, TDC and TOT as the
+    float32 tables, and ADC words within 2 counts (pair loop and flat entries; a saturated straw next to a multi-pair
+    one; with and without the bounded tile sums). A bad setting is refused when a kernel is built."""
+    import jax.numpy as jnp
+    t = np.array([[1000., 1010., 1500., 3000.], [1001., 1011., 1501., 3001.],
+                  [1200., 1205., 1210., 1215.], [1201., 1206., 1211., 1216.]])
+    q = np.array([[.5] * 4, [.5] * 4, [80.] * 4, [80.] * 4])
+    wd = np.array([[400.] * 4, [600.] * 4, [300.] * 4, [700.] * 4])
+    step = np.tile(np.arange(4), (4, 1))
+    args = tuple(map(jnp.asarray, (t, q, wd, step, np.array([4, 4, 4, 4]), np.array([520, 1000]),
+                                   np.array([False, False]), np.array([520, 1000]), np.array([True, True]),
+                                   np.array([.3, -.2]))))
+    monkeypatch.setattr(DJ, "TABLE_PATHS", ("sat",))
+    out = {}
+    for half in (None, "float16"):
+        monkeypatch.setattr(DJ, "TABLE_FLOAT", half)
+        DJ._electronics_parts.cache_clear()
+        jax.clear_caches()                       # the setting is read when a kernel is traced
+        kern = DJ._electronics_parts(cond, 4, 4, 2, entries, bounded_loops=bounded).run
+        out[half] = jax.device_get(kern(jax.random.key(4), *args))
+    monkeypatch.setattr(DJ, "TABLE_FLOAT", "float8")
+    DJ._electronics_parts.cache_clear()
+    with pytest.raises(ValueError, match="TRKFASTSIM_TABLE_FLOAT"):
+        DJ._electronics_parts(cond, 4, 4, 2, entries, bounded_loops=bounded)
+    DJ._electronics_parts.cache_clear()
+    full, half = out[None], out["float16"]
+    assert full["saturated_ends"] > 0 and full["pairs"] >= 3
+    assert full.keys() == half.keys()
+    for name in ("tdc", "tot", "keep", "pairs", "saturated_ends"):
+        np.testing.assert_array_equal(np.asarray(half[name]), np.asarray(full[name]), err_msg=name)
+    adc = "adc" if "adc" in full else "pool"
+    a, b = (np.asarray(jax.tree_util.tree_leaves(x[adc])[0]).astype(np.int64) for x in (full, half))
+    assert np.abs(a - b).max() <= 2
