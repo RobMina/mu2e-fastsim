@@ -10,7 +10,8 @@ Modules (`crvfastsim.objective`):
 - `ex_observations`: EX crossings from the track-CRV association and the matched per-SiPM pulses.
 - `ex_response`: one estimator family: the closed-form positive-only fit (`profile_fit`, formerly
   `charge_time_calib`) and the censored likelihood (`fit`), with Hessian uncertainties.
-- `ex_synthetic`: public-seed generators for closure tests (the fitted model, and a Poisson + log-normal mismatch).
+- `ex_synthetic`: public-seed generators for closure tests (the fitted model; Poisson + log-normal mismatches with
+  integer or continuous charge).
 
 ## Crossings from the track-CRV association
 
@@ -42,8 +43,10 @@ holds coincidence members only, and a missed pulse would include every pulse out
 refuses such an input unless `--allow-clustered-only` is given.
 
 Follow-up items for the association (not changed here): per-SiPM (per-end) probe charge and time with the pulse
-index, so that pulse matching needs no fallback; the probe's time window and PE threshold as stored settings; and
-the probe on all pulses (`probe = 3`) in the ntuple-stage matchers, which run on clustered pulses only.
+index, so that pulse matching needs no fallback; the probe's time window and PE threshold as stored settings; the
+detector-frame origin (or the predicted bar's across-bar coordinate) with the record, so that consumers need no
+geometry version; and the probe on all pulses (`probe = 3`) in the ntuple-stage matchers, which run on clustered
+pulses only.
 
 ```bash
 python -m crvfastsim.objective.ex_observations "$NTUPLE" "$COUNTERS" "$CRVCALIB" "$TRAIN_NPZ" \
@@ -62,8 +65,8 @@ the reader selects one track in about 1 % of the events, the association's probe
 the chord through the predicted bar agrees with `probe_upred` to 1e-4 mm. About 31 % of the EX sensor rows are
 `neighbour` (the probe's pulse on an adjacent bar), so the neighbour rule removes a large share of crossings; its
 cause (pointing, or the probe's choice between bars) is an open question for the association. The censored fit
-converges on that file's supported channels with a positive-definite Hessian. No fitted constants from detector data are
-quoted here.
+converges on that file's supported channels with a positive-definite Hessian. No fitted constants from detector
+data are quoted here.
 
 Use an extracted, field-off EventNtuple of one run with the association branches and unclustered pulses, recorded
 without a CRV requirement, with the same counters file and per-channel `CRVCalib` CSV as the sample. `present` is
@@ -122,21 +125,21 @@ uncensored baseline; its slope errors come from the residual scatter.
 
 | Generator | Fit | Attenuation pull | Slowness pull | sigma_0 pull | sigma_t pull | walk pull | 1-sigma coverage (att / slow) | Gain RMSE | Fit time (s) |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| fitted model, constant width | widths fitted | +0.09 +- 1.07 | +0.28 +- 0.90 | -0.38 +- 0.94 | -0.19 +- 0.90 | - | 0.68 / 0.68 | 1.2 % | 5.1 |
-| fitted model, PE-dependent width | widths fitted | -0.02 +- 1.00 | +0.21 +- 0.94 | +0.07 +- 0.95 | -0.19 +- 0.86 | - | 0.70 / 0.73 | 1.5 % | 4.0 |
-| fitted model, PE-dependent width, walk 0.8 ns | widths and walk fitted | +0.05 +- 1.00 | +0.15 +- 0.86 | +0.03 +- 0.93 | -0.20 +- 0.90 | -0.15 +- 0.83 | 0.72 / 0.79 | 1.5 % | 4.5 |
-| fitted model, walk 0.8 ns | walk fixed at 0 | +0.23 +- 1.04 | +1.43 +- 0.86 | -0.02 +- 0.98 | +0.21 +- 0.90 | - | 0.65 / 0.28 | 1.6 % | 4.1 |
-| fitted model, constant width | widths fixed at 0.8x true | -4.40 +- 2.12 | -0.19 +- 1.34 | - | - | - | 0.07 / 0.48 | 1.3 % | 1.8 |
-| fitted model, constant width | widths fixed at true | -0.03 +- 1.08 | +0.27 +- 0.94 | - | - | - | 0.72 / 0.67 | 1.2 % | 1.4 |
-| fitted model, constant width | widths fixed at 1.2x true | +3.30 +- 1.36 | +0.48 +- 0.95 | - | - | - | 0.03 / 0.65 | 1.6 % | 1.2 |
-| fitted model, PE-dependent width | constant width fitted | -4.26 +- 2.16 | +0.58 +- 0.98 | +31.28 +- 2.44 | -0.72 +- 0.90 | - | 0.07 / 0.57 | 1.6 % | 2.7 |
-| Poisson counts on log-normal yield | widths fixed (0.36, 2 ns) | -5.80 +- 2.44 | +0.17 +- 1.02 | - | - | - | 0.03 / 0.70 | 1.5 % | 1.1 |
-| Poisson counts on log-normal yield | constant width fitted | -6.80 +- 2.82 | +0.08 +- 1.02 | -4.15 +- 1.09 | -0.67 +- 0.84 | - | 0.00 / 0.73 | 1.6 % | 1.7 |
-| Poisson counts on log-normal yield | widths fitted | -5.83 +- 2.24 | +0.08 +- 1.05 | -2.76 +- 1.27 | -0.62 +- 0.84 | - | 0.02 / 0.72 | 1.5 % | 3.9 |
-| Poisson counts, walk 0.8 ns | widths and walk fitted | -5.46 +- 2.25 | +0.08 +- 0.99 | -2.76 +- 1.22 | -0.78 +- 0.93 | -0.82 +- 1.26 | 0.02 / 0.69 | 1.5 % | 4.6 |
-| Poisson counts on log-normal yield | widths fitted, threshold 8.5 (continuity) | -1.89 +- 1.31 | -0.00 +- 1.12 | -1.85 +- 0.86 | +1.58 +- 1.08 | - | 0.15 / 0.67 | 1.3 % | 4.5 |
-| Poisson + single-PE gain spread (continuous) | widths fixed (0.36, 2 ns) | -4.15 +- 2.11 | +0.01 +- 1.06 | - | - | - | 0.05 / 0.67 | 1.4 % | 1.4 |
-| Poisson + single-PE gain spread (continuous) | widths fitted | -2.06 +- 1.32 | -0.04 +- 1.08 | -1.71 +- 0.80 | +1.23 +- 0.98 | - | 0.13 / 0.72 | 1.3 % | 4.8 |
+| fitted model, constant width | widths fitted | +0.09 +- 1.07 | +0.28 +- 0.90 | -0.38 +- 0.94 | -0.19 +- 0.90 | - | 0.68 / 0.68 | 1.2 % | 9.3 |
+| fitted model, PE-dependent width | widths fitted | -0.02 +- 1.00 | +0.21 +- 0.94 | +0.07 +- 0.95 | -0.19 +- 0.86 | - | 0.70 / 0.73 | 1.5 % | 7.9 |
+| fitted model, PE-dependent width, walk 0.8 ns | widths and walk fitted | +0.06 +- 1.00 | +0.17 +- 0.86 | +0.03 +- 0.94 | -0.17 +- 0.90 | -0.14 +- 0.82 | 0.72 / 0.78 | 1.5 % | 9.6 |
+| fitted model, walk 0.8 ns | walk fixed at 0 | +0.23 +- 1.04 | +1.43 +- 0.86 | -0.02 +- 0.98 | +0.21 +- 0.90 | - | 0.65 / 0.28 | 1.6 % | 7.6 |
+| fitted model, constant width | widths fixed at 0.8x true | -4.40 +- 2.12 | -0.19 +- 1.34 | - | - | - | 0.07 / 0.48 | 1.3 % | 3.4 |
+| fitted model, constant width | widths fixed at true | -0.03 +- 1.08 | +0.27 +- 0.94 | - | - | - | 0.72 / 0.67 | 1.2 % | 3.1 |
+| fitted model, constant width | widths fixed at 1.2x true | +3.30 +- 1.36 | +0.48 +- 0.95 | - | - | - | 0.03 / 0.65 | 1.6 % | 2.8 |
+| fitted model, PE-dependent width | constant width fitted | -4.26 +- 2.16 | +0.58 +- 0.98 | +31.28 +- 2.44 | -0.72 +- 0.90 | - | 0.07 / 0.57 | 1.6 % | 5.3 |
+| Poisson counts on log-normal yield | widths fixed (0.36, 2 ns) | -5.80 +- 2.44 | +0.17 +- 1.02 | - | - | - | 0.03 / 0.70 | 1.5 % | 3.2 |
+| Poisson counts on log-normal yield | constant width fitted | -6.80 +- 2.82 | +0.08 +- 1.02 | -4.15 +- 1.09 | -0.67 +- 0.84 | - | 0.00 / 0.73 | 1.6 % | 5.4 |
+| Poisson counts on log-normal yield | widths fitted | -5.83 +- 2.23 | +0.05 +- 1.02 | -2.87 +- 1.27 | -0.63 +- 0.84 | - | 0.00 / 0.73 | 1.5 % | 9.0 |
+| Poisson counts, walk 0.8 ns | widths and walk fitted | -5.49 +- 2.23 | +0.10 +- 0.98 | -2.77 +- 1.20 | -0.78 +- 0.92 | -0.84 +- 1.25 | 0.02 / 0.70 | 1.5 % | 10.9 |
+| Poisson counts on log-normal yield | widths fitted, threshold 8.5 (continuity) | -1.89 +- 1.31 | -0.00 +- 1.12 | -1.85 +- 0.86 | +1.58 +- 1.08 | - | 0.15 / 0.67 | 1.3 % | 10.1 |
+| Poisson + single-PE gain spread (continuous) | widths fixed (0.36, 2 ns) | -4.15 +- 2.11 | +0.01 +- 1.06 | - | - | - | 0.05 / 0.67 | 1.4 % | 3.4 |
+| Poisson + single-PE gain spread (continuous) | widths fitted | -2.06 +- 1.32 | -0.04 +- 1.08 | -1.71 +- 0.80 | +1.23 +- 0.98 | - | 0.13 / 0.72 | 1.3 % | 10.2 |
 | fitted model, constant width | positive-only closed form | bias -2.6e-04 /mm | +0.28 +- 4.05 | - | - | - | 0.00 / 0.15 | 4.3 % | 0.0 |
 
 - **The fitted model closes.** Pulls are centred with unit spread and the 1-sigma coverage is near 0.68, with
@@ -150,11 +153,13 @@ uncensored baseline; its slope errors come from the residual scatter.
   by about -5.8 sigma (-7e-5 /mm) whether the widths are fixed or fitted. Most of it is the count threshold:
   `n >= 9` is `PE >= 8.5` for a continuous model, and the continuity-corrected threshold brings it to -1.9 sigma.
   With a continuous charge (single-PE gain spread 0.15, as a reconstructed PE), fitted widths halve the bias,
-  -4.2 to -2.1 sigma (-4.8e-5 to -3.0e-5 /mm), at a 4.8 s fit. The remaining bias comes from the charge shape,
-  which the log-normal surrogate cannot describe; the forward model, not the widths, has to (see below).
-- 2 of 60 toys with walk did not converge (reported as fit failures, not in the table).
-- Fits take 1-5 s for 9,600 crossings on one core (fixed widths 1-2 s). `predict` in float32 agrees with float64 to
-  1.6e-6 in probability, 1.2e-7 in log PE and 1.5e-5 ns.
+  -4.2 to -2.1 sigma (-4.8e-5 to -3.0e-5 /mm). The remaining bias comes from the charge shape, which the log-normal
+  surrogate cannot describe: the forward model, not the widths, has to (the planned expected-mode fastsim CRV
+  response feeding this likelihood through `nominal_log_pe` / `nominal_time_ns`).
+- All 960 fits converge (largest scaled gradient below 0.01 sigma); a mis-specified fit that wants a negative
+  `excess_noise` ends with it held at 0 (`at_bound`).
+- Fits take 8-11 s for 9,600 crossings on one core with fitted widths (3 s with fixed widths), including the
+  Hessian. `predict` in float32 agrees with float64 to 8e-7 in probability, 1.2e-7 in log PE and 1.5e-5 ns.
 
 Earlier validation of the fixed-width fit (2026-11-19, same toys): attenuation pulls -3.5 +- 2.0 and +2.6 +- 1.4 for
 fit widths 0.8x and 1.2x true, and -4.1 +- 3.0 under the Poisson + log-normal mismatch.
