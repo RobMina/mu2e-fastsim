@@ -200,6 +200,48 @@ def test_device_locate_and_cascade_on_a_clad_rod(tmp_path, dtype):
 
 
 @pytest.mark.parametrize("dtype", [jnp.float64, jnp.float32])
+def test_device_spheres_cylinders_match_host(tmp_path, dtype):
+    """The RAL target (rod, hubs, hub balls, spokes): device locate / distances against the host."""
+    from beamfastsim import ptgt_deck as K
+    bank = _bank(tmp_path, n_pim=3)
+    tgt = K.ral_target(0)
+    env = C.Envelope(z_nodes=np.array([-5000.0, 5000.0]), r_nodes=np.array([1900.0, 1900.0]), z_min=-2000.0,
+                     z_plane=800.0, r_plane=1800.0, axis_x=0.0)
+    S, nk, nmat = J.make_static(bank, tgt, env, _uniform_map(2.0), dtype)
+    cfg = J.make_cfg(tgt, env, C.Stepping(), nk, nmat, dtype)
+    assert cfg.ncone == 5 and cfg.nseg == 17
+    rng = np.random.default_rng(8)
+    n = 40000
+    xl = np.concatenate([np.stack([rng.uniform(-18, 18, n), rng.uniform(-18, 18, n), rng.uniform(-100, 100, n)], 1),
+                         np.stack([rng.uniform(-150, 150, n), rng.uniform(-150, 150, n), rng.uniform(-120, 120, n)], 1)])
+    # points near the spokes: along each axis, jittered by about its radius
+    c = tgt.cy
+    f = rng.uniform(0, 1, (n, 1)); k = rng.integers(0, len(c), n)
+    xl = np.concatenate([xl, c[k, 0:3] + f * (c[k, 3:6] - c[k, 0:3]) + rng.normal(scale=0.4, size=(n, 3)),
+                         tgt.sp[k, 0:3] + rng.normal(scale=1.5, size=(n, 3))])          # and around the balls
+    host = tgt.locate(xl)
+    dev = np.asarray(J.locate(S, cfg, jnp.asarray(xl, dtype)))
+    same = dev == host
+    assert np.mean(same) > 0.9995 and set(host.tolist()) == set(range(-1, 17))
+    assert np.array_equal(np.asarray(J.cylinder_near(S, jnp.asarray(xl, dtype), 1.0)), tgt.cylinder_near(xl, 1.0))
+    dl = rng.normal(size=xl.shape); dl /= np.linalg.norm(dl, axis=1, keepdims=True)
+    x, d = jnp.asarray(xl, dtype), jnp.asarray(dl, dtype)
+    inside = same & (host >= 0)
+    do = np.asarray(J.distance_out(S, cfg, x, d, jnp.asarray(host, jnp.int32)))[inside]
+    assert np.mean(np.isclose(do, tgt.distance_out(xl[inside], dl[inside], host[inside]), rtol=1e-4, atol=1e-3)) > 0.999
+    out = same & (host < 0)
+    di, dh = np.asarray(J.distance_in(S, cfg, x, d))[out], tgt.distance_in(xl[out], dl[out])
+    fin = np.isfinite(dh)
+    assert np.mean(np.isfinite(di) == fin) > 0.999 and fin.sum() > 5000
+    both = fin & np.isfinite(di)
+    assert np.mean(np.isclose(di[both], dh[both], rtol=1e-4, atol=1e-3)) > 0.999
+    prim = C.primaries(2000, tgt, np.random.default_rng(3))
+    assert np.allclose(tgt.to_local(prim["x"])[:, 2], 80.5)     # the deck's beam start, inside the upstream hub
+    rec, cnt = J.run(bank, tgt, _uniform_map(2.0), env, prim, seed=5, pool=4096, steps=32, dtype=dtype)
+    assert cnt["inelastic"] > 1000
+
+
+@pytest.mark.parametrize("dtype", [jnp.float64, jnp.float32])
 def test_device_many_segments_match_host(tmp_path, dtype):
     """A Hayman-like body: disjoint discs, a frustum, a hollow end ring and fins (segment axis vectorized)."""
     bank = _bank(tmp_path, n_pim=3)

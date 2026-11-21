@@ -119,6 +119,44 @@ def test_boxes_locate_and_distances():
                  boxes=np.array([[0.0, 1.0, 0, 1, 0, 1]]))       # mat must cover the box
 
 
+def _hubbed():
+    """A rod with a sphere on its side and a tilted spoke (cylinder) from the sphere outwards."""
+    return P.Target(np.array([-20.0, 20.0]), np.zeros((1, 2)), np.full((1, 2), 3.0), np.array([0, 0, 1]),
+                    spheres=np.array([[0.0, 4.0, 10.0, 2.0]]), cylinders=np.array([[0.0, 5.0, 10.0, 0.0, 25.0, 0.0, 0.5]]),
+                    beam_z=15.0)
+
+
+def test_spheres_and_cylinders_locate_and_distances():
+    t = _hubbed()
+    assert (t.n_cone, t.n_box, t.n_sphere) == (1, 0, 1) and t.z_beam == 15.0 and t.z_hi == 20.0
+    assert t.r_max == pytest.approx(6.0)                           # the sphere; the spoke has its own near test
+    pts = np.array([[0, 0, 0], [0, 4.0, 10.0], [0, 15.0, 5.0], [0.6, 15.0, 5.0], [0, 2.5, 10.0], [0, 30.0, -2.5]])
+    assert list(t.locate(pts)) == [0, 1, 2, -1, 0, -1]             # the rod wins where it overlaps the sphere
+    u = np.array([0.0, 20.0, -10.0]) / np.hypot(20.0, 10.0)        # the spoke axis
+    x = np.array([[0, 4.0, 10.0], [0, 15.0, 5.0], [0, 15.0, 5.0], [0, 15.0, 5.0]])
+    d = np.array([[1.0, 0, 0], [1.0, 0, 0], u, -u])
+    assert np.allclose(t.distance_out(x, d, t.locate(x)), [2.0, 0.5, np.linalg.norm([0, 10.0, -5.0]),
+                                                            np.linalg.norm([0, -10.0, 5.0])])
+    out = np.array([[-10.0, 4.0, 10.0], [-10.0, 15.0, 5.0], [0, 15.0 + 20 * u[1], 5.0 + 20 * u[2]], [5.0, 15.0, 5.0]])
+    dout = np.array([[1.0, 0, 0], [1.0, 0, 0], -u, [0, 0, 1.0]])
+    assert np.allclose(t.distance_in(out, dout), [8.0, 9.5, 20.0 - np.linalg.norm([0, 10.0, -5.0]), np.inf])
+    rng = np.random.default_rng(3)                                 # distance_in agrees with locate along random rays
+    x0 = np.stack([rng.uniform(-8, 8, 400), rng.uniform(-5, 30, 400), rng.uniform(-25, 25, 400)], 1)
+    x0 = x0[t.locate(x0) < 0]
+    d0 = rng.normal(size=x0.shape); d0 /= np.linalg.norm(d0, axis=1, keepdims=True)
+    ts = np.linspace(0, 60, 24001)
+    first = np.array([ts[np.argmax(t.locate(p + ts[:, None] * q) >= 0)] if np.any(t.locate(p + ts[:, None] * q) >= 0)
+                      else np.inf for p, q in zip(x0, d0)])
+    di = t.distance_in(x0, d0)
+    hit = np.isfinite(first)
+    agree = (np.isfinite(di) & (di < 60)) == hit                   # a grazing chord can slip between grid points
+    assert hit.sum() > 20 and agree.mean() > 0.99
+    assert np.allclose(di[hit & agree], first[hit & agree], atol=3e-3)
+    with pytest.raises(ValueError):
+        P.Target(np.array([-1.0, 1.0]), np.zeros((1, 2)), np.ones((1, 2)), np.array([0, 0]),
+                 cylinders=np.array([[0.0, 0, 0, 0, 0, 0, 1.0]]))  # a == b
+
+
 def test_contiguous_segments_locate_as_before():
     t = P.Target(np.array([-50.0, -10.0, 20.0, 50.0]), np.zeros((3, 2)), np.array([[2, 3], [3, 3], [3, 1.5]]),
                  np.array([0, 1, 0]))

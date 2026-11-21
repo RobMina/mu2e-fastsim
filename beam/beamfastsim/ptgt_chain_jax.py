@@ -44,6 +44,7 @@ class Static(NamedTuple):
     cell_off: object; sec_off: object; sec_sp: object; sec_p: object
     z0: object; z1: object; rin: object; rout: object; mat: object; origin: object; rot: object   # per segment
     bx: object                                  # axis-aligned boxes (n, 6): x0, x1, y0, y1, z0, z1 (local frame)
+    sp: object; cy: object                      # spheres (n, 4): c, R; cylinders (n, 7): a, b, r (local frame)
     env_z: object; env_r: object; annuli: object
     fm: object
     rb: object; zc: object; hl: object          # target bounding cylinder (device scalars: no recompile per rod)
@@ -52,7 +53,7 @@ class Static(NamedTuple):
 
 
 class Cfg(NamedTuple):
-    nk: int; nmat: int; nseg: int; ncone: int    # nseg = ncone coaxial segments + the boxes
+    nk: int; nmat: int; nseg: int; ncone: int    # nseg = ncone coaxial segments + boxes + spheres + cylinders
     z_plane: float; r_plane: float; z_min: float; axis_x: float
     h_vac: float; h_near: float; near: float; h_mat: float; neutral_step: float
     ke_min_hadron: float; ke_min_pion: float; max_loss_fraction: float
@@ -95,7 +96,7 @@ def make_static(bank, target, env, fm, dtype, slab=None):
                 sec_off=jnp.asarray(bank["sec_offsets"], jnp.int64), sec_sp=jnp.asarray(sec_sp, jnp.int32),
                 sec_p=jnp.asarray(bank["sec_p"], jnp.float32),
                 z0=f(target.zr[:, 0]), z1=f(target.zr[:, 1]), rin=f(target.r_in), rout=f(target.r_out), mat=jnp.asarray(target.mat, jnp.int32),
-                bx=f(target.bx),
+                bx=f(target.bx), sp=f(target.sp), cy=f(target.cy),
                 origin=f(target.origin), rot=f(target.rot), env_z=f(env.z_nodes), env_r=f(env.r_nodes), annuli=f(annuli),
                 fm=fieldmap.FieldMap(f(fm.lo), f(fm.d), jnp.asarray(fm.n), f(fm.B)),
                 rb=f(target.r_max), zc=f(0.5 * (target.z_lo + target.z_hi)),
@@ -126,9 +127,17 @@ def dir_local(S, u):
 def locate(S, cfg, xl):
     z, r = xl[:, 2], jnp.hypot(xl[:, 0], xl[:, 1])
     seg = jnp.full(z.shape, -1, jnp.int32)
-    if S.bx.shape[0]:                                   # boxes after the coaxial segments: the first box wins
-        inb = jnp.all((xl[:, None, :] >= S.bx[None, :, 0::2]) & (xl[:, None, :] < S.bx[None, :, 1::2]), axis=2)
-        seg = jnp.where(inb.any(axis=1), cfg.ncone + jnp.argmax(inb, axis=1).astype(jnp.int32), seg)
+    nb, ns = S.bx.shape[0], S.sp.shape[0]
+    groups = []                                         # later groups first, so earlier ones win
+    if S.cy.shape[0]:
+        groups.append((cfg.ncone + nb + ns, _in_cylinders(S, xl)))
+    if ns:
+        groups.append((cfg.ncone + nb, jnp.sum((xl[:, None, :] - S.sp[None, :, 0:3]) ** 2, -1) < S.sp[None, :, 3] ** 2))
+    if nb:
+        groups.append((cfg.ncone, jnp.all((xl[:, None, :] >= S.bx[None, :, 0::2]) & (xl[:, None, :] < S.bx[None, :, 1::2]),
+                                          axis=2)))
+    for off, inside in groups:                          # the first solid of a group wins
+        seg = jnp.where(inside.any(axis=1), off + jnp.argmax(inside, axis=1).astype(jnp.int32), seg)
     nc = cfg.ncone                                      # coaxial segments, vectorized over the segment axis
     z0, z1, zz, rr = S.z0[:nc], S.z1[:nc], z[:, None], r[:, None]
     f = (zz - z0) / (z1 - z0)
@@ -163,6 +172,68 @@ def _cone_hit(xl, dl, z0, z1, ra, rb, eps=1e-7):
     return best
 
 
+def _in_cylinders(S, xl):
+    a, ab = S.cy[:, 0:3], S.cy[:, 3:6] - S.cy[:, 0:3]
+    L = jnp.linalg.norm(ab, axis=1)
+    u = ab / L[:, None]
+    w = xl[:, None, :] - a[None]
+    s = jnp.sum(w * u[None], -1)
+    q = w - s[..., None] * u[None]
+    return (s >= 0) & (s < L[None]) & (jnp.sum(q * q, -1) < S.cy[None, :, 6] ** 2)
+
+
+def _sphere_span(xl, dl, c, R):
+    """(t_enter, t_exit) of rays against spheres (broadcast); (inf, -inf) for a miss."""
+    w = xl - c
+    b = jnp.sum(w * dl, -1)
+    disc = b * b - (jnp.sum(w * w, -1) - R * R)
+    sq = jnp.sqrt(jnp.maximum(disc, 0.0))
+    return jnp.where(disc > 0, -b - sq, jnp.inf), jnp.where(disc > 0, -b + sq, -jnp.inf)
+
+
+def _cylinder_span(xl, dl, a, b, r):
+    """(t_enter, t_exit) of rays against finite solid cylinders (broadcast): axial slab x infinite cylinder."""
+    ab = b - a
+    L = jnp.linalg.norm(ab, axis=-1)
+    u = ab / L[..., None]
+    w = xl - a
+    s0, ds = jnp.sum(w * u, -1), jnp.sum(dl * u, -1)
+    par = ds == 0
+    safe = jnp.where(par, 1.0, ds)
+    t1, t2 = -s0 / safe, (L - s0) / safe
+    ins = (s0 >= 0) & (s0 < L)
+    big = jnp.asarray(jnp.inf, xl.dtype)
+    lo = jnp.where(par, jnp.where(ins, -big, big), jnp.minimum(t1, t2))
+    hi = jnp.where(par, jnp.where(ins, big, -big), jnp.maximum(t1, t2))
+    q0, qd = w - s0[..., None] * u, dl - ds[..., None] * u
+    A, B, Cq = jnp.sum(qd * qd, -1), jnp.sum(q0 * qd, -1), jnp.sum(q0 * q0, -1) - r * r
+    disc = B * B - A * Cq
+    axial = A < 1e-15
+    sA = jnp.where(axial, 1.0, A)
+    sq = jnp.sqrt(jnp.maximum(disc, 0.0))
+    c1 = jnp.where(axial, jnp.where(Cq < 0, -big, big), jnp.where(disc > 0, (-B - sq) / sA, big))
+    c2 = jnp.where(axial, jnp.where(Cq < 0, big, -big), jnp.where(disc > 0, (-B + sq) / sA, -big))
+    return jnp.maximum(lo, c1), jnp.minimum(hi, c2)
+
+
+def _spans(S, xl, dl):
+    """(t_enter, t_exit) of rays (N, 3) against every sphere, then every cylinder: (N, n_sphere + n_cylinder)."""
+    x3, d3 = xl[:, None, :], dl[:, None, :]
+    e1, x1 = _sphere_span(x3, d3, S.sp[None, :, 0:3], S.sp[None, :, 3])
+    e2, x2 = _cylinder_span(x3, d3, S.cy[None, :, 0:3], S.cy[None, :, 3:6], S.cy[None, :, 6])
+    return jnp.concatenate([e1, e2], 1), jnp.concatenate([x1, x2], 1)
+
+
+def cylinder_near(S, xl, margin):
+    """Lanes within margin of a cylinder (distance to its axis segment < r + margin)."""
+    if not S.cy.shape[0]:
+        return jnp.zeros(xl.shape[0], bool)
+    a, ab = S.cy[None, :, 0:3], (S.cy[:, 3:6] - S.cy[:, 0:3])[None]
+    w = xl[:, None, :] - a
+    s = jnp.clip(jnp.sum(w * ab, -1) / jnp.sum(ab * ab, -1), 0.0, 1.0)
+    return jnp.any(jnp.linalg.norm(w - s[..., None] * ab, axis=-1) < S.cy[None, :, 6] + margin, axis=1)
+
+
 def _box_slabs(xl, dl, lo, hi):
     """(t_enter, t_exit) of rays against axis-aligned boxes (broadcast over the leading axes)."""
     par = dl == 0
@@ -188,6 +259,11 @@ def distance_out(S, cfg, xl, dl, seg):
     if nb:
         bj = S.bx[jnp.clip(seg - cfg.ncone, 0, nb - 1)]
         out = jnp.where(seg >= cfg.ncone, _box_slabs(xl, dl, bj[:, 0::2], bj[:, 1::2])[1], out)
+    nq = S.sp.shape[0] + S.cy.shape[0]
+    if nq:                                              # spheres and cylinders: the exit of the own solid's span
+        k = seg - cfg.ncone - nb
+        tx = jnp.take_along_axis(_spans(S, xl, dl)[1], jnp.clip(k, 0, nq - 1)[:, None], axis=1)[:, 0]
+        out = jnp.where(k >= 0, tx, out)
     i = jnp.clip(seg, 0, cfg.ncone - 1)                # the walls of the point's own coaxial segment (gathered)
     z0, z1, e = S.z0[i], S.z1[i], cfg.eps
     ti = jnp.minimum(_plane_hit(xl, dl, z0, e), _plane_hit(xl, dl, z1, e))
@@ -202,6 +278,9 @@ def distance_in(S, cfg, xl, dl):
     if S.bx.shape[0]:
         te, tx = _box_slabs(xl[:, None, :], dl[:, None, :], S.bx[None, :, 0::2], S.bx[None, :, 1::2])
         t = jnp.min(jnp.where((te > cfg.eps) & (te <= tx), te, jnp.inf), axis=1)
+    if S.sp.shape[0] + S.cy.shape[0]:
+        te, tx = _spans(S, xl, dl)
+        t = jnp.minimum(t, jnp.min(jnp.where((te > cfg.eps) & (te <= tx), te, jnp.inf), axis=1))
     nc, e = cfg.ncone, cfg.eps                          # all coaxial segments at once: (lanes, segments)
     z0, z1, rin, rout = S.z0[:nc], S.z1[:nc], S.rin[:nc], S.rout[:nc]
     x3, d3 = xl[:, None, :], dl[:, None, :]
@@ -360,7 +439,7 @@ def _step(S, cfg, carry, key):
     um = jnp.where(el[:, None], ue, um)
     # ---------------------------------------------------------------- vacuum step
     rloc = jnp.hypot(xl[:, 0], xl[:, 1])
-    near = (rloc < S.rb + cfg.near) & (jnp.abs(xl[:, 2] - S.zc) < S.hl + cfg.near)
+    near = (rloc < S.rb + cfg.near) & (jnp.abs(xl[:, 2] - S.zc) < S.hl + cfg.near) | cylinder_near(S, xl, cfg.near)
     charged = q != 0
     hv = jnp.where(near, cfg.h_near, jnp.where(charged, cfg.h_vac, cfg.neutral_step))
     tn = distance_in(S, cfg, xl, dl)                              # neutral: straight to the next entry, or out

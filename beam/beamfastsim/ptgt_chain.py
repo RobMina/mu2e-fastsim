@@ -262,9 +262,9 @@ def decay(pdg, x, u, p, t, rng):
 
 
 def primaries(n, target, rng, sigma=1.0, ke=8000.0, offset=0.5):
-    """G4beamline beam: protons 0.5 mm outside the target's local +z face moving along local -z, Gaussian sigma
+    """G4beamline beam: protons 0.5 mm outside the target's local +z face (z_beam) moving along local -z, Gaussian sigma
     1 mm in the transverse plane, no divergence, t = 0."""
-    zl = target.z_hi + offset
+    zl = target.z_beam + offset
     xl = np.stack([sigma * rng.standard_normal(n), sigma * rng.standard_normal(n), np.full(n, zl)], 1)
     dl = np.tile([0.0, 0.0, -1.0], (n, 1))
     x, u = target.to_global(xl, dl)
@@ -403,7 +403,7 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, sla
             i = np.flatnonzero(vac)
             xl = target.to_local(L["x"][i])
             rloc = np.hypot(xl[:, 0], xl[:, 1])
-            near = (rloc < rb + st.near) & (np.abs(xl[:, 2] - zc) < hl + st.near)
+            near = (rloc < rb + st.near) & (np.abs(xl[:, 2] - zc) < hl + st.near) | target.cylinder_near(xl, st.near)
             hv = np.where(near, st.h_near, np.where(q[i] != 0, st.h_vac, st.neutral_step))
             hv = np.minimum(hv, d_dec[i])
             x0v = L["x"][i]
@@ -577,6 +577,8 @@ def add_design_arguments(ap):
                     "file (e.g. Geometry/Proton_Target_Hayman2.txt), placed on the deck's target centre (--rod unused)")
     ap.add_argument("--deck-rotation", default="Y14", help="rotation of that group in the deck (G4beamline string, "
                     "e.g. 'Z-30,Y14' for Hayman2)")
+    ap.add_argument("--ral", action="store_true", help="the deck's RAL target (Use_Proton_Target=6): rod, hubs, hub "
+                    "balls and spokes in --material (ptgt_deck.ral_target; --rod unused)")
     ap.add_argument("--clad", nargs=3, metavar=("R_CORE", "T_CLAD", "MATERIAL"),
                     help="a cylinder of radius R_CORE (--material) in a sleeve of thickness T_CLAD of MATERIAL, the "
                          "length of --rod (its radii unused): the deck's Use_Proton_Target=10")
@@ -595,6 +597,12 @@ def design_targets(a, bank, rod):
                              rot=ptgt_deck.rotation(a.deck_rotation))
         return t, t
     mat = bank.materials.index(a.material)
+    if getattr(a, "ral", False):
+        from beamfastsim import ptgt_deck
+        if a.offset_x or a.tilt_x or a.clad:
+            raise SystemExit("--ral takes no --offset-x, --tilt-x or --clad")
+        t = ptgt_deck.ral_target(mat, **placement())
+        return t, t
     if a.clad:
         r_core, t_clad, cmat = float(a.clad[0]), float(a.clad[1]), a.clad[2]
         if cmat not in bank.materials:

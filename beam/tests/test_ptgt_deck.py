@@ -55,3 +55,29 @@ def test_rotation_matches_the_placement_convention():
     assert np.allclose(K.rotation("Y14"), C.placement()["rot"])
     rz = K.rotation("Z-30,Y14")
     assert np.allclose(rz[:, 2], C.placement()["rot"][:, 2])          # a z rotation first keeps the target axis
+
+
+def test_ral_target_matches_the_deck_arithmetic():
+    """The deck's own formulas (Proton_Target_RAL.txt): hub polycones, ball and spoke end positions, rod lengths."""
+    p = C.placement()
+    t = K.ral_target(0, **p)
+    assert (t.n_cone, t.n_sphere, len(t.cy)) == (5, 6, 6) and t.z_beam == 80.0
+    assert t.z_hi == pytest.approx(80 + 4 + 16 * np.cos(np.pi / 4)) and t.z_lo == -t.z_hi
+    assert np.allclose(t.zr[1], [72, 84]) and np.allclose(t.r_out[2], [4.15, 4.15 + 16 * np.sin(np.pi / 4)])
+    ball = t.sp[0]
+    yoff = 4.15 + 9 * np.sin(np.pi / 4) - 2.25 * np.cos(np.pi / 4)
+    assert np.allclose(ball[:2], [-np.sin(np.deg2rad(105)) * yoff, np.cos(np.deg2rad(105)) * yoff])
+    deg, th = np.pi / 180, 14 * np.pi / 180
+    for i, (sgn, att) in enumerate([(1, 105), (1, 225), (1, 345), (-1, 15), (-1, 135), (-1, 255)]):
+        ang = att * deg
+        zpre = sgn * (84 + 9 * np.cos(np.pi / 4) - 0.1 * np.sin(np.pi / 4))
+        ypre = 4.15 + 9 * np.sin(np.pi / 4) + 0.1 * np.cos(np.pi / 4)
+        xpr, ypr = -np.sin(ang) * ypre, np.cos(ang) * ypre
+        hub = np.array([np.cos(th) * xpr + np.sin(th) * zpre, ypr, -np.sin(th) * xpr + np.cos(th) * zpre])
+        yring = 176 - 35 * np.sin(65 * deg)
+        ring = np.array([-np.sin(ang) * yring, np.cos(ang) * yring, -sgn * (9.525 + 35 * np.cos(65 * deg))])
+        a, b = p["rot"] @ t.cy[i, 0:3], p["rot"] @ t.cy[i, 3:6]      # the deck's (target-centred) frame
+        assert np.linalg.norm(b - a) == pytest.approx(np.linalg.norm(ring - hub) - 1.0)    # rodlength
+        assert np.allclose(0.5 * (a + b), 0.5 * (ring + hub))                               # rodcenter
+        e, g = (b - a) / np.linalg.norm(b - a), (ring - hub) / np.linalg.norm(ring - hub)
+        assert np.allclose(e, g, atol=1e-12)                                                # along hub -> ring
