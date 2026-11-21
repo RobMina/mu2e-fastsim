@@ -400,6 +400,7 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, sla
             if np.any(inel):
                 cnt["inelastic"] += int(inel.sum())
                 k = i[inel]
+                cnt["primary_inelastic"] = cnt.get("primary_inelastic", 0) + int(np.sum(L["gen"][k] == 0))
                 j = bank.draw(cell[inel], rng)
                 off = bank["sec_offsets"]
                 ns = off[j + 1] - off[j]
