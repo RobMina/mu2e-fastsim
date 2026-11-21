@@ -109,6 +109,9 @@ class Backend:
         self.output_compression = getattr(args, "output_compression", None)
         if self.output_compression not in (None, *COMPRESSIONS):
             raise ValueError(f"output compression must be one of {sorted(COMPRESSIONS)}")
+        self.sampling_receipt = getattr(args, "sampling_receipt", None) or "full"
+        if self.sampling_receipt not in ("full", "compact"):
+            raise ValueError("sampling receipt must be full or compact")
         if self.output_mode not in ("root", "occupancy"):
             raise ValueError("device output must be root or occupancy")
         if self.output_mode == "occupancy":
@@ -149,6 +152,14 @@ class Backend:
                 result = {**result, "output": occupancy, "receipt": device_occupancy.compact_receipt(result["receipt"]),
                           "errors": {**result["errors"], **occupancy_errors}}
                 return result, next_state
+        elif self.sampling_receipt == "compact":
+            dense = execute
+
+            def execute(pools, state, assets, seeds, ordinal, batch_index, size):
+                # the receipt without its per-donor arrays (sequential donors follow from counts and cursors): the
+                # same detector outputs, a much smaller terminal transfer and sampling.npz
+                result, next_state = dense(pools, state, assets, seeds, ordinal, batch_index, size)
+                return {**result, "receipt": device_occupancy.compact_receipt(result["receipt"])}, next_state
 
         self._arguments = (self.pools, self.state, self.assets, self._seeds)
         probe = tuple(jax.device_put(np.array(value, dtype=dtype), self.device)
@@ -164,6 +175,7 @@ class Backend:
             "rng": "JAX uint64 seed/batch domains folded as low/high uint32; distinct from NumPy and stock",
             "capacity_policy": "fixed padded buffers, masks and explicit overflow rejection; no truncation acceptance or CPU fallback",
             "output_event_tables": [], "reconstruction": "not implemented",
+            "sampling_receipt": "compact" if self.output_mode == "occupancy" else self.sampling_receipt,
         }
         if self.output_mode == "occupancy":
             self.metadata.update(
@@ -255,8 +267,9 @@ class Backend:
                     selection[field] = selection[field][:request.count]
         receipt.update(batch_index=request.batch_index, ordinal_start=request.ordinal_start,
                        version=2, rng=self.metadata["rng"], model_kind=self.metadata["model_kind"])
-        if self.output_mode == "occupancy":
+        if self.metadata["sampling_receipt"] == "compact":
             receipt["donors"] = "omitted: sequential donors follow from counts and initial_cursor"
+        if self.output_mode == "occupancy":
             save_sampling(path.parent, receipt)
             device_occupancy.write(path.parent / "occupancy.npz", keys, request.ordinal_start,
                                    host["output"], self._sector_names)

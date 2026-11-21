@@ -1,4 +1,5 @@
-"""benchmarks/fastsim_score: statistics, flag rule, yields, both-dtype requirement, ROOT conversion, Codabench bundle."""
+"""benchmarks/fastsim_score: statistics, flag rule, yields, both-dtype requirement, ROOT conversion, Codabench bundle,
+and B1 (FS-CALO-G4): CE peak fit, power rule, classifier score, calorimeter arm definitions."""
 import json
 import os
 import shutil
@@ -13,6 +14,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from benchmarks.codabench import build_bundle  # noqa: E402
+from benchmarks.fastsim_score import calo  # noqa: E402
 from benchmarks.fastsim_score import score as S  # noqa: E402
 from benchmarks.fastsim_score import synthetic  # noqa: E402
 
@@ -103,7 +105,7 @@ def test_missing_histogram_and_dtype_mismatch(example, tmp_path):
 def test_cli_exit_codes(example, tmp_path):
     assert S.main([str(example / "submissions" / "good"), str(example / "reference"),
                    "--out", str(tmp_path / "s.json")]) == 0
-    assert json.loads((tmp_path / "s.json").read_text())["n_workflows"] == 2
+    assert json.loads((tmp_path / "s.json").read_text())["n_workflows"] == 3
     assert S.main([str(tmp_path / "nothing"), str(example / "reference")]) == 1
 
 
@@ -196,7 +198,7 @@ def test_allow_missing_lists_arms(example, tmp_path):
     shutil.copytree(example / "submissions" / "good", sub)
     shutil.rmtree(sub / "WB" / "float32")
     res = S.score(sub, example / "reference", allow_missing=True)
-    assert "both dtypes" in res["missing"]["WB"]["float32"] and res["n_arms_scored"] == 3
+    assert "both dtypes" in res["missing"]["WB"]["float32"] and res["n_arms_scored"] == 5
     assert "missing" not in S.score(example / "submissions" / "good", example / "reference")
 
 
@@ -212,7 +214,9 @@ def test_validity_only_task(example, tmp_path):
     res = S.score(sub, ref)
     r = res["workflows"]["WB"]["float32"]
     assert r["throughput_scored"] is False and r["throughput_multiplier"] is None and r["validity"] == pytest.approx(1)
-    assert res["throughput_geomean"] == pytest.approx(5000 * 1.6 ** 0.5 / 12.5)
+    mults = [a["throughput_multiplier"] for by in res["workflows"].values() for a in by.values()
+             if a["throughput_multiplier"] is not None]
+    assert len(mults) == 4 and res["throughput_geomean"] == pytest.approx(float(np.exp(np.mean(np.log(mults)))))
 
 
 def test_paired_shape_ignores_the_yield():
@@ -230,5 +234,307 @@ def test_paired_shape_ignores_the_yield():
 def test_task_table_lists_every_task():
     from benchmarks.fastsim_score import tasks
     t = tasks.table()
-    for k in ("W1", "W8", "W9", "CRVLY", "PTGT"):
+    for k in ("W1", "W8", "W9", "CRVLY", "PTGT", "B1", "B2", "B3", "B4"):
         assert f"| {k} |" in t
+    assert all(tasks.TASKS[k]["status"] == "defined" for k in ("CRVLY", "B2", "B3", "B4"))
+    assert tasks.TASKS["B1"]["status"] == "scored"
+
+
+# ---------------------------------------------------------------- B1-B4 extensions
+
+def test_auc_ties_and_order():
+    assert S.auc(np.array([1.0, 1.0]), np.array([1.0, 1.0])) == pytest.approx(0.5)
+    assert S.auc(np.array([2.0, 3.0]), np.array([0.0, 1.0])) == pytest.approx(1.0)
+    assert S.auc(np.array([0.0, 2.0]), np.array([1.0, 3.0])) == pytest.approx(0.25)
+
+
+def test_classifier_score_separates_shifted_arms():
+    rng = np.random.default_rng(5)
+    a, b = rng.normal(size=(4000, 3)), rng.normal(size=(4000, 3))
+    same = S.classifier_score(a, b)
+    assert same["cls_score"] > 0.85 and same["n_per_arm"] == 4000
+    wide = b.copy()
+    wide[:, 1] *= 1.6  # same mean, wider: only the quadratic features see it; optimal AUC = (2/pi) atan(1.6)
+    assert S.classifier_score(a, wide)["auc"] == pytest.approx(2 / np.pi * np.arctan(1.6), abs=0.03)
+    moved = b.copy()
+    moved[:, 0] += 1.0  # mean shift of one sigma: optimal AUC = Phi(1/sqrt 2) = 0.760
+    assert S.classifier_score(a, moved)["auc"] == pytest.approx(0.7602, abs=0.03)
+    assert S.classifier_score(a, b, seed=1)["auc"] != same["auc"]
+    with pytest.raises(S.ScoreError, match="same columns"):
+        S.classifier_score(a, b[:, :2])
+
+
+def _with_cfg(example, tmp_path, w, **extra):
+    ref = tmp_path / "ref"
+    shutil.copytree(example / "reference", ref)
+    cfg = json.loads((ref / w / "reference.json").read_text())
+    (ref / w / "reference.json").write_text(json.dumps({**cfg, **extra}))
+    sub = tmp_path / "sub"
+    shutil.copytree(example / "submissions" / "good", sub)
+    return ref, sub
+
+
+def test_classifier_in_score(example, tmp_path):
+    ref, sub = _with_cfg(example, tmp_path, "WA", classifier={"file": "features.npz", "seed": 3})
+    rng = np.random.default_rng(9)
+    for d in (ref / "WA" / "stock", ref / "WA" / "floor", sub / "WA" / "float32", sub / "WA" / "float64"):
+        np.savez(d / "features.npz", X=rng.normal(size=(500, 4)))
+    r = S.score(sub, ref)["workflows"]["WA"]["float64"]
+    assert r["classifier"]["cls_score"] > 0.6 and "floor_cls_score" in r["classifier"]
+    assert r["validity"] == pytest.approx(1.0)  # reported beside validity, not in it
+    assert "wa_f64_cls_score" in S.leaderboard_row(S.score(sub, ref))
+    (sub / "WA" / "float32" / "features.npz").unlink()
+    with pytest.raises(S.ScoreError, match="features.npz"):
+        S.score(sub, ref)
+
+
+def test_yield_max_se_fails_an_underpowered_yield(example, tmp_path):
+    ref, sub = _with_cfg(example, tmp_path, "WA", yield_max_se={"selected": 1e-4})
+    r = S.score(sub, ref)["workflows"]["WA"]["float32"]
+    y = r["yields"][0]
+    assert y["underpowered"] and y["pass"] is False and r["validity"] == 0.0
+
+
+def test_scaling_curve_and_crossover(example, tmp_path):
+    ref, sub = _with_cfg(example, tmp_path, "WA", scaling_batches=[10, 1000, 100000])
+    for dt in ("float32", "float64"):
+        b = json.loads((sub / "WA" / dt / "bench.json").read_text())
+        b.pop("warm_rate")
+        b["scaling"] = [{"batch": 10, "rate": 5.0}, {"batch": 1000, "rate": 50.0}, {"batch": 100000, "rate": 500.0}]
+        (sub / "WA" / dt / "bench.json").write_text(json.dumps(b))
+    r = S.score(sub, ref)["workflows"]["WA"]["float32"]
+    assert [c["multiplier"] for c in r["scaling"]] == pytest.approx([0.4, 4.0, 40.0])
+    assert r["crossover_batch"] == 1000 and r["throughput_multiplier"] == pytest.approx(40.0)
+    b = json.loads((sub / "WA" / "float32" / "bench.json").read_text())
+    b["scaling"] = b["scaling"][:2]
+    (sub / "WA" / "float32" / "bench.json").write_text(json.dumps(b))
+    with pytest.raises(S.ScoreError, match="lacks batch"):
+        S.score(sub, ref)
+
+
+def _tracks(rng, n=2000, k=5):
+    truth = rng.normal(size=(n, k))
+    sigma = np.full((n, k), 0.2)
+    params = truth + sigma * rng.normal(size=(n, k))
+    return {"id": np.arange(n) + 7, "params": params, "sigma": sigma, "truth": truth, "good": np.ones(n, bool)}
+
+
+def test_track_agreement_by_hand():
+    rng = np.random.default_rng(2)
+    st = _tracks(rng)
+    close = {"id": st["id"][::-1], "params": st["params"][::-1] + 0.001, "sigma": st["sigma"][::-1]}
+    r = S.track_agreement(st, close, 0.1, min_fraction=0.99)
+    assert r["agreement"] == pytest.approx(1.0) and r["pass"] and r["good_fit"]["ratio"] == pytest.approx(1.0)
+    assert abs(r["pulls"]["stock"]["width"][0] - 1) < 0.1 and abs(r["pulls"]["fast"]["width"][0] - 1) < 0.1
+    far = {"id": st["id"][:1000], "params": st["params"][:1000] + 0.2, "good": np.r_[np.ones(900), np.zeros(100)]}
+    r = S.track_agreement(st, far, 0.1, min_fraction=0.99)
+    assert r["agreement"] == 0.0 and r["n_matched"] == 1000 and not r["pass"]
+    assert r["good_fit"]["ratio"] == pytest.approx(0.45)
+    with pytest.raises(S.ScoreError, match="unique"):
+        S.track_agreement(st, {"id": np.zeros(3), "params": np.zeros((3, 5))})
+
+
+def test_tracks_only_task(tmp_path):
+    rng = np.random.default_rng(4)
+    st = _tracks(rng, 500)
+    ref, sub = tmp_path / "ref", tmp_path / "sub"
+    (ref / "B3line" / "stock").mkdir(parents=True)
+    np.savez(ref / "B3line" / "stock" / "tracks.npz", **st)
+    (ref / "B3line" / "reference.json").write_text(json.dumps(
+        {"stock_rate_per_slot": 200.0, "rate_unit": "tracks/s", "yield_tolerance": 0.0, "scaling_batches": [10, 1000],
+         "track_agreement": {"file": "tracks.npz", "threshold_sigma": 0.1, "min_fraction": 0.95}}))
+    for dt in ("float32", "float64"):
+        d = sub / "B3line" / dt
+        d.mkdir(parents=True)
+        np.savez(d / "tracks.npz", id=st["id"], params=st["params"] + 0.005, good=st["good"])
+        (d / "bench.json").write_text(json.dumps({"dtype": dt, "rate_unit": "tracks/s", "device": "toy-gpu",
+                                                  "scaling": [{"batch": 10, "rate": 100.0},
+                                                              {"batch": 1000, "rate": 4000.0}]}))
+    r = S.score(sub, ref)["workflows"]["B3line"]["float64"]
+    assert r["validity"] == pytest.approx(1.0) and r["n_hists"] == 0
+    assert {y["yield"] for y in r["yields"]} == {"good_fit_ratio", "track_agreement"}
+    assert r["crossover_batch"] == 1000 and r["throughput_multiplier"] == pytest.approx(20.0)
+
+
+def test_groups_portability_and_capture_budget(example, tmp_path):
+    ref, sub = tmp_path / "ref", tmp_path / "sub"
+    layouts = {"B2dev": ("dev", "good"), "B2pa": ("place", "good"), "B2pb": ("place", "shifted"),
+               "B2r41": ("design", "good")}
+    for w, (part, src) in layouts.items():
+        shutil.copytree(example / "reference" / "WA", ref / w)
+        cfg = json.loads((ref / w / "reference.json").read_text())
+        extra = {"group": "B2", "part": part, **({"capture_budget": 200000} if part == "design" else {})}
+        (ref / w / "reference.json").write_text(json.dumps({**cfg, **extra}))
+        shutil.copytree(example / "submissions" / src / "WA", sub / w)
+        for dt in ("float32", "float64"):
+            b = json.loads((sub / w / dt / "bench.json").read_text())
+            (sub / w / dt / "bench.json").write_text(json.dumps({**b, "capture_entries": 150000}))
+    res = S.score(sub, ref)
+    g = res["groups"]["B2"]["float32"]
+    assert g["dev_validity"] == pytest.approx(1.0) and g["n_place"] == 2 and g["n_design"] == 1
+    pb = res["workflows"]["B2pb"]["float32"]["validity"]
+    assert g["portability_ratio"] == pytest.approx((1.0 + pb) / 2) and g["portability_ratio"] < 1
+    assert g["adaptation_score"] == pytest.approx(1.0)
+    assert "b2_f32_portability" in S.leaderboard_row(res)
+    b = json.loads((sub / "B2r41" / "float64" / "bench.json").read_text())
+    (sub / "B2r41" / "float64" / "bench.json").write_text(json.dumps({**b, "capture_entries": 250000}))
+    with pytest.raises(S.ScoreError, match="capture budget exceeded"):
+        S.score(sub, ref)
+
+
+# ---------------------------------------------------------------- B1 (FS-CALO-G4): peak, power, arm definitions
+
+def test_gauss_core_matches_scipy_curve_fit():
+    opt = pytest.importorskip("scipy.optimize")
+    rng = np.random.default_rng(8)
+    e = np.r_[rng.normal(87.6, 2.4, 20000), 87.6 - rng.exponential(8.0, 5000)]
+    edges = calo.PEAK_EDGES
+    h, _ = np.histogram(e, edges)
+    got = S.gauss_core(edges, h, 75.0, 3.0)
+    # CAL1's loop with scipy, on the same bins
+    c = 0.5 * (edges[1:] + edges[:-1])
+    mu, sig = float(np.median(e[e > 75.0])), 3.0
+    above = c > 75.0
+    cum = np.cumsum(h[above])
+    mu = float(c[above][np.searchsorted(cum, 0.5 * cum[-1])])
+    f = lambda x, a, m, s: a * np.exp(-0.5 * ((x - m) / s) ** 2)  # noqa: E731
+    for _ in range(6):
+        w = (c > mu - 1.5 * sig) & (c < mu + 2.0 * sig) & (h > 0)
+        p, cov = opt.curve_fit(f, c[w], h[w], p0=[h[w].max(), mu, sig], sigma=np.sqrt(h[w]), absolute_sigma=True)
+        mu, sig = float(p[1]), float(abs(p[2]))
+    assert got["peak"] == pytest.approx(mu, abs=1e-6) and got["width"] == pytest.approx(sig, abs=1e-6)
+    assert got["peak_error"] == pytest.approx(float(np.sqrt(cov[1, 1])), rel=1e-4)
+    assert abs(got["peak"] - 87.6) < 0.5          # the low tail pulls the core fit down a little
+
+
+def test_peak_ratio_bootstrap_and_fit_errors():
+    rng = np.random.default_rng(9)
+    edges = calo.PEAK_EDGES
+    mk = lambda m: {f"s{i}": np.histogram(rng.normal(m, 2.4, 3000), edges)[0].tolist() for i in range(20)}  # noqa
+    ref, same, low = ({"edges": edges.tolist(), "shards": mk(m)} for m in (87.6, 87.6, 87.0))
+    r = S.peak_ratio(ref, same, 0.002, "p", {"start_above": 75.0, "start_width": 3.0})
+    assert r["se_method"] == "bootstrap_200_of_20_shards" and 0.0001 < r["se"] < 0.001 and r["pass"]
+    assert abs(r["ratio"] - 1) < 4 * r["se"]
+    lo = S.peak_ratio(ref, low, 0.002, "p", {"start_above": 75.0, "start_width": 3.0})
+    assert lo["ratio"] == pytest.approx(87.0 / 87.6, abs=0.001) and not lo["pass"]
+    one = {"edges": edges.tolist(), "counts": np.sum(list(ref["shards"].values()), axis=0).tolist()}
+    two = {"edges": edges.tolist(), "counts": np.sum(list(same["shards"].values()), axis=0).tolist()}
+    fe = S.peak_ratio(one, two, 0.002, "p", {"start_above": 75.0, "start_width": 3.0})
+    assert fe["se_method"] == "fit_errors" and fe["se"] == pytest.approx(r["se"], rel=0.5)
+    # the bootstrap agrees with the spread of the ratio over independent samples of the same size
+    reps = [S.peak_ratio({"edges": edges.tolist(), "shards": mk(87.6)}, {"edges": edges.tolist(), "shards": mk(87.6)},
+                         0.002, "p", {"start_above": 75.0, "start_width": 3.0, "n_boot": 20})["ratio"] for _ in range(30)]
+    assert float(np.std(reps, ddof=1)) == pytest.approx(r["se"], rel=0.5)
+
+
+def test_shape_from_hits_by_hand():
+    out = calo.shape_from_hits([0, 0, 1, -1], [3.0, 1.0, 5.0, 9.0], [0.0, 4.0, 10.0, 0.0], [0.0, 0.0, 2.0, 0.0], 2)
+    assert out["seed_energy"].tolist() == [3.0, 5.0]
+    # cluster 0: centre x = 1, mxx = (3 * 1 + 1 * 9) / 4 = 3; cluster 1: one hit, zero moments
+    assert out["mxx"] == pytest.approx([3.0, 0.0]) and out["myy"] == pytest.approx([0.0, 0.0])
+    assert out["mxy"] == pytest.approx([0.0, 0.0])
+
+
+def test_calo_arm_definitions():
+    cl = {"event": np.array([0, 0, 1, 3]), "energy": np.array([88.0, 4.0, 60.0, 12.0]),
+          "time": np.array([700.0, 701.0, 900.0, 1200.0]), "x": np.array([400.0, 420.0, -500.0, 0.0]),
+          "y": np.array([0.0, 0.0, 0.0, 450.0]), "size": np.array([6, 1, 4, 2]),
+          "seed_energy": np.array([44.0, 4.0, 30.0, 6.0]), "mxx": np.ones(4), "myy": np.ones(4), "mxy": np.zeros(4)}
+    hits = {"event": np.array([0, 0, 1, 2]), "energy": np.array([44.0, 0.7, 30.0, 2.2])}
+    h, f = calo.arm(cl, hits, n_events=4, block=2)
+    assert set(h["hists"]) == set(calo.HIST_EDGES) and list(h["hists"]["cluster_energy"]["shards"]) == ["b00000",
+                                                                                                         "b00001"]
+    assert sum(h["hists"]["cluster_energy"]["shards"]["b00000"]) == 3                 # every cluster
+    assert sum(h["hists"]["cluster_time"]["shards"]["b00000"]) == 2                   # above 10 MeV only
+    assert h["hists"]["clusters_per_event"]["shards"]["b00001"][:2] == [1.0, 1.0]     # events 2 (none), 3 (one)
+    assert h["yields"]["events_cluster_gt10"]["shards"] == {"b00000": 2, "b00001": 1}
+    assert sum(h["peaks"]["ce_peak"]["shards"]["b00000"]) == 2 and sum(h["peaks"]["ce_peak"]["shards"]["b00001"]) == 0
+    assert set(f) == {"X", "names", "event"} and list(f["names"]) == list(calo.FEATURES)
+    assert f["X"].shape == (3, len(calo.FEATURES)) and f["event"].tolist() == [0, 1, 3]       # clusters above 10 MeV
+    assert f["X"][:, calo.FEATURES.index("seed_frac")] == pytest.approx([0.5, 0.5, 0.5])
+    with pytest.raises(ValueError, match="outside the population"):
+        calo.arm(dict(cl, event=np.array([0, 0, 1, 9])), hits, n_events=4)
+
+
+def test_calo_population_pairs_by_event_id(monkeypatch):
+    files = {"a": (np.array([[1, 1, 5], [1, 1, 6]]),
+                   {"event": np.array([0, 1]), "energy": np.array([50.0, 60.0])},
+                   {"event": np.array([0, 1, 1]), "energy": np.array([1.0, 2.0, 3.0])}),
+             "b": (np.array([[1, 2, 7]]), {"event": np.array([0]), "energy": np.array([70.0])},
+                   {"event": np.array([0]), "energy": np.array([4.0])})}
+    monkeypatch.setattr(calo, "read_ntuple", lambda f: files[f])
+    ids, cl, ht = calo.population(["a", "b"], np.array([[1, 2, 7], [1, 1, 5]]))
+    assert ids.tolist() == [[1, 2, 7], [1, 1, 5]]
+    assert cl["event"].tolist() == [0, 1] and cl["energy"].tolist() == [70.0, 50.0]
+    assert sorted(zip(ht["event"].tolist(), ht["energy"].tolist())) == [(0, 4.0), (1, 1.0)]
+    with pytest.raises(ValueError, match="not in the ntuples"):
+        calo.population(["a"], np.array([[9, 9, 9]]))
+
+
+def test_b1_good_and_shifted(example):
+    ref = example / "reference"
+    good = S.score(example / "submissions" / "good", ref)
+    shifted = S.score(example / "submissions" / "shifted", ref)
+    for dt in S.DTYPES:
+        g = good["workflows"]["B1"][dt]
+        assert g["validity"] == pytest.approx(1.0) and g["power_ok"] is True and g["n_hists"] == 8
+        pk = next(y for y in g["yields"] if y["yield"] == "ce_peak")
+        assert pk["kind"] == "peak" and pk["se"] <= calo.MAX_SE and pk["se_method"].startswith("bootstrap")
+        assert not pk["underpowered"] and g["classifier"]["cls_score"] > 0.85
+        sh = shifted["workflows"]["B1"][dt]
+        assert sh["validity"] < 0.5 and sh["classifier"]["cls_score"] < g["classifier"]["cls_score"] - 0.2
+        assert not next(y for y in sh["yields"] if y["yield"] == "ce_peak")["pass"]
+    assert good["cls_score"] == pytest.approx(np.mean([good["workflows"]["B1"][d]["classifier"]["cls_score"]
+                                                       for d in S.DTYPES]))
+    assert good["workflows"]["B1"]["float64"]["classifier"]["floor_cls_score"] > 0.85
+    row = S.leaderboard_row(good)
+    assert {"cls_score", "b1_f32_cls_score", "b1_f64_power"} <= set(row) and row["b1_f64_power"] == 1.0
+
+
+def test_power_rule_fails_a_small_sample(example, tmp_path):
+    ref = tmp_path / "ref"
+    shutil.copytree(example / "reference", ref)
+    cfg = json.loads((ref / "B1" / "reference.json").read_text())
+    (ref / "B1" / "reference.json").write_text(json.dumps({**cfg, "yield_max_se": {"ce_peak": 1e-6}}))
+    r = S.score(example / "submissions" / "good", ref)["workflows"]["B1"]["float64"]
+    pk = next(y for y in r["yields"] if y["yield"] == "ce_peak")
+    assert pk["underpowered"] is True and pk["pass"] is False and abs(pk["ratio"] - 1) - 3 * pk["se"] <= 0.002
+    assert r["power_ok"] is False and r["validity"] == pytest.approx(0.5)
+    (ref / "B1" / "reference.json").write_text(json.dumps({**cfg, "yield_max_se": {"no_such": 0.1}}))
+    with pytest.raises(S.ScoreError, match="no_such"):
+        S.score(example / "submissions" / "good", ref)
+
+
+def test_features_required_and_checked(example, tmp_path):
+    sub = tmp_path / "sub"
+    shutil.copytree(example / "submissions" / "good", sub)
+    (sub / "B1" / "float32" / "features.npz").unlink()
+    with pytest.raises(S.ScoreError, match="features.npz"):
+        S.score(sub, example / "reference")
+    z = dict(np.load(example / "submissions" / "good" / "B1" / "float32" / "features.npz"))
+    z["X"][0, 6] = np.nan
+    np.savez(sub / "B1" / "float32" / "features.npz", **z)
+    with pytest.raises(S.ScoreError, match="finite"):
+        S.score(sub, example / "reference")
+    del z["X"]
+    np.savez(sub / "B1" / "float32" / "features.npz", **z)
+    with pytest.raises(S.ScoreError, match="needs X"):
+        S.score(sub, example / "reference")
+
+
+def test_mu2eg4_host_throughput_and_memory(example, tmp_path):
+    sub = tmp_path / "sub"
+    shutil.copytree(example / "submissions" / "good", sub)
+    for dt in S.DTYPES:
+        b = json.loads((sub / "B1" / dt / "bench.json").read_text())
+        (sub / "B1" / dt / "bench.json").write_text(json.dumps(
+            {**b, "host": "mu2eg4", "warm_rate": 50.0, "baseline_rate": 30.0, "memory_mb_per_thread": 310,
+             "edge_rule": "D_edge 40 mm"}))
+    r = S.score(sub, example / "reference")["workflows"]["B1"]["float32"]
+    assert r["throughput_multiplier"] == pytest.approx(50 / 30) and r["throughput_basis"] == "same node, model off"
+    assert r["memory_ok"] is False and r["edge_rule"] == "D_edge 40 mm"
+    b = json.loads((sub / "B1" / "float32" / "bench.json").read_text())
+    del b["baseline_rate"]
+    (sub / "B1" / "float32" / "bench.json").write_text(json.dumps(b))
+    with pytest.raises(S.ScoreError, match="baseline_rate"):
+        S.score(sub, example / "reference")

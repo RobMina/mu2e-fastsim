@@ -50,6 +50,7 @@ def test_mixing_bench_pipelines_by_default(mixing_config):
     assert bench.configuration(path).device_pipeline is True
     assert bench.configuration(path).device_pipeline_writers == 3
     assert bench.configuration(path).output_compression == "zstd1"
+    assert bench.configuration(path).sampling_receipt == "compact"
     values = json.loads(path.read_text())
     path.write_text(json.dumps({**values, "output_compression": None}))
     assert bench.configuration(path).output_compression is None     # null keeps uproot's ZLIB 1

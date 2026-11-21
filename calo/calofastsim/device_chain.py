@@ -911,8 +911,12 @@ def _closest_pairs(member_a, member_b, dist):
     return jnp.stack(rows, axis=1)
 
 
-def clusters(resp: DeviceResponse, hits, n_events, caps: Caps):
+def clusters(resp: DeviceResponse, hits, n_events, caps: Caps, shape=False):
     """cluster.make_clusters on padded per-event hits; returns per-event clusters sorted by energy, and overflows.
+
+    ``shape`` (opt-in) adds per cluster ``seed_energy`` (the largest member-hit energy) and the energy-weighted
+    central second moments ``mxx``, ``myy``, ``mxy`` (mm^2) of the member crystal centres about the cluster's centre
+    of gravity (the same weights as the centre of gravity); the other outputs are unchanged.
 
     The hits are padded to ``caps.event_hits_fast`` per event (auto 16: CE events have at most 13); only a batch
     with a larger event runs the clustering again on ``caps.event_hits`` per event, whose results it takes whole.
@@ -924,12 +928,13 @@ def clusters(resp: DeviceResponse, hits, n_events, caps: Caps):
     if fast < 0:
         fast = 16 if caps.event_hits > 16 else 0
     if not fast or fast >= caps.event_hits:
-        return _clusters(resp, hits, n_events, caps)
-    out, over = _clusters(resp, hits, n_events, dataclasses.replace(caps, event_hits=fast))
-    return lax.cond(over["event_hits"] > 0, lambda: _clusters(resp, hits, n_events, caps), lambda: (out, over))
+        return _clusters(resp, hits, n_events, caps, shape)
+    out, over = _clusters(resp, hits, n_events, dataclasses.replace(caps, event_hits=fast), shape)
+    return lax.cond(over["event_hits"] > 0, lambda: _clusters(resp, hits, n_events, caps, shape),
+                    lambda: (out, over))
 
 
-def _clusters(resp: DeviceResponse, hits, n_events, caps: Caps):
+def _clusters(resp: DeviceResponse, hits, n_events, caps: Caps, shape=False):
     """:func:`clusters` on ``caps.event_hits`` hits per event.
 
     Main and split clusters grow in ``caps.rounds`` rounds, and the result has ``caps.rounds`` slots. With
@@ -1075,6 +1080,15 @@ def _clusters(resp: DeviceResponse, hits, n_events, caps: Caps):
             ttr = pad(hits["ttrue"], jnp.inf, jnp.float64)
             out["etrue"] = take(jnp.einsum("bhc,bh->bc", f_mem.astype(jnp.float64), etr))
             out["ttrue"] = take(jnp.min(jnp.where(f_mem, ttr[:, :, None], jnp.inf), axis=1))
+        if shape:   # opt-in shape: seed-hit energy and second moments about the centre of gravity
+            swd = jnp.where(sw > 0, sw, 1.0)
+            cabs = sxyz / swd[..., None]                                                         # (B, C, 3)
+            dx = pos[:, :, None, 0] - cabs[:, None, :, 0]                                        # (B, H, C)
+            dy = pos[:, :, None, 1] - cabs[:, None, :, 1]
+            out["seed_energy"] = take(jnp.max(jnp.where(f_mem, e[:, :, None], 0.0), axis=1).astype(jnp.float64))
+            out["mxx"] = take((w * dx * dx).sum(axis=1) / swd)
+            out["myy"] = take((w * dy * dy).sum(axis=1) / swd)
+            out["mxy"] = take((w * dx * dy).sum(axis=1) / swd)
         return out, over_main, over_split
 
     out, left_main, left_split = cluster_events(R0)
@@ -1104,8 +1118,15 @@ def _with_cluster_stats(stats, over_cl):
     return dict(stats, recluster=over_cl["recluster"], cluster_slots=over_cl["cluster_slots"])
 
 
+def _with_hits(res, hits, shape):
+    """The chain result plus the flat reconstructed hits (``e``, ``event``, ``ok``) when ``shape`` is on."""
+    if shape:
+        res["hits"] = dict(e=hits["e"], event=hits["event"], ok=hits["ok"])
+    return res
+
+
 def make_chain(lib: DeviceLibrary, resp: DeviceResponse, caps: Caps = Caps(), digi_response="parametric",
-               truth=False):
+               truth=False, shape=False):
     """Return ``chain(q, timing, key, uniform=None)``: one jitted call from entrance states to clusters.
 
     ``q``/``timing`` come from :func:`entries_batch` (``caps.events`` rows). The result stays on the device:
@@ -1120,6 +1141,8 @@ def make_chain(lib: DeviceLibrary, resp: DeviceResponse, caps: Caps = Caps(), di
     ``truth`` (opt-in) adds per cluster ``etrue``, the sampled steps' visible (Birks) energy in the cluster's hit
     crystals, and ``ttrue``, the earliest of those steps' times (the stock CaloClusterMC etot / earliest deposit);
     the other outputs are unchanged.
+    ``shape`` (opt-in) adds per cluster ``seed_energy``, ``mxx``, ``myy``, ``mxy`` (:func:`clusters`) and the
+    result key ``hits`` (flat ``e``, ``event``, ``ok`` of the reconstructed hits); the other outputs are unchanged.
     """
     import jax
     import jax.numpy as jnp
@@ -1151,13 +1174,14 @@ def make_chain(lib: DeviceLibrary, resp: DeviceResponse, caps: Caps = Caps(), di
         if table is not None:
             hits, over_resp, stats = param_hits(resp, table, q["event"][st["row"]], t, st, crystal, depth, mapped,
                                                 k_pe, _smeared_pbt(resp, t, k_pbt), caps)
-            cl, over_cl = clusters(resp, with_truth(hits, q, st, crystal, mapped), caps.events, caps)
+            cl, over_cl = clusters(resp, with_truth(hits, q, st, crystal, mapped), caps.events, caps, shape)
             over = dict(steps=over_steps, **over_resp, **over_cl)
             stats.update(draws=jnp.sum(donor >= 0), fallback=jnp.sum(fallback & q["valid"]),
                          steps=jnp.sum(st["valid"]), mapped=jnp.sum(mapped), photoelectrons=jnp.float64(0),
                          digis=jnp.int64(0), hits=jnp.sum(hits["ok"]))
-            return dict(clusters=cl, overflow=jnp.stack([jnp.asarray(over[k], jnp.int64) for k in OVERFLOW_NAMES]),
-                        stats=_with_cluster_stats(stats, over_cl), donor=donor)
+            return _with_hits(dict(clusters=cl, overflow=jnp.stack([jnp.asarray(over[k], jnp.int64)
+                                                                    for k in OVERFLOW_NAMES]),
+                                   stats=_with_cluster_stats(stats, over_cl), donor=donor), hits, shape)
         ev, sipm, pe_t, weight, pe_ok, over_pe = photoelectrons(resp, q, t, st, crystal, depth, mapped, k_pe,
                                                                 caps.photoelectrons)
         dg, over_dg = digitise(resp, t, ev, sipm, pe_t, weight, pe_ok, k_digi, caps)
@@ -1166,25 +1190,26 @@ def make_chain(lib: DeviceLibrary, resp: DeviceResponse, caps: Caps = Caps(), di
             pbt = (pbt.astype(jnp.float64) + resp.pbt_reco_sigma *
                    jax.random.normal(k_pbt, pbt.shape, dtype=jnp.float64)).astype(jnp.float32)
         hits, over_hits, stats = fit_and_hits(resp, t, dg, pbt, caps)
-        cl, over_cl = clusters(resp, with_truth(hits, q, st, crystal, mapped), caps.events, caps)
+        cl, over_cl = clusters(resp, with_truth(hits, q, st, crystal, mapped), caps.events, caps, shape)
         over = dict(steps=over_steps, photoelectrons=over_pe, hits=over_hits, refits=stats.pop("refits"),
                     fit_buckets=stats.pop("fit_buckets"), **over_dg, **over_cl)
         stats.update(draws=jnp.sum(donor >= 0), fallback=jnp.sum(fallback & q["valid"]), steps=jnp.sum(st["valid"]),
                      mapped=jnp.sum(mapped), photoelectrons=jnp.sum(jnp.where(pe_ok, weight, 0.0)),
                      digis=jnp.sum(dg["ok"]), hits=jnp.sum(hits["ok"]))
-        return dict(clusters=cl, overflow=jnp.stack([jnp.asarray(over[k], jnp.int64) for k in OVERFLOW_NAMES]),
-                    stats=_with_cluster_stats(stats, over_cl), donor=donor)
+        return _with_hits(dict(clusters=cl, overflow=jnp.stack([jnp.asarray(over[k], jnp.int64)
+                                                                for k in OVERFLOW_NAMES]),
+                               stats=_with_cluster_stats(stats, over_cl), donor=donor), hits, shape)
 
     return jax.jit(chain, compiler_options=COMPILER_OPTIONS)
 
 
-def make_steps_chain(resp: DeviceResponse, caps: Caps = Caps(), digi_response="parametric"):
+def make_steps_chain(resp: DeviceResponse, caps: Caps = Caps(), digi_response="parametric", shape=False):
     """Return ``chain(steps, timing, key)``: saved CaloShowerSteps -> clusters (the stock calo digi + reco stage).
 
     ``steps`` from :func:`steps_batch`: batch-local ``event``, ``crystal`` (-1 = padding), ``energy_g4``,
     ``energy_birks``, ``time``, ``z_local``; same result layout as :func:`make_chain`. ``digi_response`` as
     :func:`make_chain` (the default "parametric" draws hits per crystal: steps -> hits + clusters, no digis;
-    "waveform" makes digis).
+    "waveform" makes digis). ``shape`` as :func:`make_chain`.
     """
     import jax
     import jax.numpy as jnp
@@ -1203,12 +1228,13 @@ def make_steps_chain(resp: DeviceResponse, caps: Caps = Caps(), digi_response="p
         if table is not None:
             hits, over_resp, stats = param_hits(resp, table, steps["event"], t, st, steps["crystal"],
                                                 steps["z_local"], ok, k_pe, _smeared_pbt(resp, t, k_pbt), caps)
-            cl, over_cl = clusters(resp, hits, caps.events, caps)
+            cl, over_cl = clusters(resp, hits, caps.events, caps, shape)
             over = dict(steps=jnp.int64(0), **over_resp, **over_cl)
             stats.update(steps=jnp.sum(ok), photoelectrons=jnp.float64(0), digis=jnp.int64(0),
                          hits=jnp.sum(hits["ok"]))
-            return dict(clusters=cl, overflow=jnp.stack([jnp.asarray(over[k], jnp.int64) for k in OVERFLOW_NAMES]),
-                        stats=_with_cluster_stats(stats, over_cl))
+            return _with_hits(dict(clusters=cl, overflow=jnp.stack([jnp.asarray(over[k], jnp.int64)
+                                                                    for k in OVERFLOW_NAMES]),
+                                   stats=_with_cluster_stats(stats, over_cl)), hits, shape)
         ev, sipm, pe_t, weight, pe_ok, over_pe = photoelectrons(resp, {"event": steps["event"]}, t, st,
                                                                 steps["crystal"], steps["z_local"], ok, k_pe,
                                                                 caps.photoelectrons)
@@ -1218,13 +1244,14 @@ def make_steps_chain(resp: DeviceResponse, caps: Caps = Caps(), digi_response="p
             pbt = (pbt.astype(jnp.float64) + resp.pbt_reco_sigma *
                    jax.random.normal(k_pbt, pbt.shape, dtype=jnp.float64)).astype(jnp.float32)
         hits, over_hits, stats = fit_and_hits(resp, t, dg, pbt, caps)
-        cl, over_cl = clusters(resp, hits, caps.events, caps)
+        cl, over_cl = clusters(resp, hits, caps.events, caps, shape)
         over = dict(steps=jnp.int64(0), photoelectrons=over_pe, hits=over_hits, refits=stats.pop("refits"),
                     fit_buckets=stats.pop("fit_buckets"), **over_dg, **over_cl)
         stats.update(steps=jnp.sum(ok), photoelectrons=jnp.sum(jnp.where(pe_ok, weight, 0.0)),
                      digis=jnp.sum(dg["ok"]), hits=jnp.sum(hits["ok"]))
-        return dict(clusters=cl, overflow=jnp.stack([jnp.asarray(over[k], jnp.int64) for k in OVERFLOW_NAMES]),
-                    stats=_with_cluster_stats(stats, over_cl))
+        return _with_hits(dict(clusters=cl, overflow=jnp.stack([jnp.asarray(over[k], jnp.int64)
+                                                                for k in OVERFLOW_NAMES]),
+                               stats=_with_cluster_stats(stats, over_cl)), hits, shape)
 
     return jax.jit(chain, compiler_options=COMPILER_OPTIONS)
 

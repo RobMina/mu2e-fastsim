@@ -80,6 +80,8 @@ def validate(params: Dict[str, Any], task: str = "beam_point") -> Dict[str, Any]
         return validate_parameters(task, params, kit_task.EDEP_PARAMS, {"dtype": "float64", **kit_task.SCALE_DEFAULTS})
     if task == "beam_centuple":
         return validate_parameters(task, params, kit_task.CENT_PARAMS, {"dtype": "float64"})
+    if task == "ptgt_point":
+        return validate_parameters(task, params, kit_task.PTGT_PARAMS, kit_task.PTGT_DEFAULTS)
     return validate_parameters(task, params, kit_task.SOB_PARAMS if task == "beam_sob" else kit_task.PARAMS,
                                kit_task.SCALE_DEFAULTS)
 
@@ -713,3 +715,94 @@ class BeamCentupleStream(BeamPointStream):
             if state == "cancelled":
                 self._mark(name, "cancelled")
         return {"state": state}
+
+
+PTGT_BODY = """module load apptainer >/dev/null 2>&1
+M2FS_OUT=$(readlink -f "$M2FS_OUT")   # the scratch area may be a symlink (UVA): bind the real path
+echo "host $(hostname) job ${SLURM_JOB_ID:-none} cpus ${SLURM_CPUS_PER_TASK:-?} out $M2FS_OUT"
+CODE=@code@
+L=${TMPDIR:-/tmp}/ptgt_kit_j${SLURM_JOB_ID:-0}_$$; mkdir -p "$L"; chmod 700 "$L"
+trap 'rm -rf "$L"; echo "$(date -Is) $(hostname) deleted $L" >> "$M2FS_OUT/cleanup.txt"' EXIT
+trap 'exit 143' TERM INT
+D=$(readlink -f @data@) || { echo "no ptgt data directory"; exit 3; }
+mkdir -p @cache@ && C=$(readlink -f @cache@) || { echo "no ptgt cache directory"; exit 3; }
+( cd "$D" && sha256sum -c --quiet - ) <<'SUMS' || { echo "ptgt data in $D does not match the pinned sha256"; exit 3; }
+@sums@
+SUMS
+B() { apptainer exec @nv@--cleanenv --env "JAX_PLATFORMS=@jax@,OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1},OPENBLAS_NUM_THREADS=1,PYTHONDONTWRITEBYTECODE=1,PYTHONPATH=$CODE/core:$CODE/beam,XLA_PYTHON_CLIENT_PREALLOCATE=false" -B "$L" -B "$M2FS_OUT" -B "$CODE" -B "$D" -B "$C" --pwd "$CODE" @sif@ "$@"; }
+@gpucheck@B python -m beamfastsim.stage "$L/pub" --geom @dsgeom@ @maps@ @fieldfiles@ > "$M2FS_OUT/stage.txt" 2>&1 || { tail -5 "$M2FS_OUT/stage.txt"; exit 4; }
+tail -1 "$M2FS_OUT/stage.txt"
+B python -m beamfastsim.ptgt_point --rod @Tlength@ @R_up@ @R_mid@ @R_dn@ --pot @pot@ --seed @seed@ --dtype @dtype@ \\
+  --platform @platform@ --bank "$D/bank.npz" --slab-bank "$D/slab_bank.npz" --ps-map "$L/pub/maps/GA05/PSMap.header" \\
+  --cache "$C" --gdml "$D/ts.gdml" --field-config "$L/pub/offline/@fieldcfg@" --offline-root "$L/pub/offline" \\
+  --maps "$L/pub/maps" --ds-geom @dsgeom@ --ds-map "$L/pub/maps/DSMap.header" --out "$M2FS_OUT" \\
+  > "$M2FS_OUT/point.txt" 2>&1 || { tail -20 "$M2FS_OUT/point.txt"; exit 6; }
+tail -1 "$M2FS_OUT/point.txt"
+"""
+PTGT_GPU_CHECK = """B python -c "import jax, sys; print(jax.devices()); sys.exit(jax.default_backend() != 'gpu')" || { echo "JAX not on the GPU"; exit 5; }
+"""
+
+
+class PtgtPointStream(BeamPointStream):
+    """ptgt_point (beamfastsim.ptgt_point) on a Slurm-over-SSH endpoint: nothing streamed. The public Offline files and
+    field maps are staged from CVMFS in the job; the bank, the slab bank and the TS GDML are read from the endpoint
+    directory FASTSIMKIT_PTGT_DATA after a sha256 check against kit_task.PTGT_DATA_SHA256; the TS-entrance states are
+    cached per design in FASTSIMKIT_PTGT_CACHE (default <FASTSIMKIT_SCRATCH>/ptgt_cache). One CPU or one GPU job."""
+    TASK = "ptgt_point"
+    TABLE = None
+
+    class _NoSource:
+        """No FNAL source: ptgt_point streams nothing (the binding target records that)."""
+        host, root = "none", "none"
+
+    def __init__(self, kit, **kw):
+        kw.setdefault("source", self._NoSource())
+        super().__init__(kit, **kw)
+
+    @classmethod
+    def inputs(cls, p) -> Dict[str, str]:
+        return {}
+
+    def resources(self, p) -> Resources:
+        return kit_task.ptgt_resources(p, Resources)
+
+    def render(self, p, manifest=None, geometry=None):
+        from mu2efastsim.endpoints.kit import admit_resources
+        if geometry is not None:
+            raise ValueError("fastsimkit: ptgt_point takes no geometry file (the rod is its params)")
+        res = self.resources(p)
+        admit_resources(self.ep, res)
+        gpu = p["platform"] == "gpu"
+        try:
+            data = site.require("FASTSIMKIT_PTGT_DATA")
+            cache = site.setting("FASTSIMKIT_PTGT_CACHE") or site.scratch() + "/ptgt_cache"
+        except RuntimeError as e:          # site.SiteConfigError: an unset site variable refuses the point
+            raise ValueError(f"fastsimkit: ptgt_point: {e}") from e
+        subs = {"sif": shlex.quote(manifest["image"]["path"] if manifest else self.kit.sif),
+                "code": shlex.quote(manifest["code"]["path"] if manifest else self.code),
+                "data": shlex.quote(data), "cache": shlex.quote(cache),
+                "sums": "\n".join(f"{h}  {n}" for n, h in sorted(kit_task.PTGT_DATA_SHA256.items())),
+                "nv": "--nv " if gpu else "", "jax": "cuda" if gpu else "cpu", "gpucheck": PTGT_GPU_CHECK if gpu else "",
+                "maps": "--map DSMap " + " ".join(f"--extra-map {m}" for m in kit_task.PTGT_MAPS if m != "DSMap"),
+                "fieldcfg": kit_task.PTGT_FIELD_CONFIG, "fieldfiles": " ".join(f"--file {f}" for f in kit_task.PTGT_FIELD_FILES), "dsgeom": kit_task.PTGT_DS_GEOM,
+                **{k: repr(v) if isinstance(v, float) else str(v) for k, v in p.items()}}
+        body = PTGT_BODY
+        for a, b in subs.items():
+            body = body.replace(f"@{a}@", b)
+        import re
+        if re.search(r"@[A-Za-z_]+@", body):
+            raise ValueError("fastsimkit: ptgt_point: unfilled placeholder")
+        if gpu:
+            body = jax_cache(body)
+        if manifest is not None:
+            body = runtime_prefix(manifest) + body
+        return body, res
+
+    def submit(self, name, params, geometry=None) -> Dict[str, Any]:
+        if geometry is not None:
+            raise ValueError("fastsimkit: ptgt_point takes no geometry file (the rod is its params)")
+        return super().submit(name, params)
+
+    def ensure_streaming(self, name):
+        """Nothing to stream: the job stages its own public inputs."""
+        return

@@ -8,7 +8,7 @@ params, submits it through an endpoint (``mu2efastsim.endpoints``), and on compl
 resources, the params it accepts and the metrics it returns.
 
 Run as an MCP stdio server (``python -m mu2efastsim.endpoints.kit``) for a kits.toml entry, or use FastsimKit directly.
-Environment: FASTSIMKIT_ENDPOINT (default uva; eaf), FASTSIMKIT_STATE_DIR (local job records and fetched outputs),
+Environment: FASTSIMKIT_ENDPOINT (default uva; eaf; fermigrid, the FNAL grid through jobsub_lite: endpoints.jobsub), FASTSIMKIT_STATE_DIR (local job records and fetched outputs),
 FASTSIMKIT_MAX_SU_PER_JOB (default 500), FASTSIMKIT_GPU_TYPE (uva: the endpoint's gpu_type, "auto" by default,
 "none" for each task's own card, or a type such as 1g.24gb or a100; see endpoints.slurm_ssh), FASTSIMKIT_SIF (image path on the site; default
 <FASTSIMKIT_SCRATCH>/mu2efastsim.sif, needed only by image-based endpoints). Endpoint settings: see
@@ -283,6 +283,8 @@ if _beam_task is not None:
 
 TABLE_TASKS = {"response_bench", "v4_response", "chain", "regression"}   # stage Mu2e-internal tables: cleanup record required
 DELEGATED_ONLY: set = set()   # tasks whose job body only their endpoint delegate renders (plain render refuses them)
+if "ptgt_point" in TASKS:      # beam: the body needs the delegate's staging and the endpoint data directory
+    DELEGATED_ONLY.add("ptgt_point")
 
 # CRV response tuning (crv package, crvfastsim.kit_task): task crv_response, one point of every chain.KNOBS knob scored
 # against the KPP data reference. Registered when crvfastsim is importable: inputs read in place on FNAL endpoints (EAF),
@@ -632,7 +634,7 @@ class FastsimKit:
         for name, task in TASKS.items():
             routes = ["eaf"] if name in FNAL_TASKS else ["eaf", "uva"]
             if name in DELEGATES:
-                routes = ["eaf", "uva"]
+                routes = ["eaf", "uva", *getattr(DELEGATES[name], "routes", ())]
             tasks[name] = {"params": {k: v.describe() for k, v in schema(name, task.params).items()},
                            "defaults": dict(task.defaults), "required": sorted(set(task.params) - set(task.defaults)),
                            "endpoints": routes, "file_kinds": [], "inputs_supported": False,

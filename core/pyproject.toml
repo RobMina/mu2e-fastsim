@@ -11,12 +11,20 @@ requires-python = ">=3.10"
 # hep-endpoints (import name hependpoints): the experiment-neutral endpoint adapters, needed on the kit host only
 # (jobs do not import it); pinned to a commit of RobMina/hep-endpoints (not on PyPI), the same pin as
 # ci/requirements.txt. For development install a local checkout with pip install -e first.
+# scint-fibre-fastsim (import name scintfibrefastsim): the experiment-neutral lookupgen.core that
+# crvfastsim.lookupgen.core re-exports; pinned in crv/pyproject.toml and ci/requirements.txt.
 # hep-simlib (import name hepsimlib): the experiment-neutral library core and component banks that
-# mu2efastsim.library and mu2efastsim.component_response re-export with the Mu2e profile; same pin as
-# ci/requirements.txt.
-dependencies = ["numpy", "pandas", "uproot", "matplotlib", "scipy", "hep-endpoints @ git+https://github.com/RobMina/hep-endpoints.git@536656008f457eefb5939cdbe1095cbdf445857d",
-                "cryjax @ git+https://github.com/RobMina/cryjax.git@3094804ba73f1d8f9b36665e30c6c64fa0a063d0",
-                "hep-simlib @ git+https://github.com/RobMina/hep-simlib.git@22e160ddb973f863e2639e19553e5e5c3aa4f8bf"]
+# mu2efastsim.library and mu2efastsim.component_response re-export with the Mu2e profile, and the censored crossing
+# likelihood of the CRV EX calibration (crvfastsim.objective.ex_response); same pin as ci/requirements.txt.
+# hep-simbench (import name hepsimbench): the experiment-neutral scorer, warm-rate timer, approximation registry and
+# robust statistics behind mu2efastsim.bench, .approximations, .stats and benchmarks/; same pin as ci/requirements.txt.
+# hep-simkernels (import name hepsimkernels): the Geant4-matched physics kernels behind mu2efastsim.eloss, .emsc,
+# .ebrem, .eslab*, .transport, .world, .precision, ... (Mu2e materials and hooks in mu2efastsim); same pin as ci/.
+dependencies = ["numpy", "pandas", "uproot", "matplotlib", "scipy", "hep-endpoints @ git+https://github.com/RobMina/hep-endpoints.git@caa585711a3610fa8746fc16ab729f74b2f401b6",
+                "cryjax @ git+https://github.com/RobMina/cryjax.git@4b5f0df4965b895f3296543a3d42bc2ab04d6909",
+                "hep-simlib @ git+https://github.com/RobMina/hep-simlib.git@b5868350f789f49dfc174110e72d55a40758de67",
+                "hep-simbench @ git+https://github.com/RobMina/hep-simbench.git@5d3eab140474f29301269df19bebec0cd387a261",
+                "hep-simkernels @ git+https://github.com/RobMina/hep-simkernels.git@2c3f0d4e74d31e79f72e37a346d561b306443db5"]
 
 [project.optional-dependencies]
 jax = ["jax"]

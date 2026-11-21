@@ -134,7 +134,7 @@ def test_device_overenergy_carry_across_empty_terminal_and_batches():
         return {"pdg": jnp.full(n,13), "ke": jnp.array(energies, float), "shower": jnp.array(shower),
                 "mask": jnp.ones(n,bool), "position": jnp.zeros((n,3)),
                 "direction": jnp.tile(jnp.array([0.,0.,-1.]), (n,1)),
-                "t": jnp.array(clocks)[jnp.array(shower)], "clocks": jnp.array(clocks),
+                "delay": jnp.zeros(n), "clocks": jnp.array(clocks),
                 "overflow": jnp.array(False), "invalid_pdf": jnp.array(False), "particles": jnp.array(n)}
     cfg = D._config(config)
     first = D.select(batch([1200.], [0], [1.]), cfg, jax.random.key(1), jnp.zeros((8,9)), jnp.array(0),
@@ -146,6 +146,28 @@ def test_device_overenergy_carry_across_empty_terminal_and_batches():
     np.testing.assert_allclose(np.asarray(second["rows"])[:2,1], [1305.658367, 205.658367])
     np.testing.assert_array_equal(np.asarray(second["slots"])[:2], [0,1])
     np.testing.assert_array_equal(np.asarray(second["clocks"])[:2], [2.,3.])
+
+
+def test_live_time_does_not_depend_on_the_clock_start(setup):
+    # The same seed with the running clock started at 0 and at 1000 s draws the same showers, so the live time per
+    # call may differ only by the float64 rounding of the host offset. A device-float clock (float32) changed it by
+    # up to 2e-2 at 1000 s.
+    config = CosmicConfig((0,20000,0), (-10000,-5000,-10000), (10000,10000,10000),
+                          (-200000,-10000,-200000), (200000,15000,200000), "fixture")
+    lives, times = {}, {}
+    for start in (0.0, 1000.0):
+        with D.DeviceCosmicSource(config, seed=7, raw_batch=10000, selected_capacity=2048, table=TABLE,
+                                  require_gpu=False) as source:
+            source.before = source.last_time = start
+            calls = [source.generate(150, subrun=k+1, first_event=1+150*k) for k in range(4)]
+        assert source.batches > 4                       # the clock crosses device batches
+        lives[start] = np.array([subruns.livetime.iloc[0] for _, subruns, _ in calls])
+        times[start] = np.concatenate([gen.t.to_numpy() for gen, _, _ in calls])
+    np.testing.assert_allclose(lives[1000.0], lives[0.0], rtol=1e-9, atol=0)
+    assert np.all(lives[0.0] > 0)
+    # the stock time column is the CosmicTimeOffset (ns) plus the shower delay (s): the clock start moves it only
+    # through the device-float rounding of the delay, at most one float32 ulp of a 1e5 ns column (0.008 ns)
+    np.testing.assert_allclose(times[1000.0], times[0.0], rtol=0, atol=0.016)
 
 
 @pytest.mark.pr_params("0")

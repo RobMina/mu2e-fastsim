@@ -109,6 +109,8 @@ def _routes(task):
     if task in ("beam_point", "beam_sob", "beam_edep", "beam_edep_cpu", "beam_centuple", "crv_response", "tracker_point"):
         rows = [{"name": "mounted", "requires": ["fnal_data"]},
                 {"name": "streaming", "requires": ["stream_in", "no_fnal_data"]}]
+        if task == "beam_edep_cpu":       # the FNAL grid: inputs staged to dCache scratch (beamfastsim.kit_grid)
+            rows.append({"name": "staged", "requires": ["stage_file", "no_fnal_data"]})
         if task == "crv_response":
             rows[1]["when"] = {"tables": ["vr5"]}
             rows[0]["reason"] = "tables=all requires the mounted FNAL/EAF route."
@@ -307,11 +309,13 @@ def _local_file(root, relative):
 def _route(task, endpoint, params):
     mounted = bool(getattr(endpoint, "fnal_data", None))
     streaming = hasattr(endpoint, "stream_in")
+    staged = hasattr(endpoint, "stage_file")
     for route in _routes(task):
         requirements = route["requires"]
         if ("fnal_data" in requirements and not mounted or
                 "no_fnal_data" in requirements and mounted or
                 "stream_in" in requirements and not streaming or
+                "stage_file" in requirements and not staged or
                 not _matches(route.get("when", {}), params)):
             continue
         return {"name": route["name"], "supported": True, "requirements": requirements,

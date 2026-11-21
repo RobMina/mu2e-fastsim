@@ -5,6 +5,12 @@ cryjax (cryjax.device, extracted from this module on 2026-11-18); this module ke
 CosmicCRY projection onto the extracted geometry, the energy cuts, the over-energy carry and the CosmicTimeOffset,
 fused with `raw` in one program (`accepted`). The device float follows mu2efastsim.precision, passed to cryjax
 explicitly. Host code parses/uploads pinned PDF tables; it never draws showers for this backend.
+
+Live-time clock: each device batch starts its clock at 0 and the running total is a float64 offset on the host, as in
+cryjax.device.DeviceSource, so a float32 device float never accumulates live time across batches. The stock time
+column (CosmicTimeOffset in ns plus the shower delay in s, as CosmicCRY forms it) keeps its arithmetic: the delay is
+the shower's absolute time minus its clock, with the clock started at the offset in the device float. In float64
+this is main's arithmetic exactly, so float64 outputs are bit-identical to the device-scalar clock it replaces.
 Model reference: LLNL UCRL-CODE-227323; notices in docs/third-party/cry.txt.
 """
 from functools import partial
@@ -67,7 +73,10 @@ def intersection(position, direction, lower, upper):
 
 @partial(dprec.jit, static_argnames=("showers", "selected_capacity"))
 def select(r, cfg, key, pending, pending_count, *, showers, selected_capacity):
-    """Stock selection/grouping of a device raw batch; exposed separately for deterministic parity tests."""
+    """Stock selection/grouping of a device raw batch; exposed separately for deterministic parity tests.
+
+    ``r["delay"]`` is the stock time column's shower delay (s); ``r["clocks"]`` are returned as given (batch-local).
+    """
     mass_index = jnp.searchsorted(cfg["mass_pdg"], jnp.abs(r["pdg"]))
     mass = cfg["mass"][mass_index]
     energy = r["ke"]+mass
@@ -82,7 +91,7 @@ def select(r, cfg, key, pending, pending_count, *, showers, selected_capacity):
     indices = jnp.nonzero(keep, size=selected_capacity, fill_value=0)[0]
     rows = jnp.concatenate([r["pdg"][:, None], energy[:, None], position,
                             jnp.sqrt(jnp.maximum(energy**2-mass**2, 0))[:, None]*direction,
-                            (r["t"]-r["clocks"][r["shower"]])[:, None]], axis=1)[indices]
+                            r["delay"][:, None]], axis=1)[indices]
     low = sums < cfg["max_shower"]
     terminal = lax.associative_scan(jnp.minimum, jnp.where(low, jnp.arange(showers), showers), reverse=True)
     targets = terminal[r["shower"][indices]]
@@ -114,8 +123,14 @@ def select(r, cfg, key, pending, pending_count, *, showers, selected_capacity):
 
 @partial(dprec.jit, static_argnames=("showers", "capacity", "selected_capacity"))
 def accepted(t, cfg, key, before, pending, pending_count, *, showers, capacity, selected_capacity):
-    """Sampling and stock selection execute on the same device; no host shower inputs."""
-    r = raw(t, key, before, showers=showers, capacity=capacity)
+    """Sampling and stock selection execute on the same device; no host shower inputs.
+
+    The raw batch's clocks start at 0 and come back batch-local (``clocks``, ``before_next``); the host adds its
+    float64 offset. ``before`` (the offset, rounded to the device float) enters only the stock delay ``t - clock``.
+    """
+    r = raw(t, key, 0.0, showers=showers, capacity=capacity)
+    clock = (jnp.asarray(before, dprec.FLOAT) + r["clocks"])[r["shower"]]
+    r = dict(r, delay=(clock + r["delay"]) - clock)
     return select(r, cfg, key, pending, pending_count, showers=showers, selected_capacity=selected_capacity)
 
 
@@ -149,7 +164,7 @@ class DeviceCosmicSource(CosmicSource):
         self.key = jax.random.fold_in(jax.random.key(seed & 0xffffffff, impl="threefry2x32"), seed >> 32)
         self.pending_device = jnp.zeros((selected_capacity, 9))
         self.pending_count = jnp.asarray(0)
-        self.before = jnp.asarray(0.0)
+        self.before = 0.0     # live time (s) at the end of the last device batch: a float64 host offset
         jax.block_until_ready(self.tables)
         self.setup_s = time.perf_counter()-start
         self.raw_offset = self.overenergy_showers = self.accepted_from_overenergy = self.batches = 0
@@ -166,12 +181,13 @@ class DeviceCosmicSource(CosmicSource):
             raise RuntimeError("device CRY source is closed or failed")
         started = time.perf_counter()
         key = jax.random.fold_in(self.key, self.batches)
-        out = accepted(self.tables, self.device_config, key, self.before, self.pending_device, self.pending_count,
-                       showers=self.raw_batch, capacity=self.capacity, selected_capacity=self.selected_capacity)
+        out = accepted(self.tables, self.device_config, key, np.float64(self.before), self.pending_device,
+                       self.pending_count, showers=self.raw_batch, capacity=self.capacity,
+                       selected_capacity=self.selected_capacity)
         jax.block_until_ready(out)
         self.kernel_wall_s += time.perf_counter()-started
         started = time.perf_counter()
-        host = jax.device_get({k: v for k, v in out.items() if k not in ("pending", "pending_count", "before_next")})
+        host = jax.device_get({k: v for k, v in out.items() if k not in ("pending", "pending_count")})
         self.copy_wall_s += time.perf_counter()-started
         if host["overflow"]:
             self.failed = True
@@ -179,12 +195,14 @@ class DeviceCosmicSource(CosmicSource):
         if host["invalid_pdf"] or host["world_miss"]:
             self.failed = True
             raise RuntimeError("device CRY reached undefined PDF or target particle missed world")
-        self.pending_device, self.pending_count, self.before = out["pending"], out["pending_count"], out["before_next"]
+        self.pending_device, self.pending_count = out["pending"], out["pending_count"]
+        offset = self.before
+        self.before = offset + np.float64(host["before_next"])
         n, events = int(host["row_count"]), int(host["events"])
         frame = pd.DataFrame(host["rows"][:n], columns=["pdg", "e", "x", "y", "z", "px", "py", "pz", "t"])
         frame["slot"] = host["slots"][:n]+len(self.clocks)
         self.buffer = pd.concat([self.buffer, frame], ignore_index=True) if len(self.buffer) else frame
-        self.clocks = np.concatenate([self.clocks, host["clocks"][:events]])
+        self.clocks = np.concatenate([self.clocks, offset + host["clocks"][:events].astype(np.float64)])
         self.raw_offset += self.raw_batch
         self.overenergy_showers += int(host["overenergy"])
         self.accepted_from_overenergy += int(host["carried"])
@@ -198,6 +216,7 @@ class DeviceCosmicSource(CosmicSource):
                        particle_capacity=self.capacity, selected_capacity=self.selected_capacity,
                        device_batches=self.batches, device_setup_s=self.setup_s,
                        device_kernel_wall_s=self.kernel_wall_s, device_copy_wall_s=self.copy_wall_s,
+                       live_clock="float64 host offset; device batches start at 0",
                        rng="jax threefry2x32; independent streams by batch/quantity; not art/CLHEP/mt19937")
         return gen, subruns, receipt
 

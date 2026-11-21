@@ -129,18 +129,38 @@ def entry_features(face, local_position, local_momentum, pdg):
     return energy, cosine, key, phi
 
 
-def read(path):
+def transverse_angle(local_position, local_momentum):
+    """psi: angle of the transverse entry momentum from the outward radius at the entry, in (-pi, pi] (disk frame)."""
+    lp, lm = np.asarray(local_position, float), np.asarray(local_momentum, float)
+    return np.angle(np.exp(1j * (np.arctan2(lm[:, 1], lm[:, 0]) - np.arctan2(lp[:, 1], lp[:, 0]))))
+
+
+PSI_BINS_15 = tuple(np.radians(np.arange(-180, 181, 15)))   # 15 degree psi bins (opt-in cell axis of sample)
+
+
+def psi_cells(face, psi, psi_bins):
+    """psi bin index of front entries (clipped to the edges); inner-edge entries are not split (index 0)."""
+    edges = np.asarray(psi_bins, float)
+    if edges.ndim != 1 or len(edges) < 2 or np.any(np.diff(edges) <= 0):
+        raise ValueError("psi_bins must be increasing edges")
+    index = np.clip(np.searchsorted(edges, np.asarray(psi, float), side="right") - 1, 0, len(edges) - 2)
+    return np.where(np.asarray(face) == FRONT, index, 0)
+
+
+def read(path, *, skip_failed=False):
     """Entrants and their subtree CSS from one CaloLibraryDumper export (calo_library_tables.root).
 
     Returns (entrants, css, geometry, census). Entrants: one row per fast-simulation entrant with event_row, pdg,
     species, face, disk, global position/momentum/time and local (disk-frame) position/momentum. CSS: rows of
     supported-face entrants with entrant row, global position, absolute time, energies, crystal and disk.
+    ``skip_failed`` (opt-in) drops events whose Geant4 transport failed (``g4_status != 0``) with all their rows
+    instead of raising; event rows then index the completed events, and the census counts the dropped ones.
     """
     with uproot.open(path) as source:
         events = columns(source, "events", EVENT + ("g4_status",))
-        if np.any(events["g4_status"] != 0):
+        failed = events["g4_status"] != 0
+        if np.any(failed) and not skip_failed:
             raise ValueError("input contains failed transport events; select completed input events first")
-        event_ids = keys(events, EVENT)
         particles = columns(source, "particles", IDENTITY + ("pdg", "parent_product_id", "parent_key", "parent_valid"))
         steps = columns(source, "steps", IDENTITY + ("kind", "volume", "time") +
                         tuple(p + "_" + a for p in ("position", "momentum") for a in "xyz"))
@@ -149,6 +169,12 @@ def read(path):
         disks = columns(source, "disks", ("run", "disk") + tuple(p + "_" + a for p in ("origin", "size", "axis_x", "axis_y", "axis_z") for a in "xyz"))
         crystals = columns(source, "crystals", ("run", "crystal", "disk") + tuple(p + "_" + a for p in ("position", "size") for a in "xyz"))
         vd = columns(source, "virtualdetectors", ("run", "id") + tuple("position_" + a for a in "xyz"))
+    if np.any(failed):
+        bad = keys({k: v[failed] for k, v in events.items()}, EVENT)
+        events = {k: v[~failed] for k, v in events.items()}
+        particles, steps, showers = ({k: v[~np.isin(keys(t, EVENT), bad)] for k, v in t.items()}
+                                     for t in (particles, steps, showers))
+    event_ids = keys(events, EVENT)
 
     pid = keys(particles, IDENTITY)
     n = len(pid)
@@ -221,7 +247,7 @@ def read(path):
                energy_g4=showers["energy_g4"][keep].astype(float), energy_birks=eb[keep],
                crystal=showers["crystal"][keep], disk=crystals["disk"][crow[keep]])
     total = float(eb.sum())
-    census = dict(events=len(event_ids), particles=n, entrants=len(entrant_particles), css_rows=len(eb),
+    census = dict(events=len(event_ids), failed_events_skipped=int(np.sum(failed)), particles=n, entrants=len(entrant_particles), css_rows=len(eb),
                   css_energy_birks=total,
                   css_fraction_unresolved_particle=float(eb[prow < 0].sum()) / total if total else 0.,
                   css_fraction_no_entrant=float(eb[(prow >= 0) & (owner < 0)].sum()) / total if total else 0.,
@@ -241,12 +267,13 @@ def read(path):
     return entrants, css, geometry, census
 
 
-def read_many(paths):
-    """Concatenate several exports (one geometry); event rows are offset per file."""
+def read_many(paths, *, skip_failed=False):
+    """Concatenate several exports (one geometry); event rows are offset per file. ``skip_failed`` as in :func:`read`
+    (the offsets count the completed events)."""
     parts, geometry, census = [], None, []
     offset = 0
     for path in paths:
-        entrants, css, geo, cen = read(path)
+        entrants, css, geo, cen = read(path, skip_failed=skip_failed)
         if geometry is None:
             geometry = geo
         elif any(not np.array_equal(geometry[k], geo[k]) for k in geometry if not k.endswith("_run")):
@@ -293,6 +320,8 @@ def build(entrants, css, geometry, *, binning=Binning()):
         entry_disk=np.asarray(entrants["disk"], dtype=np.int64), entry_energy=energy, entry_cosine=cosine,
         entry_key=key, entry_azimuth=phi, entry_time=np.asarray(entrants["time"], dtype=float),
         entry_local_position=np.asarray(entrants["local_position"], dtype=float), entry_cell=index, entry_outside_bins=outside,
+        entry_local_momentum=np.asarray(entrants["local_momentum"], dtype=float),
+        entry_psi=transverse_angle(entrants["local_position"], entrants["local_momentum"]),
         step_relative_position=relative, step_relative_time=np.asarray(css["time"])[order] - np.asarray(entrants["time"])[row],
         step_energy_g4=np.asarray(css["energy_g4"])[order], step_energy_birks=np.asarray(css["energy_birks"])[order],
         step_crystal=np.asarray(css["crystal"])[order].astype(np.int64), step_disk=np.asarray(css["disk"])[order].astype(np.int64),
@@ -306,13 +335,72 @@ def _binning(library):
     return Binning(*(tuple(library["bins_" + k]) for k in ("energy", "cosine", "front_radius", "inner_depth")))
 
 
-def sample(library, queries, rng, *, dtype=np.float64):
+SELECTIONS = ("cell", "nearest")
+FAR_RULES = ("g4", "cell")
+
+
+def fold_half_turn(dphi):
+    """Azimuth difference folded by the crystal lattice's 180-degree symmetry into [-pi/2, pi/2] (C++
+    ``std::remainder(dphi, M_PI)``: round half to even)."""
+    return dphi - np.round(np.asarray(dphi, float) / np.pi) * np.pi
+
+
+def entry_distance2(face, key, phi, rho, donor_key, donor_phi):
+    """Squared entry-point distance of the Mu2eG4 host's ``donorSelection: nearest`` (``selectNearest``), counting
+    the donor's image turned by 180 degrees: front face, the chord between the entry points on the face (key =
+    radius); inner edge, dz^2 + (rho dphi)^2 at the query radius (key = depth). Broadcasts."""
+    dphi = fold_half_turn(phi - donor_phi)
+    front = key * key + donor_key * donor_key - 2.0 * key * donor_key * np.cos(dphi)
+    inner = (key - donor_key) ** 2 + (rho * dphi) ** 2
+    return np.maximum(np.where(np.asarray(face) == INNER, inner, front), 0.0)
+
+
+def sample(library, queries, rng, *, dtype=np.float64, key_neighbors=0, psi_bins=None, selection="cell",
+           nearest_k=1, max_entry_distance=20.0, far="g4"):
     """Draw one donor per query and place its CSS at the query entry.
 
     queries: disk, face, pdg, time, local_position (N,3) and local_momentum (N,3) in the disk frame. Returns the
     placed steps (global position, absolute time, energies, donor crystal), per-query donor (-1 when the
     species/face/disk group has no entrants), supported, fallback (another cell or outside the bins) and offsets.
+
+    ``key_neighbors=0`` keeps the uniform draw over the cell. A positive K (opt-in) draws, in a cell with more than K
+    entrants, among the K whose position key (front radius or inner-edge depth) is nearest the query's (ties by
+    library row; the eligible rows sorted by library row, then the same uniform), the rule of
+    :func:`calofastsim.showers.library.sample`'s ``radius_neighbors``: the donor pattern then moves by at most the
+    key spread of those K instead of the cell width (a front entry near the inner edge or an inner-edge entry near
+    the crystals' back face otherwise lands partly outside the crystals).
+
+    ``psi_bins`` (opt-in, edges in radians, e.g. :data:`PSI_BINS_15`) adds the angle of the transverse entry momentum
+    from the outward radius (:func:`transverse_angle`) as a cell axis of front entries: a front shower's offset from
+    its entry follows that direction (CE on the W7 dev files: +21 mm outward-going vs -31 mm inward-going at 450-1000
+    mm), which the energy, cosine and radius cells do not carry. Needs a library built with ``entry_psi``. The
+    nearest occupied cell uses the bin-index distance over all axes, psi included.
+
+    ``selection="nearest"`` (opt-in) is the Mu2eG4 host's ``donorSelection: nearest``: among the entrants of the
+    query's species, face, disk, energy bin and cosine bin (clipped bins, as the cell rule), the ``nearest_k``
+    closest in entry point (:func:`entry_distance2`, ties by library row), one of them by the uniform. The donor is
+    then turned by about 0 or 180 degrees and moved by about that distance, so its shower keeps its place relative
+    to the stepped edges of the crystal array. A query whose chosen donor is farther than ``max_entry_distance``
+    (mm), or whose group is empty, is ``far``: with ``far="g4"`` it gets no donor (the Mu2eG4 host leaves it to
+    Geant4); with ``far="cell"`` it is drawn by the cell rule (``key_neighbors`` applies). ``key_neighbors`` and
+    ``psi_bins`` otherwise do not apply to nearest draws. Unlike the C++ host, entries outside the bins are drawn
+    (flagged ``fallback``), as with the cell rule.
     """
+    if selection not in SELECTIONS:
+        raise ValueError(f"selection must be one of {SELECTIONS}")
+    if far not in FAR_RULES:
+        raise ValueError(f"far must be one of {FAR_RULES}")
+    if selection == "nearest":
+        if (isinstance(nearest_k, (bool, np.bool_)) or not isinstance(nearest_k, (int, np.integer))
+                or nearest_k < 1):
+            raise ValueError("nearest_k must be a positive integer")
+        if not (max_entry_distance >= 0):
+            raise ValueError("max_entry_distance must be a nonnegative distance")
+        if psi_bins is not None:
+            raise ValueError("psi_bins applies to the cell rule only")
+    if (isinstance(key_neighbors, (bool, np.bool_)) or not isinstance(key_neighbors, (int, np.integer))
+            or key_neighbors < 0):
+        raise ValueError("key_neighbors must be a nonnegative integer")
     face = np.asarray(queries["face"])
     n = len(face)
     disk = np.asarray(queries["disk"])
@@ -322,6 +410,12 @@ def sample(library, queries, rng, *, dtype=np.float64):
     query, outside = cells(face, energy, cosine, key, _binning(library))
     group = np.column_stack((library["entry_species"], library["entry_face"], library["entry_disk"]))
     labels = np.column_stack((group, library["entry_cell"]))
+    if psi_bins is not None:
+        if "entry_psi" not in library:
+            raise ValueError("psi_bins needs a library built with entry_psi")
+        labels = np.column_stack((labels, psi_cells(library["entry_face"], library["entry_psi"], psi_bins)))
+        query = np.column_stack((query, psi_cells(face, transverse_angle(queries["local_position"],
+                                                                         queries["local_momentum"]), psi_bins)))
     occupied, inverse = np.unique(labels, axis=0, return_inverse=True)
     inverse = inverse.ravel()
     order = np.argsort(inverse, kind="stable")
@@ -341,6 +435,22 @@ def sample(library, queries, rng, *, dtype=np.float64):
         bins = pool[near]
         fallback[where] |= distance[np.arange(len(where)), near] != 0
         donors[where] = order[starts[bins] + (uniform[where] * counts[bins]).astype(np.int64)]
+        if key_neighbors:
+            from .library import _radius_pool
+            for cell in np.unique(bins[counts[bins] > key_neighbors]):
+                local = np.flatnonzero(bins == cell)
+                target = where[local]
+                rows = order[starts[cell]:starts[cell] + counts[cell]]
+                eligible = _radius_pool(rows, np.asarray(library["entry_key"], float), key[target], key_neighbors)
+                draw = (uniform[target] * key_neighbors).astype(np.int64)
+                donors[target] = eligible[np.arange(len(target)), draw]
+    far_mask = np.zeros(n, bool)
+    if selection == "nearest":
+        nearest, far_mask = _nearest_donors(library, species, face, disk, query, key, phi,
+                                            np.hypot(*np.asarray(queries["local_position"], float)[:, :2].T),
+                                            uniform, nearest_k, max_entry_distance)
+        donors = np.where(far_mask, donors if far == "cell" else -1, nearest)
+        fallback = np.where(far_mask & (far == "cell"), fallback, outside)       # nearest draws: outside the bins
     supported = donors >= 0
     length = np.zeros(n, dtype=np.int64)
     length[supported] = np.diff(library["offsets"])[donors[supported]]
@@ -365,7 +475,33 @@ def sample(library, queries, rng, *, dtype=np.float64):
                 energy_g4=library["step_energy_g4"][source].astype(dtype),
                 energy_birks=library["step_energy_birks"][source].astype(dtype),
                 donor_crystal=library["step_crystal"][source], disk=library["step_disk"][source],
-                entry=row, offsets=offsets, donor=donors, supported=supported, fallback=fallback)
+                entry=row, offsets=offsets, donor=donors, supported=supported, fallback=fallback, far=far_mask)
+
+
+def _nearest_donors(library, species, face, disk, query, key, phi, rho, uniform, k, max_distance):
+    """(donor row, far) per query by the nearest rule of :func:`sample` (Mu2eG4 ``selectNearest``)."""
+    n = len(face)
+    donors = np.full(n, -1, np.int64)
+    far = np.ones(n, bool)
+    lib_group = np.column_stack((library["entry_species"], library["entry_face"], library["entry_disk"],
+                                 np.asarray(library["entry_cell"])[:, :2]))
+    q_group = np.column_stack((species, face, disk, query[:, :2]))
+    lib_key = np.asarray(library["entry_key"], float)
+    lib_phi = np.asarray(library["entry_azimuth"], float)
+    for g in np.unique(q_group, axis=0):
+        where = np.flatnonzero(np.all(q_group == g, axis=1))
+        rows = np.flatnonzero(np.all(lib_group == g, axis=1))
+        if not len(rows):
+            continue
+        d2 = entry_distance2(face[where, None], key[where, None], phi[where, None], rho[where, None],
+                             lib_key[rows][None, :], lib_phi[rows][None, :])
+        m = min(k, len(rows))
+        rank = np.lexsort((np.broadcast_to(rows, d2.shape), d2), axis=1)[:, :m]
+        pick = np.minimum((uniform[where] * m).astype(np.int64), m - 1)
+        chosen = rank[np.arange(len(where)), pick]
+        donors[where] = rows[chosen]
+        far[where] = d2[np.arange(len(where)), chosen] > max_distance * max_distance
+    return donors, far
 
 
 def axes(library):
@@ -429,13 +565,14 @@ ROOT_ENTRY = ("species", "face", "disk", "energy", "cosine", "key", "azimuth", "
 def export_root(library, path):
     """Write the library as ROOT trees for the Mu2eG4 model; returns the library content hash it records.
 
-    Trees: ``entries`` (one row per entrant: species, face, disk, energy, cosine, key, azimuth, time, cell_energy,
+    Trees: ``entries`` (one row per entrant: species, face, disk, energy, cosine, key, azimuth, time, psi when the
+    library has it (:func:`transverse_angle`), cell_energy,
     cell_cosine, cell_key, outside, step_begin, step_end), ``steps`` (x, y, z relative, t relative, energy_g4,
     energy_birks, disk, crystal), ``bins`` (one tree per axis, branch ``edge``), ``disks`` (disk, origin and axes) and
     the TObjString ``content_hash`` (sha256 of the npz arrays, mu2efastsim.library.hashing.content_hash).
     """
     digest = content_hash({k: v for k, v in library.items() if k != "metadata"})
-    entries = {k: np.asarray(library["entry_" + k]) for k in ROOT_ENTRY}
+    entries = {k: np.asarray(library["entry_" + k]) for k in ROOT_ENTRY + (("psi",) if "entry_psi" in library else ())}
     entries.update(cell_energy=library["entry_cell"][:, 0], cell_cosine=library["entry_cell"][:, 1],
                    cell_key=library["entry_cell"][:, 2], outside=library["entry_outside_bins"].astype(np.int32),
                    step_begin=library["offsets"][:-1], step_end=library["offsets"][1:])
@@ -468,8 +605,10 @@ def main(argv=None):
     parser.add_argument("exports", type=Path, nargs="+")
     parser.add_argument("--root", type=Path, help="also write the ROOT export for Mu2eG4")
     parser.add_argument("--name", default="unnamed")
+    parser.add_argument("--skip-failed", action="store_true",
+                        help="drop failed-transport events instead of raising (counted in the census)")
     args = parser.parse_args(argv)
-    entrants, css, geometry, census = read_many(args.exports)
+    entrants, css, geometry, census = read_many(args.exports, skip_failed=args.skip_failed)
     library = build(entrants, css, geometry)
     metadata = dict(name=args.name, exports=[str(p) for p in args.exports], census=census,
                     entrants=int(len(entrants["face"])), steps=int(len(css["entrant"])))

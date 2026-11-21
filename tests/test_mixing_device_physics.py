@@ -314,6 +314,47 @@ def test_output_compression_same_arrays(template, cond, tmp_path, compression):
             lambda manifest, **kwargs: source(c, **kwargs), Backend)
 
 
+def test_compact_sampling_receipt_same_outputs(template, cond, tmp_path):
+    """sampling_receipt compact (ROOT output): the same fast.root trees and receipt arrays, without the per-donor ones."""
+    from types import SimpleNamespace
+    from trkfastsim.digi.digicond import Conditions
+    from mixing.device_backend import Backend
+    from mixing.stream_benchmark import run
+
+    c = Conditions(cond.s, cond.a)
+    c.s["onspill"] = True
+    capacity = tmp_path / "capacities.json"
+    capacity.write_text(json.dumps(CAPACITY))
+    outs = {}
+    for mode in ("full", "compact"):
+        outs[mode] = tmp_path / f"out_{mode}"
+        args = SimpleNamespace(out=outs[mode], frames_manifest=None, device_platform="cpu",
+                               device_kernel="mixing.device_integration:model", device_capacities=capacity,
+                               synthetic=False, backend="mixing.device_backend:Backend", events=5, batch_events=2,
+                               max_selected_rows=448, chunk=2, warmup_batches=1, seed=17, tracker_seed=19,
+                               sampling_seed=23, require_stage=[], template=template, sampling_receipt=mode)
+        run(args, lambda manifest, **kwargs: source(c, **kwargs), Backend)
+    paths = sorted(outs["full"].glob("*/fast.root"))
+    assert paths
+    dropped = ("/donors", "/mask", "/source_event_ids")
+    for a in paths:
+        b = outs["compact"] / a.parent.name / "fast.root"
+        with uproot.open(a) as ra, uproot.open(b) as rb:
+            for name, tree in ra.items(filter_classname="TTree"):
+                for branch in tree.keys():
+                    assert (ak.to_list(tree[branch].array(library="ak"))
+                            == ak.to_list(rb[name][branch].array(library="ak"))), f"{name}/{branch}"
+        with np.load(a.parent / "sampling.npz") as full, np.load(b.parent / "sampling.npz") as compact:
+            assert any(k.endswith(dropped) for k in full.files)
+            assert set(compact.files) == {k for k in full.files if not k.endswith(dropped)}
+            for k in compact.files:
+                np.testing.assert_array_equal(compact[k], full[k], err_msg=k)
+        assert "omitted" in json.loads((b.parent / "sampling.json").read_text())["donors"]
+    with pytest.raises(ValueError, match="sampling receipt"):
+        run(SimpleNamespace(**{**vars(args), "out": tmp_path / "bad", "sampling_receipt": "dense"}),
+            lambda manifest, **kwargs: source(c, **kwargs), Backend)
+
+
 def test_output_capacities_validated():
     from mixing.device_physics import compact_rows, output_capacities
     assert output_capacities(None) == {} and output_capacities({"tracker_rows": 4}) == {"tracker_rows": 4}

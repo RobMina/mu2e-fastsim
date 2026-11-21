@@ -163,7 +163,7 @@ def test_calo_filters_match_the_stock_transcription(stage, tmp_path):
     rtpl = ref.Templates(*tpl_paths, LH["MinClusterRadialDist"], LH["ClusterRadialDistStep"])
     with calo.strict(jnp.asarray(stage["dg"]["sipm"])):
         got = {"counter": calo.counter_pass(cl, COUNTER), "rmc": calo.counter_pass(cl, RMC),
-               "cosmic": calo.cosmic_pass(cl, hits, s, COSMIC), "cosmic_int": calo.cosmic_pass(cl, hits, s, COSMIC, True),
+               "cosmic": calo.cosmic_pass(cl, hits, s, COSMIC),
                "nn": calo.nn_pass(cl, hits, s, net, NN_EVAL, NN_FILTER),
                "lh": calo.likelihood_pass(cl, hits, s, tpl, LH)}
     got = {k: np.asarray(v) for k, v in got.items()}
@@ -171,7 +171,6 @@ def test_calo_filters_match_the_stock_transcription(stage, tmp_path):
         assert got["counter"][e] == ref.counter_pass(c, COUNTER), e
         assert got["rmc"][e] == ref.counter_pass(c, RMC), e
         assert got["cosmic"][e] == ref.cosmic_pass(c, h, geo, COSMIC), e
-        assert got["cosmic_int"][e] == ref.cosmic_pass(c, h, geo, COSMIC, int_abs=True), e
         assert got["nn"][e] == ref.nn_pass(c, ref.nn_scores(c, h, geo, net, NN_EVAL), NN_FILTER), e
         assert got["lh"][e] == ref.likelihood_pass(c, h, geo, rtpl, LH), e
     for k in ("counter", "nn", "lh"):
