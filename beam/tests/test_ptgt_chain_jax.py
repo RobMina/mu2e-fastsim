@@ -21,7 +21,7 @@ def _uniform_map(bz):
     return fieldmap.FieldMap(lo, np.array([2000.0, 2000.0, 3000.0]), n, B)
 
 
-def _bank(tmp_path, n_pim=1, sigma_p=1e3, dedx=0.0):
+def _bank(tmp_path, n_pim=1, sigma_p=1e3, dedx=0.0, edep_local=0.0):
     shape = (len(D.SPECIES), len(MATS), EDGES.size - 1)
     cells = {k: np.zeros(shape) for k in D.CELL_ARRAYS}
     cells["x0"][:] = 1e12
@@ -30,7 +30,8 @@ def _bank(tmp_path, n_pim=1, sigma_p=1e3, dedx=0.0):
     cells["el_cos_icdf"] = np.ones(shape + (D.N_EL,))
     ncell = int(np.prod(shape))
     per = np.array([n_pim if c // (len(MATS) * (EDGES.size - 1)) == 0 else 0 for c in range(ncell)])
-    trials = dict(trial_cell=np.arange(ncell), sec_offsets=np.concatenate([[0], np.cumsum(per)]), edep_local=np.zeros(ncell))
+    trials = dict(trial_cell=np.arange(ncell), sec_offsets=np.concatenate([[0], np.cumsum(per)]),
+                  edep_local=np.full(ncell, float(edep_local)))
     ns = int(per.sum())
     rng = np.random.default_rng(0)
     d = rng.normal(size=(ns, 3)); d /= np.linalg.norm(d, axis=1, keepdims=True)
@@ -365,3 +366,46 @@ def test_tally_planes_must_be_a_vacuum_step_apart():
                      z_plane=800.0, r_plane=1800.0, axis_x=0.0, tally=((790.0, 100.0),))
     with pytest.raises(ValueError, match="vacuum step"):
         C.check_tally(env, C.Stepping().h_vac)
+
+
+@pytest.mark.parametrize("dtype", [jnp.float64, jnp.float32])
+def test_target_heat_slices_device_matches_host(tmp_path, dtype):
+    """Slice deposits (ionisation at step midpoints, stopped lanes, local deposit per interaction): the host's slice
+    sums equal its per-segment sums, and device and host agree per slice within statistics."""
+    bank = _bank(tmp_path, n_pim=3, sigma_p=5e-3, dedx=0.5, edep_local=40.0)
+    tgt = D.Target.rod(100.0, 10.0, 10.0, 10.0)
+    env = C.Envelope(z_nodes=np.array([-5000.0, 5000.0]), r_nodes=np.array([1900.0, 1900.0]), z_min=-2000.0,
+                     z_plane=800.0, r_plane=1800.0, axis_x=0.0)
+    prim = C.primaries(4000, tgt, np.random.default_rng(3))
+    host = C.run(bank, tgt, lambda x: np.tile([0.0, 0.0, 2.0], (len(x), 1)), env, prim, np.random.default_rng(4))
+    hz = host["edep_slices"]
+    assert np.isclose(hz.sum(), host["edep"].sum(), rtol=1e-9)
+    ez, n = D.slice_edges(tgt)
+    assert n == 10 and np.allclose(hz[:, n:], 0.0)
+    rec, cnt = J.run(bank, tgt, _uniform_map(2.0), env, prim, seed=5, pool=4096, steps=32, dtype=dtype)
+    dz = rec["edep_slices"]
+    assert dz.shape == (D.EDEP_BATCHES, D.EDEP_SLICE_MAX) and np.allclose(dz[:, n:], 0.0)
+    h, d = hz.sum(0)[:n], dz.sum(0)[:n]
+    assert np.all(h > 0)
+    sig = np.sqrt(np.var(hz[:, :n] * D.EDEP_BATCHES, axis=0, ddof=1) / D.EDEP_BATCHES)   # batch-mean error
+    assert np.all(np.abs(d - h) < 5 * np.sqrt(2) * sig + 1e-6 * h), (h, d, sig)
+    assert abs(d.sum() / h.sum() - 1) < 0.03
+
+
+def test_slice_masses_and_peak_heat():
+    tgt = D.Target.rod(160.0, 3.0, 3.5, 4.0)
+    ez, n = D.slice_edges(tgt)
+    m = D.slice_masses(tgt, ez, [19.3])
+    r = lambda z: np.interp(z, [-80.0, 0.0, 80.0], [3.0, 3.5, 4.0])
+    exact = np.array([np.pi / 3 * (ez[k + 1] - ez[k]) * (r(ez[k]) ** 2 + r(ez[k]) * r(ez[k + 1]) + r(ez[k + 1]) ** 2)
+                      for k in range(n)]) * 19.3e-3
+    assert n == 16 and np.allclose(m[:n], exact, rtol=0.01) and np.all(m[n:] == 0)
+    b = np.zeros((D.EDEP_BATCHES, D.EDEP_SLICE_MAX)); b[:, 3] = 100.0; b[:, 4] = 50.0; b[0, 3] = 110.0
+    h = D.peak_heat(b, m, 1000.0, n)
+    assert h["peak_slice"] == 3
+    assert np.isclose(h["peak_MeV_per_g_per_pot"], b[:, 3].sum() / m[3] / 1000.0)
+    assert np.isclose(h["peak_Gy_per_pot"], h["peak_MeV_per_g_per_pot"] * D.MEV_PER_G_TO_GY) and h["peak_err"] > 0
+    with pytest.raises(ValueError, match="slices"):
+        D.slice_edges(D.Target.rod(1000.0, 3.0, 3.0, 3.0))
+    with pytest.raises(ValueError, match="density"):
+        D.material_densities(["unobtainium"])

@@ -22,7 +22,7 @@ import shutil
 import time
 from pathlib import Path
 
-CACHE_VERSION = 1     # raise when the chain's output for the same inputs changes
+CACHE_VERSION = 2     # raise when the chain's output for the same inputs changes (2: target heat in the meta)
 ENVELOPE = dict(env_z=(-9929, -7858.01, -7858, -6658, -4068, -4067.99, -4000),
                 env_r=(750, 750, 650, 200, 200, 249.8, 249.8), z_min=-8368.0, r_plane=249.3, z_plane=-4044.45)
 SLABS = ((-4147.3, 158.8, 174.6, 6.35), (-4140.7, 158.8, 174.6, 6.35), (-4134.4, 158.8, 174.6, 6.35))
@@ -95,11 +95,14 @@ def states(a, key, run_chain):
 
 
 def metrics(reference, ts_out, cached, chain_s, ts_s):
-    """The point's numbers: stops per POT (Poisson error: the reference is one shard), the TS-entrance yields."""
+    """The point's numbers: stops per POT (Poisson error: the reference is one shard), the TS-entrance yields and the
+    target's peak heat (largest deposit per gram in a local-z slice per POT, Gy/POT; an upper bound, see
+    ptgt_chain.heat_summary) when the chain recorded it."""
     import numpy as np
     with np.load(reference) as r:
         pot = float(r["parent_shard_event_counts"].sum())
         pdg = r["pdg"]
+        heat = json.loads(str(r["build_meta"][0])).get("heat") if "build_meta" in r.files else None
     with np.load(ts_out) as o:
         stop = o["ds_fate"] == 1
         mu_minus = o["pdg_ds"] == 13
@@ -109,7 +112,10 @@ def metrics(reference, ts_out, cached, chain_s, ts_s):
                 mu_minus_stops_per_pot=float((stop & mu_minus).sum()) / pot, stops=n, pot=pot,
                 ts_entrances=float(len(pdg)), ts_mu_minus_pi_minus_per_pot=sig / pot,
                 ts_mu_minus_pi_minus_per_pot_err=max(sig, 1.0) ** 0.5 / pot, ts_mu_pi_per_pot=len(pdg) / pot,
-                cached=float(cached), chain_s=float(chain_s), ts_s=float(ts_s))
+                cached=float(cached), chain_s=float(chain_s), ts_s=float(ts_s),
+                **({} if not heat else dict(peak_heat_Gy_per_pot=float(heat["peak_Gy_per_pot"]),
+                                            peak_heat_Gy_per_pot_err=float(heat["peak_Gy_err"]),
+                                            target_edep_MeV_per_pot=float(heat["total_MeV_per_pot"]))))
 
 
 def main(argv=None):

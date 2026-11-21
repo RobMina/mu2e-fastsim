@@ -300,6 +300,15 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, sla
     rec = dict(ev=[], pdg=[], x=[], p=[], t=[])
     tal = dict(ev=[], pdg=[], plane=[], x=[], p=[], t=[])
     edep = np.zeros(len(target.mat))
+    ez, _ = D.slice_edges(target)
+    edz = np.zeros((D.EDEP_BATCHES, len(ez) - 1))   # MeV per (event batch, local-z slice)
+
+    def slice_dep(x, ev, val):
+        z = target.to_local(np.asarray(x, float))[:, 2]
+        b = np.searchsorted(ez, z, side="right") - 1
+        ok = (b >= 0) & (b < len(ez) - 1)
+        np.add.at(edz, (ev[ok] % D.EDEP_BATCHES, b[ok]), np.asarray(val, float)[ok])
+
     cnt = dict(inelastic=0, elastic=0, stopped=0, decays=0, absorbed=0, upstream=0, recorded=0, outside_plane=0,
                unknown=0, iterations=0, tallied=0)
     zc = 0.5 * (target.z_lo + target.z_hi)
@@ -332,6 +341,7 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, sla
         if np.any(stop):
             inmat = stop & (L["seg"] >= 0)
             np.add.at(edep, L["seg"][inmat], ke[inmat])
+            slice_dep(L["x"][inmat], L["ev"][inmat], ke[inmat])
             cnt["stopped"] += int(stop.sum())
             cnt["unknown"] += int((~known & ~low).sum())
             keep(~stop)
@@ -368,6 +378,7 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, sla
             xnew = L["x"][i] + step[:, None] * L["u"][i]
             de = np.minimum(dedx * step, ke[i])
             np.add.at(edep, seg, de)
+            slice_dep(L["x"][i] + 0.5 * step[:, None] * L["u"][i], L["ev"][i], de)     # at the step midpoint
             e_new = ke[i] - de + m[i]
             pn = np.sqrt(np.maximum(e_new ** 2 - m[i] ** 2, 0.0))
             bet = np.where(e_new > 0, pn / np.maximum(e_new, 1e-300), 0.0)
@@ -404,6 +415,7 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, sla
                 rows = np.repeat(off[j], ns) + (np.arange(ns.sum()) - np.repeat(np.cumsum(ns) - ns, ns))
                 par = np.repeat(k, ns)
                 np.add.at(edep, L["seg"][k].clip(0), bank["edep_local"][j].astype(float))
+                slice_dep(L["x"][k], L["ev"][k], bank["edep_local"][j].astype(float))
                 pl = D.rotate_secondaries(bank["sec_p"][rows].astype(float), L["u"][par], rng.random(rows.size) * 2 * np.pi)
                 pa = np.linalg.norm(pl, axis=1)
                 new_lanes.append(dict(pdg=bank["sec_pdg"][rows].astype(np.int64), x=L["x"][par].copy(),
@@ -555,7 +567,7 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, sla
     else:
         raise RuntimeError("chain did not finish within max_iter")
     cat = lambda d: {k: (np.concatenate(v) if v else np.zeros((0, 3) if k in ("x", "p") else 0)) for k, v in d.items()}
-    return dict(record=cat(rec), edep=edep, counts=cnt, pot=n0, tally=cat(tal))
+    return dict(record=cat(rec), edep=edep, counts=cnt, pot=n0, tally=cat(tal), edep_slices=edz)
 
 
 def save_tally(path, tally, pot, env, meta):
@@ -600,6 +612,23 @@ def rod_target(length, r_up, r_mid, r_dn, z_center=-6164.5, x_axis=3904.0, tilt_
     """The G4beamline rod placed as in the deck (placement; offset_x, tilt_x_deg: a misalignment)."""
     return D.Target.rod(length, r_up, r_mid, r_dn, mat=mat,
                         **placement(z_center, x_axis, tilt_deg, offset_x, tilt_x_deg))
+
+
+def add_heat_arguments(ap):
+    ap.add_argument("--density", action="append", default=[], metavar="NAME=G_PER_CM3",
+                    help="material density override for the target-heat tally (repeatable)")
+
+
+def heat_summary(target, bank, batches, pot, a):
+    """Target heating per local-z slice (EDEP_SLICE_MM): ionisation, energy of stopped lanes and the bank's local
+    deposit per interaction (photons, pi0, e+-, fragments, nucleons below the cut) all counted where they arise.
+    Local EM deposit ignores leakage of photon showers out of the target, so the heat is an upper bound."""
+    ez, n = D.slice_edges(target)
+    dens = D.material_densities(bank.materials, {k: float(v) for k, v in (x.split("=", 1) for x in a.density)})
+    h = D.peak_heat(batches, D.slice_masses(target, ez, dens), pot, n)
+    h.update(slice_mm=D.EDEP_SLICE_MM, edges_mm=ez[:n + 1].tolist(), batches=D.EDEP_BATCHES,
+             caveat="upper bound: local deposit of the EM energy (no leakage)")
+    return h
 
 
 def add_design_arguments(ap):
@@ -709,6 +738,7 @@ def main(argv=None):
     ap.add_argument("--tally", nargs=2, type=float, action="append", default=[], metavar=("Z", "R"),
                     help="diagnostic: recording-only plane (repeatable); mu/pi crossings both ways go to --tally-out")
     ap.add_argument("--tally-out", help="npz for the --tally crossings")
+    add_heat_arguments(ap)
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     slab = load_slab(a.slab, a.slab_bank, a.slab_material)
@@ -726,6 +756,7 @@ def main(argv=None):
                   cuts=D.Cuts(ke_min_hadron=a.ke_min_hadron))
     rng = np.random.default_rng(a.seed)
     recs, tals, counts, edep = [], [], {}, np.zeros(len(tgt.mat))
+    edz = 0.0
     t0 = time.time()
     done = 0
     while done < a.pot:
@@ -735,6 +766,7 @@ def main(argv=None):
         out = run(bank, tgt, fb, env, prim, rng, st, enclosure=a.enclosure, slab=slab)
         recs.append(out["record"]); tals.append(out["tally"])
         edep += out["edep"]
+        edz = edz + out["edep_slices"]
         for k, v in out["counts"].items():
             counts[k] = counts.get(k, 0) + v
         done += n
@@ -745,7 +777,7 @@ def main(argv=None):
                 wall_s=wall, s_per_pot=wall / a.pot, maps=[str(m) for m in a.maps],
                 envelope=dict(z=a.env_z, r=a.env_r, z_min=a.z_min, r_plane=a.r_plane, z_plane=a.z_plane, annuli=a.annulus,
                               slabs=a.slab, slab_bank=slab_meta(slab, a.slab_bank)),
-                stepping=dict(h_vac=st.h_vac, h_near=st.h_near, h_mat=st.h_mat, elastic=st.elastic,
+                heat=heat_summary(tgt, bank, edz, a.pot, a), stepping=dict(h_vac=st.h_vac, h_near=st.h_near, h_mat=st.h_mat, elastic=st.elastic,
                               msc_scale=st.msc_scale), bank=dict(path=str(a.bank),
                                                                             content_hash=bank.lib.content_hash))
     ptgt_g4bl.save(a.out, ref, meta)
