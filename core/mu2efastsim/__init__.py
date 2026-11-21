@@ -35,14 +35,16 @@ _devloops.apply()
 def _install_kernel_hooks():
     """Mu2e's pieces of the kernels, through hepsimkernels.settings (standard library only: nothing here imports NumPy
     or fixes the device float): the Mu2e GDML materials (mu2efastsim.materials, imported with
-    hepsimkernels.materials), the per-map field scale of read_g4bl (bfield_scale.factor) and the device-loop settings
-    in precision.provenance()."""
+    hepsimkernels.materials), CONCRETE_MARS as the material of world pieces without constants (transport.world_loss),
+    the per-map field scale of read_g4bl (bfield_scale.factor) and the device-loop settings in precision.provenance()."""
     import hepsimkernels.settings as kernel_settings
 
     from . import bfield_scale
 
     if "mu2efastsim.materials" not in kernel_settings.MATERIAL_MODULES:
         kernel_settings.MATERIAL_MODULES.append("mu2efastsim.materials")
+    if kernel_settings.FALLBACK_MATERIAL is None:
+        kernel_settings.FALLBACK_MATERIAL = "CONCRETE_MARS"
     kernel_settings.MAP_SCALE = bfield_scale.factor
     if _devloops_provenance not in kernel_settings.PROVENANCE_HOOKS:
         kernel_settings.PROVENANCE_HOOKS.append(_devloops_provenance)

@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 import hepsimkernels
 import hepsimkernels.settings as kernel_settings
 from mu2efastsim import bfield_scale, materials
@@ -20,18 +22,33 @@ FORMER_ORDER = ("G4_POLYSTYRENE", "G4_Al", "G4_AIR", "CONCRETE_MARS", "MBOverbur
                 "StainlessSteel")
 
 
-def test_import_paths_are_the_hepsimkernels_modules():
+def _same_module(mu2e_name, kernel_name):
+    """mu2e_name is the module kernel_name; without JAX, a JAX kernel fails to import under both names."""
     import importlib
+    try:
+        module = importlib.import_module(kernel_name)
+    except ModuleNotFoundError as exc:
+        if exc.name != "jax":
+            raise
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module(mu2e_name)
+        return
+    assert importlib.import_module(mu2e_name) is module
+
+
+def test_import_paths_are_the_hepsimkernels_modules():
     for name in MOVED:
-        assert importlib.import_module(f"mu2efastsim.{name}") is importlib.import_module(f"hepsimkernels.{name}")
-    from mu2efastsim.geometry import annulus_jax
-    assert annulus_jax is importlib.import_module("hepsimkernels.geometry.annulus_jax")
+        _same_module(f"mu2efastsim.{name}", f"hepsimkernels.{name}")
+    _same_module("mu2efastsim.geometry.annulus_jax", "hepsimkernels.geometry.annulus_jax")
 
 
 def test_settings_keep_the_mu2e_names_and_hooks():
     assert kernel_settings.PREFIX == "MU2EFS" and kernel_settings.name("DEVICE_FLOAT") == "MU2EFS_DEVICE_FLOAT"
     assert kernel_settings.MAP_SCALE is bfield_scale.factor
     assert "mu2efastsim.materials" in kernel_settings.MATERIAL_MODULES
+    assert kernel_settings.FALLBACK_MATERIAL == "CONCRETE_MARS"
+    from mu2efastsim import transport
+    assert transport.piece_material("not a registered material") is materials.CONCRETE_MARS
     from mu2efastsim import precision
     p = precision.provenance()
     assert list(p)[:4] == ["device_float", "deterministic", "device_loops", "graph_concurrency"]
