@@ -20,10 +20,10 @@ requires-python = ">=3.10"
 # robust statistics behind mu2efastsim.bench, .approximations, .stats and benchmarks/; same pin as ci/requirements.txt.
 # hep-simkernels (import name hepsimkernels): the Geant4-matched physics kernels behind mu2efastsim.eloss, .emsc,
 # .ebrem, .eslab*, .transport, .world, .precision, ... (Mu2e materials and hooks in mu2efastsim); same pin as ci/.
-dependencies = ["numpy", "pandas", "uproot", "matplotlib", "scipy", "hep-endpoints @ git+https://github.com/RobMina/hep-endpoints.git@56309634ecba3208846c515da5b5f04c7a3a4808",
-                "cryjax @ git+https://github.com/RobMina/cryjax.git@8ca6f546c817cf311fd4a4c15fa31288fba31fb6",
-                "hep-simlib @ git+https://github.com/RobMina/hep-simlib.git@670478ff759b090245088a1375b348fb717ae5ac",
-                "hep-simbench @ git+https://github.com/RobMina/hep-simbench.git@f00be7cde515d237fb305064dc714347a78db991",
+dependencies = ["numpy", "pandas", "uproot", "matplotlib", "scipy", "hep-endpoints @ git+https://github.com/RobMina/hep-endpoints.git@caa585711a3610fa8746fc16ab729f74b2f401b6",
+                "cryjax @ git+https://github.com/RobMina/cryjax.git@4b5f0df4965b895f3296543a3d42bc2ab04d6909",
+                "hep-simlib @ git+https://github.com/RobMina/hep-simlib.git@b5868350f789f49dfc174110e72d55a40758de67",
+                "hep-simbench @ git+https://github.com/RobMina/hep-simbench.git@5d3eab140474f29301269df19bebec0cd387a261",
                 "hep-simkernels @ git+https://github.com/RobMina/hep-simkernels.git@2c3f0d4e74d31e79f72e37a346d561b306443db5"]
 
 [project.optional-dependencies]
