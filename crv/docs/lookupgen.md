@@ -14,15 +14,13 @@ at run time. It writes the same version-6 file.
 
 | | modules | content |
 |---|---|---|
-| `lookupgen.core` | `counter`, `binning`, `optics`, `materials`, `transport`, `run` | a scintillator strip with two WLS fibers (every dimension a parameter), bins as boxes of the variables each photon source samples (row-major numbering in an order the caller gives), the Geant4 optical building blocks and a registry of optical models, the `current` optical model with the sources its constants come from, the device transport and the host driver |
+| `lookupgen.core` | re-export of [scint-fibre-fastsim](https://github.com/RobMina/scint-fibre-fastsim) (`scintfibrefastsim.core`: `counter`, `binning`, `optics`, `materials`, `transport`, `run`) | a scintillator strip with two WLS fibers (every dimension a parameter), bins as boxes of the variables each photon source samples (row-major numbering in an order the caller gives), the Geant4 optical building blocks and a registry of optical models, the `current` optical model with the sources its constants come from, the device transport and the host driver |
 | `lookupgen.mu2e` | `sections`, `v6`, `writer`, `compare`, `library` | the CRV counters (stock and design cross-sections) and the stock bin-edge rule and numbering, the test-beam-tuned `v6` model, the version-6 file Offline reads, comparisons with released tables, library-core manifests |
 
-The core imports only the standard library, NumPy, JAX and its own modules, and a copy of it under another name
-generates tables for a strip and bins of its own (tests `test_core_imports_nothing_experiment_specific`,
-`test_core_runs_as_a_package_of_its_own`), so it can move to its own package. Mu2e-internal inputs (the released
-tables, the `v6` constants tuned to Mu2e test-beam data, the Offline table format) stay in the adapter. Splitting the
-modules changed nothing: every optical-model table of both models is equal, and the old and new trees give
-bit-identical pieces for both models, both dtypes and all three sim types (stock and design counters).
+`lookupgen.core` is the same module objects as `scintfibrefastsim.core` (pinned commit in `crv/pyproject.toml`;
+tests `test_scintfibre_extraction`). The public package also holds photosensor backend stubs and Geant4 compare
+hooks shared with NOvA. Mu2e-internal inputs (the released tables, the `v6` constants tuned to Mu2e test-beam data,
+the offline table format) stay in the adapter.
 
 ## Two optical models
 

@@ -349,12 +349,14 @@ def test_design_tables_are_named_by_their_cross_section():
 
 
 # ------------------------------------------------------------------------------------------------ core / adapter
-_STDLIB_OK = {"bisect", "dataclasses", "math", "time", "numpy", "jax"}
+_STDLIB_OK = {"bisect", "dataclasses", "importlib", "math", "time", "numpy", "jax"}
 
 
-@pytest.mark.parametrize("name", sorted(f for f in os.listdir(CORE) if f.endswith(".py")))
+@pytest.mark.parametrize("name", sorted(
+    f for f in os.listdir(CORE) if f.endswith(".py") and f != "__init__.py"
+))
 def test_core_imports_nothing_experiment_specific(name):
-    """The core imports only the standard library it needs, NumPy, JAX and its own modules (level-1 relative)."""
+    """The scint-fibre-fastsim core imports only stdlib, NumPy, JAX and its own modules (level-1 relative)."""
     tree = ast.parse(open(os.path.join(CORE, name)).read())
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -390,28 +392,17 @@ def test_v6_model_is_registered_by_the_adapter_only():
     subprocess.run([sys.executable, "-c", code], check=True)
 
 
-def test_core_runs_as_a_package_of_its_own(tmp_path):
-    """A copy of the core under another name generates a table for a strip and bins that are not Mu2e's."""
+def test_core_runs_as_a_package_of_its_own():
+    """scintfibrefastsim.core generates a table for a strip and bins that are not Mu2e's."""
     pytest.importorskip("jax")
-    import shutil
-    import subprocess
-    import sys
-    shutil.copytree(CORE, tmp_path / "stripgen", ignore=shutil.ignore_patterns("__pycache__"))
-    code = """
-import numpy as np
-from stripgen.counter import Counter
-from stripgen.binning import Binning
-from stripgen.run import generate
-c = Counter(length=1000.0, thickness=10.0, width=40.0, fiber_separation=10.0, fiber_diameter=1.2, clad_fraction=0.03,
-            hole_rx=1.0, hole_ry=0.8, coating=0.2, corner_radius=1.0, guide_bar=5.0, sipm_width=1.3, sipm_window=0.1,
-            sipm_length=0.2, air_gap=0.001)
-b = Binning({"x": [0.0, 2.0, 4.8], "y": np.linspace(-19.8, 19.8, 7), "z": np.linspace(-500.0, 500.0, 5)},
-            {0: ("z", "y", "x")})
-r = generate(c, b, 0, np.arange(b.n_bins(0)), 50, dtype="float32", lanes=256, chunk_iters=400)
-assert r["gen"].sum() > 0 and np.all(r["ht"].sum(1) == r["he"].sum(1)) and r["ht"].sum() > 0, r["stats"]
-print("ok", int(r["gen"].sum()), int(r["ht"].sum()))
-"""
-    env = dict(os.environ, PYTHONPATH=str(tmp_path))
-    out = subprocess.run([sys.executable, "-c", code], cwd=tmp_path, env=env, capture_output=True, text=True)
-    assert out.returncode == 0, out.stderr[-2000:]
-    assert out.stdout.startswith("ok")
+    from scintfibrefastsim.core.binning import Binning
+    from scintfibrefastsim.core.counter import Counter
+    from scintfibrefastsim.core.run import generate
+
+    c = Counter(length=1000.0, thickness=10.0, width=40.0, fiber_separation=10.0, fiber_diameter=1.2,
+                clad_fraction=0.03, hole_rx=1.0, hole_ry=0.8, coating=0.2, corner_radius=1.0, guide_bar=5.0,
+                sipm_width=1.3, sipm_window=0.1, sipm_length=0.2, air_gap=0.001)
+    b = Binning({"x": [0.0, 2.0, 4.8], "y": np.linspace(-19.8, 19.8, 7), "z": np.linspace(-500.0, 500.0, 5)},
+                {0: ("z", "y", "x")})
+    r = generate(c, b, 0, np.arange(b.n_bins(0)), 50, dtype="float32", lanes=256, chunk_iters=400)
+    assert r["gen"].sum() > 0 and np.all(r["ht"].sum(1) == r["he"].sum(1)) and r["ht"].sum() > 0, r["stats"]
