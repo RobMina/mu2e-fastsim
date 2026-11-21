@@ -297,7 +297,8 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, sla
              t=np.asarray(prim["t"], float).copy(), ev=np.asarray(prim["event"], np.int64))
     L["tau"] = -np.log(1 - rng.random(n0)) * lifetime(L["pdg"])
     L["seg"] = target.locate(target.to_local(L["x"]))
-    rec = dict(ev=[], pdg=[], x=[], p=[], t=[])
+    L["gen"] = np.zeros(n0, np.int64)      # hadronic generation: primaries 0, products of a gen-g interaction g + 1
+    rec = dict(ev=[], pdg=[], x=[], p=[], t=[], gen=[])
     tal = dict(ev=[], pdg=[], plane=[], x=[], p=[], t=[])
     edep = np.zeros(len(target.mat))
     cnt = dict(inelastic=0, elastic=0, stopped=0, decays=0, absorbed=0, upstream=0, recorded=0, outside_plane=0,
@@ -408,7 +409,7 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, sla
                 pa = np.linalg.norm(pl, axis=1)
                 new_lanes.append(dict(pdg=bank["sec_pdg"][rows].astype(np.int64), x=L["x"][par].copy(),
                                       u=pl / np.maximum(pa, 1e-300)[:, None], p=pa, t=L["t"][par].copy(),
-                                      ev=L["ev"][par].copy(), seg=L["seg"][par].copy()))
+                                      ev=L["ev"][par].copy(), seg=L["seg"][par].copy(), gen=L["gen"][par] + 1))
                 L["p"][k] = 0.0                                  # parent consumed: removed below
         # ---------------------------------------------------------------- vacuum lanes
         vac = ~inm
@@ -487,7 +488,7 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, sla
                 if neu.size:
                     cross[neu[hv[neu] == 0.0]] = True
                 c = np.flatnonzero(cross)
-                rec["ev"].append(L["ev"][i[c]]); rec["pdg"].append(L["pdg"][i[c]])
+                rec["ev"].append(L["ev"][i[c]]); rec["pdg"].append(L["pdg"][i[c]]); rec["gen"].append(L["gen"][i[c]])
                 rec["x"].append(np.where((hv[c] == 0)[:, None], x0v[c], xn[c]))
                 rec["p"].append(un[c] * L["p"][i[c], None]); rec["t"].append(L["t"][i[c]].copy())
                 cnt["recorded"] += c.size
@@ -500,7 +501,7 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, sla
                 tp = L["t"][i[c]] - (1 - f) * hv[c] / (beta[i[c]] * C_MM_NS)
                 inside = env.radius(xp) < env.r_plane
                 sel = inside & np.isin(L["pdg"][i[c]], RECORD)
-                rec["ev"].append(L["ev"][i[c]][sel]); rec["pdg"].append(L["pdg"][i[c]][sel])
+                rec["ev"].append(L["ev"][i[c]][sel]); rec["pdg"].append(L["pdg"][i[c]][sel]); rec["gen"].append(L["gen"][i[c]][sel])
                 rec["x"].append(xp[sel]); rec["p"].append(up[sel] * L["p"][i[c]][sel, None]); rec["t"].append(tp[sel])
                 cnt["recorded"] += int(sel.sum())
                 cnt["outside_plane"] += int((~inside).sum())
@@ -545,7 +546,7 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, sla
             # parent index per daughter: decay() emits per channel blocks; rebuild by matching positions
             par = dd["parent"]
             new_lanes.append(dict(pdg=dd["pdg"].astype(np.int64), x=dd["x"], u=dd["u"], p=dd["p"], t=dd["t"],
-                                  ev=L["ev"][k][par], seg=L["seg"][k][par]))
+                                  ev=L["ev"][k][par], seg=L["seg"][k][par], gen=L["gen"][k][par]))
             L["p"][k] = 0.0
         mu_dec = np.isfinite(L["tau"]) & (L["tau"] <= 1e-9) & (np.abs(L["pdg"]) == 13)
         L["p"][mu_dec] = 0.0
@@ -709,6 +710,7 @@ def main(argv=None):
     ap.add_argument("--tally", nargs=2, type=float, action="append", default=[], metavar=("Z", "R"),
                     help="diagnostic: recording-only plane (repeatable); mu/pi crossings both ways go to --tally-out")
     ap.add_argument("--tally-out", help="npz for the --tally crossings")
+    ap.add_argument("--gen-out", help="diagnostic: npz of the recorded states with their hadronic generation (raw order)")
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     slab = load_slab(a.slab, a.slab_bank, a.slab_material)
@@ -749,6 +751,9 @@ def main(argv=None):
                               msc_scale=st.msc_scale), bank=dict(path=str(a.bank),
                                                                             content_hash=bank.lib.content_hash))
     ptgt_g4bl.save(a.out, ref, meta)
+    if a.gen_out:
+        np.savez_compressed(a.gen_out, ev=rec["ev"], pdg=rec["pdg"], x=rec["x"], p=rec["p"], t=rec["t"], gen=rec["gen"],
+                            pot=np.int64(a.pot))
     if a.tally:
         save_tally(a.tally_out, {k: np.concatenate([r[k] for r in tals]) for k in tals[0]}, a.pot, env,
                    dict(generator="ptgt_chain", seed=a.seed, rod=a.rod, counts=counts))
