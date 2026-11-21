@@ -66,8 +66,7 @@ def run(args):
     from trigger import replay
     from . import calopaths, menu
     cfg = menu.parse_fcl(open(args.menu).read())
-    stage = calopaths.CaloStage(cfg, tuple(args.templates) if args.templates else None, args.nn_weights,
-                                int_abs=args.int_abs)
+    stage = calopaths.CaloStage(cfg, tuple(args.templates) if args.templates else None, args.nn_weights)
     names = None
     if args.production_config:
         text = open(args.production_config).read()
@@ -134,7 +133,6 @@ def main(argv=None):
     ap.add_argument("--event-mode", default="OnSpill", choices=("OnSpill", "OffSpill"))
     ap.add_argument("--precision", default="float64", choices=("float64", "float32"))
     ap.add_argument("--batch", type=int, default=128)
-    ap.add_argument("--int-abs", action="store_true", help="CaloCosmicCalib with the int abs overload (unsettled, see README)")
     ap.add_argument("--output", required=True)
     run(ap.parse_args(argv))
 

@@ -53,7 +53,7 @@ class CaloStage:
     """The calo paths of a menu, jitted. Inputs per block: packed digis (`calo.pack_digis`), ProtonBunchTime,
     event numbers and the spill type of each event."""
 
-    def __init__(self, cfg, templates=None, nn_weights=None, names=None, int_abs=False):
+    def __init__(self, cfg, templates=None, nn_weights=None, names=None):
         mods = _modules(cfg)
         self.cfg, self.mods = cfg, mods
         self.paths = plan(cfg, names)
@@ -74,7 +74,6 @@ class CaloStage:
             if nn_weights is None:
                 raise ValueError("calo_NNCE needs the NN weights")
             self.net = mva.load(nn_weights)
-        self.int_abs = int_abs
         self.factors = {p: prescale_factors(cfg, p) for p in self.paths}
         self._fn = jax.jit(self._decide)
 
@@ -93,7 +92,7 @@ class CaloStage:
                 elif kind == "nn":
                     ok = calo.nn_pass(cl, hits, self.s, self.net, m[0], m[1])
                 else:
-                    ok = calo.cosmic_pass(cl, hits, self.s, m[0], int_abs=self.int_abs)
+                    ok = calo.cosmic_pass(cl, hits, self.s, m[0])
                 out[p] = ok & prescale_pass(events, spill, self.factors[p])
         diag["n_hits"], diag["n_clusters"] = hits["n"], cl["n"]
         for k in ("overflow", "tie"):

@@ -357,7 +357,7 @@ def nn_pass(clusters, scores, cfg):
     return False
 
 
-def cosmic_pass(clusters, hits, geo, cfg, int_abs=False):
+def cosmic_pass(clusters, hits, geo, cfg):
     mincel, outr, innr = f(cfg["MinCelEneCut"]), f(cfg["OutRadius"]), f(cfg["InnerRadius"])
     dmin, dmax, dymin = f(cfg["diagminval"]), f(cfg["diagmaxval"]), f(cfg["dyminval"])
     csize = f(geo["crystal_size"])
@@ -385,8 +385,8 @@ def cosmic_pass(clusters, hits, geo, cfg, int_abs=False):
         if nmip > int(cfg["MinNumCeldiagver"]):
             dx = f(xmax - xmin)
             dy = f(ymax - ymin)
-            dx = f(abs(int(dx))) if int_abs else abs(dx)
-            dy = f(abs(int(dy))) if int_abs else abs(dy)
+            dx = abs(dx)
+            dy = abs(dy)
             diag = f(dy / dx) if dx > 0 else f(0.0)
             if dx < csize: flag += 100
             if dmin < diag < dmax: flag += 200

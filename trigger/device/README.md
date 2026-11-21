@@ -88,8 +88,17 @@ the stock orders where they decide a result:
 
 On the production CE files (Offline v13_41, OnSpill; development 14,052 events, held-out 13,992), the device clusters
 equal the stored stock clusters in every field and the 11 paths have no discordant event, in both precisions.
-`calo_cosmic` and the two prescaled digi-count paths do not fire on these files; `CaloCosmicCalib` calls `abs` on a
-float, and the overload stock resolves (float or int) is not settled by them (`--int-abs` selects the int one).
+`calo_cosmic` and the two prescaled digi-count paths do not fire on these files. They are validated against the
+v13_41 menu replayed in stock on other digis, with the device deciding the same files:
+- **cosmic digis** (`CosmicSignalOnSpill`, MDC2025be, 3 files, 24,836 events; their digitiser and calo trigger modules
+  are those of v13_41, except `CaloClusterFast`, which the replay runs in its v13_41 form): one development file, two
+  held-out. Clusters equal in every event and no discordant event on the 11 paths, in both precisions; `calo_cosmic`
+  passes 739 / 1,469 events (development / held-out), `minBias_CDCount` 14 / 44, `calo_N0Source` 2,668 / 5,536.
+  `CaloCosmicCalib` calls `abs` on floats: the float overload is the one stock takes (the int one would change 30
+  development and 44 held-out decisions).
+- **the CE files with the two prescales lowered** (`CaloN0SourcePS` 3, `MinBiasCDCountPS` 1), development 1-5 and
+  held-out 6-10: no discordant event; `calo_N0Source` passes 4,693 / 4,670 events, `minBias_CDCount` none (every CE
+  event has fewer than its 200 calo digis).
 
 **Inputs from the calorimeter fast simulation.** The stage reads CaloDigis as the v13_41 `CaloDigiMaker` writes them
 (SiPM id, `t0` in 5 ns ticks, waveform, peak position). It does not read the clusters of the calofastsim device chain

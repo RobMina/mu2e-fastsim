@@ -567,8 +567,8 @@ def nn_pass(cl, hits, s, net, cfg_eval, cfg_filter):
     return jnp.any(cl["valid"] & sel & ~(score < F32(cfg_filter["minMVAScore"])), axis=-1)
 
 
-def cosmic_pass(cl, hits, s, cfg, int_abs=False):
-    """CaloCosmicCalib."""
+def cosmic_pass(cl, hits, s, cfg):
+    """CaloCosmicCalib (its `abs` calls resolve to the float overload, as the stock replays on cosmic digis show)."""
     cr, en, ok = _member_view(cl, hits, s)
     mincel = F32(cfg["MinCelEneCut"])
     outr, innr = F32(cfg["OutRadius"]), F32(cfg["InnerRadius"])
@@ -590,10 +590,7 @@ def cosmic_pass(cl, hits, s, cfg, int_abs=False):
     xmin = jnp.where(hmin, pick(x, imin), F32(999)); rmin = jnp.where(hmin, pick(rr, imin), F32(-999))
     flag = jnp.where((eo > mincel) & (ei > mincel) & (nmip > int(cfg["MinNumCelinout"])), 1, 0)
     dx, dy = xmax - xmin, ymax_v - ymin_v
-    if int_abs:
-        dx, dy = jnp.abs(jnp.trunc(dx)), jnp.abs(jnp.trunc(dy))
-    else:
-        dx, dy = jnp.abs(dx), jnp.abs(dy)
+    dx, dy = jnp.abs(dx), jnp.abs(dy)
     diag = jnp.where(dx > 0, dy / jnp.where(dx > 0, dx, F32(1)), F32(0))
     dg = nmip > int(cfg["MinNumCeldiagver"])
     flag = flag + jnp.where(dg & (dx < s["crystal_size"]), 100, 0)
