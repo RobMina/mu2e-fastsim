@@ -114,7 +114,8 @@ def fields(c, model, pieces, arrays, notes=(), commit=None, created_utc=None):
                        physics_list="Geant4 10.7 optical physics of CRVStandalone table mode, ported to JAX "
                                     "(G4OpBoundaryProcess, G4OpAbsorption, G4OpWLS, scintillation, G4CerenkovNew)",
                        configuration=dict(model=model, dtypes=dtypes, max_steps=steps, devices=devices,
-                                          pieces=per_st)),
+                                          pieces=per_st, fibre_core=W.fibre_core_record()),
+                       fibre_core=W.fibre_core_record()),
         release=release, seeds=seeds,
         geometry=dict(tag=f"{'stock' if G.is_stock(c) else G.section_tag(c)}_{G.name(c)}",
                       hash=digest(dict(c.__dict__))),
