@@ -17,5 +17,7 @@ cryjax @ git+https://github.com/RobMina/cryjax.git@8ca6f546c817cf311fd4a4c15fa31
 hep-simlib @ git+https://github.com/RobMina/hep-simlib.git@670478ff759b090245088a1375b348fb717ae5ac
 # hep-simbench: scorer, timer, approximation registry, stats (mu2efastsim.bench/approximations/stats, benchmarks/); same pin as pyproject.toml
 hep-simbench @ git+https://github.com/RobMina/hep-simbench.git@f00be7cde515d237fb305064dc714347a78db991
+# hep-simkernels: the physics kernels (mu2efastsim.eloss, .materials, .precision, ...); same pin as pyproject.toml
+hep-simkernels @ git+https://github.com/RobMina/hep-simkernels.git@2c3f0d4e74d31e79f72e37a346d561b306443db5
 # scint-fibre-fastsim: experiment-neutral lookupgen.core (crvfastsim.lookupgen.core re-exports it)
 scint-fibre-fastsim @ git+https://github.com/RobMina/scint-fibre-fastsim.git@9aecf032a6039e0d56a9119a4d2e21109212e0e2

@@ -291,7 +291,7 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, sla
                unknown=0, iterations=0)
     zc = 0.5 * (target.z_lo + target.z_hi)
     hl = 0.5 * (target.z_hi - target.z_lo)
-    rb = float(np.max(target.r_out))
+    rb = target.r_max
 
     def keep(mask):
         for k in L:
@@ -573,6 +573,10 @@ def add_design_arguments(ap):
                     "nominal axis (the deck's Toffset_x)")
     ap.add_argument("--tilt-x", type=float, default=0.0, help="target rotated about x [deg] before the y tilt; the beam "
                     "stays on the nominal axis (the deck's Ttilt_x)")
+    ap.add_argument("--deck-target", metavar="FILE", help="the target group (pTarget) of a generated G4beamline target "
+                    "file (e.g. Geometry/Proton_Target_Hayman2.txt), placed on the deck's target centre (--rod unused)")
+    ap.add_argument("--deck-rotation", default="Y14", help="rotation of that group in the deck (G4beamline string, "
+                    "e.g. 'Z-30,Y14' for Hayman2)")
     ap.add_argument("--clad", nargs=3, metavar=("R_CORE", "T_CLAD", "MATERIAL"),
                     help="a cylinder of radius R_CORE (--material) in a sleeve of thickness T_CLAD of MATERIAL, the "
                          "length of --rod (its radii unused): the deck's Use_Proton_Target=10")
@@ -581,8 +585,16 @@ def add_design_arguments(ap):
 def design_targets(a, bank, rod):
     """(target, beam target) of the command-line design: the beam is aimed at the nominal placement of the same
     shape, so a misalignment moves the target only."""
-    mat = bank.materials.index(a.material)
     off = dict(offset_x=a.offset_x, tilt_x_deg=a.tilt_x)
+    if getattr(a, "deck_target", None):
+        from beamfastsim import ptgt_deck
+        if a.offset_x or a.tilt_x or a.clad:
+            raise SystemExit("--deck-target takes no --offset-x, --tilt-x or --clad")
+        p0 = placement(tilt_deg=0.0)
+        t = ptgt_deck.target(a.deck_target, list(bank.materials), origin=p0["origin"],
+                             rot=ptgt_deck.rotation(a.deck_rotation))
+        return t, t
+    mat = bank.materials.index(a.material)
     if a.clad:
         r_core, t_clad, cmat = float(a.clad[0]), float(a.clad[1]), a.clad[2]
         if cmat not in bank.materials:

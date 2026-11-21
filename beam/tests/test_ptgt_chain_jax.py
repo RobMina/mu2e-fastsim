@@ -197,3 +197,72 @@ def test_device_locate_and_cascade_on_a_clad_rod(tmp_path, dtype):
     assert cnt["inelastic"] == host["counts"]["inelastic"] == 3000
     nh, nd = host["counts"]["recorded"], len(rec["pdg"])
     assert nh > 1500 and abs(nd - nh) < 4 * np.sqrt(nh), (nh, nd)
+
+
+@pytest.mark.parametrize("dtype", [jnp.float64, jnp.float32])
+def test_device_many_segments_match_host(tmp_path, dtype):
+    """A Hayman-like body: disjoint discs, a frustum, a hollow end ring and fins (segment axis vectorized)."""
+    bank = _bank(tmp_path, n_pim=3)
+    zr = np.array([[-60.0, -50.0], [-48.0, -30.0], [-28.0, -10.0], [-8.0, 10.0], [12.0, 30.0], [32.0, 50.0], [50.0, 60.0]])
+    r_in = np.array([[0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [4.0, 4.0]])
+    r_out = np.array([[8, 8], [6, 6], [6, 6], [5, 7], [6, 6], [6, 6], [8.0, 8.0]])
+    boxes = np.array([[-1.0, 1.0, 6.0, 12.0, -48.0, -30.0], [6.0, 12.0, -1.0, 1.0, 12.0, 30.0]])
+    tgt = D.Target(np.array([-60.0, 60.0]), r_in, r_out, np.zeros(9, int), z_ranges=zr, boxes=boxes)
+    env = C.Envelope(z_nodes=np.array([-5000.0, 5000.0]), r_nodes=np.array([1900.0, 1900.0]), z_min=-2000.0,
+                     z_plane=800.0, r_plane=1800.0, axis_x=0.0)
+    S, nk, nmat = J.make_static(bank, tgt, env, _uniform_map(2.0), dtype)
+    cfg = J.make_cfg(tgt, env, C.Stepping(), nk, nmat, dtype)
+    assert cfg.ncone == 7 and cfg.nseg == 9
+    rng = np.random.default_rng(7)
+    xl = np.stack([rng.uniform(-14, 14, 20000), rng.uniform(-14, 14, 20000), rng.uniform(-65, 65, 20000)], 1)
+    host = tgt.locate(xl)
+    dev = np.asarray(J.locate(S, cfg, jnp.asarray(xl, dtype)))
+    assert np.mean(dev == host) > 0.9995 and set(host.tolist()) == set(range(-1, 9))
+    same = dev == host
+    dl = rng.normal(size=xl.shape); dl /= np.linalg.norm(dl, axis=1, keepdims=True)
+    x, d = jnp.asarray(xl, dtype), jnp.asarray(dl, dtype)
+    inside = same & (host >= 0)
+    do = np.asarray(J.distance_out(S, cfg, x, d, jnp.asarray(host, jnp.int32)))[inside]
+    assert np.mean(np.isclose(do, tgt.distance_out(xl[inside], dl[inside], host[inside]), rtol=1e-4, atol=1e-3)) > 0.999
+    out = same & (host < 0)
+    di, dh = np.asarray(J.distance_in(S, cfg, x, d))[out], tgt.distance_in(xl[out], dl[out])
+    fin = np.isfinite(dh)
+    assert np.mean(np.isfinite(di) == fin) > 0.999 and np.isfinite(dh).sum() > 1000
+    both = fin & np.isfinite(di)
+    assert np.mean(np.isclose(di[both], dh[both], rtol=1e-4, atol=1e-3)) > 0.999
+
+
+@pytest.mark.parametrize("dtype", [jnp.float64, jnp.float32])
+def test_device_boxes_match_host(tmp_path, dtype):
+    bank = _bank(tmp_path, n_pim=3)
+    tgt = D.Target(np.array([-50.0, 50.0]), np.zeros((1, 2)), np.full((1, 2), 6.0), np.array([0, 0, 0, 0]),
+                   boxes=np.array([[-1.0, 1.0, 6.0, 20.0, -50.0, 50.0], [6.0, 20.0, -1.0, 1.0, -50.0, 50.0],
+                                   [-1.0, 1.0, -20.0, -6.0, -40.0, 40.0]]))
+    env = C.Envelope(z_nodes=np.array([-5000.0, 5000.0]), r_nodes=np.array([1900.0, 1900.0]), z_min=-2000.0,
+                     z_plane=800.0, r_plane=1800.0, axis_x=0.0)
+    fm = _uniform_map(2.0)
+    S, nk, nmat = J.make_static(bank, tgt, env, fm, dtype)
+    cfg = J.make_cfg(tgt, env, C.Stepping(), nk, nmat, dtype)
+    assert cfg.ncone == 1 and cfg.nseg == 4
+    rng = np.random.default_rng(6)
+    xl = np.stack([rng.uniform(-25, 25, 6000), rng.uniform(-25, 25, 6000), rng.uniform(-60, 60, 6000)], 1)
+    host = tgt.locate(xl)
+    edges = np.array([-50, -40, -20, -6, -1, 1, 6, 20, 40, 50.0])
+    far = np.all(np.abs(xl[:, :, None] - edges[None, None, :]) > 1e-3, axis=(1, 2))
+    dev = np.asarray(J.locate(S, cfg, jnp.asarray(xl, dtype)))
+    assert np.array_equal(dev[far], host[far]) and set(host.tolist()) == {-1, 0, 1, 2, 3}
+    dl = rng.normal(size=xl.shape); dl /= np.linalg.norm(dl, axis=1, keepdims=True)
+    inside = far & (host >= 0)
+    do = np.asarray(J.distance_out(S, cfg, jnp.asarray(xl, dtype), jnp.asarray(dl, dtype), jnp.asarray(host, jnp.int32)))
+    assert np.allclose(do[inside], tgt.distance_out(xl[inside], dl[inside], host[inside]), rtol=1e-4, atol=1e-3)
+    out = far & (host < 0)
+    di = np.asarray(J.distance_in(S, cfg, jnp.asarray(xl, dtype), jnp.asarray(dl, dtype)))
+    dh = tgt.distance_in(xl[out], dl[out])
+    fin = np.isfinite(dh)
+    assert np.array_equal(np.isfinite(di[out]), fin) and np.allclose(di[out][fin], dh[fin], rtol=1e-4, atol=1e-3)
+    prim = C.primaries(3000, tgt, np.random.default_rng(3))
+    hr = C.run(bank, tgt, lambda x: np.tile([0.0, 0.0, 2.0], (len(x), 1)), env, prim, np.random.default_rng(4))
+    rec, cnt = J.run(bank, tgt, fm, env, prim, seed=5, pool=4096, steps=32, dtype=dtype)
+    assert cnt["inelastic"] == hr["counts"]["inelastic"] == 3000
+    nh, nd = hr["counts"]["recorded"], len(rec["pdg"])
+    assert nh > 1500 and abs(nd - nh) < 4 * np.sqrt(nh), (nh, nd)

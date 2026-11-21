@@ -94,6 +94,31 @@ def test_clad_rod_locate_and_distances():
         P.Target(np.array([-1.0, 1.0]), np.zeros((1, 2)), np.ones((1, 2)), np.array([0]), z_ranges=np.array([[1.0, -1.0]]))
 
 
+def _finned():
+    """A rod (r 3) with two fins: +y (x -0.5..0.5, y 3..8) and +x (x 3..8, y -0.5..0.5), z -20..20, material 1."""
+    return P.Target(np.array([-20.0, 20.0]), np.zeros((1, 2)), np.full((1, 2), 3.0), np.array([0, 1, 1]),
+                    boxes=np.array([[-0.5, 0.5, 3.0, 8.0, -20.0, 20.0], [3.0, 8.0, -0.5, 0.5, -20.0, 20.0]]))
+
+
+def test_boxes_locate_and_distances():
+    t = _finned()
+    assert t.n_cone == 1 and t.r_max == pytest.approx(np.hypot(8.0, 0.5)) and (t.z_lo, t.z_hi) == (-20.0, 20.0)
+    pts = np.array([[0, 0, 0], [0, 5.0, 0], [5.0, 0, 0], [5.0, 5.0, 0], [0, 5.0, 25.0], [0.6, 5.0, 0]])
+    assert list(t.locate(pts)) == [0, 1, 2, -1, -1, -1]
+    x = np.array([[0, 5.0, 0], [0, 5.0, 0], [5.0, 0, 10.0], [0.0, 0, 0]])
+    d = np.array([[0, 1.0, 0], [1.0, 0, 0], [0, 0, 1.0], [0, 1.0, 0]])
+    assert np.allclose(t.distance_out(x, d, t.locate(x)), [3.0, 0.5, 10.0, 3.0])     # box faces; the core wall
+    out = np.array([[0, 20.0, 0], [5.0, 5.0, 0], [20.0, 0, 0], [0, 5.0, 40.0], [5.0, 5.0, 0]])
+    dout = np.array([[0, -1.0, 0], [-1.0, 0, 0], [-1.0, 0, 0], [0, 0, -1.0], [0, 0, 1.0]])
+    assert np.allclose(t.distance_in(out, dout), [12.0, 4.5, 12.0, 20.0, np.inf])
+    with pytest.raises(ValueError):
+        P.Target(np.array([-1.0, 1.0]), np.zeros((1, 2)), np.ones((1, 2)), np.array([0, 0]),
+                 boxes=np.array([[1.0, 0.0, 0, 1, 0, 1]]))
+    with pytest.raises(ValueError):
+        P.Target(np.array([-1.0, 1.0]), np.zeros((1, 2)), np.ones((1, 2)), np.array([0]),
+                 boxes=np.array([[0.0, 1.0, 0, 1, 0, 1]]))       # mat must cover the box
+
+
 def test_contiguous_segments_locate_as_before():
     t = P.Target(np.array([-50.0, -10.0, 20.0, 50.0]), np.zeros((3, 2)), np.array([[2, 3], [3, 3], [3, 1.5]]),
                  np.array([0, 1, 0]))

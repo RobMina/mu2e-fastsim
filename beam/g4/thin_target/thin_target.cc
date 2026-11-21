@@ -79,6 +79,11 @@ G4Material* make_material(const std::string& name) {
     m->AddElement(el("Al"), 0.01);
     return m;
   }
+  if (name == "WL10") {         // W + 1 % La2O3 (the G4beamline deck's WL10: W 0.99, La 0.0085, O 0.0015)
+    auto* m = new G4Material(name, 18.75 * g / cm3, 3);
+    m->AddElement(el("W"), 0.99); m->AddElement(el("La"), 0.0085); m->AddElement(el("O"), 0.0015);
+    return m;
+  }
   if (name == "Stainless316") {
     auto* m = new G4Material(name, 8.00 * g / cm3, 5);
     m->AddElement(el("Fe"), 0.655); m->AddElement(el("Cr"), 0.17); m->AddElement(el("Ni"), 0.12);
