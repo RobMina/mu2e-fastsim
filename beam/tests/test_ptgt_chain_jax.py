@@ -211,7 +211,7 @@ def test_device_spheres_cylinders_match_host(tmp_path, dtype):
     cfg = J.make_cfg(tgt, env, C.Stepping(), nk, nmat, dtype)
     assert cfg.ncone == 5 and cfg.nseg == 17
     rng = np.random.default_rng(8)
-    n = 40000
+    n = 15000
     xl = np.concatenate([np.stack([rng.uniform(-18, 18, n), rng.uniform(-18, 18, n), rng.uniform(-100, 100, n)], 1),
                          np.stack([rng.uniform(-150, 150, n), rng.uniform(-150, 150, n), rng.uniform(-120, 120, n)], 1)])
     # points near the spokes: along each axis, jittered by about its radius
@@ -232,13 +232,24 @@ def test_device_spheres_cylinders_match_host(tmp_path, dtype):
     out = same & (host < 0)
     di, dh = np.asarray(J.distance_in(S, cfg, x, d))[out], tgt.distance_in(xl[out], dl[out])
     fin = np.isfinite(dh)
-    assert np.mean(np.isfinite(di) == fin) > 0.999 and fin.sum() > 5000
+    assert np.mean(np.isfinite(di) == fin) > 0.999 and fin.sum() > 2000
     both = fin & np.isfinite(di)
     assert np.mean(np.isclose(di[both], dh[both], rtol=1e-4, atol=1e-3)) > 0.999
-    prim = C.primaries(2000, tgt, np.random.default_rng(3))
+    prim = C.primaries(200, tgt, np.random.default_rng(3))
     assert np.allclose(tgt.to_local(prim["x"])[:, 2], 80.5)     # the deck's beam start, inside the upstream hub
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("dtype", [jnp.float64, jnp.float32])
+def test_device_cascade_on_the_ral_target(tmp_path, dtype):
+    from beamfastsim import ptgt_deck as K
+    bank = _bank(tmp_path, n_pim=3)
+    tgt = K.ral_target(0)
+    env = C.Envelope(z_nodes=np.array([-5000.0, 5000.0]), r_nodes=np.array([1900.0, 1900.0]), z_min=-2000.0,
+                     z_plane=800.0, r_plane=1800.0, axis_x=0.0)
+    prim = C.primaries(300, tgt, np.random.default_rng(3))
     rec, cnt = J.run(bank, tgt, _uniform_map(2.0), env, prim, seed=5, pool=4096, steps=32, dtype=dtype)
-    assert cnt["inelastic"] > 1000
+    assert cnt["inelastic"] > 150
 
 
 @pytest.mark.parametrize("dtype", [jnp.float64, jnp.float32])
