@@ -88,10 +88,12 @@ def tc_filter_pass(peaks, cfg):
     return jnp.any(peaks["tc"] & (peaks["nsh"] >= int(cfg["minNStrawHits"])), axis=-1)
 
 
-def calo_batch(digis, rows, n_events):
+def calo_batch(digis, rows, n_events, slots=None):
     """The batch's CaloDigis for the tracker chain: flat stock digis (`caloart.decode_digis`) of the events `rows`
     (input indices, in the block's order) packed per event (`calo.pack_digis`) as "cd_*" arrays [n_events, D], padded
-    to n_events rows and to a power-of-two digi axis (>= 16), so a few shapes compile."""
+    to n_events rows and to a power-of-two digi axis (>= 16), so a few shapes compile. `slots` fixes the digi axis
+    (for example the largest digi count of a file, `digi_slots`), so that only the tracker hit axis changes between
+    blocks: every (hit axis, digi axis) pair compiles the whole chain once."""
     from . import calo
     rows = np.asarray(rows, np.int64)
     start = np.r_[0, np.cumsum(digis["n"])]
@@ -100,7 +102,7 @@ def calo_batch(digis, rows, n_events):
     sub["entry"] = np.repeat(np.arange(rows.size), digis["n"][rows])
     sub["samples"] = digis["samples"]
     sub["n"] = np.r_[digis["n"][rows], np.zeros(n_events - rows.size, np.int64)]
-    pk = calo.pack_digis(sub, n_events)
+    pk = calo.pack_digis(sub, n_events, slots)
     D = pk["sipm"].shape[1]
     Dp = max(16, 1 << (D - 1).bit_length())
     out = {}
@@ -109,6 +111,12 @@ def calo_batch(digis, rows, n_events):
             v = np.pad(v, ((0, 0), (0, Dp - D)))
         out["cd_" + k] = v
     return out
+
+
+def digi_slots(digis):
+    """A fixed digi axis for `calo_batch`: the largest digi count of any event, as a power of two (>= 16)."""
+    n = int(np.max(digis["n"], initial=1))
+    return max(16, 1 << (n - 1).bit_length())
 
 
 def jit_time_peaks(s):
