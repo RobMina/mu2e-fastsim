@@ -319,3 +319,49 @@ def test_device_boxes_match_host(tmp_path, dtype):
     assert cnt["inelastic"] == hr["counts"]["inelastic"] == 3000
     nh, nd = hr["counts"]["recorded"], len(rec["pdg"])
     assert nh > 1500 and abs(nd - nh) < 4 * np.sqrt(nh), (nh, nd)
+
+
+@pytest.mark.parametrize("dtype", [jnp.float64, jnp.float32])
+def test_tally_planes_record_without_changing_transport(tmp_path, dtype):
+    """Recording-only planes: the record plane and counters are unchanged (no random numbers drawn), crossings in
+    both directions sit on their planes, and device and host agree per plane and direction within statistics."""
+    import dataclasses
+    bank = _bank(tmp_path, n_pim=3)
+    tgt = D.Target.rod(100.0, 10.0, 10.0, 10.0)
+    env0 = C.Envelope(z_nodes=np.array([-5000.0, 5000.0]), r_nodes=np.array([1900.0, 1900.0]), z_min=-2000.0,
+                      z_plane=800.0, r_plane=1800.0, axis_x=0.0)
+    planes = ((-300.0, 1800.0), (300.0, 1800.0), (600.0, 900.0))
+    env = dataclasses.replace(env0, tally=planes)
+    prim = C.primaries(4000, tgt, np.random.default_rng(3))
+    rec0, cnt0 = J.run(bank, tgt, _uniform_map(2.0), env0, prim, seed=5, pool=4096, steps=32, dtype=dtype)
+    rec, cnt = J.run(bank, tgt, _uniform_map(2.0), env, prim, seed=5, pool=4096, steps=32, dtype=dtype)
+    tal = rec.pop("tally")
+    for k in rec0:
+        assert np.array_equal(rec0[k], rec[k]), k
+    assert {k: v for k, v in cnt.items() if k not in ("tallied",)} == {k: v for k, v in cnt0.items() if k != "tallied"}
+    assert cnt["tallied"] == len(tal["pdg"]) > 0
+    bfield = lambda x: np.tile([0.0, 0.0, 2.0], (len(x), 1))
+    h0 = C.run(bank, tgt, bfield, env0, prim, np.random.default_rng(4))
+    h = C.run(bank, tgt, bfield, env, prim, np.random.default_rng(4))
+    for k in h0["record"]:
+        assert np.array_equal(h0["record"][k], h["record"][k]), k
+    ht = h["tally"]
+    for t in (tal, ht):
+        assert set(np.unique(t["pdg"])) <= {13, -13, 211, -211}
+        z = np.asarray(planes)[t["plane"], 0]
+        assert np.allclose(t["x"][:, 2], z, atol=1e-2)
+        assert np.all(np.hypot(t["x"][:, 0], t["x"][:, 1]) < np.asarray(planes)[t["plane"], 1])
+    for kp in range(len(planes)):
+        for sgn in (1, -1):
+            nd = int(np.sum((tal["plane"] == kp) & (np.sign(tal["p"][:, 2]) == sgn)))
+            nh = int(np.sum((ht["plane"] == kp) & (np.sign(ht["p"][:, 2]) == sgn)))
+            assert abs(nd - nh) < 4 * np.sqrt(max(nh, 1)) + 2, (kp, sgn, nd, nh)
+    assert np.sum((ht["plane"] == 0) & (ht["p"][:, 2] < 0)) > 200       # upstream plane sees backward lanes
+    assert np.sum((ht["plane"] == 1) & (ht["p"][:, 2] > 0)) > 1000
+
+
+def test_tally_planes_must_be_a_vacuum_step_apart():
+    env = C.Envelope(z_nodes=np.array([-5000.0, 5000.0]), r_nodes=np.array([1900.0, 1900.0]), z_min=-2000.0,
+                     z_plane=800.0, r_plane=1800.0, axis_x=0.0, tally=((790.0, 100.0),))
+    with pytest.raises(ValueError, match="vacuum step"):
+        C.check_tally(env, C.Stepping().h_vac)
