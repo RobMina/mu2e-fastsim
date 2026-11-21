@@ -264,7 +264,7 @@ def decay(pdg, x, u, p, t, rng):
 def primaries(n, target, rng, sigma=1.0, ke=8000.0, offset=0.5):
     """G4beamline beam: protons 0.5 mm outside the target's local +z face moving along local -z, Gaussian sigma
     1 mm in the transverse plane, no divergence, t = 0."""
-    zl = 0.5 * (target.z_edges[-1] - target.z_edges[0]) + offset + 0.5 * (target.z_edges[-1] + target.z_edges[0])
+    zl = target.z_hi + offset
     xl = np.stack([sigma * rng.standard_normal(n), sigma * rng.standard_normal(n), np.full(n, zl)], 1)
     dl = np.tile([0.0, 0.0, -1.0], (n, 1))
     x, u = target.to_global(xl, dl)
@@ -289,8 +289,8 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, sla
     edep = np.zeros(len(target.mat))
     cnt = dict(inelastic=0, elastic=0, stopped=0, decays=0, absorbed=0, upstream=0, recorded=0, outside_plane=0,
                unknown=0, iterations=0)
-    zc = 0.5 * (target.z_edges[0] + target.z_edges[-1])
-    hl = 0.5 * (target.z_edges[-1] - target.z_edges[0])
+    zc = 0.5 * (target.z_lo + target.z_hi)
+    hl = 0.5 * (target.z_hi - target.z_lo)
     rb = float(np.max(target.r_out))
 
     def keep(mask):
@@ -551,11 +551,47 @@ def reference(rec, pot, point, shard, z_target=-4004.0):
     return ref, meta
 
 
-def rod_target(length, r_up, r_mid, r_dn, z_center=-6164.5, x_axis=3904.0, tilt_deg=14.0, mat=0):
-    """The G4beamline rod placed as in the deck: centre on the PS axis at z_center, rotated by tilt_deg about y."""
-    a = np.deg2rad(tilt_deg)
-    rot = np.array([[np.cos(a), 0.0, np.sin(a)], [0.0, 1.0, 0.0], [-np.sin(a), 0.0, np.cos(a)]])
-    return D.Target.rod(length, r_up, r_mid, r_dn, mat=mat, origin=np.array([x_axis, 0.0, z_center]), rot=rot)
+def placement(z_center=-6164.5, x_axis=3904.0, tilt_deg=14.0, offset_x=0.0, tilt_x_deg=0.0):
+    """Target placement of the deck: centre on the PS axis at z_center (moved by offset_x along x), rotated by
+    tilt_x_deg about x and then tilt_deg about y (fixed axes: rot = Ry @ Rx, the deck's rotation=X..,Y..)."""
+    a, b = np.deg2rad(tilt_deg), np.deg2rad(tilt_x_deg)
+    ry = np.array([[np.cos(a), 0.0, np.sin(a)], [0.0, 1.0, 0.0], [-np.sin(a), 0.0, np.cos(a)]])
+    rx = np.array([[1.0, 0.0, 0.0], [0.0, np.cos(b), -np.sin(b)], [0.0, np.sin(b), np.cos(b)]])
+    return dict(origin=np.array([x_axis + offset_x, 0.0, z_center]), rot=ry @ rx)
+
+
+def rod_target(length, r_up, r_mid, r_dn, z_center=-6164.5, x_axis=3904.0, tilt_deg=14.0, mat=0, offset_x=0.0,
+               tilt_x_deg=0.0):
+    """The G4beamline rod placed as in the deck (placement; offset_x, tilt_x_deg: a misalignment)."""
+    return D.Target.rod(length, r_up, r_mid, r_dn, mat=mat,
+                        **placement(z_center, x_axis, tilt_deg, offset_x, tilt_x_deg))
+
+
+def add_design_arguments(ap):
+    """Target design options beyond --rod (shared by the host and device chains)."""
+    ap.add_argument("--offset-x", type=float, default=0.0, help="target moved along x [mm]; the beam stays on the "
+                    "nominal axis (the deck's Toffset_x)")
+    ap.add_argument("--tilt-x", type=float, default=0.0, help="target rotated about x [deg] before the y tilt; the beam "
+                    "stays on the nominal axis (the deck's Ttilt_x)")
+    ap.add_argument("--clad", nargs=3, metavar=("R_CORE", "T_CLAD", "MATERIAL"),
+                    help="a cylinder of radius R_CORE (--material) in a sleeve of thickness T_CLAD of MATERIAL, the "
+                         "length of --rod (its radii unused): the deck's Use_Proton_Target=10")
+
+
+def design_targets(a, bank, rod):
+    """(target, beam target) of the command-line design: the beam is aimed at the nominal placement of the same
+    shape, so a misalignment moves the target only."""
+    mat = bank.materials.index(a.material)
+    off = dict(offset_x=a.offset_x, tilt_x_deg=a.tilt_x)
+    if a.clad:
+        r_core, t_clad, cmat = float(a.clad[0]), float(a.clad[1]), a.clad[2]
+        if cmat not in bank.materials:
+            raise SystemExit(f"clad material {cmat} not in the bank {bank.materials}")
+
+        def make(**kw):
+            return D.Target.clad_rod(rod[0], r_core, t_clad, mat, bank.materials.index(cmat), **placement(**kw))
+        return make(**off), make()
+    return rod_target(*rod, mat=mat, **off), rod_target(*rod, mat=mat)
 
 
 def load_slab(slabs, path, material):
@@ -612,6 +648,7 @@ def main(argv=None):
                     help="passive thin ring at z (repeatable): loss, scattering, absorption from --slab-bank")
     ap.add_argument("--slab-bank", help="bank with the slab material's tables (cross sections only is enough)")
     ap.add_argument("--slab-material", help="slab material in --slab-bank (default: its first)")
+    add_design_arguments(ap)
     ap.add_argument("--enclosure", nargs=2, type=float, metavar=("R", "H"),
                     help="diagnostic: record all species leaving this cylinder about the target, instead of the plane")
     ap.add_argument("--out", required=True)
@@ -620,7 +657,7 @@ def main(argv=None):
     bank = D.Bank.load(a.bank)
     if a.material not in bank.materials:
         raise SystemExit(f"material {a.material} not in the bank {bank.materials}")
-    tgt = rod_target(*a.rod, mat=bank.materials.index(a.material))
+    tgt, beam_tgt = design_targets(a, bank, a.rod)
     fb = tsfield.FieldBank(a.maps)
     env = Envelope(z_nodes=np.asarray(a.env_z), r_nodes=np.asarray(a.env_r), z_min=a.z_min, z_plane=a.z_plane,
                    r_plane=a.r_plane, annuli=tuple(tuple(x) for x in a.annulus), slabs=tuple(tuple(x) for x in a.slab))
@@ -632,7 +669,7 @@ def main(argv=None):
     done = 0
     while done < a.pot:
         n = min(a.chunk, a.pot - done)
-        prim = primaries(n, tgt, rng)
+        prim = primaries(n, beam_tgt, rng)
         prim["event"] = prim["event"] + done
         out = run(bank, tgt, fb, env, prim, rng, st, enclosure=a.enclosure, slab=slab)
         recs.append(out["record"])

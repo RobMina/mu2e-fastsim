@@ -15,7 +15,10 @@ already uses:
 - a scaled shape test (mode `shape`);
 - the paired per-shard test when both arms carry shards (`trkfastsim.validation.chain_pair`).
 
-The scorer uses NumPy only and imports nothing from this repository, so a Codabench worker can run it unchanged.
+The scorer is [hep-simbench](https://github.com/RobMina/hep-simbench)'s `hepsimbench.score` (pinned in
+`core/ci/requirements.txt`; `benchmarks.fastsim_score.score` is that module). It uses NumPy only and imports nothing
+from this repository, so a Codabench worker can run it unchanged. The task table, the calorimeter converters and the
+synthetic example stay here.
 
 ## Histogram kinds, modes and yields
 
@@ -86,8 +89,8 @@ the bench timer uses the published headline pass sizes. No stock jobs were run.
   whose code changed, on merged main. The **commit** column says which commit each row was scored on.
 - **PTGT** is rerun on main `32eea930` (#293). The chain is bit-identical to the run scored before the merge (every
   per-rod counter on all 33 rods), and the yields are unchanged.
-- **Scores:** from `score --allow-missing` (coverage) over 20 of 20 arms (W1-W9 and PTGT): **mean validity 0.900**
-  and a **throughput geometric mean of x1,007**.
+- **Scores:** from `score --allow-missing` (coverage) over 20 of 20 arms (W1-W9 and PTGT): **mean validity 0.925**
+  and a **throughput geometric mean of x993**.
 - The last column is the same task scored on the older arms. The reference trees are kept privately.
 
 | task | dtype | commit | validity | flagged / histograms | yields passing | throughput x | device | before (scored 2026-11-18 on older arms) |
@@ -104,8 +107,8 @@ the bench timer uses the published headline pass sizes. No stock jobs were run.
 | W5 | float64 | c03dbd13 | 1.000 | 0 / 12 | 1 / 1 | 1090 | A100-80 | 1.000, x1091 |
 | W6 | float32 | 36362f7b | 1.000 | 0 / 2 | 2 / 2 | 198 | A100-80 | 1.000, x191 (c03dbd13) |
 | W6 | float64 | 36362f7b | 1.000 | 0 / 2 | 2 / 2 | 198 | A100-80 | 1.000, x180 (c03dbd13) |
-| W7 | float32 | cfe4c13d | 0.750 | 1 / 4 | 1 / 1 | 2369 | A100-80 | 0.750, x2582 (c03dbd13, parametric) |
-| W7 | float64 | cfe4c13d | 0.750 | 1 / 4 | 1 / 1 | 2003 | A100-80 | 0.750, x2315 (c03dbd13, parametric) |
+| W7 | float32 | f53e27a3 | 1.000 | 0 / 4 | 1 / 1 | 2041 | A100-80 | 0.750, x2582 (c03dbd13, parametric) |
+| W7 | float64 | f53e27a3 | 1.000 | 0 / 4 | 1 / 1 | 1771 | A100-80 | 0.750, x2315 (c03dbd13, parametric) |
 | W8 | float32 | 213edff8 | 1.000 | 0 / 0 | 22 / 22 | 350 | A100-80 | 1.000, x349 (c03dbd13, before #283) |
 | W8 | float64 | 213edff8 | 1.000 | 0 / 0 | 22 / 22 | 320 | A100-80 | 1.000, x305 (c03dbd13, before #283) |
 | W9 | float32 | c03dbd13 | 0.500 | 1 / 2 | 1 / 1 | 38635 | CPU, 4 cores | not scored |
@@ -132,9 +135,9 @@ the bench timer uses the published headline pass sizes. No stock jobs were run.
 - **W5, W6, W7:**
   - W6's float32 arm is now pure float32. On main `36362f7b` (#301: the bench defaults to the compact sampling receipt;
     detector outputs unchanged) W6 runs at x198 in both dtypes.
-  - W7 on main `cfe4c13d` runs the per-entrant library chain (the default since #313), on the frozen arm's events (front
-    population). The cluster-radius histogram is still flagged, but closer: chi2/ndf 3.30 / 2.97 (4.08 / 4.02 with the
-    parametric chain), threshold 2. Cluster yield 0.9986 / 0.9987.
+  - W7 on main `f53e27a3` runs the per-entrant library chain with the nearest-donor draw (far -> cell; the default
+    since #315 and #321), on the frozen arm's events (front population). No histogram is flagged: the cluster-radius
+    chi2/ndf is 1.08 (2.97-3.30 with the cell rule, about 4.0 with the parametric chain). Cluster yield 0.9994.
 - **W8:** main as is (device loops on); 22 tested paths. Under this scorer's rule (3 sigma + 2 %) all of them pass.
 - **W9:**
   - float32 and float64 on the same paired events;

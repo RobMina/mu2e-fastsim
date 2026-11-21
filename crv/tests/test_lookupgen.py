@@ -197,6 +197,9 @@ def test_transport_runs_and_conserves(dtype, model):
     # chain-length histograms: one entry per generated photon, one per SiPM-0 arrival
     assert len(s["len_end"]) == len(s["len_arr"]) == 19
     assert sum(s["len_end"]) == r["gen"].sum() and sum(s["len_arr"]) == r["nall"].sum()
+    # the device the kernel ran on is recorded (the manifests name it per piece)
+    import jax
+    assert s["device"] == jax.devices()[0].device_kind and s["platform"] == jax.devices()[0].platform
 
 
 def test_bins_outside_the_scintillator_generate_nothing():
@@ -273,8 +276,8 @@ def test_assemble_writes_the_table_and_its_provenance(tmp_path):
         z = {k: np.zeros(n, np.int32) for k in ("gen", "nall")}
         z.update(bins=np.arange(n), ht=np.zeros((n, 150), np.int32), he=np.zeros((n, 10), np.int32),
                  hta=np.zeros((n, 150), np.int32), hea=np.zeros((n, 10), np.int32))
-        stats = {"dtype": "float32", "model": "v6", "max_steps": 65536, "capped": 2,
-                 "resumed_from": {"dtype": "float32", "max_steps": 1 << 19, "capped": 0}}
+        stats = {"dtype": "float32", "model": "v6", "max_steps": 65536, "capped": 2, "device": "gpu B",
+                 "resumed_from": {"dtype": "float32", "max_steps": 1 << 19, "capped": 0, "device": "gpu A"}}
         np.savez(f, **z, complete=np.ones(n, bool), nphot=10000 if st == 2 else 100000, simtype=st, model="v6",
                  stats=json.dumps(stats), counter=json.dumps(c.__dict__))
         pieces.append(f)
@@ -304,6 +307,10 @@ def test_assemble_writes_the_table_and_its_provenance(tmp_path):
     assert set(m["unrecorded"]) == {"seeds", "release"} and m["validation"]["status"] == "tested, not closed"
     assert [a["name"] for a in m["axes"]] == ["x", "y", "z", "beta", "theta", "phi", "r"]
     assert m["generator"]["configuration"]["max_steps"] == [65536]
+    # devices per piece, newest run first (this piece was resumed on another device)
+    assert m["generator"]["configuration"]["devices"] == ["gpu A", "gpu B"]
+    assert m["generator"]["configuration"]["pieces"]["Cerenkov in fiber"][0]["devices"] == ["gpu B", "gpu A"]
+    assert part["device"] == "gpu B" and part["resumed_from"]["device"] == "gpu A"
     assert LIB.verify(out)["content_hash"] == m["content_hash"]
     assert main(["verify", out, "--content-hash", m["content_hash"]]) == 0
     with pytest.raises(LibraryError):
@@ -315,6 +322,24 @@ def test_assemble_writes_the_table_and_its_provenance(tmp_path):
     assert m2["unrecorded"] == {} and m2["content_hash"] == m["content_hash"]
     assert m2["release"]["commit"] == "def5678" and m2["generator"]["release"] == ["abc1234"]
     assert m2["seeds"] == {"scintillation in scintillator": 1, "Cerenkov in scintillator": 1, "Cerenkov in fiber": 1}
+    # a piece made before devices were recorded: None in its list (not a manifest gap field)
+    z = dict(np.load(pieces[2]))
+    z["stats"] = json.dumps({"dtype": "float32", "model": "v6", "max_steps": 65536, "capped": 0})
+    np.savez(pieces[2], **z)
+    assert main(["assemble", "--length", "1045", "--reflector", "1", "--out", out, "--model", "v6", "--assume-seed",
+                 "1", "--piece-commit", "abc1234", "--commit", "def5678"] + pieces) == 0
+    m3 = json.load(open(str(tmp_path / "LookupTable_1045_1.manifest.json")))
+    assert m3["unrecorded"] == {} and m3["content_hash"] == m["content_hash"]
+    assert m3["generator"]["configuration"]["pieces"]["Cerenkov in fiber"][0]["devices"] == [None]
+    assert m3["generator"]["configuration"]["devices"] == ["gpu A", "gpu B"]
+
+
+def test_validation_status_of_each_model():
+    """The status a new manifest is written with (core/docs/libraries.md): the current model was measured against a
+    CRVStandalone build of the same optics, without criteria declared before the comparison."""
+    from crvfastsim.lookupgen.mu2e import library as LIB
+    assert LIB.VALIDATION["current"][0] == "tested, not closed"
+    assert LIB.VALIDATION["v6"][0] == "tested, not closed"
 
 
 def test_design_tables_are_named_by_their_cross_section():
@@ -324,12 +349,14 @@ def test_design_tables_are_named_by_their_cross_section():
 
 
 # ------------------------------------------------------------------------------------------------ core / adapter
-_STDLIB_OK = {"bisect", "dataclasses", "math", "time", "numpy", "jax"}
+_STDLIB_OK = {"bisect", "dataclasses", "importlib", "math", "time", "numpy", "jax"}
 
 
-@pytest.mark.parametrize("name", sorted(f for f in os.listdir(CORE) if f.endswith(".py")))
+@pytest.mark.parametrize("name", sorted(
+    f for f in os.listdir(CORE) if f.endswith(".py") and f != "__init__.py"
+))
 def test_core_imports_nothing_experiment_specific(name):
-    """The core imports only the standard library it needs, NumPy, JAX and its own modules (level-1 relative)."""
+    """The scint-fibre-fastsim core imports only stdlib, NumPy, JAX and its own modules (level-1 relative)."""
     tree = ast.parse(open(os.path.join(CORE, name)).read())
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -365,28 +392,17 @@ def test_v6_model_is_registered_by_the_adapter_only():
     subprocess.run([sys.executable, "-c", code], check=True)
 
 
-def test_core_runs_as_a_package_of_its_own(tmp_path):
-    """A copy of the core under another name generates a table for a strip and bins that are not Mu2e's."""
+def test_core_runs_as_a_package_of_its_own():
+    """scintfibrefastsim.core generates a table for a strip and bins that are not Mu2e's."""
     pytest.importorskip("jax")
-    import shutil
-    import subprocess
-    import sys
-    shutil.copytree(CORE, tmp_path / "stripgen", ignore=shutil.ignore_patterns("__pycache__"))
-    code = """
-import numpy as np
-from stripgen.counter import Counter
-from stripgen.binning import Binning
-from stripgen.run import generate
-c = Counter(length=1000.0, thickness=10.0, width=40.0, fiber_separation=10.0, fiber_diameter=1.2, clad_fraction=0.03,
-            hole_rx=1.0, hole_ry=0.8, coating=0.2, corner_radius=1.0, guide_bar=5.0, sipm_width=1.3, sipm_window=0.1,
-            sipm_length=0.2, air_gap=0.001)
-b = Binning({"x": [0.0, 2.0, 4.8], "y": np.linspace(-19.8, 19.8, 7), "z": np.linspace(-500.0, 500.0, 5)},
-            {0: ("z", "y", "x")})
-r = generate(c, b, 0, np.arange(b.n_bins(0)), 50, dtype="float32", lanes=256, chunk_iters=400)
-assert r["gen"].sum() > 0 and np.all(r["ht"].sum(1) == r["he"].sum(1)) and r["ht"].sum() > 0, r["stats"]
-print("ok", int(r["gen"].sum()), int(r["ht"].sum()))
-"""
-    env = dict(os.environ, PYTHONPATH=str(tmp_path))
-    out = subprocess.run([sys.executable, "-c", code], cwd=tmp_path, env=env, capture_output=True, text=True)
-    assert out.returncode == 0, out.stderr[-2000:]
-    assert out.stdout.startswith("ok")
+    from scintfibrefastsim.core.binning import Binning
+    from scintfibrefastsim.core.counter import Counter
+    from scintfibrefastsim.core.run import generate
+
+    c = Counter(length=1000.0, thickness=10.0, width=40.0, fiber_separation=10.0, fiber_diameter=1.2,
+                clad_fraction=0.03, hole_rx=1.0, hole_ry=0.8, coating=0.2, corner_radius=1.0, guide_bar=5.0,
+                sipm_width=1.3, sipm_window=0.1, sipm_length=0.2, air_gap=0.001)
+    b = Binning({"x": [0.0, 2.0, 4.8], "y": np.linspace(-19.8, 19.8, 7), "z": np.linspace(-500.0, 500.0, 5)},
+                {0: ("z", "y", "x")})
+    r = generate(c, b, 0, np.arange(b.n_bins(0)), 50, dtype="float32", lanes=256, chunk_iters=400)
+    assert r["gen"].sum() > 0 and np.all(r["ht"].sum(1) == r["he"].sum(1)) and r["ht"].sum() > 0, r["stats"]
