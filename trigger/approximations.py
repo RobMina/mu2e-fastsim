@@ -22,6 +22,8 @@ WORKFLOW = Workflow(
         "exact_weighted_median": "time clusters use the exact weighted median where stock uses the P2 estimate; "
                                  + REPLAY,
         "tracker_path_subset": "20 single-helix tracker paths of 52 on the device; the replay runs all 52",
-        "no_delta_finder": "DeltaFinder skipped (exact without pileup); " + REPLAY,
+        "no_delta_finder": "TrigFlagPH (DeltaFinder) off by default: no hit carries Background and "
+                           "EnergySelection stays as TrigMakePH sets it; decide --deltafinder runs the "
+                           "port (flags equal to stock); " + REPLAY,
     },
 )

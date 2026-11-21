@@ -95,13 +95,14 @@ def parse_fcl(text):
 
 # module types the device evaluates, by role in a path
 ROLES = {'TimeClusterFilter': 'tc', 'HelixFilter': 'hs', 'KalSeedFilter': 'ks', 'DigiFilter': 'sd'}
-PATTERN_RECOGNITION = {'TimeClusterFinder': 'tpr', 'TZClusterFinder': 'apr', 'SimpleTimeCluster': 'cst'}
+PATTERN_RECOGNITION = {'TimeClusterFinder': 'tpr', 'TZClusterFinder': 'apr', 'SimpleTimeCluster': 'cst',
+                       'CalTimePeakFinder': 'cpr'}
 
 
 def device_paths(cfg, names=None):
     """Per tracker path: its filters' settings in path order and which time-cluster producer feeds them.
 
-    Returns {path: {'family': tpr|apr|cst, 'tc_producer': label, 'pitch': float, 'filters': [(role, label, cfg)]}}
+    Returns {path: {'family': tpr|apr|cst|cpr, 'tc_producer': label, 'pitch': float, 'filters': [(role, label, cfg)]}}
     for every path that has a TimeClusterFilter and no calorimeter or CRV filter.
     """
     phys = cfg['physics']

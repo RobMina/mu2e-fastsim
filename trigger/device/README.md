@@ -7,7 +7,7 @@ and lumi-stream paths) of the production menu, from StrawDigis to per-path decis
 |---|---|---|---|
 | straw hits | `StrawHitReco` (TrigMakeSH, FitType 5) | port with the stock arithmetic (`hits.straw_hits`) | bit for bit |
 | panel hits | `CombineStrawHits` (TrigMakePH) | port with the stock arithmetic (`hits.panel_hits`) | bit for bit |
-| background flags | `DeltaFinder` (TrigFlagPH) | not run: no hit flagged | exact on primary-only CE digis (stock flags none); not with pileup |
+| background flags | `DeltaFinder` (TrigFlagPH) | port with the stock arithmetic and orders (`deltafinder.py`); opt-in (off: no hit flagged) | bit for bit; see [Background flags](#background-flags-deltafinder) |
 | time clusters | `TimeClusterFinder` | port (`timecluster.py`), incl. the TMVA hit MLP | see the README table of the PR / record |
 | time clusters (apr) | `TZClusterFinder` | the TimeClusterFinder port with TZ's `clusterThresh` | approximation |
 | helices | `RobustHelixFinder` (tpr), `AgnosticHelixFinder` (apr) | compact fit with the stock per-face hit selection and chi2 definitions (`helix.py`); the hit ratio over `HelixTool`'s nominal face z | approximation |
@@ -18,12 +18,48 @@ and lumi-stream paths) of the production menu, from StrawDigis to per-path decis
 | lumi stream | `LumiStreamFilter` | event counter per subrun on the host, in event order | exact |
 | off-spill hits, time clusters (`cst_TimeCluster`) | off-spill `StrawHitReco` / `CombineStrawHits`, `SimpleTimeCluster` | the hit ports with the off-spill settings, `simpletc.py` | exact on the held-out shards |
 | multi-helix finder (`mpr_*`) | `RobustMultiHelixFinder` + `MergeHelices` | port with the stock arithmetic (`mpr.py`); opt-in | see [Multi-helix paths](#multi-helix-paths-mpr) |
+| cpr helices | `CalHelixFinder` + `MergeHelices` (on the `CalTimePeakFinder` peaks) | port with the stock arithmetic (`calhelix.py`); with the cpr paths (opt-in) | see [Calorimeter-seeded helices](#calorimeter-seeded-helices-cpr) |
 | calo hits, clusters | `CaloHitMakerFast`, `CaloClusterFast` | port with the stock arithmetic and orders (`calo.py`), from CaloDigis | bit for bit; see [Calorimeter paths](#calorimeter-paths) |
 | calo filters | `CaloClusterCounterFilter`, `CaloLikelihood`, `CaloNNEval` + `FilterEcalNNTrigger`, `CaloCosmicCalib`, `DigiFilter` (calo digis) | ports (`calo.py`, `calopaths.py`) | exact on the development and held-out files |
 
-Not evaluated on the device: the calorimeter-seeded tracker paths (`cpr_*`), `apr_TC_calo` (its `TZClusterFinder`
+Not evaluated on the device: `apr_TC_calo` (its `TZClusterFinder`
 attaches and recovers calo clusters; always false on the device), `cst_CosmicTrackSeed` (`LineFinder` +
 `CosmicSeedFilter`), paths with `MultiHelixFilter` or `minNHelices > 1`.
+
+### Background flags (DeltaFinder)
+
+`deltafinder.py` ports DeltaFinder (Offline v13_41_01, CalPatRec: `DeltaFinderAlg`, `DeltaSeed`, `DeltaCandidate`,
+`ProtonCandidate`), the menu's `TrigFlagPH`. It sets `Background` (StrawHitFlag bit 6) on the panel hits of delta
+electrons, sets `EnergySelection` on every hit and clears it on the hits of proton candidates; every hit is written,
+so only the flags change. It is off by default and runs with `Chain(deltafinder=True)`, `decide --deltafinder` or
+`TRIGGER_DEVICE_DELTAFINDER=1` (bench); with it off, no hit carries `Background` (as before). With it on, the stages
+that read the flags see them: `CalTimePeakFinder` (cpr, `BkgSelBits`) and the helix fits (`HitBackgroundBits`).
+`TimeClusterFinder` runs with `TestFlag: false` and reads no flag, so the tpr and apr time clusters do not change.
+
+The port follows the stock containers and orders: hits time-ordered by the radix sort's key (the early-end time,
+`ComboHit::time()`, which the panel hits now carry as `etime`), the per-face time bins with the out-of-range reads of
+an OnSpill job, seeds in creation order per station, the delta-candidate vector, the proton candidates sorted with
+libstdc++'s `std::sort`; float members in float32, double members and promotions in float64, products not fused
+(`exact.py`). DeltaFinder reads the nominal tracker (`GeomHandle<Tracker>`), not the aligned one the hits are made with:
+the straw-0/1 positions of each panel are shipped in `data/tracker_nominal_panels.json`. An event where stock reads
+outside its arrays, or a table overflows, gets error bits (`TrigFlagPH:err` in the aux arrays; none on the
+production files). `tests/deltafinder_reference.py` is a literal transcription; the unit test requires the port to
+match it bit for bit.
+
+On the production CE files (Offline v13_41, OnSpill, all secondaries; development 14,052 events, held-out 13,992),
+the TrigFlagPH flags from the stored StrawDigis equal the stock ones on every hit of every event, in both precisions
+(stock flags `Background` on about 1,500 hits per 1,000 events, in 8 % of them). With the port on:
+
+| time-cluster stage, events discordant with stock (dev / held-out) | off | on |
+|---|---|---|
+| cpr (`CalTimePeakFinder` peak counts and `TimeClusterFilter`, 11 paths) | 8 (De paths), 44 (`cpr_HlxUe_40`) on file 1 | 0 / 0 |
+| tpr (`TimeClusterFinder`) | 57-205 / 67-173 per path | unchanged |
+| apr (`TZClusterFinder`, device: `TimeClusterFinder`) | 124 / 132 | unchanged |
+
+The tpr discordance comes from the calo-seeded time clusters (`UseCaloCluster: true`), which the device does not make:
+against a stock replay with `UseCaloCluster: false` it is 0 on every tpr path (2 held-out events on
+`tpr_HlxUe_50m30p`). The apr one comes from the time-clustering approximation. The port costs about 0.15-0.2 s per
+event on four CPU cores (compiles included); its GPU rate is not measured.
 
 ### Multi-helix paths (mpr)
 
@@ -67,6 +103,43 @@ than 64 hits (28 development and 19 held-out events) and 2 development events wi
 of the rest. Adding the mpr paths changes no decision of the other paths. The port is not tuned for speed: a decide
 job with the mpr paths on takes 0.6-1.5 s per event on four CPU cores (the other paths together take about 3 ms), and
 its GPU rate is not measured.
+
+### Calorimeter-seeded helices (cpr)
+
+With `Chain(cpr=True)` the cpr paths run the calo stage, `CalTimePeakFinder` (`cpr.py`) and then `calhelix.py`: the
+port of `CalHelixFinder` (with `CalHelixFinderAlg`) per (event, time peak), both helicities, and `MergeHelices` per
+event over the finder's seeds in time-peak order. `HelixFilter` reads the merged seeds through `HelixTool` (non-outlier
+hits, the nominal face z), with MergeHelices' recomputed chi2dXY / chi2dZPhi. The port equals the literal
+transcriptions `tests/cal_helix_reference.py` and `tests/merge_helices_reference.py` bit for bit, as the mpr port does
+(float32 values, the double steps in float64, no fused multiply-add, chained divisions kept as written, libstdc++
+`std::sort` for the face-ordered hits, the walk order of every face/panel/hit loop for the sums), including the stock
+state that crosses calls (the triplet search's shared slope, the rescue trials' add/remove rounding and counters).
+
+Geometry inputs (`calhelix.geometry`): face z and panel azimuths from the nominal tracker (`data/tracker_nominal_panels.json`,
+shared with the DeltaFinder port), the calorimeter offset, disk origins and tracker centre as Offline builds them; the
+field at the tracker origin (1 T) is provisional. A peak keeps at most `CHF_HITS` selected hits (more: `:hxoverflow`); stock behaviour the port
+flags instead of reproducing (a findDfDz throw, a non-terminating phi-z cleanup) is in `:hxerr`. The calo-cluster
+slots of the peaks are fixed (`CPR_CLUSTERS`, more: `:overflow`). `strawart.py` reads the stored StrawDigis, path
+status and HelixSeeds of the stock files; `cpr.calo_batch` adds the event's CaloDigis to a block (with `digi_slots`,
+one digi axis per file, so fewer shapes compile).
+
+`KalSeedFilter` (CalSeedFit) is the response layer, as for the tpr and mpr paths: its cuts on the merged seeds'
+helix quantities, times a pass factor per path from the development files (both shipped responses, draw keys 600+).
+
+Validation on the production CE files (Offline v13_41, OnSpill), with `deltafinder=True`; development files 1-5
+(14,052 events) and held-out files 6-10 (13,992), the split and the rule (time-cluster and helix stages equal to stock,
+every path within 2 % / 2 sigma) declared before the held-out read:
+
+| | development | held-out |
+|---|---|---|
+| TimeClusterFilter and HelixFilter stages, 11 paths: events that differ from stock | 0 | 0 |
+| `cpr_HlxDe_50`, `cpr_HlxUe_40`: discordant events | 0 | 0 |
+| 9 `cpr_TrkDe_*` paths (response factors from development): paired difference | factors 0.992-0.997 | -0.16 to +0.13 pp, within 1.9 sigma |
+
+Both precisions. Against the stored stock HelixSeeds, the reference finder and merger reproduce every seed
+bit for bit on file 1 events 0-299 (De 170, Ue 109), and the port equals the reference in both precisions. In events
+where every time peak has fewer straw hits than the paths' TimeClusterFilter minimum, stock never runs the finder
+(the filter stops the path first), so no seeds are stored; the decisions do not depend on it.
 
 ### Calorimeter paths
 
