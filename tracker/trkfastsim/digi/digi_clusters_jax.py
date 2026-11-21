@@ -11,6 +11,7 @@ the tracker device float (trkfastsim.devfloat), the standalone gain and wire hel
 An allocation exceeding MAX_CLUSTER_BUCKET raises OverflowError, never truncates a
 physics tail. Callers may raise that resource limit explicitly before retrying.
 """
+import os
 from functools import partial
 
 import numpy as np
@@ -93,6 +94,13 @@ def _uniform(keys):
 # kernel is traced: set it before the first call).
 POISSON_SPLIT = None
 POISSON_CHUNK = 2048
+# POISSON_METHOD "lanes" (opt-in; environment TRKFASTSIM_POISSON=lanes) draws the same Poisson law without a per-lane
+# while loop (_poisson_lanes): other random numbers than jax.random.poisson's, so other clusters, with the same
+# distribution. "jax" (default): jax.random.poisson, as above. Read when a kernel is traced.
+POISSON_METHOD = os.environ.get("TRKFASTSIM_POISSON", "") or "jax"
+LANES_SMALL = 10.0      # means below: inversion of the Poisson CDF from one uniform; from here: PTRS trials
+LANES_TERMS = 32        # CDF terms summed in one fused pass: P(X >= 32 | mean < 10) < 1e-8
+LANES_TRIALS = 1        # PTRS trials in the fused pass (acceptance per trial above 0.9)
 
 
 def _poisson_parts():
@@ -111,9 +119,81 @@ def _poisson_split_on():
     return bool(on) and _poisson_parts() is not None
 
 
+def _ptrs(u, v, lam):
+    """One transformed-rejection (PTRS, Hormann 1993; numpy's and jax.random.poisson's) trial per lane from uniforms
+    u - 0.5 and v, for means >= 10: the candidate count and whether it is accepted."""
+    slam, loglam = jnp.sqrt(lam), jnp.log(lam)
+    b = 0.931 + 2.53 * slam
+    a = -0.059 + 0.02483 * b
+    invalpha = 1.1239 + 1.1328 / (b - 3.4)
+    vr = 0.9277 - 3.6224 / (b - 2)
+    us = 0.5 - jnp.abs(u)
+    k = jnp.floor((2 * a / us + b) * u + lam + 0.43)
+    quick = (us >= 0.07) & (v <= vr)
+    reject = (k < 0) | ((us < 0.013) & (v > us))
+    lhs = jnp.log(v) + jnp.log(invalpha) - jnp.log(a / (us * us) + b)
+    rhs = -lam + k * loglam - lax.lgamma(k + 1)
+    return k, quick | (~reject & (lhs <= rhs))
+
+
+def _poisson_lanes(keys, mean, small=LANES_SMALL, terms=LANES_TERMS, trials=LANES_TRIALS):
+    """int64 Poisson draws, one key per lane, without a per-lane while loop in the common case (POISSON_METHOD
+    "lanes"). Means below `small`: inversion of the Poisson CDF from one uniform, summed over `terms` terms in one
+    fused pass; from `small`: `trials` independent PTRS trials, the first accepted is the draw. The few lanes left
+    unsettled continue exactly in a masked loop (the same CDF sum past `terms`; further independent PTRS trials).
+    Arithmetic in the means' float type. Non-finite or negative means take jax.random.poisson's draw (only when such
+    a lane exists). Other random numbers than jax.random.poisson's, the same distribution."""
+    dtype = mean.dtype
+    lam = jnp.where(jnp.isfinite(mean) & (mean >= 0), mean, 0).astype(dtype)
+    uniform = lambda tag: jax.vmap(lambda k: random.uniform(k, (), dtype))(_fold(keys, tag))
+    is_small = lam < small
+    u = uniform(11)
+    ls = jnp.where(is_small, lam, 0)
+    p = jnp.exp(-ls)
+    cdf = p
+    k = jnp.zeros(lam.shape, jnp.int64)
+    for i in range(1, terms):
+        k = k + (cdf < u)
+        p = p * ls / i
+        cdf = cdf + p
+    ll = jnp.where(is_small, small, lam)
+    draw = jnp.where(is_small, k, 0)
+    done = is_small & (u <= cdf)
+    for t in range(trials):
+        kt, ok = _ptrs(uniform(20 + 2 * t) - 0.5, uniform(21 + 2 * t), ll)
+        take = ~done & ~is_small & ok
+        draw = jnp.where(take, kt.astype(jnp.int64), draw)
+        done = done | take
+
+    def more(state):
+        return jnp.any(~state[1])
+
+    def step(state):    # exact continuation of the unsettled lanes only
+        draw, done, p, cdf, i, t = state
+        live = ~done & is_small
+        draw = draw + live
+        p = jnp.where(live, p * ls / i, p)
+        cdf = jnp.where(live, cdf + p, cdf)
+        settled = live & ((u <= cdf) | (p == 0))        # p == 0: the CDF stays below u only by rounding
+        kt, ok = _ptrs(uniform(1000 + 2 * t) - 0.5, uniform(1001 + 2 * t), ll)
+        take = ~done & ~is_small & ok
+        draw = jnp.where(take, kt.astype(jnp.int64), draw)
+        return draw, done | settled | take, p, cdf, i + 1, t + 1
+    draw = lax.while_loop(more, step, (draw, done, p, cdf, jnp.asarray(terms, dtype), jnp.int32(0)))[0]
+    bad = ~(jnp.isfinite(mean) & (mean >= 0))
+    return lax.cond(jnp.any(bad),
+                    lambda: jnp.where(bad, jax.vmap(lambda k, m: random.poisson(k, m, dtype=jnp.int64))(
+                        keys, jnp.where(bad, mean, 0)), draw),
+                    lambda: draw)
+
+
 def _poisson(keys, mean):
     if df.DRAW64:
         mean = mean.astype(np.float64)
+    if POISSON_METHOD not in ("jax", "lanes"):
+        raise ValueError(f"POISSON_METHOD must be 'jax' or 'lanes', not {POISSON_METHOD!r}")
+    if POISSON_METHOD == "lanes" and mean.ndim == 1 and mean.shape[0] > 0:
+        return _poisson_lanes(keys, mean)
     if mean.ndim != 1 or mean.shape[0] == 0 or not _poisson_split_on():
         return jax.vmap(lambda k, m: random.poisson(k, m, dtype=jnp.int64))(keys, mean)
     return _poisson_chunks(keys, mean, POISSON_CHUNK)

@@ -296,3 +296,84 @@ def test_poisson_split_gives_the_same_clusters(cond, monkeypatch):
     assert len(out[True][2]) > n and np.asarray(out[True][2]).max() > 10
     for x, y in zip(out[False], out[True]):
         np.testing.assert_array_equal(np.asarray(x), np.asarray(y))
+
+
+def _poisson_chi2(draws, lam):
+    """chi2/ndf of draws against the Poisson pmf of mean lam, over bins with expected count >= 20 (tails pooled)."""
+    import math
+    n = draws.size
+    lo, hi = max(0, int(lam - 8 * math.sqrt(lam + 1))), int(lam + 8 * math.sqrt(lam + 1)) + 2
+    ks = np.arange(lo, hi)
+    pmf = np.exp(-lam + ks * math.log(lam) - np.array([math.lgamma(k + 1) for k in ks])) if lam > 0 else (ks == 0) * 1.0
+    expect, seen = n * pmf, np.array([(draws == k).sum() for k in ks], float)
+    keep = expect >= 20
+    rest_e, rest_s = n - expect[keep].sum(), n - seen[keep].sum()
+    chi2 = float((((seen[keep] - expect[keep]) ** 2) / expect[keep]).sum())
+    ndf = int(keep.sum()) - 1
+    if rest_e >= 20:
+        chi2 += (rest_s - rest_e) ** 2 / rest_e
+        ndf += 1
+    return chi2 / max(ndf, 1)
+
+
+@pytest.mark.parametrize("dt", [np.float64, np.float32])
+@pytest.mark.parametrize("terms,trials", [(None, None), (3, 0)])
+def test_poisson_lanes_has_the_poisson_law(dt, terms, trials):
+    """_poisson_lanes (POISSON_METHOD "lanes"): Poisson draws for means below, at and above the inversion / PTRS
+    boundary, with the default fused pass and with the exact continuation loop doing most of the work (3 terms, no
+    trial in the fused pass); means and pmf chi2/ndf against the Poisson law, typed keys, both float types."""
+    n = 60000
+    kw = {} if terms is None else {"terms": terms, "trials": trials}
+    f = jax.jit(lambda k, m: DJ._poisson_lanes(k, m, **kw))
+    for i, lam in enumerate((0.0, 0.3, 2.5, 9.99, 10.0, 13.0, 47.0, 1.0e3, 1.0e5)):
+        keys = jax.random.split(jax.random.key(100 + i), n)
+        x = np.asarray(f(keys, jnp.full(n, lam, dt)))
+        assert x.dtype == np.int64 and x.min() >= 0
+        if lam == 0:
+            assert not x.any()
+            continue
+        assert abs(x.mean() - lam) < 5 * np.sqrt(lam / n), (lam, x.mean())
+        assert abs(x.var() / lam - 1) < 0.05, (lam, x.var())
+        if lam < 100:
+            assert _poisson_chi2(x, lam) < 2.0, (lam, _poisson_chi2(x, lam))
+
+
+def test_poisson_lanes_edges_and_determinism():
+    """Non-finite and negative means take jax.random.poisson's draw for those lanes; the same keys give the same draws;
+    raw and typed keys both work; an unknown POISSON_METHOD is refused."""
+    mean = jnp.asarray([0.0, 1.5, 12.0, np.nan, -2.0, np.inf, 3e6, 7.0])
+    for keys in (jax.random.split(jax.random.key(4), mean.size), jax.random.split(jax.random.PRNGKey(4), mean.size)):
+        got = np.asarray(jax.jit(DJ._poisson_lanes)(keys, mean))
+        np.testing.assert_array_equal(got, np.asarray(jax.jit(DJ._poisson_lanes)(keys, mean)))
+        ref = np.asarray(jax.vmap(lambda k, m: jax.random.poisson(k, m, dtype=jnp.int64))(keys, mean))
+        bad = ~np.isfinite(np.asarray(mean)) | (np.asarray(mean) < 0)
+        np.testing.assert_array_equal(got[bad], ref[bad])
+        assert got[0] == 0 and (got[~bad] >= 0).all() and abs(got[6] - 3e6) < 10 * np.sqrt(3e6)
+
+
+def test_poisson_lanes_clusters_match_the_jax_draws_statistically(cond, monkeypatch):
+    """make_clusters with POISSON_METHOD "lanes" and "jax": other draws, the same law: cluster and electron totals
+    over 4,000 steps agree within 4 sigma (Poisson errors), means on both sides of the inversion / PTRS boundary;
+    an unknown method is refused."""
+    c = cond
+    n = 4000
+    rng = np.random.default_rng(5)
+    st = _table(c, n, eion=2e-3)
+    st["eion"] = 10 ** rng.uniform(-4.5, -2.0, n)
+    st["len"] = c.meanFreePath * rng.uniform(0.1, 30.0, n)
+    st["shape"][::3] = 3
+    st["ion"][::2] = 1
+    st["width"][:] = 0.3
+    out = {}
+    for method in ("jax", "lanes"):
+        monkeypatch.setattr(DJ, "POISSON_METHOD", method)
+        jax.clear_caches()
+        out[method] = DJ.make_clusters(jax.random.key(9), c, st, np.arange(n))
+    nj, nl = len(out["jax"][2]), len(out["lanes"][2])
+    assert nj > n and abs(nl - nj) < 4 * np.sqrt(2 * nj), (nj, nl)
+    ej, el = int(np.asarray(out["jax"][2]).sum()), int(np.asarray(out["lanes"][2]).sum())
+    assert abs(el - ej) < 4 * np.sqrt(2 * ej) * 3, (ej, el)       # electrons per cluster overdisperse the total
+    monkeypatch.setattr(DJ, "POISSON_METHOD", "knuth")
+    jax.clear_caches()
+    with pytest.raises(ValueError, match="POISSON_METHOD"):
+        DJ.make_clusters(jax.random.key(9), c, st, np.arange(n))
