@@ -14,8 +14,8 @@ requires-python = ">=3.10"
 # scint-fibre-fastsim (import name scintfibrefastsim): the experiment-neutral lookupgen.core that
 # crvfastsim.lookupgen.core re-exports; pinned in crv/pyproject.toml and ci/requirements.txt.
 # hep-simlib (import name hepsimlib): the experiment-neutral library core and component banks that
-# mu2efastsim.library and mu2efastsim.component_response re-export with the Mu2e profile; same pin as
-# ci/requirements.txt.
+# mu2efastsim.library and mu2efastsim.component_response re-export with the Mu2e profile, and the censored crossing
+# likelihood of the CRV EX calibration (crvfastsim.objective.ex_response); same pin as ci/requirements.txt.
 # hep-simbench (import name hepsimbench): the experiment-neutral scorer, warm-rate timer, approximation registry and
 # robust statistics behind mu2efastsim.bench, .approximations, .stats and benchmarks/; same pin as ci/requirements.txt.
 # hep-simkernels (import name hepsimkernels): the Geant4-matched physics kernels behind mu2efastsim.eloss, .emsc,
