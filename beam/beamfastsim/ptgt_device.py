@@ -476,7 +476,7 @@ DENSITY = {"G4_W": 19.30, "G4_Ir": 22.42, "G4_Ta": 16.654, "G4_Mo": 10.22, "G4_C
 EDEP_SLICE_MM = 10.0     # default slice width along the target's local z
 EDEP_SLICE_MAX = 64      # fixed number of slice bins (a new design length needs no recompile on the device)
 EDEP_BATCHES = 10        # batch means (by event number mod EDEP_BATCHES) for the statistical errors
-MEV_PER_G_TO_GY = 1.602176634e-10 * 1e3   # MeV/g -> J/kg
+MEV_PER_G_TO_GY = 1.602176634e-13 / 1e-3  # MeV/g -> J/kg (1 MeV = 1.602e-13 J, 1 g = 1e-3 kg)
 
 
 def slice_edges(target, width=EDEP_SLICE_MM, nmax=EDEP_SLICE_MAX):

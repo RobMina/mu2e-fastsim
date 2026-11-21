@@ -405,6 +405,7 @@ def test_slice_masses_and_peak_heat():
     assert h["peak_slice"] == 3
     assert np.isclose(h["peak_MeV_per_g_per_pot"], b[:, 3].sum() / m[3] / 1000.0)
     assert np.isclose(h["peak_Gy_per_pot"], h["peak_MeV_per_g_per_pot"] * D.MEV_PER_G_TO_GY) and h["peak_err"] > 0
+    assert D.MEV_PER_G_TO_GY == pytest.approx(1.602176634e-10)          # 1 MeV/g in Gy
     with pytest.raises(ValueError, match="slices"):
         D.slice_edges(D.Target.rod(1000.0, 3.0, 3.0, 3.0))
     with pytest.raises(ValueError, match="density"):
