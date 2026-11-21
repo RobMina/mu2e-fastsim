@@ -43,6 +43,7 @@ class Static(NamedTuple):
     edges: object; sig_in: object; sig_el: object; dedx: object; x0: object; el_icdf: object
     cell_off: object; sec_off: object; sec_sp: object; sec_p: object
     z0: object; z1: object; rin: object; rout: object; mat: object; origin: object; rot: object   # per segment
+    bx: object                                  # axis-aligned boxes (n, 6): x0, x1, y0, y1, z0, z1 (local frame)
     env_z: object; env_r: object; annuli: object
     fm: object
     rb: object; zc: object; hl: object          # target bounding cylinder (device scalars: no recompile per rod)
@@ -51,7 +52,7 @@ class Static(NamedTuple):
 
 
 class Cfg(NamedTuple):
-    nk: int; nmat: int; nseg: int
+    nk: int; nmat: int; nseg: int; ncone: int    # nseg = ncone coaxial segments + the boxes
     z_plane: float; r_plane: float; z_min: float; axis_x: float
     h_vac: float; h_near: float; near: float; h_mat: float; neutral_step: float
     ke_min_hadron: float; ke_min_pion: float; max_loss_fraction: float
@@ -94,9 +95,10 @@ def make_static(bank, target, env, fm, dtype, slab=None):
                 sec_off=jnp.asarray(bank["sec_offsets"], jnp.int64), sec_sp=jnp.asarray(sec_sp, jnp.int32),
                 sec_p=jnp.asarray(bank["sec_p"], jnp.float32),
                 z0=f(target.zr[:, 0]), z1=f(target.zr[:, 1]), rin=f(target.r_in), rout=f(target.r_out), mat=jnp.asarray(target.mat, jnp.int32),
+                bx=f(target.bx),
                 origin=f(target.origin), rot=f(target.rot), env_z=f(env.z_nodes), env_r=f(env.r_nodes), annuli=f(annuli),
                 fm=fieldmap.FieldMap(f(fm.lo), f(fm.d), jnp.asarray(fm.n), f(fm.B)),
-                rb=f(np.max(target.r_out)), zc=f(0.5 * (target.z_lo + target.z_hi)),
+                rb=f(target.r_max), zc=f(0.5 * (target.z_lo + target.z_hi)),
                 hl=f(0.5 * (target.z_hi - target.z_lo)),
                 slabs=f(slabs), sl_edges=f(sl_edges), sl_sig_in=f(sl["sigma_inel"]), sl_dedx=f(sl["dedx"]),
                 sl_x0=f(sl["x0"]))
@@ -105,7 +107,7 @@ def make_static(bank, target, env, fm, dtype, slab=None):
 
 def make_cfg(target, env, stp, nk, nmat, dtype=jnp.float64, max_lane_steps=200_000):
     f32 = jnp.dtype(dtype) == jnp.float32
-    return Cfg(eps=1e-4 if f32 else 1e-7, nudge=1e-3 if f32 else 1e-5, max_lane_steps=int(max_lane_steps),nk=nk, nmat=nmat, nseg=len(target.mat), z_plane=float(env.z_plane), r_plane=float(env.r_plane),
+    return Cfg(eps=1e-4 if f32 else 1e-7, nudge=1e-3 if f32 else 1e-5, max_lane_steps=int(max_lane_steps),nk=nk, nmat=nmat, nseg=len(target.mat), ncone=target.n_cone, z_plane=float(env.z_plane), r_plane=float(env.r_plane),
                z_min=float(env.z_min), axis_x=float(env.axis_x), h_vac=stp.h_vac, h_near=stp.h_near, near=stp.near,
                h_mat=stp.h_mat, neutral_step=stp.neutral_step, ke_min_hadron=stp.cuts.ke_min_hadron,
                ke_min_pion=stp.cuts.ke_min_pion, max_loss_fraction=stp.cuts.max_loss_fraction)
@@ -121,27 +123,26 @@ def dir_local(S, u):
     return u @ S.rot
 
 
-def _radii(S, i, z):
-    z0, z1 = S.z0[i], S.z1[i]
-    f = (z - z0) / (z1 - z0)
-    return (S.rin[i, 0] + f * (S.rin[i, 1] - S.rin[i, 0]), S.rout[i, 0] + f * (S.rout[i, 1] - S.rout[i, 0]))
-
-
 def locate(S, cfg, xl):
     z, r = xl[:, 2], jnp.hypot(xl[:, 0], xl[:, 1])
     seg = jnp.full(z.shape, -1, jnp.int32)
-    for i in range(cfg.nseg - 1, -1, -1):              # the first segment wins where several hold the point
-        rin, rout = _radii(S, i, z)
-        inside = (z >= S.z0[i]) & (z < S.z1[i]) & (r >= rin) & (r < rout)
-        seg = jnp.where(inside, i, seg)
-    return seg
+    if S.bx.shape[0]:                                   # boxes after the coaxial segments: the first box wins
+        inb = jnp.all((xl[:, None, :] >= S.bx[None, :, 0::2]) & (xl[:, None, :] < S.bx[None, :, 1::2]), axis=2)
+        seg = jnp.where(inb.any(axis=1), cfg.ncone + jnp.argmax(inb, axis=1).astype(jnp.int32), seg)
+    nc = cfg.ncone                                      # coaxial segments, vectorized over the segment axis
+    z0, z1, zz, rr = S.z0[:nc], S.z1[:nc], z[:, None], r[:, None]
+    f = (zz - z0) / (z1 - z0)
+    rin = S.rin[:nc, 0] + f * (S.rin[:nc, 1] - S.rin[:nc, 0])
+    rout = S.rout[:nc, 0] + f * (S.rout[:nc, 1] - S.rout[:nc, 0])
+    inside = (zz >= z0) & (zz < z1) & (rr >= rin) & (rr < rout)
+    return jnp.where(inside.any(axis=1), jnp.argmax(inside, axis=1).astype(jnp.int32), seg)   # the first one wins
 
 
 def _cone_hit(xl, dl, z0, z1, ra, rb, eps=1e-7):
     s = (rb - ra) / (z1 - z0)
     c0 = ra - s * z0
-    x, y, z = xl[:, 0], xl[:, 1], xl[:, 2]
-    dx, dy, dz = dl[:, 0], dl[:, 1], dl[:, 2]
+    x, y, z = xl[..., 0], xl[..., 1], xl[..., 2]
+    dx, dy, dz = dl[..., 0], dl[..., 1], dl[..., 2]
     a = dx * dx + dy * dy - s * s * dz * dz
     b = 2 * (x * dx + y * dy - s * dz * (c0 + s * z))
     c = x * x + y * y - (c0 + s * z) ** 2
@@ -154,7 +155,7 @@ def _cone_hit(xl, dl, z0, z1, ra, rb, eps=1e-7):
     r1 = jnp.where(lin, -c / jnp.where(b == 0, 1.0, b), (-b - sq) / safe_a)
     r1 = jnp.where(lin & (b == 0), big, r1)
     r2 = jnp.where(lin, big, (-b + sq) / safe_a)
-    best = jnp.full(x.shape, big)
+    best = jnp.full(jnp.broadcast_shapes(x.shape, jnp.shape(z0), jnp.shape(ra), jnp.shape(rb)), big)
     for t in (r1, r2):
         zt = z + t * dz
         good = ok & (t > eps) & (zt >= z0) & (zt <= z1) & (c0 + s * zt >= 0) & jnp.isfinite(t)
@@ -162,38 +163,57 @@ def _cone_hit(xl, dl, z0, z1, ra, rb, eps=1e-7):
     return best
 
 
+def _box_slabs(xl, dl, lo, hi):
+    """(t_enter, t_exit) of rays against axis-aligned boxes (broadcast over the leading axes)."""
+    par = dl == 0
+    safe = jnp.where(par, 1.0, dl)
+    t1, t2 = (lo - xl) / safe, (hi - xl) / safe
+    inside = (xl >= lo) & (xl < hi)
+    big = jnp.asarray(jnp.inf, xl.dtype)
+    t1 = jnp.where(par, jnp.where(inside, -big, big), t1)
+    t2 = jnp.where(par, jnp.where(inside, big, -big), t2)
+    return jnp.max(jnp.minimum(t1, t2), axis=-1), jnp.min(jnp.maximum(t1, t2), axis=-1)
+
+
 def _plane_hit(xl, dl, zp, eps=1e-7):
-    safe = jnp.where(dl[:, 2] == 0, 1.0, dl[:, 2])
-    t = (zp - xl[:, 2]) / safe
-    return jnp.where((dl[:, 2] != 0) & (t > eps), t, jnp.inf)
+    safe = jnp.where(dl[..., 2] == 0, 1.0, dl[..., 2])
+    t = (zp - xl[..., 2]) / safe
+    return jnp.where((dl[..., 2] != 0) & (t > eps), t, jnp.inf)
 
 
 def distance_out(S, cfg, xl, dl, seg):
     big = jnp.full(xl.shape[0], jnp.inf, xl.dtype)
     out = big
-    for i in range(cfg.nseg):
-        z0, z1 = S.z0[i], S.z1[i]
-        e = cfg.eps
-        ti = jnp.minimum(_plane_hit(xl, dl, z0, e), _plane_hit(xl, dl, z1, e))
-        ti = jnp.minimum(ti, _cone_hit(xl, dl, z0, z1, S.rout[i, 0], S.rout[i, 1], e))
-        has_in = (S.rin[i, 0] > 0) | (S.rin[i, 1] > 0)
-        ti = jnp.where(has_in, jnp.minimum(ti, _cone_hit(xl, dl, z0, z1, S.rin[i, 0], S.rin[i, 1], e)), ti)
-        out = jnp.where(seg == i, ti, out)
-    return out
+    nb = S.bx.shape[0]
+    if nb:
+        bj = S.bx[jnp.clip(seg - cfg.ncone, 0, nb - 1)]
+        out = jnp.where(seg >= cfg.ncone, _box_slabs(xl, dl, bj[:, 0::2], bj[:, 1::2])[1], out)
+    i = jnp.clip(seg, 0, cfg.ncone - 1)                # the walls of the point's own coaxial segment (gathered)
+    z0, z1, e = S.z0[i], S.z1[i], cfg.eps
+    ti = jnp.minimum(_plane_hit(xl, dl, z0, e), _plane_hit(xl, dl, z1, e))
+    ti = jnp.minimum(ti, _cone_hit(xl, dl, z0, z1, S.rout[i, 0], S.rout[i, 1], e))
+    has_in = (S.rin[i, 0] > 0) | (S.rin[i, 1] > 0)
+    ti = jnp.where(has_in, jnp.minimum(ti, _cone_hit(xl, dl, z0, z1, S.rin[i, 0], S.rin[i, 1], e)), ti)
+    return jnp.where((seg >= 0) & (seg < cfg.ncone), ti, out)
 
 
 def distance_in(S, cfg, xl, dl):
     t = jnp.full(xl.shape[0], jnp.inf, xl.dtype)
-    for i in range(cfg.nseg):
-        z0, z1 = S.z0[i], S.z1[i]
-        t = jnp.minimum(t, _cone_hit(xl, dl, z0, z1, S.rout[i, 0], S.rout[i, 1], cfg.eps))
-        has_in = (S.rin[i, 0] > 0) | (S.rin[i, 1] > 0)
-        t = jnp.where(has_in, jnp.minimum(t, _cone_hit(xl, dl, z0, z1, S.rin[i, 0], S.rin[i, 1], cfg.eps)), t)
-        for zp, k in ((z0, 0), (z1, 1)):
-            tp = _plane_hit(xl, dl, zp, cfg.eps)
-            pp = xl + jnp.where(jnp.isfinite(tp), tp, 0.0)[:, None] * dl
-            r = jnp.hypot(pp[:, 0], pp[:, 1])
-            t = jnp.where((r >= S.rin[i, k]) & (r < S.rout[i, k]) & (tp < t), tp, t)
+    if S.bx.shape[0]:
+        te, tx = _box_slabs(xl[:, None, :], dl[:, None, :], S.bx[None, :, 0::2], S.bx[None, :, 1::2])
+        t = jnp.min(jnp.where((te > cfg.eps) & (te <= tx), te, jnp.inf), axis=1)
+    nc, e = cfg.ncone, cfg.eps                          # all coaxial segments at once: (lanes, segments)
+    z0, z1, rin, rout = S.z0[:nc], S.z1[:nc], S.rin[:nc], S.rout[:nc]
+    x3, d3 = xl[:, None, :], dl[:, None, :]
+    tc = _cone_hit(x3, d3, z0, z1, rout[:, 0], rout[:, 1], e)
+    has_in = (rin[:, 0] > 0) | (rin[:, 1] > 0)
+    tc = jnp.where(has_in, jnp.minimum(tc, _cone_hit(x3, d3, z0, z1, rin[:, 0], rin[:, 1], e)), tc)
+    t = jnp.minimum(t, jnp.min(tc, axis=1))
+    for zp, k in ((z0, 0), (z1, 1)):                     # the end faces (annuli)
+        tp = _plane_hit(x3, d3, zp, e)
+        tf = jnp.where(jnp.isfinite(tp), tp, 0.0)
+        r = jnp.hypot(xl[:, None, 0] + tf * dl[:, None, 0], xl[:, None, 1] + tf * dl[:, None, 1])
+        t = jnp.minimum(t, jnp.min(jnp.where((r >= rin[:, k]) & (r < rout[:, k]), tp, jnp.inf), axis=1))
     return t
 
 

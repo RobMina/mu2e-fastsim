@@ -159,8 +159,10 @@ class Target:
     """Coaxial frusta along the target's local z (the beam enters at the +z face and travels along local -z, see
     ptgt_chain.primaries): segment i spans z_edges[i]..z_edges[i+1] (or z_ranges[i], for segments that share a z
     range, e.g. a core and its sleeve) with inner/outer radii linear between r_in/r_out[i, 0] and [i, 1], material
-    mat[i] (bank material index). Segments must not overlap; a point inside several is in the first. Placement: local
-    -> global (the caller's frame) is x_global = origin + rot @ x_local."""
+    mat[i] (bank material index). Optional axis-aligned boxes in the local frame (fins, plates): boxes[j] =
+    (x0, x1, y0, y1, z0, z1), segment index n_cone + j, material mat[n_cone + j]; mat covers the coaxial segments,
+    then the boxes. Segments must not overlap; a point inside several is in the first. Placement: local -> global
+    (the caller's frame) is x_global = origin + rot @ x_local."""
     z_edges: np.ndarray
     r_in: np.ndarray
     r_out: np.ndarray
@@ -168,6 +170,7 @@ class Target:
     origin: np.ndarray = field(default_factory=lambda: np.zeros(3))
     rot: np.ndarray = field(default_factory=lambda: np.eye(3))
     z_ranges: Optional[np.ndarray] = None
+    boxes: Optional[np.ndarray] = None
 
     def __post_init__(self):
         z = np.asarray(self.z_edges, float)
@@ -184,6 +187,27 @@ class Target:
             raise ValueError("need 0 <= r_in < r_out")
         if not np.allclose(np.asarray(self.rot) @ np.asarray(self.rot).T, np.eye(3), atol=1e-12):
             raise ValueError("rot must be orthonormal")
+        b = self.bx
+        if b.ndim != 2 or b.shape[1] != 6 or np.any(b[:, 1::2] <= b[:, 0::2]):
+            raise ValueError("boxes must be (n, 6) = x0, x1, y0, y1, z0, z1 with lo < hi")
+        if len(self.mat) != n + len(b):
+            raise ValueError(f"mat must have one entry per segment and box ({n} + {len(b)}), got {len(self.mat)}")
+
+    @property
+    def n_cone(self):
+        return len(np.asarray(self.r_in))
+
+    @property
+    def bx(self):
+        """(boxes, 6): x0, x1, y0, y1, z0, z1 of each box (local frame); (0, 6) without boxes."""
+        return np.zeros((0, 6)) if self.boxes is None else np.asarray(self.boxes, float)
+
+    @property
+    def r_max(self):
+        """Radius of the bounding cylinder about the local z axis."""
+        b = self.bx
+        rb = np.hypot(np.maximum(np.abs(b[:, 0]), np.abs(b[:, 1])), np.maximum(np.abs(b[:, 2]), np.abs(b[:, 3])))
+        return float(max(np.max(self.r_out), rb.max() if len(b) else 0.0))
 
     @property
     def zr(self):
@@ -195,11 +219,11 @@ class Target:
 
     @property
     def z_lo(self):
-        return float(self.zr[:, 0].min())
+        return float(min(self.zr[:, 0].min(), self.bx[:, 4].min() if len(self.bx) else np.inf))
 
     @property
     def z_hi(self):
-        return float(self.zr[:, 1].max())
+        return float(max(self.zr[:, 1].max(), self.bx[:, 5].max() if len(self.bx) else -np.inf))
 
     @classmethod
     def clad_rod(cls, length, r_core, t_clad, mat_core=0, mat_clad=1, **placement):
@@ -235,12 +259,27 @@ class Target:
         xl = np.asarray(xl, float)
         z, r = xl[:, 2], np.hypot(xl[:, 0], xl[:, 1])
         seg = np.full(len(z), -1)
+        b = self.bx
+        if len(b):                                           # boxes after the coaxial segments: the first box wins
+            inb = np.all((xl[:, None, :] >= b[None, :, 0::2]) & (xl[:, None, :] < b[None, :, 1::2]), axis=2)
+            seg = np.where(inb.any(axis=1), self.n_cone + np.argmax(inb, axis=1), seg)
         zr = self.zr
-        for i in range(len(self.mat) - 1, -1, -1):          # the first segment wins where several hold the point
+        for i in range(self.n_cone - 1, -1, -1):             # the first segment wins where several hold the point
             rin, rout = self._radii(i, z)
             inside = (z >= zr[i, 0]) & (z < zr[i, 1]) & (r >= rin) & (r < rout)
             seg = np.where(inside, i, seg)
         return seg
+
+    @staticmethod
+    def _box_slabs(xl, dl, lo, hi):
+        """(t_enter, t_exit) of rays against boxes: xl, dl (N, 3); lo, hi (N or 1, 3)."""
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t1, t2 = (lo - xl) / dl, (hi - xl) / dl
+        par = dl == 0                                        # parallel to a pair of faces: inside the slab or never
+        inside = (xl >= lo) & (xl < hi)
+        t1 = np.where(par, np.where(inside, -np.inf, np.inf), t1)
+        t2 = np.where(par, np.where(inside, np.inf, -np.inf), t2)
+        return np.max(np.minimum(t1, t2), axis=-1), np.min(np.maximum(t1, t2), axis=-1)
 
     @staticmethod
     def _cone_hits(xl, dl, z0, z1, ra, rb):
@@ -273,8 +312,13 @@ class Target:
     def distance_out(self, xl, dl, seg):
         """Distance along dl from a point inside segment seg to that segment's boundary."""
         t = np.full(len(xl), np.inf)
+        b = self.bx
         for i in np.unique(seg):
             m = seg == i
+            if i >= self.n_cone:
+                bj = b[i - self.n_cone]
+                t[m] = self._box_slabs(xl[m], dl[m], bj[0::2][None], bj[1::2][None])[1]
+                continue
             z0, z1 = self.zr[i]
             ti = np.minimum(self._plane_hits(xl[m], dl[m], z0), self._plane_hits(xl[m], dl[m], z1))
             ti = np.minimum(ti, self._cone_hits(xl[m], dl[m], z0, z1, *self.r_out[i]))
@@ -286,7 +330,12 @@ class Target:
     def distance_in(self, xl, dl):
         """Distance to the first entry into any segment for points outside the material (inf: never)."""
         t = np.full(len(xl), np.inf)
-        for i in range(len(self.mat)):
+        b = self.bx
+        if len(b):
+            te, tx = self._box_slabs(xl[:, None, :], dl[:, None, :], b[None, :, 0::2], b[None, :, 1::2])
+            ok = (te > 1e-9) & (te <= tx)
+            t = np.min(np.where(ok, te, np.inf), axis=1)
+        for i in range(self.n_cone):
             z0, z1 = self.zr[i]
             for tc in (self._cone_hits(xl, dl, z0, z1, *self.r_out[i]),
                        self._cone_hits(xl, dl, z0, z1, *self.r_in[i]) if np.any(self.r_in[i] > 0) else t + np.inf):
