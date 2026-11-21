@@ -77,6 +77,8 @@ class Envelope:
     annuli: tuple = ()                  # absorbing annuli (z, r_in, r_out) crossed in either direction (thin rings)
     slabs: tuple = ()                   # passive thin rings (z, r_in, r_out, thickness) crossed in either direction:
                                         # loss, scattering and absorption from the tables of a slab material (slab_cross)
+    tally: tuple = ()                   # recording-only planes (z, r) (diagnostic): every mu/pi crossing at radius < r,
+                                        # in either direction, is recorded with its plane index; the lane goes on
 
     def radius(self, x):
         return np.hypot(x[:, 0] - self.axis_x, x[:, 1])
@@ -273,12 +275,22 @@ def primaries(n, target, rng, sigma=1.0, ke=8000.0, offset=0.5):
                 event=np.arange(n))
 
 
+def check_tally(env, h_vac):
+    """Tally planes and the record plane must be more than one vacuum step apart (one record per lane and step)."""
+    z = np.sort(np.r_[[t[0] for t in env.tally], env.z_plane]) if len(env.tally) else np.zeros(0)
+    if z.size > 1 and np.min(np.diff(z)) <= h_vac:
+        raise ValueError(f"tally planes closer than the vacuum step {h_vac} mm: {z.tolist()}")
+
+
 def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, slab=None):
     """Transport primaries to the record plane. Returns recorded states (event, pdg, x, p, t), deposit per target
     segment and counters. slab=(bank, material index): tables for env.slabs.
 
     enclosure=(R, H) (diagnostic): instead of the plane, record every lane (all species) where it first leaves the
-    cylinder of radius R and half-length H about the target axis (target frame), and stop it there."""
+    cylinder of radius R and half-length H about the target axis (target frame), and stop it there.
+
+    env.tally (diagnostic): mu/pi crossings of recording-only planes, returned as `tally` (with `plane`)."""
+    check_tally(env, st.h_vac)
     n0 = len(prim["pdg"])
     L = dict(pdg=np.asarray(prim["pdg"], np.int64), x=np.asarray(prim["x"], float).copy(),
              u=np.asarray(prim["u"], float).copy(), p=np.asarray(prim["p"], float).copy(),
@@ -286,9 +298,10 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, sla
     L["tau"] = -np.log(1 - rng.random(n0)) * lifetime(L["pdg"])
     L["seg"] = target.locate(target.to_local(L["x"]))
     rec = dict(ev=[], pdg=[], x=[], p=[], t=[])
+    tal = dict(ev=[], pdg=[], plane=[], x=[], p=[], t=[])
     edep = np.zeros(len(target.mat))
     cnt = dict(inelastic=0, elastic=0, stopped=0, decays=0, absorbed=0, upstream=0, recorded=0, outside_plane=0,
-               unknown=0, iterations=0)
+               unknown=0, iterations=0, tallied=0)
     zc = 0.5 * (target.z_lo + target.z_hi)
     hl = 0.5 * (target.z_hi - target.z_lo)
     rb = target.r_max
@@ -491,6 +504,20 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, sla
                 rec["x"].append(xp[sel]); rec["p"].append(up[sel] * L["p"][i[c]][sel, None]); rec["t"].append(tp[sel])
                 cnt["recorded"] += int(sel.sum())
                 cnt["outside_plane"] += int((~inside).sum())
+            for k_, (zt, rt) in enumerate(env.tally if enclosure is None else ()):
+                c = np.flatnonzero((x0v[:, 2] < zt) != (xn[:, 2] < zt))
+                if not c.size:
+                    continue
+                f = (zt - x0v[c, 2]) / (xn[c, 2] - x0v[c, 2])
+                xp = x0v[c] + f[:, None] * (xn[c] - x0v[c])
+                up = L["u"][i[c]] + f[:, None] * (un[c] - L["u"][i[c]])
+                up /= np.linalg.norm(up, axis=1, keepdims=True)
+                tp = L["t"][i[c]] - (1 - f) * hv[c] / (beta[i[c]] * C_MM_NS)
+                sel = (env.radius(xp) < rt) & np.isin(L["pdg"][i[c]], RECORD)
+                tal["ev"].append(L["ev"][i[c]][sel]); tal["pdg"].append(L["pdg"][i[c]][sel])
+                tal["plane"].append(np.full(int(sel.sum()), k_, np.int64))
+                tal["x"].append(xp[sel]); tal["p"].append(up[sel] * L["p"][i[c]][sel, None]); tal["t"].append(tp[sel])
+                cnt["tallied"] += int(sel.sum())
             L["x"][i], L["u"][i] = xn, un
             L["seg"][i] = target.locate(target.to_local(xn))
             gone = cross.copy()
@@ -527,8 +554,16 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, sla
             add(nl)
     else:
         raise RuntimeError("chain did not finish within max_iter")
-    out = {k: (np.concatenate(v) if v else np.zeros((0, 3) if k in ("x", "p") else 0)) for k, v in rec.items()}
-    return dict(record=out, edep=edep, counts=cnt, pot=n0)
+    cat = lambda d: {k: (np.concatenate(v) if v else np.zeros((0, 3) if k in ("x", "p") else 0)) for k, v in d.items()}
+    return dict(record=cat(rec), edep=edep, counts=cnt, pot=n0, tally=cat(tal))
+
+
+def save_tally(path, tally, pot, env, meta):
+    """Tally crossings (Mu2e frame) with the planes and POT, for the plane-by-plane comparison."""
+    import json
+    np.savez_compressed(path, ev=tally["ev"], pdg=tally["pdg"], plane=tally["plane"], x=tally["x"], p=tally["p"],
+                        t=tally["t"], pot=np.int64(pot), planes=np.asarray(env.tally, float).reshape(-1, 2),
+                        meta=json.dumps(meta, default=str))
 
 
 def reference(rec, pot, point, shard, z_target=-4004.0):
@@ -671,6 +706,9 @@ def main(argv=None):
     add_design_arguments(ap)
     ap.add_argument("--enclosure", nargs=2, type=float, metavar=("R", "H"),
                     help="diagnostic: record all species leaving this cylinder about the target, instead of the plane")
+    ap.add_argument("--tally", nargs=2, type=float, action="append", default=[], metavar=("Z", "R"),
+                    help="diagnostic: recording-only plane (repeatable); mu/pi crossings both ways go to --tally-out")
+    ap.add_argument("--tally-out", help="npz for the --tally crossings")
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     slab = load_slab(a.slab, a.slab_bank, a.slab_material)
@@ -680,11 +718,14 @@ def main(argv=None):
     tgt, beam_tgt = design_targets(a, bank, a.rod)
     fb = tsfield.FieldBank(a.maps)
     env = Envelope(z_nodes=np.asarray(a.env_z), r_nodes=np.asarray(a.env_r), z_min=a.z_min, z_plane=a.z_plane,
-                   r_plane=a.r_plane, annuli=tuple(tuple(x) for x in a.annulus), slabs=tuple(tuple(x) for x in a.slab))
+                   r_plane=a.r_plane, annuli=tuple(tuple(x) for x in a.annulus), slabs=tuple(tuple(x) for x in a.slab),
+                   tally=tuple(tuple(x) for x in a.tally))
+    if a.tally and not a.tally_out:
+        raise SystemExit("--tally needs --tally-out")
     st = Stepping(h_vac=a.h_vac, h_near=a.h_near, h_mat=a.h_mat, elastic=not a.no_elastic, msc_scale=a.msc_scale,
                   cuts=D.Cuts(ke_min_hadron=a.ke_min_hadron))
     rng = np.random.default_rng(a.seed)
-    recs, counts, edep = [], {}, np.zeros(len(tgt.mat))
+    recs, tals, counts, edep = [], [], {}, np.zeros(len(tgt.mat))
     t0 = time.time()
     done = 0
     while done < a.pot:
@@ -692,7 +733,7 @@ def main(argv=None):
         prim = primaries(n, beam_tgt, rng)
         prim["event"] = prim["event"] + done
         out = run(bank, tgt, fb, env, prim, rng, st, enclosure=a.enclosure, slab=slab)
-        recs.append(out["record"])
+        recs.append(out["record"]); tals.append(out["tally"])
         edep += out["edep"]
         for k, v in out["counts"].items():
             counts[k] = counts.get(k, 0) + v
@@ -708,6 +749,9 @@ def main(argv=None):
                               msc_scale=st.msc_scale), bank=dict(path=str(a.bank),
                                                                             content_hash=bank.lib.content_hash))
     ptgt_g4bl.save(a.out, ref, meta)
+    if a.tally:
+        save_tally(a.tally_out, {k: np.concatenate([r[k] for r in tals]) for k in tals[0]}, a.pot, env,
+                   dict(generator="ptgt_chain", seed=a.seed, rod=a.rod, counts=counts))
     print(json.dumps({k: meta[k] for k in ("pot", "entrances", "yield_per_pot", "species", "s_per_pot", "counts")}))
 
 
