@@ -300,6 +300,7 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, sla
     L["gen"] = np.zeros(n0, np.int64)      # hadronic generation: primaries 0, products of a gen-g interaction g + 1
     L["ppdg"] = np.zeros(n0, np.int64)     # parent species (interacting or decaying lane); 0 for primaries
     rec = dict(ev=[], pdg=[], x=[], p=[], t=[], gen=[], ppdg=[])
+    cre = dict(ev=[], pdg=[], p=[], x=[], gen=[], ppdg=[])     # every pion created (interaction or decay), diagnostic
     tal = dict(ev=[], pdg=[], plane=[], x=[], p=[], t=[])
     edep = np.zeros(len(target.mat))
     cnt = dict(inelastic=0, elastic=0, stopped=0, decays=0, absorbed=0, upstream=0, recorded=0, outside_plane=0,
@@ -558,11 +559,16 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, sla
         L["p"][mu_dec] = 0.0
         keep(L["p"] > 0)
         for nl in new_lanes:
+            pi = np.abs(nl["pdg"]) == 211
+            if np.any(pi):
+                cre["ev"].append(nl["ev"][pi]); cre["pdg"].append(nl["pdg"][pi]); cre["gen"].append(nl["gen"][pi])
+                cre["ppdg"].append(nl["ppdg"][pi]); cre["p"].append(nl["u"][pi] * nl["p"][pi][:, None])
+                cre["x"].append(np.asarray(nl["x"])[pi])
             add(nl)
     else:
         raise RuntimeError("chain did not finish within max_iter")
     cat = lambda d: {k: (np.concatenate(v) if v else np.zeros((0, 3) if k in ("x", "p") else 0)) for k, v in d.items()}
-    return dict(record=cat(rec), edep=edep, counts=cnt, pot=n0, tally=cat(tal))
+    return dict(record=cat(rec), edep=edep, counts=cnt, pot=n0, tally=cat(tal), created=cat(cre))
 
 
 def save_tally(path, tally, pot, env, meta):
@@ -717,6 +723,7 @@ def main(argv=None):
                     help="diagnostic: recording-only plane (repeatable); mu/pi crossings both ways go to --tally-out")
     ap.add_argument("--tally-out", help="npz for the --tally crossings")
     ap.add_argument("--gen-out", help="diagnostic: npz of the recorded states with their hadronic generation (raw order)")
+    ap.add_argument("--created-out", help="diagnostic: npz of every pion created (momentum, generation, parent species)")
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     slab = load_slab(a.slab, a.slab_bank, a.slab_material)
@@ -733,7 +740,7 @@ def main(argv=None):
     st = Stepping(h_vac=a.h_vac, h_near=a.h_near, h_mat=a.h_mat, elastic=not a.no_elastic, msc_scale=a.msc_scale,
                   cuts=D.Cuts(ke_min_hadron=a.ke_min_hadron))
     rng = np.random.default_rng(a.seed)
-    recs, tals, counts, edep = [], [], {}, np.zeros(len(tgt.mat))
+    recs, tals, cres, counts, edep = [], [], [], {}, np.zeros(len(tgt.mat))
     t0 = time.time()
     done = 0
     while done < a.pot:
@@ -741,7 +748,7 @@ def main(argv=None):
         prim = primaries(n, beam_tgt, rng)
         prim["event"] = prim["event"] + done
         out = run(bank, tgt, fb, env, prim, rng, st, enclosure=a.enclosure, slab=slab)
-        recs.append(out["record"]); tals.append(out["tally"])
+        recs.append(out["record"]); tals.append(out["tally"]); cres.append(out["created"])
         edep += out["edep"]
         for k, v in out["counts"].items():
             counts[k] = counts.get(k, 0) + v
@@ -757,6 +764,9 @@ def main(argv=None):
                               msc_scale=st.msc_scale), bank=dict(path=str(a.bank),
                                                                             content_hash=bank.lib.content_hash))
     ptgt_g4bl.save(a.out, ref, meta)
+    if a.created_out:
+        c = {k: np.concatenate([r[k] for r in cres]) for k in cres[0]}
+        np.savez_compressed(a.created_out, **c, pot=np.int64(a.pot))
     if a.gen_out:
         np.savez_compressed(a.gen_out, ev=rec["ev"], pdg=rec["pdg"], x=rec["x"], p=rec["p"], t=rec["t"], gen=rec["gen"],
                             ppdg=rec["ppdg"], pot=np.int64(a.pot))
