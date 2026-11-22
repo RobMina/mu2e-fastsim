@@ -94,7 +94,8 @@ def compare(stock, design=M.Design(), ctx=None, cfg=F.FomConfig(), dtype=np.floa
     k_s = np.array([int(V.required_layers(int(dg.n_layers[s]), req[nm], design.coincidence_layers,
                                           design.spare_layers)) for s, nm in enumerate(names)])
     _, (gt, gs, pcm) = V.p_miss(len(mu["p"]), idx[:, 0], sec_x, lay_x, pe, dg.n_layers, thr_s, k_s,
-                                F.finder_config(dg, ctx.cuts, idx[:, 1]) if cfg.finder_cuts else None)
+                                F.finder_config(dg, ctx.cuts, idx[:, 1]) if cfg.finder_cuts else None,
+                                V.group_index(names, cfg.coincidence_groups))
     miss_es = np.ones((nev, len(names)))
     np.multiply.at(miss_es, (mu["event"][gt], gs), 1.0 - pcm)
     out = dict(n_events=nev, n_muons=len(mu["p"]), n_crossings=int(len(idx)), dtype=np.dtype(dtype).name,
@@ -190,7 +191,8 @@ def inefficiency(stock, gen_paths, design=M.Design(), ctx=None, cfg=F.FomConfig(
     k = np.array([V.required_layers(int(dg.n_layers[s]), req[nm], design.coincidence_layers, design.spare_layers)
                   for s, nm in enumerate(names)])
     pm, _ = V.p_miss(len(p), idx[:, 0], dg.sector[idx[:, 1]], dg.layer[idx[:, 1]], pe, dg.n_layers, thr, k,
-                     F.finder_config(dg, ctx.cuts, idx[:, 1]) if cfg.finder_cuts else None)
+                     F.finder_config(dg, ctx.cuts, idx[:, 1]) if cfg.finder_cuts else None,
+                     V.group_index(names, cfg.coincidence_groups))
     ue, inv = np.unique(ek, return_inverse=True)
     pm_ev = np.ones(len(ue))
     np.multiply.at(pm_ev, inv, pm)

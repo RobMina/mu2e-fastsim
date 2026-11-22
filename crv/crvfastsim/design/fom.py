@@ -40,6 +40,8 @@ class FomConfig:
     finder_cuts: bool = True   # the finder's slope and minimum-cluster-PE cuts in P_coinc (veto.finder_factor)
     stack_range: bool = True   # muons lose energy in the designed stack (veto.stack_range); those that stop before
                                # the CE-like region are left out of the inefficiency (they cannot reach the tracker)
+    coincidence_groups: tuple = ()   # (sector, group label) pairs: sectors searched together for coincidences, as
+                                     # Offline's finder searches one sector type; () = every sector alone (veto.p_miss)
 
 
 def proxy_entry_t(origin, direction, proxy=PROXY):
@@ -183,7 +185,8 @@ def evaluate(design, muons, ctx=None, cfg=FomConfig(), calibration=None, dtype=n
     k = np.array([V.required_layers(int(dg.n_layers[s]), req[nm], design.coincidence_layers, design.spare_layers)
                   for s, nm in enumerate(names)])
     pm, (gt, gs, pc) = V.p_miss(n, idx[:, 0], dg.sector[idx[:, 1]], dg.layer[idx[:, 1]], pe, dg.n_layers, thr, k,
-                                finder_config(dg, ctx.cuts, idx[:, 1]) if cfg.finder_cuts else None)
+                                finder_config(dg, ctx.cuts, idx[:, 1]) if cfg.finder_cuts else None,
+                                V.group_index(names, cfg.coincidence_groups))
     covered = np.zeros(n, bool)
     covered[idx[:, 0]] = True
     ymax = np.full(n, -np.inf)
