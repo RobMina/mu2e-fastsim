@@ -13,6 +13,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from . import (calhelix, calo, calogeom, cpr as cprmod, deltafinder as dfmod, helix, hits, menu, mpr, mva, paths,
+               tzcluster,
                simpletc, timecluster)
 
 HELIX_TYPES = ("RobustHelixFinder", "AgnosticHelixFinder", "CalHelixFinder")
@@ -62,9 +63,11 @@ def pair_bucket(n, total):
 
 class Chain:
     def __init__(self, cfg, cond, tc_mva_path, response=None, path_names=None, salt=20261107, debug=False,
-                 precision="float64", compact=False, pairs=True, mpr=False, cpr=False, deltafinder=False):
+                 precision="float64", compact=False, pairs=True, mpr=False, cpr=False, deltafinder=False, tz=False):
         if precision not in PRECISIONS:
             raise ValueError(f"precision must be one of {PRECISIONS}")
+        if tz and not deltafinder:
+            raise ValueError("tz: TZClusterFinder reads TrigFlagPH's flags, run it with deltafinder=True")
         # float32: the device arrays in 32-bit, except the stock double steps of the hit and mpr ports, which trace
         # in float64 in both precisions (exact.strict). JAX's x64 flag is process-wide, so set it before any device
         # array is made.
@@ -94,6 +97,9 @@ class Chain:
         self.mprs = {}                           # RobustMultiHelixFinder label -> (finder, merge) settings (mpr paths)
         self.mpr = mpr                           # mpr paths are opt-in: the finder costs ~0.5 s per event on a CPU
         self.cpr = cpr                           # cpr paths are opt-in: they need the event's CaloDigis in the batch
+        # TZClusterFinder port (opt-in): the apr paths' time clusters from the stock-exact port (tzcluster.py), with
+        # their calo clusters, in place of the TimeClusterFinder approximation; needs CaloDigis and DeltaFinder flags
+        self.tz = tz
         self.chfs = {}                           # MergeHelices label -> (CalHelixFinder label, settings) (cpr paths)
         self.chf_geom = None                     # CalHelixFinder geometry inputs (calhelix.geometry)
         # TrigFlagPH (DeltaFinder port, opt-in): its flags replace the panel hits' for every stage that reads them
@@ -128,16 +134,19 @@ class Chain:
         # cpr paths: the calo stage (calo.reconstruct, from the batch's packed CaloDigis "cd_*") and CalTimePeakFinder
         self.cpr_tp, self.calo_s = {}, None
         cpr_tc = sorted({p["tc"] for p in self.plan.values() if p["family"] == "cpr"})
-        if cpr_tc:
+        self.tz_s = {lbl: tzcluster.settings(self.mods[lbl]) for lbl in
+                     sorted({p["tc"] for p in self.plan.values() if p["family"] == "apr"})} if tz else {}
+        if cpr_tc or self.tz_s:
             calib = cfg["services"]["ProditionsService"]["calCalib"]
             if calib.get("useDb"):
-                raise ValueError("cpr paths need calCalib from the configuration (useDb false)")
+                raise ValueError("cpr and tz paths need calCalib from the configuration (useDb false)")
             geo = calogeom.build()
             self.calo_s = calo.settings(self.mods["CaloHitMakerFast"], self.mods["CaloClusterFast"], calib, geo)
+            if compact:
+                raise ValueError("cpr and tz paths run on the one-call path only (compact=False)")
+        if cpr_tc:
             self.cpr_tp = {lbl: cprmod.settings(self.mods[lbl], geo) for lbl in cpr_tc}
             self.chf_geom = calhelix.geometry(cond)
-            if compact:
-                raise ValueError("cpr paths run on the one-call path only (compact=False)")
         # off-spill hit reconstruction (cst paths): the TrigOffSpMakeSH/PH settings on the same digis
         self.sh_off = self.ph_off = None
         if self.stc:
@@ -245,7 +254,7 @@ class Chain:
     def _tc_label(self, p):
         """Device time-cluster settings: the path's TimeClusterFinder, or the matching-pitch one for TZClusterFinder."""
         m = self.mods[p["tc_producer"]]
-        if m["module_type"] in ("TimeClusterFinder", "CalTimePeakFinder"):
+        if m["module_type"] in ("TimeClusterFinder", "CalTimePeakFinder") or (self.tz and m["module_type"] == "TZClusterFinder"):
             return p["tc_producer"]
         return "TrigTimeClusterFinder"
 
@@ -261,7 +270,7 @@ class Chain:
 
     def _tc_labels(self):
         """TimeClusterFinder settings the tpr/apr paths use (cst clusters come from SimpleTimeCluster)."""
-        return sorted({p["tc"] for p in self.plan.values() if p["family"] in ("tpr", "apr", "mpr")})
+        return sorted({p["tc"] for p in self.plan.values() if p["family"] in ("tpr", "apr", "mpr")} - set(self.tz_s))
 
     def _helix_keys(self):
         return sorted({(p["tc"], p["helix"]) for p in self.plan.values() if p.get("helix")})
@@ -276,9 +285,18 @@ class Chain:
             res = (timecluster.time_clusters_multi_pairs(ph, ss, self.net, K=E * len(group)) if self.pairs else
                    timecluster.time_clusters_multi(ph, ss, self.net))
             tcs.update(zip(group, res))
-        if self.cpr_tp:                              # cpr: calo clusters, then CalTimePeakFinder on the panel hits
+        cl = None
+        if self.calo_s is not None:                  # calo clusters (cpr and tz paths)
             dg = {k: batch["cd_" + k] for k in CALO_KEYS}
             _, cl = calo.reconstruct(dg, batch["pbt"].astype(jnp.float32), self.calo_s, C=CPR_CLUSTERS)
+        for lbl, s in self.tz_s.items():             # tz: TZClusterFinder port on the flagged panel hits + calo clusters
+            # carry=False: the block's events need not be consecutive in file order; a calo-recovered chunk that needs
+            # the stale energy selection of an earlier event is flagged (indeterminate) and not made an electron
+            z = tzcluster.clusters({k: v for k, v in ph.items() if k != "df_err"}, cl, s, carry=False)
+            tcs[lbl] = {"valid": z["valid"], "nsh": z["nsh"], "t0": z["t0"], "members": z["members"],
+                        "calo": z["calo"], "overflow": (z["overflow"] != 0) | cl["overflow"],
+                        "indeterminate": z["indeterminate"]}
+        if self.cpr_tp:                              # cpr: CalTimePeakFinder on the panel hits and calo clusters
             for lbl, s in self.cpr_tp.items():
                 pk = cprmod.time_peaks(ph, cl, s)
                 # overflow: more clusters than CPR_CLUSTERS (the later ones are not seen), reported per path
@@ -318,7 +336,7 @@ class Chain:
         for key in self._helix_keys():
             s = helix.settings(self.mods[key[1]])
             # cpr time peaks have another slot count than the time clusters: their own batched call
-            groups.setdefault((key[0] in self.cpr_tp,) + tuple(sorted(s.items())), []).append(key)
+            groups.setdefault((key[0] in self.cpr_tp, key[0] in self.tz_s) + tuple(sorted(s.items())), []).append(key)
         return list(groups.values())
 
     # compact path: candidates -> (host: counts) -> refined clusters on candidate pairs -> (host: counts) -> helices on
@@ -430,6 +448,9 @@ class Chain:
                          ("cpr", p["chf"]) if p.get("chf") else (p["tc"], p["helix"]))
             if p["family"] == "mpr":
                 aux[name + ":overflow"] = hx["overflow"]           # time clusters with more hits than the finder's slots
+            if p["tc"] in self.tz_s:
+                aux[name + ":tzoverflow"] = tc["overflow"]         # a TZ capacity, or calo clusters past CPR_CLUSTERS
+                aux[name + ":tzindet"] = tc["indeterminate"]       # recovered chunks with an unknown stale selection
             if p["family"] == "cpr":
                 aux[name + ":overflow"] = tc["overflow"]           # events with more calo clusters than CPR_CLUSTERS
                 aux[name + ":hxoverflow"] = hx["overflow"]        # time peaks with more hits than the finder's slots

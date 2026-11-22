@@ -130,6 +130,57 @@ def decode_helix_seeds(data, offsets):
     return out
 
 
+def decode_time_clusters(data, offsets):
+    """Stock TimeClusters (memberwise: header 16, then per member over the n clusters: ``_strawHitIdxs`` (one
+    bytecounted block for all n, version 2 bytes, then per cluster a count and its uint16 indices), ``_t0`` 26 bytes
+    each (t0 and its error, doubles at 10 and 18),
+    ``_pos`` 32 bytes each (3 floats at 20), ``_nsh`` 2 bytes each (uint16), ``_caloCluster`` 36 bytes each (an
+    art::Ptr: its key, the cluster index, as a uint64 at 28; all ones for a null Ptr)). Returns per event a list of
+    clusters {hits (the ComboHit indices, in stock order), t0, t0err, pos [3], nsh, calo (the index, or -1)}."""
+    out = []
+    bc = lambda at: int(_be(data, np.array([at]), ">u4")[0] & 0x3FFFFFFF)
+    for s, e in zip(offsets[:-1], offsets[1:]):
+        s, e = int(s), int(e)
+        if bc(s) + 4 != e - s or int(_be(data, np.array([s + 4]), ">u2")[0]) != 0x400A:
+            raise ValueError("unexpected TimeCluster collection header")
+        n = int(_be(data, np.array([s + 12]), ">i4")[0])
+        at = s + 16
+        tcs = [{} for _ in range(n)]
+        if n:
+            end = at + 4 + bc(at)
+            at += 6
+            for k in range(n):
+                m = int(_be(data, np.array([at]), ">i4")[0])
+                tcs[k]["hits"] = _be(data, at + 4 + 2 * np.arange(m), ">u2").astype(np.int64) if m else np.zeros(0, np.int64)
+                at += 4 + 2 * m
+            if at != end:
+                raise ValueError("unexpected TimeCluster hit-index layout")
+        for k in range(n):
+            if bc(at) != 22:
+                raise ValueError("unexpected TrkT0 layout")
+            tcs[k]["t0"] = float(_be(data, np.array([at + 10]), ">f8")[0])
+            tcs[k]["t0err"] = float(_be(data, np.array([at + 18]), ">f8")[0])
+            at += 26
+        for k in range(n):
+            if bc(at) != 28 or bc(at + 10) != 18:
+                raise ValueError("unexpected TimeCluster position layout")
+            tcs[k]["pos"] = _be(data, at + 20 + 4 * np.arange(3), ">f4").astype(np.float32)
+            at += 32
+        for k in range(n):
+            tcs[k]["nsh"] = int(_be(data, np.array([at]), ">u2")[0])
+            at += 2
+        for k in range(n):
+            if bc(at) != 32:
+                raise ValueError("unexpected art::Ptr layout")
+            key = int(_be(data, np.array([at + 28]), ">u8")[0])
+            tcs[k]["calo"] = -1 if key == 0xFFFFFFFFFFFFFFFF else key
+            at += 36
+        if at != e:
+            raise ValueError("TimeCluster collection length differs from its members")
+        out.append(tcs)
+    return out
+
+
 def path_status(words):
     """HLTPathStatus words -> (state, index): state 0 ready, 1 pass, 2 fail, 3 exception; index = the path's module
     that decided (the last module run)."""

@@ -9,7 +9,7 @@ and lumi-stream paths) of the production menu, from StrawDigis to per-path decis
 | panel hits | `CombineStrawHits` (TrigMakePH) | port with the stock arithmetic (`hits.panel_hits`) | bit for bit |
 | background flags | `DeltaFinder` (TrigFlagPH) | port with the stock arithmetic and orders (`deltafinder.py`); opt-in (off: no hit flagged) | bit for bit; see [Background flags](#background-flags-deltafinder) |
 | time clusters | `TimeClusterFinder` | port (`timecluster.py`), incl. the TMVA hit MLP | see the README table of the PR / record |
-| time clusters (apr) | `TZClusterFinder` | the TimeClusterFinder port with TZ's `clusterThresh` | approximation |
+| time clusters (apr) | `TZClusterFinder` (TrigTZClusterFinder) | port with the stock arithmetic (`tzcluster.py`); opt-in (off: the TimeClusterFinder port with TZ's `clusterThresh`) | on: equal to stock in every event; off: approximation; see [apr time clusters](#time-clusters-of-the-apr-paths-tzclusterfinder) |
 | helices | `RobustHelixFinder` (tpr), `AgnosticHelixFinder` (apr) | compact fit with the stock per-face hit selection and chi2 definitions (`helix.py`); the hit ratio over `HelixTool`'s nominal face z | approximation |
 | helix cuts | `HelixFilter` | same cuts, incl. the D0-phi prescale counter on the host | exact given the helix |
 | track fit + cuts | `KalSeedFit` + `KalSeedFilter` | response layer: the filter's cuts on helix quantities and a pass probability per path and process from development shards (shipped, `data/`) | statistical |
@@ -22,9 +22,9 @@ and lumi-stream paths) of the production menu, from StrawDigis to per-path decis
 | calo hits, clusters | `CaloHitMakerFast`, `CaloClusterFast` | port with the stock arithmetic and orders (`calo.py`), from CaloDigis | bit for bit; see [Calorimeter paths](#calorimeter-paths) |
 | calo filters | `CaloClusterCounterFilter`, `CaloLikelihood`, `CaloNNEval` + `FilterEcalNNTrigger`, `CaloCosmicCalib`, `DigiFilter` (calo digis) | ports (`calo.py`, `calopaths.py`) | exact on the development and held-out files |
 
-Not evaluated on the device: `apr_TC_calo` (its `TZClusterFinder`
-attaches and recovers calo clusters; always false on the device), `cst_CosmicTrackSeed` (`LineFinder` +
-`CosmicSeedFilter`), paths with `MultiHelixFilter` or `minNHelices > 1`.
+Not evaluated on the device: `cst_CosmicTrackSeed` (`LineFinder` + `CosmicSeedFilter`), paths with
+`MultiHelixFilter` or `minNHelices > 1`. `apr_TC_calo` needs the TZClusterFinder port (`Chain(tz=True)`); without it the
+path is always false.
 
 ### Background flags (DeltaFinder)
 
@@ -34,7 +34,8 @@ electrons, sets `EnergySelection` on every hit and clears it on the hits of prot
 so only the flags change. It is off by default and runs with `Chain(deltafinder=True)`, `decide --deltafinder` or
 `TRIGGER_DEVICE_DELTAFINDER=1` (bench); with it off, no hit carries `Background` (as before). With it on, the stages
 that read the flags see them: `CalTimePeakFinder` (cpr, `BkgSelBits`) and the helix fits (`HitBackgroundBits`).
-`TimeClusterFinder` runs with `TestFlag: false` and reads no flag, so the tpr and apr time clusters do not change.
+`TimeClusterFinder` runs with `TestFlag: false` and reads no flag, so the tpr time clusters do not change, nor do the
+apr ones unless the TZClusterFinder port is on (`tz=True`, which needs the flags).
 
 The port follows the stock containers and orders: hits time-ordered by the radix sort's key (the early-end time,
 `ComboHit::time()`, which the panel hits now carry as `etime`), the per-face time bins with the out-of-range reads of
@@ -58,7 +59,8 @@ the TrigFlagPH flags from the stored StrawDigis equal the stock ones on every hi
 
 The tpr discordance comes from the calo-seeded time clusters (`UseCaloCluster: true`), which the device does not make:
 against a stock replay with `UseCaloCluster: false` it is 0 on every tpr path (2 held-out events on
-`tpr_HlxUe_50m30p`). The apr one comes from the time-clustering approximation. The port costs about 0.15-0.2 s per
+`tpr_HlxUe_50m30p`). The apr one comes from the time-clustering approximation; with `tz=True` it is 0 (see
+[apr time clusters](#time-clusters-of-the-apr-paths-tzclusterfinder)). The port costs about 0.15-0.2 s per
 event on four CPU cores (compiles included); its GPU rate is not measured.
 
 ### Multi-helix paths (mpr)
@@ -140,6 +142,53 @@ Both precisions. Against the stored stock HelixSeeds, the reference finder and m
 bit for bit on file 1 events 0-299 (De 170, Ue 109), and the port equals the reference in both precisions. In events
 where every time peak has fewer straw hits than the paths' TimeClusterFilter minimum, stock never runs the finder
 (the filter stops the path first), so no seeds are stored; the decisions do not depend on it.
+
+### Time clusters of the apr paths (TZClusterFinder)
+
+With `Chain(tz=True)` (which needs `deltafinder=True` and the event's CaloDigis in the batch, as for cpr) the apr
+paths take their time clusters from `tzcluster.py`, the port of `TZClusterFinder` (Offline v13_41_01, CalPatRec), the
+menu's `TrigTZClusterFinder`. It reads the TrigFlagPH panel hits (it skips energy-selected hits flagged Noisy, Dead or
+Background) and the `CaloClusterFast` clusters of the calo stage. The stages run in the stock order: per-plane hit
+lists in descending time, chunks, combined chunks, recovered hits (LsqSums2 line fits, in float64), combined lines,
+proton counting, then the calo step, which attaches matching calo clusters (a second match copies the chunk) and
+recovers clusters around unmatched ones. The port equals the literal transcription `tests/tz_cluster_reference.py`
+(float32 where stock computes in float, libstdc++ `std::sort` with its ties, no fused multiply-add), which equals the
+stored stock TimeClusters, hit list in order, t0, nsh and calo cluster, in every event checked (1,500 CE and 1,500
+cosmic events, from the stored TrigFlagPH flags). `strawart.decode_time_clusters` reads the stored TimeClusters.
+
+`TimeClusterFilter` reads `nStrawHits` and, with `requireCaloCluster`, the cluster's calo cluster (`apr_TC_calo`:
+minimum 15 straw hits, with a calo cluster). The other apr paths' time-cluster stage is the same filter without the
+calo requirement, so with `tz=True` it is exact too; their helix and track stages stay the approximation and the
+response layer.
+
+Two things are flagged instead of reproduced (aux arrays `<path>:tzoverflow` and `<path>:tzindet`):
+- fixed capacities: 64 chunks from the chunk step, 16 chunks appended by the calo step, 16 output clusters (the
+  production files reach 29, 3 and 8);
+- stale state: the calo recovery reuses the module's chunk record without resetting its energy selection, so a
+  recovered cluster counts as an electron cluster according to the last chunk stored before it, possibly in an earlier
+  event. `tzcluster.clusters` resolves that within a call whose events are consecutive in file order (`nrg_in`,
+  `nrg_out` carry it across calls). The chain's blocks may be sorted by hit count, so it calls the port with
+  `carry=False`: a recovery that needs an earlier event's value is flagged. On the production files every recovered
+  cluster was decided by its own event.
+
+Validation on the v13_41 menu replays of [Calorimeter paths](#calorimeter-paths) (CE files 1-5 development, 6-10 held-out;
+cosmic file 1 development, 2-3 held-out), the rule (the apr time-cluster stage equal to stock in every event, no
+discordant `apr_TC_calo` event) declared before the held-out read, both precisions:
+
+| | CE development | CE held-out | cosmic development | cosmic held-out |
+|---|---|---|---|---|
+| events | 14,052 | 13,992 | 8,269 | 16,567 |
+| apr time-cluster stage (14 paths): events that differ from stock | 0 | 0 | 0 | 0 |
+| `apr_TC_calo` passes, stock / device | 7,676 / 7,676 | 7,709 / 7,709 | 3,790 / 3,790 | 7,558 / 7,558 |
+| `apr_TC_calo` discordant events | 0 | 0 | 0 | 0 |
+| flagged events (`tzoverflow`, `tzindet`) | 0 | 0 | 0 | 0 |
+
+On one cosmic event the DeltaFinder port flags 3 hits differently from stock; the TZ clusters of that event differ,
+but no filter decision does. A decide job with `tz=True` (and the cpr calo stage) takes 0.07-0.24 s per CE event and
+0.3-0.9 s per cosmic event on four CPU cores, compiles included; the GPU rate is not measured.
+
+The apr response factors (`data/response_ce_dio.json`, `data/response_rpc.json`) were measured with the approximate
+time clusters (`tz=False`); with `tz=True` they have not been measured again.
 
 ### Calorimeter paths
 
