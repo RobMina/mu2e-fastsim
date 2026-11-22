@@ -81,3 +81,13 @@ def test_stage_map_sets():
     for bad in ("../x", "GA05/../PSMap", "a/b/c", "", "PS Map"):
         with pytest.raises(ValueError):
             stage.map_path(bad)
+
+
+def test_metrics_carry_the_target_heat(tmp_path):
+    heat = dict(peak_Gy_per_pot=2.5e-9, peak_Gy_err=1e-11, total_MeV_per_pot=850.0)
+    np.savez(tmp_path / "r.npz", pdg=np.array([13, -211]), parent_shard_event_counts=np.array([1000]),
+             build_meta=np.array([json.dumps(dict(heat=heat))]))
+    np.savez(tmp_path / "t.npz", ds_fate=np.array([1, 0]), pdg_ds=np.array([13, -211]))
+    m = PP.metrics(tmp_path / "r.npz", tmp_path / "t.npz", cached=True, chain_s=0.0, ts_s=1.0)
+    assert m["peak_heat_Gy_per_pot"] == pytest.approx(2.5e-9) and m["peak_heat_Gy_per_pot_err"] == pytest.approx(1e-11)
+    assert m["target_edep_MeV_per_pot"] == pytest.approx(850.0) and all(isinstance(v, float) for v in m.values())

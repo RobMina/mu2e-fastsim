@@ -468,6 +468,71 @@ class Target:
 
 # ------------------------------------------------------------------------------------------------ transport
 
+# ------------------------------------------------------------------------------------------------ target heating
+
+# Densities [g/cm3] of the bank materials (NIST values for G4_*; the G4beamline deck's composites as defined there).
+DENSITY = {"G4_W": 19.30, "G4_Ir": 22.42, "G4_Ta": 16.654, "G4_Mo": 10.22, "G4_Cu": 8.96, "G4_Fe": 7.874,
+           "G4_STAINLESS-STEEL": 8.00, "WL10": 18.75, "Inconel718": 8.19}
+EDEP_SLICE_MM = 10.0     # default slice width along the target's local z
+EDEP_SLICE_MAX = 64      # fixed number of slice bins (a new design length needs no recompile on the device)
+EDEP_BATCHES = 10        # batch means (by event number mod EDEP_BATCHES) for the statistical errors
+MEV_PER_G_TO_GY = 1.602176634e-13 / 1e-3  # MeV/g -> J/kg (1 MeV = 1.602e-13 J, 1 g = 1e-3 kg)
+
+
+def slice_edges(target, width=EDEP_SLICE_MM, nmax=EDEP_SLICE_MAX):
+    """(nmax + 1) slice edges along the local z from target.z_lo in steps of width, and the number of slices that
+    cover z_lo..z_hi (bins beyond carry no mass). Deposits outside the slices (e.g. spokes) are not sliced."""
+    n = int(np.ceil((target.z_hi - target.z_lo) / width - 1e-9))
+    if n > nmax:
+        raise ValueError(f"target length {target.z_hi - target.z_lo} mm needs {n} slices > {nmax}: widen the slices")
+    return target.z_lo + width * np.arange(nmax + 1), n
+
+
+def slice_masses(target, edges, densities, n_per_slice=200_000, seed=12345):
+    """Target mass [g] per slice: Monte Carlo over the cylinder about the local z axis that holds every solid in the
+    slice (points located with Target.locate, density per material). densities: g/cm3 per bank material index."""
+    rng = np.random.default_rng(seed)
+    R = target.r_max
+    cy = target.cy
+    if len(cy):
+        R = max(R, float(np.max(np.maximum(np.hypot(cy[:, 0], cy[:, 1]), np.hypot(cy[:, 3], cy[:, 4])) + cy[:, 6])))
+    rho = np.asarray(densities, float)[np.asarray(target.mat)]
+    out = np.zeros(len(edges) - 1)
+    for k in range(len(edges) - 1):
+        if edges[k] >= target.z_hi:
+            break
+        r = R * np.sqrt(rng.random(n_per_slice)); ph = 2 * np.pi * rng.random(n_per_slice)
+        z = edges[k] + (edges[k + 1] - edges[k]) * rng.random(n_per_slice)
+        seg = target.locate(np.stack([r * np.cos(ph), r * np.sin(ph), z], 1))
+        dens = np.where(seg >= 0, rho[np.clip(seg, 0, None)], 0.0)
+        out[k] = dens.mean() * np.pi * R * R * (edges[k + 1] - edges[k]) * 1e-3     # g/cm3 * mm3 -> g
+    return out
+
+
+def material_densities(materials, overrides=None):
+    """g/cm3 per bank material; overrides: {name: density}."""
+    d = dict(DENSITY, **(overrides or {}))
+    missing = [m for m in materials if m not in d]
+    if missing:
+        raise ValueError(f"no density for {missing}: pass --density NAME=G_PER_CM3")
+    return [d[m] for m in materials]
+
+
+def peak_heat(batches, masses, pot, n_used):
+    """Peak heat from batch sums: batches (EDEP_BATCHES, nbins) MeV deposited per slice, masses (nbins) g, pot (total).
+    Returns per-slice MeV/g/POT, the peak (MeV/g/POT and Gy/POT) with the batch-mean error of the peak slice."""
+    b = np.asarray(batches, float)[:, :n_used]
+    m = np.asarray(masses, float)[:n_used]
+    nb = b.shape[0]
+    per = b.sum(0) / m / pot
+    k = int(np.argmax(per))
+    bm = b[:, k] / m[k] / (pot / nb)                   # per-batch estimates (batches hold ~pot / nb POT each)
+    err = float(np.std(bm, ddof=1) / np.sqrt(nb)) if nb > 1 else float("nan")
+    return dict(slice_MeV_per_g_per_pot=per.tolist(), peak_slice=k, peak_MeV_per_g_per_pot=float(per[k]),
+                peak_err=err, peak_Gy_per_pot=float(per[k] * MEV_PER_G_TO_GY), peak_Gy_err=err * MEV_PER_G_TO_GY,
+                total_MeV_per_pot=float(b.sum() / pot), mass_g=m.tolist())
+
+
 def frame_to_lab(d):
     """Rotation matrices [N, 3, 3] whose third column is the unit direction d (projectile frame -> lab)."""
     d = d / np.linalg.norm(d, axis=1, keepdims=True)

@@ -47,6 +47,7 @@ class Static(NamedTuple):
     sp: object; cy: object                      # spheres (n, 4): c, R; cylinders (n, 7): a, b, r (local frame)
     env_z: object; env_r: object; annuli: object
     tally: object                               # recording-only planes (n, 2): z, r (diagnostic)
+    ez: object; edep_loc: object                # target-heat slice edges (local z); bank local deposit per trial
     fm: object
     rb: object; zc: object; hl: object          # target bounding cylinder (device scalars: no recompile per rod)
     slabs: object                               # passive thin rings (n, 4): z, r_in, r_out, thickness
@@ -100,6 +101,7 @@ def make_static(bank, target, env, fm, dtype, slab=None):
                 z0=f(target.zr[:, 0]), z1=f(target.zr[:, 1]), rin=f(target.r_in), rout=f(target.r_out), mat=jnp.asarray(target.mat, jnp.int32),
                 bx=f(target.bx), sp=f(target.sp), cy=f(target.cy),
                 origin=f(target.origin), rot=f(target.rot), env_z=f(env.z_nodes), env_r=f(env.r_nodes), annuli=f(annuli), tally=f(tally),
+                ez=f(D.slice_edges(target)[0]), edep_loc=f(bank["edep_local"]),
                 fm=fieldmap.FieldMap(f(fm.lo), f(fm.d), jnp.asarray(fm.n), f(fm.B)),
                 rb=f(target.r_max), zc=f(0.5 * (target.z_lo + target.z_hi)),
                 hl=f(0.5 * (target.z_hi - target.z_lo)),
@@ -379,8 +381,18 @@ def _slab_cross(S, sp, m, q, p, u, thick, k1, k2, k3):
     return jnp.where(on, pn, p), jnp.where(on[:, None], un, u), on & (absorbed | stopped)
 
 
+def _deposit(S, edz, ev, x, val, mask):
+    """Add val [MeV] where mask to the target-heat sums (event batch x local-z slice), accumulated in float64."""
+    nz = S.ez.shape[0] - 1
+    zl = to_local(S, x)[:, 2]
+    b = jnp.searchsorted(S.ez, zl, side="right") - 1
+    ok = mask & (b >= 0) & (b < nz)
+    idx = jnp.where(ok, (ev % D.EDEP_BATCHES).astype(jnp.int32) * nz + b.astype(jnp.int32), edz.size)
+    return edz.reshape(-1).at[idx].add(jnp.where(ok, val, 0.0).astype(jnp.float64), mode="drop").reshape(edz.shape)
+
+
 def _step(S, cfg, carry, key):
-    L, emit, ecount, rec, rcount, cnt = carry
+    L, emit, ecount, rec, rcount, cnt, edz = carry
     dt = L.x.dtype
     N = L.alive.shape[0]
     ks = jax.random.split(key, 15)
@@ -392,6 +404,7 @@ def _step(S, cfg, carry, key):
     pend = L.alive & (L.pk > 0)                    # deferred lanes: emit their kept outcome, do not move
     capped = L.alive & ~pend & (L.n >= cfg.max_lane_steps)
     stop = L.alive & ~pend & (low | (L.sp < 0) | capped)
+    edz = _deposit(S, edz, L.ev, L.x, ke, stop & (L.seg >= 0))
     alive = L.alive & ~stop & ~pend
     beta = L.p / jnp.hypot(L.p, m)
     finite_tau = jnp.isfinite(L.tau)
@@ -416,6 +429,7 @@ def _step(S, cfg, carry, key):
     um = um / jnp.linalg.norm(um, axis=1, keepdims=True)
     xm = L.x + stp[:, None] * L.u
     de = jnp.minimum(dedx * stp, ke)
+    edz = _deposit(S, edz, L.ev, L.x + 0.5 * stp[:, None] * L.u, de, inm)       # at the step midpoint
     e_new = ke - de + m
     pm = jnp.sqrt(jnp.maximum(e_new ** 2 - m ** 2, 0.0))
     bet = pm / jnp.maximum(e_new, 1e-30)
@@ -556,6 +570,7 @@ def _step(S, cfg, carry, key):
     n_emit = jnp.where(defer, 0, n_emit)
     n_sec = jnp.where(defer, 0, n_sec)
     inel = inel & ~defer
+    edz = _deposit(S, edz, L.ev, x_new, S.edep_loc[jnp.clip(j, 0, S.edep_loc.shape[0] - 1)], inel)
     dec_had = dec_had & ~defer
     alive_new = jnp.where(defer, L.alive, alive_new)
     tot = jnp.sum(n_emit)
@@ -633,7 +648,7 @@ def _step(S, cfg, carry, key):
                            jnp.sum(defer), jnp.sum(slab & ~defer), jnp.sum(abs_sl), ntal]).astype(jnp.int64)
     L = Lanes(alive=alive_new, sp=L.sp, x=x_new, u=u_new, p=p_new, t=t_new, tau=tau_new, seg=seg_new, ev=L.ev,
               n=L.n + L.alive.astype(jnp.int32), pk=pk_new, pj=pj_new, pch=pch_new)
-    return (L, emit, ecount, rec, rcount, cnt)
+    return (L, emit, ecount, rec, rcount, cnt, edz)
 
 
 def cfg_emit_per_step(N):
@@ -760,6 +775,7 @@ def run(bank, target, fm, env, prim, seed=1, st=C.Stepping(), pool=1 << 16, emit
     emit, ecount = _empty_emit(E, dtype), jnp.int64(0)
     rec, rcount = _empty_rec(R, dtype), jnp.int64(0)
     cnt = jnp.zeros(len(COUNTERS), jnp.int64)
+    edz = jnp.zeros((D.EDEP_BATCHES, D.EDEP_SLICE_MAX), jnp.float64)
     key = jax.random.PRNGKey(seed)
     first, steps_run, stuck_prev = 0, 0, None
     for it in range(max_chunks):
@@ -770,7 +786,7 @@ def run(bank, target, fm, env, prim, seed=1, st=C.Stepping(), pool=1 << 16, emit
             first += int(k)
         if not bool(jnp.any(L.alive)) and int(ecount) == 0 and first >= n_prim:
             break
-        (L, emit, ecount, rec, rcount, cnt), i = chunk(S, cfg, (L, emit, ecount, rec, rcount, cnt), steps,
+        (L, emit, ecount, rec, rcount, cnt, edz), i = chunk(S, cfg, (L, emit, ecount, rec, rcount, cnt, edz), steps,
                                                        jax.random.fold_in(key, 2 * it + 1))
         steps_run += int(i)
         if int(i) == 0 and bool(jnp.all(L.alive)):
@@ -792,6 +808,7 @@ def run(bank, target, fm, env, prim, seed=1, st=C.Stepping(), pool=1 << 16, emit
     out = {key: v[k < 0] for key, v in allr.items()}
     if len(env.tally):
         out["tally"] = dict({key: v[k >= 0] for key, v in allr.items()}, plane=k[k >= 0].astype(np.int64))
+    out["edep_slices"] = np.asarray(edz)          # MeV per (event batch, local-z slice): see ptgt_chain.heat_summary
     c["steps"] = steps_run
     return out, c
 
@@ -810,6 +827,7 @@ def main(argv=None):
     ap.add_argument("--points", nargs="+", type=int, help="rows of --rods-tsv to run in this process (one compile)")
     ap.add_argument("--material", default="G4_W")
     C.add_design_arguments(ap)
+    C.add_heat_arguments(ap)
     ap.add_argument("--map", required=True, help="field map .header (PS region)")
     ap.add_argument("--env-z", nargs="+", type=float, required=True)
     ap.add_argument("--env-r", nargs="+", type=float, required=True)
@@ -864,13 +882,14 @@ def main(argv=None):
         wall = time.perf_counter() - t0
         out = a.out.replace("{point}", f"{point:02d}") if "{point}" in a.out else a.out
         tally = rec.pop("tally", None)
-        _save_point(a, bank, env, rec, cnt, point, rod, wall, out, ptgt_g4bl, slab)
+        heat = C.heat_summary(tgt, bank, rec.pop("edep_slices"), a.pot, a)
+        _save_point(a, bank, env, rec, cnt, point, rod, wall, out, ptgt_g4bl, slab, heat=heat)
         if tally is not None:
             C.save_tally(a.tally_out.replace("{point}", f"{point:02d}"), tally, a.pot, env,
                          dict(generator="ptgt_chain_jax", seed=a.seed + point, rod=rod, dtype=a.dtype, counts=cnt))
 
 
-def _save_point(a, bank, env, rec, cnt, point, rod, wall, out, ptgt_g4bl, slab=None):
+def _save_point(a, bank, env, rec, cnt, point, rod, wall, out, ptgt_g4bl, slab=None, heat=None):
     import json
     ref, meta = C.reference(rec, a.pot, point, 0)
     meta.update(rod=rod, material=a.material, seed=a.seed + point, counts=cnt, wall_s=wall, s_per_pot=wall / a.pot,
@@ -878,10 +897,13 @@ def _save_point(a, bank, env, rec, cnt, point, rod, wall, out, ptgt_g4bl, slab=N
                 generator="ptgt_chain_jax",
                 envelope=dict(z=a.env_z, r=a.env_r, z_min=a.z_min, r_plane=a.r_plane, z_plane=a.z_plane, annuli=a.annulus,
                               slabs=a.slab, slab_bank=C.slab_meta(slab, a.slab_bank)),
-                bank=dict(path=str(a.bank), content_hash=bank.lib.content_hash))
+                bank=dict(path=str(a.bank), content_hash=bank.lib.content_hash), heat=heat)
     ptgt_g4bl.save(out, ref, meta)
     print(json.dumps({k: meta[k] for k in ("point", "pot", "entrances", "yield_per_pot", "species", "s_per_pot",
                                            "wall_s", "counts", "device", "dtype")}), flush=True)
+    if heat:
+        print(json.dumps(dict(point=point, dtype=a.dtype, peak_Gy_per_pot=heat["peak_Gy_per_pot"],
+                              peak_Gy_err=heat["peak_Gy_err"], peak_slice=heat["peak_slice"])), flush=True)
 
 if __name__ == "__main__":
     main()
