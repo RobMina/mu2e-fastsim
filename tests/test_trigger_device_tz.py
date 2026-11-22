@@ -205,7 +205,7 @@ def test_time_cluster_decoder_on_memberwise_blobs():
 def test_time_cluster_filter_require_calo_cluster():
     """TimeClusterFilter: requireCaloCluster passes only clusters with a calo cluster index (the TZ port's `calo`);
     clusters that carry none (the other device producers) fail it."""
-    import jax.numpy as jnp
+    jnp = pytest.importorskip("jax.numpy")
     from trigger.device import paths
     tc = {"valid": jnp.array([[True, True], [True, False], [True, True]]),
           "nsh": jnp.array([[20, 15], [30, 40], [14, 16]]), "calo": jnp.array([[-1, 2], [-1, 0], [0, -1]])}
@@ -217,6 +217,7 @@ def test_time_cluster_filter_require_calo_cluster():
 
 
 def test_chain_tz_needs_deltafinder():
+    pytest.importorskip("jax")
     from trigger.device import chain
     with pytest.raises(ValueError, match="deltafinder"):
         chain.Chain({"physics": {"producers": {}, "filters": {}, "trigger_paths": []}}, None, None, tz=True)
