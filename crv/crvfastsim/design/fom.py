@@ -41,7 +41,8 @@ class FomConfig:
     stack_range: bool = True   # muons lose energy in the designed stack (veto.stack_range); those that stop before
                                # the CE-like region are left out of the inefficiency (they cannot reach the tracker)
     coincidence_groups: tuple = ()   # (sector, group label) pairs: sectors searched together for coincidences, as
-                                     # Offline's finder searches one sector type; () = every sector alone (veto.p_miss)
+                                     # Offline's finder searches one sector type (sector_type_groups), each hit with
+                                     # its own sector's cuts; () = every sector alone (veto.p_miss)
 
 
 def proxy_entry_t(origin, direction, proxy=PROXY):
@@ -117,6 +118,15 @@ class Context:
         if best not in self.tables:
             self.tables[best] = O.TableModel.from_lookup(lookup.load(best, self.lookup_dir))
         return self.tables[best]
+
+
+def sector_type_groups(counters):
+    """FomConfig.coincidence_groups of Offline's finder: every sector grouped by its crs.sectorType, as
+    CrvCoincidenceFinder keys its hit map (pairs (sector, "type<t>")). counters: a counters file (Offline-relative or
+    absolute path, as module.build) or its text."""
+    from .. import geometry as G
+    cfg = G.parse_simpleconfig(counters if "crs.sectorNames" in counters else open(G.find_counters(counters)).read())
+    return tuple((n, f"type{int(float(cfg[f'crs.sectorType{n}']))}") for n in cfg["crs.sectorNames"])
 
 
 def _stock_required(cuts):
