@@ -118,8 +118,12 @@ transcriptions `tests/cal_helix_reference.py` and `tests/merge_helices_reference
 state that crosses calls (the triplet search's shared slope, the rescue trials' add/remove rounding and counters).
 
 Geometry inputs (`calhelix.geometry`): face z and panel azimuths from the nominal tracker (`data/tracker_nominal_panels.json`,
-shared with the DeltaFinder port), the calorimeter offset, disk origins and tracker centre as Offline builds them; the
-field at the tracker origin (1 T) is provisional. A peak keeps at most `CHF_HITS` selected hits (more: `:hxoverflow`); stock behaviour the port
+shared with the DeltaFinder port), the calorimeter offset, disk origins and tracker centre as Offline builds them, and
+the field z at the tracker origin, `bfield.BZ0` = 1.0117056584464001 T (the stock BFieldManager on the replay geometry,
+geom_run1_a with bfgeom_no_tsu_ps_v01, printed at full double precision; the BFieldTest module's 10 decimals are not
+enough for a bit-exact seed t0). The port keeps stock's two precisions for it: CalHelixFinderAlg::bz() is a
+float (the radius window from minP / maxP), CalHelixFinder's `_bz0` a double (`mm2MeV = 0.3 * _bz0`, which sets the
+momentum, beta and the seed t0). A peak keeps at most `CHF_HITS` selected hits (more: `:hxoverflow`); stock behaviour the port
 flags instead of reproducing (a findDfDz throw, a non-terminating phi-z cleanup) is in `:hxerr`. The calo-cluster
 slots of the peaks are fixed (`CPR_CLUSTERS`, more: `:overflow`). `strawart.py` reads the stored StrawDigis, path
 status and HelixSeeds of the stock files; `cpr.calo_batch` adds the event's CaloDigis to a block (with `digi_slots`,
@@ -138,8 +142,11 @@ every path within 2 % / 2 sigma) declared before the held-out read:
 | `cpr_HlxDe_50`, `cpr_HlxUe_40`: discordant events | 0 | 0 |
 | 9 `cpr_TrkDe_*` paths (response factors from development): paired difference | factors 0.992-0.997 | -0.16 to +0.13 pp, within 1.9 sigma |
 
-Both precisions. Against the stored stock HelixSeeds, the reference finder and merger reproduce every seed
-bit for bit on file 1 events 0-299 (De 170, Ue 109), and the port equals the reference in both precisions. In events
+Both precisions; re-run with the measured field, every count above unchanged. Against the stored stock HelixSeeds
+(500 events of each of the 10 files plus events 500-999 of files 1 and 6, 6,000 events), the reference finder and
+merger and the float64 port reproduce every seed bit for bit, the 7 RobustHelix floats, the helicity and the double
+t0: De 3,312, Ue 2,260 seeds; the float32 port gives stock's t0 rounded to float. With the field's 10-decimal print
+(1.0117056584) the double t0 is one bit off in 9 % of the seeds; at 1 T every t0 differs (up to 2e-5 ns). In events
 where every time peak has fewer straw hits than the paths' TimeClusterFilter minimum, stock never runs the finder
 (the filter stops the path first), so no seeds are stored; the decisions do not depend on it.
 

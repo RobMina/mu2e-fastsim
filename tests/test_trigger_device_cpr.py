@@ -3,6 +3,7 @@ TimeClusterFilter on its peaks, the StrawDigi / fixed-size art decoders and the 
 from pathlib import Path
 import math
 import struct
+import types
 import sys
 
 import numpy as np
@@ -191,7 +192,7 @@ def _chf_geometry():
     """zFace from the nominal straws, a synthetic panel layout (three panels 120 degrees apart per face), the stock
     calorimeter disks and offset; and the HelixTool face z."""
     import cal_helix_reference as CH
-    from trigger.device import calhelix, calogeom, helix
+    from trigger.device import bfield, calhelix, calogeom, helix
     g = helix.TRACKER_GEOM
     mz = [[[helix.nominal_straw_z(g, p, q, s) for s in (0, 1)] for q in range(6)] for p in range(36)]
     po, inv = [], {}
@@ -211,7 +212,7 @@ def _chf_geometry():
     cg = calogeom.CALO_GEOM
     off = CH.calo_offset(cg["crystalZLength"] + cg["crystalCapZLength"], cg["BPPipeZOffset"], cg["BPHoleZLength"],
                          cg["FEEZLength"], cg["FPCarbonZLength"], cg["FPFoamZLength"])
-    G = {"zFace": zf2, "phiPanel": pp2, "bz": 1.0, "fCaloOffset": np.float32(off),
+    G = {"zFace": zf2, "phiPanel": pp2, "bz": bfield.BZ0, "fCaloOffset": np.float32(off),
          "disk_origin": np.asarray(geo["origin"], np.float64), "tracker_center": np.array([-3904.0, 0.0, 10171.0])}
     fz = np.array([[np.float32((helix.nominal_straw_z(g, p, f, 0) + helix.nominal_straw_z(g, p, f, 1)) / 2.)
                     for f in (0, 1)] for p in range(36)]).ravel().astype(np.float64)
@@ -369,6 +370,27 @@ def _chf_compare(ref, dev, precision):
             if fl != [int(v) & 0xFFFFFFFF for v in dev["flag"][e, j][dev["hits"][e, j] >= 0][:k]]:
                 bad.append((e, "flag"))
     return n, bad
+
+
+def test_cal_helix_field_default_and_precisions():
+    """The finder's default field is the measured one (bfield.BZ0, not 1 T); the radius window takes it as a float
+    (CalHelixFinderAlg::bz()), as the transcription does, while the seed t0 keeps the double."""
+    pytest.importorskip("jax")
+    sys.path.insert(0, str(ROOT / "tests"))
+    import cal_helix_reference as CH
+    from trigger.device import bfield, calhelix
+    G = calhelix.geometry()
+    assert G["bz"] == bfield.BZ0 and round(G["bz"], 10) == 1.0117056584   # BFieldTest prints 10 decimals
+    assert float(np.float32(G["bz"])) != G["bz"]  # the float and double paths differ, so both are exercised
+    S = calhelix.settings(CHF, MERGE)
+    alg = CH.CalHelixFinderAlg(CHF["HelixFinderAlg"], {**G, "zFace": list(G["zFace"]), "phiPanel": list(G["phiPanel"])})
+    assert alg.bz == np.float32(bfield.BZ0)
+    alg.fit_helix = lambda H: None                # find_helix sets the window, then fits: stop before the fit
+    alg.find_helix(types.SimpleNamespace(helicity=1))
+    rmin, rmax = calhelix._radius_limits(S, G["bz"])
+    u32 = lambda v: np.float32(v).view(np.uint32)
+    assert (u32(rmin), u32(rmax)) == (u32(alg.rmin), u32(alg.rmax))
+    assert (u32(rmin), u32(rmax)) != tuple(u32(v) for v in calhelix._radius_limits(S, 1.0))
 
 
 @pytest.mark.parametrize("precision", ["float64", "float32"])
