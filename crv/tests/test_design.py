@@ -350,10 +350,41 @@ def test_p_miss_coincidence_groups():
     grouped, (gt, gs, pc) = V.p_miss(1, track, sector, layer, pe, nl, thr, k, group=np.array([0, 0]))
     assert grouped[0] == pytest.approx(0.0, abs=1e-12)                  # the group sees 4 lit layers
     assert gs.tolist() == [0, 1] and np.allclose(pc, 1.0)               # one row per crossed member, group's P_coinc
-    with pytest.raises(ValueError):                                     # members must share the threshold
-        V.p_miss(1, track, sector, layer, pe, nl, np.array([8.0, 12.0]), k, group=np.array([0, 0]))
     with pytest.raises(ValueError):                                     # group ids are representative sectors
         V.p_miss(1, track, sector, layer, pe, nl, thr, k, group=np.array([1, 0]))
+
+
+def test_p_miss_group_per_hit_cuts():
+    # Offline's finder: each hit keeps its own sector's threshold; k is the lowest required among the hits
+    track, sector, layer = np.zeros(4, int), np.array([0, 0, 1, 1]), np.array([0, 1, 2, 3])
+    pe = np.full((4, 2), 50.0)
+    nl, k = np.array([4, 4]), np.array([3, 3])
+    thr = np.array([8.0, 60.0])                                         # sector 1 layers mostly below threshold
+    got, (_, _, pc) = V.p_miss(1, track, sector, layer, pe, nl, thr, k, group=np.array([0, 0]))
+    mu = np.full((1, 4, 2), 50.0)
+    want = V.p_coincidence(mu, np.array([[8.0, 8.0, 60.0, 60.0]]), np.array([3]))
+    assert got[0] == pytest.approx(1.0 - want[0], rel=1e-12) and 0.0 < want[0] < 0.5
+    # a layer crossed in both sectors takes the lower threshold
+    tr2, se2, la2 = np.zeros(5, int), np.array([0, 0, 1, 1, 0]), np.array([0, 1, 2, 3, 2])
+    pe2 = np.r_[np.full((4, 2), 50.0), np.zeros((1, 2))]
+    got2, _ = V.p_miss(1, tr2, se2, la2, pe2, nl, thr, k, group=np.array([0, 0]))
+    want2 = V.p_coincidence(mu, np.array([[8.0, 8.0, 8.0, 60.0]]), np.array([3]))
+    assert got2[0] == pytest.approx(1.0 - want2[0], rel=1e-12)
+    # mixed k: the lowest k of the crossed members
+    got3, _ = V.p_miss(1, track, sector, layer, pe, nl, np.array([8.0, 8.0]), np.array([2, 4]), group=np.array([0, 0]))
+    assert got3[0] == pytest.approx(1.0 - V.p_coincidence(mu, np.array([8.0]), np.array([2]))[0], rel=1e-12)
+
+
+def test_sector_type_groups():
+    text = """vector<string> crs.sectorNames = {"R1", "R2", "T1", "R2F"};
+int crs.sectorTypeR1 = 1;
+int crs.sectorTypeR2 = 1;
+int crs.sectorTypeT1 = 3;
+double crs.sectorTypeR2F = 1;
+"""
+    g = F.sector_type_groups(text)
+    assert g == (("R1", "type1"), ("R2", "type1"), ("T1", "type3"), ("R2F", "type1"))
+    assert V.group_index(["R1", "R2", "T1", "R2F"], g).tolist() == [0, 0, 2, 0]
 
 
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
