@@ -8,7 +8,10 @@ PE of the crossed counters are summed (the finder's same-plus-adjacent-counter P
 end has at least the sector's PE threshold (Poisson); the sector has a coincidence if at least k of its N layers are
 hit (Poisson-binomial), k = Design.coincidence_layers, or N - Design.spare_layers, or by default N - (4 - stock
 required layers), at least 1.
-P_miss = prod over sectors (1 - P_coinc); a muon that crosses no counter has P_miss = 1. With the finder cuts
+P_miss = prod over sectors (1 - P_coinc); a muon that crosses no counter has P_miss = 1. Optional coincidence groups
+(p_miss `group`): sectors of one group are searched together, as CrvCoincidenceFinder searches all sectors of one
+sector type (crs.sectorType) with counters numbered across them (crs.precedingSectorFor): a layer of the group is hit
+if its summed crossed PE reaches the threshold, whichever member sector the counters belong to. With the finder cuts
 (default in fom.evaluate) P_coinc also carries the finder's slope test and minimum cluster PE (finder_factor); its
 time and distance cuts are not applied (one muon: hits in time, neighbouring counters).
 """
@@ -209,17 +212,58 @@ def finder_factor(grp, layer, bar, pe_sides, dg, groups, k_grp, lo, hi, msd, min
     return ok * p_pe
 
 
-def p_miss(n_tracks, track, sector, layer, pe_sides, n_layers_sec, thr_sec, k_sec, finder=None):
+def group_index(names, groups=None):
+    """Coincidence group of every sector [nsec] (int, the index of the group's first sector in `names`) from `groups`:
+    a mapping (or pairs) sector name -> group label; sectors not listed are their own group. None or empty -> None
+    (one group per sector). Raises on a name not in `names`."""
+    if not groups:
+        return None
+    pairs = groups.items() if hasattr(groups, "items") else groups
+    names = list(names)
+    label = {n: n for n in names}
+    for n, g in pairs:
+        if n not in label:
+            raise ValueError(f"coincidence group for unknown sector {n!r}")
+        label[n] = g
+    first = {}
+    for i, n in enumerate(names):
+        first.setdefault(label[n], i)
+    return np.array([first[label[n]] for n in names], np.int64)
+
+
+def _check_group_uniform(group, **per_sector):
+    """Members of a coincidence group must share the parameters the group search uses (layers, threshold, k, cuts)."""
+    for key, v in per_sector.items():
+        v = np.asarray(v)
+        bad = np.flatnonzero(v != v[group])
+        if len(bad):
+            raise ValueError(f"coincidence group of sector {int(bad[0])} mixes {key} values "
+                             f"({v[bad[0]]} vs {v[group[bad[0]]]})")
+
+
+def p_miss(n_tracks, track, sector, layer, pe_sides, n_layers_sec, thr_sec, k_sec, finder=None, group=None):
     """Per track P(no sector coincidence) [n_tracks] and per (track, sector) P_coinc rows (track, sector, p).
     track, sector, layer [m] per crossing; pe_sides [m, 2]. finder: None (k-of-N and threshold only) or dict(dg,
     bar [m], min_slope, max_slope, max_slope_diff, min_pe [nsec]) to apply the finder's slope and cluster-PE cuts
-    (finder_factor)."""
+    (finder_factor). group: None (every sector alone) or [nsec] the coincidence group of each sector
+    (group_index); a group's members must share n_layers, threshold, k and finder cuts. With groups, P_coinc is per
+    (track, group) and the returned rows are per (track, crossed member sector), each with its group's P_coinc."""
     nsec = len(n_layers_sec)
     nmax = int(np.max(n_layers_sec)) if nsec else 1
     out = np.ones(n_tracks)
     if not len(track):
         return out, (np.zeros(0, np.int64), np.zeros(0, np.int64), np.zeros(0))
-    grp = np.asarray(track, np.int64) * nsec + np.asarray(sector, np.int64)
+    sector = np.asarray(sector, np.int64)
+    if group is not None:
+        group = np.asarray(group, np.int64)
+        if group.shape != (nsec,) or np.any(group[group] != group):
+            raise ValueError("group must map every sector to a representative sector of its group")
+        chk = dict(n_layers=n_layers_sec, threshold=thr_sec, k=k_sec)
+        if finder is not None:
+            chk.update({kk: finder[kk] for kk in ("min_slope", "max_slope", "max_slope_diff", "min_pe")})
+        _check_group_uniform(group, **chk)
+    gsec = sector if group is None else group[sector]
+    grp = np.asarray(track, np.int64) * nsec + gsec
     ug, gi = np.unique(grp, return_inverse=True)
     mu = np.zeros((len(ug), nmax, 2))
     np.add.at(mu, (gi, np.asarray(layer, np.int64)), np.asarray(pe_sides, np.float64))
@@ -232,4 +276,8 @@ def p_miss(n_tracks, track, sector, layer, pe_sides, n_layers_sec, thr_sec, k_se
                                 np.asarray(f["max_slope_diff"])[gs], np.asarray(f["min_pe"])[gs])
     gt = ug // nsec
     np.multiply.at(out, gt, 1.0 - pc)
-    return out, (gt, gs, pc)
+    if group is None:
+        return out, (gt, gs, pc)
+    mem = np.unique(np.asarray(track, np.int64) * nsec + sector)
+    mt, ms = mem // nsec, mem % nsec
+    return out, (mt, ms, pc[np.searchsorted(ug, mt * nsec + group[ms])])

@@ -329,6 +329,47 @@ def test_finder_positions_are_the_stock_world_coordinates(counters):
     np.testing.assert_allclose(y, geo.center[b, lw[b, 0]], atol=1e-9)
 
 
+def test_group_index():
+    assert V.group_index(["A", "B", "C"]) is None
+    assert V.group_index(["A", "B", "C"], ()) is None
+    assert V.group_index(["A", "B", "C"], {"C": "A"}).tolist() == [0, 1, 0]
+    assert V.group_index(["A", "B", "C"], (("B", "x"), ("C", "x"))).tolist() == [0, 1, 1]
+    with pytest.raises(ValueError):
+        V.group_index(["A", "B"], {"Z": "A"})
+
+
+def test_p_miss_coincidence_groups():
+    # one track, 4-layer sectors 0 and 1, 3 of 4 required: layers 0, 1 lit in sector 0 and layers 2, 3 in sector 1
+    track, sector, layer = np.zeros(4, int), np.array([0, 0, 1, 1]), np.array([0, 1, 2, 3])
+    pe = np.full((4, 2), 50.0)
+    nl, thr, k = np.array([4, 4]), np.array([8.0, 8.0]), np.array([3, 3])
+    alone, (gt, gs, pc) = V.p_miss(1, track, sector, layer, pe, nl, thr, k)
+    assert alone[0] == pytest.approx(1.0) and np.allclose(pc, 0.0)
+    same, rows = V.p_miss(1, track, sector, layer, pe, nl, thr, k, group=np.array([0, 1]))
+    assert same[0] == alone[0] and np.array_equal(rows[1], gs)          # identity groups = no groups
+    grouped, (gt, gs, pc) = V.p_miss(1, track, sector, layer, pe, nl, thr, k, group=np.array([0, 0]))
+    assert grouped[0] == pytest.approx(0.0, abs=1e-12)                  # the group sees 4 lit layers
+    assert gs.tolist() == [0, 1] and np.allclose(pc, 1.0)               # one row per crossed member, group's P_coinc
+    with pytest.raises(ValueError):                                     # members must share the threshold
+        V.p_miss(1, track, sector, layer, pe, nl, np.array([8.0, 12.0]), k, group=np.array([0, 0]))
+    with pytest.raises(ValueError):                                     # group ids are representative sectors
+        V.p_miss(1, track, sector, layer, pe, nl, thr, k, group=np.array([1, 0]))
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_evaluate_coincidence_groups(counters, dtype):
+    mu = _muons(3000, seed=12)
+    ctx = _ctx(counters)
+    base = F.evaluate(M.Design(), mu, ctx, dtype=dtype)
+    own = F.evaluate(M.Design(), mu, ctx, F.FomConfig(coincidence_groups=(("A", "a"), ("B", "b"))), dtype=dtype)
+    assert own["inefficiency"] == base["inefficiency"]                  # every sector its own group = no groups
+    # without the finder's slope test (which a joint group may fail across sectors) a joint search loses nothing
+    alone = F.evaluate(M.Design(), mu, ctx, F.FomConfig(finder_cuts=False), dtype=dtype)
+    joint = F.evaluate(M.Design(), mu, ctx, F.FomConfig(finder_cuts=False, coincidence_groups=(("B", "A"),)),
+                       dtype=dtype)
+    assert joint["inefficiency"] <= alone["inefficiency"] + 1e-12
+
+
 def test_finder_cuts_slope_window_and_cluster_pe(counters):
     import dataclasses as dc
     mu = _muons(3000, seed=11)
