@@ -483,3 +483,23 @@ def test_window_edge_events(monkeypatch):
     assert keys.tolist() == [SC._ekey(1, 0, 2)]
     assert info["late_primaries"] == 1 and info["primaries"] == 3 and info["early_primaries"] == 1
 
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_cost_weights(counters, dtype):
+    mu = _muons(1000, seed=13)
+    ctx = _ctx(counters)
+    d = M.Design(n_layers=5, absorber=20.0, fiber_diameter=1.8)
+    base = F.evaluate(d, mu, ctx, dtype=dtype)
+    rel = base["cost_rel"]
+    assert set(rel) == set(F.COST_TERMS)
+    assert base["cost"] == float(np.mean(list(rel.values())))               # default: the plain mean, unchanged
+    price = (("channels", 0.514), ("fiber_m_mm2", 0.188), ("scint_m3", 0.153), ("absorber_t", 0.145))
+    pw = F.evaluate(d, mu, ctx, F.FomConfig(cost_weights=price), dtype=dtype)
+    assert pw["cost"] == pytest.approx(sum(w * rel[k] for k, w in price) / sum(w for _, w in price), rel=1e-12)
+    assert pw["inefficiency"] == base["inefficiency"] and pw["cost_rel"] == rel   # only the cost changes
+    equal = F.evaluate(d, mu, ctx, F.FomConfig(cost_weights=tuple((k, 1.0) for k in F.COST_TERMS)), dtype=dtype)
+    assert equal["cost"] == pytest.approx(base["cost"], rel=1e-12)
+    for bad in ((("channels", 1.0),), price + (("channels", 1.0),), (("channels", -1.0),) + price[1:]):
+        with pytest.raises(ValueError):
+            F.cost_of(rel, bad)
+

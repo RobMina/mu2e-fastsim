@@ -15,6 +15,8 @@ Params (Mu2eBO sends numbers as floats; empty = the stock value of each sector)
   pe_scale      optics calibration (0.847: stock Offline, Run 2 conditions; docs/design.md)
   kappa, f_acc, beta  deadtime model (deadtime.DeadtimeConfig)
   aging_c1, aging_ref light-yield constraint (fom.FomConfig)
+  cost_w_scint, cost_w_channels, cost_w_absorber, cost_w_fiber  cost-proxy weights (fom.FomConfig.cost_weights);
+                all empty = the plain mean of the four terms; set all four or none
   max_muons     0 = the whole sample
 Metrics: METRICS (inefficiency and its error, deadtime_rate_ratio, ly_margin, cost and its four terms, ...).
 """
@@ -25,12 +27,14 @@ INT_KNOBS = ("n_layers", "counters_per_module", "coincidence_layers", "spare_lay
 FLOAT_KNOBS = ("thickness", "width", "max_length", "absorber", "tilt_deg", "fiber_diameter", "pe_threshold")
 KNOBS = INT_KNOBS + FLOAT_KNOBS
 ABSORBER_MATERIALS = ("G4_Al", "MildSteel", "G4_Pb", "G4_POLYETHYLENE")   # = module.ABSORBER_MATERIALS (tested)
+COST_WEIGHTS = {"cost_w_scint": "scint_m3", "cost_w_channels": "channels", "cost_w_absorber": "absorber_t",
+                "cost_w_fiber": "fiber_m_mm2"}   # param -> fom.COST_TERMS key
 FIXED = ("absorber_material", "sample", "dtype", "pe_scale", "kappa", "f_acc", "beta", "aging_c1", "aging_ref",
-         "max_muons")
+         "max_muons") + tuple(COST_WEIGHTS)
 PARAMS = KNOBS + FIXED
 DEFAULTS = {**{k: "" for k in KNOBS}, "absorber_material": "", "sample": "run2_ce_proxy_v1", "dtype": "float64",
             "pe_scale": 0.847, "kappa": 1.0, "f_acc": 0.5, "beta": 1.0, "aging_c1": 0.94 ** 5, "aging_ref": 0.86,
-            "max_muons": 0}
+            "max_muons": 0, **{k: "" for k in COST_WEIGHTS}}
 # file names under the endpoint's crv_design data dir: generated lines (v1) or CRV-entry states (design.sample)
 SAMPLES = {"run2_ce_proxy_v1": "run2_ce_proxy_v1.npz", "run2_ce_entry_v1": "run2_ce_entry_v1.npz"}
 METRICS = ("inefficiency", "inefficiency_err", "inefficiency_covered", "uncovered_fraction", "stopped_fraction",
@@ -47,6 +51,7 @@ BODY = ('MU=@sample_path@\n'
         + " ".join(f"--{k.replace('_', '-')} @p_{k}@" for k in ("dtype", "pe_scale", "kappa", "f_acc", "beta",
                                                                "aging_c1", "aging_ref", "max_muons"))
         + " --design " + " ".join(f"{k}=@p_{k}@" for k in KNOBS + ("absorber_material",))
+        + " --cost-weights " + " ".join(f"{k}=@p_{k}@" for k in COST_WEIGHTS)
         + ' > "$M2FS_OUT/point.txt" 2>&1 || { tail -20 "$M2FS_OUT/point.txt"; exit 6; }\n'
         'tail -c 400 "$M2FS_OUT/point.txt"\n')
 
@@ -62,6 +67,23 @@ def design_dict(pairs):
             continue
         out[k] = v if k == "absorber_material" else (int(float(v)) if k in INT_KNOBS else float(v))
     return out
+
+
+def cost_weights(pairs):
+    """fom.FomConfig.cost_weights from KEY=VALUE words over COST_WEIGHTS: () when every value is empty (equal
+    weights), all four when every value is set; a partial set raises."""
+    vals = {}
+    for w in pairs:
+        k, _, v = w.partition("=")
+        if k not in COST_WEIGHTS:
+            raise ValueError(f"crv_design: unknown cost weight {k!r}")
+        vals[k] = v
+    given = {k: v for k, v in vals.items() if v != ""}
+    if not given:
+        return ()
+    if set(given) != set(COST_WEIGHTS):
+        raise ValueError(f"crv_design: set all of {tuple(COST_WEIGHTS)} or none, got {tuple(given)}")
+    return tuple((COST_WEIGHTS[k], float(given[k])) for k in COST_WEIGHTS)
 
 
 def metrics_of(r):
@@ -95,11 +117,12 @@ def run(argv=None):
         p.add_argument("--" + k.replace("_", "-"), type=float, required=True)
     p.add_argument("--max-muons", type=int, default=0)
     p.add_argument("--design", nargs="*", default=[])
+    p.add_argument("--cost-weights", nargs="*", default=[])
     a = p.parse_args(argv)
     design = M.Design(**design_dict(a.design))
     cfg = fom.FomConfig(optics=O.OpticsConfig(pe_scale=a.pe_scale),
                         deadtime=DT.DeadtimeConfig(kappa=a.kappa, f_acc=a.f_acc, beta=a.beta),
-                        aging_c1=a.aging_c1, aging_ref=a.aging_ref)
+                        aging_c1=a.aging_c1, aging_ref=a.aging_ref, cost_weights=cost_weights(a.cost_weights))
     z = np.load(a.muons)
     n = len(z["p"]) if a.max_muons <= 0 else min(a.max_muons, len(z["p"]))
     muons = dict(origin=z["origin"][:n], direction=z["direction"][:n], p=z["p"][:n])
