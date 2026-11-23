@@ -11,6 +11,7 @@ and lumi-stream paths) of the production menu, from StrawDigis to per-path decis
 | time clusters | `TimeClusterFinder` | port (`timecluster.py`), incl. the TMVA hit MLP | see the README table of the PR / record |
 | time clusters (apr) | `TZClusterFinder` (TrigTZClusterFinder) | port with the stock arithmetic (`tzcluster.py`); opt-in (off: the TimeClusterFinder port with TZ's `clusterThresh`) | on: equal to stock in every event; off: approximation; see [apr time clusters](#time-clusters-of-the-apr-paths-tzclusterfinder) |
 | helices | `RobustHelixFinder` (tpr), `AgnosticHelixFinder` (apr) | compact fit with the stock per-face hit selection and chi2 definitions (`helix.py`); the hit ratio over `HelixTool`'s nominal face z | approximation |
+| helices (apr) | `AgnosticHelixFinder` (TrigAprHelixFinder) + `MergeHelices` | port with the stock arithmetic (`aprhelix.py`); opt-in with `tz=True` (`apr_helix=True`) | equal to stock given its inputs; see [apr helices](#helices-of-the-apr-paths-agnostichelixfinder) |
 | helix cuts | `HelixFilter` | same cuts, incl. the D0-phi prescale counter on the host | exact given the helix |
 | track fit + cuts | `KalSeedFit` + `KalSeedFilter` | response layer: the filter's cuts on helix quantities and a pass probability per path and process from development shards (shipped, `data/`) | statistical |
 | prescale | `PrescaleEvent` | event number modulo the factor; a mode the module does not configure rejects (`apr_proton`) | exact |
@@ -24,7 +25,8 @@ and lumi-stream paths) of the production menu, from StrawDigis to per-path decis
 
 Not evaluated on the device: `cst_CosmicTrackSeed` (`LineFinder` + `CosmicSeedFilter`), paths with
 `MultiHelixFilter` or `minNHelices > 1`. `apr_TC_calo` needs the TZClusterFinder port (`Chain(tz=True)`); without it the
-path is always false.
+path is always false. The apr helices are exact with `Chain(tz=True, apr_helix=True)`; without it they are the
+compact approximation.
 
 ### Background flags (DeltaFinder)
 
@@ -189,6 +191,48 @@ but no filter decision does. A decide job with `tz=True` (and the cpr calo stage
 
 The apr response factors (`data/response_ce_dio.json`, `data/response_rpc.json`) were measured with the approximate
 time clusters (`tz=False`); with `tz=True` they have not been measured again.
+
+### Helices of the apr paths (AgnosticHelixFinder)
+
+With `Chain(tz=True, apr_helix=True)` (`apr_helix` needs `tz`) the apr paths take their helices from `aprhelix.py`,
+the port of `AgnosticHelixFinder` (Offline v13_41_01, CalPatRec; the menu's `TrigAprHelixFinder`, on the TZ electron
+clusters), followed by `MergeHelices` (`TrigAprHelixMerger`); `HelixFilter` reads the merged seeds through `HelixTool`
+as for the cpr paths. Per time cluster the port runs the stock search: the hits laid out as `tcHitsFill` leaves them
+(the stopping target at z = FLT_MAX, the calorimeter cluster, then the cluster's hits sorted by z with libstdc++'s
+`std::sort`, its heap-sort fallback included), the triplet loops with their break / continue rules, the seed circle
+(`LsqSums4`), the phi-z lines, the 2-pi resolution, the line refinement, the final seed, the hit recovery and the save
+cuts, with the stock state that crosses triplets and helices (segment, seed, averaging flags; `inHelix` also for
+seeds dropped by the energy cut) and the stock arithmetic (float where stock computes in float, double for the
+`LsqSums` sums and the double promotions, no fused multiply-add). `tests/agnostic_helix_reference.py` is the literal
+transcription; the port equals it in both precisions. Constants from the geometry: the field at the detector origin,
+1.0117056584 T (the stock field map; it enters the transverse-momentum and momentum windows), and the calorimeter
+offset (diskCaseZLength + BPPipeZOffset + BPHoleZLength + FEEZLength) / 2 = 159 mm. `MergeHelices` keeps a seed whose
+time cluster has a calorimeter cluster over an overlapping one without (`UseCalo`), as stock does.
+
+Fixed capacities, flagged in `<path>:ahoverflow` (bits in `aprhelix.py`): 192 hits per time cluster, 16 accepted
+phi-z lines per triplet, 4 saved seeds per time cluster, 8 seeds per event. The proton finder
+(`TrigAprProtonHelixFinder`) is not ported; the proton paths are skipped.
+
+Against the stored stock seeds (1,500 CE and 1,500 cosmic events, stock TZ clusters as input; every field and hit
+list equal): the transcription equals stock on 969 / 969 (CE) and 804 / 804 (cosmic) finder seeds, the port equals
+the transcription in both precisions, and the merged seeds equal stock (969 / 969, 768 / 768).
+
+In the chain, on the v13_41 menu replays of [Calorimeter paths](#calorimeter-paths), the split and the rule (the apr
+HelixFilter stage equal to stock in every event) declared before the held-out read, both precisions:
+
+| | CE development (1-5) | CE held-out (6-10) | cosmic development (1) | cosmic held-out (2-3) |
+|---|---|---|---|---|
+| events | 14,052 | 13,992 | 8,269 | 16,567 |
+| apr HelixFilter stage (12 paths): events that differ from stock | 0 | 0 | 0 | 1 |
+| events with `ahoverflow` | 0 | 0 | 2 | 5 |
+
+The held-out event that differs (cosmic file 3) is not a finder difference: the DeltaFinder port flags 3 of its hits
+`Background` differently from stock, the TZ cluster then has one more hit, and the finder makes no seed in it, where
+stock makes two. With the stock flags the finder reproduces the stock seeds of that event. A decide job with
+`apr_helix=True` (and the TZ and calo stages) takes 0.10-0.27 s per CE event and 0.46-0.98 s per cosmic event on four
+CPU cores (the finder alone: 2-4 ms per CE event, 0.35-0.4 s per cosmic event); the GPU rate is not measured. The
+KalSeedFilter stage stays the response layer, whose apr factors were measured with the approximate clusters and
+helices.
 
 ### Calorimeter paths
 

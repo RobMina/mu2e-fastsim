@@ -12,7 +12,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from . import (calhelix, calo, calogeom, cpr as cprmod, deltafinder as dfmod, helix, hits, menu, mpr, mva, paths,
+from . import (aprhelix, calhelix, calo, calogeom, cpr as cprmod, deltafinder as dfmod, helix, hits, menu, mpr, mva, paths,
                tzcluster,
                simpletc, timecluster)
 
@@ -63,11 +63,14 @@ def pair_bucket(n, total):
 
 class Chain:
     def __init__(self, cfg, cond, tc_mva_path, response=None, path_names=None, salt=20261107, debug=False,
-                 precision="float64", compact=False, pairs=True, mpr=False, cpr=False, deltafinder=False, tz=False):
+                 precision="float64", compact=False, pairs=True, mpr=False, cpr=False, deltafinder=False, tz=False,
+                 apr_helix=False):
         if precision not in PRECISIONS:
             raise ValueError(f"precision must be one of {PRECISIONS}")
         if tz and not deltafinder:
             raise ValueError("tz: TZClusterFinder reads TrigFlagPH's flags, run it with deltafinder=True")
+        if apr_helix and not tz:
+            raise ValueError("apr_helix: AgnosticHelixFinder reads the TZClusterFinder clusters, run it with tz=True")
         # float32: the device arrays in 32-bit, except the stock double steps of the hit and mpr ports, which trace
         # in float64 in both precisions (exact.strict). JAX's x64 flag is process-wide, so set it before any device
         # array is made.
@@ -100,6 +103,10 @@ class Chain:
         # TZClusterFinder port (opt-in): the apr paths' time clusters from the stock-exact port (tzcluster.py), with
         # their calo clusters, in place of the TimeClusterFinder approximation; needs CaloDigis and DeltaFinder flags
         self.tz = tz
+        # AgnosticHelixFinder port (opt-in, needs tz): the apr paths' helices from the stock-exact port (aprhelix.py)
+        # and MergeHelices, in place of the RobustHelixFinder-style approximation; ~0.4 s per cosmic event on a CPU
+        self.apr_helix = apr_helix
+        self.ahfs = {}                           # MergeHelices label -> (AgnosticHelixFinder label, settings, merge)
         self.chfs = {}                           # MergeHelices label -> (CalHelixFinder label, settings) (cpr paths)
         self.chf_geom = None                     # CalHelixFinder geometry inputs (calhelix.geometry)
         # TrigFlagPH (DeltaFinder port, opt-in): its flags replace the panel hits' for every stage that reads them
@@ -243,12 +250,24 @@ class Chain:
             except ValueError as e:
                 self.skipped[name] = [str(e)]
                 return
-        hcfg_label = self._helix_label(hel) if hel and chf is None else None
+        ahf = None
+        if p["family"] == "apr" and self.apr_helix and hel and self.mods[hel].get("module_type") == "AgnosticHelixFinder":
+            ahf = next((lbl for lbl in labels if self.mods.get(lbl, {}).get("module_type") == "MergeHelices"), None)
+            fins = [f.split(":")[0] for f in self.mods[ahf]["HelixFinders"]] if ahf else []
+            if fins != [hel] or self.mods[hel]["tcCollLabel"] != tcl:
+                self.skipped[name] = [f"apr helix layout not supported: {hel} {ahf} {fins}"]
+                return
+            try:
+                self.ahfs[ahf] = (hel, aprhelix.settings(self.mods[hel]), aprhelix.merge_settings(self.mods[ahf]))
+            except ValueError as e:
+                self.skipped[name] = [str(e)]
+                return
+        hcfg_label = self._helix_label(hel) if hel and chf is None and ahf is None else None
         if p["family"] == "cpr":                 # CalSeedFit (TrigCalSeedFitDe): found by its type
             ksf = next((lbl for lbl in labels if self.mods.get(lbl, {}).get("module_type") in KSF_TYPES), None)
         else:
             ksf = next((lbl for lbl in labels if lbl.startswith("Trig") and "KSF" in lbl and "MC" not in lbl), None)
-        self.plan[name] = {"tc": tcl, "helix": hcfg_label, "chf": chf, "ksf": ksf, "filters": p["filters"],
+        self.plan[name] = {"tc": tcl, "helix": hcfg_label, "chf": chf, "ahf": ahf, "ksf": ksf, "filters": p["filters"],
                            "family": p["family"], "min_helices": p["min_helices"], "ps": ps}
 
     def _tc_label(self, p):
@@ -294,8 +313,14 @@ class Chain:
             # the stale energy selection of an earlier event is flagged (indeterminate) and not made an electron
             z = tzcluster.clusters({k: v for k, v in ph.items() if k != "df_err"}, cl, s, carry=False)
             tcs[lbl] = {"valid": z["valid"], "nsh": z["nsh"], "t0": z["t0"], "members": z["members"],
-                        "calo": z["calo"], "overflow": (z["overflow"] != 0) | cl["overflow"],
+                        "calo": z["calo"], "order": z["order"], "overflow": (z["overflow"] != 0) | cl["overflow"],
                         "indeterminate": z["indeterminate"]}
+        for mlbl, (hlbl, s, ms) in sorted(self.ahfs.items()):   # apr: AgnosticHelixFinder + MergeHelices
+            tz = tcs[self.mods[hlbl]["tcCollLabel"]]
+            seeds, _ = aprhelix.helices({k: v for k, v in ph.items() if k != "df_err"},
+                                        {k: tz[k] for k in ("valid", "order", "calo")}, cl, s)
+            hx = aprhelix.merge(seeds, ph["x"].shape[1], ms, self.fz)
+            hxs[("ahf", mlbl)] = {**hx, "overflow": seeds["overflow"]}
         if self.cpr_tp:                              # cpr: CalTimePeakFinder on the panel hits and calo clusters
             for lbl, s in self.cpr_tp.items():
                 pk = cprmod.time_peaks(ph, cl, s)
@@ -445,12 +470,15 @@ class Chain:
                 continue
             tc = tcs[p["tc"]]
             hx = hxs.get(("mpr", p["mpr"]) if p["family"] == "mpr" else
-                         ("cpr", p["chf"]) if p.get("chf") else (p["tc"], p["helix"]))
+                         ("cpr", p["chf"]) if p.get("chf") else ("ahf", p["ahf"]) if p.get("ahf") else
+                         (p["tc"], p["helix"]))
             if p["family"] == "mpr":
                 aux[name + ":overflow"] = hx["overflow"]           # time clusters with more hits than the finder's slots
             if p["tc"] in self.tz_s:
                 aux[name + ":tzoverflow"] = tc["overflow"]         # a TZ capacity, or calo clusters past CPR_CLUSTERS
                 aux[name + ":tzindet"] = tc["indeterminate"]       # recovered chunks with an unknown stale selection
+            if p.get("ahf"):
+                aux[name + ":ahoverflow"] = hx["overflow"] != 0    # an AgnosticHelixFinder capacity (aprhelix.py)
             if p["family"] == "cpr":
                 aux[name + ":overflow"] = tc["overflow"]           # events with more calo clusters than CPR_CLUSTERS
                 aux[name + ":hxoverflow"] = hx["overflow"]        # time peaks with more hits than the finder's slots
