@@ -18,9 +18,19 @@ Params (Mu2eBO sends numbers as floats; empty = the stock value of each sector)
   cost_w_scint, cost_w_channels, cost_w_absorber, cost_w_fiber  cost-proxy weights (fom.FomConfig.cost_weights);
                 all empty = the plain mean of the four terms; set all four or none
   max_muons     0 = the whole sample
-Metrics: METRICS (inefficiency and its error, deadtime_rate_ratio, ly_margin, cost and its four terms, ...).
+  place_policy  empty = no placement (module.build on the stock sector positions, as before); "first" or "each":
+                lay the design out and place it in the detector envelope (design.placement), scoring every placed
+                variant ("each": the base placement, or every remedy alone when it does not place)
+  place_stagger_max, place_clearance, place_max_trim, place_max_shift  placement ranges [mm] (PlacementConfig)
+  place_remedies  ';'-separated remedies, move:<name>:<S1>,<S2>:<dx>,<dy>,<dz>:<max_mm> (move sectors),
+                thin:<name>:<sheet>|<sheet>:<min_mm> (thin borated-poly sheets; sheet = G4 name, type<k> or label
+                text) or movethin:<name>:<S1>,<S2>:<dx>,<dy>,<dz>:<max_mm>:<sheet>|<sheet>:<min_mm> (both)
+Metrics: METRICS (inefficiency and its error, deadtime_rate_ratio, ly_margin, cost and its four terms, ...); with a
+placement also PLACEMENT_METRICS (feasible, largest shift, sheet move and thinnest sheet, shield modified, remedy).
 """
 from __future__ import annotations
+
+import re
 
 # static names only: the kit process imports this module without numpy
 INT_KNOBS = ("n_layers", "counters_per_module", "coincidence_layers", "spare_layers")
@@ -29,18 +39,25 @@ KNOBS = INT_KNOBS + FLOAT_KNOBS
 ABSORBER_MATERIALS = ("G4_Al", "MildSteel", "G4_Pb", "G4_POLYETHYLENE")   # = module.ABSORBER_MATERIALS (tested)
 COST_WEIGHTS = {"cost_w_scint": "scint_m3", "cost_w_channels": "channels", "cost_w_absorber": "absorber_t",
                 "cost_w_fiber": "fiber_m_mm2"}   # param -> fom.COST_TERMS key
+PLACE = ("place_policy", "place_stagger_max", "place_clearance", "place_max_trim", "place_max_shift", "place_remedies")
+PLACE_POLICIES = ("first", "each")       # = placement.POLICIES (tested)
 FIXED = ("absorber_material", "sample", "dtype", "pe_scale", "kappa", "f_acc", "beta", "aging_c1", "aging_ref",
-         "max_muons") + tuple(COST_WEIGHTS)
+         "max_muons") + tuple(COST_WEIGHTS) + PLACE
 PARAMS = KNOBS + FIXED
 DEFAULTS = {**{k: "" for k in KNOBS}, "absorber_material": "", "sample": "run2_ce_proxy_v1", "dtype": "float64",
             "pe_scale": 0.847, "kappa": 1.0, "f_acc": 0.5, "beta": 1.0, "aging_c1": 0.94 ** 5, "aging_ref": 0.86,
-            "max_muons": 0, **{k: "" for k in COST_WEIGHTS}}
+            "max_muons": 0, **{k: "" for k in COST_WEIGHTS}, "place_policy": "", "place_stagger_max": 60.0,
+            "place_clearance": 3.0, "place_max_trim": 120.0, "place_max_shift": 500.0, "place_remedies": ""}
 # file names under the endpoint's crv_design data dir: generated lines (v1) or CRV-entry states (design.sample)
 SAMPLES = {"run2_ce_proxy_v1": "run2_ce_proxy_v1.npz", "run2_ce_entry_v1": "run2_ce_entry_v1.npz"}
 METRICS = ("inefficiency", "inefficiency_err", "inefficiency_covered", "uncovered_fraction", "stopped_fraction",
            "deadtime_rate_ratio",
            "ly_margin", "cost", "cost_scint", "cost_channels", "cost_absorber", "cost_fiber", "n_muons", "n_bars",
            "wall_s")
+PLACEMENT_METRICS = ("placement_feasible", "placement_shift_max_abs_mm", "placement_sheet_move_max_mm",
+                     "placement_sheet_min_thickness_mm", "placement_shield_modified", "placement_remedy_mm",
+                     "placement_n_variants")
+METRICS = METRICS + PLACEMENT_METRICS
 TABLES = tuple(f"LookupTable_{t}" for t in ("1045_1", "1550_1", "2100_1", "2370_1", "3040_0", "3200_0", "4550_0",
                                              "5000_1", "5700_0", "6000_0", "6000_1", "6900_1"))
 RESOURCES = dict(cores=2, mem_gb=8, gpus=0, gpu_type="", minutes=30)
@@ -52,6 +69,7 @@ BODY = ('MU=@sample_path@\n'
                                                                "aging_c1", "aging_ref", "max_muons"))
         + " --design " + " ".join(f"{k}=@p_{k}@" for k in KNOBS + ("absorber_material",))
         + " --cost-weights " + " ".join(f"{k}=@p_{k}@" for k in COST_WEIGHTS)
+        + " " + " ".join(f"--{k.replace('_', '-')} @p_{k}@" for k in PLACE)
         + ' > "$M2FS_OUT/point.txt" 2>&1 || { tail -20 "$M2FS_OUT/point.txt"; exit 6; }\n'
         'tail -c 400 "$M2FS_OUT/point.txt"\n')
 
@@ -86,12 +104,50 @@ def cost_weights(pairs):
     return tuple((COST_WEIGHTS[k], float(given[k])) for k in COST_WEIGHTS)
 
 
+_NUM, _SHEET = r"[-+0-9.eE]+", r"[\w][\w .-]*(\|[\w][\w .-]*)*"
+_MOVE = rf"[\w]+(,[\w]+)*:{_NUM},{_NUM},{_NUM}:{_NUM}"
+_REMEDY = re.compile(rf"^(move:[\w.-]+:{_MOVE}|thin:[\w.-]+:{_SHEET}:{_NUM}|movethin:[\w.-]+:{_MOVE}:{_SHEET}:{_NUM})$")
+
+
+def remedy_words(text):
+    """The place_remedies items (placement.parse_remedies syntax), checked without numpy; raises ValueError."""
+    items = [x.strip() for x in (text or "").split(";") if x.strip()]
+    for it in items:
+        if not _REMEDY.match(it):
+            raise ValueError(f"crv_design: remedy {it!r}: expected move:name:S1,S2:dx,dy,dz:max, "
+                             "thin:name:sheet|sheet:min_mm or movethin:name:S1,S2:dx,dy,dz:max:sheet|sheet:min_mm")
+    names = [it.split(":")[1] for it in items]
+    if len(set(names)) != len(names):
+        raise ValueError("crv_design: remedy names must be unique")
+    return items
+
+
 def metrics_of(r):
     m = {k: r[k] for k in ("inefficiency", "inefficiency_err", "inefficiency_covered", "uncovered_fraction", "stopped_fraction",
                            "deadtime_rate_ratio", "ly_margin", "cost", "n_muons", "n_bars", "wall_s")}
     m.update(cost_scint=r["cost_rel"]["scint_m3"], cost_channels=r["cost_rel"]["channels"],
              cost_absorber=r["cost_rel"]["absorber_t"], cost_fiber=r["cost_rel"]["fiber_m_mm2"])
+    if "placement" in r:                       # only with a placement: the default metrics are unchanged
+        pl = r["placement"]
+        m.update(placement_feasible=pl["feasible"], placement_shift_max_abs_mm=pl["shift_max_abs_mm"],
+                 placement_sheet_move_max_mm=pl["sheet_move_max_mm"],
+                 placement_sheet_min_thickness_mm=pl["sheet_min_thickness_mm"],
+                 placement_shield_modified=pl["shield_modified"],
+                 placement_remedy_mm=(pl["remedy"] or {}).get("amount_mm", 0.0),
+                 placement_n_variants=len(r["placement_variants"]))
     return {k: float(v) for k, v in m.items()}
+
+
+def placement_config(policy, stagger_max, clearance, max_trim, max_shift, remedies):
+    """fom.FomConfig.placement from the place_* params; None when policy is empty."""
+    if not policy:
+        return None
+    from . import placement as P
+    top = float(stagger_max)
+    stag = tuple(sorted({top - 10.0 * i for i in range(int(top // 10.0) + 1)} | {0.0}, reverse=True)) if top > 0 \
+        else (0.0,)
+    return P.PlacementConfig(stagger_mm=stag, clearance=float(clearance), max_trim=float(max_trim),
+                             max_shift=float(max_shift), remedies=P.parse_remedies(remedies), policy=policy)
 
 
 def run(argv=None):
@@ -118,11 +174,18 @@ def run(argv=None):
     p.add_argument("--max-muons", type=int, default=0)
     p.add_argument("--design", nargs="*", default=[])
     p.add_argument("--cost-weights", nargs="*", default=[])
+    p.add_argument("--place-policy", default="", choices=("",) + PLACE_POLICIES)
+    for k in ("place_stagger_max", "place_clearance", "place_max_trim", "place_max_shift"):
+        p.add_argument("--" + k.replace("_", "-"), type=float, default=DEFAULTS[k])
+    p.add_argument("--place-remedies", default="")
     a = p.parse_args(argv)
     design = M.Design(**design_dict(a.design))
+    remedy_words(a.place_remedies)
     cfg = fom.FomConfig(optics=O.OpticsConfig(pe_scale=a.pe_scale),
                         deadtime=DT.DeadtimeConfig(kappa=a.kappa, f_acc=a.f_acc, beta=a.beta),
-                        aging_c1=a.aging_c1, aging_ref=a.aging_ref, cost_weights=cost_weights(a.cost_weights))
+                        aging_c1=a.aging_c1, aging_ref=a.aging_ref, cost_weights=cost_weights(a.cost_weights),
+                        placement=placement_config(a.place_policy, a.place_stagger_max, a.place_clearance,
+                                                   a.place_max_trim, a.place_max_shift, a.place_remedies))
     z = np.load(a.muons)
     n = len(z["p"]) if a.max_muons <= 0 else min(a.max_muons, len(z["p"]))
     muons = dict(origin=z["origin"][:n], direction=z["direction"][:n], p=z["p"][:n])
@@ -130,6 +193,9 @@ def run(argv=None):
     r = fom.evaluate(design, muons, ctx, cfg, None, np.float64 if a.dtype == "float64" else np.float32)
     if r["table_substitutions"]:
         raise SystemExit(f"crv_design: lookup tables missing from {a.lookup_dir}: {sorted(r['table_substitutions'])}")
+    if "counters_text" in r:                   # the placed layout: what a stock reference of this point is built on
+        with open(os.path.join(a.out, "crv_counters_placed.txt"), "w") as f:
+            f.write(r.pop("counters_text"))
     r["config"] = dict(fom=dataclasses.asdict(cfg), muons=os.path.basename(a.muons), design=design.as_dict())
     r["approximations"] = WORKFLOW.select("default").record()
     with open(os.path.join(a.out, "eval.json"), "w") as f:

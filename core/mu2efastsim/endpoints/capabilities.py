@@ -258,6 +258,9 @@ def describe_tasks(tasks, chainpoint_module):
                  "Only returned when the corresponding V4 diagnostic JSON exists; pass=0 alone is still returned.")
         elif task == "reco_bench":
             _set(metrics, metrics, "conditional", "Metric must be present in the producer's benchmark JSON.")
+        elif task == "crv_design":
+            _set(metrics, [n for n in metrics if n.startswith("placement_")], "conditional",
+                 "Returned only with place_policy set (the design is placed in the detector envelope).")
         result[task] = {"metrics": metrics, "metric_rules": rules, "metric_patterns": patterns,
                         "configurations": configs, "route_requirements": _routes(task),
                         "file_kinds": ["geom"] if task in ("beam_point", "beam_sob", "beam_edep", "beam_edep_cpu",
