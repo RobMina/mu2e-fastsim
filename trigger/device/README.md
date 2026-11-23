@@ -11,6 +11,7 @@ and lumi-stream paths) of the production menu, from StrawDigis to per-path decis
 | time clusters | `TimeClusterFinder` | port (`timecluster.py`), incl. the TMVA hit MLP | see the README table of the PR / record |
 | time clusters (apr) | `TZClusterFinder` (TrigTZClusterFinder) | port with the stock arithmetic (`tzcluster.py`); opt-in (off: the TimeClusterFinder port with TZ's `clusterThresh`) | on: equal to stock in every event; off: approximation; see [apr time clusters](#time-clusters-of-the-apr-paths-tzclusterfinder) |
 | helices | `RobustHelixFinder` (tpr), `AgnosticHelixFinder` (apr) | compact fit with the stock per-face hit selection and chi2 definitions (`helix.py`); the hit ratio over `HelixTool`'s nominal face z | approximation |
+| helices (tpr) | `RobustHelixFinder` + `MergeHelices` (TrigHelixFinder(Ue), TrigHelixMergerDe / Ue) | port with the stock arithmetic (`rhelix.py`); opt-in (`Chain(tpr_helix=True)`, off: the compact fit) | on: equal to stock given the stock time clusters; see [tpr helices](#helices-of-the-tpr-paths-robusthelixfinder) |
 | helix cuts | `HelixFilter` | same cuts, incl. the D0-phi prescale counter on the host | exact given the helix |
 | track fit + cuts | `KalSeedFit` + `KalSeedFilter` | response layer: the filter's cuts on helix quantities and a pass probability per path and process from development shards (shipped, `data/`) | statistical |
 | prescale | `PrescaleEvent` | event number modulo the factor; a mode the module does not configure rejects (`apr_proton`) | exact |
@@ -142,6 +143,54 @@ Both precisions. Against the stored stock HelixSeeds, the reference finder and m
 bit for bit on file 1 events 0-299 (De 170, Ue 109), and the port equals the reference in both precisions. In events
 where every time peak has fewer straw hits than the paths' TimeClusterFilter minimum, stock never runs the finder
 (the filter stops the path first), so no seeds are stored; the decisions do not depend on it.
+
+### Helices of the tpr paths (RobustHelixFinder)
+
+With `Chain(tpr_helix=True)` (which needs `deltafinder=True`; the one-call path only) the tpr paths take their helices
+from `rhelix.py`, the port of `RobustHelixFinder` (Offline v13_41_01, TrkPatRec, with TrkReco `RobustHelixFit`), the
+menu's `TrigHelixFinder` and `TrigHelixFinderUe`, and of `MergeHelices` (`TrigHelixMergerDe` / `Ue`). Per time
+cluster it follows the stock module: the face-ordered hits (libstdc++ `std::sort` by panel), the hit prefilter (boost
+P² medians), the median circle fit over hit triplets (MedianCalculator's weighted medians), the phi-z init and fit,
+both helicities, the hit clean-up, `updateT0` (boost's weighted mean and variance, the calo cluster's time first) and
+`pickBestHelix`. Float where stock computes in float, double where it promotes, no fused multiply-add, and the float64
+divisions by a scalar made elementwise (XLA compiles them as reciprocal products, 1 ulp off).
+`tests/robust_helix_reference.py` is the literal transcription; the port equals it in both precisions.
+`MergeHelices` keeps a seed whose time cluster has a calorimeter cluster over an overlapping one without (`UseCalo`).
+
+Fixed capacities, flagged in `<path>:rhoverflow` (bits in `rhelix.py`): 96 selected hits per time cluster, 16 seeds
+per event.
+
+Against the stored stock seeds (1,500 CE and 1,500 cosmic events, stock time clusters as input; every field and hit
+list equal): the transcription equals stock on every finder seed (CE De 1,051, Ue 1,282; cosmic De 1,147, Ue
+1,225), the port equals the transcription in both precisions, and the merged seeds equal stock (CE 1,039 / 1,032,
+cosmic 1,083 / 1,106).
+
+In the chain the time clusters come from the `TimeClusterFinder` port, which differs from stock in two ways: it does
+not make the calo-seeded clusters (stock runs the tpr finders with `UseCaloCluster: true`), and its hit membership is
+not exact (`atan2` where stock uses `polyAtan2`, and the order of the MLP sums), so in some events a cluster has a
+hit more or less than stock's. The chain is therefore compared with stock replays of the v13_41 menu with
+`UseCaloCluster: false` on both tpr finders (CE files 1-5 development, 6-10 held-out; cosmic file 1 development, 2-3
+held-out), and the rule (the tpr HelixFilter stage equal to stock in every event whose device time clusters equal
+the stored stock ones, hit lists in order; the other events counted) declared before the held-out read, both
+precisions:
+
+| | CE development (1-5) | CE held-out (6-10) | cosmic development (1) | cosmic held-out (2-3) |
+|---|---|---|---|---|
+| events | 14,052 | 13,992 | 8,269 | 16,567 |
+| tpr HelixFilter stage (6 paths), events with equal time clusters that differ from stock | 0 | 0 | 0 | 0 |
+| events whose device time clusters differ, De / Ue finder | 86 / 218 | 100 / 230 | 1,760 / 1,704-1,705 | 3,644 / 3,452 |
+| tpr TimeClusterFilter stage, events that differ from stock (per path) | 0 | 0-2 | 66-96 | 123-193 |
+| events with `rhoverflow` | 0 | 0 | 2 | 2 |
+
+`tpr_HlxDe_30p_IPAPhi` is left out of the HelixFilter-stage row: its HelixFilter applies the D0-phi prescale on the
+host, after the stage the chain reports, so only its final decision can be compared. IPAPHI_NOTE
+
+With the stock time clusters as input the finder reproduces the stock seeds, so the remaining differences are those of
+the time clusters: an exact tpr helix stage needs an exact `TimeClusterFinder` port and its calo seeding. A decide
+job with `tpr_helix=True` (and DeltaFinder) takes 0.13-0.30 s per CE event and 0.40-0.57 s per cosmic event on four
+CPU cores, compiles included (the finder alone: 14-17 ms per CE event and 60-92 ms per cosmic event per finder
+instance); the GPU rate is not measured. The KalSeedFilter stage stays the response layer, whose tpr factors were
+measured with the compact helices.
 
 ### Time clusters of the apr paths (TZClusterFinder)
 
