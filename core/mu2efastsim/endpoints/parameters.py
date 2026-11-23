@@ -159,7 +159,10 @@ def schema(task: str, names) -> dict[str, Parameter]:
                  "pe_scale": number(0, role="calibration", positive=True), "kappa": number(0, role="scenario"),
                  "f_acc": number(0, 1, role="calibration"), "beta": number(0, role="calibration"),
                  "aging_c1": number(0, 1, role="scenario", positive=True),
-                 "aging_ref": number(0, 1, role="calibration", positive=True), "max_muons": integer(0)}
+                 "aging_ref": number(0, 1, role="calibration", positive=True), "max_muons": integer(0),
+                 # cost-proxy weights per term (empty = the plain mean of the four terms; set all or none)
+                 **{k: Parameter("number", "1", "scenario", 0, None, allow_empty=True)
+                    for k in ("cost_w_scint", "cost_w_channels", "cost_w_absorber", "cost_w_fiber")}}
     else:
         raise ValueError(f"fastsimkit: task {task!r} has no parameter schema")
     if task in SCALED_TASKS:

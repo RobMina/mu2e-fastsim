@@ -35,6 +35,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from .bfield import BZ0
 from .exact import g as _g, m as _m, strict
 from .mpr import _argmax, _d, _f, _stock_sort, poly_atan2
 
@@ -156,14 +157,16 @@ def module_geometry(straw_mid_z, panel_origin):
     return zface, phipanel
 
 
-def geometry(cond=None, bz=1.0):
+def geometry(cond=None, bz=BZ0):
     """The geometry inputs of the finder, in one place:
     - zFace and phiPanel from the nominal tracker (`data/tracker_nominal_panels.json`, shared with the DeltaFinder
       port: straw 0 midpoint x, y, z and straw 1 z per (plane, panel)), as CalHelixFinder::beginRun reads them;
       stock takes the panel azimuth from Panel::straw0MidPoint() / origin(); on production events this reproduces
       every stock seed;
-    - bz: the field at the tracker origin (PROVISIONAL 1.0 T; stock reads the BFieldManager; no seed has depended on
-      it so far);
+    - bz: the field z at the tracker origin, as stock reads it from the BFieldManager (`bfield.BZ0`, the stock
+      BFieldManager on the replay geometry at full double precision), kept in a Python float (double); the port uses it at stock's two
+      precisions: CalHelixFinderAlg::bz() is a float (`_radius_limits`: pb, rmin, rmax), CalHelixFinder's `_bz0` a
+      double (`mm2MeV = 0.3 * _bz0`: momentum, beta, seed t0);
     - fCaloOffset from the calorimeter G4 parameters (calogeom.CALO_GEOM) as CalHelixFinderAlg::setCalorimeter;
     - the disk origins (calogeom.build) and the tracker centre (-solenoidOffset, 0, detectorSystemZ0).
     `cond` is not used (kept for the call signature)."""
@@ -184,6 +187,7 @@ def geometry(cond=None, bz=1.0):
 
 
 def _radius_limits(s, bz):
+    """CalHelixFinderAlg's radius window; its bz() is a float, so the field is rounded to float32 first."""
     pb = np.float32(abs((C_LIGHT * 1e-3) / (float(np.float32(bz)) * -1.0)))
     rmin = np.float32(float(s["pmin"]) / (float(pb) * math.sqrt(1.0 + float(np.float32(s["tdmax"] * s["tdmax"])))))
     rmax = np.float32(float(s["pmax"]) / (float(pb) * math.sqrt(1.0 + float(np.float32(s["tdmin"] * s["tdmin"])))))
@@ -1023,7 +1027,7 @@ def _helicity(P, A, S, G, R):
     sign = _d(A["sign"])
     rcent = jnp.sqrt(_m(x0, x0) + _m(y0, y0))
     fcent = jnp.where((x0 == 0) & (y0 == 0), 0.0, jnp.arctan2(y0, x0))
-    mm2mev = (3.0 / 10.0) * float(G["bz"])
+    mm2mev = (3.0 / 10.0) * float(G["bz"])                 # CalHelixFinder's double _bz0, not rounded
     mom = _m(Rd, mm2mev) / jnp.cos(jnp.arctan(td))
     beta = jnp.abs(mom) / _g(jnp.sqrt(_m(mom, mom) + E_MASS * E_MASS))     # opaque: XLA makes x / sqrt(y) x * rsqrt(y)
     pitch = PI / 2.0 - jnp.arctan(td)
