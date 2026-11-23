@@ -192,7 +192,13 @@ precisions:
 | events with `rhoverflow` | 0 | 0 | 2 | 2 |
 
 `tpr_HlxDe_30p_IPAPhi` is left out of the HelixFilter-stage row: its HelixFilter applies the D0-phi prescale on the
-host, after the stage the chain reports, so only its final decision can be compared. IPAPHI_NOTE
+host, after the stage the chain reports, so only its final decision can be compared. Stock's prescale counter counts every
+HelixFilter call over the art job, and the replays ran one job over all files of a sample, while `run.py` and
+`bench.py` restart the counter for each file (equal to stock only for one-file jobs). With the counter carried across
+the files and fed with stock's call sequence, the final decision equals stock in every event with equal time clusters,
+both precisions: 0 of 28,044 CE events differ, and the 18 cosmic events that differ (7 / 5 / 6 in files 1-3) all have
+differing time clusters. Fed with the device's own call sequence, the TimeClusterFilter-stage differences shift the
+counter in the cosmic files: 168 events differ, 135 of them with equal time clusters (CE: 0).
 
 With the stock time clusters as input the finder reproduces the stock seeds, so the remaining differences are those of
 the time clusters: an exact tpr helix stage needs an exact `TimeClusterFinder` port and its calo seeding. A decide
