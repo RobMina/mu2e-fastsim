@@ -12,8 +12,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from . import (aprhelix, calhelix, calo, calogeom, cpr as cprmod, deltafinder as dfmod, helix, hits, menu, mpr, mva, paths,
-               tzcluster,
+from . import (aprhelix, calhelix, calo, calogeom, cpr as cprmod, deltafinder as dfmod, helix, hits, menu, mpr, mva,
+               paths, rhelix, tzcluster,
                simpletc, timecluster)
 
 HELIX_TYPES = ("RobustHelixFinder", "AgnosticHelixFinder", "CalHelixFinder")
@@ -64,13 +64,17 @@ def pair_bucket(n, total):
 class Chain:
     def __init__(self, cfg, cond, tc_mva_path, response=None, path_names=None, salt=20261107, debug=False,
                  precision="float64", compact=False, pairs=True, mpr=False, cpr=False, deltafinder=False, tz=False,
-                 apr_helix=False):
+                 apr_helix=False, tpr_helix=False):
         if precision not in PRECISIONS:
             raise ValueError(f"precision must be one of {PRECISIONS}")
         if tz and not deltafinder:
             raise ValueError("tz: TZClusterFinder reads TrigFlagPH's flags, run it with deltafinder=True")
         if apr_helix and not tz:
             raise ValueError("apr_helix: AgnosticHelixFinder reads the TZClusterFinder clusters, run it with tz=True")
+        if tpr_helix and not deltafinder:
+            raise ValueError("tpr_helix: RobustHelixFinder reads TrigFlagPH's flags, run it with deltafinder=True")
+        if tpr_helix and compact:
+            raise ValueError("tpr_helix runs on the one-call path only (compact=False)")
         # float32: the device arrays in 32-bit, except the stock double steps of the hit and mpr ports, which trace
         # in float64 in both precisions (exact.strict). JAX's x64 flag is process-wide, so set it before any device
         # array is made.
@@ -107,6 +111,13 @@ class Chain:
         # and MergeHelices, in place of the RobustHelixFinder-style approximation; ~0.4 s per cosmic event on a CPU
         self.apr_helix = apr_helix
         self.ahfs = {}                           # MergeHelices label -> (AgnosticHelixFinder label, settings, merge)
+        # RobustHelixFinder port (opt-in): the tpr paths' helices from the stock-exact port (rhelix.py) and
+        # MergeHelices, in place of the compact approximation (helix.py). The device time clusters carry no calo
+        # cluster (stock tpr clusters are calo-seeded, UseCaloCluster true), so its seeds equal stock's only against
+        # a menu whose tpr TimeClusterFinders run with UseCaloCluster false, and only where the device time clusters
+        # equal stock's (the TimeClusterFinder port is not exact in hit membership)
+        self.tpr_helix = tpr_helix
+        self.rhfs = {}                           # MergeHelices label -> (RobustHelixFinder label, settings, merge)
         self.chfs = {}                           # MergeHelices label -> (CalHelixFinder label, settings) (cpr paths)
         self.chf_geom = None                     # CalHelixFinder geometry inputs (calhelix.geometry)
         # TrigFlagPH (DeltaFinder port, opt-in): its flags replace the panel hits' for every stage that reads them
@@ -262,12 +273,25 @@ class Chain:
             except ValueError as e:
                 self.skipped[name] = [str(e)]
                 return
-        hcfg_label = self._helix_label(hel) if hel and chf is None and ahf is None else None
+        rhf = None
+        if p["family"] == "tpr" and self.tpr_helix and hel and self.mods[hel].get("module_type") == "RobustHelixFinder":
+            rhf = next((lbl for lbl in labels if self.mods.get(lbl, {}).get("module_type") == "MergeHelices"), None)
+            fins = [f.split(":")[0] for f in self.mods[rhf]["HelixFinders"]] if rhf else []
+            if fins != [hel] or self.mods[hel]["TimeClusterCollection"] != tcl:
+                self.skipped[name] = [f"tpr helix layout not supported: {hel} {rhf} {fins}"]
+                return
+            try:
+                self.rhfs[rhf] = (hel, rhelix.settings(self.mods[hel]), rhelix.merge_settings(self.mods[rhf]))
+            except ValueError as e:
+                self.skipped[name] = [str(e)]
+                return
+        hcfg_label = self._helix_label(hel) if hel and chf is None and ahf is None and rhf is None else None
         if p["family"] == "cpr":                 # CalSeedFit (TrigCalSeedFitDe): found by its type
             ksf = next((lbl for lbl in labels if self.mods.get(lbl, {}).get("module_type") in KSF_TYPES), None)
         else:
             ksf = next((lbl for lbl in labels if lbl.startswith("Trig") and "KSF" in lbl and "MC" not in lbl), None)
-        self.plan[name] = {"tc": tcl, "helix": hcfg_label, "chf": chf, "ahf": ahf, "ksf": ksf, "filters": p["filters"],
+        self.plan[name] = {"tc": tcl, "helix": hcfg_label, "chf": chf, "ahf": ahf, "rhf": rhf, "ksf": ksf,
+                           "filters": p["filters"],
                            "family": p["family"], "min_helices": p["min_helices"], "ps": ps}
 
     def _tc_label(self, p):
@@ -285,7 +309,7 @@ class Chain:
 
     def _tc_settings(self, lbl):
         """TimeClusterFinder settings; with mpr paths, every producer also returns the stock hit order (`order`)."""
-        return {**timecluster.settings(self.mods[lbl]), "order": bool(self.mprs)}
+        return {**timecluster.settings(self.mods[lbl]), "order": bool(self.mprs) or bool(self.rhfs)}
 
     def _tc_labels(self):
         """TimeClusterFinder settings the tpr/apr paths use (cst clusters come from SimpleTimeCluster)."""
@@ -321,6 +345,15 @@ class Chain:
                                         {k: tz[k] for k in ("valid", "order", "calo")}, cl, s)
             hx = aprhelix.merge(seeds, ph["x"].shape[1], ms, self.fz)
             hxs[("ahf", mlbl)] = {**hx, "overflow": seeds["overflow"]}
+        for mlbl, (hlbl, s, ms) in sorted(self.rhfs.items()):   # tpr: RobustHelixFinder + MergeHelices
+            tc = tcs[self.mods[hlbl]["TimeClusterCollection"]]
+            KT = tc["valid"].shape[1]
+            tcx = {"valid": tc["valid"], "order": tc["order"], "t0": tc["t0"], "t0err": tc["t0err"],
+                   "calo": jnp.full((E, KT), -1, jnp.int32)}                 # device clusters: no calo cluster
+            clx = {"disk": jnp.zeros((E, 1), jnp.int32), "time": jnp.zeros((E, 1), jnp.float32)}
+            seeds, _ = rhelix.helices({k: v for k, v in ph.items() if k != "df_err"}, tcx, clx, s)
+            hx = rhelix.merge(seeds, ph["x"].shape[1], ms, self.fz)
+            hxs[("rhf", mlbl)] = {**hx, "overflow": seeds["overflow"]}
         if self.cpr_tp:                              # cpr: CalTimePeakFinder on the panel hits and calo clusters
             for lbl, s in self.cpr_tp.items():
                 pk = cprmod.time_peaks(ph, cl, s)
@@ -471,6 +504,7 @@ class Chain:
             tc = tcs[p["tc"]]
             hx = hxs.get(("mpr", p["mpr"]) if p["family"] == "mpr" else
                          ("cpr", p["chf"]) if p.get("chf") else ("ahf", p["ahf"]) if p.get("ahf") else
+                         ("rhf", p["rhf"]) if p.get("rhf") else
                          (p["tc"], p["helix"]))
             if p["family"] == "mpr":
                 aux[name + ":overflow"] = hx["overflow"]           # time clusters with more hits than the finder's slots
@@ -479,6 +513,8 @@ class Chain:
                 aux[name + ":tzindet"] = tc["indeterminate"]       # recovered chunks with an unknown stale selection
             if p.get("ahf"):
                 aux[name + ":ahoverflow"] = hx["overflow"] != 0    # an AgnosticHelixFinder capacity (aprhelix.py)
+            if p.get("rhf"):
+                aux[name + ":rhoverflow"] = hx["overflow"] != 0    # a RobustHelixFinder capacity (rhelix.py)
             if p["family"] == "cpr":
                 aux[name + ":overflow"] = tc["overflow"]           # events with more calo clusters than CPR_CLUSTERS
                 aux[name + ":hxoverflow"] = hx["overflow"]        # time peaks with more hits than the finder's slots
