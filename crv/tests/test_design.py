@@ -470,3 +470,16 @@ def test_stockcmp_bookkeeping(counters):
         assert 0.0 <= s["coinc_model"] <= 1.0 and s["events"] > 5
         for row in s["pe"]:
             assert row["ratio_end0"] == pytest.approx(1.0, rel=1e-9)
+
+
+def test_window_edge_events(monkeypatch):
+    import pandas as pd
+    from crvfastsim.design import stockcmp as SC
+    parts = pd.DataFrame(dict(run=[1] * 5, subrun=[0] * 5, event=[1, 2, 3, 3, 4], isprim=[1, 1, 1, 0, 1],
+                              pdg=[13, -13, 13, 13, 11], st=[50.0, 99_850.0, 99_700.0, 99_990.0, 99_990.0]))
+    monkeypatch.setattr(SC.T, "read_many", lambda paths, tree, cols=None: parts)
+    keys, info = SC.window_edge_events(["x"], 100_000.0, 200.0)
+    # event 2: primary muon after 99,800 ns; event 3's late particle is no primary; event 4's late primary no muon
+    assert keys.tolist() == [SC._ekey(1, 0, 2)]
+    assert info["late_primaries"] == 1 and info["primaries"] == 3 and info["early_primaries"] == 1
+
