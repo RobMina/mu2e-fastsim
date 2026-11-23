@@ -27,6 +27,10 @@ ENVELOPE = dict(env_z=(-9929, -7858.01, -7858, -6658, -4068, -4067.99, -4000),
                 env_r=(750, 750, 650, 200, 200, 249.8, 249.8), z_min=-8368.0, r_plane=249.3, z_plane=-4044.45)
 SLABS = ((-4147.3, 158.8, 174.6, 6.35), (-4140.7, 158.8, 174.6, 6.35), (-4134.4, 158.8, 174.6, 6.35))
 POOL = {"cpu": 16384, "gpu": 262144}
+# tsdevice lanes on the GPU: a fixed pool (the board scoring passes' value), so the compiled executables do not
+# depend on the design's entrant count and the persistent cache serves every design (without it each design
+# recompiled: 215-407 s per design on an A100 for ~80k entrants). CPU keeps tsdevice's default (all inputs).
+TS_POOL = {"cpu": None, "gpu": 262144}
 TS_SEED = 1
 TS_SIGNAL = (13, -211)        # mu- and pi- at the TS entrance (the board objective)
 
@@ -71,7 +75,8 @@ def tsdevice_argv(a, reference, out):
     return ["--reference", str(reference), "--gdml", a.gdml, "--field-config", a.field_config,
             "--offline-root", a.offline_root, "--maps", a.maps, "--ds-geom", a.ds_geom,
             "--ds-offline-root", a.ds_offline_root or a.offline_root, "--ds-map", a.ds_map,
-            "--seed", str(TS_SEED), "--dtype", a.dtype, "--out", str(out)]
+            "--seed", str(TS_SEED), "--dtype", a.dtype, "--out", str(out)] + (
+                ["--pool", str(TS_POOL[a.platform])] if TS_POOL[a.platform] else [])
 
 
 def states(a, key, run_chain):
