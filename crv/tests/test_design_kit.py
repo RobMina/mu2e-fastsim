@@ -104,6 +104,22 @@ def test_static_names_match_the_package():
     assert kitmod.TASKS["crv_design"].resources.gpus == 0 and "crv_design" in kitmod.DELEGATED_ONLY
 
 
+def test_cost_weight_words_and_domain():
+    from crvfastsim.design import fom as F
+    assert set(KT.COST_WEIGHTS.values()) == set(F.COST_TERMS)
+    assert KT.cost_weights([f"{k}=" for k in KT.COST_WEIGHTS]) == ()
+    w = KT.cost_weights(["cost_w_scint=0.153", "cost_w_channels=0.514", "cost_w_absorber=0.145", "cost_w_fiber=0.188"])
+    assert dict(w) == {"scint_m3": 0.153, "channels": 0.514, "absorber_t": 0.145, "fiber_m_mm2": 0.188}
+    for bad in (["cost_w_scint=1"], ["cost_w_other=1"]):
+        with pytest.raises(ValueError):
+            KT.cost_weights(bad)
+    pw = {"cost_w_scint": 0.153, "cost_w_channels": 0.514, "cost_w_absorber": 0.145, "cost_w_fiber": 0.188}
+    assert KU.validate({**P, **pw})["cost_w_channels"] == 0.514
+    for bad in ({**P, "cost_w_scint": 1.0}, {**P, **pw, "cost_w_fiber": -0.1}):
+        with pytest.raises(ValueError):
+            KU.validate(bad)
+
+
 def test_plain_render_refuses_the_delegated_task(tmp_path):
     _, _, kit = make(tmp_path)
     with pytest.raises(ValueError, match="delegate"):
@@ -138,6 +154,7 @@ def test_submit_renders_a_cpu_job_and_results_need_the_cleanup(tmp_path):
     assert f'echo "{SHA}  $MU" | sha256sum -c -' in body and "/path/to/slurm/crv_design_data/run2_ce_proxy_v1.npz" in body
     assert all(t in body for t in KT.TABLES) and "cleanup.txt" in body
     assert "n_layers=5 " in body and "thickness=''" in body and "--dtype float64" in body
+    assert "--cost-weights cost_w_scint=''" in body                        # empty = equal weights
     assert "/path/to/slurm/crv_design_code_kit/snap" in body
     j = ep.state.get("d1").job_id
     assert kit.status("d1")["state"] == "working"
