@@ -37,6 +37,7 @@ def make(tmp_path):
 def test_registered_with_a_refusing_mounted_body_and_a_uva_delegate():
     t = kitmod.TASKS["ptgt_point"]
     assert t.params == kit_task.PTGT_PARAMS and "stops_per_pot" in t.metrics and "ptgt_point" in kitmod.DELEGATED_ONLY
+    assert {"peak_heat_Gy_per_pot", "peak_heat_Gy_per_pot_err", "target_edep_MeV_per_pot"} <= set(t.metrics)
     assert "exit 3" in t.body and kitmod.DELEGATES["ptgt_point"] is kit_task._UVAPtgtDelegate
     assert t.resources_for({**kit_task.PTGT_DEFAULTS, "platform": "gpu"}).gpus == 1
 

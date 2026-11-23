@@ -200,12 +200,13 @@ tail -c 300 "$M2FS_OUT/point.txt"
 # Offline files and field maps (Mau13 for TS + DS, the G4beamline GA05 PSMap for the PS) staged from CVMFS, and three
 # public-derived files in the endpoint data directory FASTSIMKIT_PTGT_DATA, checked against PTGT_DATA_SHA256: the
 # thin-target bank (Geant4 11.3, QGSP_BERT_HP), the xs-only steel bank of the TS-window rings, the TS GDML (an export
-# of the Offline Run 1A geometry). Metrics: stops_per_pot (+ Poisson error), the TS-entrance yields, timings.
+# of the Offline Run 1A geometry). Metrics: stops_per_pot (+ Poisson error), the TS-entrance yields, the target's
+# peak heat (Gy/POT, + batch-mean error) and total deposit (MeV/POT) from the chain's heat summary, timings.
 PTGT_PARAMS = ("Tlength", "R_up", "R_mid", "R_dn", "pot", "seed", "dtype", "platform")
 PTGT_DEFAULTS = {"pot": 100_000, "seed": 1, "dtype": "float64", "platform": "cpu"}
 PTGT_METRICS = ("stops_per_pot", "stops_per_pot_err", "mu_minus_stops_per_pot", "stops", "pot", "ts_entrances",
-                "ts_mu_minus_pi_minus_per_pot", "ts_mu_minus_pi_minus_per_pot_err", "ts_mu_pi_per_pot", "cached",
-                "chain_s", "ts_s")
+                "ts_mu_minus_pi_minus_per_pot", "ts_mu_minus_pi_minus_per_pot_err", "ts_mu_pi_per_pot",
+                "peak_heat_Gy_per_pot", "peak_heat_Gy_per_pot_err", "target_edep_MeV_per_pot", "cached", "chain_s", "ts_s")
 PTGT_DATA_SHA256 = {
     "bank.npz": "d44c7ca1a3357ed369b78202bd6eb8df3a567b9b18d8fb54810c2c30dfd53020",       # W thin-target bank v3
     "slab_bank.npz": "8019e6b77b6c40a752dfaaa87a2041fe4004b9e4001f6244cf3a8fa4b127d57e",  # G4_STAINLESS-STEEL, xs only
