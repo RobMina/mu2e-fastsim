@@ -39,6 +39,8 @@ def settings(m):
         raise ValueError("device DeltaFinder implements testHitMask false and an empty bkgHitMask")
     if int(fp.get("mergePC", 0)) != 0:
         raise ValueError("device DeltaFinder implements mergePC 0")
+    if int(fp.get("printErrors", 0)) != 0:
+        raise ValueError("device DeltaFinder implements printErrors 0 (it changes MergeDeltaCandidate)")
     out = {}
     for k in FINDER_KEYS:
         v = fp[k]
@@ -867,11 +869,12 @@ def _link_delta_seeds(ev, c, S, cl, cstart, ccount):
 
 
 def _d_merge(ev, S, D1, D2):
-    """DeltaCandidate::MergeDeltaCandidate(D2) into D1."""
+    """DeltaCandidate::MergeDeltaCandidate(D2) into D1, printErrors 0: stock keeps D1's seed at a station both
+    candidates occupy only when it prints the error, so D2's seed replaces it there and is counted again."""
     def body(st, st_):
         S, D1 = st_
         s2 = D2["seeds"][st]
-        go = (st >= D2["first"]) & (st <= D2["last"]) & (s2 >= 0) & (D1["seeds"][st] < 0)
+        go = (st >= D2["first"]) & (st <= D2["last"]) & (s2 >= 0)
         sc = jnp.maximum(s2, 0)
         N = {**D1, "seeds": D1["seeds"].at[st].set(s2), "nseeds": D1["nseeds"] + 1, "nh": D1["nh"] + S["s_nh"][sc],
              "nsh": D1["nsh"] + S["s_nsh"][sc], "v": D1["v"].at[DSUMEDEP].add(S["s_v"][sc, SUMEDEP]),
