@@ -64,7 +64,7 @@ def pair_bucket(n, total):
 class Chain:
     def __init__(self, cfg, cond, tc_mva_path, response=None, path_names=None, salt=20261107, debug=False,
                  precision="float64", compact=False, pairs=True, mpr=False, cpr=False, deltafinder=False, tz=False,
-                 apr_helix=False, tpr_helix=False):
+                 apr_helix=False, tpr_helix=False, tc_calo=False, tc_calo_mva_path=None):
         if precision not in PRECISIONS:
             raise ValueError(f"precision must be one of {PRECISIONS}")
         if tz and not deltafinder:
@@ -75,6 +75,8 @@ class Chain:
             raise ValueError("tpr_helix: RobustHelixFinder reads TrigFlagPH's flags, run it with deltafinder=True")
         if tpr_helix and compact:
             raise ValueError("tpr_helix runs on the one-call path only (compact=False)")
+        if tc_calo and compact:
+            raise ValueError("tc_calo runs on the one-call path only (compact=False)")
         # float32: the device arrays in 32-bit, except the stock double steps of the hit and mpr ports, which trace
         # in float64 in both precisions (exact.strict). JAX's x64 flag is process-wide, so set it before any device
         # array is made.
@@ -90,6 +92,14 @@ class Chain:
         self.cond_dev, self.tot_bins = hits.device_conditions(cond)
         self.fz = helix.face_z(cond)
         self.net = mva.load(tc_mva_path)
+        # calo-seeded TimeClusterFinder clusters (opt-in): the device calo clusters (calo.reconstruct, from the
+        # batch's CaloDigis) seed the producers that set UseCaloCluster, with the ClusterCaloMVA net (by default
+        # TimeClusterCalo.weights.xml next to the ClusterMVA file)
+        self.tc_calo = tc_calo
+        self.cnet = None
+        if tc_calo:
+            from pathlib import Path
+            self.cnet = mva.load(tc_calo_mva_path or str(Path(tc_mva_path).with_name("TimeClusterCalo.weights.xml")))
         # {path: {"hs": f, "ks": f}}: response-layer pass probabilities; or, opt-in, {path: {"final": {"var": "tc_nsh",
         # "edges": [...], "f": [...]}}}: one pass probability for the path, binned in the straw hits of the event's
         # best time cluster of the path's producer, applied to the path's own device decision (then hs/ks are not used)
@@ -112,10 +122,8 @@ class Chain:
         self.apr_helix = apr_helix
         self.ahfs = {}                           # MergeHelices label -> (AgnosticHelixFinder label, settings, merge)
         # RobustHelixFinder port (opt-in): the tpr paths' helices from the stock-exact port (rhelix.py) and
-        # MergeHelices, in place of the compact approximation (helix.py). The device time clusters carry no calo
-        # cluster (stock tpr clusters are calo-seeded, UseCaloCluster true), so its seeds equal stock's only against
-        # a menu whose tpr TimeClusterFinders run with UseCaloCluster false, and only where the device time clusters
-        # equal stock's (the TimeClusterFinder port is not exact in hit membership)
+        # MergeHelices, in place of the compact approximation (helix.py). Stock's tpr time clusters are calo-seeded
+        # (UseCaloCluster true): run with tc_calo=True for those, or against a menu with UseCaloCluster false
         self.tpr_helix = tpr_helix
         self.rhfs = {}                           # MergeHelices label -> (RobustHelixFinder label, settings, merge)
         self.chfs = {}                           # MergeHelices label -> (CalHelixFinder label, settings) (cpr paths)
@@ -154,10 +162,10 @@ class Chain:
         cpr_tc = sorted({p["tc"] for p in self.plan.values() if p["family"] == "cpr"})
         self.tz_s = {lbl: tzcluster.settings(self.mods[lbl]) for lbl in
                      sorted({p["tc"] for p in self.plan.values() if p["family"] == "apr"})} if tz else {}
-        if cpr_tc or self.tz_s:
+        if cpr_tc or self.tz_s or tc_calo:
             calib = cfg["services"]["ProditionsService"]["calCalib"]
             if calib.get("useDb"):
-                raise ValueError("cpr and tz paths need calCalib from the configuration (useDb false)")
+                raise ValueError("cpr, tz and tc_calo need calCalib from the configuration (useDb false)")
             geo = calogeom.build()
             self.calo_s = calo.settings(self.mods["CaloHitMakerFast"], self.mods["CaloClusterFast"], calib, geo)
             if compact:
@@ -323,15 +331,21 @@ class Chain:
         ph = self._flag(hits.panel_hits(sh, self.ph), batch)
         E = batch["valid"].shape[0]
         tcs, hxs = {}, {}
-        for group in self._tc_groups():              # producers that differ only in pitch share one batched call
-            ss = [self._tc_settings(lbl) for lbl in group]
-            res = (timecluster.time_clusters_multi_pairs(ph, ss, self.net, K=E * len(group)) if self.pairs else
-                   timecluster.time_clusters_multi(ph, ss, self.net))
-            tcs.update(zip(group, res))
         cl = None
-        if self.calo_s is not None:                  # calo clusters (cpr and tz paths)
+        if self.calo_s is not None:                  # calo clusters (cpr, tz and calo-seeded time clusters)
             dg = {k: batch["cd_" + k] for k in CALO_KEYS}
             _, cl = calo.reconstruct(dg, batch["pbt"].astype(jnp.float32), self.calo_s, C=CPR_CLUSTERS)
+        tcl = cl if self.tc_calo else None
+        for group in self._tc_groups():              # producers that differ only in pitch share one batched call
+            ss = [self._tc_settings(lbl) for lbl in group]
+            # calo seeds add candidates per event: a larger pair capacity keeps the gathered path
+            K = E * len(group) * (8 if tcl is not None else 1)
+            res = (timecluster.time_clusters_multi_pairs(ph, ss, self.net, K=K, cl=tcl, cnet=self.cnet)
+                   if self.pairs else timecluster.time_clusters_multi(ph, ss, self.net, cl=tcl, cnet=self.cnet))
+            if tcl is not None:                      # calo clusters past CPR_CLUSTERS are not seen
+                res = [{**r, "overflow": r["overflow"] | jnp.where(cl["overflow"], 8, 0).astype(r["overflow"].dtype)}
+                       for r in res]
+            tcs.update(zip(group, res))
         for lbl, s in self.tz_s.items():             # tz: TZClusterFinder port on the flagged panel hits + calo clusters
             # carry=False: the block's events need not be consecutive in file order; a calo-recovered chunk that needs
             # the stale energy selection of an earlier event is flagged (indeterminate) and not made an electron
@@ -349,8 +363,9 @@ class Chain:
             tc = tcs[self.mods[hlbl]["TimeClusterCollection"]]
             KT = tc["valid"].shape[1]
             tcx = {"valid": tc["valid"], "order": tc["order"], "t0": tc["t0"], "t0err": tc["t0err"],
-                   "calo": jnp.full((E, KT), -1, jnp.int32)}                 # device clusters: no calo cluster
-            clx = {"disk": jnp.zeros((E, 1), jnp.int32), "time": jnp.zeros((E, 1), jnp.float32)}
+                   "calo": tc["calo"] if tcl is not None else jnp.full((E, KT), -1, jnp.int32)}
+            clx = ({"disk": cl["disk"], "time": cl["time"]} if tcl is not None else
+                   {"disk": jnp.zeros((E, 1), jnp.int32), "time": jnp.zeros((E, 1), jnp.float32)})
             seeds, _ = rhelix.helices({k: v for k, v in ph.items() if k != "df_err"}, tcx, clx, s)
             hx = rhelix.merge(seeds, ph["x"].shape[1], ms, self.fz)
             hxs[("rhf", mlbl)] = {**hx, "overflow": seeds["overflow"]}
@@ -508,6 +523,8 @@ class Chain:
                          (p["tc"], p["helix"]))
             if p["family"] == "mpr":
                 aux[name + ":overflow"] = hx["overflow"]           # time clusters with more hits than the finder's slots
+            if p["family"] in ("tpr", "apr", "mpr") and p["tc"] not in self.tz_s:
+                aux[name + ":tcoverflow"] = tc["overflow"] != 0    # a TimeClusterFinder capacity (timecluster.py)
             if p["tc"] in self.tz_s:
                 aux[name + ":tzoverflow"] = tc["overflow"]         # a TZ capacity, or calo clusters past CPR_CLUSTERS
                 aux[name + ":tzindet"] = tc["indeterminate"]       # recovered chunks with an unknown stale selection
