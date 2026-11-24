@@ -121,7 +121,7 @@ def test_entry_compare_identical_and_scaled(tmp_path):
     assert json.loads(str(np.load(a)["provenance"])) == {}
 
 
-def test_device_build_bookkeeping(monkeypatch):
+def test_device_build_bookkeeping(monkeypatch, tmp_path):
     calls = []
 
     class Source:
@@ -159,6 +159,14 @@ def test_device_build_bookkeeping(monkeypatch):
     assert out["n_generated_events"] == 25000 and out["live_seconds"] == 12500.0
     assert len(out["p"]) == len(out["event_key"]) and set(out["event_key"][:, 1]) <= {1, 2, 3}
     assert out["provenance"]["cry"]["generator"] == "jax-cry-1.7" and out["provenance"]["transport"] == "jax"
+    path, small = tmp_path / "s.npz", tmp_path / "s2.npz"
+    DS.save(path, out, F.PROXY)
+    sub = DS.subset(path, 2, small)
+    assert sub["n_generated_events"] == 20000 and len(sub["p"]) == int((out["event_key"][:, 1] <= 2).sum())
+    assert json.loads(str(np.load(small)["provenance"]))["chunks"] == 2
+    with pytest.raises(ValueError, match="cannot take"):
+        DS.subset(path, 3, small)
+    assert any("rate ratio" in s for s in DS.summary_lines(DS.entry_compare([str(path), str(small)])))
 
 
 def test_materials_without_constants_follow_the_host_rule():

@@ -117,3 +117,32 @@ def entry_compare(paths, n_events=None):
                                  "reference_mean": float(np.mean(rc[k])) if len(rc[k]) else None}
         out["samples"].append(rec)
     return out
+
+
+def subset(path, chunks, out):
+    """The first `chunks` CRY chunks of a device sample (subruns 1..chunks) as its own sample: the same events as a
+    shorter run with the same seed and chunk size."""
+    z = dict(np.load(path, allow_pickle=False))
+    prov = json.loads(str(z["provenance"]))
+    chunk, events = int(prov["chunk"]), int(prov["events"])
+    if chunks < 1 or chunks * chunk > events:
+        raise ValueError(f"{path} holds {events} events in chunks of {chunk}: cannot take {chunks} chunks")
+    keep = z["event_key"][:, 1] <= chunks
+    m = {k: z[k][keep] for k in ("origin", "direction", "p", "p_generated", "event_key")}
+    m["n_generated_events"] = chunks * chunk
+    m["y_plane"] = float(z["y_plane"])
+    m["provenance"] = dict(prov, subset_of=str(path), chunks=chunks, events=chunks * chunk)
+    save(out, m, json.loads(str(z["proxy"])))
+    return m
+
+
+def summary_lines(cmp):
+    """Compact text of an entry_compare result: per sample the rate ratio and each spectrum's chi2/ndf and KS p."""
+    lines = []
+    for s in cmp["samples"]:
+        lines.append(f"{s['path']}: {s['selected']} of {s['generated_events']} events, rate ratio "
+                     f"{s['rate_ratio']:.4f} +- {s['rate_ratio_err']:.4f}")
+        for k, v in s["spectra"].items():
+            lines.append(f"  {k:12s} chi2/ndf {v['chi2']:.1f}/{v['ndf']} (p {v['chi2_p']})  KS p {v['ks_p']}  "
+                         f"mean {v['mean']} vs {v['reference_mean']}")
+    return lines

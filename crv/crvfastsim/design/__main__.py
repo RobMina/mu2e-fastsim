@@ -1,4 +1,4 @@
-"""python -m crvfastsim.design {muons, entrycmp, geometry, evaluate, closure, stockcmp}: CRV module design points
+"""python -m crvfastsim.design {muons, entrycmp, subset, geometry, evaluate, closure, stockcmp}: CRV module design points
 (docs/design.md)."""
 from __future__ import annotations
 
@@ -64,7 +64,17 @@ def cmd_muons(a):
 
 def cmd_entrycmp(a):
     from . import device_sample
-    _write(a.out, device_sample.entry_compare(a.samples, a.events or None))
+    out = device_sample.entry_compare(a.samples, a.events or None)
+    if a.out:
+        with open(a.out, "w") as f:
+            f.write(json.dumps(out, indent=1, default=float) + "\n")
+    print("\n".join(device_sample.summary_lines(out)))
+
+
+def cmd_subset(a):
+    from . import device_sample
+    m = device_sample.subset(a.sample, a.chunks, a.out)
+    print(json.dumps(dict(selected=len(m["p"]), generated_events=m["n_generated_events"], out=a.out)))
 
 
 def cmd_geometry(a):
@@ -162,6 +172,11 @@ def main(argv=None):
     ec.add_argument("--events", type=int, nargs="*", help="generated CRY events per sample, where the npz has none")
     ec.add_argument("--out")
     ec.set_defaults(func=cmd_entrycmp)
+    sb = sub.add_parser("subset", help="the first CRY chunks of a --device-cry sample as a smaller sample")
+    sb.add_argument("sample")
+    sb.add_argument("--chunks", type=int, required=True)
+    sb.add_argument("--out", required=True)
+    sb.set_defaults(func=cmd_subset)
     g = sub.add_parser("geometry", help="build a design and summarise it")
     g.add_argument("--design")
     g.add_argument("--counters", default=RUN2_COUNTERS)
