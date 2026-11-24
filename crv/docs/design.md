@@ -135,6 +135,11 @@ reproduced by `LayoutConfig(split=True, close_up=False)` with `PlacementConfig(t
 
 `python -m crvfastsim.design.tiling_plot` draws the top sectors seen from above (layers a vertical track crosses, module
 outlines, zooms on the sector boundaries) for the nominal geometry or a design, placed or on stock positions.
+**Coincidence grouping** (kit: `coinc_groups`). Empty (the default) searches every sector alone. `sector_type` is
+Offline's CrvCoincidenceFinder grouping (`fom.sector_type_groups`): sectors of one `crs.sectorType` are searched
+together, each hit with its own sector's cuts, and placed fillers join their parent's group. Scoring the design loop
+on placed geometry means `place_policy` and `coinc_groups=sector_type` together. (The G1 crvd04 Geant4 references
+were built on the v3 layout rules, before the default rules above, so they do not validate the default layout.)
 
 ## Comparison with stock (`stockcmp.py`)
 

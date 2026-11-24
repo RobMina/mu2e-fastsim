@@ -230,6 +230,46 @@ def test_placed_run2_design_scores_in_both_dtypes(env, dtype):
     assert abs(r["inefficiency"] - r64) <= 1e-4 + 1e-3 * r64 + 1.0 / r["n_muons"]
 
 
+@pytest.mark.parametrize("dtype", ["float64", "float32"])
+def test_placed_run2_design_with_sector_type_groups(env, dtype):
+    """The kit's coinc_groups=sector_type on a placed Run 2 design: fillers join their parent's sector-type group,
+    grouping only adds coincidence chances (inefficiency not above the ungrouped one), float32 agrees with float64."""
+    import numpy as np
+    from crvfastsim.design import fom as F
+    from crvfastsim.design import kit_task as KT
+    rng = np.random.default_rng(7)
+    n = 3000
+    o = np.stack([rng.uniform(-7000, -800, n), np.full(n, 6000.0), rng.uniform(-2000, 18000, n)], 1)
+    d = np.stack([rng.normal(0, 0.2, n), -np.ones(n), rng.normal(0, 0.2, n)], 1)
+    d /= np.linalg.norm(d, axis=1)[:, None]
+    mu = dict(origin=o, direction=d, p=rng.uniform(1000, 10000, n))
+    ctx0 = F.Context()
+    groups = KT.coincidence_groups("sector_type", ctx0.counters)
+    out = {}
+    for g in ((), groups):
+        for dt in ("float64", dtype):
+            cfg = F.FomConfig(placement=LEGACY, stack_range=False, coincidence_groups=g)
+            out[bool(g), dt] = F.evaluate(design("R41"), mu, _synthetic_tables(F.Context()), cfg,
+                                          dtype=np.dtype(dt).type)
+    grouped, alone = out[True, dtype], out[False, dtype]
+    assert grouped["placement"]["feasible"] and any(k.endswith("F") for k in grouped["inefficiency_sector"])
+    assert grouped["inefficiency"] <= alone["inefficiency"] + 1.0 / n
+    # dtypes: with the finder cuts on, float32 flips the slope-window cut for a couple of edge muons on this sample
+    # (test_placed_run2_design_scores_in_both_dtypes); with them off the grouped placed score agrees tightly
+    nocut = [F.evaluate(design("R41"), mu, _synthetic_tables(F.Context()),
+                        F.FomConfig(placement=LEGACY, stack_range=False, finder_cuts=False,
+                                    coincidence_groups=groups), dtype=np.dtype(dt).type)["inefficiency"]
+             for dt in ("float64", dtype)]
+    assert abs(nocut[1] - nocut[0]) <= 1e-6       # float32 sums over 3000 muons (#346: 3e-7)
+    # fillers in their parent's group: the grouped placed score equals one with the filler pairs spelled out
+    names = list(grouped["inefficiency_sector"])
+    stock = dict(groups)
+    full = groups + tuple((s, stock[s[:-1]]) for s in names if s.endswith("F") and s[:-1] in stock)
+    cfg = F.FomConfig(placement=LEGACY, stack_range=False, coincidence_groups=full)
+    spelled = F.evaluate(design("R41"), mu, _synthetic_tables(F.Context()), cfg, dtype=np.dtype(dtype).type)
+    assert spelled["inefficiency"] == grouped["inefficiency"]
+
+
 @pytest.mark.slow
 def test_c_thinpoly_placed_without_hand_tuning(env):
     """crvd04 C with a thinner outer CRV-U sheet: the automatic fit, given the E1 / E2 downstream move and the sheet
