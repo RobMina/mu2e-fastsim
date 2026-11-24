@@ -100,3 +100,22 @@ def test_refuses_a_geometry_file_and_a_missing_data_directory(tmp_path, monkeypa
         d.render(kit_uva.validate(P, "ptgt_point"), geometry={"name": "g"})
     monkeypatch.delenv("FASTSIMKIT_PTGT_DATA")
     assert not kit.check("p3", P, [], [])["ok"]
+
+
+def test_queue_mode_gpu_body_is_a_cpu_client(tmp_path, monkeypatch):
+    monkeypatch.setenv("FASTSIMKIT_PTGT_QUEUE", "/path/to/ptgt_queue")
+    monkeypatch.setenv("FASTSIMKIT_PTGT_QUEUE_MINUTES", "90")
+    site, ep, kit = make(tmp_path)
+    assert kit.submit("q1", {**P, "platform": "gpu"}, [], []) == {"handle": "q1"}
+    body = site.body
+    assert '-m beamfastsim.ptgt_point --queue "$Q"' in body and "/path/to/ptgt_queue" in body
+    assert "--platform gpu" in body and "--wait-s 5280" in body and "--data-sha256" in body
+    assert all(h in body for h in kit_task.PTGT_DATA_SHA256.values())
+    assert "apptainer exec --nv" not in body and "gpu:a100" not in body and "JAX_PLATFORMS=cpu" in body
+    assert "cleanup.txt" in body
+    r = subprocess.run(["bash", "-n"], input=body.encode(), capture_output=True)
+    assert r.returncode == 0, r.stderr.decode()
+    res = kit._delegates["ptgt_point"].resources(kit_uva.validate({**P, "platform": "gpu"}, "ptgt_point"))
+    assert (res.gpus, res.cores, res.minutes) == (0, 1, 90)
+    # CPU points ignore the queue
+    assert kit._delegates["ptgt_point"].queue(kit_uva.validate(P, "ptgt_point")) is None
