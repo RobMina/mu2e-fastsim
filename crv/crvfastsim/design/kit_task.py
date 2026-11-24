@@ -25,6 +25,9 @@ Params (Mu2eBO sends numbers as floats; empty = the stock value of each sector)
   place_remedies  ';'-separated remedies, move:<name>:<S1>,<S2>:<dx>,<dy>,<dz>:<max_mm> (move sectors),
                 thin:<name>:<sheet>|<sheet>:<min_mm> (thin borated-poly sheets; sheet = G4 name, type<k> or label
                 text) or movethin:<name>:<S1>,<S2>:<dx>,<dy>,<dz>:<max_mm>:<sheet>|<sheet>:<min_mm> (both)
+  coinc_groups  empty = every sector searched alone for coincidences (as before); "sector_type": Offline's
+                CrvCoincidenceFinder grouping, every sector searched with the others of its crs.sectorType, each hit
+                with its own sector's cuts (fom.sector_type_groups; placed fillers join their parent's group)
 Metrics: METRICS (inefficiency and its error, deadtime_rate_ratio, ly_margin, cost and its four terms, ...); with a
 placement also PLACEMENT_METRICS (feasible, largest shift, sheet move and thinnest sheet, shield modified, remedy).
 """
@@ -41,13 +44,15 @@ COST_WEIGHTS = {"cost_w_scint": "scint_m3", "cost_w_channels": "channels", "cost
                 "cost_w_fiber": "fiber_m_mm2"}   # param -> fom.COST_TERMS key
 PLACE = ("place_policy", "place_stagger_max", "place_clearance", "place_max_trim", "place_max_shift", "place_remedies")
 PLACE_POLICIES = ("first", "each")       # = placement.POLICIES (tested)
+COINC_GROUPS = ("sector_type",)          # coinc_groups values (empty = every sector alone)
 FIXED = ("absorber_material", "sample", "dtype", "pe_scale", "kappa", "f_acc", "beta", "aging_c1", "aging_ref",
-         "max_muons") + tuple(COST_WEIGHTS) + PLACE
+         "max_muons") + tuple(COST_WEIGHTS) + PLACE + ("coinc_groups",)
 PARAMS = KNOBS + FIXED
 DEFAULTS = {**{k: "" for k in KNOBS}, "absorber_material": "", "sample": "run2_ce_proxy_v1", "dtype": "float64",
             "pe_scale": 0.847, "kappa": 1.0, "f_acc": 0.5, "beta": 1.0, "aging_c1": 0.94 ** 5, "aging_ref": 0.86,
             "max_muons": 0, **{k: "" for k in COST_WEIGHTS}, "place_policy": "", "place_stagger_max": 60.0,
-            "place_clearance": 3.0, "place_max_trim": 120.0, "place_max_shift": 500.0, "place_remedies": ""}
+            "place_clearance": 3.0, "place_max_trim": 120.0, "place_max_shift": 500.0, "place_remedies": "",
+            "coinc_groups": ""}
 # file names under the endpoint's crv_design data dir: generated lines (v1) or CRV-entry states (design.sample)
 SAMPLES = {"run2_ce_proxy_v1": "run2_ce_proxy_v1.npz", "run2_ce_entry_v1": "run2_ce_entry_v1.npz"}
 METRICS = ("inefficiency", "inefficiency_err", "inefficiency_covered", "uncovered_fraction", "stopped_fraction",
@@ -69,7 +74,7 @@ BODY = ('MU=@sample_path@\n'
                                                                "aging_c1", "aging_ref", "max_muons"))
         + " --design " + " ".join(f"{k}=@p_{k}@" for k in KNOBS + ("absorber_material",))
         + " --cost-weights " + " ".join(f"{k}=@p_{k}@" for k in COST_WEIGHTS)
-        + " " + " ".join(f"--{k.replace('_', '-')} @p_{k}@" for k in PLACE)
+        + " " + " ".join(f"--{k.replace('_', '-')} @p_{k}@" for k in PLACE + ("coinc_groups",))
         + ' > "$M2FS_OUT/point.txt" 2>&1 || { tail -20 "$M2FS_OUT/point.txt"; exit 6; }\n'
         'tail -c 400 "$M2FS_OUT/point.txt"\n')
 
@@ -150,6 +155,17 @@ def placement_config(policy, stagger_max, clearance, max_trim, max_shift, remedi
                              max_shift=float(max_shift), remedies=P.parse_remedies(remedies), policy=policy)
 
 
+def coincidence_groups(mode, counters):
+    """fom.FomConfig.coincidence_groups from the coinc_groups param: () when empty, Offline's sector-type grouping
+    of the counters file for "sector_type"."""
+    if not mode:
+        return ()
+    if mode not in COINC_GROUPS:
+        raise ValueError(f"crv_design: coinc_groups {mode!r}: expected one of {COINC_GROUPS} or empty")
+    from . import fom
+    return fom.sector_type_groups(counters)
+
+
 def run(argv=None):
     """The job side: evaluate one design point, write eval.json and metrics.json into --out."""
     import argparse
@@ -178,18 +194,20 @@ def run(argv=None):
     for k in ("place_stagger_max", "place_clearance", "place_max_trim", "place_max_shift"):
         p.add_argument("--" + k.replace("_", "-"), type=float, default=DEFAULTS[k])
     p.add_argument("--place-remedies", default="")
+    p.add_argument("--coinc-groups", default="", choices=("",) + COINC_GROUPS)
     a = p.parse_args(argv)
     design = M.Design(**design_dict(a.design))
     remedy_words(a.place_remedies)
+    ctx = fom.Context(lookup_dir=a.lookup_dir)
     cfg = fom.FomConfig(optics=O.OpticsConfig(pe_scale=a.pe_scale),
                         deadtime=DT.DeadtimeConfig(kappa=a.kappa, f_acc=a.f_acc, beta=a.beta),
                         aging_c1=a.aging_c1, aging_ref=a.aging_ref, cost_weights=cost_weights(a.cost_weights),
                         placement=placement_config(a.place_policy, a.place_stagger_max, a.place_clearance,
-                                                   a.place_max_trim, a.place_max_shift, a.place_remedies))
+                                                   a.place_max_trim, a.place_max_shift, a.place_remedies),
+                        coincidence_groups=coincidence_groups(a.coinc_groups, ctx.counters))
     z = np.load(a.muons)
     n = len(z["p"]) if a.max_muons <= 0 else min(a.max_muons, len(z["p"]))
     muons = dict(origin=z["origin"][:n], direction=z["direction"][:n], p=z["p"][:n])
-    ctx = fom.Context(lookup_dir=a.lookup_dir)
     r = fom.evaluate(design, muons, ctx, cfg, None, np.float64 if a.dtype == "float64" else np.float32)
     if r["table_substitutions"]:
         raise SystemExit(f"crv_design: lookup tables missing from {a.lookup_dir}: {sorted(r['table_substitutions'])}")

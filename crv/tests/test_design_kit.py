@@ -120,6 +120,18 @@ def test_cost_weight_words_and_domain():
             KU.validate(bad)
 
 
+def test_coinc_groups_param():
+    from crvfastsim.design import fom as F
+    assert KT.coincidence_groups("", M.RUN2_COUNTERS) == ()
+    g = KT.coincidence_groups("sector_type", M.RUN2_COUNTERS)
+    assert g == F.sector_type_groups(M.RUN2_COUNTERS) and len({t for _, t in g}) < len(g)   # sectors share types
+    assert KU.validate(P)["coinc_groups"] == "" and KU.validate({**P, "coinc_groups": "sector_type"})["coinc_groups"]
+    with pytest.raises(ValueError):
+        KU.validate({**P, "coinc_groups": "filler"})
+    with pytest.raises(ValueError):
+        KT.coincidence_groups("filler", M.RUN2_COUNTERS)
+
+
 def test_plain_render_refuses_the_delegated_task(tmp_path):
     _, _, kit = make(tmp_path)
     with pytest.raises(ValueError, match="delegate"):
