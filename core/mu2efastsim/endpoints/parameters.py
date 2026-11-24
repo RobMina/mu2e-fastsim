@@ -143,7 +143,7 @@ def schema(task: str, names) -> dict[str, Parameter]:
                 specs[key] = number(0, 1 if key == "cross_talk" else None, optional=True, role="calibration",
                                     unit="V" if key in ("min_voltage", "wf_noise") else "1")
     elif task == "crv_design":
-        from crvfastsim.design.kit_task import ABSORBER_MATERIALS, SAMPLES
+        from crvfastsim.design.kit_task import ABSORBER_MATERIALS, PLACE_POLICIES, SAMPLES
 
         def knob(kind, lo, hi, unit):   # empty = the stock value of each sector
             return Parameter(kind, unit, "physics_design", lo, hi, allow_empty=True)
@@ -162,7 +162,14 @@ def schema(task: str, names) -> dict[str, Parameter]:
                  "aging_ref": number(0, 1, role="calibration", positive=True), "max_muons": integer(0),
                  # cost-proxy weights per term (empty = the plain mean of the four terms; set all or none)
                  **{k: Parameter("number", "1", "scenario", 0, None, allow_empty=True)
-                    for k in ("cost_w_scint", "cost_w_channels", "cost_w_absorber", "cost_w_fiber")}}
+                    for k in ("cost_w_scint", "cost_w_channels", "cost_w_absorber", "cost_w_fiber")},
+                 # detector-envelope placement (crvfastsim.design.placement; empty policy = none)
+                 "place_policy": Parameter("string", role="scenario", choices=PLACE_POLICIES, allow_empty=True),
+                 "place_stagger_max": number(0, 500, unit="mm", role="scenario"),
+                 "place_clearance": number(0, 50, unit="mm", role="scenario"),
+                 "place_max_trim": number(0, 2000, unit="mm", role="scenario"),
+                 "place_max_shift": number(0, 2000, unit="mm", role="scenario", positive=True),
+                 "place_remedies": Parameter("string", role="scenario", allow_empty=True)}
     else:
         raise ValueError(f"fastsimkit: task {task!r} has no parameter schema")
     if task in SCALED_TASKS:

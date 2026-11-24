@@ -86,6 +86,56 @@ absorber transmission for 1 MeV photons). A higher PE threshold lowers the singl
 (`{"source": ..., "deadtime": {sector: fraction}}` or `{"total": fraction}`) holds the stock nominal deadtime; it is
 an input, not part of this repository.
 
+## Placement in the detector envelope (`layout.py`, `envelope.py`, `placement.py`)
+
+By default `fom.evaluate` re-tiles every sector on its stock position (`module.build`) and ignores everything around
+the CRV. With `FomConfig(placement=PlacementConfig(...))` (kit: `place_policy`) the optimisation loop places each
+design itself, then scores the placed geometry:
+
+1. **Layout** (`layout.py`, the rules of the G1 option-B references, every constant from the counters file): the
+   no-overshoot tiling per sector (counters per module within 6 of stock) with one-module end-strip *filler*
+   sectors `<parent>F`, the scaled `layerOffset`, length segments `segment_gap` apart (2 x (CMBOffset +
+   CMBHalfThickness) + 2 mm) with the joints staggered by `stagger_mm` per layer, FEB boxes scaled to the module
+   pitch. Fillers take their parent's response, cuts, coincidence group and deadtime terms.
+2. **Envelope** (`envelope.py`): ExtShieldUpstream boxes and ExtShieldDownstream extruded blocks built as Offline's
+   makers build them (half-lengths, tolerances, orientation codes; blocks split into convex prisms, holes and notches
+   solid), the floor (`yOfFloorSurface.below.mu2eOrigin`) and the counters file's support structures. The borated
+   polyethylene boxes (ExtShieldUpstream types 15-19 on Run 2) are the movable sheets. Not modelled: the hall
+   services (pipes, trays).
+3. **Placement** (`placement.py`): each sector (with its segments and filler) is the union of its Geant4 mother
+   parts and moves along its layer direction by `-shift`; it treats the envelope, the sectors that face it along its
+   layer direction in the stock geometry and the sheets it does not push as hard, and takes the shift that needs the
+   least sheet displacement, then the smallest |shift|. Sheets are pushed away from the CRV by the sectors on their
+   stock CRV side (never toward it), grow away from the CRV when thicker, must clear the envelope and each other by
+   `sheet_clearance` (1 mm) and the other sectors by `clearance` (3 mm), or the stock gap if smaller; a sector that
+   reaches a sheet only through its re-layout cuts the sheet's end back by up to `max_trim`. Sectors whose FEB boxes
+   hit anything drop them. The joint stagger is the largest candidate that places.
+4. **Remedies**, when the base placement does not fit: a move of named sectors (e.g. `move:topmove:T1,T2,T3:0,0,1:50`,
+   the top sectors downstream by up to 50 mm) or a thinner sheet (`thin:thinU:Outer CRV-U:10`, down to 10 mm). Each
+   takes the smallest amount that places. Policy `each` scores the base placement, or every remedy on its own when
+   the base does not place, so the effect of each remedy on inefficiency, deadtime and cost is in
+   `placement_variants`; the result is the feasible variant with the lowest inefficiency. Policy `first` stops at
+   the first that places.
+
+`eval.json` records the chosen placement (`placement`: shifts, moves, FEB-less sectors, stagger, every sheet's move,
+thickness and trims, remaining violations, the `shield_overlay` lines for a stock reference) and every variant;
+`crv_counters_placed.txt` is the placed counters text a stock reference is built from. A variant that thins or trims a
+sheet sets `deadtime_shield_uncalibrated`: the deadtime model is calibrated on the stock shielding and has no shield
+term, so such a deadtime is not a prediction until a shield-thickness study calibrates it. `placement.check` tests a
+given (e.g. hand-made) placement against the envelope without solving.
+
+**Default rules since 2026-11-24** (the first placed scores and the G1 Geant4 references used the old v3 rules,
+reproduced by `LayoutConfig(split=True, close_up=False)` with `PlacementConfig(tie_chains=False)`):
+- stock counter lengths: `Design.max_length` no longer splits sectors (`LayoutConfig.split`), so a placed design has no
+  length joints the nominal geometry does not have;
+- close-up: sectors that follow each other in stock (T1..T5, R1-R2, L1-L2, E1-E2; `layout.sector_chains`) start where
+  their predecessor's modules end, so the no-overshoot end strips do not open cracks through the stack at the
+  boundaries (they collect at the chain's last end);
+- tied chains: such sectors share one shift, so the top plane has no step.
+
+`python -m crvfastsim.design.tiling_plot` draws the top sectors seen from above (layers a vertical track crosses, module
+outlines, zooms on the sector boundaries) for the nominal geometry or a design, placed or on stock positions.
+
 ## Comparison with stock (`stockcmp.py`)
 
 Input: the TFileService files of a stock job that ran the CrvStepTableDumper (`dump/`) and the CrvRecoTableDumper

@@ -62,6 +62,9 @@ class FomConfig:
     coincidence_groups: tuple = ()   # (sector, group label) pairs: sectors searched together for coincidences, as
                                      # Offline's finder searches one sector type (sector_type_groups), each hit with
                                      # its own sector's cuts; () = every sector alone (veto.p_miss)
+    placement: object = None   # placement.PlacementConfig: lay the design out (layout.py) and place it in the
+                               # detector envelope (placement.py), scoring every placed variant; None = module.build
+                               # on the stock sector positions, no envelope
 
 
 def proxy_entry_t(origin, direction, proxy=PROXY):
@@ -192,12 +195,87 @@ def light_yield(dg, ctx, cfg):
 
 
 def evaluate(design, muons, ctx=None, cfg=FomConfig(), calibration=None, dtype=np.float64, nominal=None):
-    """Metrics of one design point (dict). muons: dict origin [n, 3], direction [n, 3], p [n] (muons_from_gen)."""
+    """Metrics of one design point (dict). muons: dict origin [n, 3], direction [n, 3], p [n] (muons_from_gen).
+    With cfg.placement the design is placed first (evaluate_placed)."""
     t0 = time.perf_counter()
     ctx = ctx or Context()
+    if cfg.placement is not None:
+        return evaluate_placed(design, muons, ctx, cfg, calibration, dtype, nominal)
     yields = {n: s.yield_per_mev for n, s in ctx.sectors.items()}
     dg = M.build(design, ctx.counters, yields)
     dg0 = nominal or M.build(M.Design(), ctx.counters, yields)
+    return _score(design, dg, dg0, muons, ctx, cfg, calibration, dtype, t0)
+
+
+def _merge_fillers(terms, parent):
+    """Deadtime terms with each filler sector's counters added to its parent sector (same counters and cuts: a
+    filler is one more module of its parent)."""
+    out = {t["name"]: dict(t) for t in terms if parent[t["name"]] == t["name"]}
+    for t in terms:
+        p = parent[t["name"]]
+        if p != t["name"]:
+            out[p]["n_roads"] += t["n_roads"]
+            out[p]["area"] += t["area"]
+    return list(out.values())
+
+
+def _with_fillers(ctx, cfg, names, parent):
+    """ctx and coincidence groups extended to filler sectors (their parent's response, cuts and group)."""
+    if all(parent[n] == n for n in names):
+        return ctx, cfg.coincidence_groups
+    sectors = {**ctx.sectors, **{n: ctx.sectors[parent[n]] for n in names if parent[n] != n}}
+    cuts = {**ctx.cuts, **{n: ctx.cuts[parent[n]] for n in names if parent[n] != n}}
+    grp = dict(cfg.coincidence_groups)
+    groups = tuple(cfg.coincidence_groups) + tuple((n, grp[parent[n]]) for n in names
+                                                   if parent[n] != n and parent[n] in grp)
+    return dataclasses.replace(ctx, sectors=sectors, cuts=cuts), groups
+
+
+def evaluate_placed(design, muons, ctx=None, cfg=FomConfig(), calibration=None, dtype=np.float64, nominal=None):
+    """Metrics of a design placed in the detector envelope (placement.place with cfg.placement). Every feasible
+    variant (the base placement, or each remedy with policy "each") is scored; the result is the variant with the
+    lowest inefficiency, with all variants under ``placement_variants``. With no feasible variant the first one is
+    scored and flagged (placement.feasible False). A variant that thins or trims a sheet has its deadtime flagged as
+    uncalibrated: deadtime.py is calibrated on the stock shielding and has no shield term."""
+    from . import layout as L
+    from . import placement as P
+    t0 = time.perf_counter()
+    ctx = ctx or Context()
+    variants = P.place(design, ctx.counters, cfg.placement)
+    t_place = time.perf_counter() - t0
+    yields = {n: s.yield_per_mev for n, s in ctx.sectors.items()}
+    dg0 = nominal or M.build(M.Design(), ctx.counters, yields)
+    stock = list(dg0.sector_names)
+    scored = [v for v in variants if v.feasible] or variants[:1]
+    results = []
+    for v in scored:
+        ts = time.perf_counter()
+        dg = L.build(design, v.text, yields, v.layout)
+        parent = {n: L.parent_of(n, stock) for n in dg.sector_names}
+        ctx_v, groups = _with_fillers(ctx, cfg, dg.sector_names, parent)
+        r = _score(design, dg, dg0, muons, ctx_v, cfg, calibration, dtype, ts, groups=groups, parent=parent)
+        r["placement"] = dict(v.summary(), shield_overlay=v.shield_overlay())
+        r["deadtime_shield_uncalibrated"] = bool(v.shield_modified)
+        results.append((v, r))
+    best_v, best = min(results, key=lambda vr: (not vr[0].feasible, vr[1]["inefficiency"]))
+    best["table_substitutions"] = dict(ctx.substitutions)
+    keys = ("inefficiency", "inefficiency_err", "deadtime_rate_ratio", "ly_margin", "cost", "uncovered_fraction",
+            "n_bars")
+    scores = {id(v): r for v, r in results}
+    best["placement_variants"] = [
+        dict(variant=v.label, feasible=v.feasible, remedy=v.remedy, scored=id(v) in scores,
+             n_violations=len(v.violations), shield_modified=v.shield_modified,
+             deadtime_shield_uncalibrated=v.shield_modified, **{k: scores[id(v)][k] for k in keys if id(v) in scores})
+        for v in variants]
+    best["placement_wall_s"] = t_place
+    best["counters_text"] = best_v.text
+    best["wall_s"] = time.perf_counter() - t0
+    return best
+
+
+def _score(design, dg, dg0, muons, ctx, cfg, calibration, dtype, t0, groups=None, parent=None):
+    """The figures of merit of design geometry dg against the nominal dg0 (module docstring)."""
+    groups = cfg.coincidence_groups if groups is None else groups
     o1 = dataclasses.replace(cfg.optics, aging=cfg.optics.aging * cfg.aging_o1)
     idx, pos = V.sector_crossings(dg, muons["origin"], muons["direction"], dtype)
     n = len(muons["p"])
@@ -215,7 +293,7 @@ def evaluate(design, muons, ctx=None, cfg=FomConfig(), calibration=None, dtype=n
                   for s, nm in enumerate(names)])
     pm, (gt, gs, pc) = V.p_miss(n, idx[:, 0], dg.sector[idx[:, 1]], dg.layer[idx[:, 1]], pe, dg.n_layers, thr, k,
                                 finder_config(dg, ctx.cuts, idx[:, 1]) if cfg.finder_cuts else None,
-                                V.group_index(names, cfg.coincidence_groups))
+                                V.group_index(names, groups))
     covered = np.zeros(n, bool)
     covered[idx[:, 0]] = True
     ymax = np.full(n, -np.inf)
@@ -239,6 +317,9 @@ def evaluate(design, muons, ctx=None, cfg=FomConfig(), calibration=None, dtype=n
     _, ly0_mev = light_yield(dg0, ctx, cfg.optics)
     terms = DT.sector_terms(dg, ctx.cuts, ly_mev, req, thr / thr0)
     terms0 = DT.sector_terms(dg0, ctx.cuts, ly0_mev, req)
+    if parent is not None:                             # placed layouts: fillers belong to their parent sector
+        ly0 = ly0[[list(dg0.sector_names).index(parent[n]) for n in names]]
+        terms = _merge_fillers(terms, parent)
     dt = DT.evaluate(terms, terms0, cfg.deadtime, calibration)
     # cost
     refl = {nm: ctx.sectors[nm].reflector for nm in names}

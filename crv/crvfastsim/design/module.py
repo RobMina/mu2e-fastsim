@@ -136,9 +136,10 @@ def _overlap(lo_a, hi_a, lo_b, hi_b, tol=1e-6):
 
 
 def build(design=Design(), counters=RUN2_COUNTERS, sector_yields=None):
-    """DesignGeometry of ``design`` on the sectors of ``counters`` (an Offline-relative or absolute path).
-    sector_yields: {sector: scintillation yield /MeV} (sets each sector's stock fiber); default 1.4 mm everywhere."""
-    c = G.parse_simpleconfig(open(G.find_counters(counters)).read())
+    """DesignGeometry of ``design`` on the sectors of ``counters`` (an Offline-relative or absolute path, or a counters
+    text, e.g. layout.counters_text). sector_yields: {sector: scintillation yield /MeV} (sets each sector's stock
+    fiber); default 1.4 mm everywhere."""
+    c = G.parse_simpleconfig(counters if "crs.sectorNames" in counters else open(G.find_counters(counters)).read())
     names = list(c["crs.sectorNames"])
     t_s, w_s = float(c["crs.scintillatorBarThickness"]), float(c["crs.scintillatorBarWidth"])
     g_small, g_large, g_mod = float(c["crs.gapSmall"]), float(c["crs.gapLarge"]), float(c["crs.gapBetweenModules"])
