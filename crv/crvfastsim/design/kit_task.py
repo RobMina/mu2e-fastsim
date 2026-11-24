@@ -35,8 +35,10 @@ PARAMS = KNOBS + FIXED
 DEFAULTS = {**{k: "" for k in KNOBS}, "absorber_material": "", "sample": "run2_ce_proxy_v1", "dtype": "float64",
             "pe_scale": 0.847, "kappa": 1.0, "f_acc": 0.5, "beta": 1.0, "aging_c1": 0.94 ** 5, "aging_ref": 0.86,
             "max_muons": 0, **{k: "" for k in COST_WEIGHTS}}
-# file names under the endpoint's crv_design data dir: generated lines (v1) or CRV-entry states (design.sample)
-SAMPLES = {"run2_ce_proxy_v1": "run2_ce_proxy_v1.npz", "run2_ce_entry_v1": "run2_ce_entry_v1.npz"}
+# file names under the endpoint's crv_design data dir: generated lines (v1) or CRV-entry states (design.sample);
+# dev10m/dev60m: device CRY Run 2 + device overburden (design.device_sample, float64), 10M / 60M CRY events
+SAMPLES = {"run2_ce_proxy_v1": "run2_ce_proxy_v1.npz", "run2_ce_entry_v1": "run2_ce_entry_v1.npz",
+           "run2_ce_entry_dev10m_v1": "run2_ce_entry_dev10m_v1.npz", "run2_ce_entry_dev60m_v1": "run2_ce_entry_dev60m_v1.npz"}
 METRICS = ("inefficiency", "inefficiency_err", "inefficiency_covered", "uncovered_fraction", "stopped_fraction",
            "deadtime_rate_ratio",
            "ly_margin", "cost", "cost_scint", "cost_channels", "cost_absorber", "cost_fiber", "n_muons", "n_bars",

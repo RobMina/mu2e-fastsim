@@ -133,6 +133,33 @@ accepted events on the A40 (the first shard 60 s with compilation). Downstream, 
 against the same chain on stock primaries gives digis, pulses and clusters per live second equal to 0.1 % (errors 0.3 %)
 (CRV `docs/native-cry.md`).
 
+## Run 2 preset (`CosmicConfig.run2`, A40, 2026-11-23)
+
+`CosmicConfig.run2(gdml)` is stock Run 2 CosmicCRY as Offline's `defaultCRYconfig.txt` sets it: TRACKER reference
+(-3904, 20000, 10171) mm, target box x -10000..3000, y -5000..5000, z -5000..21000 mm, maxShowerEn 1e8 MeV, minimum
+kinetic energy 50 MeV, with the world box of `mu2e_run2_v10.gdml` (world in x and z, HallAir in y, 1 mm inside; the
+GDML is pinned by sha256). These are the reference point, target box and world box the stock Run 2 job logs. The
+extracted preset is unchanged; `PRESETS` maps `extracted` and `run2`, and `cry_validate`, `cry_device_check` take
+`--config`. About 420 events per 100k raw showers are accepted, far below the 8,192-row selected buffer.
+
+Validation (`cry_validate --backend device --config run2 --shards 100`): 100 device shards of 50,000 accepted events
+against the 20 stock Run 2 gen-table shards (1M events), independent-shard standard errors:
+
+| metric | float64 | float32 |
+|---|---|---|
+| accepted rate per live second | 1.0008 +- 0.0011 | 0.9998 +- 0.0012 |
+| mean multiplicity | 0.99997 +- 0.00011 | 0.99992 +- 0.00011 |
+| multiprimary / multimuon fraction | 0.991 +- 0.016 / 0.994 +- 0.019 | 0.986 +- 0.015 / 0.990 +- 0.019 |
+| mu- / mu+ rate | 0.9999 +- 0.0016 / 1.0006 +- 0.0017 | 0.9985 +- 0.0017 / 0.9997 +- 0.0018 |
+| e- / e+ / gamma | 0.996 +- 0.007 / 1.003 +- 0.005 / 1.001 +- 0.004 | 0.996 +- 0.007 / 1.005 +- 0.005 / 1.000 +- 0.004 |
+| n / p | 1.007 +- 0.005 / 0.996 +- 0.009 | 1.006 +- 0.005 / 0.992 +- 0.010 |
+| pi+ / pi- (few hundred) | 1.08 +- 0.18 / 0.87 +- 0.12 | 0.98 +- 0.16 / 0.78 +- 0.11 |
+| lateral p90, target / world pair p90 | 1.000 +- 0.007, 0.997 +- 0.007 / 1.003 +- 0.017 | 1.001 +- 0.007, 0.997 +- 0.007 / 1.001 +- 0.017 |
+| 2,092 spectrum bins: smallest Bonferroni p | 1 | 0.035 (one e+ target-x bin) |
+
+Warm generation 0.82 s (float64) and 0.87 s (float32) per 50,000 accepted events on the A40. The stock arm has only 20
+shards, so its standard error dominates.
+
 ## Measured implementation checks (A100, 2026-10-30)
 
 Ten independent 50k-event device shards versus ten stock 50k-event shards give
