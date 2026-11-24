@@ -10,6 +10,7 @@ import numpy as np
 import uproot
 
 from .cry_native import CrySource
+from .cry_receipts import EXTRACTED_V04_GDML_SHA256
 
 
 def inspect(reference, gdml):
@@ -50,6 +51,15 @@ def inspect(reference, gdml):
     return report
 
 
+def _world_edges(config):
+    """World-plane position bins: the extracted ranges (5 km bins), else the config's world box in 61/50/62 bins."""
+    if config.geometry_sha256 == EXTRACTED_V04_GDML_SHA256:
+        return {"x": np.linspace(-155000, 150000, 62), "y": np.linspace(-5000, 20000, 51),
+                "z": np.linspace(-130000, 180000, 63)}
+    lo, hi = config.world_min_mm, config.world_max_mm
+    return {a: np.linspace(lo[j], hi[j], n) for j, (a, n) in enumerate(zip("xyz", (62, 51, 63)))}
+
+
 def _summarise(gen, live, config):
     from .cosmic_cry import MASS, highest_intersection
     momentum = gen[["px", "py", "pz"]].to_numpy()
@@ -82,9 +92,7 @@ def _summarise(gen, live, config):
         arrays = {"ke": (kinetic, np.geomspace(50, 200000, 45)),
                   "coszenith": (-rows.py.to_numpy() / np.maximum(p, 1e-30), np.linspace(-1, 1, 41)),
                   "azimuth": (np.arctan2(rows.pz.to_numpy(), rows.px.to_numpy()), np.linspace(-np.pi, np.pi, 41)),
-                  "x": (rows.x.to_numpy(), np.linspace(-155000, 150000, 62)),
-                  "y": (rows.y.to_numpy(), np.linspace(-5000, 20000, 51)),
-                  "z": (rows.z.to_numpy(), np.linspace(-130000, 180000, 63)),
+                  **{a: (rows[a].to_numpy(), e) for a, e in _world_edges(config).items()},
                   "t": (rows.t.to_numpy(), np.linspace(0, 100005, 51)),
                   **{"target_"+a: (rows["target_"+a].to_numpy(),
                                    np.linspace(config.target_min_mm[j], config.target_max_mm[j], 41))
@@ -118,12 +126,13 @@ def _summarise(gen, live, config):
     return {"events": n, "particles": len(gen), "live_seconds": live, "metrics": result, "histograms": hist}
 
 
-def compare(references, gdml, events, seed, native_out=None, native_inputs=None, backend="native"):
+def compare(references, gdml, events, seed, native_out=None, native_inputs=None, backend="native", preset="extracted",
+            shards=None):
     if backend not in ("native", "device"):
         raise ValueError("unknown CRY validation backend")
     from . import tables
-    from .cosmic_cry import CosmicConfig, CosmicSource
-    config = CosmicConfig.extracted(gdml)
+    from .cosmic_cry import PRESETS, CosmicSource
+    config = PRESETS[preset](gdml)
     if backend == "device":
         from .cry_device import DeviceCosmicSource
         Source = DeviceCosmicSource
@@ -131,11 +140,15 @@ def compare(references, gdml, events, seed, native_out=None, native_inputs=None,
         Source = CosmicSource
     if native_inputs and len(native_inputs) != len(references):
         raise ValueError("native-input and reference lists must have the same number of shards")
+    shards = len(references) if shards is None else shards
+    if shards < 1 or (native_inputs and shards != len(references)):
+        raise ValueError("shards must be positive and equal the reference count with native inputs")
     native, stock, receipts, elapsed = [], [], [], []
-    for i, path in enumerate(references):
+    for path in references:
         g = tables.read(path, "gen")
         sr = tables.read(path, "subruns")
         stock.append(_summarise(g, float(sr.livetime.sum()), config))
+    for i in range(shards):
         start = time.perf_counter()
         if native_inputs:
             ng = tables.read(native_inputs[i], "gen")
@@ -198,7 +211,7 @@ def compare(references, gdml, events, seed, native_out=None, native_inputs=None,
             spectra[key]["bonferroni_min_p"] = min(1.0, min(pv)*family) if pv else None
         spectra["family_summary"] = {"tested_bins": family, "minimum_bonferroni_p": min(1.0,min(tested)*family) if tested else None,
                                       "method": "Welch t across independent shards; bins require >=20 particles per arm; Bonferroni across all tested bins; descriptive, no predeclared admission band"}
-    return {"backend": backend, "spectra_summary": spectra,
+    return {"backend": backend, "config": preset, "spectra_summary": spectra,
             "error_method": "independent native/stock shard means; sample-SE over shards, no pairing; K=1 errors indeterminate",
             "native_events": sum(x["events"] for x in native), "stock_events": sum(x["events"] for x in stock),
             "native_max_multiplicity": max(x["metrics"]["shard_max_multiplicity"] for x in native),
@@ -218,8 +231,12 @@ def main():
     p.add_argument("--backend", choices=("native", "device"), default="native")
     p.add_argument("--native-out")
     p.add_argument("--native-input", nargs="+")
+    p.add_argument("--config", choices=("extracted", "run2"), default="extracted",
+                   help="CosmicCRY preset the stock references were generated with (cosmic_cry.PRESETS)")
+    p.add_argument("--shards", type=int, help="independent generated shards (default: one per reference shard)")
     a = p.parse_args()
-    report = (compare(a.reference, a.gdml, a.events, a.seed, a.native_out, a.native_input, a.backend) if a.events
+    report = (compare(a.reference, a.gdml, a.events, a.seed, a.native_out, a.native_input, a.backend, a.config,
+                      a.shards) if a.events
               else inspect(a.reference[0], a.gdml))
     Path(a.out).write_text(json.dumps(report, indent=2))
     print(json.dumps({k: v for k, v in report.items() if k not in ("histograms", "native_raw", "stock_raw")}, indent=2))

@@ -60,6 +60,24 @@ counters and absorbers in path order (`veto.stack_range`): crossings after it st
 stops before the CE-like region is left out of the inefficiency (it cannot reach the tracker; `stopped_fraction`).
 The P_coinc of a sector also carries the finder's slope window and minimum cluster PE (`veto.finder_factor`).
 
+### Device sample (`device_sample.py`, `entry_jax.py`)
+
+`muons --device-cry run2 --events N --world mu2e_run2_v10.gdml --transport jax` makes the sample without gen tables:
+CRY on the device with the stock Run 2 CosmicCRY preset (`CosmicConfig.run2`, core `docs/device-cry.md`), the
+preselected muons through the overburden with the stage-C device world transport of the extracted chain
+(`DeviceTransport.world` and its band-weighted Highland scattering to the MSC plane), then the Run 2 proxy. Only the
+proxy is Run 2-specific. Materials without loss constants above the plane (`G4_C`, `G4_Fe`, `Scintillator` in Run 2)
+are transported as concrete, the host `world_loss` rule; the sample provenance lists them. `--transport jax` on gen
+tables runs the same transport on stock CRY; `entrycmp` compares samples per generated CRY event; `subset` takes the
+first chunks of a device sample.
+
+Checks (UVA, 2026-11-23): on the 1M stock Run 2 gen tables the device transport keeps 14,984 (float64) / 14,977
+(float32) muons against the host's 14,968, every CRV-entry spectrum (p, generated p, cos zenith, azimuth, x, z at the
+plane) within chi2 p >= 0.85. Device CRY + device transport, 60M CRY events (A40, 23 / 19 min float64 / float32):
+885,295 / 883,432 muons, per event 0.986 +- 0.008 / 0.984 +- 0.008 of the host sample (its 15k muons set the error),
+spectra within chi2 p >= 0.06; float32 / float64 0.998 +- 0.0015. Kit samples `run2_ce_entry_dev10m_v1` (first 10M
+events, 147,863 muons) and `run2_ce_entry_dev60m_v1` (885,295) are the float64 builds.
+
 Against stock Geant4 + CRV reco on a thick-absorber Run 2 sample (25.4 mm Al per gap, 1M CRY events), over CE-like
 events whose stock muon reached the detector region: stock 0.115 % (14 of 12,176) against the model's 0.177 %, a
 difference of -0.06 +- 0.05 %, consistent in momentum bins. With generated lines instead of CRV-entry states the

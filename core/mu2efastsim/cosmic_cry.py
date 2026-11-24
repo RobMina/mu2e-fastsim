@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from .cry_native import CrySource
-from .cry_receipts import EXTRACTED_V04_GDML_SHA256
+from .cry_receipts import EXTRACTED_V04_GDML_SHA256, RUN2_V10_GDML_SHA256
 
 MASS = {11: 0.510998910, 13: 105.658367, 22: 0.0, 211: 139.57018,
         321: 493.677, 2112: 939.56536, 2212: 938.27203}
@@ -41,34 +41,53 @@ class CosmicConfig:
     @classmethod
     def extracted(cls, gdml):
         """Use the extracted-v04 reference and read its centered world/HallAir boxes from GDML."""
-        digest = hashlib.sha256(Path(gdml).read_bytes()).hexdigest()
-        if digest != EXTRACTED_V04_GDML_SHA256:
-            raise ValueError("unverified extracted-v04 GDML signature; supply an explicit CosmicConfig for other geometry")
-        root = ET.parse(gdml).getroot()
-        vols = {v.get("name"): v for v in root.find("structure").findall("volume")}
-        solids = {s.get("name"): s for s in root.find("solids")}
-        world = vols[root.find("setup/world").get("ref")]
-        box = solids[world.find("solidref").get("ref")]
-        if box.tag != "box" or box.get("lunit", "mm") != "mm":
-            raise ValueError("CosmicCRY expects an mm centered world box")
-        half = np.array([float(box.get(a)) / 2 for a in "xyz"])
-        halls = [p for p in world.findall("physvol") if p.get("name", "").startswith("HallAir")]
-        if len(halls) != 1:
-            raise ValueError("expected one HallAir placement")
-        hall = halls[0]
-        if hall.find("rotation") is not None or hall.find("rotationref") is not None:
-            raise ValueError("rotated HallAir is not supported")
-        hb = solids[vols[hall.find("volumeref").get("ref")].find("solidref").get("ref")]
-        pos = hall.find("position")
-        if hb.tag != "box" or hb.get("lunit", "mm") != "mm" or pos.get("unit", "mm") != "mm":
-            raise ValueError("expected mm HallAir box")
-        ymin = float(pos.get("y", "0")) - float(hb.get("y")) / 2
-        ymax = float(pos.get("y", "0")) + float(hb.get("y")) / 2
-        lower, upper = -half + 1, half - 1
-        lower[1], upper[1] = ymin + 1, ymax - 1
+        digest, lower, upper = _world_box(gdml, EXTRACTED_V04_GDML_SHA256, "extracted-v04")
         return cls((-3904.0, 20000.0, 24171.0), (-10000.0, -5000.0, 17105.0),
                    (3000.0, 9880.0, 32220.0), tuple(lower), tuple(upper),
                    digest)
+
+    @classmethod
+    def run2(cls, gdml):
+        """Stock Run 2 CosmicCRY (Offline defaultCRYconfig.txt: TRACKER reference at the detector origin, refY0 20 m,
+        maxShowerEn 1e8 MeV) with the world/HallAir boxes of the Run 2 v10 GDML."""
+        digest, lower, upper = _world_box(gdml, RUN2_V10_GDML_SHA256, "Run 2 v10")
+        return cls((-3904.0, 20000.0, 10171.0), (-10000.0, -5000.0, -5000.0),
+                   (3000.0, 5000.0, 21000.0), tuple(lower), tuple(upper),
+                   digest, max_shower_mev=1e8)
+
+
+PRESETS = {"extracted": CosmicConfig.extracted, "run2": CosmicConfig.run2}
+
+
+def _world_box(gdml, sha256, label):
+    """(sha256, lower, upper) of CosmicCRY's world box: the centered GDML world in x and z, HallAir in y, 1 mm inside
+    (Mu2eEnvelope / WorldG4 with CosmicCRY's deltaX); refuses a GDML whose sha256 is not the preset's."""
+    digest = hashlib.sha256(Path(gdml).read_bytes()).hexdigest()
+    if digest != sha256:
+        raise ValueError(f"unverified {label} GDML signature; supply an explicit CosmicConfig for other geometry")
+    root = ET.parse(gdml).getroot()
+    vols = {v.get("name"): v for v in root.find("structure").findall("volume")}
+    solids = {s.get("name"): s for s in root.find("solids")}
+    world = vols[root.find("setup/world").get("ref")]
+    box = solids[world.find("solidref").get("ref")]
+    if box.tag != "box" or box.get("lunit", "mm") != "mm":
+        raise ValueError("CosmicCRY expects an mm centered world box")
+    half = np.array([float(box.get(a)) / 2 for a in "xyz"])
+    halls = [p for p in world.findall("physvol") if p.get("name", "").startswith("HallAir")]
+    if len(halls) != 1:
+        raise ValueError("expected one HallAir placement")
+    hall = halls[0]
+    if hall.find("rotation") is not None or hall.find("rotationref") is not None:
+        raise ValueError("rotated HallAir is not supported")
+    hb = solids[vols[hall.find("volumeref").get("ref")].find("solidref").get("ref")]
+    pos = hall.find("position")
+    if hb.tag != "box" or hb.get("lunit", "mm") != "mm" or pos.get("unit", "mm") != "mm":
+        raise ValueError("expected mm HallAir box")
+    ymin = float(pos.get("y", "0")) - float(hb.get("y")) / 2
+    ymax = float(pos.get("y", "0")) + float(hb.get("y")) / 2
+    lower, upper = -half + 1, half - 1
+    lower[1], upper[1] = ymin + 1, ymax - 1
+    return digest, lower, upper
 
 
 def highest_intersection(position, direction, lower, upper):

@@ -5,6 +5,7 @@ import math
 GENERATOR = "native-cry-1.7"
 DEVICE_GENERATOR = "jax-cry-1.7"
 EXTRACTED_V04_GDML_SHA256 = "5b357107ac740de5df770066b6428c1a58ec61e0349380219ab08dd9d1ace3d9"
+RUN2_V10_GDML_SHA256 = "0b2e2d21428e1adaf5d0053285678b16098982ddd55aae5029a19798e9b335eb"   # mu2e_run2_v10.gdml
 
 
 def _integer(value, lower, upper):
