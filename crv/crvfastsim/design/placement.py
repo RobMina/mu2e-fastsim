@@ -95,6 +95,8 @@ class PlacementConfig:
     hall: str | None = E.HALL
     movable_material: str = E.MOVABLE_MATERIAL
     max_iter: int = 40
+    tie_chains: bool = True         # sectors that follow each other in stock (layout.sector_chains: T1..T5, ...)
+                                    # share one shift, so their plane has no step; False = each sector alone
 
     def __post_init__(self):
         if self.policy not in POLICIES:
@@ -365,6 +367,26 @@ class _Solver:
         self.shift = np.zeros(ng)
         self.no_feb = set()
         self.has = np.array([np.any(world.parts.group == g) for g in range(ng)])
+        self.ties = []                                   # index sets sharing one shift (PlacementConfig.tie_chains)
+        if self.cfg.tie_chains:
+            root = list(range(ng))
+
+            def find(i):
+                while root[i] != i:
+                    i = root[i]
+                return i
+            for b, a in L.sector_chains(world.c0).items():
+                root[find(world.names.index(b))] = find(world.names.index(a))
+            sets = {}
+            for g in range(ng):
+                sets.setdefault(find(g), []).append(g)
+            self.ties = [v for v in sets.values() if len(v) > 1]
+
+    def tie(self):
+        """Every tied set takes the shift of its member that moved furthest from stock."""
+        for t in self.ties:
+            k = max(t, key=lambda g: abs(self.shift[g]))
+            self.shift[t] = self.shift[k]
 
     def translation(self, shift=None):
         s = self.shift if shift is None else shift
@@ -627,6 +649,7 @@ class _Solver:
                 sheets = self.sheets(parts)
                 s, ok[g] = self.solve_group(g, parts, sheets)
                 self.shift[g] = s
+            self.tie()
             if np.max(np.abs(self.shift - old)) < 1e-3:
                 break
         self.iterations = it + 1
@@ -635,6 +658,7 @@ class _Solver:
                 parts = self.parts()
                 s, _ = self.solve_group(g, parts, self.sheets(parts), relax=True)
                 self.shift[g] = s
+        self.tie()
         self.unsolved = [self.w.names[g] for g in range(ng) if not ok[g]]
         return self
 

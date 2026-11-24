@@ -146,12 +146,12 @@ def test_layout_shift_move_filler_and_stagger(world, tmp_path):
     paths, _ = world
     d = M.Design(width=40.0, n_layers=6, thickness=30.0, absorber=30.0, max_length=1000.0)
     with pytest.raises(ValueError, match="layerOffset"):           # the stagger rides on the layer offset
-        L.counters_text(d, L.Placement(), paths["counters"], L.LayoutConfig(stagger_mm=20.0))
+        L.counters_text(d, L.Placement(), paths["counters"], L.LayoutConfig(stagger_mm=20.0, split=True, close_up=False))
     cpath = tmp_path / "offset.txt"
     cpath.write_text(COUNTERS.replace("crs.layerOffset = 0", "crs.layerOffset = 42"))
     t = L.counters_text(d, L.Placement(shifts={"A": 10.0}, moves={"A": [0, 0, 5.0]}), str(cpath),
-                        L.LayoutConfig(stagger_mm=20.0))
-    dg = L.build(d, t, None, L.LayoutConfig(stagger_mm=20.0))
+                        L.LayoutConfig(stagger_mm=20.0, split=True, close_up=False))
+    dg = L.build(d, t, None, L.LayoutConfig(stagger_mm=20.0, split=True, close_up=False))
     c = G.parse_simpleconfig(cpath.read_text())
     k, n, cov = L.tiling(c, "A", 40.0, True)
     kf = L.filler_counters(c, L.stock_extent(c, "A") - n * L.module_pitch(c, k, 40.0), 40.0)

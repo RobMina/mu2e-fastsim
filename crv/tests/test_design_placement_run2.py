@@ -8,6 +8,7 @@ CRV-U sheet (P45T2: E1 / E2 moved 46 mm downstream), and reported 28 overlaps fo
 1.1 mm, U against E1 / E2, and the inner CRV-U sheet against the inner CRV-TS sheet and the downstream shielding. The
 checker must agree with every verdict; the solver must place the five clean designs as the hand fits did, and C with
 the thinner sheet without hand tuning."""
+import dataclasses
 import sys
 from pathlib import Path
 
@@ -71,7 +72,13 @@ def env():
     return E.Envelope.load(G.parse_simpleconfig(L.read_text(M.RUN2_COUNTERS)))
 
 
-TOUCH = P.PlacementConfig(clearance=0.0, sheet_clearance=0.0)     # overlaps only, as the Geant4 surface check
+# the hand placements and their Geant4 references used the G1 option-B v3 rules: length splits at max_length, each
+# sector at its stock firstCounter (end strips open), every sector shifted alone. LEGACY reproduces them; the
+# defaults (stock counter lengths, close-up, tied chains) are tested below.
+LEGACY_LAYOUT = L.LayoutConfig(split=True, close_up=False)
+LEGACY = P.PlacementConfig(layout=LEGACY_LAYOUT, tie_chains=False)
+TOUCH = P.PlacementConfig(layout=LEGACY_LAYOUT, tie_chains=False, clearance=0.0, sheet_clearance=0.0)   # overlaps
+#                                                                                       only, as the Geant4 check
 
 
 def test_envelope_reads_the_run2_shielding(env):
@@ -106,7 +113,7 @@ def test_c_variants_overlap_where_geant4_reports(env, tag):
     assert has("E1", "Us1", "sector-sector") and has("E2", "Us1", "sector-sector")
     assert has("ExtShieldUpstreamBox_30", "ExtShieldDownstreamBox_", "sheet-envelope")
     assert has("ExtShieldUpstreamBox_30", "ExtShieldUpstreamBox_31", "sheet-sheet")
-    r3 = P.check(design(tag), h["placement"], stagger_mm=h["stagger"], thickness=h["thickness"], env=env)
+    r3 = P.check(design(tag), h["placement"], cfg=LEGACY, stagger_mm=h["stagger"], thickness=h["thickness"], env=env)
     trims = {v["label"]: v["trimmed_mm"].get("-z", 0.0) for v in r3["sheets"].values()}
     want = (42.1, 53.3) if tag == "P45S" else (27.1, 38.3)  # the hand fit's trims against U (3 mm clearance)
     assert [trims["Borated poly: Outer CRV-TS"], trims["Borated poly: Outer CRV-TS-Ext"]] == pytest.approx(want, abs=0.06)
@@ -115,7 +122,7 @@ def test_c_variants_overlap_where_geant4_reports(env, tag):
 @pytest.mark.parametrize("tag", FIVE)
 def test_hand_sheet_moves_reproduced(env, tag):
     h = HAND[tag]
-    r = P.check(design(tag), h["placement"], stagger_mm=h["stagger"], env=env)
+    r = P.check(design(tag), h["placement"], cfg=LEGACY, stagger_mm=h["stagger"], env=env)
     got = {v["label"]: v["moved_mm"] for v in r["sheets"].values()}
     want = {"R41": (14.4, 24.4, 17.2), "R28": (61.8, 72.0, 112.8), "R51": (26.1, 56.0, 60.8)}.get(tag)
     if want:                                               # the hand fit's own sheet moves (outer U, TS, TS-Ext)
@@ -126,7 +133,7 @@ def test_hand_sheet_moves_reproduced(env, tag):
 
 def _hand_sheets(env, tag):
     h = HAND[tag]
-    r = P.check(design(tag), h["placement"], stagger_mm=h["stagger"], thickness=h["thickness"], env=env)
+    r = P.check(design(tag), h["placement"], cfg=LEGACY, stagger_mm=h["stagger"], thickness=h["thickness"], env=env)
     return {v["label"]: v["moved_mm"] for v in r["sheets"].values()}
 
 
@@ -138,7 +145,7 @@ def test_auto_placement_matches_the_hand_fit(env, tag):
     solver keeps 3 mm), within 7.5 mm for crvd04 except U, which the hand fit kept up to 26.3 mm further upstream
     than needed, and no sheet moved more than by the hand fit (+ 1 mm)."""
     h = HAND[tag]
-    p = P.place(design(tag), env=env)[0]
+    p = P.place(design(tag), cfg=LEGACY, env=env)[0]
     assert p.feasible and p.remedy is None and p.stagger_mm == h["stagger"]
     assert set(p.placement.no_feb) <= set(h["placement"].no_feb)
     assert set(p.placement.shifts) <= set(h["placement"].shifts)
@@ -168,7 +175,7 @@ def test_c_needs_both_remedies_together(env):
         dict(name="thinU", sheets=("Outer CRV-U",), min_thickness=5.0),
         dict(name="top+thinU", sectors=("T1", "T2", "T3", "T4", "T5", "E1", "E2"), max_mm=150.0,
              sheets=("Outer CRV-U",), min_thickness=5.0)))
-    out = {p.label: p for p in P.place(design("P45"), cfg=P.PlacementConfig(remedies=rem), env=env)}
+    out = {p.label: p for p in P.place(design("P45"), cfg=dataclasses.replace(LEGACY, remedies=rem), env=env)}
     assert not out["base"].feasible and "U" in out["base"].unsolved and out["base"].stagger_mm == 50.0
     assert not out["topmove"].feasible and not out["thinU"].feasible
     both = out["top+thinU"]
@@ -206,7 +213,7 @@ def test_placed_run2_design_scores_in_both_dtypes(env, dtype):
     d = np.stack([rng.normal(0, 0.2, n), -np.ones(n), rng.normal(0, 0.2, n)], 1)
     d /= np.linalg.norm(d, axis=1)[:, None]
     mu = dict(origin=o, direction=d, p=rng.uniform(1000, 10000, n))
-    cfg = F.FomConfig(placement=P.PlacementConfig(), stack_range=False)
+    cfg = F.FomConfig(placement=LEGACY, stack_range=False)
     out = {}
     for dt in ("float64", dtype):
         ctx = _synthetic_tables(F.Context())
@@ -241,7 +248,7 @@ def test_placed_run2_design_with_sector_type_groups(env, dtype):
     out = {}
     for g in ((), groups):
         for dt in ("float64", dtype):
-            cfg = F.FomConfig(placement=P.PlacementConfig(), stack_range=False, coincidence_groups=g)
+            cfg = F.FomConfig(placement=LEGACY, stack_range=False, coincidence_groups=g)
             out[bool(g), dt] = F.evaluate(design("R41"), mu, _synthetic_tables(F.Context()), cfg,
                                           dtype=np.dtype(dt).type)
     grouped, alone = out[True, dtype], out[False, dtype]
@@ -250,7 +257,7 @@ def test_placed_run2_design_with_sector_type_groups(env, dtype):
     # dtypes: with the finder cuts on, float32 flips the slope-window cut for a couple of edge muons on this sample
     # (test_placed_run2_design_scores_in_both_dtypes); with them off the grouped placed score agrees tightly
     nocut = [F.evaluate(design("R41"), mu, _synthetic_tables(F.Context()),
-                        F.FomConfig(placement=P.PlacementConfig(), stack_range=False, finder_cuts=False,
+                        F.FomConfig(placement=LEGACY, stack_range=False, finder_cuts=False,
                                     coincidence_groups=groups), dtype=np.dtype(dt).type)["inefficiency"]
              for dt in ("float64", dtype)]
     assert abs(nocut[1] - nocut[0]) <= 1e-6       # float32 sums over 3000 muons (#346: 3e-7)
@@ -258,7 +265,7 @@ def test_placed_run2_design_with_sector_type_groups(env, dtype):
     names = list(grouped["inefficiency_sector"])
     stock = dict(groups)
     full = groups + tuple((s, stock[s[:-1]]) for s in names if s.endswith("F") and s[:-1] in stock)
-    cfg = F.FomConfig(placement=P.PlacementConfig(), stack_range=False, coincidence_groups=full)
+    cfg = F.FomConfig(placement=LEGACY, stack_range=False, coincidence_groups=full)
     spelled = F.evaluate(design("R41"), mu, _synthetic_tables(F.Context()), cfg, dtype=np.dtype(dtype).type)
     assert spelled["inefficiency"] == grouped["inefficiency"]
 
@@ -272,7 +279,7 @@ def test_c_thinpoly_placed_without_hand_tuning(env):
            P.Remedy("E", sectors=("E1", "E2"), max_mm=80.0, step=10.0),
            P.Remedy("E+thinU", sectors=("E1", "E2"), max_mm=80.0, sheets=("Outer CRV-U",), min_thickness=10.0,
                     step=10.0))
-    out = {p.label: p for p in P.place(design("P45"), cfg=P.PlacementConfig(remedies=rem), env=env)}
+    out = {p.label: p for p in P.place(design("P45"), cfg=dataclasses.replace(LEGACY, remedies=rem), env=env)}
     assert not out["base"].feasible and not out["thinU"].feasible and not out["E"].feasible
     p, h = out["E+thinU"], HAND["P45T2"]
     assert p.feasible and p.stagger_mm == h["stagger"] and p.placement.no_feb == ("L1",)
@@ -284,3 +291,53 @@ def test_c_thinpoly_placed_without_hand_tuning(env):
     again = P.check(design("P45"), p.placement, cfg=TOUCH, stagger_mm=p.stagger_mm, thickness={"Outer CRV-U": t},
                     env=env)
     assert again["violations"] == [] and again["feb_conflicts"] == []
+
+
+def test_close_up_chains_and_stock_unchanged(env):
+    """Stock-adjacent sectors are found as chains; the stock design needs no close-up (its tiling covers each sector
+    exactly), so its layout text keeps every stock firstCounter."""
+    c = G.parse_simpleconfig(L.read_text(M.RUN2_COUNTERS))
+    ch = L.sector_chains(c)
+    assert {"T2": "T1", "T3": "T2", "T4": "T3", "T5": "T4"}.items() <= ch.items()
+    assert L.close_up_offsets(c, float(c["crs.scintillatorBarWidth"])) == {}
+    t = G.parse_simpleconfig(L.counters_text(M.Design(), L.Placement()))
+    for nm in c["crs.sectorNames"]:
+        assert t[f"crs.firstCounter{nm}"] == pytest.approx(c[f"crs.firstCounter{nm}"])
+
+
+def test_close_up_removes_the_top_boundary_cracks(env):
+    """crvd04 A (42.38 mm counters): without close-up the no-overshoot tiling leaves each top sector's end strip
+    open in every layer (28-54 mm at T2|T3, T3|T4, T4|T5); with it every boundary is the stock module gap."""
+    from crvfastsim.design import tiling_plot as TP
+    gap0 = float(G.parse_simpleconfig(L.read_text(M.RUN2_COUNTERS))["crs.gapBetweenModules"])
+    for close, check in ((False, lambda g: max(g) > 25.0), (True, lambda g: max(abs(x) for x in g) <= gap0 + 0.5)):
+        cfg = L.LayoutConfig(close_up=close)
+        dg = L.build(design("P39"), L.counters_text(design("P39"), L.Placement(), cfg=cfg), None, cfg)
+        rows, nl = TP.top_boxes(dg)
+        bnd = {(b["prev"], b["next"]): b["gap_mm_per_layer"] for b in TP.boundaries(rows, nl)}
+        for pair in (("T2F", "T3"), ("T3F", "T4"), ("T4", "T5")):
+            assert check(bnd[pair]), (close, pair, bnd[pair])
+
+
+def test_tiling_plot_nominal(env, tmp_path):
+    from crvfastsim.design import tiling_plot as TP
+    out = tmp_path / "run2.png"
+    assert TP.main(["--out", str(out)]) == 0
+    s = __import__("json").load(open(tmp_path / "run2.json"))
+    assert out.stat().st_size > 10000 and s["n_layers"] == 4
+    assert all(max(abs(x) for x in b["gap_mm_per_layer"]) < 5.0 for b in s["boundaries"])
+
+
+@pytest.mark.parametrize("tag", ["P39", "P30"])
+def test_default_layout_places_flat_top_with_stock_lengths(env, tag):
+    """The default rules on crvd04 A / B: stock counter lengths (no joints), closed-up boundaries and one shift for
+    the top chain. The base placement cannot lower the whole top plane; the E1 / E2 downstream move places the
+    design with the top sectors at their stock height (no step)."""
+    rem = P.parse_remedies("move:E:E1,E2:0,0,1:80")
+    vs = {v.label: v for v in P.place(design(tag), cfg=P.PlacementConfig(remedies=rem), env=env)}
+    v = vs["E"]
+    assert v.feasible and v.violations == []
+    top = {s: v.placement.shifts.get(s, 0.0) for s in ("T1", "T2", "T3", "T4", "T5")}
+    assert len(set(round(x, 6) for x in top.values())) == 1
+    dg = L.build(design(tag), v.text, None, v.layout)
+    assert int(dg.segment.max()) == 0
