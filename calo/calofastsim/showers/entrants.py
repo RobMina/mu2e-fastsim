@@ -355,8 +355,43 @@ def entry_distance2(face, key, phi, rho, donor_key, donor_phi):
     return np.maximum(np.where(np.asarray(face) == INNER, inner, front), 0.0)
 
 
+def nearest_entries(face, key, azimuth, rho, rows, donor_key, donor_azimuth, neighbors, uniform, *, chunk=4_000_000):
+    """One donor per query among the ``neighbors`` donor ``rows`` (ascending library rows) whose entries are nearest
+    (:func:`entry_distance2`); the candidates are ordered by distance, ties by library row, and ``uniform`` picks
+    ``min(floor(u n), n - 1)`` of the n = min(neighbors, len(rows)). Returns (donor rows, distances [mm])."""
+    n = len(key)
+    rows = np.asarray(rows, np.int64)
+    k = min(int(neighbors), len(rows))
+    donors = np.full(n, -1, np.int64)
+    distance = np.full(n, np.nan)
+    if not n or not k:
+        return donors, distance
+    step = max(1, chunk // len(rows))
+    for lo in range(0, n, step):
+        sl = slice(lo, min(n, lo + step))
+        d2 = entry_distance2(face, np.asarray(key[sl], float)[:, None], np.asarray(azimuth[sl], float)[:, None],
+                             np.asarray(rho[sl], float)[:, None], np.asarray(donor_key, float)[None, :],
+                             np.asarray(donor_azimuth, float)[None, :])
+        if k < len(rows):
+            # the k smallest by (distance, row): all below the k-th distance, then the lowest rows at it
+            kth = np.partition(d2, k - 1, axis=1)[:, k - 1:k]
+            below = d2 < kth
+            at = d2 == kth
+            chosen = below | (at & (np.cumsum(at, axis=1) <= k - below.sum(axis=1, keepdims=True)))
+            near = np.nonzero(chosen)[1].reshape(-1, k)
+        else:
+            near = np.tile(np.arange(len(rows)), (d2.shape[0], 1))
+        nd2 = np.take_along_axis(d2, near, axis=1)
+        order = np.lexsort((rows[near], nd2), axis=1)
+        near, nd2 = np.take_along_axis(near, order, axis=1), np.take_along_axis(nd2, order, axis=1)
+        pick = np.minimum((np.asarray(uniform[sl]) * k).astype(np.int64), k - 1)
+        donors[sl] = rows[near[np.arange(len(pick)), pick]]
+        distance[sl] = np.sqrt(nd2[np.arange(len(pick)), pick])
+    return donors, distance
+
+
 def sample(library, queries, rng, *, dtype=np.float64, key_neighbors=0, psi_bins=None, selection="cell",
-           nearest_k=1, max_entry_distance=20.0, far="g4"):
+           nearest_k=1, max_entry_distance=None, far="g4", entry_neighbors=0, max_energy_deviation=None):
     """Draw one donor per query and place its CSS at the query entry.
 
     queries: disk, face, pdg, time, local_position (N,3) and local_momentum (N,3) in the disk frame. Returns the
@@ -381,10 +416,27 @@ def sample(library, queries, rng, *, dtype=np.float64, key_neighbors=0, psi_bins
     closest in entry point (:func:`entry_distance2`, ties by library row), one of them by the uniform. The donor is
     then turned by about 0 or 180 degrees and moved by about that distance, so its shower keeps its place relative
     to the stepped edges of the crystal array. A query whose chosen donor is farther than ``max_entry_distance``
-    (mm), or whose group is empty, is ``far``: with ``far="g4"`` it gets no donor (the Mu2eG4 host leaves it to
+    (mm; None: 20, the host's default), or whose group is empty, is ``far``: with ``far="g4"`` it gets no donor (the Mu2eG4 host leaves it to
     Geant4); with ``far="cell"`` it is drawn by the cell rule (``key_neighbors`` applies). ``key_neighbors`` and
     ``psi_bins`` otherwise do not apply to nearest draws. Unlike the C++ host, entries outside the bins are drawn
     (flagged ``fallback``), as with the cell rule.
+
+    ``entry_neighbors`` (opt-in, K > 0) is the Mu2eG4 model's default donor rule (``donorSelection: nearest``) instead
+    of the cells: among the entrants of the query's species, face, disk, energy bin and cosine bin, the K whose entry
+    points are nearest the query's (:func:`entry_distance2`, which counts a donor's image turned by 180 degrees), one
+    drawn with the query's uniform (:func:`nearest_entries`). Placement then turns a donor by about 0 or 180 degrees
+    and moves it about that distance, so its shower keeps its place on the crystal lattice near the stepped inner and
+    outer edges of the crystal array, which an arbitrary turn does not (Mu2eG4 test: 14.5 % of the placed energy
+    landed outside the crystals with the cell rule, 3.4 % with this one). Queries outside the bins, or whose nearest
+    usable donor is farther than ``max_entry_distance`` [mm], get no donor (left to full simulation); ``distance``
+    returns the donor's entry distance. Not combined with ``key_neighbors`` or ``psi_bins``. The Mu2eG4 defaults
+    are ``entry_neighbors=1, max_entry_distance=20., max_energy_deviation=0.1``.
+    ``selection="nearest"`` above is the same donor choice with a device twin (:mod:`calofastsim.entrant_chain`)
+    and the far rules; ``entry_neighbors`` keeps the C++ host's own handling (no donor outside the bins, no distance
+    cut unless ``max_entry_distance`` is given) and is host-only. Not combined with ``selection="nearest"``.
+
+    ``max_energy_deviation`` (opt-in, either rule): no donor when |E_donor - E| > max_energy_deviation * E, with the
+    total entry energies (energies are never rescaled).
     """
     if selection not in SELECTIONS:
         raise ValueError(f"selection must be one of {SELECTIONS}")
@@ -394,13 +446,23 @@ def sample(library, queries, rng, *, dtype=np.float64, key_neighbors=0, psi_bins
         if (isinstance(nearest_k, (bool, np.bool_)) or not isinstance(nearest_k, (int, np.integer))
                 or nearest_k < 1):
             raise ValueError("nearest_k must be a positive integer")
-        if not (max_entry_distance >= 0):
+        if max_entry_distance is not None and not (max_entry_distance >= 0):
             raise ValueError("max_entry_distance must be a nonnegative distance")
         if psi_bins is not None:
             raise ValueError("psi_bins applies to the cell rule only")
+        if entry_neighbors:
+            raise ValueError("entry_neighbors is not combined with selection='nearest'")
     if (isinstance(key_neighbors, (bool, np.bool_)) or not isinstance(key_neighbors, (int, np.integer))
             or key_neighbors < 0):
         raise ValueError("key_neighbors must be a nonnegative integer")
+    if (isinstance(entry_neighbors, (bool, np.bool_)) or not isinstance(entry_neighbors, (int, np.integer))
+            or entry_neighbors < 0):
+        raise ValueError("entry_neighbors must be a nonnegative integer")
+    if entry_neighbors and (key_neighbors or psi_bins is not None):
+        raise ValueError("entry_neighbors is not combined with key_neighbors or psi_bins")
+    for name, value in (("max_entry_distance", max_entry_distance), ("max_energy_deviation", max_energy_deviation)):
+        if value is not None and not (np.isfinite(value) and value >= 0):
+            raise ValueError(f"{name} must be a nonnegative number or None")
     face = np.asarray(queries["face"])
     n = len(face)
     disk = np.asarray(queries["disk"])
@@ -424,8 +486,27 @@ def sample(library, queries, rng, *, dtype=np.float64, key_neighbors=0, psi_bins
     donors = np.full(n, -1, dtype=np.int64)
     fallback = outside.copy()
     uniform = rng.random(n)
+    entry_distance = np.full(n, np.nan)
     qgroup = np.column_stack((species, face, disk))
-    for g in np.unique(qgroup, axis=0):
+    if entry_neighbors:
+        rho = np.hypot(np.asarray(queries["local_position"], float)[:, 0], np.asarray(queries["local_position"], float)[:, 1])
+        lgroup = np.column_stack((group, library["entry_cell"][:, :2]))
+        qcell = np.column_stack((qgroup, query[:, :2]))
+        fallback = np.zeros(n, bool)
+        ok = ~outside
+        for g in np.unique(qcell[ok], axis=0):
+            where = np.flatnonzero(ok & np.all(qcell == g, axis=1))
+            rows = np.flatnonzero(np.all(lgroup == g, axis=1))
+            if not len(rows):
+                continue
+            donors[where], entry_distance[where] = nearest_entries(
+                int(g[1]), key[where], phi[where], rho[where], rows, np.asarray(library["entry_key"], float)[rows],
+                np.asarray(library["entry_azimuth"], float)[rows], entry_neighbors, uniform[where])
+        if max_entry_distance is not None:
+            too_far = donors >= 0
+            too_far[too_far] = entry_distance[too_far] > max_entry_distance
+            donors[too_far] = -1
+    for g in (np.unique(qgroup, axis=0) if not entry_neighbors else ()):
         where = np.flatnonzero(np.all(qgroup == g, axis=1))
         pool = np.flatnonzero(np.all(occupied[:, :3] == g, axis=1))
         if not len(pool):
@@ -448,9 +529,15 @@ def sample(library, queries, rng, *, dtype=np.float64, key_neighbors=0, psi_bins
     if selection == "nearest":
         nearest, far_mask = _nearest_donors(library, species, face, disk, query, key, phi,
                                             np.hypot(*np.asarray(queries["local_position"], float)[:, :2].T),
-                                            uniform, nearest_k, max_entry_distance)
+                                            uniform, nearest_k, 20.0 if max_entry_distance is None
+                                            else max_entry_distance)
         donors = np.where(far_mask, donors if far == "cell" else -1, nearest)
         fallback = np.where(far_mask & (far == "cell"), fallback, outside)       # nearest draws: outside the bins
+    if max_energy_deviation is not None:
+        has = donors >= 0
+        has[has] = (np.abs(np.asarray(library["entry_energy"], float)[donors[has]] - energy[has])
+                    > max_energy_deviation * energy[has])
+        donors[has] = -1
     supported = donors >= 0
     length = np.zeros(n, dtype=np.int64)
     length[supported] = np.diff(library["offsets"])[donors[supported]]
@@ -475,7 +562,8 @@ def sample(library, queries, rng, *, dtype=np.float64, key_neighbors=0, psi_bins
                 energy_g4=library["step_energy_g4"][source].astype(dtype),
                 energy_birks=library["step_energy_birks"][source].astype(dtype),
                 donor_crystal=library["step_crystal"][source], disk=library["step_disk"][source],
-                entry=row, offsets=offsets, donor=donors, supported=supported, fallback=fallback, far=far_mask)
+                entry=row, offsets=offsets, donor=donors, supported=supported, fallback=fallback, far=far_mask,
+                distance=entry_distance)
 
 
 def _nearest_donors(library, species, face, disk, query, key, phi, rho, uniform, k, max_distance):
