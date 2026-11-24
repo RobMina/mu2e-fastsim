@@ -294,13 +294,13 @@ class Delta:                                   # DeltaCandidate
         self.st += t; self.st2 += t * t; self.stz += t * z; self.sz += z; self.sz2 += z * z
         self._time(False)
 
-    def merge(self, o):
+    def merge(self, o, print_errors=0):
         for st in range(o.first, o.last + 1):
             if o.seeds[st] is None:
                 continue
-            if self.seeds[st] is not None:
-                continue
-            self.seeds[st] = o.seeds[st]
+            if self.seeds[st] is not None and print_errors:
+                continue                       # stock keeps the existing seed only when it prints the error
+            self.seeds[st] = o.seeds[st]       # printErrors 0: o's seed replaces it and is counted again
             self.seeds[st].delta = self.index
             self.nseeds += 1
             self.nhits += self.seeds[st].nhits
@@ -978,7 +978,7 @@ class Finder:
                 dds = dc2.first - dc1.last
                 if dds < 0 or dds > c["maxGap"]:
                     continue
-                dc1.merge(dc2)
+                dc1.merge(dc2, c.get("printErrors", 0))
                 dc2.index = -1000 - dc1.index
 
     def recover_missing_hits(self):

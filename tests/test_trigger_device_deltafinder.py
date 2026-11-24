@@ -109,6 +109,13 @@ def _arrays(evs, H):
     return ph
 
 
+def _ref_hits(ph, i, n):
+    """Event i of the device arrays -> the transcription's hit columns."""
+    return {"sid": ph["sid"][i, :n], "flag": ph["flag"][i, :n], "time": ph["etime"][i, :n], "ctime": ph["time"][i, :n],
+            "x": ph["x"][i, :n], "y": ph["y"][i, :n], "udx": ph["udx"][i, :n], "udy": ph["udy"][i, :n],
+            "uvar": ph["uvar"][i, :n], "edep": ph["edep"][i, :n], "nsh": ph["ncombo"][i, :n]}
+
+
 @pytest.mark.slow
 def test_port_matches_the_stock_transcription():
     import deltafinder_reference as ref
@@ -123,13 +130,89 @@ def test_port_matches_the_stock_transcription():
     nbkg = 0
     for i, ev in enumerate(evs):
         n = len(ev)
-        hits = {"sid": ph["sid"][i, :n], "flag": ph["flag"][i, :n], "time": ph["etime"][i, :n], "ctime": ph["time"][i, :n],
-                "x": ph["x"][i, :n], "y": ph["y"][i, :n], "udx": ph["udx"][i, :n], "udy": ph["udy"][i, :n],
-                "uvar": ph["uvar"][i, :n], "edep": ph["edep"][i, :n], "nsh": ph["ncombo"][i, :n]}
-        want, want15 = ref.run(hits, geo, s)
+        want, want15 = ref.run(_ref_hits(ph, i, n), geo, s)
         assert err[i] == 0
         np.testing.assert_array_equal(flag[i, :n], want, err_msg=f"event {i}")
         assert np15[i] == want15
         nbkg += int(((want >> dfm.BKG_BIT) & 1).sum())
     assert nbkg >= 5 * 20                       # the delta electrons are flagged
     assert ((flag[:5, :] >> dfm.ESEL_BIT) & 1).sum() < ph["valid"][:5].sum()   # some proton hits lose EnergySelection
+
+
+def _overlap_event(rng, g):
+    """Two delta electrons 10-19 mm apart that both make a seed in station st: A also crosses st - 1, B leaves one hit
+    in st + 1. A's candidate (made first) recovers st - 1, B's recovers its single hit, and mergeDeltaCandidates joins
+    them with both holding a seed in st (as in a cosmic event of the Run 1A menu validation)."""
+    hits = []
+
+    def add(st, zf, pf, x, y, t, ct, edep):
+        plane, panel = _panel(st, zf, pf)
+        hits.append(dict(sid=(plane << 10) | (panel << 7) | int(rng.integers(0, 96)), x=x, y=y, t=t, ct=ct, edep=edep,
+                         wx=g["wx"][st, zf, pf], wy=g["wy"][st, zf, pf]))
+
+    def track(cx, cy, stations, t0, faces=range(4)):
+        u = np.array([cx, cy]) / np.hypot(cx, cy)
+        for st in stations:
+            for zf in faces:
+                pf = int(np.argmax(g["nx"][st, zf] * u[0] + g["ny"][st, zf] * u[1]))
+                w = np.array([g["wx"][st, zf, pf], g["wy"][st, zf, pf]])
+                n = np.array([w[1], -w[0]])
+                p = np.array([cx, cy]) + rng.uniform(-6, 6) * w + rng.uniform(-1, 1) * n
+                ct = t0 + rng.uniform(0, 3)
+                add(st, zf, pf, p[0], p[1], ct + rng.uniform(0, 15), ct, 0.002 * rng.uniform(0.8, 1.2))
+
+    a, r = rng.uniform(0, 2 * np.pi), rng.uniform(350, 600)
+    cx, cy = r * np.cos(a), r * np.sin(a)
+    t0 = rng.uniform(500, 1500)
+    st = int(rng.integers(2, 15))
+    track(cx, cy, [st - 1, st], t0)
+    d, b = rng.uniform(10, 19), rng.uniform(0, 2 * np.pi)
+    bx, by, tb = cx + d * np.cos(b), cy + d * np.sin(b), t0 + rng.uniform(-3, 3)
+    track(bx, by, [st], tb)
+    track(bx, by, [st + 1], tb, faces=[int(rng.integers(0, 4))])
+    for _ in range(int(rng.integers(0, 6))):
+        st, zf, pf = int(rng.integers(0, 18)), int(rng.integers(0, 4)), int(rng.integers(0, 3))
+        w = np.array([g["wx"][st, zf, pf], g["wy"][st, zf, pf]])
+        n = np.array([g["nx"][st, zf, pf], g["ny"][st, zf, pf]])
+        p = rng.uniform(380, 680) * n + rng.uniform(-300, 300) * w
+        ct = rng.uniform(450, 1700)
+        add(st, zf, pf, p[0], p[1], ct + rng.uniform(0, 20), ct, rng.uniform(0.0005, 0.006))
+    order = rng.permutation(len(hits))
+    return [hits[i] for i in order]
+
+
+@pytest.mark.slow
+def test_port_matches_the_transcription_when_merged_candidates_share_a_station(monkeypatch):
+    """printErrors 0: MergeDeltaCandidate replaces the first candidate's seed in a shared station by the second's."""
+    import deltafinder_reference as ref
+    g = dfm.geometry()
+    s = dfm.settings(MODULE)
+    rng = np.random.default_rng(10)
+    evs = [_overlap_event(rng, g) for _ in range(8)]
+    ph = _arrays(evs, 64)
+    flag, np15, err, cnt = (np.asarray(x) for x in dfm.flag_hits(ph, s, g))
+    geo = ref.geo_from(g)
+    merge, shared = ref.Delta.merge, []
+
+    def counting(self, o, print_errors=0):
+        shared.append(sum(o.seeds[st] is not None and self.seeds[st] is not None for st in range(o.first, o.last + 1)))
+        return merge(self, o, print_errors)
+
+    nchanged = 0
+    for i, ev in enumerate(evs):
+        n = len(ev)
+        shared.clear()
+        monkeypatch.setattr(ref.Delta, "merge", counting)
+        want, want15 = ref.run(_ref_hits(ph, i, n), geo, s)
+        monkeypatch.setattr(ref.Delta, "merge", lambda self, o, pe=0: merge(self, o, 1))
+        kept, _ = ref.run(_ref_hits(ph, i, n), geo, s)             # keeping the existing seed (printErrors 1)
+        assert err[i] == 0
+        np.testing.assert_array_equal(flag[i, :n], want, err_msg=f"event {i}")
+        assert np15[i] == want15
+        nchanged += bool(any(shared)) and not np.array_equal(want, kept)
+    assert nchanged >= 4                       # the replaced seed changes the Background flags
+
+
+def test_settings_rejects_print_errors():
+    with pytest.raises(ValueError):
+        dfm.settings({**MODULE, "finderParameters": {**FINDER, "printErrors": 1}})

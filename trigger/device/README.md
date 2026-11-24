@@ -44,7 +44,9 @@ The port follows the stock containers and orders: hits time-ordered by the radix
 `ComboHit::time()`, which the panel hits now carry as `etime`), the per-face time bins with the out-of-range reads of
 an OnSpill job, seeds in creation order per station, the delta-candidate vector, the proton candidates sorted with
 libstdc++'s `std::sort`; float members in float32, double members and promotions in float64, products not fused
-(`exact.py`). DeltaFinder reads the nominal tracker (`GeomHandle<Tracker>`), not the aligned one the hits are made with:
+(`exact.py`). With the menu's `printErrors: 0`, `MergeDeltaCandidate` keeps the first candidate's seed in a station
+both candidates hold only when it prints the error, so the merged candidate's seed replaces it there and is counted
+again; the port does the same (`settings` refuses other `printErrors` values). DeltaFinder reads the nominal tracker (`GeomHandle<Tracker>`), not the aligned one the hits are made with:
 the straw-0/1 positions of each panel are shipped in `data/tracker_nominal_panels.json`. An event where stock reads
 outside its arrays, or a table overflows, gets error bits (`TrigFlagPH:err` in the aux arrays; none on the
 production files). `tests/deltafinder_reference.py` is a literal transcription; the unit test requires the port to
@@ -52,7 +54,10 @@ match it bit for bit.
 
 On the production CE files (Offline v13_41, OnSpill, all secondaries; development 14,052 events, held-out 13,992),
 the TrigFlagPH flags from the stored StrawDigis equal the stock ones on every hit of every event, in both precisions
-(stock flags `Background` on about 1,500 hits per 1,000 events, in 8 % of them). With the port on:
+(stock flags `Background` on about 1,500 hits per 1,000 events, in 8 % of them). On the stock TrigMakePH hits of the
+cosmic replays of [Calorimeter paths](#calorimeter-paths) (24,836 events, 1,504,376 hits) the port and the transcription
+equal the stored stock TrigFlagPH flags on every hit, in both precisions, with no error bits; before the merge rule
+above, 9 cosmic events differed by 1-7 hits. With the port on:
 
 | time-cluster stage, events discordant with stock (dev / held-out) | off | on |
 |---|---|---|
@@ -247,8 +252,7 @@ discordant `apr_TC_calo` event) declared before the held-out read, both precisio
 | `apr_TC_calo` discordant events | 0 | 0 | 0 | 0 |
 | flagged events (`tzoverflow`, `tzindet`) | 0 | 0 | 0 | 0 |
 
-On one cosmic event the DeltaFinder port flags 3 hits differently from stock; the TZ clusters of that event differ,
-but no filter decision does. A decide job with `tz=True` (and the cpr calo stage) takes 0.07-0.24 s per CE event and
+A decide job with `tz=True` (and the cpr calo stage) takes 0.07-0.24 s per CE event and
 0.3-0.9 s per cosmic event on four CPU cores, compiles included; the GPU rate is not measured.
 
 The apr response factors (`data/response_ce_dio.json`, `data/response_rpc.json`) were measured with the approximate
