@@ -7,13 +7,20 @@ the rules of the G1 option-B stock references (user 2026-11-20/21), with every c
   tiling    per sector, the even counter count per module (within +-``max_counter_delta`` of stock) and module count
             that cover the stock extent along the gap direction most closely without exceeding it, chosen together
             with the end-strip filler (below); ties go to the count closest to stock;
+  close-up  sectors that follow each other along a common gap direction in the stock geometry (same plane and
+            directions, one starting where the other's stock extent ends: T1..T5, R1..R6, ...) are closed up: each
+            starts where its predecessor's design modules (and filler) end, so the uncovered end strip of every
+            sector (stock extent minus cover, < one filler pitch, the same in every layer) does not open a crack
+            through the stack at the boundary; the strips add up at the chain's last end (``close_up``);
   fillers   each end strip that holds a module of >= 2 design counters gets a one-module sector ``<parent>F`` after
             the parent's last module (largest even count that fits; Offline's layer box assumes an even count): the
             parent's directions, length, SiPM sides, joint stagger and cuts, no FEB boxes; appended after the stock
             sectors, so the stock sector indices are unchanged;
   offset    crs.layerOffset = min(offset_stock x w / w_stock, offset_stock x (N_stock - 1) / (N - 1)): the stock
             fraction of a counter width, never more total stagger than stock;
-  segments  a sector longer than Design.max_length is split along its length; segments read at both ends need
+  segments  off by default (``split``): every sector keeps its stock counter length, as nominal Run 2, and
+            Design.max_length is ignored by the layout. With split=True a sector longer than Design.max_length is
+            split along its length; segments read at both ends need
             their counter motherboards at the joint, so they are ``segment_gap`` apart (default 2 x (CMBOffset +
             CMBHalfThickness) + 2 mm = 42 mm on Run 2) and the sector grows by the gaps;
   stagger   in a segmented sector, layer j's joints move by j x ``stagger_mm`` along the length (offsetDirection
@@ -51,6 +58,10 @@ class LayoutConfig:
     fillers: bool = True               # end-strip filler sectors
     max_counter_delta: int = 6         # counters per module within +- this of stock
     feb_margin: float = 2.0            # mm between the FEBs of neighbouring modules
+    split: bool = False                # split sectors longer than Design.max_length into length segments (joints
+                                       # the nominal geometry does not have); False = stock counter lengths
+    close_up: bool = True              # close up stock-adjacent sectors (module docstring); False = each sector at
+                                       # its stock firstCounter, leaving its end strip open at the boundary
 
     def __post_init__(self):
         if self.segment_gap is not None and not self.segment_gap >= 0:
@@ -129,6 +140,52 @@ def tiling(c, name, w, joint, delta=6):
     if best is None:
         raise ValueError(f"{name}: no module of the design fits the stock sector extent")
     return best[1], best[2], best[3]
+
+
+def sector_chains(c, tol=5.0):
+    """{sector: its predecessor} for stock sectors that follow each other along a common gap direction: same
+    gapDirection, layerDirection and offsetDirection, firstCounter offset along the gap direction by the
+    predecessor's stock extent (within tol mm) and not laterally."""
+    names = list(c["crs.sectorNames"])
+    vec = lambda k: np.asarray(c[k], float)                          # noqa: E731
+    prev = {}
+    for b in names:
+        for a in names:
+            if a == b or any(not np.allclose(vec(f"crs.{d}{a}"), vec(f"crs.{d}{b}"))
+                             for d in ("gapDirection", "layerDirection", "offsetDirection")):
+                continue
+            g = vec(f"crs.gapDirection{a}")
+            g = g / np.linalg.norm(g)
+            dv = vec(f"crs.firstCounter{b}") - vec(f"crs.firstCounter{a}")
+            along = float(dv @ g)
+            if abs(along - stock_extent(c, a)) < tol and np.linalg.norm(dv - along * g) < tol:
+                prev[b] = a
+    return prev
+
+
+def end_strip(c, name, w, cfg=LayoutConfig()):
+    """The uncovered end strip of a sector [mm]: stock extent minus the design modules and the filler."""
+    k, n, _ = tiling(c, name, w, cfg.fillers, cfg.max_counter_delta)
+    cov = n * module_pitch(c, k, w)
+    if cfg.fillers:
+        kf = filler_counters(c, stock_extent(c, name) - cov, w)
+        cov += module_pitch(c, kf, w) if kf >= 2 else 0.0
+    return stock_extent(c, name) - cov
+
+
+def close_up_offsets(c, w, cfg=LayoutConfig()):
+    """{sector: mm} the sector moves against its gap direction to start where its chain predecessor ends."""
+    prev = sector_chains(c)
+    out = {}
+
+    def off(nm):
+        if nm not in out:
+            p = prev.get(nm)
+            out[nm] = 0.0 if p is None else off(p) + end_strip(c, p, w, cfg)
+        return out[nm]
+    for nm in c["crs.sectorNames"]:
+        off(nm)
+    return {k: v for k, v in out.items() if v > 1e-9}
 
 
 def _length_axis(c, name):
@@ -240,8 +297,13 @@ def counters_text(design, placement=None, base=M.RUN2_COUNTERS, cfg=LayoutConfig
     for sec, v in placement.moves.items():
         t.set(f"crs.firstCounter{sec}", np.asarray(t.get(f"crs.firstCounter{sec}"), float) + np.asarray(v, float),
               "vec")
+    closed = close_up_offsets(c, w, cfg) if cfg.close_up else {}
+    for sec, dz in closed.items():
+        g = np.asarray(c[f"crs.gapDirection{sec}"], float)
+        t.set(f"crs.firstCounter{sec}", np.asarray(t.get(f"crs.firstCounter{sec}"), float) - dz * g / np.linalg.norm(g),
+              "vec")
     gap = segment_gap(c, cfg)
-    mx = float(design.max_length or 0.0)
+    mx = float(design.max_length or 0.0) if cfg.split else 0.0
     lengthened = {}
     if mx > 0:
         for nm in names:
@@ -284,7 +346,8 @@ def counters_text(design, placement=None, base=M.RUN2_COUNTERS, cfg=LayoutConfig
         text += "\nbool crs.layoutJointTiling = true;\n"
         if fillers:
             text = _write_fillers(text, names, fillers)
-    meta = dict(layer_offset=off, segment_gap=gap, lengthened=lengthened, stagger_mm=cfg.stagger_mm,
+    meta = dict(layer_offset=off, segment_gap=gap, close_up={k: round(v, 3) for k, v in closed.items()},
+                lengthened=lengthened, stagger_mm=cfg.stagger_mm,
                 stagger_anchor=staggered, feb_scale=f, fillers={k: v[0] for k, v in fillers.items()},
                 **placement.as_dict())
     return f"// crvfastsim.design.layout: {json.dumps(meta)}\n" + text
@@ -353,7 +416,9 @@ def parent_of(name, stock_names):
 def build(design, text, sector_yields=None, cfg=LayoutConfig()):
     """DesignGeometry of a design on a layout counters text (counters_text): module.build with the no-overshoot
     tiling per stock sector and one module per filler sector. sector_yields: {stock sector: yield}; fillers take
-    their parent's."""
+    their parent's. With cfg.split False (default) the design's max_length is ignored: stock counter lengths."""
+    if not cfg.split:
+        design = dataclasses.replace(design, max_length=0.0)
     c = G.parse_simpleconfig(text)
     names = list(c["crs.sectorNames"])
     stock = [n for n in names if not (n.endswith(FILLER) and n[:-len(FILLER)] in names)]

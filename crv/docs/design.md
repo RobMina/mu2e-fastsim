@@ -124,6 +124,18 @@ sheet sets `deadtime_shield_uncalibrated`: the deadtime model is calibrated on t
 term, so such a deadtime is not a prediction until a shield-thickness study calibrates it. `placement.check` tests a
 given (e.g. hand-made) placement against the envelope without solving.
 
+**Default rules since 2026-11-24** (the first placed scores and the G1 Geant4 references used the old v3 rules,
+reproduced by `LayoutConfig(split=True, close_up=False)` with `PlacementConfig(tie_chains=False)`):
+- stock counter lengths: `Design.max_length` no longer splits sectors (`LayoutConfig.split`), so a placed design has no
+  length joints the nominal geometry does not have;
+- close-up: sectors that follow each other in stock (T1..T5, R1-R2, L1-L2, E1-E2; `layout.sector_chains`) start where
+  their predecessor's modules end, so the no-overshoot end strips do not open cracks through the stack at the
+  boundaries (they collect at the chain's last end);
+- tied chains: such sectors share one shift, so the top plane has no step.
+
+`python -m crvfastsim.design.tiling_plot` draws the top sectors seen from above (layers a vertical track crosses, module
+outlines, zooms on the sector boundaries) for the nominal geometry or a design, placed or on stock positions.
+
 ## Comparison with stock (`stockcmp.py`)
 
 Input: the TFileService files of a stock job that ran the CrvStepTableDumper (`dump/`) and the CrvRecoTableDumper
