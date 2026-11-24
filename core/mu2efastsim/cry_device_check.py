@@ -8,7 +8,7 @@ import jax
 import numpy as np
 
 from . import cry_device as D, cry_tables as T
-from .cosmic_cry import CosmicConfig
+from .cosmic_cry import PRESETS
 from .cry_native import CrySource
 
 
@@ -29,10 +29,11 @@ def main():
     p.add_argument("--out", required=True)
     p.add_argument("--events", type=int, default=50000)
     p.add_argument("--repeat", type=int, default=3)
+    p.add_argument("--config", choices=sorted(PRESETS), default="extracted")
     a = p.parse_args()
     if jax.default_backend() != "gpu":
         raise RuntimeError("GPU backend required")
-    config = CosmicConfig.extracted(a.gdml)
+    config = PRESETS[a.config](a.gdml)
     results = {"devices": [str(d) for d in jax.devices()], "raw": [], "accepted_passes": []}
     tables, meta = D.device_tables()
     results["tables"] = meta

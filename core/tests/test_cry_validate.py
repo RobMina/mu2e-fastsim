@@ -26,3 +26,14 @@ def test_summary_counts_and_target():
     assert summary["metrics"]["multi_pair_world_xz_median_m"] == expected
     assert summary["metrics"]["multi_pair_target_xz_p90_m"] == expected
     assert sum(summary["histograms"]["multi_pair_world_xz"]["counts_per_event"]) == .5
+
+
+def test_world_edges_follow_the_config():
+    from mu2efastsim.cry_receipts import EXTRACTED_V04_GDML_SHA256
+    from mu2efastsim.cry_validate import _world_edges
+    box = ((-100, -15, -50), (100, 15, 60))
+    other = _world_edges(CosmicConfig((0, 20, 0), (-10, -10, -10), (10, 10, 10), *box, "fixture"))
+    assert [len(other[a]) for a in "xyz"] == [62, 51, 63]
+    assert other["x"][0] == -100 and other["z"][-1] == 60
+    ext = _world_edges(CosmicConfig((0, 20, 0), (-10, -10, -10), (10, 10, 10), *box, EXTRACTED_V04_GDML_SHA256))
+    assert ext["x"][0] == -155000 and ext["z"][-1] == 180000

@@ -93,3 +93,33 @@ def test_extracted_factory_rejects_unknown_gdml(tmp_path):
 def test_bad_config():
     with pytest.raises(ValueError):
         CosmicConfig((0, 0, 0), (1, 1, 1), (0, 0, 0), (-1, -1, -1), (1, 1, 1), "bad")
+
+
+GDML = """<gdml><solids><box lunit="mm" name="W" x="2000" y="1000" z="4000"/>
+<box lunit="mm" name="H" x="100" y="300" z="100"/></solids>
+<structure><volume name="HV"><solidref ref="H"/></volume>
+<volume name="WV"><solidref ref="W"/><physvol name="HallAir0x1"><volumeref ref="HV"/>
+<position name="p" unit="mm" x="5" y="50" z="0"/></physvol></volume></structure>
+<setup><world ref="WV"/></setup></gdml>"""
+
+
+def test_world_box_of_presets(tmp_path, monkeypatch):
+    import hashlib
+    import mu2efastsim.cosmic_cry as CC
+    path = tmp_path / "w.gdml"
+    path.write_text(GDML)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    got, lo, hi = CC._world_box(path, digest, "fixture")
+    assert got == digest
+    np.testing.assert_array_equal(lo, [-999, -99, -1999])
+    np.testing.assert_array_equal(hi, [999, 199, 1999])
+    for name, sha in (("run2", "RUN2_V10_GDML_SHA256"), ("extracted", "EXTRACTED_V04_GDML_SHA256")):
+        with pytest.raises(ValueError, match="signature"):
+            CC.PRESETS[name](path)
+        monkeypatch.setattr(CC, sha, digest)
+    run2 = CosmicConfig.run2(path)
+    assert run2.reference_mm == (-3904.0, 20000.0, 10171.0) and run2.max_shower_mev == 1e8
+    assert run2.target_min_mm == (-10000.0, -5000.0, -5000.0) and run2.target_max_mm == (3000.0, 5000.0, 21000.0)
+    assert run2.world_min_mm == (-999, -99, -1999) and run2.geometry_sha256 == digest
+    ext = CosmicConfig.extracted(path)
+    assert ext.max_shower_mev == 200000.0 and ext.world_max_mm == run2.world_max_mm
