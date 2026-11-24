@@ -126,7 +126,8 @@ def _summarise(gen, live, config):
     return {"events": n, "particles": len(gen), "live_seconds": live, "metrics": result, "histograms": hist}
 
 
-def compare(references, gdml, events, seed, native_out=None, native_inputs=None, backend="native", preset="extracted"):
+def compare(references, gdml, events, seed, native_out=None, native_inputs=None, backend="native", preset="extracted",
+            shards=None):
     if backend not in ("native", "device"):
         raise ValueError("unknown CRY validation backend")
     from . import tables
@@ -139,11 +140,15 @@ def compare(references, gdml, events, seed, native_out=None, native_inputs=None,
         Source = CosmicSource
     if native_inputs and len(native_inputs) != len(references):
         raise ValueError("native-input and reference lists must have the same number of shards")
+    shards = len(references) if shards is None else shards
+    if shards < 1 or (native_inputs and shards != len(references)):
+        raise ValueError("shards must be positive and equal the reference count with native inputs")
     native, stock, receipts, elapsed = [], [], [], []
-    for i, path in enumerate(references):
+    for path in references:
         g = tables.read(path, "gen")
         sr = tables.read(path, "subruns")
         stock.append(_summarise(g, float(sr.livetime.sum()), config))
+    for i in range(shards):
         start = time.perf_counter()
         if native_inputs:
             ng = tables.read(native_inputs[i], "gen")
@@ -228,8 +233,10 @@ def main():
     p.add_argument("--native-input", nargs="+")
     p.add_argument("--config", choices=("extracted", "run2"), default="extracted",
                    help="CosmicCRY preset the stock references were generated with (cosmic_cry.PRESETS)")
+    p.add_argument("--shards", type=int, help="independent generated shards (default: one per reference shard)")
     a = p.parse_args()
-    report = (compare(a.reference, a.gdml, a.events, a.seed, a.native_out, a.native_input, a.backend, a.config) if a.events
+    report = (compare(a.reference, a.gdml, a.events, a.seed, a.native_out, a.native_input, a.backend, a.config,
+                      a.shards) if a.events
               else inspect(a.reference[0], a.gdml))
     Path(a.out).write_text(json.dumps(report, indent=2))
     print(json.dumps({k: v for k, v in report.items() if k not in ("histograms", "native_raw", "stock_raw")}, indent=2))

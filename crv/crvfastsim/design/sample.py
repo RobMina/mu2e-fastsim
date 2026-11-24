@@ -49,8 +49,10 @@ def crv_entry_states(gen, world_gdml, counters, rng, proxy=F.PROXY, preselect_r=
     wide = F.proxy_hits(o, d, dict(proxy, r=preselect_r)) & (p0 > 0) & (d[:, 1] < 0)
     ew = prepared if prepared is not None else EntryWorld(world_gdml, counters)
     ow, dw, pw = o[wide], d[wide], p0[wide]
+    extra = {}
     if backend == "jax":
         o2, d2, p_plane, alive = ew.device().run(ow, dw, pw, int(rng.integers(0, 2 ** 32, dtype=np.uint64)))
+        extra["concrete_substituted"] = ew.device().substituted
     elif backend == "numpy":
         p_plane, xx0, alive, bxx0, bh = TR.world_loss(rng, ow, dw, pw, ew.world, ew.edges)
         p_msc = np.maximum(np.sqrt(pw * np.maximum(p_plane, 1.0)), 1.0)
@@ -64,4 +66,4 @@ def crv_entry_states(gen, world_gdml, counters, rng, proxy=F.PROXY, preselect_r=
     return dict(origin=o2[keep], direction=d2[keep], p=p_plane[keep], p_generated=pw[keep], event_key=ev,
                 n_generated_muons=int(len(mu)), n_generated_events=n_events,
                 n_preselected=int(wide.sum()), n_ranged_out=int((~alive).sum()),
-                n_selected_generated_lines=int(F.proxy_hits(o, d, proxy)[wide].sum()), y_plane=float(ew.y_plane))
+                n_selected_generated_lines=int(F.proxy_hits(o, d, proxy)[wide].sum()), y_plane=float(ew.y_plane), **extra)

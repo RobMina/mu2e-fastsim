@@ -159,3 +159,21 @@ def test_device_build_bookkeeping(monkeypatch):
     assert out["n_generated_events"] == 25000 and out["live_seconds"] == 12500.0
     assert len(out["p"]) == len(out["event_key"]) and set(out["event_key"][:, 1]) <= {1, 2, 3}
     assert out["provenance"]["cry"]["generator"] == "jax-cry-1.7" and out["provenance"]["transport"] == "jax"
+
+
+def test_materials_without_constants_follow_the_host_rule():
+    from crvfastsim.design import entry_jax as EJ
+    pieces = [_box("CONCRETE_MARS", (-20000, Y_PLANE + 1000, -20000), (20000, Y_PLANE + 2000, 30000)),
+              _box("NoSuchMaterial", (-20000, Y_PLANE + 3000, -20000), (20000, Y_PLANE + 4000, 30000))]
+    w = TR.banded_world(pieces, TR.band_edges(Y_PLANE))
+    sub, names = EJ.host_material_rule(w)
+    assert names == ["NoSuchMaterial"]
+    assert {q[0] for q in sub._pieces} == {"CONCRETE_MARS"} and np.array_equal(sub.edges, w.edges)
+    assert EJ.host_material_rule(_world())[1] == []
+    ew = _prepared()
+    ew.world, ew._device = w, None
+    g = _gen(4000, seed=9)
+    host = S.crv_entry_states(g, None, None, np.random.default_rng(1), prepared=ew)
+    dev = S.crv_entry_states(g, None, None, np.random.default_rng(1), backend="jax", prepared=ew)
+    assert dev["concrete_substituted"] == ["NoSuchMaterial"]
+    assert abs(np.mean(host["p_generated"] - host["p"]) / np.mean(dev["p_generated"] - dev["p"]) - 1) < 0.03

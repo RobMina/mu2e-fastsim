@@ -46,8 +46,10 @@ def cmd_muons(a):
         m = sample.crv_entry_states(gen, a.world, a.counters, np.random.default_rng(a.seed), proxy,
                                     backend=a.transport)
         m["provenance"] = dict(gen=a.gen, seed=a.seed, transport=a.transport)
+        if a.transport == "jax":
+            m["provenance"]["concrete_substituted"] = m.pop("concrete_substituted")
         device_sample.save(a.out, m, proxy)
-        extra = {k: v for k, v in m.items() if k.startswith("n_") or k == "y_plane"}
+        extra = {k: v for k, v in m.items() if k.startswith("n_") or k in ("y_plane", "provenance")}
     else:
         if not a.gen:
             raise SystemExit("muons needs gen tables")

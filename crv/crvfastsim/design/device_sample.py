@@ -50,7 +50,8 @@ def build(preset, gdml, counters, events, seed, *, chunk=200_000, proxy=F.PROXY,
     keep = ("generator", "sampling", "device", "particle_capacity", "selected_capacity", "device_batches",
             "device_setup_s", "device_kernel_wall_s", "device_copy_wall_s", "rng", "cosmic_config")
     out["provenance"] = dict(preset=preset, seed=seed, events=events, chunk=chunk, transport=backend,
-                             transport_batch=transport_batch, precision=dprec.provenance(),
+                             transport_batch=transport_batch,
+                             concrete_substituted=ew.device().substituted if backend == "jax" else None, precision=dprec.provenance(),
                              setup_s=setup_s, generation_s=gen_s, transport_s=tr_s,
                              cry={k: receipt[k] for k in keep if k in receipt})
     return out

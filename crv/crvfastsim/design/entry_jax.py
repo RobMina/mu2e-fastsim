@@ -1,8 +1,9 @@
 """Device overburden transport for the design muon sample: the stage-C world loss and band-weighted Highland
 scattering to the MSC plane of transport_jax.DeviceTransport (the extracted/KPP device chain), without the bar loop.
 
-Host code pads the preselected muons into fixed-shape batches; each batch runs as one jitted program in the device float
-(mu2efastsim.precision) and returns (origin, direction on the plane, |p| at the plane, survived?). RNG: threefry keys
+Materials without constants are transported as CONCRETE_MARS, the host world_loss rule (the device chain itself fails
+closed on them); EntryTransport.substituted lists them. Host code pads the preselected muons into fixed-shape batches;
+each batch runs as one jitted program in the device float (mu2efastsim.precision) and returns (origin, direction on the plane, |p| at the plane, survived?). RNG: threefry keys
 folded by batch index, so a sample is reproducible for a fixed seed, batch size and runtime; not the host RNG stream.
 """
 from __future__ import annotations
@@ -11,11 +12,26 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from mu2efastsim import materials
 from mu2efastsim import precision as dprec
+from mu2efastsim import transport as core_tr
 
+from .. import transport as TR
 from .. import transport_jax as TJ
 
 dprec.register(__name__)
+
+
+def host_material_rule(world):
+    """(world, substituted names): pieces of materials without constants renamed CONCRETE_MARS, as world_loss treats
+    them; the world itself when every material is known."""
+    banded = isinstance(world, core_tr.BandedWorld)
+    pieces = world._pieces if banded else world
+    unknown = sorted({q[0] for q in pieces} - materials.BY_NAME.keys())
+    if not unknown:
+        return world, []
+    sub = [(materials.CONCRETE_MARS.name if q[0] in unknown else q[0],) + tuple(q[1:]) for q in pieces]
+    return (TR.banded_world(sub, world.edges) if banded else sub), unknown
 
 
 class EntryTransport:
@@ -24,6 +40,7 @@ class EntryTransport:
     def __init__(self, geom, world, batch_size=4096):
         if batch_size < 1:
             raise ValueError("batch_size must be positive")
+        world, self.substituted = host_material_rule(world)
         self.dev = TJ.DeviceTransport(geom, world, stage="C", batch_size=batch_size)
         self.y_plane, self.batch_size = self.dev.y, batch_size
         self.kernel = dprec.jit(self._batch)
