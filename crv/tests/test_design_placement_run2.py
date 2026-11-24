@@ -2,11 +2,12 @@
 ExtShieldDownstream_v06, mu2eHall_v03; skipped where they cannot be found) against the hand-fitted G1 placements.
 
 Ground truth: the Geant4 surface check (one event, crsVeto and the external shielding) of the hand placements. It
-was clean for crvd03 R41 / R28 / R51 (it11) and crvd04 P39 / P30 (it3), and reported 28 overlaps for each of the two
-crvd04 C variants P45S (T1-T3 moved 15 mm downstream) and P45T (outer CRV-U sheet 10 mm): T1-T3 against the R1 / R2 /
-L1 upper segments by 1.1 mm, U against E1 / E2, and the inner CRV-U sheet against the inner CRV-TS sheet and the
-downstream shielding. The checker must agree with both verdicts, and the solver must place the five clean designs
-as the hand fits did."""
+was clean for crvd03 R41 / R28 / R51 (it11), crvd04 P39 / P30 (it3) and the second fit of crvd04 C with a 10 mm outer
+CRV-U sheet (P45T2: E1 / E2 moved 46 mm downstream), and reported 28 overlaps for each of the first C variants P45S
+(T1-T3 moved 15 mm downstream) and P45T (outer CRV-U sheet 10 mm): T1-T3 against the R1 / R2 / L1 upper segments by
+1.1 mm, U against E1 / E2, and the inner CRV-U sheet against the inner CRV-TS sheet and the downstream shielding. The
+checker must agree with every verdict; the solver must place the five clean designs as the hand fits did, and C with
+the thinner sheet without hand tuning."""
 import sys
 from pathlib import Path
 
@@ -48,8 +49,12 @@ HAND = {
     "P30": _hand(55.0, -30.0, 170.4, 159.4, 60.0),
     "P45S": _hand(45.0, -79.0, 155.0, 198.0, 50.0, l1=34.4, move={s: [0.0, 0.0, 15.0] for s in ("T1", "T2", "T3")}),
     "P45T": _hand(45.0, -79.0, 170.0, 198.0, 50.0, l1=34.4, thickness={"Outer CRV-U": 10.0}),
+    # the second C-thinpoly fit (it2): E1 / E2 moved 46 mm downstream, U further upstream; Geant4: 0 overlaps
+    "P45T2": _hand(41.0, -83.0, 185.0, 198.0, 50.0, l1=34.4, move={s: [0.0, 0.0, 46.0] for s in ("E1", "E2")},
+                   thickness={"Outer CRV-U": 10.0}),
 }
-CLEAN = ("R41", "R28", "R51", "P39", "P30")
+CLEAN = ("R41", "R28", "R51", "P39", "P30", "P45T2")
+FIVE = CLEAN[:5]                                   # the designs that place without a remedy
 
 
 def design(tag):
@@ -107,7 +112,7 @@ def test_c_variants_overlap_where_geant4_reports(env, tag):
     assert [trims["Borated poly: Outer CRV-TS"], trims["Borated poly: Outer CRV-TS-Ext"]] == pytest.approx(want, abs=0.06)
 
 
-@pytest.mark.parametrize("tag", CLEAN)
+@pytest.mark.parametrize("tag", FIVE)
 def test_hand_sheet_moves_reproduced(env, tag):
     h = HAND[tag]
     r = P.check(design(tag), h["placement"], stagger_mm=h["stagger"], env=env)
@@ -125,7 +130,7 @@ def _hand_sheets(env, tag):
     return {v["label"]: v["moved_mm"] for v in r["sheets"].values()}
 
 
-@pytest.mark.parametrize("tag", CLEAN)
+@pytest.mark.parametrize("tag", FIVE)
 def test_auto_placement_matches_the_hand_fit(env, tag):
     """The solver places the five Geant4-clean designs as the hand fits did: the same sectors shifted (or fewer),
     the same joint stagger, FEB boxes dropped only where they hit something (the hand fits dropped L1's in every
@@ -155,7 +160,7 @@ def test_auto_placement_matches_the_hand_fit(env, tag):
 @pytest.mark.slow
 def test_c_needs_both_remedies_together(env):
     """crvd04 C (P45, a 330 mm stack): neither the top-sector move (P45S) nor the thinner outer CRV-U sheet (P45T)
-    places it, as the Geant4 check of the hand variants found: U also meets the upstream ends of E1 / E2 and is
+    places it on its own, as the Geant4 check of the first hand variants found: U also meets the upstream ends of E1 / E2 and is
     held between the concrete and the inner CRV-U sheet, which lies against the downstream shielding. Moving the top
     and E sectors downstream with a thinner outer CRV-U sheet places it."""
     rem = tuple(P.Remedy(**kw, step=10.0) for kw in (
@@ -216,3 +221,26 @@ def test_placed_run2_design_scores_in_both_dtypes(env, dtype):
     # muon in D1 (with finder_cuts off the dtypes agree to 3e-7)
     r64 = out["float64"]["inefficiency"]
     assert abs(r["inefficiency"] - r64) <= 1e-4 + 1e-3 * r64 + 1.0 / r["n_muons"]
+
+
+@pytest.mark.slow
+def test_c_thinpoly_placed_without_hand_tuning(env):
+    """crvd04 C with a thinner outer CRV-U sheet: the automatic fit, given the E1 / E2 downstream move and the sheet
+    thinning (down to 10 mm) as one remedy, reaches a clean placement that matches the Geant4-clean hand fit P45T2
+    (E1 / E2 +46 mm, T 41, E -83, U 185, sheet 10 mm); the thinning or the move alone does not place."""
+    rem = (P.Remedy("thinU", sheets=("Outer CRV-U",), min_thickness=10.0, step=10.0),
+           P.Remedy("E", sectors=("E1", "E2"), max_mm=80.0, step=10.0),
+           P.Remedy("E+thinU", sectors=("E1", "E2"), max_mm=80.0, sheets=("Outer CRV-U",), min_thickness=10.0,
+                    step=10.0))
+    out = {p.label: p for p in P.place(design("P45"), cfg=P.PlacementConfig(remedies=rem), env=env)}
+    assert not out["base"].feasible and not out["thinU"].feasible and not out["E"].feasible
+    p, h = out["E+thinU"], HAND["P45T2"]
+    assert p.feasible and p.stagger_mm == h["stagger"] and p.placement.no_feb == ("L1",)
+    assert abs(p.remedy["move_mm"] - 46.0) <= 5.0
+    t = p.remedy["thickness_mm"]["ExtShieldUpstreamBox_29"]
+    assert 10.0 <= t < 25.4 and p.shield_modified and p.summary()["deadtime_shield_uncalibrated"]
+    for sec, tol in (("T1", 1.0), ("T2", 1.0), ("T3", 1.0), ("E2", 1.0), ("U", 3.0), ("L1", 2.5)):
+        assert abs(p.placement.shifts[sec] - h["placement"].shifts[sec]) <= tol, sec
+    again = P.check(design("P45"), p.placement, cfg=TOUCH, stagger_mm=p.stagger_mm, thickness={"Outer CRV-U": t},
+                    env=env)
+    assert again["violations"] == [] and again["feb_conflicts"] == []
