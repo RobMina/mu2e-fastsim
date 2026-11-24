@@ -474,7 +474,13 @@ def test_compact_clusters_and_helices_match_the_one_call_path():
     ok = np.asarray(hf["ok"])
     np.testing.assert_array_equal(np.asarray(hc["ok"]), ok)
     for key in hf:
-        np.testing.assert_array_equal(np.asarray(hc[key])[ok], np.asarray(hf[key])[ok])
+        # the device helix fit (a compact fit, not a stock port) sums with plain reductions, which another batch shape
+        # (here the gathered pairs) may round differently (float32 sums: 1e-7 relative); counts and flags are equal
+        a_, b_ = np.asarray(hc[key])[ok], np.asarray(hf[key])[ok]
+        if np.issubdtype(a_.dtype, np.floating):
+            np.testing.assert_allclose(a_, b_, rtol=1e-6, atol=0)
+        else:
+            np.testing.assert_array_equal(a_, b_)
     assert [chain.pair_bucket(n, 64) for n in (0, 16, 17, 32, 33, 64)] == [16, 16, 32, 32, 64, 64]
 
 
