@@ -247,8 +247,13 @@ def test_placed_run2_design_with_sector_type_groups(env, dtype):
     grouped, alone = out[True, dtype], out[False, dtype]
     assert grouped["placement"]["feasible"] and any(k.endswith("F") for k in grouped["inefficiency_sector"])
     assert grouped["inefficiency"] <= alone["inefficiency"] + 1.0 / n
-    r64 = out[True, "float64"]["inefficiency"]
-    assert abs(grouped["inefficiency"] - r64) <= 1e-4 + 1e-3 * r64 + 1.0 / grouped["n_muons"]
+    # dtypes: with the finder cuts on, float32 flips the slope-window cut for a couple of edge muons on this sample
+    # (test_placed_run2_design_scores_in_both_dtypes); with them off the grouped placed score agrees tightly
+    nocut = [F.evaluate(design("R41"), mu, _synthetic_tables(F.Context()),
+                        F.FomConfig(placement=P.PlacementConfig(), stack_range=False, finder_cuts=False,
+                                    coincidence_groups=groups), dtype=np.dtype(dt).type)["inefficiency"]
+             for dt in ("float64", dtype)]
+    assert abs(nocut[1] - nocut[0]) <= 1e-6       # float32 sums over 3000 muons (#346: 3e-7)
     # fillers in their parent's group: the grouped placed score equals one with the filler pairs spelled out
     names = list(grouped["inefficiency_sector"])
     stock = dict(groups)
