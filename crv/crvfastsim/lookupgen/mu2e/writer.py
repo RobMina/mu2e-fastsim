@@ -108,11 +108,29 @@ QUIRKS = (
 
 def piece_provenance(stats):
     """The run settings of one piece (and of the run it was resumed from) that change the counts."""
-    keys = ("dtype", "model", "seed", "max_steps", "capped", "forced", "badsrc", "stuck", "photons", "commit")
+    keys = ("dtype", "model", "seed", "max_steps", "capped", "forced", "badsrc", "stuck", "photons", "commit", "device",
+            "platform", "package_version")
     out = {k: stats.get(k) for k in keys if k in stats}
+    fibre = fibre_core_record()
+    if fibre:
+        out["fibre_core"] = fibre
     if "resumed_from" in stats:
         out["resumed_from"] = piece_provenance(stats["resumed_from"])
     return out
+
+
+def fibre_core_record():
+    """Installed scint-fibre-fastsim identity for table provenance (version + module path)."""
+    try:
+        import scintfibrefastsim
+        import scintfibrefastsim.core.run as run_mod
+    except ImportError:
+        return None
+    return {
+        "name": "scint-fibre-fastsim",
+        "version": getattr(scintfibrefastsim, "__version__", None),
+        "module": getattr(run_mod, "__file__", None),
+    }
 
 
 def table_provenance(c, model, pieces, notes=()):

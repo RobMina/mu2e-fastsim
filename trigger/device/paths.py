@@ -19,9 +19,17 @@ def _cuts(c, key, default):
 
 
 def tc_pass(tc, cfg):
-    if cfg.get("requireCaloCluster", False) or int(cfg.get("minNPlanes", 0)) > 0 or int(cfg.get("minPlaneSpan", 0)) > 0:
-        return jnp.zeros(tc["valid"].shape[0], bool)      # device clusters carry no calorimeter cluster / plane cuts
-    return jnp.any(tc["valid"] & (tc["nsh"] >= int(cfg["minNStrawHits"])), axis=1)
+    """TimeClusterFilter: a cluster with minNStrawHits straw hits (and, with requireCaloCluster, a calo cluster: only
+    clusters that carry their calo cluster index, `calo`, as the TZClusterFinder port's; other device clusters
+    carry none and fail). The plane requirements are not on the device (fail)."""
+    if int(cfg.get("minNPlanes", 0)) > 0 or int(cfg.get("minPlaneSpan", 0)) > 0:
+        return jnp.zeros(tc["valid"].shape[0], bool)
+    ok = tc["valid"] & (tc["nsh"] >= int(cfg["minNStrawHits"]))
+    if cfg.get("requireCaloCluster", False):
+        if "calo" not in tc:
+            return jnp.zeros(tc["valid"].shape[0], bool)
+        ok = ok & (tc["calo"] >= 0)
+    return jnp.any(ok, axis=1)
 
 
 def _check_helix(h, cut, helicity):

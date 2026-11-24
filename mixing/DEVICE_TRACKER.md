@@ -224,6 +224,10 @@ About 92 % of the hit straws of a mixed event see steps of one donor frame only.
 - **What it freezes:** per donor frame and time shift, the cluster and noise draws. A frame drawn twice gives the
   same digis, so the small EleBeamFlash pool (about 1,200 frames, drawn about 60 times per pass) and NeutralsFlash
   (4 times) are not reused. With them, TDC, ADC and PMP shapes moved 2-8x past the stock floor.
+  With one copy per event shift (below), NeutralsFlash reuse is available as the opt-in file
+  `run1a_mix1bb_batch256_neutrals.json`: +12.6 % / +9.9 % events/s (float32 / float64), at the cost of float64 TOT0
+  and TOT1 shapes further from stock than the default (TOT1 chi2/ndf 1.5-2.2 against 1.1-1.8) and one held-out
+  realization outside the exact runs' range on the per-phase ADC peak index (float32) and TDC1-TDC0 (float64).
 - **Why one copy per event shift.** One copy at the mean shift, moved per event, keeps the ADC sampling phase of the
   setup: the ADC peak index per TDC phase was off by chi2/ndf about 1,800 against stock. A grid of copies around the
   mean (`phases`, `periods`) left a constant 0.17 ns offset between the grid and the discrete event shifts (peak

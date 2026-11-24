@@ -17,7 +17,11 @@ settings, overflow and draw counts, census.
 
 The library must be W7's (:data:`entrant_chain.W7_LIBRARY_HASH`) unless ``--any-library`` is given. ``--d-edge`` > 0
 leaves front entrants within D_edge of the disk inner or outer radius undrawn and passes their own Geant4
-CaloShowerSteps from the export instead (the Mu2eG4 host's edge rule, for validation).
+CaloShowerSteps from the export instead (the Mu2eG4 host's edge rule, for validation). The donor rule is W7's
+(:data:`entrant_chain.W7_DEFAULT`: the Mu2eG4 host's nearest entry point, :func:`entrants.sample`, far entrants on the
+cell rule) unless ``--selection``, ``--nearest-k``, ``--max-entry-distance`` or ``--far`` override it: ``--far g4``
+gives entrants with no donor within the distance their own Geant4 steps from the export (the host's behaviour),
+``--selection cell`` the cell rule for every entrant.
 """
 from __future__ import annotations
 
@@ -69,15 +73,24 @@ def run(a):
         raise SystemExit(f"{a.library}: content hash {lib_hash[:12]}... is not W7's library "
                          f"({ec.W7_LIBRARY_HASH[:12]}...); pass --any-library to run it anyway")
     settings = dict(ec.W7_DEFAULT, d_edge=a.d_edge)
+    settings.update({k: v for k, v in (("selection", a.selection), ("nearest_k", a.nearest_k),
+                                       ("max_entry_distance", a.max_entry_distance), ("far", a.far)) if v is not None})
+    g4_far = settings["selection"] == "nearest" and settings["far"] == "g4"
     lib = ec.pack_entrants(library, dtype=np.dtype(a.dtype), **settings)
     resp = response(a.cal1_inputs, a.dtype)
     B = a.batch
     caps = dc.Caps(events=B, steps=B * 80, photoelectrons=B * 9000, rows=B * 48, digis=B * 48, digi_length=96,
                    hits=B * 32, event_hits=64, rounds=8)
-    n_entrants, n_g4 = 2 * B, B * 64
+    n_entrants, n_g4, n_g4_all = 2 * B, B * 64, B * 192
     chain = ec.make_entrant_chain(lib, resp, caps, digi_response=a.digi_response)
     inner, outer = library["geometry_disk_size_x"], library["geometry_disk_size_y"]
-    cpos_z = library["geometry_crystal_position_z"]
+    cpos_z = np.asarray(library["geometry_crystal_position_z"])
+    crystal_ids = np.asarray(library["geometry_crystal_crystal"])
+    id_order = np.argsort(crystal_ids)
+
+    def crystal_row(ids):
+        """Geometry row of crystal ids (the device chain indexes crystals by geometry row)."""
+        return id_order[np.searchsorted(crystal_ids[id_order], ids)]
     key = jax.random.PRNGKey(a.seed)
     out_cl = {k: [] for k in ("energy", "time", "x", "y", "disk")}
     cl_ids, front_ids, all_ids, overflow, stats, census, front_def = [], [], [], {}, {}, [], []
@@ -122,13 +135,24 @@ def run(a):
                       "marker": np.full(m, 200.0, np.float32), "crystal_length": np.full(m, 200.0, np.float32)}
             q, t = ec.entrants_batch(e, timing, n_entrants, B)
             g4 = None
-            if a.d_edge > 0:
-                ev_of = ent["event_row"][css["entrant"][g4_rows]]
-                r = g4_rows[(ev_of >= b0) & (ev_of < b0 + m)]
-                g4 = dc.steps_batch(dict(event=ent["event_row"][css["entrant"][r]] - b0, crystal=css["crystal"][r],
+            if g4_far:
+                # every entrant's own Geant4 steps, tagged with its batch row: the chain keeps those of far entrants
+                pos_in_batch = np.full(len(ent["face"]), -1, np.int64)
+                pos_in_batch[sel] = np.arange(len(sel))
+                r = np.flatnonzero(pos_in_batch[css["entrant"]] >= 0)
+                g4 = dc.steps_batch(dict(event=ent["event_row"][css["entrant"][r]] - b0, crystal=crystal_row(css["crystal"][r]),
                                          energy_g4=css["energy_g4"][r], energy_birks=css["energy_birks"][r],
                                          time=css["time"][r],
-                                         z_local=css["position"][r, 2] - cpos_z[css["crystal"][r]]), n_g4)
+                                         z_local=css["position"][r, 2] - cpos_z[crystal_row(css["crystal"][r])]), n_g4_all)
+                g4["entrant"] = np.full(n_g4_all, -1, np.int32)
+                g4["entrant"][:len(r)] = pos_in_batch[css["entrant"][r]]
+            elif a.d_edge > 0:
+                ev_of = ent["event_row"][css["entrant"][g4_rows]]
+                r = g4_rows[(ev_of >= b0) & (ev_of < b0 + m)]
+                g4 = dc.steps_batch(dict(event=ent["event_row"][css["entrant"][r]] - b0, crystal=crystal_row(css["crystal"][r]),
+                                         energy_g4=css["energy_g4"][r], energy_birks=css["energy_birks"][r],
+                                         time=css["time"][r],
+                                         z_local=css["position"][r, 2] - cpos_z[crystal_row(css["crystal"][r])]), n_g4)
             key, sub = jax.random.split(key)
             res = ec.run(chain, q, t, sub, g4=g4, tolerate_overflow=True)
             for k, v in res["overflow"].items():
@@ -168,6 +192,13 @@ def main(argv=None):
     p.add_argument("--seed", type=int, default=20261107)
     p.add_argument("--batch", type=int, default=2048)
     p.add_argument("--d-edge", type=float, default=0.0)
+    p.add_argument("--selection", default=None, choices=("cell", "nearest"),
+                   help="donor rule (default W7's: nearest): the cell rule or the Mu2eG4 host's nearest entry point")
+    p.add_argument("--nearest-k", type=int, default=None, help="nearest rule (default W7's: 1)")
+    p.add_argument("--max-entry-distance", type=float, default=None, help="mm, nearest rule (default W7's: 20)")
+    p.add_argument("--far", default=None, choices=("g4", "cell"),
+                   help="nearest rule, no donor within the distance (default W7's: cell): the entrant's own Geant4 "
+                        "steps (the Mu2eG4 host's behaviour, validation only) or the cell rule")
     p.add_argument("--any-library", action="store_true", help="allow a library other than W7's")
     return run(p.parse_args(argv))
 

@@ -108,13 +108,13 @@ def test_entry_distance2_against_points():
     rng = np.random.default_rng(1)
     kq, kd = rng.uniform(350, 690, 40), rng.uniform(350, 690, 60)
     pq, pd = rng.uniform(-np.pi, np.pi, 40), rng.uniform(-np.pi, np.pi, 60)
-    front = E.entry_distance2(E.FRONT, kq, pq, kq, kd, pd)
+    front = E.entry_distance2(E.FRONT, kq[:, None], pq[:, None], kq[:, None], kd[None], pd[None])
     a = np.column_stack((kq * np.cos(pq), kq * np.sin(pq)))
     b = np.column_stack((kd * np.cos(pd), kd * np.sin(pd)))
     direct = np.minimum(((a[:, None] - b[None]) ** 2).sum(-1), ((a[:, None] + b[None]) ** 2).sum(-1))
     np.testing.assert_allclose(front, direct, rtol=1e-9, atol=1e-6)
     zq, zd, rho = rng.uniform(-190, 190, 40), rng.uniform(-190, 190, 60), np.full(40, 340.)
-    inner = E.entry_distance2(E.INNER, zq, pq, rho, zd, pd)
+    inner = E.entry_distance2(E.INNER, zq[:, None], pq[:, None], rho[:, None], zd[None], pd[None])
     want = np.array([[(zq[i] - zd[j]) ** 2 + (340. * math.remainder(pq[i] - pd[j], math.pi)) ** 2
                       for j in range(60)] for i in range(40)])
     np.testing.assert_allclose(inner, want, rtol=1e-9, atol=1e-6)
@@ -129,7 +129,7 @@ def test_nearest_entries_against_brute_force(k):
     qk, qp, u = rng.uniform(350, 690, 50), rng.uniform(-np.pi, np.pi, 50), rng.random(50)
     qk[0], qp[0] = dk[4], dp[4]
     donors, distance = E.nearest_entries(E.FRONT, qk, qp, qk, rows, dk, dp, k, u, chunk=7 * 300)
-    d2 = E.entry_distance2(E.FRONT, qk, qp, qk, dk, dp)
+    d2 = E.entry_distance2(E.FRONT, qk[:, None], qp[:, None], qk[:, None], dk[None], dp[None])
     n = min(k, len(rows))
     for i in range(50):
         ranked = sorted(range(len(rows)), key=lambda j: (d2[i, j], rows[j]))[:n]
@@ -153,8 +153,8 @@ def test_sample_takes_the_nearest_entry_of_the_energy_cosine_group(lattice):
     assert (out["donor"] >= 0).sum() > 350 and not out["fallback"].any()
     for i in np.flatnonzero(out["donor"] >= 0):
         pool = np.flatnonzero(np.all(labels == (0, q["face"][i], q["disk"][i], *cell[i, :2]), axis=1))
-        d2 = E.entry_distance2(int(q["face"][i]), key[i:i + 1], phi[i:i + 1], rho[i:i + 1],
-                               library["entry_key"][pool], library["entry_azimuth"][pool])[0]
+        d2 = E.entry_distance2(int(q["face"][i]), key[i:i + 1, None], phi[i:i + 1, None], rho[i:i + 1, None],
+                               library["entry_key"][pool][None], library["entry_azimuth"][pool][None])[0]
         assert out["donor"][i] == pool[np.lexsort((pool, d2))[0]]
         assert out["distance"][i] == pytest.approx(np.sqrt(d2.min()), abs=1e-9)
     assert np.isnan(out["distance"][out["donor"] < 0]).all()

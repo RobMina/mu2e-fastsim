@@ -7,7 +7,8 @@
   deadtime           deadtime.py (absolute with a calibration file, ``deadtime_rate_ratio`` always);
   ly_margin          min over sectors of the design's minimum light yield along the counter (better end, normal
                      incidence, aged by ``aging_c1``) over the nominal design's (aged by ``aging_ref``);
-  cost               mean of the four cost terms (module.cost_terms), each normalised to the nominal design.
+  cost               mean of the four cost terms (module.cost_terms), each normalised to the nominal design, or
+                     with FomConfig.cost_weights their weighted mean (sum w_k term_k / sum w_k), e.g. by price.
 The nominal design is the Design() of the same counters file, run through the same code.
 """
 from __future__ import annotations
@@ -26,6 +27,22 @@ from . import module as M
 from . import optics as O
 from . import veto as V
 
+COST_TERMS = ("scint_m3", "channels", "absorber_t", "fiber_m_mm2")   # module.cost_terms keys
+
+
+def cost_of(rel, weights=()):
+    """Cost proxy from the per-term ratios to the nominal design: the mean (weights empty) or sum w_k rel_k / sum w_k
+    over (term, weight) pairs naming every COST_TERMS key once with weights >= 0 and a positive sum."""
+    if not weights:
+        return float(np.mean(list(rel.values())))
+    w = dict(weights)
+    if len(w) != len(tuple(weights)) or set(w) != set(COST_TERMS):
+        raise ValueError(f"cost_weights must name each of {COST_TERMS} once, got {tuple(w)}")
+    if any(v < 0 for v in w.values()) or sum(w.values()) <= 0:
+        raise ValueError(f"cost_weights must be >= 0 with a positive sum, got {w}")
+    return float(sum(w[k] * rel[k] for k in COST_TERMS) / sum(w.values()))
+
+
 # CE-like proxy region (Mu2e mm): a cylinder about the DS axis from the stopping target to the tracker end
 PROXY = dict(x=-3904.0, y=0.0, r=800.0, z0=5400.0, z1=11800.0)
 
@@ -40,6 +57,11 @@ class FomConfig:
     finder_cuts: bool = True   # the finder's slope and minimum-cluster-PE cuts in P_coinc (veto.finder_factor)
     stack_range: bool = True   # muons lose energy in the designed stack (veto.stack_range); those that stop before
                                # the CE-like region are left out of the inefficiency (they cannot reach the tracker)
+    cost_weights: tuple = ()   # (cost term, weight) pairs over COST_TERMS: cost = sum w_k rel_k / sum w_k;
+                               # () = the plain mean of the four terms (equal weights)
+    coincidence_groups: tuple = ()   # (sector, group label) pairs: sectors searched together for coincidences, as
+                                     # Offline's finder searches one sector type (sector_type_groups), each hit with
+                                     # its own sector's cuts; () = every sector alone (veto.p_miss)
 
 
 def proxy_entry_t(origin, direction, proxy=PROXY):
@@ -117,6 +139,15 @@ class Context:
         return self.tables[best]
 
 
+def sector_type_groups(counters):
+    """FomConfig.coincidence_groups of Offline's finder: every sector grouped by its crs.sectorType, as
+    CrvCoincidenceFinder keys its hit map (pairs (sector, "type<t>")). counters: a counters file (Offline-relative or
+    absolute path, as module.build) or its text."""
+    from .. import geometry as G
+    cfg = G.parse_simpleconfig(counters if "crs.sectorNames" in counters else open(G.find_counters(counters)).read())
+    return tuple((n, f"type{int(float(cfg[f'crs.sectorType{n}']))}") for n in cfg["crs.sectorNames"])
+
+
 def _stock_required(cuts):
     return {n: int(c.coincidence_layers) for n, c in cuts.items()}
 
@@ -183,7 +214,8 @@ def evaluate(design, muons, ctx=None, cfg=FomConfig(), calibration=None, dtype=n
     k = np.array([V.required_layers(int(dg.n_layers[s]), req[nm], design.coincidence_layers, design.spare_layers)
                   for s, nm in enumerate(names)])
     pm, (gt, gs, pc) = V.p_miss(n, idx[:, 0], dg.sector[idx[:, 1]], dg.layer[idx[:, 1]], pe, dg.n_layers, thr, k,
-                                finder_config(dg, ctx.cuts, idx[:, 1]) if cfg.finder_cuts else None)
+                                finder_config(dg, ctx.cuts, idx[:, 1]) if cfg.finder_cuts else None,
+                                V.group_index(names, cfg.coincidence_groups))
     covered = np.zeros(n, bool)
     covered[idx[:, 0]] = True
     ymax = np.full(n, -np.inf)
@@ -218,7 +250,7 @@ def evaluate(design, muons, ctx=None, cfg=FomConfig(), calibration=None, dtype=n
         inefficiency_covered=float(pm[covered & live].sum() / nl_), uncovered_fraction=float((~covered[live]).mean()),
         inefficiency_sector=per, n_muons=n, n_crossings=int(len(idx)), stopped_fraction=float(stopped.mean()),
         deadtime_rate_ratio=dt["rate_ratio"], ly_min=dict(zip(names, ly.tolist())),
-        ly_margin=float(np.min(ly / ly0)), cost=float(np.mean(list(rel.values()))), cost_terms=ct, cost_rel=rel,
+        ly_margin=float(np.min(ly / ly0)), cost=cost_of(rel, cfg.cost_weights), cost_terms=ct, cost_rel=rel,
         n_bars=int(dg.nbars), module_pitch=dict(zip(names, dg.module_pitch.tolist())),
         coincidence=dict(zip(names, [f"{int(kk)} of {int(nn)}, {tt:g} PE" for kk, nn, tt in zip(k, dg.n_layers, thr)])),
         table_substitutions=dict(ctx.substitutions), dtype=np.dtype(dtype).name, wall_s=time.perf_counter() - t0)

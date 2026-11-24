@@ -37,13 +37,25 @@ MODEL_SOURCES = {"current": "CRVStandalone since July 2021 (crvfastsim.lookupgen
 VALIDATION = {"v6": ("tested, not closed",
                      "crv/docs/lookupgen.md: the transport matches the released v6_0 tables for scintillation and "
                      "scintillator Cerenkov light; fiber Cerenkov light differs (open)"),
-              "current": ("not validated",
-                          "crv/docs/lookupgen.md: comparison with the CRVStandalone build of the same model pending")}
+              "current": ("tested, not closed",
+                          "crv/docs/lookupgen.md, 'Agreement with CRVStandalone (current model)': scintillation and "
+                          "scintillator Cerenkov light agree with a CRVStandalone build of the same optics on spread "
+                          "bins; fiber Cerenkov light measured on fewer photons; criteria were not declared before the "
+                          "comparison")}
 
 
 def table_name(c):
     """crv.lookup.<length>_<reflector> for the stock cross-section, crv.lookup.<section tag>_<...> otherwise."""
     return f"crv.lookup.{G.name(c)}" if G.is_stock(c) else f"crv.lookup.{G.section_tag(c)}_{G.name(c)}"
+
+
+def _devices(p):
+    """Devices of a piece and of the runs it was resumed from, newest first (None where a run did not record it)."""
+    out = []
+    while p:
+        out.append(p.get("device"))
+        p = p.get("resumed_from")
+    return out
 
 
 def _load(path):
@@ -58,8 +70,8 @@ def fields(c, model, pieces, arrays, notes=(), commit=None, created_utc=None):
     {sim type: [piece provenance (writer.piece_provenance + photons_per_bin, bins, file)]}."""
     unrecorded = {}
     flat = [p for st in sorted(pieces) for p in pieces[st]]
-    per_st = {G.SIM_TYPES[st]: [{k: p.get(k) for k in ("photons_per_bin", "bins", "dtype", "max_steps", "seed")}
-                                for p in v] for st, v in sorted(pieces.items())}
+    per_st = {G.SIM_TYPES[st]: [dict({k: p.get(k) for k in ("photons_per_bin", "bins", "dtype", "max_steps", "seed")},
+                                     devices=_devices(p)) for p in v] for st, v in sorted(pieces.items())}
     dtypes = sorted({p.get("dtype") for p in flat if p.get("dtype")})
     steps = sorted({p.get("max_steps") for p in flat if p.get("max_steps")})
     seeds = {}
@@ -70,6 +82,8 @@ def fields(c, model, pieces, arrays, notes=(), commit=None, created_utc=None):
         seeds = None
         unrecorded["seeds"] = "a piece does not record its seed (made before seeds were recorded)"
     piece_commits = sorted({p.get("commit") for p in flat if p.get("commit")})
+    # recorded devices; a run made before devices were recorded shows as None in its piece's list
+    devices = sorted({d for p in flat for d in _devices(p) if d})
     release = dict(repository=REPOSITORY, commit=commit, entry_point="python -m crvfastsim.lookupgen assemble")
     if commit is None:
         release = None
@@ -99,7 +113,9 @@ def fields(c, model, pieces, arrays, notes=(), commit=None, created_utc=None):
         generator=dict(name="crvfastsim.lookupgen", release=piece_commits or None,
                        physics_list="Geant4 10.7 optical physics of CRVStandalone table mode, ported to JAX "
                                     "(G4OpBoundaryProcess, G4OpAbsorption, G4OpWLS, scintillation, G4CerenkovNew)",
-                       configuration=dict(model=model, dtypes=dtypes, max_steps=steps, pieces=per_st)),
+                       configuration=dict(model=model, dtypes=dtypes, max_steps=steps, devices=devices,
+                                          pieces=per_st, fibre_core=W.fibre_core_record()),
+                       fibre_core=W.fibre_core_record()),
         release=release, seeds=seeds,
         geometry=dict(tag=f"{'stock' if G.is_stock(c) else G.section_tag(c)}_{G.name(c)}",
                       hash=digest(dict(c.__dict__))),

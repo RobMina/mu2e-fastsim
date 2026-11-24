@@ -329,6 +329,78 @@ def test_finder_positions_are_the_stock_world_coordinates(counters):
     np.testing.assert_allclose(y, geo.center[b, lw[b, 0]], atol=1e-9)
 
 
+def test_group_index():
+    assert V.group_index(["A", "B", "C"]) is None
+    assert V.group_index(["A", "B", "C"], ()) is None
+    assert V.group_index(["A", "B", "C"], {"C": "A"}).tolist() == [0, 1, 0]
+    assert V.group_index(["A", "B", "C"], (("B", "x"), ("C", "x"))).tolist() == [0, 1, 1]
+    with pytest.raises(ValueError):
+        V.group_index(["A", "B"], {"Z": "A"})
+
+
+def test_p_miss_coincidence_groups():
+    # one track, 4-layer sectors 0 and 1, 3 of 4 required: layers 0, 1 lit in sector 0 and layers 2, 3 in sector 1
+    track, sector, layer = np.zeros(4, int), np.array([0, 0, 1, 1]), np.array([0, 1, 2, 3])
+    pe = np.full((4, 2), 50.0)
+    nl, thr, k = np.array([4, 4]), np.array([8.0, 8.0]), np.array([3, 3])
+    alone, (gt, gs, pc) = V.p_miss(1, track, sector, layer, pe, nl, thr, k)
+    assert alone[0] == pytest.approx(1.0) and np.allclose(pc, 0.0)
+    same, rows = V.p_miss(1, track, sector, layer, pe, nl, thr, k, group=np.array([0, 1]))
+    assert same[0] == alone[0] and np.array_equal(rows[1], gs)          # identity groups = no groups
+    grouped, (gt, gs, pc) = V.p_miss(1, track, sector, layer, pe, nl, thr, k, group=np.array([0, 0]))
+    assert grouped[0] == pytest.approx(0.0, abs=1e-12)                  # the group sees 4 lit layers
+    assert gs.tolist() == [0, 1] and np.allclose(pc, 1.0)               # one row per crossed member, group's P_coinc
+    with pytest.raises(ValueError):                                     # group ids are representative sectors
+        V.p_miss(1, track, sector, layer, pe, nl, thr, k, group=np.array([1, 0]))
+
+
+def test_p_miss_group_per_hit_cuts():
+    # Offline's finder: each hit keeps its own sector's threshold; k is the lowest required among the hits
+    track, sector, layer = np.zeros(4, int), np.array([0, 0, 1, 1]), np.array([0, 1, 2, 3])
+    pe = np.full((4, 2), 50.0)
+    nl, k = np.array([4, 4]), np.array([3, 3])
+    thr = np.array([8.0, 60.0])                                         # sector 1 layers mostly below threshold
+    got, (_, _, pc) = V.p_miss(1, track, sector, layer, pe, nl, thr, k, group=np.array([0, 0]))
+    mu = np.full((1, 4, 2), 50.0)
+    want = V.p_coincidence(mu, np.array([[8.0, 8.0, 60.0, 60.0]]), np.array([3]))
+    assert got[0] == pytest.approx(1.0 - want[0], rel=1e-12) and 0.0 < want[0] < 0.5
+    # a layer crossed in both sectors takes the lower threshold
+    tr2, se2, la2 = np.zeros(5, int), np.array([0, 0, 1, 1, 0]), np.array([0, 1, 2, 3, 2])
+    pe2 = np.r_[np.full((4, 2), 50.0), np.zeros((1, 2))]
+    got2, _ = V.p_miss(1, tr2, se2, la2, pe2, nl, thr, k, group=np.array([0, 0]))
+    want2 = V.p_coincidence(mu, np.array([[8.0, 8.0, 8.0, 60.0]]), np.array([3]))
+    assert got2[0] == pytest.approx(1.0 - want2[0], rel=1e-12)
+    # mixed k: the lowest k of the crossed members
+    got3, _ = V.p_miss(1, track, sector, layer, pe, nl, np.array([8.0, 8.0]), np.array([2, 4]), group=np.array([0, 0]))
+    assert got3[0] == pytest.approx(1.0 - V.p_coincidence(mu, np.array([8.0]), np.array([2]))[0], rel=1e-12)
+
+
+def test_sector_type_groups():
+    text = """vector<string> crs.sectorNames = {"R1", "R2", "T1", "R2F"};
+int crs.sectorTypeR1 = 1;
+int crs.sectorTypeR2 = 1;
+int crs.sectorTypeT1 = 3;
+double crs.sectorTypeR2F = 1;
+"""
+    g = F.sector_type_groups(text)
+    assert g == (("R1", "type1"), ("R2", "type1"), ("T1", "type3"), ("R2F", "type1"))
+    assert V.group_index(["R1", "R2", "T1", "R2F"], g).tolist() == [0, 0, 2, 0]
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_evaluate_coincidence_groups(counters, dtype):
+    mu = _muons(3000, seed=12)
+    ctx = _ctx(counters)
+    base = F.evaluate(M.Design(), mu, ctx, dtype=dtype)
+    own = F.evaluate(M.Design(), mu, ctx, F.FomConfig(coincidence_groups=(("A", "a"), ("B", "b"))), dtype=dtype)
+    assert own["inefficiency"] == base["inefficiency"]                  # every sector its own group = no groups
+    # without the finder's slope test (which a joint group may fail across sectors) a joint search loses nothing
+    alone = F.evaluate(M.Design(), mu, ctx, F.FomConfig(finder_cuts=False), dtype=dtype)
+    joint = F.evaluate(M.Design(), mu, ctx, F.FomConfig(finder_cuts=False, coincidence_groups=(("B", "A"),)),
+                       dtype=dtype)
+    assert joint["inefficiency"] <= alone["inefficiency"] + 1e-12
+
+
 def test_finder_cuts_slope_window_and_cluster_pe(counters):
     import dataclasses as dc
     mu = _muons(3000, seed=11)
@@ -398,3 +470,36 @@ def test_stockcmp_bookkeeping(counters):
         assert 0.0 <= s["coinc_model"] <= 1.0 and s["events"] > 5
         for row in s["pe"]:
             assert row["ratio_end0"] == pytest.approx(1.0, rel=1e-9)
+
+
+def test_window_edge_events(monkeypatch):
+    import pandas as pd
+    from crvfastsim.design import stockcmp as SC
+    parts = pd.DataFrame(dict(run=[1] * 5, subrun=[0] * 5, event=[1, 2, 3, 3, 4], isprim=[1, 1, 1, 0, 1],
+                              pdg=[13, -13, 13, 13, 11], st=[50.0, 99_850.0, 99_700.0, 99_990.0, 99_990.0]))
+    monkeypatch.setattr(SC.T, "read_many", lambda paths, tree, cols=None: parts)
+    keys, info = SC.window_edge_events(["x"], 100_000.0, 200.0)
+    # event 2: primary muon after 99,800 ns; event 3's late particle is no primary; event 4's late primary no muon
+    assert keys.tolist() == [SC._ekey(1, 0, 2)]
+    assert info["late_primaries"] == 1 and info["primaries"] == 3 and info["early_primaries"] == 1
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_cost_weights(counters, dtype):
+    mu = _muons(1000, seed=13)
+    ctx = _ctx(counters)
+    d = M.Design(n_layers=5, absorber=20.0, fiber_diameter=1.8)
+    base = F.evaluate(d, mu, ctx, dtype=dtype)
+    rel = base["cost_rel"]
+    assert set(rel) == set(F.COST_TERMS)
+    assert base["cost"] == float(np.mean(list(rel.values())))               # default: the plain mean, unchanged
+    price = (("channels", 0.514), ("fiber_m_mm2", 0.188), ("scint_m3", 0.153), ("absorber_t", 0.145))
+    pw = F.evaluate(d, mu, ctx, F.FomConfig(cost_weights=price), dtype=dtype)
+    assert pw["cost"] == pytest.approx(sum(w * rel[k] for k, w in price) / sum(w for _, w in price), rel=1e-12)
+    assert pw["inefficiency"] == base["inefficiency"] and pw["cost_rel"] == rel   # only the cost changes
+    equal = F.evaluate(d, mu, ctx, F.FomConfig(cost_weights=tuple((k, 1.0) for k in F.COST_TERMS)), dtype=dtype)
+    assert equal["cost"] == pytest.approx(base["cost"], rel=1e-12)
+    for bad in ((("channels", 1.0),), price + (("channels", 1.0),), (("channels", -1.0),) + price[1:]):
+        with pytest.raises(ValueError):
+            F.cost_of(rel, bad)
+

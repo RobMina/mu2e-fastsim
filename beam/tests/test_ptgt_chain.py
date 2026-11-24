@@ -268,3 +268,27 @@ def test_bank_builder_xs_only(tmp_path):
     assert m["config_hash"] != L.hashing.digest(dict(grid=json.load(open(d / "grid.json")), xs_only=False))
     assert b.materials == ("G4_STAINLESS-STEEL",) and b["trial_cell"].size == 0
     assert b["sigma_inel"][0, 0].tolist() == [0.01, 0.02] and np.allclose(b["x0"], 17.6)
+
+
+def test_placement_misalignment_moves_the_target_not_the_beam():
+    import argparse
+    nominal = C.rod_target(160.0, 3.1495, 3.1495, 3.1495)
+    p0 = C.placement()
+    assert np.allclose(p0["rot"], nominal.rot) and np.allclose(p0["origin"], [3904.0, 0.0, -6164.5])
+    p1 = C.placement(offset_x=1.0, tilt_x_deg=0.5)
+    assert np.allclose(p1["origin"], [3905.0, 0.0, -6164.5])
+    assert np.allclose(p1["rot"] @ p1["rot"].T, np.eye(3)) and not np.allclose(p1["rot"], p0["rot"])
+    b = np.deg2rad(0.5)                               # Ry @ Rx: the local y axis tilts out of the x = const plane
+    assert np.allclose(p1["rot"][:, 1], p0["rot"] @ [0.0, np.cos(b), np.sin(b)])
+    bank = type("B", (), {"materials": ("G4_W", "Inconel718")})()
+    a = argparse.Namespace(material="G4_W", offset_x=1.0, tilt_x=0.5, clad=None)
+    tgt, beam = C.design_targets(a, bank, (160.0, 3.1495, 3.1495, 3.1495))
+    assert np.allclose(beam.origin, nominal.origin) and np.allclose(beam.rot, nominal.rot)
+    assert np.allclose(tgt.origin, p1["origin"]) and np.allclose(tgt.rot, p1["rot"])
+    prim = C.primaries(2000, beam, np.random.default_rng(2))
+    assert np.allclose(prim["u"], prim["u"][0])                            # one beam direction, the nominal axis
+    lost = tgt.locate(tgt.to_local(prim["x"] + 2.0 * prim["u"])) < 0          # 1 mm offset: some protons miss the face
+    assert 0 < lost.mean() < 0.5
+    a.clad = ("3.0", "0.25", "Inconel718")
+    tgt, beam = C.design_targets(a, bank, (160.0, 0.0, 0.0, 0.0))
+    assert list(tgt.mat) == [0, 1] and np.allclose(tgt.r_out[:, 0], [3.0, 3.25]) and np.allclose(beam.origin, nominal.origin)

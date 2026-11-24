@@ -1,7 +1,7 @@
 """Job environments (the project image, the EAF venv, GPVM pyenv ana) do not have hep-endpoints: every core module
 outside mu2efastsim.endpoints, in particular mu2efastsim.site, must import without it, and every module of the
-detector packages on PYTHONPATH (crv, the umbrella's beam, tracker) except the kit-host streaming delegates
-(``kit_uva``) must import without mu2efastsim.endpoints."""
+detector packages on PYTHONPATH (crv, the umbrella's beam, tracker) except the kit-host delegates (``kit_uva``
+streaming, ``kit_grid`` FermiGrid submission) must import without mu2efastsim.endpoints."""
 import os
 import subprocess
 import sys
@@ -41,7 +41,7 @@ for pkg in ("crvfastsim", "beamfastsim", "trkfastsim"):
     except ImportError:
         continue
     for m in pkgutil.walk_packages(mod.__path__, pkg + "."):
-        if m.name.rsplit(".", 1)[-1] in ("kit_uva", "__main__"):
+        if m.name.rsplit(".", 1)[-1] in ("kit_uva", "kit_grid", "__main__"):
             continue
         try:
             importlib.import_module(m.name)

@@ -17,6 +17,7 @@ builder (`ptgt_bank`) name no experiment geometry; the solenoid stage and the de
 layer (`ptgt_chain`, `ptgt_chain_jax`). Nothing imports it from a default chain.
 """
 from dataclasses import dataclass, field
+from typing import Optional
 
 import numpy as np
 
@@ -156,21 +157,36 @@ class Bank:
 @dataclass(frozen=True)
 class Target:
     """Coaxial frusta along the target's local z (the beam enters at the +z face and travels along local -z, see
-    ptgt_chain.primaries): segment i spans
-    z_edges[i]..z_edges[i+1] with inner/outer radii linear between r_in/r_out[i, 0] and [i, 1], material mat[i]
-    (bank material index). Placement: local -> global (the caller's frame) is x_global = origin + rot @ x_local."""
+    ptgt_chain.primaries): segment i spans z_edges[i]..z_edges[i+1] (or z_ranges[i], for segments that share a z
+    range, e.g. a core and its sleeve) with inner/outer radii linear between r_in/r_out[i, 0] and [i, 1], material
+    mat[i] (bank material index). Optional axis-aligned boxes in the local frame (fins, plates): boxes[j] =
+    (x0, x1, y0, y1, z0, z1), segment index n_cone + j, material mat[n_cone + j]. Optional spheres[k] = (cx, cy, cz,
+    R) and solid cylinders of any axis cylinders[m] = (ax, ay, az, bx, by, bz, r) (end centres a, b; flat ends) in the
+    local frame (hub balls, spokes), indexed after the boxes in that order. mat covers the coaxial segments, then the
+    boxes, spheres and cylinders. Solids of different materials must not overlap; a point inside several is in the
+    first (coaxial segments, then boxes, spheres, cylinders). beam_z: the local z of the beam's entrance plane
+    (default z_hi; the deck starts the beam at its nominal rod face, inside hubs that reach further). Placement:
+    local -> global (the caller's frame) is x_global = origin + rot @ x_local."""
     z_edges: np.ndarray
     r_in: np.ndarray
     r_out: np.ndarray
     mat: np.ndarray
     origin: np.ndarray = field(default_factory=lambda: np.zeros(3))
     rot: np.ndarray = field(default_factory=lambda: np.eye(3))
+    z_ranges: Optional[np.ndarray] = None
+    boxes: Optional[np.ndarray] = None
+    spheres: Optional[np.ndarray] = None
+    cylinders: Optional[np.ndarray] = None
+    beam_z: Optional[float] = None
 
     def __post_init__(self):
         z = np.asarray(self.z_edges, float)
-        n = z.size - 1
-        if n < 1 or np.any(np.diff(z) <= 0):
-            raise ValueError("z_edges must increase")
+        if self.z_ranges is None:
+            if z.size < 2 or np.any(np.diff(z) <= 0):
+                raise ValueError("z_edges must increase")
+        elif np.asarray(self.z_ranges).ndim != 2 or np.any(np.diff(np.asarray(self.z_ranges, float), axis=1) <= 0):
+            raise ValueError("z_ranges must be (segments, 2) with z0 < z1")
+        n = len(self.zr)
         for k in ("r_in", "r_out"):
             if np.asarray(getattr(self, k)).shape != (n, 2):
                 raise ValueError(f"{k} must be (segments, 2)")
@@ -178,6 +194,96 @@ class Target:
             raise ValueError("need 0 <= r_in < r_out")
         if not np.allclose(np.asarray(self.rot) @ np.asarray(self.rot).T, np.eye(3), atol=1e-12):
             raise ValueError("rot must be orthonormal")
+        b = self.bx
+        if b.ndim != 2 or b.shape[1] != 6 or np.any(b[:, 1::2] <= b[:, 0::2]):
+            raise ValueError("boxes must be (n, 6) = x0, x1, y0, y1, z0, z1 with lo < hi")
+        sp, cy = self.sp, self.cy
+        if sp.ndim != 2 or sp.shape[1] != 4 or np.any(sp[:, 3] <= 0):
+            raise ValueError("spheres must be (n, 4) = cx, cy, cz, R with R > 0")
+        if cy.ndim != 2 or cy.shape[1] != 7 or np.any(cy[:, 6] <= 0) or np.any(
+                np.linalg.norm(cy[:, 3:6] - cy[:, 0:3], axis=1) <= 0):
+            raise ValueError("cylinders must be (n, 7) = ax, ay, az, bx, by, bz, r with a != b and r > 0")
+        if len(self.mat) != n + len(b) + len(sp) + len(cy):
+            raise ValueError(f"mat must have one entry per segment, box, sphere and cylinder ({n} + {len(b)} + "
+                             f"{len(sp)} + {len(cy)}), got {len(self.mat)}")
+
+    @property
+    def n_cone(self):
+        return len(np.asarray(self.r_in))
+
+    @property
+    def bx(self):
+        """(boxes, 6): x0, x1, y0, y1, z0, z1 of each box (local frame); (0, 6) without boxes."""
+        return np.zeros((0, 6)) if self.boxes is None else np.asarray(self.boxes, float)
+
+    @property
+    def sp(self):
+        """(spheres, 4): cx, cy, cz, R (local frame); (0, 4) without spheres."""
+        return np.zeros((0, 4)) if self.spheres is None else np.asarray(self.spheres, float)
+
+    @property
+    def cy(self):
+        """(cylinders, 7): ax, ay, az, bx, by, bz, r (local frame); (0, 7) without cylinders."""
+        return np.zeros((0, 7)) if self.cylinders is None else np.asarray(self.cylinders, float)
+
+    @property
+    def n_box(self):
+        return len(self.bx)
+
+    @property
+    def n_sphere(self):
+        return len(self.sp)
+
+    @property
+    def z_beam(self):
+        return float(self.z_hi if self.beam_z is None else self.beam_z)
+
+    @property
+    def r_max(self):
+        """Radius of the bounding cylinder about the local z axis of the coaxial segments, boxes and spheres (the
+        cylinders, e.g. long spokes, have their own: cylinder_near)."""
+        b, sp = self.bx, self.sp
+        rb = np.hypot(np.maximum(np.abs(b[:, 0]), np.abs(b[:, 1])), np.maximum(np.abs(b[:, 2]), np.abs(b[:, 3])))
+        rs = np.hypot(sp[:, 0], sp[:, 1]) + sp[:, 3]
+        return float(max(np.max(self.r_out), rb.max() if len(b) else 0.0, rs.max() if len(sp) else 0.0))
+
+    def cylinder_near(self, xl, margin):
+        """Points within margin of a cylinder (distance to its axis segment < r + margin)."""
+        c = self.cy
+        if not len(c):
+            return np.zeros(len(xl), bool)
+        a, ab = c[None, :, 0:3], (c[:, 3:6] - c[:, 0:3])[None]
+        w = np.asarray(xl, float)[:, None, :] - a
+        s = np.clip(np.sum(w * ab, -1) / np.sum(ab * ab, -1), 0.0, 1.0)
+        return np.any(np.linalg.norm(w - s[..., None] * ab, axis=-1) < c[None, :, 6] + margin, axis=1)
+
+    @property
+    def zr(self):
+        """(segments, 2): the z range of each segment."""
+        if self.z_ranges is not None:
+            return np.asarray(self.z_ranges, float)
+        z = np.asarray(self.z_edges, float)
+        return np.stack([z[:-1], z[1:]], 1)
+
+    @property
+    def z_lo(self):
+        """Lowest local z of the coaxial segments, boxes and spheres (as r_max)."""
+        sp = self.sp
+        return float(min(self.zr[:, 0].min(), self.bx[:, 4].min() if len(self.bx) else np.inf,
+                         (sp[:, 2] - sp[:, 3]).min() if len(sp) else np.inf))
+
+    @property
+    def z_hi(self):
+        sp = self.sp
+        return float(max(self.zr[:, 1].max(), self.bx[:, 5].max() if len(self.bx) else -np.inf,
+                         (sp[:, 2] + sp[:, 3]).max() if len(sp) else -np.inf))
+
+    @classmethod
+    def clad_rod(cls, length, r_core, t_clad, mat_core=0, mat_clad=1, **placement):
+        """A cylindrical rod of radius r_core in a sleeve r_core..r_core + t_clad (no end caps), both of length."""
+        h, r1 = 0.5 * length, r_core + t_clad
+        return cls(np.array([-h, h]), np.array([[0.0, 0.0], [r_core, r_core]]), np.array([[r_core, r_core], [r1, r1]]),
+                   np.array([mat_core, mat_clad]), z_ranges=np.array([[-h, h], [-h, h]]), **placement)
 
     @classmethod
     def rod(cls, length, r_up, r_mid, r_dn, mat=0, **placement):
@@ -196,7 +302,7 @@ class Target:
         return x if dl is None else (x, np.asarray(dl) @ np.asarray(self.rot).T)
 
     def _radii(self, i, z):
-        z0, z1 = self.z_edges[i], self.z_edges[i + 1]
+        z0, z1 = self.zr[i, 0], self.zr[i, 1]
         f = (z - z0) / (z1 - z0)
         return (self.r_in[i, 0] + f * (self.r_in[i, 1] - self.r_in[i, 0]),
                 self.r_out[i, 0] + f * (self.r_out[i, 1] - self.r_out[i, 0]))
@@ -205,10 +311,87 @@ class Target:
         """Segment index per local point, -1 outside the material."""
         xl = np.asarray(xl, float)
         z, r = xl[:, 2], np.hypot(xl[:, 0], xl[:, 1])
-        i = np.clip(np.searchsorted(self.z_edges, z, side="right") - 1, 0, len(self.mat) - 1)
-        rin, rout = self._radii(i, z)
-        inside = (z >= self.z_edges[0]) & (z < self.z_edges[-1]) & (r >= rin) & (r < rout)
-        return np.where(inside, i, -1)
+        seg = np.full(len(z), -1)
+        b = self.bx
+        o_sp, o_cy = self.n_cone + len(b), self.n_cone + len(b) + self.n_sphere
+        for off, inside in ((o_cy, self._in_cylinders(xl)), (o_sp, self._in_spheres(xl)),
+                            (self.n_cone, np.all((xl[:, None, :] >= b[None, :, 0::2]) & (xl[:, None, :] < b[None, :, 1::2]),
+                                                 axis=2))):
+            if inside.shape[1]:                              # later groups first, so earlier ones win; the first of a group
+                seg = np.where(inside.any(axis=1), off + np.argmax(inside, axis=1), seg)
+        zr = self.zr
+        for i in range(self.n_cone - 1, -1, -1):             # the first segment wins where several hold the point
+            rin, rout = self._radii(i, z)
+            inside = (z >= zr[i, 0]) & (z < zr[i, 1]) & (r >= rin) & (r < rout)
+            seg = np.where(inside, i, seg)
+        return seg
+
+    @staticmethod
+    def _box_slabs(xl, dl, lo, hi):
+        """(t_enter, t_exit) of rays against boxes: xl, dl (N, 3); lo, hi (N or 1, 3)."""
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t1, t2 = (lo - xl) / dl, (hi - xl) / dl
+        par = dl == 0                                        # parallel to a pair of faces: inside the slab or never
+        inside = (xl >= lo) & (xl < hi)
+        t1 = np.where(par, np.where(inside, -np.inf, np.inf), t1)
+        t2 = np.where(par, np.where(inside, np.inf, -np.inf), t2)
+        return np.max(np.minimum(t1, t2), axis=-1), np.min(np.maximum(t1, t2), axis=-1)
+
+    def _in_spheres(self, xl):
+        c = self.sp
+        return np.sum((xl[:, None, :] - c[None, :, 0:3]) ** 2, -1) < c[None, :, 3] ** 2
+
+    def _in_cylinders(self, xl):
+        c = self.cy
+        ab = c[:, 3:6] - c[:, 0:3]
+        L = np.linalg.norm(ab, axis=1)
+        w = xl[:, None, :] - c[None, :, 0:3]
+        s = np.sum(w * (ab / L[:, None])[None], -1)
+        q = w - s[..., None] * (ab / L[:, None])[None]
+        return (s >= 0) & (s < L[None]) & (np.sum(q * q, -1) < c[None, :, 6] ** 2)
+
+    @staticmethod
+    def _sphere_span(xl, dl, c, R):
+        """(t_enter, t_exit) of rays against spheres (broadcast); (inf, -inf) for a miss."""
+        w = xl - c
+        b = np.sum(w * dl, -1)
+        disc = b * b - (np.sum(w * w, -1) - R * R)
+        sq = np.sqrt(np.maximum(disc, 0.0))
+        return np.where(disc > 0, -b - sq, np.inf), np.where(disc > 0, -b + sq, -np.inf)
+
+    @staticmethod
+    def _cylinder_span(xl, dl, a, b, r):
+        """(t_enter, t_exit) of rays against finite solid cylinders (broadcast): the axial slab 0 <= s <= L
+        intersected with the infinite cylinder |q| <= r; (inf, -inf) or t_enter > t_exit for a miss."""
+        ab = b - a
+        L = np.linalg.norm(ab, axis=-1)
+        u = ab / L[..., None]
+        w = xl - a
+        s0, ds = np.sum(w * u, -1), np.sum(dl * u, -1)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t1, t2 = -s0 / ds, (L - s0) / ds
+        par = ds == 0
+        ins = (s0 >= 0) & (s0 < L)
+        lo = np.where(par, np.where(ins, -np.inf, np.inf), np.minimum(t1, t2))
+        hi = np.where(par, np.where(ins, np.inf, -np.inf), np.maximum(t1, t2))
+        q0, qd = w - s0[..., None] * u, dl - ds[..., None] * u
+        A, B, Cq = np.sum(qd * qd, -1), np.sum(q0 * qd, -1), np.sum(q0 * q0, -1) - r * r
+        disc = B * B - A * Cq
+        axial = A < 1e-15                                    # along the axis: inside the radius or never
+        with np.errstate(divide="ignore", invalid="ignore"):
+            sq = np.sqrt(np.maximum(disc, 0.0))
+            c1, c2 = (-B - sq) / A, (-B + sq) / A
+        c1 = np.where(axial, np.where(Cq < 0, -np.inf, np.inf), np.where(disc > 0, c1, np.inf))
+        c2 = np.where(axial, np.where(Cq < 0, np.inf, -np.inf), np.where(disc > 0, c2, -np.inf))
+        return np.maximum(lo, c1), np.minimum(hi, c2)
+
+    def _spans(self, xl, dl):
+        """(t_enter, t_exit) of rays (N, 3) against every sphere and cylinder: (N, n_sphere + n_cylinder)."""
+        sp, cy = self.sp, self.cy
+        x3, d3 = xl[:, None, :], dl[:, None, :]
+        e1, x1 = self._sphere_span(x3, d3, sp[None, :, 0:3], sp[None, :, 3])
+        e2, x2 = self._cylinder_span(x3, d3, cy[None, :, 0:3], cy[None, :, 3:6], cy[None, :, 6])
+        return np.concatenate([e1, e2], 1), np.concatenate([x1, x2], 1)
 
     @staticmethod
     def _cone_hits(xl, dl, z0, z1, ra, rb):
@@ -241,9 +424,17 @@ class Target:
     def distance_out(self, xl, dl, seg):
         """Distance along dl from a point inside segment seg to that segment's boundary."""
         t = np.full(len(xl), np.inf)
+        b = self.bx
         for i in np.unique(seg):
             m = seg == i
-            z0, z1 = self.z_edges[i], self.z_edges[i + 1]
+            if i >= self.n_cone + len(b):                    # sphere or cylinder: the exit of its span
+                t[m] = self._spans(xl[m], dl[m])[1][:, i - self.n_cone - len(b)]
+                continue
+            if i >= self.n_cone:
+                bj = b[i - self.n_cone]
+                t[m] = self._box_slabs(xl[m], dl[m], bj[0::2][None], bj[1::2][None])[1]
+                continue
+            z0, z1 = self.zr[i]
             ti = np.minimum(self._plane_hits(xl[m], dl[m], z0), self._plane_hits(xl[m], dl[m], z1))
             ti = np.minimum(ti, self._cone_hits(xl[m], dl[m], z0, z1, *self.r_out[i]))
             if np.any(self.r_in[i] > 0):
@@ -254,8 +445,16 @@ class Target:
     def distance_in(self, xl, dl):
         """Distance to the first entry into any segment for points outside the material (inf: never)."""
         t = np.full(len(xl), np.inf)
-        for i in range(len(self.mat)):
-            z0, z1 = self.z_edges[i], self.z_edges[i + 1]
+        b = self.bx
+        if len(b):
+            te, tx = self._box_slabs(xl[:, None, :], dl[:, None, :], b[None, :, 0::2], b[None, :, 1::2])
+            ok = (te > 1e-9) & (te <= tx)
+            t = np.min(np.where(ok, te, np.inf), axis=1)
+        if self.n_sphere + len(self.cy):
+            te, tx = self._spans(xl, dl)
+            t = np.minimum(t, np.min(np.where((te > 1e-9) & (te <= tx), te, np.inf), axis=1))
+        for i in range(self.n_cone):
+            z0, z1 = self.zr[i]
             for tc in (self._cone_hits(xl, dl, z0, z1, *self.r_out[i]),
                        self._cone_hits(xl, dl, z0, z1, *self.r_in[i]) if np.any(self.r_in[i] > 0) else t + np.inf):
                 t = np.minimum(t, tc)
@@ -268,6 +467,71 @@ class Target:
 
 
 # ------------------------------------------------------------------------------------------------ transport
+
+# ------------------------------------------------------------------------------------------------ target heating
+
+# Densities [g/cm3] of the bank materials (NIST values for G4_*; the G4beamline deck's composites as defined there).
+DENSITY = {"G4_W": 19.30, "G4_Ir": 22.42, "G4_Ta": 16.654, "G4_Mo": 10.22, "G4_Cu": 8.96, "G4_Fe": 7.874,
+           "G4_STAINLESS-STEEL": 8.00, "WL10": 18.75, "Inconel718": 8.19}
+EDEP_SLICE_MM = 10.0     # default slice width along the target's local z
+EDEP_SLICE_MAX = 64      # fixed number of slice bins (a new design length needs no recompile on the device)
+EDEP_BATCHES = 10        # batch means (by event number mod EDEP_BATCHES) for the statistical errors
+MEV_PER_G_TO_GY = 1.602176634e-13 / 1e-3  # MeV/g -> J/kg (1 MeV = 1.602e-13 J, 1 g = 1e-3 kg)
+
+
+def slice_edges(target, width=EDEP_SLICE_MM, nmax=EDEP_SLICE_MAX):
+    """(nmax + 1) slice edges along the local z from target.z_lo in steps of width, and the number of slices that
+    cover z_lo..z_hi (bins beyond carry no mass). Deposits outside the slices (e.g. spokes) are not sliced."""
+    n = int(np.ceil((target.z_hi - target.z_lo) / width - 1e-9))
+    if n > nmax:
+        raise ValueError(f"target length {target.z_hi - target.z_lo} mm needs {n} slices > {nmax}: widen the slices")
+    return target.z_lo + width * np.arange(nmax + 1), n
+
+
+def slice_masses(target, edges, densities, n_per_slice=200_000, seed=12345):
+    """Target mass [g] per slice: Monte Carlo over the cylinder about the local z axis that holds every solid in the
+    slice (points located with Target.locate, density per material). densities: g/cm3 per bank material index."""
+    rng = np.random.default_rng(seed)
+    R = target.r_max
+    cy = target.cy
+    if len(cy):
+        R = max(R, float(np.max(np.maximum(np.hypot(cy[:, 0], cy[:, 1]), np.hypot(cy[:, 3], cy[:, 4])) + cy[:, 6])))
+    rho = np.asarray(densities, float)[np.asarray(target.mat)]
+    out = np.zeros(len(edges) - 1)
+    for k in range(len(edges) - 1):
+        if edges[k] >= target.z_hi:
+            break
+        r = R * np.sqrt(rng.random(n_per_slice)); ph = 2 * np.pi * rng.random(n_per_slice)
+        z = edges[k] + (edges[k + 1] - edges[k]) * rng.random(n_per_slice)
+        seg = target.locate(np.stack([r * np.cos(ph), r * np.sin(ph), z], 1))
+        dens = np.where(seg >= 0, rho[np.clip(seg, 0, None)], 0.0)
+        out[k] = dens.mean() * np.pi * R * R * (edges[k + 1] - edges[k]) * 1e-3     # g/cm3 * mm3 -> g
+    return out
+
+
+def material_densities(materials, overrides=None):
+    """g/cm3 per bank material; overrides: {name: density}."""
+    d = dict(DENSITY, **(overrides or {}))
+    missing = [m for m in materials if m not in d]
+    if missing:
+        raise ValueError(f"no density for {missing}: pass --density NAME=G_PER_CM3")
+    return [d[m] for m in materials]
+
+
+def peak_heat(batches, masses, pot, n_used):
+    """Peak heat from batch sums: batches (EDEP_BATCHES, nbins) MeV deposited per slice, masses (nbins) g, pot (total).
+    Returns per-slice MeV/g/POT, the peak (MeV/g/POT and Gy/POT) with the batch-mean error of the peak slice."""
+    b = np.asarray(batches, float)[:, :n_used]
+    m = np.asarray(masses, float)[:n_used]
+    nb = b.shape[0]
+    per = b.sum(0) / m / pot
+    k = int(np.argmax(per))
+    bm = b[:, k] / m[k] / (pot / nb)                   # per-batch estimates (batches hold ~pot / nb POT each)
+    err = float(np.std(bm, ddof=1) / np.sqrt(nb)) if nb > 1 else float("nan")
+    return dict(slice_MeV_per_g_per_pot=per.tolist(), peak_slice=k, peak_MeV_per_g_per_pot=float(per[k]),
+                peak_err=err, peak_Gy_per_pot=float(per[k] * MEV_PER_G_TO_GY), peak_Gy_err=err * MEV_PER_G_TO_GY,
+                total_MeV_per_pot=float(b.sum() / pot), mass_g=m.tolist())
+
 
 def frame_to_lab(d):
     """Rotation matrices [N, 3, 3] whose third column is the unit direction d (projectile frame -> lab)."""

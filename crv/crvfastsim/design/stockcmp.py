@@ -94,7 +94,8 @@ def compare(stock, design=M.Design(), ctx=None, cfg=F.FomConfig(), dtype=np.floa
     k_s = np.array([int(V.required_layers(int(dg.n_layers[s]), req[nm], design.coincidence_layers,
                                           design.spare_layers)) for s, nm in enumerate(names)])
     _, (gt, gs, pcm) = V.p_miss(len(mu["p"]), idx[:, 0], sec_x, lay_x, pe, dg.n_layers, thr_s, k_s,
-                                F.finder_config(dg, ctx.cuts, idx[:, 1]) if cfg.finder_cuts else None)
+                                F.finder_config(dg, ctx.cuts, idx[:, 1]) if cfg.finder_cuts else None,
+                                V.group_index(names, cfg.coincidence_groups))
     miss_es = np.ones((nev, len(names)))
     np.multiply.at(miss_es, (mu["event"][gt], gs), 1.0 - pcm)
     out = dict(n_events=nev, n_muons=len(mu["p"]), n_crossings=int(len(idx)), dtype=np.dtype(dtype).name,
@@ -160,11 +161,29 @@ def geometry_check(paths, design=M.Design(), ctx=None, max_steps=500_000, tol=0.
                 max_excess_mm=float(excess.max()) if len(b) else float("nan"))
 
 
+def window_edge_events(paths, window_end, margin):
+    """Event keys to leave out of a paired comparison, in both arms: events with a primary muon whose truth start time
+    (dump/particles st, the cosmic time offset included) is at or after window_end - margin [ns]. Their CRV hits can
+    fall after the end of the digitised event window, so the stock chain records nothing while the model (no time
+    window) sees the crossings. Also returns counts at both window edges for the record."""
+    pa = T.read_many(paths, "particles", T.KEY + ["isprim", "pdg", "st"])
+    pa = pa[(pa.isprim.to_numpy() == 1) & (np.abs(pa.pdg.to_numpy()) == 13)]
+    st = pa.st.to_numpy(np.float64)
+    k = _ekey(pa.run, pa.subrun, pa.event)
+    late = st >= window_end - margin
+    info = dict(window_end_ns=float(window_end), margin_ns=float(margin), primaries=int(len(st)),
+                start_min_ns=float(st.min()) if len(st) else float("nan"),
+                start_max_ns=float(st.max()) if len(st) else float("nan"),
+                late_primaries=int(late.sum()), early_primaries=int((st < margin).sum()))
+    return np.unique(k[late]), info
+
+
 def inefficiency(stock, gen_paths, design=M.Design(), ctx=None, cfg=F.FomConfig(), dtype=np.float64,
-                 proxy=F.PROXY):
+                 proxy=F.PROXY, window=None):
     """CE-proxy veto inefficiency, paired over generated events: events with a proxy muon (fom.proxy_hits) among
     every generated event of the gen dump; stock miss = no coincidence cluster anywhere (events absent from the
-    stock reco, which keeps only events with CRV steps, are misses); model = prod over the event's muons of P_miss."""
+    stock reco, which keeps only events with CRV steps, are misses); model = prod over the event's muons of P_miss.
+    window: None (all events) or (window_end, margin) ns: leave out, in both arms, the events of window_edge_events."""
     ctx = ctx or F.Context()
     dg = M.build(design, ctx.counters, {n: s.yield_per_mev for n, s in ctx.sectors.items()})
     gen = T.read_many(gen_paths, "gen", T.KEY + ["pdg", "x", "y", "z", "px", "py", "pz"])
@@ -190,10 +209,17 @@ def inefficiency(stock, gen_paths, design=M.Design(), ctx=None, cfg=F.FomConfig(
     k = np.array([V.required_layers(int(dg.n_layers[s]), req[nm], design.coincidence_layers, design.spare_layers)
                   for s, nm in enumerate(names)])
     pm, _ = V.p_miss(len(p), idx[:, 0], dg.sector[idx[:, 1]], dg.layer[idx[:, 1]], pe, dg.n_layers, thr, k,
-                     F.finder_config(dg, ctx.cuts, idx[:, 1]) if cfg.finder_cuts else None)
+                     F.finder_config(dg, ctx.cuts, idx[:, 1]) if cfg.finder_cuts else None,
+                     V.group_index(names, cfg.coincidence_groups))
     ue, inv = np.unique(ek, return_inverse=True)
     pm_ev = np.ones(len(ue))
     np.multiply.at(pm_ev, inv, pm)
+    win_info = None
+    if window is not None:
+        late, win_info = window_edge_events(stock["paths"], *window)
+        keep_ev = ~np.isin(ue, late)
+        win_info["dropped_events"] = int((~keep_ev).sum())
+        ue, pm_ev = ue[keep_ev], pm_ev[keep_ev]
     # stock: events with a cluster (stock keys are run/subrun/event of the reco dump)
     ev = RT.read(stock["paths"], "events", ["run", "subrun", "event"])
     sk = np.unique(_ekey(ak.to_numpy(ev.run), ak.to_numpy(ev.subrun), ak.to_numpy(ev.event)))
@@ -208,4 +234,4 @@ def inefficiency(stock, gen_paths, design=M.Design(), ctx=None, cfg=F.FomConfig(
                 stock_inefficiency=float(miss_st.mean()), model_expected_misses=float(pm_ev.sum()),
                 model_inefficiency=float(pm_ev.mean()),
                 diff=float(diff.mean()), diff_err=float(diff.std(ddof=1) / np.sqrt(n)) if n > 1 else float("nan"),
-                both_miss=int((miss_st & (pm_ev > 0.5)).sum()))
+                both_miss=int((miss_st & (pm_ev > 0.5)).sum()), window=win_info)

@@ -739,6 +739,22 @@ B python -m beamfastsim.ptgt_point --rod @Tlength@ @R_up@ @R_mid@ @R_dn@ --pot @
   > "$M2FS_OUT/point.txt" 2>&1 || { tail -20 "$M2FS_OUT/point.txt"; exit 6; }
 tail -1 "$M2FS_OUT/point.txt"
 """
+# Queue mode (FASTSIMKIT_PTGT_QUEUE set, platform gpu): the job only hands the design to a resident GPU worker
+# (beamfastsim.ptgt_queue, which batches many designs into one tsdevice pass) and waits for its numbers.
+PTGT_QUEUE_BODY = """module load apptainer >/dev/null 2>&1
+M2FS_OUT=$(readlink -f "$M2FS_OUT")   # the scratch area may be a symlink (UVA): bind the real path
+echo "host $(hostname) job ${SLURM_JOB_ID:-none} queue client out $M2FS_OUT"
+CODE=@code@
+trap 'echo "$(date -Is) $(hostname) queue client: nothing staged" >> "$M2FS_OUT/cleanup.txt"' EXIT
+trap 'exit 143' TERM INT
+mkdir -p @queue@ && Q=$(readlink -f @queue@) || { echo "no ptgt queue directory"; exit 3; }
+B() { apptainer exec --cleanenv --env "JAX_PLATFORMS=cpu,OPENBLAS_NUM_THREADS=1,PYTHONDONTWRITEBYTECODE=1,PYTHONPATH=$CODE/core:$CODE/beam" -B "$M2FS_OUT" -B "$CODE" -B "$Q" --pwd "$CODE" @sif@ "$@"; }
+B python -m beamfastsim.ptgt_point --queue "$Q" --data-sha256 @datasha@ --wait-s @waits@ \\
+  --rod @Tlength@ @R_up@ @R_mid@ @R_dn@ --pot @pot@ --seed @seed@ --dtype @dtype@ --platform @platform@ --out "$M2FS_OUT" \\
+  > "$M2FS_OUT/point.txt" 2>&1 || { tail -20 "$M2FS_OUT/point.txt"; exit 6; }
+tail -1 "$M2FS_OUT/point.txt"
+"""
+PTGT_QUEUE_MINUTES = 180          # default wait limit of a queue client (FASTSIMKIT_PTGT_QUEUE_MINUTES)
 PTGT_GPU_CHECK = """B python -c "import jax, sys; print(jax.devices()); sys.exit(jax.default_backend() != 'gpu')" || { echo "JAX not on the GPU"; exit 5; }
 """
 
@@ -763,7 +779,16 @@ class PtgtPointStream(BeamPointStream):
     def inputs(cls, p) -> Dict[str, str]:
         return {}
 
+    @staticmethod
+    def queue(p):
+        """The queue directory of queue mode (FASTSIMKIT_PTGT_QUEUE, GPU points only), else None."""
+        q = site.setting("FASTSIMKIT_PTGT_QUEUE")
+        return q if q and p.get("platform") == "gpu" else None
+
     def resources(self, p) -> Resources:
+        if self.queue(p):
+            minutes = int(site.setting("FASTSIMKIT_PTGT_QUEUE_MINUTES") or PTGT_QUEUE_MINUTES)
+            return Resources(cores=1, mem_gb=4, gpus=0, gpu_type="", minutes=minutes)
         return kit_task.ptgt_resources(p, Resources)
 
     def render(self, p, manifest=None, geometry=None):
@@ -772,6 +797,8 @@ class PtgtPointStream(BeamPointStream):
             raise ValueError("fastsimkit: ptgt_point takes no geometry file (the rod is its params)")
         res = self.resources(p)
         admit_resources(self.ep, res)
+        if self.queue(p):
+            return self._render_queue(p, res, manifest)
         gpu = p["platform"] == "gpu"
         try:
             data = site.require("FASTSIMKIT_PTGT_DATA")
@@ -794,6 +821,22 @@ class PtgtPointStream(BeamPointStream):
             raise ValueError("fastsimkit: ptgt_point: unfilled placeholder")
         if gpu:
             body = jax_cache(body)
+        if manifest is not None:
+            body = runtime_prefix(manifest) + body
+        return body, res
+
+    def _render_queue(self, p, res, manifest):
+        subs = {"sif": shlex.quote(manifest["image"]["path"] if manifest else self.kit.sif),
+                "code": shlex.quote(manifest["code"]["path"] if manifest else self.code),
+                "queue": shlex.quote(self.queue(p)), "datasha": shlex.quote(json.dumps(kit_task.PTGT_DATA_SHA256)),
+                "waits": str(max(60, res.minutes * 60 - 120)),
+                **{k: repr(v) if isinstance(v, float) else str(v) for k, v in p.items()}}
+        body = PTGT_QUEUE_BODY
+        for a, b in subs.items():
+            body = body.replace(f"@{a}@", b)
+        import re
+        if re.search(r"@[A-Za-z_]+@", body):
+            raise ValueError("fastsimkit: ptgt_point: unfilled placeholder")
         if manifest is not None:
             body = runtime_prefix(manifest) + body
         return body, res

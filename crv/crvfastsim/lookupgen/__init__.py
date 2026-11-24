@@ -8,10 +8,10 @@ stock program are runtime parameters here.
 
 Two layers (docs/lookupgen.md, "Layout"):
 
-  core   experiment-neutral and extractable: strip geometry (counter), bins (binning), Geant4 optical building blocks
-         and the model registry (optics), the literature-based ``current`` optical model with its sources
-         (materials), the device transport (transport) and the host driver (run). Imports only the standard
-         library, NumPy and JAX.
+  core   experiment-neutral: re-exported from scint-fibre-fastsim (``scintfibrefastsim.core``) — strip geometry
+         (counter), bins (binning), Geant4 optical building blocks and the model registry (optics), the
+         literature-based ``current`` optical model (materials), the device transport (transport) and the host
+         driver (run).
   mu2e   the Mu2e adapter: CRV counters and the stock bin-edge rule (sections), the test-beam-tuned ``v6`` model (v6),
          the version-6 file writer (writer), comparisons with released tables (compare) and library-core manifests
          (library).

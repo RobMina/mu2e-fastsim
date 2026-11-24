@@ -14,3 +14,5 @@ Geant4 Software License) that the stock program uses.
 
 Mu2e-internal inputs (CRV conditions and photon lookup tables, detector data) are not part of this repository and
 must not be added to it.
+
+crvfastsim.lookupgen.core is re-exported from RobMina/scint-fibre-fastsim (Apache-2.0; pinned commit in crv/pyproject.toml). The Mu2e adapter (crvfastsim.lookupgen.mu2e) and the SiPM response stay here.

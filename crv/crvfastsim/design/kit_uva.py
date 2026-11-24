@@ -42,6 +42,11 @@ def validate(params: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("crv_design: give coincidence_layers or spare_layers, not both")
     if p["spare_layers"] != "" and p["n_layers"] != "" and p["spare_layers"] >= p["n_layers"]:
         raise ValueError("crv_design: spare_layers must be below n_layers")
+    given = [k for k in kit_task.COST_WEIGHTS if p[k] != ""]
+    if given and len(given) != len(kit_task.COST_WEIGHTS):
+        raise ValueError(f"crv_design: set all of {tuple(kit_task.COST_WEIGHTS)} or none")
+    if given and (any(float(p[k]) < 0 for k in given) or sum(float(p[k]) for k in given) <= 0):
+        raise ValueError("crv_design: cost weights must be >= 0 with a positive sum")
     return p
 
 

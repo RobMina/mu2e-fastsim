@@ -13,6 +13,7 @@ Differences to the host reference (statistical, not bitwise): random streams; mu
 species with daughters (K decays use the same channel table); the chord re-entry, plane and annulus tests are the
 same geometry evaluated per step.
 """
+import dataclasses
 from functools import partial
 from typing import NamedTuple
 
@@ -41,8 +42,12 @@ class Static(NamedTuple):
     """Device constants: bank, target, envelope, field."""
     edges: object; sig_in: object; sig_el: object; dedx: object; x0: object; el_icdf: object
     cell_off: object; sec_off: object; sec_sp: object; sec_p: object
-    zt: object; rin: object; rout: object; mat: object; origin: object; rot: object
+    z0: object; z1: object; rin: object; rout: object; mat: object; origin: object; rot: object   # per segment
+    bx: object                                  # axis-aligned boxes (n, 6): x0, x1, y0, y1, z0, z1 (local frame)
+    sp: object; cy: object                      # spheres (n, 4): c, R; cylinders (n, 7): a, b, r (local frame)
     env_z: object; env_r: object; annuli: object
+    tally: object                               # recording-only planes (n, 2): z, r (diagnostic)
+    ez: object; edep_loc: object                # target-heat slice edges (local z); bank local deposit per trial
     fm: object
     rb: object; zc: object; hl: object          # target bounding cylinder (device scalars: no recompile per rod)
     slabs: object                               # passive thin rings (n, 4): z, r_in, r_out, thickness
@@ -50,7 +55,7 @@ class Static(NamedTuple):
 
 
 class Cfg(NamedTuple):
-    nk: int; nmat: int; nseg: int
+    nk: int; nmat: int; nseg: int; ncone: int    # nseg = ncone coaxial segments + boxes + spheres + cylinders
     z_plane: float; r_plane: float; z_min: float; axis_x: float
     h_vac: float; h_near: float; near: float; h_mat: float; neutral_step: float
     ke_min_hadron: float; ke_min_pion: float; max_loss_fraction: float
@@ -87,16 +92,19 @@ def make_static(bank, target, env, fm, dtype, slab=None):
     nk = bank["log10_ke_edges"].size - 1
     sec_sp = species_of(bank["sec_pdg"])
     annuli = np.asarray(env.annuli, float).reshape(-1, 3) if len(env.annuli) else np.zeros((0, 3))
+    tally = np.asarray(env.tally, float).reshape(-1, 2) if len(env.tally) else np.zeros((0, 2))
     st = Static(edges=f(bank["log10_ke_edges"]), sig_in=f(bank["sigma_inel"].reshape(-1)),
                 sig_el=f(bank["sigma_el"].reshape(-1)), dedx=f(bank["dedx"].reshape(-1)), x0=f(bank["x0"].reshape(-1)),
                 el_icdf=f(bank["el_cos_icdf"].reshape(-1, D.N_EL)), cell_off=jnp.asarray(bank["cell_offsets"], jnp.int64),
                 sec_off=jnp.asarray(bank["sec_offsets"], jnp.int64), sec_sp=jnp.asarray(sec_sp, jnp.int32),
                 sec_p=jnp.asarray(bank["sec_p"], jnp.float32),
-                zt=f(target.z_edges), rin=f(target.r_in), rout=f(target.r_out), mat=jnp.asarray(target.mat, jnp.int32),
-                origin=f(target.origin), rot=f(target.rot), env_z=f(env.z_nodes), env_r=f(env.r_nodes), annuli=f(annuli),
+                z0=f(target.zr[:, 0]), z1=f(target.zr[:, 1]), rin=f(target.r_in), rout=f(target.r_out), mat=jnp.asarray(target.mat, jnp.int32),
+                bx=f(target.bx), sp=f(target.sp), cy=f(target.cy),
+                origin=f(target.origin), rot=f(target.rot), env_z=f(env.z_nodes), env_r=f(env.r_nodes), annuli=f(annuli), tally=f(tally),
+                ez=f(D.slice_edges(target)[0]), edep_loc=f(bank["edep_local"]),
                 fm=fieldmap.FieldMap(f(fm.lo), f(fm.d), jnp.asarray(fm.n), f(fm.B)),
-                rb=f(np.max(target.r_out)), zc=f(0.5 * (target.z_edges[0] + target.z_edges[-1])),
-                hl=f(0.5 * (target.z_edges[-1] - target.z_edges[0])),
+                rb=f(target.r_max), zc=f(0.5 * (target.z_lo + target.z_hi)),
+                hl=f(0.5 * (target.z_hi - target.z_lo)),
                 slabs=f(slabs), sl_edges=f(sl_edges), sl_sig_in=f(sl["sigma_inel"]), sl_dedx=f(sl["dedx"]),
                 sl_x0=f(sl["x0"]))
     return st, nk, nmat
@@ -104,7 +112,7 @@ def make_static(bank, target, env, fm, dtype, slab=None):
 
 def make_cfg(target, env, stp, nk, nmat, dtype=jnp.float64, max_lane_steps=200_000):
     f32 = jnp.dtype(dtype) == jnp.float32
-    return Cfg(eps=1e-4 if f32 else 1e-7, nudge=1e-3 if f32 else 1e-5, max_lane_steps=int(max_lane_steps),nk=nk, nmat=nmat, nseg=len(target.mat), z_plane=float(env.z_plane), r_plane=float(env.r_plane),
+    return Cfg(eps=1e-4 if f32 else 1e-7, nudge=1e-3 if f32 else 1e-5, max_lane_steps=int(max_lane_steps),nk=nk, nmat=nmat, nseg=len(target.mat), ncone=target.n_cone, z_plane=float(env.z_plane), r_plane=float(env.r_plane),
                z_min=float(env.z_min), axis_x=float(env.axis_x), h_vac=stp.h_vac, h_near=stp.h_near, near=stp.near,
                h_mat=stp.h_mat, neutral_step=stp.neutral_step, ke_min_hadron=stp.cuts.ke_min_hadron,
                ke_min_pion=stp.cuts.ke_min_pion, max_loss_fraction=stp.cuts.max_loss_fraction)
@@ -120,25 +128,34 @@ def dir_local(S, u):
     return u @ S.rot
 
 
-def _radii(S, i, z):
-    z0, z1 = S.zt[i], S.zt[i + 1]
-    f = (z - z0) / (z1 - z0)
-    return (S.rin[i, 0] + f * (S.rin[i, 1] - S.rin[i, 0]), S.rout[i, 0] + f * (S.rout[i, 1] - S.rout[i, 0]))
-
-
 def locate(S, cfg, xl):
     z, r = xl[:, 2], jnp.hypot(xl[:, 0], xl[:, 1])
-    i = jnp.clip(jnp.searchsorted(S.zt, z, side="right") - 1, 0, cfg.nseg - 1)
-    rin, rout = _radii(S, i, z)
-    inside = (z >= S.zt[0]) & (z < S.zt[-1]) & (r >= rin) & (r < rout)
-    return jnp.where(inside, i, -1).astype(jnp.int32)
+    seg = jnp.full(z.shape, -1, jnp.int32)
+    nb, ns = S.bx.shape[0], S.sp.shape[0]
+    groups = []                                         # later groups first, so earlier ones win
+    if S.cy.shape[0]:
+        groups.append((cfg.ncone + nb + ns, _in_cylinders(S, xl)))
+    if ns:
+        groups.append((cfg.ncone + nb, jnp.sum((xl[:, None, :] - S.sp[None, :, 0:3]) ** 2, -1) < S.sp[None, :, 3] ** 2))
+    if nb:
+        groups.append((cfg.ncone, jnp.all((xl[:, None, :] >= S.bx[None, :, 0::2]) & (xl[:, None, :] < S.bx[None, :, 1::2]),
+                                          axis=2)))
+    for off, inside in groups:                          # the first solid of a group wins
+        seg = jnp.where(inside.any(axis=1), off + jnp.argmax(inside, axis=1).astype(jnp.int32), seg)
+    nc = cfg.ncone                                      # coaxial segments, vectorized over the segment axis
+    z0, z1, zz, rr = S.z0[:nc], S.z1[:nc], z[:, None], r[:, None]
+    f = (zz - z0) / (z1 - z0)
+    rin = S.rin[:nc, 0] + f * (S.rin[:nc, 1] - S.rin[:nc, 0])
+    rout = S.rout[:nc, 0] + f * (S.rout[:nc, 1] - S.rout[:nc, 0])
+    inside = (zz >= z0) & (zz < z1) & (rr >= rin) & (rr < rout)
+    return jnp.where(inside.any(axis=1), jnp.argmax(inside, axis=1).astype(jnp.int32), seg)   # the first one wins
 
 
 def _cone_hit(xl, dl, z0, z1, ra, rb, eps=1e-7):
     s = (rb - ra) / (z1 - z0)
     c0 = ra - s * z0
-    x, y, z = xl[:, 0], xl[:, 1], xl[:, 2]
-    dx, dy, dz = dl[:, 0], dl[:, 1], dl[:, 2]
+    x, y, z = xl[..., 0], xl[..., 1], xl[..., 2]
+    dx, dy, dz = dl[..., 0], dl[..., 1], dl[..., 2]
     a = dx * dx + dy * dy - s * s * dz * dz
     b = 2 * (x * dx + y * dy - s * dz * (c0 + s * z))
     c = x * x + y * y - (c0 + s * z) ** 2
@@ -151,7 +168,7 @@ def _cone_hit(xl, dl, z0, z1, ra, rb, eps=1e-7):
     r1 = jnp.where(lin, -c / jnp.where(b == 0, 1.0, b), (-b - sq) / safe_a)
     r1 = jnp.where(lin & (b == 0), big, r1)
     r2 = jnp.where(lin, big, (-b + sq) / safe_a)
-    best = jnp.full(x.shape, big)
+    best = jnp.full(jnp.broadcast_shapes(x.shape, jnp.shape(z0), jnp.shape(ra), jnp.shape(rb)), big)
     for t in (r1, r2):
         zt = z + t * dz
         good = ok & (t > eps) & (zt >= z0) & (zt <= z1) & (c0 + s * zt >= 0) & jnp.isfinite(t)
@@ -159,38 +176,127 @@ def _cone_hit(xl, dl, z0, z1, ra, rb, eps=1e-7):
     return best
 
 
+def _in_cylinders(S, xl):
+    a, ab = S.cy[:, 0:3], S.cy[:, 3:6] - S.cy[:, 0:3]
+    L = jnp.linalg.norm(ab, axis=1)
+    u = ab / L[:, None]
+    w = xl[:, None, :] - a[None]
+    s = jnp.sum(w * u[None], -1)
+    q = w - s[..., None] * u[None]
+    return (s >= 0) & (s < L[None]) & (jnp.sum(q * q, -1) < S.cy[None, :, 6] ** 2)
+
+
+def _sphere_span(xl, dl, c, R):
+    """(t_enter, t_exit) of rays against spheres (broadcast); (inf, -inf) for a miss."""
+    w = xl - c
+    b = jnp.sum(w * dl, -1)
+    disc = b * b - (jnp.sum(w * w, -1) - R * R)
+    sq = jnp.sqrt(jnp.maximum(disc, 0.0))
+    return jnp.where(disc > 0, -b - sq, jnp.inf), jnp.where(disc > 0, -b + sq, -jnp.inf)
+
+
+def _cylinder_span(xl, dl, a, b, r):
+    """(t_enter, t_exit) of rays against finite solid cylinders (broadcast): axial slab x infinite cylinder."""
+    ab = b - a
+    L = jnp.linalg.norm(ab, axis=-1)
+    u = ab / L[..., None]
+    w = xl - a
+    s0, ds = jnp.sum(w * u, -1), jnp.sum(dl * u, -1)
+    par = ds == 0
+    safe = jnp.where(par, 1.0, ds)
+    t1, t2 = -s0 / safe, (L - s0) / safe
+    ins = (s0 >= 0) & (s0 < L)
+    big = jnp.asarray(jnp.inf, xl.dtype)
+    lo = jnp.where(par, jnp.where(ins, -big, big), jnp.minimum(t1, t2))
+    hi = jnp.where(par, jnp.where(ins, big, -big), jnp.maximum(t1, t2))
+    q0, qd = w - s0[..., None] * u, dl - ds[..., None] * u
+    A, B, Cq = jnp.sum(qd * qd, -1), jnp.sum(q0 * qd, -1), jnp.sum(q0 * q0, -1) - r * r
+    disc = B * B - A * Cq
+    axial = A < 1e-15
+    sA = jnp.where(axial, 1.0, A)
+    sq = jnp.sqrt(jnp.maximum(disc, 0.0))
+    c1 = jnp.where(axial, jnp.where(Cq < 0, -big, big), jnp.where(disc > 0, (-B - sq) / sA, big))
+    c2 = jnp.where(axial, jnp.where(Cq < 0, big, -big), jnp.where(disc > 0, (-B + sq) / sA, -big))
+    return jnp.maximum(lo, c1), jnp.minimum(hi, c2)
+
+
+def _spans(S, xl, dl):
+    """(t_enter, t_exit) of rays (N, 3) against every sphere, then every cylinder: (N, n_sphere + n_cylinder)."""
+    x3, d3 = xl[:, None, :], dl[:, None, :]
+    e1, x1 = _sphere_span(x3, d3, S.sp[None, :, 0:3], S.sp[None, :, 3])
+    e2, x2 = _cylinder_span(x3, d3, S.cy[None, :, 0:3], S.cy[None, :, 3:6], S.cy[None, :, 6])
+    return jnp.concatenate([e1, e2], 1), jnp.concatenate([x1, x2], 1)
+
+
+def cylinder_near(S, xl, margin):
+    """Lanes within margin of a cylinder (distance to its axis segment < r + margin)."""
+    if not S.cy.shape[0]:
+        return jnp.zeros(xl.shape[0], bool)
+    a, ab = S.cy[None, :, 0:3], (S.cy[:, 3:6] - S.cy[:, 0:3])[None]
+    w = xl[:, None, :] - a
+    s = jnp.clip(jnp.sum(w * ab, -1) / jnp.sum(ab * ab, -1), 0.0, 1.0)
+    return jnp.any(jnp.linalg.norm(w - s[..., None] * ab, axis=-1) < S.cy[None, :, 6] + margin, axis=1)
+
+
+def _box_slabs(xl, dl, lo, hi):
+    """(t_enter, t_exit) of rays against axis-aligned boxes (broadcast over the leading axes)."""
+    par = dl == 0
+    safe = jnp.where(par, 1.0, dl)
+    t1, t2 = (lo - xl) / safe, (hi - xl) / safe
+    inside = (xl >= lo) & (xl < hi)
+    big = jnp.asarray(jnp.inf, xl.dtype)
+    t1 = jnp.where(par, jnp.where(inside, -big, big), t1)
+    t2 = jnp.where(par, jnp.where(inside, big, -big), t2)
+    return jnp.max(jnp.minimum(t1, t2), axis=-1), jnp.min(jnp.maximum(t1, t2), axis=-1)
+
+
 def _plane_hit(xl, dl, zp, eps=1e-7):
-    safe = jnp.where(dl[:, 2] == 0, 1.0, dl[:, 2])
-    t = (zp - xl[:, 2]) / safe
-    return jnp.where((dl[:, 2] != 0) & (t > eps), t, jnp.inf)
+    safe = jnp.where(dl[..., 2] == 0, 1.0, dl[..., 2])
+    t = (zp - xl[..., 2]) / safe
+    return jnp.where((dl[..., 2] != 0) & (t > eps), t, jnp.inf)
 
 
 def distance_out(S, cfg, xl, dl, seg):
     big = jnp.full(xl.shape[0], jnp.inf, xl.dtype)
     out = big
-    for i in range(cfg.nseg):
-        z0, z1 = S.zt[i], S.zt[i + 1]
-        e = cfg.eps
-        ti = jnp.minimum(_plane_hit(xl, dl, z0, e), _plane_hit(xl, dl, z1, e))
-        ti = jnp.minimum(ti, _cone_hit(xl, dl, z0, z1, S.rout[i, 0], S.rout[i, 1], e))
-        has_in = (S.rin[i, 0] > 0) | (S.rin[i, 1] > 0)
-        ti = jnp.where(has_in, jnp.minimum(ti, _cone_hit(xl, dl, z0, z1, S.rin[i, 0], S.rin[i, 1], e)), ti)
-        out = jnp.where(seg == i, ti, out)
-    return out
+    nb = S.bx.shape[0]
+    if nb:
+        bj = S.bx[jnp.clip(seg - cfg.ncone, 0, nb - 1)]
+        out = jnp.where(seg >= cfg.ncone, _box_slabs(xl, dl, bj[:, 0::2], bj[:, 1::2])[1], out)
+    nq = S.sp.shape[0] + S.cy.shape[0]
+    if nq:                                              # spheres and cylinders: the exit of the own solid's span
+        k = seg - cfg.ncone - nb
+        tx = jnp.take_along_axis(_spans(S, xl, dl)[1], jnp.clip(k, 0, nq - 1)[:, None], axis=1)[:, 0]
+        out = jnp.where(k >= 0, tx, out)
+    i = jnp.clip(seg, 0, cfg.ncone - 1)                # the walls of the point's own coaxial segment (gathered)
+    z0, z1, e = S.z0[i], S.z1[i], cfg.eps
+    ti = jnp.minimum(_plane_hit(xl, dl, z0, e), _plane_hit(xl, dl, z1, e))
+    ti = jnp.minimum(ti, _cone_hit(xl, dl, z0, z1, S.rout[i, 0], S.rout[i, 1], e))
+    has_in = (S.rin[i, 0] > 0) | (S.rin[i, 1] > 0)
+    ti = jnp.where(has_in, jnp.minimum(ti, _cone_hit(xl, dl, z0, z1, S.rin[i, 0], S.rin[i, 1], e)), ti)
+    return jnp.where((seg >= 0) & (seg < cfg.ncone), ti, out)
 
 
 def distance_in(S, cfg, xl, dl):
     t = jnp.full(xl.shape[0], jnp.inf, xl.dtype)
-    for i in range(cfg.nseg):
-        z0, z1 = S.zt[i], S.zt[i + 1]
-        t = jnp.minimum(t, _cone_hit(xl, dl, z0, z1, S.rout[i, 0], S.rout[i, 1], cfg.eps))
-        has_in = (S.rin[i, 0] > 0) | (S.rin[i, 1] > 0)
-        t = jnp.where(has_in, jnp.minimum(t, _cone_hit(xl, dl, z0, z1, S.rin[i, 0], S.rin[i, 1], cfg.eps)), t)
-        for zp, k in ((z0, 0), (z1, 1)):
-            tp = _plane_hit(xl, dl, zp, cfg.eps)
-            pp = xl + jnp.where(jnp.isfinite(tp), tp, 0.0)[:, None] * dl
-            r = jnp.hypot(pp[:, 0], pp[:, 1])
-            t = jnp.where((r >= S.rin[i, k]) & (r < S.rout[i, k]) & (tp < t), tp, t)
+    if S.bx.shape[0]:
+        te, tx = _box_slabs(xl[:, None, :], dl[:, None, :], S.bx[None, :, 0::2], S.bx[None, :, 1::2])
+        t = jnp.min(jnp.where((te > cfg.eps) & (te <= tx), te, jnp.inf), axis=1)
+    if S.sp.shape[0] + S.cy.shape[0]:
+        te, tx = _spans(S, xl, dl)
+        t = jnp.minimum(t, jnp.min(jnp.where((te > cfg.eps) & (te <= tx), te, jnp.inf), axis=1))
+    nc, e = cfg.ncone, cfg.eps                          # all coaxial segments at once: (lanes, segments)
+    z0, z1, rin, rout = S.z0[:nc], S.z1[:nc], S.rin[:nc], S.rout[:nc]
+    x3, d3 = xl[:, None, :], dl[:, None, :]
+    tc = _cone_hit(x3, d3, z0, z1, rout[:, 0], rout[:, 1], e)
+    has_in = (rin[:, 0] > 0) | (rin[:, 1] > 0)
+    tc = jnp.where(has_in, jnp.minimum(tc, _cone_hit(x3, d3, z0, z1, rin[:, 0], rin[:, 1], e)), tc)
+    t = jnp.minimum(t, jnp.min(tc, axis=1))
+    for zp, k in ((z0, 0), (z1, 1)):                     # the end faces (annuli)
+        tp = _plane_hit(x3, d3, zp, e)
+        tf = jnp.where(jnp.isfinite(tp), tp, 0.0)
+        r = jnp.hypot(xl[:, None, 0] + tf * dl[:, None, 0], xl[:, None, 1] + tf * dl[:, None, 1])
+        t = jnp.minimum(t, jnp.min(jnp.where((r >= rin[:, k]) & (r < rout[:, k]), tp, jnp.inf), axis=1))
     return t
 
 
@@ -275,8 +381,18 @@ def _slab_cross(S, sp, m, q, p, u, thick, k1, k2, k3):
     return jnp.where(on, pn, p), jnp.where(on[:, None], un, u), on & (absorbed | stopped)
 
 
+def _deposit(S, edz, ev, x, val, mask):
+    """Add val [MeV] where mask to the target-heat sums (event batch x local-z slice), accumulated in float64."""
+    nz = S.ez.shape[0] - 1
+    zl = to_local(S, x)[:, 2]
+    b = jnp.searchsorted(S.ez, zl, side="right") - 1
+    ok = mask & (b >= 0) & (b < nz)
+    idx = jnp.where(ok, (ev % D.EDEP_BATCHES).astype(jnp.int32) * nz + b.astype(jnp.int32), edz.size)
+    return edz.reshape(-1).at[idx].add(jnp.where(ok, val, 0.0).astype(jnp.float64), mode="drop").reshape(edz.shape)
+
+
 def _step(S, cfg, carry, key):
-    L, emit, ecount, rec, rcount, cnt = carry
+    L, emit, ecount, rec, rcount, cnt, edz = carry
     dt = L.x.dtype
     N = L.alive.shape[0]
     ks = jax.random.split(key, 15)
@@ -288,6 +404,7 @@ def _step(S, cfg, carry, key):
     pend = L.alive & (L.pk > 0)                    # deferred lanes: emit their kept outcome, do not move
     capped = L.alive & ~pend & (L.n >= cfg.max_lane_steps)
     stop = L.alive & ~pend & (low | (L.sp < 0) | capped)
+    edz = _deposit(S, edz, L.ev, L.x, ke, stop & (L.seg >= 0))
     alive = L.alive & ~stop & ~pend
     beta = L.p / jnp.hypot(L.p, m)
     finite_tau = jnp.isfinite(L.tau)
@@ -312,6 +429,7 @@ def _step(S, cfg, carry, key):
     um = um / jnp.linalg.norm(um, axis=1, keepdims=True)
     xm = L.x + stp[:, None] * L.u
     de = jnp.minimum(dedx * stp, ke)
+    edz = _deposit(S, edz, L.ev, L.x + 0.5 * stp[:, None] * L.u, de, inm)       # at the step midpoint
     e_new = ke - de + m
     pm = jnp.sqrt(jnp.maximum(e_new ** 2 - m ** 2, 0.0))
     bet = pm / jnp.maximum(e_new, 1e-30)
@@ -337,7 +455,7 @@ def _step(S, cfg, carry, key):
     um = jnp.where(el[:, None], ue, um)
     # ---------------------------------------------------------------- vacuum step
     rloc = jnp.hypot(xl[:, 0], xl[:, 1])
-    near = (rloc < S.rb + cfg.near) & (jnp.abs(xl[:, 2] - S.zc) < S.hl + cfg.near)
+    near = (rloc < S.rb + cfg.near) & (jnp.abs(xl[:, 2] - S.zc) < S.hl + cfg.near) | cylinder_near(S, xl, cfg.near)
     charged = q != 0
     hv = jnp.where(near, cfg.h_near, jnp.where(charged, cfg.h_vac, cfg.neutral_step))
     tn = distance_in(S, cfg, xl, dl)                              # neutral: straight to the next entry, or out
@@ -380,12 +498,25 @@ def _step(S, cfg, carry, key):
     abs_sl = slab & abs_sl
     zp = cfg.z_plane
     cross = vac & (L.x[:, 2] < zp) & (xv[:, 2] >= zp)
-    fz = jnp.where(cross, (zp - L.x[:, 2]) / jnp.where(cross, xv[:, 2] - L.x[:, 2], 1.0), 0.0)
+    # recording-only tally planes, either direction (more than one vacuum step from each other and the record plane,
+    # so a lane crosses at most one plane per step)
+    if S.tally.shape[0]:
+        zt = S.tally[:, 0]
+        xt = vac[:, None] & ((L.x[:, 2:3] < zt) != (xv[:, 2:3] < zt))
+        tcross = jnp.any(xt, axis=1)
+        kid = jnp.argmax(xt, axis=1).astype(jnp.int32)
+        z_hit = jnp.where(tcross, zt[kid], zp)
+        r_hit = jnp.where(tcross, S.tally[kid, 1], cfg.r_plane)
+    else:
+        tcross, kid, z_hit, r_hit = jnp.zeros_like(cross), jnp.zeros(N, jnp.int32), zp, cfg.r_plane
+    hit_p = cross | tcross
+    fz = jnp.where(hit_p, (z_hit - L.x[:, 2]) / jnp.where(hit_p, xv[:, 2] - L.x[:, 2], 1.0), 0.0)
     xp = L.x + fz[:, None] * (xv - L.x)
     upl = L.u + fz[:, None] * (uv - L.u)
     upl = upl / jnp.linalg.norm(upl, axis=1, keepdims=True)
     rad = lambda xx: jnp.hypot(xx[:, 0] - cfg.axis_x, xx[:, 1])
-    rec_ok = cross & (rad(xp) < cfg.r_plane) & ((sp == I_PIP) | (sp == I_PIM) | (sp == I_MU) | (sp == I_MUP))
+    rec_ok = hit_p & (rad(xp) < r_hit) & ((sp == I_PIP) | (sp == I_PIM) | (sp == I_MU) | (sp == I_MUP))
+    r_plane_id = jnp.where(tcross, kid, -1)
     tp = L.t + fz * hv / (beta * C.C_MM_NS)
     gone_neutral = vac & ~charged & (hv == 0)
     ab = vac & ~cross & ((rad(xv) > jnp.interp(xv[:, 2], S.env_z, S.env_r)) | abs_sl)
@@ -439,6 +570,7 @@ def _step(S, cfg, carry, key):
     n_emit = jnp.where(defer, 0, n_emit)
     n_sec = jnp.where(defer, 0, n_sec)
     inel = inel & ~defer
+    edz = _deposit(S, edz, L.ev, x_new, S.edep_loc[jnp.clip(j, 0, S.edep_loc.shape[0] - 1)], inel)
     dec_had = dec_had & ~defer
     alive_new = jnp.where(defer, L.alive, alive_new)
     tot = jnp.sum(n_emit)
@@ -503,19 +635,20 @@ def _step(S, cfg, carry, key):
     R_CAP = rec[0].shape[0]
     rk = jnp.cumsum(rec_ok.astype(jnp.int64)) - 1 + rcount
     rslot = jnp.where(rec_ok & (rk < R_CAP), rk, R_CAP)
-    r_ev, r_sp, r_x, r_p, r_t = rec
+    r_ev, r_sp, r_x, r_p, r_t, r_k = rec
     rec = (r_ev.at[rslot].set(L.ev, mode="drop"), r_sp.at[rslot].set(sp, mode="drop"),
            r_x.at[rslot].set(xp, mode="drop"), r_p.at[rslot].set(upl * L.p[:, None], mode="drop"),
-           r_t.at[rslot].set(tp, mode="drop"))
+           r_t.at[rslot].set(tp, mode="drop"), r_k.at[rslot].set(r_plane_id, mode="drop"))
     nrec = jnp.sum(rec_ok)
+    ntal = jnp.sum(rec_ok & tcross)
     over_r = jnp.maximum(rcount + nrec - R_CAP, 0)
     rcount = jnp.minimum(rcount + nrec, R_CAP)
     cnt = cnt + jnp.stack([jnp.sum(inel), jnp.sum(el & ~defer), jnp.sum(stop), jnp.sum(dec_had), jnp.sum(ab), jnp.sum(upstream),
-                           nrec, over_e, over_r, jnp.sum(capped),
-                           jnp.sum(defer), jnp.sum(slab & ~defer), jnp.sum(abs_sl)]).astype(jnp.int64)
+                           nrec - ntal, over_e, over_r, jnp.sum(capped),
+                           jnp.sum(defer), jnp.sum(slab & ~defer), jnp.sum(abs_sl), ntal]).astype(jnp.int64)
     L = Lanes(alive=alive_new, sp=L.sp, x=x_new, u=u_new, p=p_new, t=t_new, tau=tau_new, seg=seg_new, ev=L.ev,
               n=L.n + L.alive.astype(jnp.int32), pk=pk_new, pj=pj_new, pch=pch_new)
-    return (L, emit, ecount, rec, rcount, cnt)
+    return (L, emit, ecount, rec, rcount, cnt, edz)
 
 
 def cfg_emit_per_step(N):
@@ -526,7 +659,7 @@ def cfg_emit_per_step(N):
 
 COUNTERS = ("inelastic", "elastic", "stopped", "decays", "absorbed", "upstream", "recorded", "emit_overflow",
             "record_overflow", "step_cap", "deferred", "slab_crossed",
-            "slab_absorbed")
+            "slab_absorbed", "tallied")
 
 
 @partial(jax.jit, static_argnums=(1, 3))
@@ -554,7 +687,8 @@ def _empty_emit(E, dt):
 
 
 def _empty_rec(R, dt):
-    return (jnp.zeros(R, jnp.int64), jnp.zeros(R, jnp.int32), jnp.zeros((R, 3), dt), jnp.zeros((R, 3), dt), jnp.zeros(R, dt))
+    return (jnp.zeros(R, jnp.int64), jnp.zeros(R, jnp.int32), jnp.zeros((R, 3), dt), jnp.zeros((R, 3), dt), jnp.zeros(R, dt),
+            jnp.full(R, -1, jnp.int32))
 
 
 @jax.jit
@@ -608,23 +742,25 @@ def _inject(L, prim, first, n_prim):
 
 def run(bank, target, fm, env, prim, seed=1, st=C.Stepping(), pool=1 << 16, emit_cap=None, rec_cap=None, slab=None,
         steps=64, dtype=jnp.float64, max_chunks=10_000_000):
-    """Device chain for the primaries `prim` (host dict as ptgt_chain.primaries). Returns (record dict, counters)."""
+    """Device chain for the primaries `prim` (host dict as ptgt_chain.primaries). Returns (record dict, counters).
+    With env.tally the record dict also holds `tally`: the tally-plane crossings (with `plane`), as ptgt_chain.run."""
+    C.check_tally(env, st.h_vac)
     # transport in a frame centred on the target (float32: millimetre coordinates near the target keep sub-micron
     # resolution for boundary steps); records are shifted back to the Mu2e frame
     shift = np.array([target.origin[0], 0.0, target.origin[2]])
-    target = D.Target(target.z_edges, target.r_in, target.r_out, target.mat, origin=np.asarray(target.origin) - shift,
-                      rot=target.rot)
+    target = dataclasses.replace(target, origin=np.asarray(target.origin) - shift)
     env = C.Envelope(z_nodes=np.asarray(env.z_nodes) - shift[2], r_nodes=np.asarray(env.r_nodes), z_min=env.z_min - shift[2],
                      z_plane=env.z_plane - shift[2], r_plane=env.r_plane, axis_x=env.axis_x - shift[0],
                      annuli=tuple((a[0] - shift[2], a[1], a[2]) for a in env.annuli),
-                     slabs=tuple((a[0] - shift[2], a[1], a[2], a[3]) for a in env.slabs))
+                     slabs=tuple((a[0] - shift[2], a[1], a[2], a[3]) for a in env.slabs),
+                     tally=tuple((a[0] - shift[2], a[1]) for a in env.tally))
     fm = fieldmap.FieldMap(np.asarray(fm.lo) - shift, fm.d, fm.n, fm.B)
     prim = dict(prim, x=np.asarray(prim["x"], float) - shift)
     S, nk, nmat = make_static(bank, target, env, fm, dtype, slab=slab)
     cfg = make_cfg(target, env, st, nk, nmat, dtype)
     N = int(pool)
     E = int(emit_cap or 8 * N)
-    R = int(rec_cap or max(1 << 16, len(prim["p"]) // 4))
+    R = int(rec_cap or max(1 << 16, len(prim["p"]) // 4) + 2 * len(env.tally) * len(prim["p"]))
     if E < cfg_emit_per_step(N) * 2:
         raise ValueError("emission buffer must hold at least two steps of emissions")
     L = Lanes(alive=jnp.zeros(N, bool), sp=jnp.zeros(N, jnp.int32), x=jnp.zeros((N, 3), dtype), u=jnp.zeros((N, 3), dtype),
@@ -639,6 +775,7 @@ def run(bank, target, fm, env, prim, seed=1, st=C.Stepping(), pool=1 << 16, emit
     emit, ecount = _empty_emit(E, dtype), jnp.int64(0)
     rec, rcount = _empty_rec(R, dtype), jnp.int64(0)
     cnt = jnp.zeros(len(COUNTERS), jnp.int64)
+    edz = jnp.zeros((D.EDEP_BATCHES, D.EDEP_SLICE_MAX), jnp.float64)
     key = jax.random.PRNGKey(seed)
     first, steps_run, stuck_prev = 0, 0, None
     for it in range(max_chunks):
@@ -649,7 +786,7 @@ def run(bank, target, fm, env, prim, seed=1, st=C.Stepping(), pool=1 << 16, emit
             first += int(k)
         if not bool(jnp.any(L.alive)) and int(ecount) == 0 and first >= n_prim:
             break
-        (L, emit, ecount, rec, rcount, cnt), i = chunk(S, cfg, (L, emit, ecount, rec, rcount, cnt), steps,
+        (L, emit, ecount, rec, rcount, cnt, edz), i = chunk(S, cfg, (L, emit, ecount, rec, rcount, cnt, edz), steps,
                                                        jax.random.fold_in(key, 2 * it + 1))
         steps_run += int(i)
         if int(i) == 0 and bool(jnp.all(L.alive)):
@@ -665,8 +802,13 @@ def run(bank, target, fm, env, prim, seed=1, st=C.Stepping(), pool=1 << 16, emit
     if c["emit_overflow"] or c["record_overflow"]:
         raise RuntimeError(f"buffer overflow: {c}")
     n = int(rcount)
-    out = dict(ev=np.asarray(rec[0][:n]), pdg=SPECIES[np.asarray(rec[1][:n])], x=np.asarray(rec[2][:n], float) + shift,
-               p=np.asarray(rec[3][:n], float), t=np.asarray(rec[4][:n], float))
+    k = np.asarray(rec[5][:n])
+    allr = dict(ev=np.asarray(rec[0][:n]), pdg=SPECIES[np.asarray(rec[1][:n])], x=np.asarray(rec[2][:n], float) + shift,
+                p=np.asarray(rec[3][:n], float), t=np.asarray(rec[4][:n], float))
+    out = {key: v[k < 0] for key, v in allr.items()}
+    if len(env.tally):
+        out["tally"] = dict({key: v[k >= 0] for key, v in allr.items()}, plane=k[k >= 0].astype(np.int64))
+    out["edep_slices"] = np.asarray(edz)          # MeV per (event batch, local-z slice): see ptgt_chain.heat_summary
     c["steps"] = steps_run
     return out, c
 
@@ -684,6 +826,8 @@ def main(argv=None):
     ap.add_argument("--rods-tsv", help="point table: index, Tlength, R_up, R_mid, R_dn per line (with --points)")
     ap.add_argument("--points", nargs="+", type=int, help="rows of --rods-tsv to run in this process (one compile)")
     ap.add_argument("--material", default="G4_W")
+    C.add_design_arguments(ap)
+    C.add_heat_arguments(ap)
     ap.add_argument("--map", required=True, help="field map .header (PS region)")
     ap.add_argument("--env-z", nargs="+", type=float, required=True)
     ap.add_argument("--env-r", nargs="+", type=float, required=True)
@@ -704,6 +848,9 @@ def main(argv=None):
     ap.add_argument("--point", type=int, default=0)
     ap.add_argument("--ke-min-hadron", type=float, default=D.Cuts.ke_min_hadron,
                     help="nucleon transport cut, MeV (below: local deposit)")
+    ap.add_argument("--tally", nargs=2, type=float, action="append", default=[], metavar=("Z", "R"),
+                    help="diagnostic: recording-only plane (repeatable); mu/pi crossings both ways go to --tally-out")
+    ap.add_argument("--tally-out", help="npz for the --tally crossings ({point} is replaced)")
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     bank = D.Bank.load(a.bank)
@@ -715,26 +862,34 @@ def main(argv=None):
     else:
         jobs = [(a.point, a.rod)]
     env = C.Envelope(z_nodes=np.asarray(a.env_z), r_nodes=np.asarray(a.env_r), z_min=a.z_min, z_plane=a.z_plane,
-                     r_plane=a.r_plane, annuli=tuple(tuple(x) for x in a.annulus), slabs=tuple(tuple(x) for x in a.slab))
+                     r_plane=a.r_plane, annuli=tuple(tuple(x) for x in a.annulus), slabs=tuple(tuple(x) for x in a.slab),
+                     tally=tuple(tuple(x) for x in a.tally))
+    if a.tally and not a.tally_out:
+        raise SystemExit("--tally needs --tally-out")
     fm = fieldmap.load(a.map)
     dt = jnp.float64 if a.dtype == "float64" else jnp.float32
     for n_job, (point, rod) in enumerate(jobs):
         rod = [float(v) for v in rod]
-        tgt = C.rod_target(*rod, mat=bank.materials.index(a.material))
+        tgt, beam_tgt = C.design_targets(a, bank, rod)
         rng = np.random.default_rng(a.seed + 7919 * point)
         if a.warm_pot and n_job == 0:
-            run(bank, tgt, fm, env, C.primaries(a.warm_pot, tgt, rng), st=st, seed=a.seed + 1000, pool=a.pool,
+            run(bank, tgt, fm, env, C.primaries(a.warm_pot, beam_tgt, rng), st=st, seed=a.seed + 1000, pool=a.pool,
                 steps=a.steps, dtype=dt, slab=slab)
-        prim = C.primaries(a.pot, tgt, rng)
+        prim = C.primaries(a.pot, beam_tgt, rng)
         t0 = time.perf_counter()
         rec, cnt = run(bank, tgt, fm, env, prim, st=st, seed=a.seed + point, pool=a.pool, steps=a.steps, dtype=dt,
                        slab=slab)
         wall = time.perf_counter() - t0
         out = a.out.replace("{point}", f"{point:02d}") if "{point}" in a.out else a.out
-        _save_point(a, bank, env, rec, cnt, point, rod, wall, out, ptgt_g4bl, slab)
+        tally = rec.pop("tally", None)
+        heat = C.heat_summary(tgt, bank, rec.pop("edep_slices"), a.pot, a)
+        _save_point(a, bank, env, rec, cnt, point, rod, wall, out, ptgt_g4bl, slab, heat=heat)
+        if tally is not None:
+            C.save_tally(a.tally_out.replace("{point}", f"{point:02d}"), tally, a.pot, env,
+                         dict(generator="ptgt_chain_jax", seed=a.seed + point, rod=rod, dtype=a.dtype, counts=cnt))
 
 
-def _save_point(a, bank, env, rec, cnt, point, rod, wall, out, ptgt_g4bl, slab=None):
+def _save_point(a, bank, env, rec, cnt, point, rod, wall, out, ptgt_g4bl, slab=None, heat=None):
     import json
     ref, meta = C.reference(rec, a.pot, point, 0)
     meta.update(rod=rod, material=a.material, seed=a.seed + point, counts=cnt, wall_s=wall, s_per_pot=wall / a.pot,
@@ -742,10 +897,13 @@ def _save_point(a, bank, env, rec, cnt, point, rod, wall, out, ptgt_g4bl, slab=N
                 generator="ptgt_chain_jax",
                 envelope=dict(z=a.env_z, r=a.env_r, z_min=a.z_min, r_plane=a.r_plane, z_plane=a.z_plane, annuli=a.annulus,
                               slabs=a.slab, slab_bank=C.slab_meta(slab, a.slab_bank)),
-                bank=dict(path=str(a.bank), content_hash=bank.lib.content_hash))
+                bank=dict(path=str(a.bank), content_hash=bank.lib.content_hash), heat=heat)
     ptgt_g4bl.save(out, ref, meta)
     print(json.dumps({k: meta[k] for k in ("point", "pot", "entrances", "yield_per_pot", "species", "s_per_pot",
                                            "wall_s", "counts", "device", "dtype")}), flush=True)
+    if heat:
+        print(json.dumps(dict(point=point, dtype=a.dtype, peak_Gy_per_pot=heat["peak_Gy_per_pot"],
+                              peak_Gy_err=heat["peak_Gy_err"], peak_slice=heat["peak_slice"])), flush=True)
 
 if __name__ == "__main__":
     main()

@@ -77,6 +77,8 @@ class Envelope:
     annuli: tuple = ()                  # absorbing annuli (z, r_in, r_out) crossed in either direction (thin rings)
     slabs: tuple = ()                   # passive thin rings (z, r_in, r_out, thickness) crossed in either direction:
                                         # loss, scattering and absorption from the tables of a slab material (slab_cross)
+    tally: tuple = ()                   # recording-only planes (z, r) (diagnostic): every mu/pi crossing at radius < r,
+                                        # in either direction, is recorded with its plane index; the lane goes on
 
     def radius(self, x):
         return np.hypot(x[:, 0] - self.axis_x, x[:, 1])
@@ -262,9 +264,9 @@ def decay(pdg, x, u, p, t, rng):
 
 
 def primaries(n, target, rng, sigma=1.0, ke=8000.0, offset=0.5):
-    """G4beamline beam: protons 0.5 mm outside the target's local +z face moving along local -z, Gaussian sigma
+    """G4beamline beam: protons 0.5 mm outside the target's local +z face (z_beam) moving along local -z, Gaussian sigma
     1 mm in the transverse plane, no divergence, t = 0."""
-    zl = 0.5 * (target.z_edges[-1] - target.z_edges[0]) + offset + 0.5 * (target.z_edges[-1] + target.z_edges[0])
+    zl = target.z_beam + offset
     xl = np.stack([sigma * rng.standard_normal(n), sigma * rng.standard_normal(n), np.full(n, zl)], 1)
     dl = np.tile([0.0, 0.0, -1.0], (n, 1))
     x, u = target.to_global(xl, dl)
@@ -273,12 +275,22 @@ def primaries(n, target, rng, sigma=1.0, ke=8000.0, offset=0.5):
                 event=np.arange(n))
 
 
+def check_tally(env, h_vac):
+    """Tally planes and the record plane must be more than one vacuum step apart (one record per lane and step)."""
+    z = np.sort(np.r_[[t[0] for t in env.tally], env.z_plane]) if len(env.tally) else np.zeros(0)
+    if z.size > 1 and np.min(np.diff(z)) <= h_vac:
+        raise ValueError(f"tally planes closer than the vacuum step {h_vac} mm: {z.tolist()}")
+
+
 def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, slab=None):
     """Transport primaries to the record plane. Returns recorded states (event, pdg, x, p, t), deposit per target
     segment and counters. slab=(bank, material index): tables for env.slabs.
 
     enclosure=(R, H) (diagnostic): instead of the plane, record every lane (all species) where it first leaves the
-    cylinder of radius R and half-length H about the target axis (target frame), and stop it there."""
+    cylinder of radius R and half-length H about the target axis (target frame), and stop it there.
+
+    env.tally (diagnostic): mu/pi crossings of recording-only planes, returned as `tally` (with `plane`)."""
+    check_tally(env, st.h_vac)
     n0 = len(prim["pdg"])
     L = dict(pdg=np.asarray(prim["pdg"], np.int64), x=np.asarray(prim["x"], float).copy(),
              u=np.asarray(prim["u"], float).copy(), p=np.asarray(prim["p"], float).copy(),
@@ -286,12 +298,22 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, sla
     L["tau"] = -np.log(1 - rng.random(n0)) * lifetime(L["pdg"])
     L["seg"] = target.locate(target.to_local(L["x"]))
     rec = dict(ev=[], pdg=[], x=[], p=[], t=[])
+    tal = dict(ev=[], pdg=[], plane=[], x=[], p=[], t=[])
     edep = np.zeros(len(target.mat))
+    ez, _ = D.slice_edges(target)
+    edz = np.zeros((D.EDEP_BATCHES, len(ez) - 1))   # MeV per (event batch, local-z slice)
+
+    def slice_dep(x, ev, val):
+        z = target.to_local(np.asarray(x, float))[:, 2]
+        b = np.searchsorted(ez, z, side="right") - 1
+        ok = (b >= 0) & (b < len(ez) - 1)
+        np.add.at(edz, (ev[ok] % D.EDEP_BATCHES, b[ok]), np.asarray(val, float)[ok])
+
     cnt = dict(inelastic=0, elastic=0, stopped=0, decays=0, absorbed=0, upstream=0, recorded=0, outside_plane=0,
-               unknown=0, iterations=0)
-    zc = 0.5 * (target.z_edges[0] + target.z_edges[-1])
-    hl = 0.5 * (target.z_edges[-1] - target.z_edges[0])
-    rb = float(np.max(target.r_out))
+               unknown=0, iterations=0, tallied=0)
+    zc = 0.5 * (target.z_lo + target.z_hi)
+    hl = 0.5 * (target.z_hi - target.z_lo)
+    rb = target.r_max
 
     def keep(mask):
         for k in L:
@@ -319,6 +341,7 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, sla
         if np.any(stop):
             inmat = stop & (L["seg"] >= 0)
             np.add.at(edep, L["seg"][inmat], ke[inmat])
+            slice_dep(L["x"][inmat], L["ev"][inmat], ke[inmat])
             cnt["stopped"] += int(stop.sum())
             cnt["unknown"] += int((~known & ~low).sum())
             keep(~stop)
@@ -355,6 +378,7 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, sla
             xnew = L["x"][i] + step[:, None] * L["u"][i]
             de = np.minimum(dedx * step, ke[i])
             np.add.at(edep, seg, de)
+            slice_dep(L["x"][i] + 0.5 * step[:, None] * L["u"][i], L["ev"][i], de)     # at the step midpoint
             e_new = ke[i] - de + m[i]
             pn = np.sqrt(np.maximum(e_new ** 2 - m[i] ** 2, 0.0))
             bet = np.where(e_new > 0, pn / np.maximum(e_new, 1e-300), 0.0)
@@ -391,6 +415,7 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, sla
                 rows = np.repeat(off[j], ns) + (np.arange(ns.sum()) - np.repeat(np.cumsum(ns) - ns, ns))
                 par = np.repeat(k, ns)
                 np.add.at(edep, L["seg"][k].clip(0), bank["edep_local"][j].astype(float))
+                slice_dep(L["x"][k], L["ev"][k], bank["edep_local"][j].astype(float))
                 pl = D.rotate_secondaries(bank["sec_p"][rows].astype(float), L["u"][par], rng.random(rows.size) * 2 * np.pi)
                 pa = np.linalg.norm(pl, axis=1)
                 new_lanes.append(dict(pdg=bank["sec_pdg"][rows].astype(np.int64), x=L["x"][par].copy(),
@@ -403,7 +428,7 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, sla
             i = np.flatnonzero(vac)
             xl = target.to_local(L["x"][i])
             rloc = np.hypot(xl[:, 0], xl[:, 1])
-            near = (rloc < rb + st.near) & (np.abs(xl[:, 2] - zc) < hl + st.near)
+            near = (rloc < rb + st.near) & (np.abs(xl[:, 2] - zc) < hl + st.near) | target.cylinder_near(xl, st.near)
             hv = np.where(near, st.h_near, np.where(q[i] != 0, st.h_vac, st.neutral_step))
             hv = np.minimum(hv, d_dec[i])
             x0v = L["x"][i]
@@ -491,6 +516,20 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, sla
                 rec["x"].append(xp[sel]); rec["p"].append(up[sel] * L["p"][i[c]][sel, None]); rec["t"].append(tp[sel])
                 cnt["recorded"] += int(sel.sum())
                 cnt["outside_plane"] += int((~inside).sum())
+            for k_, (zt, rt) in enumerate(env.tally if enclosure is None else ()):
+                c = np.flatnonzero((x0v[:, 2] < zt) != (xn[:, 2] < zt))
+                if not c.size:
+                    continue
+                f = (zt - x0v[c, 2]) / (xn[c, 2] - x0v[c, 2])
+                xp = x0v[c] + f[:, None] * (xn[c] - x0v[c])
+                up = L["u"][i[c]] + f[:, None] * (un[c] - L["u"][i[c]])
+                up /= np.linalg.norm(up, axis=1, keepdims=True)
+                tp = L["t"][i[c]] - (1 - f) * hv[c] / (beta[i[c]] * C_MM_NS)
+                sel = (env.radius(xp) < rt) & np.isin(L["pdg"][i[c]], RECORD)
+                tal["ev"].append(L["ev"][i[c]][sel]); tal["pdg"].append(L["pdg"][i[c]][sel])
+                tal["plane"].append(np.full(int(sel.sum()), k_, np.int64))
+                tal["x"].append(xp[sel]); tal["p"].append(up[sel] * L["p"][i[c]][sel, None]); tal["t"].append(tp[sel])
+                cnt["tallied"] += int(sel.sum())
             L["x"][i], L["u"][i] = xn, un
             L["seg"][i] = target.locate(target.to_local(xn))
             gone = cross.copy()
@@ -527,8 +566,16 @@ def run(bank, target, bfield, env, prim, rng, st=Stepping(), enclosure=None, sla
             add(nl)
     else:
         raise RuntimeError("chain did not finish within max_iter")
-    out = {k: (np.concatenate(v) if v else np.zeros((0, 3) if k in ("x", "p") else 0)) for k, v in rec.items()}
-    return dict(record=out, edep=edep, counts=cnt, pot=n0)
+    cat = lambda d: {k: (np.concatenate(v) if v else np.zeros((0, 3) if k in ("x", "p") else 0)) for k, v in d.items()}
+    return dict(record=cat(rec), edep=edep, counts=cnt, pot=n0, tally=cat(tal), edep_slices=edz)
+
+
+def save_tally(path, tally, pot, env, meta):
+    """Tally crossings (Mu2e frame) with the planes and POT, for the plane-by-plane comparison."""
+    import json
+    np.savez_compressed(path, ev=tally["ev"], pdg=tally["pdg"], plane=tally["plane"], x=tally["x"], p=tally["p"],
+                        t=tally["t"], pot=np.int64(pot), planes=np.asarray(env.tally, float).reshape(-1, 2),
+                        meta=json.dumps(meta, default=str))
 
 
 def reference(rec, pot, point, shard, z_target=-4004.0):
@@ -551,11 +598,84 @@ def reference(rec, pot, point, shard, z_target=-4004.0):
     return ref, meta
 
 
-def rod_target(length, r_up, r_mid, r_dn, z_center=-6164.5, x_axis=3904.0, tilt_deg=14.0, mat=0):
-    """The G4beamline rod placed as in the deck: centre on the PS axis at z_center, rotated by tilt_deg about y."""
-    a = np.deg2rad(tilt_deg)
-    rot = np.array([[np.cos(a), 0.0, np.sin(a)], [0.0, 1.0, 0.0], [-np.sin(a), 0.0, np.cos(a)]])
-    return D.Target.rod(length, r_up, r_mid, r_dn, mat=mat, origin=np.array([x_axis, 0.0, z_center]), rot=rot)
+def placement(z_center=-6164.5, x_axis=3904.0, tilt_deg=14.0, offset_x=0.0, tilt_x_deg=0.0):
+    """Target placement of the deck: centre on the PS axis at z_center (moved by offset_x along x), rotated by
+    tilt_x_deg about x and then tilt_deg about y (fixed axes: rot = Ry @ Rx, the deck's rotation=X..,Y..)."""
+    a, b = np.deg2rad(tilt_deg), np.deg2rad(tilt_x_deg)
+    ry = np.array([[np.cos(a), 0.0, np.sin(a)], [0.0, 1.0, 0.0], [-np.sin(a), 0.0, np.cos(a)]])
+    rx = np.array([[1.0, 0.0, 0.0], [0.0, np.cos(b), -np.sin(b)], [0.0, np.sin(b), np.cos(b)]])
+    return dict(origin=np.array([x_axis + offset_x, 0.0, z_center]), rot=ry @ rx)
+
+
+def rod_target(length, r_up, r_mid, r_dn, z_center=-6164.5, x_axis=3904.0, tilt_deg=14.0, mat=0, offset_x=0.0,
+               tilt_x_deg=0.0):
+    """The G4beamline rod placed as in the deck (placement; offset_x, tilt_x_deg: a misalignment)."""
+    return D.Target.rod(length, r_up, r_mid, r_dn, mat=mat,
+                        **placement(z_center, x_axis, tilt_deg, offset_x, tilt_x_deg))
+
+
+def add_heat_arguments(ap):
+    ap.add_argument("--density", action="append", default=[], metavar="NAME=G_PER_CM3",
+                    help="material density override for the target-heat tally (repeatable)")
+
+
+def heat_summary(target, bank, batches, pot, a):
+    """Target heating per local-z slice (EDEP_SLICE_MM): ionisation, energy of stopped lanes and the bank's local
+    deposit per interaction (photons, pi0, e+-, fragments, nucleons below the cut) all counted where they arise.
+    Local EM deposit ignores leakage of photon showers out of the target, so the heat is an upper bound."""
+    ez, n = D.slice_edges(target)
+    dens = D.material_densities(bank.materials, {k: float(v) for k, v in (x.split("=", 1) for x in a.density)})
+    h = D.peak_heat(batches, D.slice_masses(target, ez, dens), pot, n)
+    h.update(slice_mm=D.EDEP_SLICE_MM, edges_mm=ez[:n + 1].tolist(), batches=D.EDEP_BATCHES,
+             caveat="upper bound: local deposit of the EM energy (no leakage)")
+    return h
+
+
+def add_design_arguments(ap):
+    """Target design options beyond --rod (shared by the host and device chains)."""
+    ap.add_argument("--offset-x", type=float, default=0.0, help="target moved along x [mm]; the beam stays on the "
+                    "nominal axis (the deck's Toffset_x)")
+    ap.add_argument("--tilt-x", type=float, default=0.0, help="target rotated about x [deg] before the y tilt; the beam "
+                    "stays on the nominal axis (the deck's Ttilt_x)")
+    ap.add_argument("--deck-target", metavar="FILE", help="the target group (pTarget) of a generated G4beamline target "
+                    "file (e.g. Geometry/Proton_Target_Hayman2.txt), placed on the deck's target centre (--rod unused)")
+    ap.add_argument("--deck-rotation", default="Y14", help="rotation of that group in the deck (G4beamline string, "
+                    "e.g. 'Z-30,Y14' for Hayman2)")
+    ap.add_argument("--ral", action="store_true", help="the deck's RAL target (Use_Proton_Target=6): rod, hubs, hub "
+                    "balls and spokes in --material (ptgt_deck.ral_target; --rod unused)")
+    ap.add_argument("--clad", nargs=3, metavar=("R_CORE", "T_CLAD", "MATERIAL"),
+                    help="a cylinder of radius R_CORE (--material) in a sleeve of thickness T_CLAD of MATERIAL, the "
+                         "length of --rod (its radii unused): the deck's Use_Proton_Target=10")
+
+
+def design_targets(a, bank, rod):
+    """(target, beam target) of the command-line design: the beam is aimed at the nominal placement of the same
+    shape, so a misalignment moves the target only."""
+    off = dict(offset_x=a.offset_x, tilt_x_deg=a.tilt_x)
+    if getattr(a, "deck_target", None):
+        from beamfastsim import ptgt_deck
+        if a.offset_x or a.tilt_x or a.clad:
+            raise SystemExit("--deck-target takes no --offset-x, --tilt-x or --clad")
+        p0 = placement(tilt_deg=0.0)
+        t = ptgt_deck.target(a.deck_target, list(bank.materials), origin=p0["origin"],
+                             rot=ptgt_deck.rotation(a.deck_rotation))
+        return t, t
+    mat = bank.materials.index(a.material)
+    if getattr(a, "ral", False):
+        from beamfastsim import ptgt_deck
+        if a.offset_x or a.tilt_x or a.clad:
+            raise SystemExit("--ral takes no --offset-x, --tilt-x or --clad")
+        t = ptgt_deck.ral_target(mat, **placement())
+        return t, t
+    if a.clad:
+        r_core, t_clad, cmat = float(a.clad[0]), float(a.clad[1]), a.clad[2]
+        if cmat not in bank.materials:
+            raise SystemExit(f"clad material {cmat} not in the bank {bank.materials}")
+
+        def make(**kw):
+            return D.Target.clad_rod(rod[0], r_core, t_clad, mat, bank.materials.index(cmat), **placement(**kw))
+        return make(**off), make()
+    return rod_target(*rod, mat=mat, **off), rod_target(*rod, mat=mat)
 
 
 def load_slab(slabs, path, material):
@@ -612,31 +732,41 @@ def main(argv=None):
                     help="passive thin ring at z (repeatable): loss, scattering, absorption from --slab-bank")
     ap.add_argument("--slab-bank", help="bank with the slab material's tables (cross sections only is enough)")
     ap.add_argument("--slab-material", help="slab material in --slab-bank (default: its first)")
+    add_design_arguments(ap)
     ap.add_argument("--enclosure", nargs=2, type=float, metavar=("R", "H"),
                     help="diagnostic: record all species leaving this cylinder about the target, instead of the plane")
+    ap.add_argument("--tally", nargs=2, type=float, action="append", default=[], metavar=("Z", "R"),
+                    help="diagnostic: recording-only plane (repeatable); mu/pi crossings both ways go to --tally-out")
+    ap.add_argument("--tally-out", help="npz for the --tally crossings")
+    add_heat_arguments(ap)
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     slab = load_slab(a.slab, a.slab_bank, a.slab_material)
     bank = D.Bank.load(a.bank)
     if a.material not in bank.materials:
         raise SystemExit(f"material {a.material} not in the bank {bank.materials}")
-    tgt = rod_target(*a.rod, mat=bank.materials.index(a.material))
+    tgt, beam_tgt = design_targets(a, bank, a.rod)
     fb = tsfield.FieldBank(a.maps)
     env = Envelope(z_nodes=np.asarray(a.env_z), r_nodes=np.asarray(a.env_r), z_min=a.z_min, z_plane=a.z_plane,
-                   r_plane=a.r_plane, annuli=tuple(tuple(x) for x in a.annulus), slabs=tuple(tuple(x) for x in a.slab))
+                   r_plane=a.r_plane, annuli=tuple(tuple(x) for x in a.annulus), slabs=tuple(tuple(x) for x in a.slab),
+                   tally=tuple(tuple(x) for x in a.tally))
+    if a.tally and not a.tally_out:
+        raise SystemExit("--tally needs --tally-out")
     st = Stepping(h_vac=a.h_vac, h_near=a.h_near, h_mat=a.h_mat, elastic=not a.no_elastic, msc_scale=a.msc_scale,
                   cuts=D.Cuts(ke_min_hadron=a.ke_min_hadron))
     rng = np.random.default_rng(a.seed)
-    recs, counts, edep = [], {}, np.zeros(len(tgt.mat))
+    recs, tals, counts, edep = [], [], {}, np.zeros(len(tgt.mat))
+    edz = 0.0
     t0 = time.time()
     done = 0
     while done < a.pot:
         n = min(a.chunk, a.pot - done)
-        prim = primaries(n, tgt, rng)
+        prim = primaries(n, beam_tgt, rng)
         prim["event"] = prim["event"] + done
         out = run(bank, tgt, fb, env, prim, rng, st, enclosure=a.enclosure, slab=slab)
-        recs.append(out["record"])
+        recs.append(out["record"]); tals.append(out["tally"])
         edep += out["edep"]
+        edz = edz + out["edep_slices"]
         for k, v in out["counts"].items():
             counts[k] = counts.get(k, 0) + v
         done += n
@@ -647,10 +777,13 @@ def main(argv=None):
                 wall_s=wall, s_per_pot=wall / a.pot, maps=[str(m) for m in a.maps],
                 envelope=dict(z=a.env_z, r=a.env_r, z_min=a.z_min, r_plane=a.r_plane, z_plane=a.z_plane, annuli=a.annulus,
                               slabs=a.slab, slab_bank=slab_meta(slab, a.slab_bank)),
-                stepping=dict(h_vac=st.h_vac, h_near=st.h_near, h_mat=st.h_mat, elastic=st.elastic,
+                heat=heat_summary(tgt, bank, edz, a.pot, a), stepping=dict(h_vac=st.h_vac, h_near=st.h_near, h_mat=st.h_mat, elastic=st.elastic,
                               msc_scale=st.msc_scale), bank=dict(path=str(a.bank),
                                                                             content_hash=bank.lib.content_hash))
     ptgt_g4bl.save(a.out, ref, meta)
+    if a.tally:
+        save_tally(a.tally_out, {k: np.concatenate([r[k] for r in tals]) for k in tals[0]}, a.pot, env,
+                   dict(generator="ptgt_chain", seed=a.seed, rod=a.rod, counts=counts))
     print(json.dumps({k: meta[k] for k in ("pot", "entrances", "yield_per_pot", "species", "s_per_pot", "counts")}))
 
 
