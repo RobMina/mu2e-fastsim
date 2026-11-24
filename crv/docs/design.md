@@ -138,9 +138,8 @@ outlines, zooms on the sector boundaries) for the nominal geometry or a design, 
 **Coincidence grouping** (kit: `coinc_groups`). Empty (the default) searches every sector alone. `sector_type` is
 Offline's CrvCoincidenceFinder grouping (`fom.sector_type_groups`): sectors of one `crs.sectorType` are searched
 together, each hit with its own sector's cuts, and placed fillers join their parent's group. Scoring the design loop
-on placed geometry means `place_policy` and `coinc_groups=sector_type` together: on the G1 crvd04 stock references
-this pair agrees with Geant4 (design A -1.6 sd, B -0.3 sd over the full sample), while the stock-position tiling
-with every sector alone ranks designs about ten times too efficient.
+on placed geometry means `place_policy` and `coinc_groups=sector_type` together. (The G1 crvd04 Geant4 references
+were built on the v3 layout rules, before the default rules above, so they do not validate the default layout.)
 
 ## Comparison with stock (`stockcmp.py`)
 
