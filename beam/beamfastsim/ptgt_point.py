@@ -27,6 +27,10 @@ ENVELOPE = dict(env_z=(-9929, -7858.01, -7858, -6658, -4068, -4067.99, -4000),
                 env_r=(750, 750, 650, 200, 200, 249.8, 249.8), z_min=-8368.0, r_plane=249.3, z_plane=-4044.45)
 SLABS = ((-4147.3, 158.8, 174.6, 6.35), (-4140.7, 158.8, 174.6, 6.35), (-4134.4, 158.8, 174.6, 6.35))
 POOL = {"cpu": 16384, "gpu": 262144}
+# tsdevice lanes on the GPU: a fixed pool (the board scoring passes' value), so the compiled executables do not
+# depend on the design's entrant count and the persistent cache serves every design (without it each design
+# recompiled: 215-407 s per design on an A100 for ~80k entrants). CPU keeps tsdevice's default (all inputs).
+TS_POOL = {"cpu": None, "gpu": 262144}
 TS_SEED = 1
 TS_SIGNAL = (13, -211)        # mu- and pi- at the TS entrance (the board objective)
 
@@ -71,7 +75,8 @@ def tsdevice_argv(a, reference, out):
     return ["--reference", str(reference), "--gdml", a.gdml, "--field-config", a.field_config,
             "--offline-root", a.offline_root, "--maps", a.maps, "--ds-geom", a.ds_geom,
             "--ds-offline-root", a.ds_offline_root or a.offline_root, "--ds-map", a.ds_map,
-            "--seed", str(TS_SEED), "--dtype", a.dtype, "--out", str(out)]
+            "--seed", str(TS_SEED), "--dtype", a.dtype, "--out", str(out)] + (
+                ["--pool", str(TS_POOL[a.platform])] if TS_POOL[a.platform] else [])
 
 
 def states(a, key, run_chain):
@@ -94,18 +99,22 @@ def states(a, key, run_chain):
     return ref, False, dt
 
 
-def metrics(reference, ts_out, cached, chain_s, ts_s):
+def metrics(reference, ts_out, cached, chain_s, ts_s, batch=None):
     """The point's numbers: stops per POT (Poisson error: the reference is one shard), the TS-entrance yields and the
     target's peak heat (largest deposit per gram in a local-z slice per POT, Gy/POT; an upper bound, see
-    ptgt_chain.heat_summary) when the chain recorded it."""
+    ptgt_chain.heat_summary) when the chain recorded it. batch: this reference's position in a tsdevice pass over
+    several references (ptgt_queue): only its rows of ts_out count."""
     import numpy as np
     with np.load(reference) as r:
         pot = float(r["parent_shard_event_counts"].sum())
         pdg = r["pdg"]
         heat = json.loads(str(r["build_meta"][0])).get("heat") if "build_meta" in r.files else None
     with np.load(ts_out) as o:
-        stop = o["ds_fate"] == 1
-        mu_minus = o["pdg_ds"] == 13
+        rows = slice(None) if batch is None else o["batch"] == batch
+        if batch is not None and int(np.sum(rows)) != len(pdg):
+            raise ValueError(f"{ts_out}: batch {batch} has {int(np.sum(rows))} rows, the reference {len(pdg)}")
+        stop = o["ds_fate"][rows] == 1
+        mu_minus = o["pdg_ds"][rows] == 13
     n = float(stop.sum())
     sig = float(np.isin(pdg, TS_SIGNAL).sum())
     return dict(stops_per_pot=n / pot, stops_per_pot_err=max(n, 1.0) ** 0.5 / pot,
@@ -126,21 +135,36 @@ def main(argv=None):
     ap.add_argument("--dtype", choices=("float64", "float32"), default="float64")
     ap.add_argument("--platform", choices=("cpu", "gpu"), default="cpu")
     ap.add_argument("--pool", type=int, help="device lanes (default: POOL of the platform)")
-    ap.add_argument("--bank", required=True)
-    ap.add_argument("--slab-bank", required=True)
-    ap.add_argument("--ps-map", required=True, help="PS field map .header (the .bin next to it)")
-    ap.add_argument("--cache", required=True, help="directory of the cached TS-entrance states")
-    ap.add_argument("--gdml", required=True)
-    ap.add_argument("--field-config", required=True)
-    ap.add_argument("--offline-root", required=True)
-    ap.add_argument("--maps", required=True)
-    ap.add_argument("--ds-geom", required=True)
+    ap.add_argument("--queue", help="hand the design to a ptgt_queue worker through this directory and wait for its "
+                                    "result (the other inputs are the worker's)")
+    ap.add_argument("--data-sha256", help="with --queue: JSON {file: sha256} the worker's data must match")
+    ap.add_argument("--wait-s", type=float, default=None, help="with --queue: give up after this many seconds")
+    ap.add_argument("--bank")
+    ap.add_argument("--slab-bank")
+    ap.add_argument("--ps-map", help="PS field map .header (the .bin next to it)")
+    ap.add_argument("--cache", help="directory of the cached TS-entrance states")
+    ap.add_argument("--gdml")
+    ap.add_argument("--field-config")
+    ap.add_argument("--offline-root")
+    ap.add_argument("--maps")
+    ap.add_argument("--ds-geom")
     ap.add_argument("--ds-offline-root")
-    ap.add_argument("--ds-map", required=True)
+    ap.add_argument("--ds-map")
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     if a.pot < 1 or min(a.rod) <= 0:
         ap.error("need --pot >= 1 and a positive rod")
+    if a.queue:
+        from beamfastsim import ptgt_queue
+        req = dict(rod=list(a.rod), pot=a.pot, seed=a.seed, dtype=a.dtype, platform=a.platform,
+                   data_sha256=json.loads(a.data_sha256) if a.data_sha256 else None)
+        m = ptgt_queue.submit_and_wait(a.queue, req, a.out, wait_s=a.wait_s)
+        print(json.dumps(m))
+        return
+    missing = [k for k in ("bank", "slab_bank", "ps_map", "cache", "gdml", "field_config", "offline_root", "maps",
+                           "ds_geom", "ds_map") if getattr(a, k) is None]
+    if missing:
+        ap.error("without --queue these are required: " + ", ".join("--" + k.replace("_", "-") for k in missing))
     os.environ.setdefault("JAX_PLATFORMS", "cuda" if a.platform == "gpu" else "cpu")   # before jax is imported
     from beamfastsim import ptgt_chain_jax, ptgt_device, tsdevice
     out = Path(a.out)

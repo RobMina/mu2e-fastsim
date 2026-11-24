@@ -43,6 +43,9 @@ def test_chain_argv_carries_the_validated_ps_configuration(tmp_path):
     assert gpu[gpu.index("--pool") + 1] == str(PP.POOL["gpu"])
     ts = PP.tsdevice_argv(_args(tmp_path), "ref.npz", "o.npz")
     assert ts[ts.index("--ds-offline-root") + 1] == "off" and ts[ts.index("--seed") + 1] == str(PP.TS_SEED)
+    assert "--pool" not in ts                                   # CPU: tsdevice's default pool
+    tsg = PP.tsdevice_argv(_args(tmp_path, platform="gpu"), "ref.npz", "o.npz")
+    assert tsg[tsg.index("--pool") + 1] == str(PP.TS_POOL["gpu"])     # GPU: fixed, design-independent shapes
 
 
 def _write_reference(path, pdg, pot):
