@@ -419,8 +419,8 @@ def test_device_rotated_boxes_match_host(tmp_path, dtype):
     bank = _bank(tmp_path, n_pim=3)
     ang = np.deg2rad([285.0, 165.0, 45.0])
     fins = np.array([[0.0, 18.0, -1.0, 1.0, -30.0, 30.0]] * 3)
-    tgt = D.Target(np.array([-30.0, 30.0]), np.zeros((1, 2)), np.full((1, 2), 3.0), np.zeros(4, int), boxes=fins,
-                   box_phi=ang)
+    tgt = D.Target(np.array([-30.0, 30.0]), np.zeros((1, 2)), np.full((1, 2), 6.0), np.zeros(4, int), boxes=fins,
+                   box_phi=ang)                         # core r 6: every primary of the 1 mm beam interacts
     env = C.Envelope(z_nodes=np.array([-5000.0, 5000.0]), r_nodes=np.array([1900.0, 1900.0]), z_min=-2000.0,
                      z_plane=800.0, r_plane=1800.0, axis_x=0.0)
     fm = _uniform_map(2.0)
