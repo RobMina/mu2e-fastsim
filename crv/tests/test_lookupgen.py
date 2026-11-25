@@ -393,6 +393,53 @@ def test_assemble_a_triangle_table(tmp_path):
     assert L.edges["x"][0] == pytest.approx(-10.0) and L.edges["y"][0] == 0.0 and L.fiber_separation == 0.0
 
 
+@pytest.mark.slow
+@pytest.mark.parametrize("dtype", ["float64", "float32"])
+@pytest.mark.parametrize("simtype,bins", [(0, [150, 2400, 4100]), (1, [700, 9000, 20000]), (2, [40, 3000, 9000])])
+def test_polygon_tracing_reproduces_the_rectangle(simtype, bins, dtype):
+    """The check against the rectangular geometry: the polygon tracing the triangle uses, run on the rectangle
+    (profile "box"), gives exactly the counts of the rectangular counter with sharp corners on a design cross-section
+    (crvd04 design A: 30 x 42.38 mm, 1.548 mm fibers), same photons and random numbers, every photon source."""
+    pytest.importorskip("jax")
+    from dataclasses import replace
+    from crvfastsim.lookupgen.core.run import generate
+    rect = replace(G.design(30.0, 42.38, 1045.0, 1, fiber_diameter=1.548), corner_radius=0.25)
+    box = replace(rect, profile="box")
+    n = int(os.environ.get("LOOKUPGEN_CHECK_PHOTONS", "1500"))
+    r = [generate(c, G.binning(rect), simtype, np.asarray(bins), n, dtype=dtype, seed=5, lanes=1024,
+                  chunk_iters=400, model="current") for c in (rect, box)]
+    for k in W.KEYS[1:]:
+        assert np.array_equal(r[0][k], r[1][k]), k
+    print(f"simtype {simtype} {dtype}: {int(r[0]['nall'].sum())} SiPM-0 arrivals of {int(r[0]['gen'].sum())} photons,"
+          " identical")
+
+
+@pytest.mark.slow
+def test_triangle_is_mirror_symmetric():
+    """Photons made at +y and -y in the triangle reach its SiPM equally (the y-folded table assumes it)."""
+    pytest.importorskip("jax")
+    from crvfastsim.lookupgen.core.binning import Binning
+    from crvfastsim.lookupgen.core.run import generate
+    c = G.triangle(30.0, 42.38, 1045.0, 1, fiber_diameter=1.548)
+    e = dict(G.edges(c))
+    e["y"] = np.array([-15.0, -5.0, -1.5, 1.5, 5.0, 15.0])
+    e["x"] = np.array([-8.0, -3.0, 3.0, 8.0])
+    e["z"] = np.array([-c.half_length, -300.0, 300.0, c.half_length])
+    b = Binning(e, G.ORDER)
+    n = int(os.environ.get("LOOKUPGEN_CHECK_PHOTONS", "1500"))
+    r = generate(c, b, 0, np.arange(b.n_bins(0)), n, dtype="float32", seed=9, lanes=1024, chunk_iters=400)
+    shape = b.shape(0)
+    k = r["nall"].reshape(shape).astype(float)
+    g = r["gen"].reshape(shape).astype(float)
+    kp, km = k[:, [3, 4]].sum(), k[:, [1, 0]].sum()
+    gp, gm = g[:, [3, 4]].sum(), g[:, [1, 0]].sum()
+    assert gp == pytest.approx(gm, rel=0.05)
+    pp, pm = kp / gp, km / gm
+    sig = np.sqrt(pp * (1 - pp) / gp + pm * (1 - pm) / gm)
+    print(f"+y {pp:.5f}, -y {pm:.5f} ({kp:.0f} / {km:.0f} arrivals): {(pp - pm) / sig:+.2f} sigma")
+    assert abs(pp - pm) < 4 * sig
+
+
 def test_validation_status_of_each_model():
     """The status a new manifest is written with (core/docs/libraries.md): the current model was measured against a
     CRVStandalone build of the same optics, without criteria declared before the comparison."""

@@ -20,4 +20,4 @@ hep-simbench @ git+https://github.com/RobMina/hep-simbench.git@5d3eab140474f2930
 # hep-simkernels: the physics kernels (mu2efastsim.eloss, .materials, .precision, ...); same pin as pyproject.toml
 hep-simkernels @ git+https://github.com/RobMina/hep-simkernels.git@2c3f0d4e74d31e79f72e37a346d561b306443db5
 # scint-fibre-fastsim: experiment-neutral lookupgen.core (crvfastsim.lookupgen.core re-exports it)
-scint-fibre-fastsim @ git+https://github.com/RobMina/scint-fibre-fastsim.git@41c7f1b0685dabcd088ccdd487318f8a7840431d
+scint-fibre-fastsim @ git+https://github.com/RobMina/scint-fibre-fastsim.git@b7511a4ed8c02e5f7c4444bf3a705170995e4456
