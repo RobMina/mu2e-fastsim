@@ -12,6 +12,9 @@ Deadtime (uniform signal t0 over the live window) = 1 - exp(-dt_veto x sum_s (R_
 Calibration: per-sector stock deadtime fractions D_s and the accidental share f_acc fix phi_s and psi_s; kappa is the
 beam-intensity scenario. Without a calibration file only the rate ratio to the nominal design is defined
 (uniform per sector area): ``rate_ratio``.
+Triangular prisms (module.py): V is the prism volume (half the bounding box), the sector area counts each prism's
+half base (the prisms tile the layer at a pitch of half a width), n_roads the prisms per layer; the road keeps m = 2
+counters. The model is not calibrated for prisms (nor in k: its k dependence is under revision).
 """
 from __future__ import annotations
 
@@ -46,6 +49,8 @@ def sector_terms(dg, sector_cuts, ly_per_mev, stock_required, thr_ratio=None):
         n_roads = int(b.sum() // nl)
         vol = float(np.prod(2 * dg.halflen[b][0]))
         area = float((4 * dg.halflen[b][:, 1] * dg.halflen[b][:, 2]).sum() / nl)
+        if dg.orient is not None and dg.orient[np.flatnonzero(b)[0]] != 0:     # prisms: half box, pitch w / 2
+            vol, area = 0.5 * vol, 0.5 * area
         ab = dg.abs_sector == s
         nmod = int(dg.module[b].max()) + 1
         gaps = 2 * dg.abs_halflen[ab][:, 0][: max(len(dg.abs_halflen[ab]) // max(nmod, 1), 0)]

@@ -115,31 +115,39 @@ class Context:
     lookup_dir: str | None = None
     tables: dict = field(default_factory=dict)
     substitutions: dict = field(default_factory=dict)
+    native_lookup_dir: str | None = None   # tables of the design's own counters (OpticsConfig.table_mode "native")
+    native_tables: dict = field(default_factory=dict)
+    native_substitutions: dict = field(default_factory=dict)
 
-    def table_for(self, name):
+    def table_for(self, name, native=False):
         """The sector's stock table if present, else the available table of the same reflector kind closest in
-        length (recorded in substitutions)."""
+        length (recorded in substitutions); native: the same from native_lookup_dir (native_substitutions)."""
         want = self.sectors[name].table
-        if want not in self.tables:
+        if native and not self.native_lookup_dir:
+            raise ValueError("table_mode 'native' needs Context.native_lookup_dir")
+        d = self.native_lookup_dir if native else self.lookup_dir
+        tables, subs = (self.native_tables, self.native_substitutions) if native else (self.tables, self.substitutions)
+        if want not in tables:
             try:
-                self.tables[want] = O.TableModel.from_lookup(lookup.load(want, self.lookup_dir))
+                tables[want] = O.TableModel.from_lookup(lookup.load(want, d))
             except FileNotFoundError:
-                self.tables[want] = None
-        if self.tables[want] is not None:
-            return self.tables[want]
+                tables[want] = None
+        if tables[want] is not None:
+            return tables[want]
         import glob
         import os
         avail = [os.path.basename(p)[len("LookupTable_"):] for p in
-                 glob.glob(os.path.join(self.lookup_dir or lookup.lookup_dir(), "LookupTable_*"))]
+                 glob.glob(os.path.join(d or lookup.lookup_dir(), "LookupTable_*"))]
+        avail = [a for a in avail if not a.endswith(".json")]
         refl = want.endswith("_1")
         cands = [a for a in avail if a.endswith("_1") == refl] or avail
         if not cands:
-            raise FileNotFoundError(f"no lookup tables in {self.lookup_dir or lookup.lookup_dir()}")
+            raise FileNotFoundError(f"no lookup tables in {d or lookup.lookup_dir()}")
         best = min(cands, key=lambda a: abs(float(a.split("_")[0]) - float(want.split("_")[0])))
-        self.substitutions[want] = best
-        if best not in self.tables:
-            self.tables[best] = O.TableModel.from_lookup(lookup.load(best, self.lookup_dir))
-        return self.tables[best]
+        subs[want] = best
+        if best not in tables:
+            tables[best] = O.TableModel.from_lookup(lookup.load(best, d))
+        return tables[best]
 
 
 def sector_type_groups(counters):
@@ -168,12 +176,19 @@ def sector_pe(dg, ctx, idx, pos, p, cfg, dtype):
     """Expected PE [m, 2] for the crossing rows (idx [m, 2] track, bar; pos [m, 6] local in/out)."""
     pe = np.zeros((len(idx), 2), dtype)
     sec = dg.sector[idx[:, 1]]
+    native = cfg.table_mode == "native"
     for s, name in enumerate(dg.sector_names):
         r = np.flatnonzero(sec == s)
         if not len(r):
             continue
         sc = ctx.sectors[name]
-        tab = ctx.table_for(name)
+        tab = ctx.table_for(name, native)
+        if native:
+            orient = dg.orient[idx[r, 1]] if dg.orient is not None else np.zeros(len(r), np.int64)
+            pe[r] = O.expected_pe_native(pos[r, :3], pos[r, 3:], dg.halflen[idx[r, 1]], p[idx[r, 0]], tab,
+                                         sc.yield_per_mev, dg.stock_fiber[s], M.readout_sides(sc.reflector), orient,
+                                         cfg, dtype)
+            continue
         pe[r] = O.expected_pe(pos[r, :3], pos[r, 3:], dg.halflen[idx[r, 1]], p[idx[r, 0]], tab, sc.yield_per_mev,
                               dg.fiber_diameter[s], dg.stock_fiber[s], M.readout_sides(sc.reflector), cfg, dtype)
     return pe
@@ -187,8 +202,12 @@ def light_yield(dg, ctx, cfg):
         b = np.flatnonzero(dg.sector == s)
         h = dg.halflen[b[np.argmax(dg.halflen[b, 2])]]
         sc = ctx.sectors[name]
-        prof = O.light_yield_profile(h, ctx.table_for(name), sc.yield_per_mev, dg.fiber_diameter[s],
-                                     dg.stock_fiber[s], M.readout_sides(sc.reflector), cfg)
+        if cfg.table_mode == "native":
+            prof = O.light_yield_profile_native(h, ctx.table_for(name, True), sc.yield_per_mev, dg.stock_fiber[s],
+                                                M.readout_sides(sc.reflector), bool(dg.triangle[b[0]]), cfg)
+        else:
+            prof = O.light_yield_profile(h, ctx.table_for(name), sc.yield_per_mev, dg.fiber_diameter[s],
+                                         dg.stock_fiber[s], M.readout_sides(sc.reflector), cfg)
         out_min.append(float(prof.min()))
         out_mev.append(float(prof[len(prof) // 2] / (dedx * 2 * h[0])))
     return np.array(out_min), np.array(out_mev)
@@ -199,12 +218,18 @@ def evaluate(design, muons, ctx=None, cfg=FomConfig(), calibration=None, dtype=n
     With cfg.placement the design is placed first (evaluate_placed)."""
     t0 = time.perf_counter()
     ctx = ctx or Context()
+    _check_optics(design, cfg)
     if cfg.placement is not None:
         return evaluate_placed(design, muons, ctx, cfg, calibration, dtype, nominal)
     yields = {n: s.yield_per_mev for n, s in ctx.sectors.items()}
     dg = M.build(design, ctx.counters, yields)
     dg0 = nominal or M.build(M.Design(), ctx.counters, yields)
     return _score(design, dg, dg0, muons, ctx, cfg, calibration, dtype, t0)
+
+
+def _check_optics(design, cfg):
+    if design.profile == "triangle" and cfg.optics.table_mode != "native":
+        raise ValueError("triangular counters need OpticsConfig(table_mode='native') and their own lookup tables")
 
 
 def _merge_fillers(terms, parent):
@@ -241,6 +266,7 @@ def evaluate_placed(design, muons, ctx=None, cfg=FomConfig(), calibration=None, 
     from . import placement as P
     t0 = time.perf_counter()
     ctx = ctx or Context()
+    _check_optics(design, cfg)
     variants = P.place(design, ctx.counters, cfg.placement)
     t_place = time.perf_counter() - t0
     yields = {n: s.yield_per_mev for n, s in ctx.sectors.items()}
@@ -259,6 +285,8 @@ def evaluate_placed(design, muons, ctx=None, cfg=FomConfig(), calibration=None, 
         results.append((v, r))
     best_v, best = min(results, key=lambda vr: (not vr[0].feasible, vr[1]["inefficiency"]))
     best["table_substitutions"] = dict(ctx.substitutions)
+    if cfg.optics.table_mode == "native":
+        best["native_table_substitutions"] = dict(ctx.native_substitutions)
     keys = ("inefficiency", "inefficiency_err", "deadtime_rate_ratio", "ly_margin", "cost", "uncovered_fraction",
             "n_bars")
     scores = {id(v): r for v, r in results}
@@ -311,10 +339,12 @@ def _score(design, dg, dg0, muons, ctx, cfg, calibration, dtype, t0, groups=None
     # light yield (C1) and deadtime
     c1 = dataclasses.replace(cfg.optics, aging=cfg.optics.aging * cfg.aging_c1)
     c0 = dataclasses.replace(cfg.optics, aging=cfg.optics.aging * cfg.aging_ref)
+    nom = cfg.optics if cfg.optics.table_mode == "scaled" else dataclasses.replace(cfg.optics, table_mode="scaled")
+    c0 = c0 if nom is cfg.optics else dataclasses.replace(c0, table_mode="scaled")   # the nominal: stock tables
     ly, _ = light_yield(dg, ctx, c1)
     ly0, _ = light_yield(dg0, ctx, c0)
     _, ly_mev = light_yield(dg, ctx, cfg.optics)      # deadtime: both designs at the same aging
-    _, ly0_mev = light_yield(dg0, ctx, cfg.optics)
+    _, ly0_mev = light_yield(dg0, ctx, nom)
     terms = DT.sector_terms(dg, ctx.cuts, ly_mev, req, thr / thr0)
     terms0 = DT.sector_terms(dg0, ctx.cuts, ly0_mev, req)
     if parent is not None:                             # placed layouts: fillers belong to their parent sector
@@ -335,6 +365,9 @@ def _score(design, dg, dg0, muons, ctx, cfg, calibration, dtype, t0, groups=None
         n_bars=int(dg.nbars), module_pitch=dict(zip(names, dg.module_pitch.tolist())),
         coincidence=dict(zip(names, [f"{int(kk)} of {int(nn)}, {tt:g} PE" for kk, nn, tt in zip(k, dg.n_layers, thr)])),
         table_substitutions=dict(ctx.substitutions), dtype=np.dtype(dtype).name, wall_s=time.perf_counter() - t0)
+    if cfg.optics.table_mode == "native":
+        out["native_table_substitutions"] = dict(ctx.native_substitutions)
+        out["profile"] = design.profile
     for k_ in ("deadtime", "deadtime_sector", "calibration_source"):
         if k_ in dt:
             out[k_] = dt[k_]

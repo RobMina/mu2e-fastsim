@@ -10,6 +10,9 @@ Params (Mu2eBO sends numbers as floats; empty = the stock value of each sector)
   design knobs  n_layers, thickness, width, max_length, absorber, tilt_deg, fiber_diameter, counters_per_module,
                 coincidence_layers or spare_layers (k = N - spare in every sector), pe_threshold (module.Design)
   absorber_material  G4_Al, MildSteel, G4_Pb, G4_POLYETHYLENE or empty (stock); one mode spec per material
+  profile       empty or "rect" (rectangular counters); "triangle" (interleaved prisms, module.py) needs the
+                counters' own lookup tables, which the kit does not stage: `kit_task run --design profile=triangle
+                --table-mode native --native-lookup-dir DIR` on a node that has them (validate refuses it)
   sample        the muon sample name (SAMPLES)
   dtype         float64 or float32
   pe_scale      optics calibration (0.847: stock Offline, Run 2 conditions; docs/design.md)
@@ -45,10 +48,14 @@ COST_WEIGHTS = {"cost_w_scint": "scint_m3", "cost_w_channels": "channels", "cost
 PLACE = ("place_policy", "place_stagger_max", "place_clearance", "place_max_trim", "place_max_shift", "place_remedies")
 PLACE_POLICIES = ("first", "each")       # = placement.POLICIES (tested)
 COINC_GROUPS = ("sector_type",)          # coinc_groups values (empty = every sector alone)
-FIXED = ("absorber_material", "sample", "dtype", "pe_scale", "kappa", "f_acc", "beta", "aging_c1", "aging_ref",
+DESIGN_STRINGS = ("absorber_material", "profile")   # string-valued module.Design keys
+PROFILES = ("rect", "triangle")                    # = module.PROFILES (tested)
+FIXED = ("absorber_material", "profile",
+         "sample", "dtype", "pe_scale", "kappa", "f_acc", "beta", "aging_c1", "aging_ref",
          "max_muons") + tuple(COST_WEIGHTS) + PLACE + ("coinc_groups",)
 PARAMS = KNOBS + FIXED
-DEFAULTS = {**{k: "" for k in KNOBS}, "absorber_material": "", "sample": "run2_ce_proxy_v1", "dtype": "float64",
+DEFAULTS = {**{k: "" for k in KNOBS}, "absorber_material": "", "profile": "",
+            "sample": "run2_ce_proxy_v1", "dtype": "float64",
             "pe_scale": 0.847, "kappa": 1.0, "f_acc": 0.5, "beta": 1.0, "aging_c1": 0.94 ** 5, "aging_ref": 0.86,
             "max_muons": 0, **{k: "" for k in COST_WEIGHTS}, "place_policy": "", "place_stagger_max": 60.0,
             "place_clearance": 3.0, "place_max_trim": 120.0, "place_max_shift": 500.0, "place_remedies": "",
@@ -72,7 +79,7 @@ BODY = ('MU=@sample_path@\n'
         'T python -m crvfastsim.design.kit_task run --out "$M2FS_OUT" --muons "$MU" --lookup-dir "$L" '
         + " ".join(f"--{k.replace('_', '-')} @p_{k}@" for k in ("dtype", "pe_scale", "kappa", "f_acc", "beta",
                                                                "aging_c1", "aging_ref", "max_muons"))
-        + " --design " + " ".join(f"{k}=@p_{k}@" for k in KNOBS + ("absorber_material",))
+        + " --design " + " ".join(f"{k}=@p_{k}@" for k in KNOBS + DESIGN_STRINGS)
         + " --cost-weights " + " ".join(f"{k}=@p_{k}@" for k in COST_WEIGHTS)
         + " " + " ".join(f"--{k.replace('_', '-')} @p_{k}@" for k in PLACE + ("coinc_groups",))
         + ' > "$M2FS_OUT/point.txt" 2>&1 || { tail -20 "$M2FS_OUT/point.txt"; exit 6; }\n'
@@ -84,11 +91,11 @@ def design_dict(pairs):
     out = {}
     for w in pairs:
         k, _, v = w.partition("=")
-        if k not in KNOBS + ("absorber_material",):
+        if k not in KNOBS + DESIGN_STRINGS:
             raise ValueError(f"crv_design: unknown design key {k!r}")
         if v == "":
             continue
-        out[k] = v if k == "absorber_material" else (int(float(v)) if k in INT_KNOBS else float(v))
+        out[k] = v if k in DESIGN_STRINGS else (int(float(v)) if k in INT_KNOBS else float(v))
     return out
 
 
@@ -195,11 +202,18 @@ def run(argv=None):
         p.add_argument("--" + k.replace("_", "-"), type=float, default=DEFAULTS[k])
     p.add_argument("--place-remedies", default="")
     p.add_argument("--coinc-groups", default="", choices=("",) + COINC_GROUPS)
+    p.add_argument("--table-mode", default="scaled", choices=("scaled", "native"),
+                   help="optics: stock tables scaled to the counter, or the counters' own tables (--native-lookup-dir)")
+    p.add_argument("--native-lookup-dir", default="", help="the design counters' own tables (table mode native)")
+    p.add_argument("--native-model-scale", type=float, default=None,
+                   help="native tables: optical-model scale (default optics.V6_OVER_CURRENT)")
     a = p.parse_args(argv)
     design = M.Design(**design_dict(a.design))
     remedy_words(a.place_remedies)
-    ctx = fom.Context(lookup_dir=a.lookup_dir)
-    cfg = fom.FomConfig(optics=O.OpticsConfig(pe_scale=a.pe_scale),
+    ctx = fom.Context(lookup_dir=a.lookup_dir, native_lookup_dir=a.native_lookup_dir or None)
+    native = {} if a.table_mode == "scaled" else dict(
+        table_mode="native", **({} if a.native_model_scale is None else {"native_model_scale": a.native_model_scale}))
+    cfg = fom.FomConfig(optics=O.OpticsConfig(pe_scale=a.pe_scale, **native),
                         deadtime=DT.DeadtimeConfig(kappa=a.kappa, f_acc=a.f_acc, beta=a.beta),
                         aging_c1=a.aging_c1, aging_ref=a.aging_ref, cost_weights=cost_weights(a.cost_weights),
                         placement=placement_config(a.place_policy, a.place_stagger_max, a.place_clearance,

@@ -29,6 +29,7 @@ python -m crvfastsim.design stockcmp STOCK.root ... --dtype float64 [--design D]
 | `coincidence_layers` | k of the k-of-N layer rule (at most the layer count of every sector) | stock: N minus the stock spare layers (3 of 4, 4 of 4 where stock asks for all four) |
 | `spare_layers` | instead of `coincidence_layers`: k = N - spare_layers in every sector (follows per-sector layer counts) | unset |
 | `pe_threshold` | PE per layer and read-out end for a hit, every sector | stock threshold of each sector (8 PE in Run 2) |
+| `profile` | counter cross-section: `rect`, or `triangle` (interleaved prisms, below; needs `table_mode` native) | `rect` |
 
 The default `Design()` reproduces the stock bars exactly (`module.to_crv_geometry` against
 `geometry.from_offline_config`, tested). Modules are re-tiled to cover the stock sector extent. Tilted modules are
@@ -40,6 +41,22 @@ Tilt needs no change to Offline and no per-layout table: the response of a count
 the counter's local frame (entry and exit point, path), so a tilted module is the same local problem as an untilted
 one seen by a rigidly rotated muon (tested). This is the same rule as the component libraries of the fast chain:
 bin on the entrance state in the component's frame, never on a global detector configuration.
+
+### Triangular counters (`profile="triangle"`)
+
+Isosceles prisms, base `width` along the gap direction, height `thickness` along the layer direction, one fiber at
+the centroid, alternately apex up and apex down every width / 2 with no gap, so a layer is a solid slab of
+scintillator and a track crosses about two prisms in each layer. A module holds twice the stock counter count by
+default (the stock module width and channel count: one fiber per prism against two per rectangle); the placed
+layout tiles with the prism module pitch ((counters + 1) x width / 2 plus the module gap). Bars keep their bounding
+boxes for the slab crossings, the placement and the FEB boxes; `veto.clip_prisms` clips each chord to the prism.
+
+The layer response is the existing same-plus-adjacent sum: the two prisms a track crosses in a layer are neighbouring
+counters, and the finder adds the PE of a counter and its neighbours, so the layer PE per end is their sum (no
+per-counter threshold, which would lose the light split between the two prisms). Cost: a prism has half its box's
+scintillator, one fiber and one channel per read-out end. Deadtime: the prism volume and half-base area enter the
+singles and correlated terms; the model is not calibrated for prisms (nor in k). Offline has no triangular counter:
+the placed counters text describes the module boxes only.
 
 ## Figures of merit (`fom.evaluate`)
 
@@ -75,6 +92,17 @@ bin extended with the table's own attenuation length beyond its length), times a
 perimeter), times PE per arrival of the SiPM model and a calibration scale `pe_scale` fitted to the full chain at
 the nominal design. A sector whose stock table is not in the lookup directory uses the closest available table of
 the same reflector kind (`table_substitutions`). Cherenkov light and visible-energy fluctuations are not modelled.
+
+`OpticsConfig(table_mode="native")` with `Context(native_lookup_dir=...)` reads the design counters' own tables
+(`crvfastsim.lookupgen`, made for their cross-section and fiber, docs/lookupgen.md) at the local point itself: no
+scaling, no capture factor; the sector yield is taken back to the 1.4 mm fiber the tables are normalised to, and
+`native_model_scale` (default 1 / 1.164, released over generated light on the stock counter) puts the generator's
+optical model on the released-table scale that `photon_yield_scale` and `pe_scale` were set with. The nominal design
+keeps the stock tables (scaled mode). Missing lengths are substituted as above (`native_table_substitutions`; the
+kit refuses only stock substitutions). Native mode is the only one that reads triangular counters (table frame: x
+from the centroid towards the apex, |y|, one fiber); their light-yield profile is the layer crossing midway between
+neighbouring fibers (half the height in each prism, the two summed), where the rectangle's is the width centre,
+between its two fibers.
 
 ### Deadtime model (`deadtime.py`)
 

@@ -32,7 +32,10 @@ the rules of the G1 option-B stock references (user 2026-11-20/21), with every c
             direction); ``moves`` add a world translation [dx, dy, dz] after the shift. Both are what placement.py
             solves for.
 The same counters text drives this fast model and the stock geometry of a reference (gen_geom-style overlays), so
-the bars are the same in both.
+the bars are the same in both. Triangular designs (Design.profile "triangle", module.py) tile with their own module
+pitch ((counters + 1) x width / 2 plus the module gap, around 2 x the stock counter count); their counters text has
+the stock (rectangular) counter keys, so it describes the module boxes, not the prisms (Offline has no triangular
+counter).
 """
 from __future__ import annotations
 
@@ -101,8 +104,10 @@ def layer_offset(c, design):
     return round(min(off0 * w / w0, off0 * (n0 - 1) / max(n - 1, 1)), 3)
 
 
-def module_pitch(c, ncnt, w):
+def module_pitch(c, ncnt, w, profile="rect"):
     gs, gl, gm = float(c["crs.gapSmall"]), float(c["crs.gapLarge"]), float(c["crs.gapBetweenModules"])
+    if profile == "triangle":
+        return M.counter_offsets(ncnt, w, gs, gl, profile)[1] + gm
     return ncnt * w + (ncnt // 2 - 1) * gl + (ncnt // 2) * gs + gm
 
 
@@ -112,28 +117,32 @@ def stock_extent(c, name):
                                                          float(c["crs.scintillatorBarWidth"]))
 
 
-def filler_counters(c, strip, w):
+def filler_counters(c, strip, w, profile="rect"):
     """Largest even counter count of a one-module filler that fits a strip (0 if none)."""
     kf = 0
-    for kk in range(2, 64, 2):
-        if module_pitch(c, kk, w) <= strip + 1e-6:
+    for kk in range(2, 128 if profile == "triangle" else 64, 2):
+        if module_pitch(c, kk, w, profile) <= strip + 1e-6:
             kf = kk
     return kf
 
 
-def tiling(c, name, w, joint, delta=6):
+def tiling(c, name, w, joint, delta=6, profile="rect"):
     """(counters per module, modules, covered / stock extent): the closest cover of the stock extent without
-    overshoot; joint: maximise the main modules plus the end-strip filler together."""
-    ext, n_s = stock_extent(c, name), int(c[f"crs.nCountersPerModule{name}"])
+    overshoot; joint: maximise the main modules plus the end-strip filler together. Prisms (profile "triangle"):
+    counts around twice stock, within +- 2 delta."""
+    ext = stock_extent(c, name)
+    n_s = M.default_counters(int(c[f"crs.nCountersPerModule{name}"]), profile)
+    if profile == "triangle":
+        delta = 2 * delta
     best = None
     for k in range(max(2, n_s - delta), n_s + delta + 1, 2):
-        n = int(math.floor(ext / module_pitch(c, k, w) + 1e-6))
+        n = int(math.floor(ext / module_pitch(c, k, w, profile) + 1e-6))
         if n < 1:
             continue
-        cov = n * module_pitch(c, k, w)
+        cov = n * module_pitch(c, k, w, profile)
         if joint:
-            kf = filler_counters(c, ext - cov, w)
-            cov += module_pitch(c, kf, w) if kf else 0.0
+            kf = filler_counters(c, ext - cov, w, profile)
+            cov += module_pitch(c, kf, w, profile) if kf else 0.0
         key = (round(cov, 3), -abs(k - n_s))
         if best is None or key > best[0]:
             best = (key, k, n, cov / ext)
@@ -163,17 +172,17 @@ def sector_chains(c, tol=5.0):
     return prev
 
 
-def end_strip(c, name, w, cfg=LayoutConfig()):
+def end_strip(c, name, w, cfg=LayoutConfig(), profile="rect"):
     """The uncovered end strip of a sector [mm]: stock extent minus the design modules and the filler."""
-    k, n, _ = tiling(c, name, w, cfg.fillers, cfg.max_counter_delta)
-    cov = n * module_pitch(c, k, w)
+    k, n, _ = tiling(c, name, w, cfg.fillers, cfg.max_counter_delta, profile)
+    cov = n * module_pitch(c, k, w, profile)
     if cfg.fillers:
-        kf = filler_counters(c, stock_extent(c, name) - cov, w)
-        cov += module_pitch(c, kf, w) if kf >= 2 else 0.0
+        kf = filler_counters(c, stock_extent(c, name) - cov, w, profile)
+        cov += module_pitch(c, kf, w, profile) if kf >= 2 else 0.0
     return stock_extent(c, name) - cov
 
 
-def close_up_offsets(c, w, cfg=LayoutConfig()):
+def close_up_offsets(c, w, cfg=LayoutConfig(), profile="rect"):
     """{sector: mm} the sector moves against its gap direction to start where its chain predecessor ends."""
     prev = sector_chains(c)
     out = {}
@@ -181,7 +190,7 @@ def close_up_offsets(c, w, cfg=LayoutConfig()):
     def off(nm):
         if nm not in out:
             p = prev.get(nm)
-            out[nm] = 0.0 if p is None else off(p) + end_strip(c, p, w, cfg)
+            out[nm] = 0.0 if p is None else off(p) + end_strip(c, p, w, cfg, profile)
         return out[nm]
     for nm in c["crs.sectorNames"]:
         off(nm)
@@ -237,7 +246,7 @@ def stagger_anchor(nm, boxes0, ell, total, margin=50.0):
     return 0.0 if free_p >= free_m else 1.0
 
 
-def feb_scale(c, w, cfg=LayoutConfig()):
+def feb_scale(c, w, cfg=LayoutConfig(), profile="rect"):
     """Factor (<= 1) on the FEB width and two-FEB spacing so the FEBs of neighbouring design modules do not touch
     (1 for a counters file without FEBs)."""
     if "crs.FEBHalfLengths" not in c:
@@ -249,9 +258,9 @@ def feb_scale(c, w, cfg=LayoutConfig()):
         n_side = max(int(c.get(f"crs.FEBBoxesAtSide0{nm}", 0)), int(c.get(f"crs.FEBBoxesAtSide1{nm}", 0)))
         if n_side == 0:
             continue
-        k, _, _ = tiling(c, nm, w, cfg.fillers, cfg.max_counter_delta)
+        k, _, _ = tiling(c, nm, w, cfg.fillers, cfg.max_counter_delta, profile)
         foot = feb_sep + feb_w if n_side == 2 else feb_w
-        f = min(f, (module_pitch(c, k, w) - cfg.feb_margin) / foot)
+        f = min(f, (module_pitch(c, k, w, profile) - cfg.feb_margin) / foot)
     return round(f, 4)
 
 
@@ -297,7 +306,8 @@ def counters_text(design, placement=None, base=M.RUN2_COUNTERS, cfg=LayoutConfig
     for sec, v in placement.moves.items():
         t.set(f"crs.firstCounter{sec}", np.asarray(t.get(f"crs.firstCounter{sec}"), float) + np.asarray(v, float),
               "vec")
-    closed = close_up_offsets(c, w, cfg) if cfg.close_up else {}
+    prof = design.profile
+    closed = close_up_offsets(c, w, cfg, prof) if cfg.close_up else {}
     for sec, dz in closed.items():
         g = np.asarray(c[f"crs.gapDirection{sec}"], float)
         t.set(f"crs.firstCounter{sec}", np.asarray(t.get(f"crs.firstCounter{sec}"), float) - dz * g / np.linalg.norm(g),
@@ -327,7 +337,7 @@ def counters_text(design, placement=None, base=M.RUN2_COUNTERS, cfg=LayoutConfig
             fc = np.asarray(t.get(f"crs.firstCounter{nm}"), float) - frac * (nl - 1) * cfg.stagger_mm * ell
             t.set(f"crs.firstCounter{nm}", fc, "vec")
             staggered[nm] = frac
-    f = feb_scale(c, w, cfg)
+    f = feb_scale(c, w, cfg, prof)
     if "crs.FEBHalfLengths" in c:
         hl = list(np.atleast_1d(c["crs.FEBHalfLengths"]).astype(float))
         t.set("crs.FEBHalfLengths", [hl[0], hl[1] * f, hl[2]], "vec")
@@ -339,10 +349,10 @@ def counters_text(design, placement=None, base=M.RUN2_COUNTERS, cfg=LayoutConfig
     fillers = {}
     if cfg.fillers:
         for nm in names:
-            k, n, _ = tiling(c, nm, w, True, cfg.max_counter_delta)
-            kf = filler_counters(c, stock_extent(c, nm) - n * module_pitch(c, k, w), w)
+            k, n, _ = tiling(c, nm, w, True, cfg.max_counter_delta, prof)
+            kf = filler_counters(c, stock_extent(c, nm) - n * module_pitch(c, k, w, prof), w, prof)
             if kf >= 2:
-                fillers[nm + FILLER] = (kf, nm, n * module_pitch(c, k, w))
+                fillers[nm + FILLER] = (kf, nm, n * module_pitch(c, k, w, prof))
         text += "\nbool crs.layoutJointTiling = true;\n"
         if fillers:
             text = _write_fillers(text, names, fillers)
@@ -427,11 +437,12 @@ def build(design, text, sector_yields=None, cfg=LayoutConfig()):
     w = design.width or float(c["crs.scintillatorBarWidth"])
     joint = bool(c.get("crs.layoutJointTiling", False))
     tile = {nm: ((int(c[f"crs.nCountersPerModule{nm}"]), 1, 1.0) if nm not in stock else
-                 tiling(c, nm, w, joint, cfg.max_counter_delta)) for nm in names}
+                 tiling(c, nm, w, joint, cfg.max_counter_delta, design.profile)) for nm in names}
     builds = {k: M.build(dataclasses.replace(design, counters_per_module=k, segment_gap=segment_gap(c, cfg)), text,
                          sector_yields) for k in sorted({v[0] for v in tile.values()})}
     first = builds[next(iter(builds))]
-    parts = {k: [] for k in ("sector", "module", "layer", "counter", "segment", "center", "halflen")}
+    keys = ("sector", "module", "layer", "counter", "segment", "center", "halflen")
+    parts = {k: [] for k in keys + (("orient",) if first.orient is not None else ())}
     aparts = {k: [] for k in ("abs_sector", "abs_center", "abs_halflen")}
     axes, nl, fib, fib0, pitch = [], [], [], [], []
     for s, nm in enumerate(names):

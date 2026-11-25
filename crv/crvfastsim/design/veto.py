@@ -1,7 +1,9 @@
 """Muon crossings of a designed CRV and the per-muon probability that no sector makes a coincidence.
 
 Crossings: per sector, the muon lines are rotated into the sector-local frame, where every bar is an axis-aligned box,
-and crossed with the core slab method (tracks first culled by the sector's bounding box).
+and crossed with the core slab method (tracks first culled by the sector's bounding box). Triangular prisms
+(module.py, profile "triangle") are crossed through their bounding box, then the chord is clipped by the two slanted
+faces (clip_prisms); chords that miss the prism are dropped.
 
 Veto probability, response fluctuations averaged analytically: per (muon, sector, layer, read-out end) the expected
 PE of the crossed counters are summed (the finder's same-plus-adjacent-counter PE sum); the layer is hit if either
@@ -16,7 +18,9 @@ sector's cuts, combined as the finder combines the hits of one coincidence: the 
 threshold of the member sectors crossed in that layer (filterHits: a hit passes with its own PEthreshold), k the
 lowest of the crossed members (checkHitCombinations: an n-layer combination counts unless every hit needs more than n),
 the slope window and slope difference the loosest (checkCombination) and the minimum cluster PE the lowest
-(clusterProperties). Groups whose members share all cuts reduce to one sector's cuts. With the finder cuts
+(clusterProperties). Groups whose members share all cuts reduce to one sector's cuts. Triangular counters use the
+same layer sum: the about two prisms a track crosses in one layer are neighbouring counters, which the finder's
+same-plus-adjacent-counter sum adds; no per-counter threshold. With the finder cuts
 (default in fom.evaluate) P_coinc also carries the finder's slope test and minimum cluster PE (finder_factor); its
 time and distance cuts are not applied (one muon: hits in time, neighbouring counters).
 """
@@ -54,11 +58,36 @@ def sector_crossings(dg, origin, direction, dtype=np.float64, chunk=4096):
         ib = x[:, 1].astype(np.int64)
         p_in = o[it] + d[it] * x[:, 2:3].astype(dtype) - c[ib]
         p_out = o[it] + d[it] * x[:, 3:4].astype(dtype) - c[ib]
+        if dg.orient is not None:
+            p_in, p_out, ok = clip_prisms(p_in, p_out, h[ib], dg.orient[bars[ib]])
+            it, ib, p_in, p_out = it[ok], ib[ok], p_in[ok], p_out[ok]
         idx.append(np.stack([it, bars[ib]], 1))
         pos.append(np.concatenate([p_in, p_out], 1))
     if not idx:
         return np.zeros((0, 2), np.int64), np.zeros((0, 6), dtype)
     return np.concatenate(idx), np.concatenate(pos).astype(dtype)
+
+
+def clip_prisms(a, b, half, orient):
+    """Chords a -> b [m, 3] (bar-local, bounding-box centre) clipped to triangular prisms: apex at +n (orient +1) or
+    -n (-1), base 2 half[1] at -n / +n, height 2 half[0]; orient 0 rows (rectangles) are kept as they are.
+    Returns (a', b', keep): inside the prism |v| <= (w / 2) (t / 2 - orient u) / t."""
+    a, b = np.asarray(a), np.asarray(b)
+    t, w = 2 * half[:, 0], 2 * half[:, 1]
+    o = np.asarray(orient).astype(a.dtype)
+    tri = o != 0
+    lo, hi = np.zeros(len(a), a.dtype), np.ones(len(a), a.dtype)
+    for s in (1.0, -1.0):
+        nu, nv, h = o * w / 2, s * t, w * t / 4
+        f0 = nu * a[:, 0] + nv * a[:, 1] - h
+        f1 = nu * b[:, 0] + nv * b[:, 1] - h
+        den = f0 - f1
+        tau = f0 / np.where(den != 0, den, 1)
+        lo = np.where(tri & (f0 > 0), np.where(f1 > 0, 2.0, np.maximum(lo, tau)), lo)
+        hi = np.where(tri & (f0 <= 0) & (f1 > 0), np.minimum(hi, tau), hi)
+    keep = hi > lo
+    ab = b - a
+    return a + lo[:, None] * ab, a + hi[:, None] * ab, keep
 
 
 def _paths(axes, box_sector, center, halflen, origin, direction, chunk=4096):

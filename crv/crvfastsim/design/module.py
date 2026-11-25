@@ -14,6 +14,12 @@ first-counter position and the stock extent along g and l.
   the tilt is the angle between the module normal and the stock normal (vertical for the top sectors). Tilted modules
   are louvers: the pitch along g is the projected module width plus the module gap, so a line along n always meets a
   module; at small tilts the pitch grows until neighbouring modules do not overlap, which leaves a hole.
+- ``profile="triangle"``: the counters are isosceles prisms, base ``width`` along g, height ``thickness`` along n,
+  one fiber at the centroid, interleaved apex up / apex down every width / 2 along g with no gap (a layer is a solid
+  slab, a track crosses about two prisms per layer); a module holds 2 x the stock counter count by default (the same
+  module width and channels as the stock module). Each bar keeps its bounding box (``halflen``) and has an
+  ``orient`` (+1 apex towards +n, -1 towards -n; None for rectangular designs): crossings are clipped to the prism
+  (veto.py) and the optics needs the counter's own lookup tables (optics.py, table_mode "native").
 Every bar of a sector shares the sector axes, so in sector-local coordinates (rows of ``axes``: thickness, width,
 length) every bar and absorber is an axis-aligned box: crossings use the core slab method there.
 """
@@ -29,6 +35,7 @@ from .. import geometry as G
 
 RUN2_COUNTERS = "Offline/Mu2eG4/geom/crv_counters_v10.txt"
 ABSORBER_MATERIALS = ("G4_Al", "MildSteel", "G4_Pb", "G4_POLYETHYLENE")
+PROFILES = ("rect", "triangle")
 
 
 @dataclass(frozen=True)
@@ -47,6 +54,7 @@ class Design:
     coincidence_layers: int | None = None  # k of the k-of-N layer rule; None = stock (N minus the stock spare layers)
     spare_layers: int | None = None        # or k = N - spare_layers in every sector (exclusive with coincidence_layers)
     pe_threshold: float | None = None      # PE per layer-end for a hit; None = the stock threshold of each sector
+    profile: str = "rect"                  # counter cross-section: "rect" or "triangle" (module docstring)
 
     def __post_init__(self):
         if self.n_layers is not None and not 1 <= self.n_layers <= 12:
@@ -75,6 +83,8 @@ class Design:
             raise ValueError("pe_threshold must be finite and > 0")
         if self.absorber_material is not None and self.absorber_material not in ABSORBER_MATERIALS:
             raise ValueError(f"absorber_material must be one of {ABSORBER_MATERIALS}")
+        if self.profile not in PROFILES:
+            raise ValueError(f"profile must be one of {PROFILES}")
 
     @classmethod
     def from_dict(cls, d):
@@ -108,6 +118,12 @@ class DesignGeometry:
     stock_fiber: np.ndarray      # [nsec] mm
     module_pitch: np.ndarray     # [nsec] along g, mm
     design: Design = field(default_factory=Design)
+    orient: np.ndarray | None = None   # [nbars] triangular prisms: +1 apex towards +n, -1 towards -n; None: rectangles
+
+    @property
+    def triangle(self):
+        """[nbars] bool: the bar is a triangular prism."""
+        return np.zeros(self.nbars, bool) if self.orient is None else self.orient != 0
 
     @property
     def nbars(self):
@@ -121,6 +137,21 @@ class DesignGeometry:
 def stock_fiber_mm(yield_per_mev):
     """Stock fiber diameter of a sector from its scintillation yield (CRV-T 1.8 mm: 39794 /MeV; else 1.4 mm)."""
     return 1.8 if yield_per_mev >= 39000 else 1.4
+
+
+def counter_offsets(ncnt, w, g_small, g_large, profile="rect"):
+    """Low edges along g of the counters of one module (bounding boxes) and the module's span: the stock small / large
+    gap pattern, or interleaved prisms every w / 2 with no gap (triangle)."""
+    ic = np.arange(ncnt)
+    if profile == "triangle":
+        return ic * (w / 2.0), (ncnt + 1) * w / 2.0
+    cg = (ic // 2) * (w + g_large) + ((ic + 1) // 2) * (w + g_small)
+    return cg, ncnt * w + (ncnt // 2 - 1) * g_large + (ncnt // 2) * g_small
+
+
+def default_counters(ncnt_stock, profile="rect"):
+    """Counters per module of a design that does not set it: stock, or twice stock for prisms (same module width)."""
+    return 2 * ncnt_stock if profile == "triangle" else ncnt_stock
 
 
 def _rot(n, g, theta):
@@ -150,7 +181,8 @@ def build(design=Design(), counters=RUN2_COUNTERS, sector_yields=None):
     t = design.thickness or t_s
     w = design.width or w_s
     theta = math.radians(design.tilt_deg)
-    rows = {k: [] for k in ("sector", "module", "layer", "counter", "segment", "center", "halflen")}
+    tri = design.profile == "triangle"
+    rows = {k: [] for k in ("sector", "module", "layer", "counter", "segment", "center", "halflen", "orient")}
     arows = {k: [] for k in ("sector", "center", "halflen")}
     axes, nl_out, fib, fib0, pitch_out = [], [], [], [], []
     for isec, name in enumerate(names):
@@ -168,7 +200,7 @@ def build(design=Design(), counters=RUN2_COUNTERS, sector_yields=None):
                 for j in range(nl - 1)]
         length = float(c[f"crs.scintillatorBarLength{name}"])
         nmod_s, ncnt_s = int(c[f"crs.nModules{name}"]), int(c[f"crs.nCountersPerModule{name}"])
-        ncnt = design.counters_per_module or ncnt_s
+        ncnt = design.counters_per_module or default_counters(ncnt_s, design.profile)
         first = np.asarray(c[f"crs.firstCounter{name}"], float)
         y0 = (sector_yields or {}).get(name)
         f0 = stock_fiber_mm(y0) if y0 is not None else 1.4
@@ -179,7 +211,8 @@ def build(design=Design(), counters=RUN2_COUNTERS, sector_yields=None):
         extent = nmod_s * pitch_stock
         # counters of one module (module-local, before tilt): positions along g, layer offsets along n / off
         ic = np.arange(ncnt)
-        cg = (ic // 2) * (w + g_large) + ((ic + 1) // 2) * (w + g_small)
+        cg, span_mod = counter_offsets(ncnt, w, g_small, g_large, design.profile)
+        orient = np.where(ic % 2 == 0, 1, -1) if tri else np.zeros(ncnt, np.int64)
         lay = np.zeros((nl, 3))
         for j in range(1, nl):
             lay[j] = lay[j - 1] + t * ldir + (0.0 if counters_only else gaps[j - 1]) * ldir + off * odir
@@ -207,7 +240,7 @@ def build(design=Design(), counters=RUN2_COUNTERS, sector_yields=None):
                 abs_rel.append((cc[0] * n_t + cc[1] * g_t + cc[2] * ell, np.array([gaps[j] / 2, span / 2, length / 2])))
         # pitch: the projected module width plus the module gap (stock at no tilt, louvers that tile the stock plane
         # when tilted); grown until neighbouring modules do not overlap (small tilts leave a hole of that growth)
-        pitch = (ncnt * w + (ncnt // 2 - 1) * g_large + (ncnt // 2) * g_small) * math.cos(theta) + g_mod
+        pitch = span_mod * math.cos(theta) + g_mod
         loc0 = rel_rot @ A.T
         lo0, hi0 = loc0 - half, loc0 + half
         for _ in range(2000):
@@ -231,6 +264,7 @@ def build(design=Design(), counters=RUN2_COUNTERS, sector_yields=None):
                 rows["layer"].append(np.repeat(np.arange(nl), ncnt))
                 rows["counter"].append(np.tile(ic + im * ncnt, nl))
                 rows["segment"].append(np.full(len(cen), k))
+                rows["orient"].append(np.tile(orient, nl))
             for ac, ah in abs_rel:
                 arows["sector"].append(isec)
                 arows["center"].append(mc + ac)
@@ -243,13 +277,15 @@ def build(design=Design(), counters=RUN2_COUNTERS, sector_yields=None):
         cat["center"].astype(float), cat["halflen"].astype(float), np.asarray(arows["sector"], np.int64),
         np.asarray(arows["center"], float).reshape(na, 3), np.asarray(arows["halflen"], float).reshape(na, 3), mat,
         np.asarray(nl_out, np.int64), np.asarray(fib, float), np.asarray(fib0, float), np.asarray(pitch_out, float),
-        design)
+        design, cat["orient"].astype(np.int64) if tri else None)
 
 
 def to_crv_geometry(dg):
     """The CRVGeometry of an untilted design (axis-aligned bars), for comparison with geometry.from_offline_config."""
     if dg.design.tilt_deg != 0.0:
         raise ValueError("tilted designs have no axis-aligned CRVGeometry")
+    if dg.orient is not None:
+        raise ValueError("triangular counters have no CRVGeometry (boxes)")
     a = np.abs(np.rint(dg.axes)).astype(int)
     l2w = np.argmax(a, axis=2)[dg.sector]                      # Mu2e axis of (thickness, width, length)
     hl = np.zeros_like(dg.halflen)
@@ -264,10 +300,16 @@ def readout_sides(reflector):
 
 def cost_terms(dg, reflectors, density):
     """Cost-proxy terms: scintillator volume [m^3], channels, absorber mass [t] (density in g/cm^3), fiber length x
-    diameter^2 [m mm^2]."""
-    vol = float(np.prod(2 * dg.halflen, axis=1).sum()) * 1e-9
+    diameter^2 [m mm^2]. A triangular prism has half its bounding box's volume and one fiber (two for rectangles)."""
     nside = np.array([len(readout_sides(reflectors[n])) for n in dg.sector_names])
-    channels = int((2 * nside[dg.sector]).sum())
     absmass = float(np.prod(2 * dg.abs_halflen, axis=1).sum()) * 1e-9 * density if len(dg.abs_halflen) else 0.0
-    fiber = float((2 * 2 * dg.halflen[:, 2] * 1e-3 * dg.fiber_diameter[dg.sector] ** 2).sum())
+    if dg.orient is None:
+        vol = float(np.prod(2 * dg.halflen, axis=1).sum()) * 1e-9
+        channels = int((2 * nside[dg.sector]).sum())
+        fiber = float((2 * 2 * dg.halflen[:, 2] * 1e-3 * dg.fiber_diameter[dg.sector] ** 2).sum())
+    else:
+        nfib = np.where(dg.triangle, 1, 2)
+        vol = float((np.prod(2 * dg.halflen, axis=1) * np.where(dg.triangle, 0.5, 1.0)).sum()) * 1e-9
+        channels = int((nfib * nside[dg.sector]).sum())
+        fiber = float((nfib * 2 * dg.halflen[:, 2] * 1e-3 * dg.fiber_diameter[dg.sector] ** 2).sum())
     return dict(scint_m3=vol, channels=channels, absorber_t=absmass, fiber_m_mm2=fiber)

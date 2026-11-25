@@ -47,6 +47,11 @@ def validate(params: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError(f"crv_design: set all of {tuple(kit_task.COST_WEIGHTS)} or none")
     if given and (any(float(p[k]) < 0 for k in given) or sum(float(p[k]) for k in given) <= 0):
         raise ValueError("crv_design: cost weights must be >= 0 with a positive sum")
+    if p["profile"] not in ("",) + kit_task.PROFILES:
+        raise ValueError(f"crv_design: profile must be one of {kit_task.PROFILES} or empty")
+    if p["profile"] == "triangle":
+        raise ValueError("crv_design: triangular counters need their own lookup tables, which the kit does not stage "
+                         "(kit_task run --table-mode native --native-lookup-dir DIR)")
     kit_task.remedy_words(p["place_remedies"])
     if p["place_remedies"] and not p["place_policy"]:
         raise ValueError("crv_design: place_remedies need a place_policy")
