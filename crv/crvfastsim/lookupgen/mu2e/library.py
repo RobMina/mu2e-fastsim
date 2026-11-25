@@ -44,6 +44,15 @@ VALIDATION = {"v6": ("tested, not closed",
                           "comparison")}
 
 
+AXES_TRIANGLE = dict(AXES, x=("mm", "along the height from the centroid (the fiber) towards the apex, not folded"),
+                     y=("mm", "|y| along the base from the centroid (the table is mirror symmetric in y); one fiber"))
+
+
+def axes_of(c):
+    """Axis descriptions of the table of counter c (the triangle's table frame differs: sections docstring)."""
+    return AXES_TRIANGLE if c.profile == "triangle" else AXES
+
+
 def table_name(c):
     """crv.lookup.<length>_<reflector> for the stock cross-section, crv.lookup.<section tag>_<...> otherwise."""
     return f"crv.lookup.{G.name(c)}" if G.is_stock(c) else f"crv.lookup.{G.section_tag(c)}_{G.name(c)}"
@@ -91,7 +100,7 @@ def fields(c, model, pieces, arrays, notes=(), commit=None, created_utc=None):
     status, record = VALIDATION[model]
     axes = [Axis(name=k, unit=u, edges=arrays[f"edges_{k}"], frame="counter", array=f"edges_{k}",
                  policy="refuse", description=d + "; outside the edges the stock findBin has no bin: the step makes "
-                 "no photons from that table").describe() for k, (u, d) in AXES.items()]
+                 "no photons from that table").describe() for k, (u, d) in axes_of(c).items()]
     outputs = []
     for t, st in TABLES.items():
         outputs += [dict(name=f"{t}_prob", unit="1", dtype="float32",
@@ -100,7 +109,7 @@ def fields(c, model, pieces, arrays, notes=(), commit=None, created_utc=None):
                          description="arrival-time weights per ns (255 = all arrivals)"),
                     dict(name=f"{t}_emis", unit="1", dtype="uint8",
                          description="weights per number of fiber (Y11) emissions")]
-    config = dict(counter=dict(c.__dict__), model=model, writer=W.WRITER[model], pieces=per_st)
+    config = dict(counter=G.record(c), model=model, writer=W.WRITER[model], pieces=per_st)
     return dict(
         name=table_name(c), subsystem="crv", version=1, kind="binned",
         description=(f"CRV photon lookup table {G.name(c)} ({'stock' if G.is_stock(c) else G.section_tag(c)} "
@@ -118,7 +127,7 @@ def fields(c, model, pieces, arrays, notes=(), commit=None, created_utc=None):
                        fibre_core=W.fibre_core_record()),
         release=release, seeds=seeds,
         geometry=dict(tag=f"{'stock' if G.is_stock(c) else G.section_tag(c)}_{G.name(c)}",
-                      hash=digest(dict(c.__dict__))),
+                      hash=digest(G.record(c))),
         config_hash=digest(config),
         split=dict(training=None, held_out=None, rule="not applicable: a generated table, nothing is fitted"),
         dtype=dict(storage={k: str(v.dtype) for k, v in sorted(arrays.items())}, compute=list(LM.COMPUTE_DTYPES),
@@ -140,7 +149,7 @@ def fields(c, model, pieces, arrays, notes=(), commit=None, created_utc=None):
                                       f"{1 << STEP_BITS}); stopped chains are counted, see docs/lookupgen.md"),
                      dict(name="optical model", tested=status != "not validated",
                           description=f"{model!r}: {MODEL_SOURCES[O.get(model).name]}")]
-        + [dict(name=f"stock quirk {i + 1}", description=q, tested=True) for i, q in enumerate(W.QUIRKS)],
+        + [dict(name=f"stock quirk {i + 1}", description=q, tested=True) for i, q in enumerate(W.quirks(c))],
         created_utc=created_utc or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         notes="\n".join(notes) if notes else None,
     )

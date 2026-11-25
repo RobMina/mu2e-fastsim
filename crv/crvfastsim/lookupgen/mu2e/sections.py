@@ -9,6 +9,10 @@ from the fiber ends. SiPM 0 reads the fiber at y = -separation/2 at the -z end.
 The bins follow the stock table: x (x >= 0), y, z edges per cross-section (the stock cross-section keeps the stock
 edges exactly; any other gets ``general_xy_edges``, the stock pattern moved to the new dimensions), z edges from the
 counter length (``z_edges``), and fixed beta, theta, phi and r edges; bin numbers are row-major in ORDER.
+
+Triangular counters (``triangle``): an isosceles prism, base ``width`` along y, height ``thickness`` along x, one fiber
+at the centroid (the origin). Its table frame differs: x runs from the base (-thickness/3) to the apex
+(+2 thickness/3) and is not folded, y >= 0 is folded (the triangle is mirror symmetric in y); ``triangle_xy_edges``.
 """
 import math
 
@@ -50,10 +54,29 @@ def design(thickness, width, length, reflector=0, fiber_diameter=2.0, hole_clear
                    fiber_separation=width * STOCK_SEPARATION / STOCK_WIDTH, fiber_diameter=fiber_diameter, **kw)
 
 
+def triangle(thickness, width, length, reflector=0, fiber_diameter=2.0, hole_clearance=(1.3, 0.3)):
+    """A triangular counter (module docstring): base ``width``, height ``thickness``, one fiber at the centroid in a
+    hole with the stock clearance (semi-axes r + 1.3 along x, r + 0.3 along y), the stock coating on every face."""
+    r = fiber_diameter / 2.0
+    kw = dict(STOCK, hole_rx=r + hole_clearance[0], hole_ry=r + hole_clearance[1])
+    return Counter(length=float(length), reflector=int(reflector), thickness=thickness, width=width,
+                   fiber_separation=0.0, fiber_diameter=fiber_diameter, profile="triangle", n_fibers=1, **kw)
+
+
 def is_stock(c):
     """True for the stock cross-section (any length and end)."""
-    return (c.thickness, c.width, c.fiber_separation, c.fiber_diameter, c.hole_rx, c.hole_ry) == \
+    return c.profile == "rect" and c.n_fibers == 2 and \
+        (c.thickness, c.width, c.fiber_separation, c.fiber_diameter, c.hole_rx, c.hole_ry) == \
         (STOCK_THICKNESS, STOCK_WIDTH, STOCK_SEPARATION, STOCK_FIBER_DIAMETER, 2.0, 1.0)
+
+
+def record(c):
+    """The counter as a dict for the records (run pieces, provenance, manifests): ``profile`` and ``n_fibers`` only
+    when they differ from the rectangle's defaults, so the records of rectangular counters are unchanged."""
+    d = dict(c.__dict__)
+    if d.get("profile") == "rect" and d.get("n_fibers") == 2:
+        del d["profile"], d["n_fibers"]
+    return d
 
 
 def name(c):
@@ -65,6 +88,8 @@ def section_tag(c):
     """Cross-section tag, e.g. t24p71_w25p00_f2p0_s12p66 (thickness, width, fiber diameter, fiber separation)."""
     def f(v, d):
         return f"{v:.{d}f}".replace(".", "p")
+    if c.profile == "triangle":                      # e.g. tri_t30p00_w42p38_f1p5 (one fiber, no separation)
+        return f"tri_t{f(c.thickness, 2)}_w{f(c.width, 2)}_f{f(c.fiber_diameter, 1)}"
     return f"t{f(c.thickness, 2)}_w{f(c.width, 2)}_f{f(c.fiber_diameter, 1)}_s{f(c.fiber_separation, 2)}"
 
 
@@ -117,10 +142,32 @@ def general_xy_edges(c):
     return np.array(x, np.float64), np.array(y, np.float64)
 
 
+def triangle_xy_edges(c):
+    """x and y edges of a triangular counter (module docstring), the stock pattern on the outer triangle: 0.5 mm steps
+    within 3 mm of the fiber (x in [-3, 3], y in [0, 3]), then equal steps of at most 3 mm up to 0.89 mm from each
+    outer end (base x = -T/3, apex x = 2T/3, base corner y = W/2), then 0.39 mm from it and the end itself."""
+    x0, x1, y1 = -c.thickness / 3.0, 2.0 * c.thickness / 3.0, c.width / 2.0
+
+    def towards(a, b):           # from a (fiber region edge) to the outer end b
+        s = 1.0 if b > a else -1.0
+        hi = b - s * 0.89
+        if (hi - a) * s <= 0.0:
+            raise ValueError("counter too small for the triangle binning rule")
+        n = max(1, math.ceil(abs(hi - a) / 3.0 - 1e-9))
+        return [a + (hi - a) * i / n for i in range(1, n + 1)] + [b - s * 0.39, b]
+    x = sorted(towards(-3.0, x0)) + [0.5 * i for i in range(-6, 7)] + towards(3.0, x1)
+    y = [0.5 * i for i in range(7)] + towards(3.0, y1)
+    return np.array(x, np.float64), np.array(y, np.float64)
+
+
 def edges(c):
     """All bin edges of the table: dict x, y, z, beta, theta, phi, r (r: core radius / 5 steps, as stock)."""
     if is_stock(c):
         x, y = np.array(_STOCK_X), np.array(_STOCK_Y)
+    elif c.profile == "triangle":
+        x, y = triangle_xy_edges(c)
+    elif c.profile != "rect":
+        raise ValueError(f"no Mu2e binning rule for profile {c.profile!r}")
     else:
         x, y = general_xy_edges(c)
     beta = np.array([1.0 / b for b in _INV_BETA])

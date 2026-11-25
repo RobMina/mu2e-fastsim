@@ -26,9 +26,20 @@ COMMIT_ENV = "LOOKUPGEN_COMMIT"
 
 def counter_from(a):
     if a.section == "stock":
+        if a.profile != "rect":
+            raise SystemExit("--section stock is rectangular; give THICKNESSxWIDTH for a triangle")
         return G.stock(a.length, a.reflector)
     t, w = (float(x) for x in a.section.split("x"))
-    return G.design(t, w, a.length, a.reflector, fiber_diameter=a.fiber_diameter)
+    make = G.triangle if a.profile == "triangle" else G.design
+    return make(t, w, a.length, a.reflector, fiber_diameter=a.fiber_diameter)
+
+
+def same_counter(rec, c):
+    """A piece's counter record (json text) is counter c (records without profile / n_fibers are rectangles)."""
+    d = json.loads(rec)
+    d.setdefault("profile", "rect")
+    d.setdefault("n_fibers", 2)
+    return d == json.loads(json.dumps(c.__dict__))
 
 
 def parse_bins(spec, n):
@@ -47,6 +58,9 @@ def main(argv=None):
         p = sub.add_parser(name)
         p.add_argument("--section", default="stock", help="'stock' or THICKNESSxWIDTH in mm (design counter)")
         p.add_argument("--fiber-diameter", type=float, default=2.0)
+        p.add_argument("--profile", default="rect", choices=("rect", "triangle"),
+                       help="counter cross-section: rect (two fibers) or triangle (base WIDTH, height THICKNESS, one "
+                            "fiber at the centroid; docs/lookupgen.md)")
         p.add_argument("--length", type=float, required=True)
         p.add_argument("--reflector", type=int, default=0)
         p.add_argument("--out", required=True)
@@ -97,7 +111,7 @@ def main(argv=None):
         if a.resume and os.path.exists(a.out):
             z = np.load(a.out)
             same = (int(z["simtype"]) == a.simtype and int(z["nphot"]) == nphot and str(z["model"]) == a.model
-                    and json.loads(str(z["counter"])) == json.loads(json.dumps(ctr.__dict__)))
+                    and same_counter(str(z["counter"]), ctr))
             if not same:
                 raise SystemExit(f"{a.out}: different sim type, photons, model or counter; not resuming")
             keep = z["complete"] & np.isin(z["bins"], bins)
@@ -127,7 +141,7 @@ def main(argv=None):
             tmp = a.out + ".tmp.npz"
             np.savez_compressed(tmp, **{k: res[k] for k in KEYS}, complete=res["complete"], nphot=nphot,
                                 simtype=a.simtype, model=a.model, stats=json.dumps(res["stats"]),
-                                counter=json.dumps(ctr.__dict__))
+                                counter=json.dumps(G.record(ctr)))
             os.replace(tmp, a.out)
 
         if len(bins) == 0:
@@ -165,7 +179,7 @@ def main(argv=None):
             z = np.load(f)
             if str(z["model"]) != a.model:
                 raise SystemExit(f"{f}: made with model {z['model']}, not {a.model}")
-            if json.loads(str(z["counter"])) != json.loads(json.dumps(ctr.__dict__)):
+            if not same_counter(str(z["counter"]), ctr):
                 raise SystemExit(f"{f}: made for a different counter")
             if "complete" in z.files and not z["complete"].all():
                 raise SystemExit(f"{f}: has incomplete bins")

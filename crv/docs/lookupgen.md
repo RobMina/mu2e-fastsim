@@ -165,6 +165,34 @@ moved to their dimensions (`mu2e.sections.general_xy_edges`). z, beta, theta, ph
 The tables are normalised as the released ones: probability per photon generated in the bin. A fiber other than
 1.4 mm therefore enters through the table, and the response uses the 1.4 mm-fiber scintillation yield.
 
+## Triangular counters
+
+`--profile triangle` (`mu2e.sections.triangle(thickness, width, length, reflector, fiber_diameter)`) makes the table
+of a triangular counter: an isosceles prism with its base (`width`) along y and its height (`thickness`) along x, one
+fiber at the centroid in a hole with the stock clearance, the stock TiO2 coating (0.25 mm, same surface model) on all
+three faces, sharp corners. The core (scint-fibre-fastsim) traces a polygon cross-section face by face; the fiber,
+fiber ends, SiPMs and optics are those of the rectangular counter.
+
+The table frame differs from the stock one, so Offline's MakeCrvPhotons (rectangular, two fibers) cannot read these
+tables as they are:
+
+| | rectangular counters | triangle |
+|---|---|---|
+| origin | counter centre | centroid = fiber axis (base at x = -T/3, apex at x = +2T/3) |
+| x bins | x >= 0 (mirror symmetric in x) | -T/3 to 2T/3, not folded: 0.5 mm steps within 3 mm of the fiber, steps of at most 3 mm, and 0.89 / 0.39 mm from the base and from the apex |
+| y bins | full width (two fibers) | y >= 0 (mirror symmetric in y): 0.5 mm steps to 3 mm, then as x up to W/2 |
+| SiPM 0 | fiber at -y, -z end | the fiber, -z end |
+| fiber-Cerenkov photons | start in the +y fiber, scored at the -y fiber (stock quirk) | start in the fiber and are scored on it |
+| header | | thickness / width half-dimensions of the rectangle formulas, fiber separation 0, corner radius 0 |
+
+Bins straddle the slanted faces: their probability is per photon generated inside the scintillator, as for the stock
+rounded corners, so a bin half outside the triangle has half the photons. Manifests name the table
+`crv.lookup.tri_t<T>_w<W>_f<d>_<length>_<reflector>`; the provenance records the profile.
+
+Check against the rectangle (tests `test_triangle` in scint-fibre-fastsim): the polygon tracing run on a rectangle
+(profile `box`) gives exactly the counts of the rectangular counter with sharp corners (same photons, same random
+numbers, both dtypes); the triangle's photon sources fill exactly the triangle minus the hole.
+
 ## Running
 
 ```bash

@@ -334,6 +334,65 @@ def test_assemble_writes_the_table_and_its_provenance(tmp_path):
     assert m3["generator"]["configuration"]["devices"] == ["gpu A", "gpu B"]
 
 
+@pytest.mark.parametrize("t,w,d", [(30.0, 42.38, 1.548), (20.0, 30.0, 1.4)])
+def test_triangle_counters_get_valid_edges(t, w, d):
+    c = G.triangle(t, w, 3000.0, 0, fiber_diameter=d)
+    assert not G.is_stock(c) and c.profile == "triangle" and c.n_fibers == 1 and c.fiber_separation == 0.0
+    assert (c.hole_rx, c.hole_ry) == pytest.approx((d / 2 + 1.3, d / 2 + 0.3))
+    e = G.edges(c)
+    for k in ("x", "y"):
+        assert np.all(np.diff(e[k]) > 0)
+    assert (e["x"][0], e["x"][-1], e["y"][0], e["y"][-1]) == pytest.approx((-t / 3, 2 * t / 3, 0.0, w / 2))
+    assert np.all(np.isin(np.arange(-6, 7) * 0.5, e["x"])) and np.all(np.isin(np.arange(7) * 0.5, e["y"]))
+    assert G.section_tag(c) == f"tri_t{t:.2f}_w{w:.2f}_f{d:.1f}".replace(".", "p")
+    assert G.record(c)["profile"] == "triangle" and "profile" not in G.record(G.design(t, w, 3000.0, 0))
+    assert len(W.quirks(c)) == 2 and W.quirks(G.stock(3000)) == W.QUIRKS
+
+
+def test_triangle_bins_outside_the_triangle_generate_nothing():
+    pytest.importorskip("jax")
+    from crvfastsim.lookupgen.core.run import generate
+    c = G.triangle(30.0, 42.38, 1045.0, 1, fiber_diameter=1.548)
+    e = G.edges(c)
+    nx, ny, nz = (len(e[k]) - 1 for k in ("x", "y", "z"))
+    ix_apex, iy_edge = nx - 1, ny - 1               # apex x bin at the base-corner |y|: outside the triangle
+    ix_mid = int(np.searchsorted(e["x"], 5.0)) - 1  # x ~ 5 mm, y ~ 4-7 mm: inside
+    iy_mid = int(np.searchsorted(e["y"], 5.0)) - 1
+    bins = [(ix_apex * ny + iy_edge) * nz + 5, (ix_mid * ny + iy_mid) * nz + 5]
+    r = generate(c, G.binning(c), 0, np.array(bins), 300, dtype="float32", seed=1, lanes=512, chunk_iters=400)
+    assert r["gen"][0] == 0 and r["nall"][0] == 0 and r["gen"][1] == 300
+
+
+def test_assemble_a_triangle_table(tmp_path):
+    import json
+    from crvfastsim.lookupgen.__main__ import main
+    c = G.triangle(30.0, 42.38, 1045.0, 1, fiber_diameter=1.548)
+    pieces = []
+    for st in (0, 1, 2):
+        n = G.n_bins(c, st)
+        f = str(tmp_path / f"s{st}.npz")
+        z = {k: np.zeros(n, np.int32) for k in ("gen", "nall")}
+        z.update(bins=np.arange(n), ht=np.zeros((n, 150), np.int32), he=np.zeros((n, 10), np.int32),
+                 hta=np.zeros((n, 150), np.int32), hea=np.zeros((n, 10), np.int32))
+        np.savez(f, **z, complete=np.ones(n, bool), nphot=2500 if st == 2 else 25000, simtype=st, model="current",
+                 stats=json.dumps({"dtype": "float32", "model": "current", "max_steps": 65536, "capped": 0}),
+                 counter=json.dumps(G.record(c)))
+        pieces.append(f)
+    out = str(tmp_path / "LookupTable_1045_1")
+    common = ["--length", "1045", "--reflector", "1", "--section", "30x42.38", "--fiber-diameter", "1.548"]
+    with pytest.raises(SystemExit):                 # the pieces are for the triangle, not the rectangle
+        main(["assemble"] + common + ["--out", out] + pieces)
+    assert main(["assemble"] + common + ["--profile", "triangle", "--out", out] + pieces) == 0
+    p = json.load(open(out + ".provenance.json"))
+    assert p["counter"]["profile"] == "triangle" and len(p["quirks"]) == 2
+    m = json.load(open(out + ".manifest.json"))
+    assert m["name"] == "crv.lookup.tri_t30p00_w42p38_f1p5_1045_1"
+    assert "not folded" in m["axes"][0]["description"]
+    from crvfastsim.response import lookup
+    L = lookup.load("LookupTable_1045_1", str(tmp_path))
+    assert L.edges["x"][0] == pytest.approx(-10.0) and L.edges["y"][0] == 0.0 and L.fiber_separation == 0.0
+
+
 def test_validation_status_of_each_model():
     """The status a new manifest is written with (core/docs/libraries.md): the current model was measured against a
     CRVStandalone build of the same optics, without criteria declared before the comparison."""

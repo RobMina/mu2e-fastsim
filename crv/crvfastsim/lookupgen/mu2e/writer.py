@@ -106,6 +106,12 @@ QUIRKS = (
 )
 
 
+def quirks(c):
+    """The stock quirks a table of counter c reproduces: a one-fiber counter scores its fiber-Cerenkov photons on the
+    fiber they start in (no second fiber), so the second quirk does not apply."""
+    return QUIRKS if c.n_fibers == 2 else (QUIRKS[0], QUIRKS[2])
+
+
 def piece_provenance(stats):
     """The run settings of one piece (and of the run it was resumed from) that change the counts."""
     keys = ("dtype", "model", "seed", "max_steps", "capped", "forced", "badsrc", "stuck", "photons", "commit", "device",
@@ -136,7 +142,7 @@ def fibre_core_record():
 def table_provenance(c, model, pieces, notes=()):
     """Sidecar record of one table: counter, optical model, the reproduced stock quirks, per sim type the pieces with
     photons per bin, dtype and step limit, and free-text notes. The version-6 file has no metadata field."""
-    return {"format": "LookupTable version %d.%d" % VERSION, "counter": dict(c.__dict__), "name": G.name(c),
+    return {"format": "LookupTable version %d.%d" % VERSION, "counter": G.record(c), "name": G.name(c),
             "stock_section": bool(G.is_stock(c)), "model": model, "writer": WRITER[model],
-            "fiber_decay_time_in_header": 0.0, "quirks": list(QUIRKS),
+            "fiber_decay_time_in_header": 0.0, "quirks": list(quirks(c)),
             "parts": {G.SIM_TYPES[st]: v for st, v in pieces.items()}, "notes": list(notes)}
