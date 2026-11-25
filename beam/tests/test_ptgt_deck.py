@@ -81,3 +81,60 @@ def test_ral_target_matches_the_deck_arithmetic():
         assert np.allclose(0.5 * (a + b), 0.5 * (ring + hub))                               # rodcenter
         e, g = (b - a) / np.linalg.norm(b - a), (ring - hub) / np.linalg.norm(ring - hub)
         assert np.allclose(e, g, atol=1e-12)                                                # along hub -> ring
+
+
+STICKMAN = """// a Stickman block (the v1.0 values; 5 plates)
+int targetPS_numberOfPlates = 5;
+vector<string> targetPS_plateMaterial = { "Inconel718", "Inconel718", "Inconel718", "Inconel718", "Inconel718" };
+vector<double> targetPS_rOut = { 3.15, 3.15, 3.15, 3.15, 3.15 }; // core radius
+int targetPS_nStickmanFins = 3;
+vector<double> targetPS_plateFinAngles = {285.,165.,45.};
+double targetPS_plateFinOuterRadius    = 18.075;
+double targetPS_plateFinWidth          = 2.0;
+double targetPS_plateCenterToLugCenter = 19.6;
+double targetPS_plateLugInnerRadius    = 1.525;
+double targetPS_plateLugOuterRadius    = 3.0;
+vector<double> targetPS_plateThickness = { 5.0, 5.0, 5.0, 5.0, 5.0 };
+vector<double> targetPS_plateLugThickness = { 6.0, 6.0, 6.0, 6.0, 6.0 };
+bool targetPS_addFilletToPlateCore = true;
+double targetPS_spacerHalfLength  = 1.5;
+double targetPS_supportRingLength          = 8.1;
+double targetPS_supportRingInnerRadius     = 15.0;
+double targetPS_supportRingOuterRadius     = 17.0;
+string targetPS_supportRingMaterial        = "Inconel718";
+"""
+
+
+def test_stickman_target(tmp_path):
+    f = tmp_path / "s.txt"
+    f.write_text(STICKMAN)
+    cfg = K.read_simpleconfig(str(f))
+    assert cfg["targetPS_numberOfPlates"] == 5 and cfg["targetPS_plateFinAngles"] == [285.0, 165.0, 45.0]
+    assert cfg["targetPS_addFilletToPlateCore"] is True and cfg["targetPS_supportRingMaterial"] == "Inconel718"
+    t = K.stickman_target(cfg, mat=1)
+    half = 8.1 + 3.0 + 15.0                                          # ring + 2 spacer halves + 5 x 6 / 2
+    assert (t.z_lo, t.z_hi) == (-half, half) and t.n_cone == 7 and t.n_box == 21 and len(t.cy) == 3
+    assert set(t.mat.tolist()) == {1}
+    z0 = -half + 11.1                                                 # first plate's -z face
+    a45 = np.deg2rad(45.0)
+    pts = np.array([[0, 0, z0 + 2.5], [0, 0, z0 + 5.5], [10 * np.cos(a45), 10 * np.sin(a45), z0 + 2.5],
+                    [10 * np.cos(a45), 10 * np.sin(a45), z0 + 5.5], [19.6 * np.cos(a45), 19.6 * np.sin(a45), 0.0],
+                    [16.0, 0, -half + 4.0], [16.0, 0, 0.0], [10.0, 0, z0 + 2.5]])
+    seg = t.locate(pts)
+    assert seg[0] == 0 and seg[1] == -1 and seg[2] >= 7 and seg[3] == -1          # core; gap; fin; gap beside the fin
+    assert seg[4] >= 7 + 21 and seg[5] == 5 and seg[6] == -1 and seg[7] == -1     # lug cylinder; ring; no ring mid-way
+    e, n = D_slice(t)
+    assert n == 7 and np.allclose(e[:8], [-half, z0, z0 + 6, z0 + 12, z0 + 18, z0 + 24, z0 + 30, half])
+    r, th, lug = K.stickman_6d((3.15, 3.15, 3.15), (5.0, 5.0, 5.0), n=5)
+    assert np.allclose(r, 3.15) and np.allclose(th, 5.0) and np.allclose(lug, [5.0, 5.75, 5.75, 5.75, 5.0])
+    r, th, _ = K.stickman_6d((2.0, 3.0, 4.5), (3.0, 8.0, 4.0), n=5)
+    assert np.allclose([r[0], r[2], r[4], th[0], th[2], th[4]], [2.0, 3.0, 4.5, 3.0, 8.0, 4.0])
+    t6 = K.stickman_target(cfg, mat=1, r_out=r, thickness=th, lug=K.stickman_6d((2.0, 3.0, 4.5), (3.0, 8.0, 4.0), n=5)[2])
+    assert t6.z_hi == pytest.approx(8.1 + 3.0 + 0.5 * (3.0 + th[1] + th[2] + th[3] + 0.75 * 3 + 4.0))
+    with pytest.raises(ValueError):
+        K.stickman_target(cfg, thickness=np.full(5, 7.0))            # lug 6 < thickness 7
+
+
+def D_slice(t):
+    from beamfastsim import ptgt_device as D
+    return D.slice_edges(t)

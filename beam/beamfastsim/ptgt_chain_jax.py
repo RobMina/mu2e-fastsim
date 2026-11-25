@@ -43,7 +43,8 @@ class Static(NamedTuple):
     edges: object; sig_in: object; sig_el: object; dedx: object; x0: object; el_icdf: object
     cell_off: object; sec_off: object; sec_sp: object; sec_p: object
     z0: object; z1: object; rin: object; rout: object; mat: object; origin: object; rot: object   # per segment
-    bx: object                                  # axis-aligned boxes (n, 6): x0, x1, y0, y1, z0, z1 (local frame)
+    bx: object                                  # boxes (n, 6): x0, x1, y0, y1, z0, z1 (local frame, turned by bcs)
+    bcs: object                                 # (n, 2): cos, sin of each box's rotation about the local z axis
     sp: object; cy: object                      # spheres (n, 4): c, R; cylinders (n, 7): a, b, r (local frame)
     env_z: object; env_r: object; annuli: object
     tally: object                               # recording-only planes (n, 2): z, r (diagnostic)
@@ -99,7 +100,8 @@ def make_static(bank, target, env, fm, dtype, slab=None):
                 sec_off=jnp.asarray(bank["sec_offsets"], jnp.int64), sec_sp=jnp.asarray(sec_sp, jnp.int32),
                 sec_p=jnp.asarray(bank["sec_p"], jnp.float32),
                 z0=f(target.zr[:, 0]), z1=f(target.zr[:, 1]), rin=f(target.r_in), rout=f(target.r_out), mat=jnp.asarray(target.mat, jnp.int32),
-                bx=f(target.bx), sp=f(target.sp), cy=f(target.cy),
+                bx=f(target.bx), bcs=f(np.stack([np.cos(target.bphi), np.sin(target.bphi)], 1).reshape(-1, 2)),
+                sp=f(target.sp), cy=f(target.cy),
                 origin=f(target.origin), rot=f(target.rot), env_z=f(env.z_nodes), env_r=f(env.r_nodes), annuli=f(annuli), tally=f(tally),
                 ez=f(D.slice_edges(target)[0]), edep_loc=f(bank["edep_local"]),
                 fm=fieldmap.FieldMap(f(fm.lo), f(fm.d), jnp.asarray(fm.n), f(fm.B)),
@@ -128,6 +130,13 @@ def dir_local(S, u):
     return u @ S.rot
 
 
+def _box_frame(v, cs):
+    """v (..., 3) in the frame of boxes with rotation cos, sin = cs[..., 0], cs[..., 1] (broadcast): Rz(-phi) v."""
+    c, s = cs[..., 0], cs[..., 1]
+    x, y, z = v[..., 0], v[..., 1], v[..., 2]
+    return jnp.stack([c * x + s * y, c * y - s * x, z + 0 * c], -1)
+
+
 def locate(S, cfg, xl):
     z, r = xl[:, 2], jnp.hypot(xl[:, 0], xl[:, 1])
     seg = jnp.full(z.shape, -1, jnp.int32)
@@ -138,8 +147,8 @@ def locate(S, cfg, xl):
     if ns:
         groups.append((cfg.ncone + nb, jnp.sum((xl[:, None, :] - S.sp[None, :, 0:3]) ** 2, -1) < S.sp[None, :, 3] ** 2))
     if nb:
-        groups.append((cfg.ncone, jnp.all((xl[:, None, :] >= S.bx[None, :, 0::2]) & (xl[:, None, :] < S.bx[None, :, 1::2]),
-                                          axis=2)))
+        xb = _box_frame(xl[:, None, :], S.bcs[None])
+        groups.append((cfg.ncone, jnp.all((xb >= S.bx[None, :, 0::2]) & (xb < S.bx[None, :, 1::2]), axis=2)))
     for off, inside in groups:                          # the first solid of a group wins
         seg = jnp.where(inside.any(axis=1), off + jnp.argmax(inside, axis=1).astype(jnp.int32), seg)
     nc = cfg.ncone                                      # coaxial segments, vectorized over the segment axis
@@ -261,8 +270,10 @@ def distance_out(S, cfg, xl, dl, seg):
     out = big
     nb = S.bx.shape[0]
     if nb:
-        bj = S.bx[jnp.clip(seg - cfg.ncone, 0, nb - 1)]
-        out = jnp.where(seg >= cfg.ncone, _box_slabs(xl, dl, bj[:, 0::2], bj[:, 1::2])[1], out)
+        j = jnp.clip(seg - cfg.ncone, 0, nb - 1)
+        bj, cs = S.bx[j], S.bcs[j]
+        out = jnp.where(seg >= cfg.ncone, _box_slabs(_box_frame(xl, cs), _box_frame(dl, cs), bj[:, 0::2], bj[:, 1::2])[1],
+                        out)
     nq = S.sp.shape[0] + S.cy.shape[0]
     if nq:                                              # spheres and cylinders: the exit of the own solid's span
         k = seg - cfg.ncone - nb
@@ -280,7 +291,9 @@ def distance_out(S, cfg, xl, dl, seg):
 def distance_in(S, cfg, xl, dl):
     t = jnp.full(xl.shape[0], jnp.inf, xl.dtype)
     if S.bx.shape[0]:
-        te, tx = _box_slabs(xl[:, None, :], dl[:, None, :], S.bx[None, :, 0::2], S.bx[None, :, 1::2])
+        cs = S.bcs[None]
+        te, tx = _box_slabs(_box_frame(xl[:, None, :], cs), _box_frame(dl[:, None, :], cs), S.bx[None, :, 0::2],
+                            S.bx[None, :, 1::2])
         t = jnp.min(jnp.where((te > cfg.eps) & (te <= tx), te, jnp.inf), axis=1)
     if S.sp.shape[0] + S.cy.shape[0]:
         te, tx = _spans(S, xl, dl)
@@ -825,6 +838,8 @@ def main(argv=None):
     ap.add_argument("--rod", nargs=4, type=float, metavar=("TLENGTH", "R_UP", "R_MID", "R_DN"))
     ap.add_argument("--rods-tsv", help="point table: index, Tlength, R_up, R_mid, R_dn per line (with --points)")
     ap.add_argument("--points", nargs="+", type=int, help="rows of --rods-tsv to run in this process (one compile)")
+    ap.add_argument("--stickman-tsv", help="with --stickman: index, r0, r1, r2, t0, t1, t2 per line (the 6D plate "
+                    "profile, mm; all zeros: the file's plates), run with --points")
     ap.add_argument("--material", default="G4_W")
     C.add_design_arguments(ap)
     C.add_heat_arguments(ap)
@@ -856,11 +871,18 @@ def main(argv=None):
     bank = D.Bank.load(a.bank)
     st = C.Stepping(cuts=D.Cuts(ke_min_hadron=a.ke_min_hadron))
     slab = C.load_slab(a.slab, a.slab_bank, a.slab_material)
-    if a.rods_tsv:
+    if a.stickman_tsv:
+        if not a.stickman:
+            raise SystemExit("--stickman-tsv needs --stickman")
+        table = {int(r[0]): r[1:7] for r in np.loadtxt(a.stickman_tsv, ndmin=2)}
+        jobs = [(pt, table[pt]) for pt in a.points]
+    elif a.rods_tsv:
         table = {int(r[0]): r[1:5] for r in np.loadtxt(a.rods_tsv, ndmin=2)}
         jobs = [(pt, table[pt]) for pt in a.points]
     else:
         jobs = [(a.point, a.rod)]
+    if not a.stickman and not a.deck_target and not a.ral and any(r is None for _, r in jobs):
+        raise SystemExit("--rod, --rods-tsv, --stickman, --deck-target or --ral is required")
     env = C.Envelope(z_nodes=np.asarray(a.env_z), r_nodes=np.asarray(a.env_r), z_min=a.z_min, z_plane=a.z_plane,
                      r_plane=a.r_plane, annuli=tuple(tuple(x) for x in a.annulus), slabs=tuple(tuple(x) for x in a.slab),
                      tally=tuple(tuple(x) for x in a.tally))
@@ -869,7 +891,7 @@ def main(argv=None):
     fm = fieldmap.load(a.map)
     dt = jnp.float64 if a.dtype == "float64" else jnp.float32
     for n_job, (point, rod) in enumerate(jobs):
-        rod = [float(v) for v in rod]
+        rod = None if rod is None else [float(v) for v in rod]
         tgt, beam_tgt = C.design_targets(a, bank, rod)
         rng = np.random.default_rng(a.seed + 7919 * point)
         if a.warm_pot and n_job == 0:

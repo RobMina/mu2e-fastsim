@@ -410,3 +410,42 @@ def test_slice_masses_and_peak_heat():
         D.slice_edges(D.Target.rod(1000.0, 3.0, 3.0, 3.0))
     with pytest.raises(ValueError, match="density"):
         D.material_densities(["unobtainium"])
+
+
+@pytest.mark.parametrize("dtype", [jnp.float64, jnp.float32])
+def test_device_rotated_boxes_match_host(tmp_path, dtype):
+    """Stickman-like fins at 285, 165 and 45 degrees around a core: device and host locate, distances and the
+    cascade agree."""
+    bank = _bank(tmp_path, n_pim=3)
+    ang = np.deg2rad([285.0, 165.0, 45.0])
+    fins = np.array([[0.0, 18.0, -1.0, 1.0, -30.0, 30.0]] * 3)
+    tgt = D.Target(np.array([-30.0, 30.0]), np.zeros((1, 2)), np.full((1, 2), 3.0), np.zeros(4, int), boxes=fins,
+                   box_phi=ang)
+    env = C.Envelope(z_nodes=np.array([-5000.0, 5000.0]), r_nodes=np.array([1900.0, 1900.0]), z_min=-2000.0,
+                     z_plane=800.0, r_plane=1800.0, axis_x=0.0)
+    fm = _uniform_map(2.0)
+    S, nk, nmat = J.make_static(bank, tgt, env, fm, dtype)
+    cfg = J.make_cfg(tgt, env, C.Stepping(), nk, nmat, dtype)
+    rng = np.random.default_rng(11)
+    xl = np.stack([rng.uniform(-20, 20, 20000), rng.uniform(-20, 20, 20000), rng.uniform(-35, 35, 20000)], 1)
+    host = tgt.locate(xl)
+    dev = np.asarray(J.locate(S, cfg, jnp.asarray(xl, dtype)))
+    assert np.mean(dev == host) > 0.9995 and set(host.tolist()) == {-1, 0, 1, 2, 3}
+    same = dev == host
+    dl = rng.normal(size=xl.shape); dl /= np.linalg.norm(dl, axis=1, keepdims=True)
+    x, d = jnp.asarray(xl, dtype), jnp.asarray(dl, dtype)
+    inside = same & (host >= 0)
+    do = np.asarray(J.distance_out(S, cfg, x, d, jnp.asarray(host, jnp.int32)))[inside]
+    assert np.mean(np.isclose(do, tgt.distance_out(xl[inside], dl[inside], host[inside]), rtol=1e-4, atol=1e-3)) > 0.999
+    out = same & (host < 0)
+    di, dh = np.asarray(J.distance_in(S, cfg, x, d))[out], tgt.distance_in(xl[out], dl[out])
+    fin = np.isfinite(dh)
+    assert np.mean(np.isfinite(di) == fin) > 0.999 and fin.sum() > 1000
+    both = fin & np.isfinite(di)
+    assert np.mean(np.isclose(di[both], dh[both], rtol=1e-4, atol=1e-3)) > 0.999
+    prim = C.primaries(3000, tgt, np.random.default_rng(3))
+    hr = C.run(bank, tgt, lambda q: np.tile([0.0, 0.0, 2.0], (len(q), 1)), env, prim, np.random.default_rng(4))
+    rec, cnt = J.run(bank, tgt, fm, env, prim, seed=5, pool=4096, steps=32, dtype=dtype)
+    assert cnt["inelastic"] == hr["counts"]["inelastic"] == 3000
+    nh, nd = hr["counts"]["recorded"], len(rec["pdg"])
+    assert nh > 1500 and abs(nd - nh) < 4 * np.sqrt(nh), (nh, nd)

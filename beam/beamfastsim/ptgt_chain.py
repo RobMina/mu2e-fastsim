@@ -643,6 +643,9 @@ def add_design_arguments(ap):
                     "e.g. 'Z-30,Y14' for Hayman2)")
     ap.add_argument("--ral", action="store_true", help="the deck's RAL target (Use_Proton_Target=6): rod, hubs, hub "
                     "balls and spokes in --material (ptgt_deck.ral_target; --rod unused)")
+    ap.add_argument("--stickman", metavar="FILE", help="the Offline Stickman target of this geometry file (e.g. "
+                    "ProductionTarget_Stickman_v1_0.txt) in --material (ptgt_deck.stickman_target; --rod unused); with "
+                    "--stickman-tsv (device chain) its plates follow the 6D profile of each row")
     ap.add_argument("--clad", nargs=3, metavar=("R_CORE", "T_CLAD", "MATERIAL"),
                     help="a cylinder of radius R_CORE (--material) in a sleeve of thickness T_CLAD of MATERIAL, the "
                          "length of --rod (its radii unused): the deck's Use_Proton_Target=10")
@@ -661,6 +664,17 @@ def design_targets(a, bank, rod):
                              rot=ptgt_deck.rotation(a.deck_rotation))
         return t, t
     mat = bank.materials.index(a.material)
+    if getattr(a, "stickman", None):
+        from beamfastsim import ptgt_deck
+        if a.offset_x or a.tilt_x or a.clad:
+            raise SystemExit("--stickman takes no --offset-x, --tilt-x or --clad")
+        cfg = ptgt_deck.read_simpleconfig(a.stickman)
+        plates = {}
+        if rod is not None and len(rod) == 6 and any(float(v) for v in rod):      # 6D row (all zeros: the file's plates)
+            r, th, lug = ptgt_deck.stickman_6d(rod[:3], rod[3:], n=int(cfg["targetPS_numberOfPlates"]))
+            plates = dict(r_out=r, thickness=th, lug=lug)
+        t = ptgt_deck.stickman_target(cfg, mat, **plates, **placement())
+        return t, t
     if getattr(a, "ral", False):
         from beamfastsim import ptgt_deck
         if a.offset_x or a.tilt_x or a.clad:

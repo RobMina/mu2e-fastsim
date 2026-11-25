@@ -236,3 +236,36 @@ def test_muon_loses_energy_without_interacting(tmp_path):
     assert list(r["exit_pdg"]) == [13] and r["counts"]["inelastic"] == 0
     ke_out = np.hypot(np.linalg.norm(r["exit_p"][0]), P.MASS[13]) - P.MASS[13]
     assert np.isclose(500.0 - ke_out, 2.0, rtol=1e-6) and np.isclose(r["edep"].sum(), 2.0, rtol=1e-6)
+
+
+def test_rotated_boxes_match_their_axis_aligned_twins():
+    """A box turned by 90 degrees is the swapped axis-aligned box; a fin at 45 degrees holds points on its diagonal,
+    and its distances are the axis-aligned ones measured in its own frame."""
+    fin = [0.0, 8.0, -0.5, 0.5, -20.0, 20.0]
+    rot = P.Target(np.array([-20.0, 20.0]), np.zeros((1, 2)), np.full((1, 2), 1.0), np.array([0, 1, 1]),
+                   boxes=np.array([fin, fin]), box_phi=np.array([np.pi / 2, np.pi / 4]))
+    twin = P.Target(np.array([-20.0, 20.0]), np.zeros((1, 2)), np.full((1, 2), 1.0), np.array([0, 1]),
+                    boxes=np.array([[-0.5, 0.5, 0.0, 8.0, -20.0, 20.0]]))
+    rng = np.random.default_rng(1)
+    x = np.stack([rng.uniform(-3, 3, 4000), rng.uniform(-1, 9, 4000), rng.uniform(-25, 25, 4000)], 1)
+    near45 = np.abs(x[:, 0] - x[:, 1]) / np.sqrt(2) < 0.6                      # points the 45-degree fin may hold
+    assert np.array_equal(rot.locate(x[~near45]) >= 0, twin.locate(x[~near45]) >= 0)
+    s = np.sqrt(0.5)
+    pts = np.array([[5 * s, 5 * s, 0.0], [5 * s + 0.4 * s, 5 * s - 0.4 * s, 0.0], [5 * s + 0.6 * s, 5 * s - 0.6 * s, 0.0]])
+    assert list(rot.locate(pts)) == [2, 2, -1]
+    d = np.array([[s, s, 0.0], [-s, s, 0.0], [0.0, 0.0, 1.0]])
+    assert np.allclose(rot.distance_out(pts[:1].repeat(3, 0), d, np.full(3, 2)), [3.0, 0.5, 20.0])
+    assert np.allclose(rot.distance_in(np.array([[10 * s - 2 * s, 2 * s, 0.0]]), np.array([[-s, s, 0.0]])), [2.5])
+    with pytest.raises(ValueError):
+        P.Target(np.array([-1.0, 1.0]), np.zeros((1, 2)), np.ones((1, 2)), np.array([0, 0]),
+                 boxes=np.array([fin]), box_phi=np.array([0.0, 1.0]))
+
+
+def test_heat_edges_set_the_slices():
+    t = P.Target(np.array([-10.0, 10.0]), np.zeros((1, 2)), np.ones((1, 2)), np.array([0]),
+                 heat_edges=np.array([-10.0, -4.0, 3.0, 10.0]))
+    e, n = P.slice_edges(t)
+    assert n == 3 and e.size == P.EDEP_SLICE_MAX + 1 and np.allclose(e[:4], [-10, -4, 3, 10]) and np.all(np.diff(e) > 0)
+    with pytest.raises(ValueError):
+        P.slice_edges(P.Target(np.array([-1.0, 1.0]), np.zeros((1, 2)), np.ones((1, 2)), np.array([0]),
+                               heat_edges=np.array([0.0, 0.0])))

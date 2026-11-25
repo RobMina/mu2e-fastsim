@@ -159,13 +159,16 @@ class Target:
     """Coaxial frusta along the target's local z (the beam enters at the +z face and travels along local -z, see
     ptgt_chain.primaries): segment i spans z_edges[i]..z_edges[i+1] (or z_ranges[i], for segments that share a z
     range, e.g. a core and its sleeve) with inner/outer radii linear between r_in/r_out[i, 0] and [i, 1], material
-    mat[i] (bank material index). Optional axis-aligned boxes in the local frame (fins, plates): boxes[j] =
-    (x0, x1, y0, y1, z0, z1), segment index n_cone + j, material mat[n_cone + j]. Optional spheres[k] = (cx, cy, cz,
+    mat[i] (bank material index). Optional boxes in the local frame (fins, plates): boxes[j] =
+    (x0, x1, y0, y1, z0, z1), segment index n_cone + j, material mat[n_cone + j]; box_phi[j] (radians, default 0)
+    rotates box j about the local z axis (its bounds hold in the frame turned by box_phi[j]: a point x is inside when
+    Rz(-box_phi[j]) x is within them; e.g. a radial fin at angle phi is the box (0, L, -w/2, w/2, z0, z1), box_phi phi). Optional spheres[k] = (cx, cy, cz,
     R) and solid cylinders of any axis cylinders[m] = (ax, ay, az, bx, by, bz, r) (end centres a, b; flat ends) in the
     local frame (hub balls, spokes), indexed after the boxes in that order. mat covers the coaxial segments, then the
     boxes, spheres and cylinders. Solids of different materials must not overlap; a point inside several is in the
     first (coaxial segments, then boxes, spheres, cylinders). beam_z: the local z of the beam's entrance plane
-    (default z_hi; the deck starts the beam at its nominal rod face, inside hubs that reach further). Placement:
+    (default z_hi; the deck starts the beam at its nominal rod face, inside hubs that reach further). heat_edges:
+    increasing local z edges of the target-heat slices (e.g. one per plate pitch; default EDEP_SLICE_MM). Placement:
     local -> global (the caller's frame) is x_global = origin + rot @ x_local."""
     z_edges: np.ndarray
     r_in: np.ndarray
@@ -175,9 +178,11 @@ class Target:
     rot: np.ndarray = field(default_factory=lambda: np.eye(3))
     z_ranges: Optional[np.ndarray] = None
     boxes: Optional[np.ndarray] = None
+    box_phi: Optional[np.ndarray] = None
     spheres: Optional[np.ndarray] = None
     cylinders: Optional[np.ndarray] = None
     beam_z: Optional[float] = None
+    heat_edges: Optional[np.ndarray] = None     # target-heat slice edges along the local z (default: EDEP_SLICE_MM)
 
     def __post_init__(self):
         z = np.asarray(self.z_edges, float)
@@ -197,6 +202,8 @@ class Target:
         b = self.bx
         if b.ndim != 2 or b.shape[1] != 6 or np.any(b[:, 1::2] <= b[:, 0::2]):
             raise ValueError("boxes must be (n, 6) = x0, x1, y0, y1, z0, z1 with lo < hi")
+        if self.box_phi is not None and np.asarray(self.box_phi, float).shape != (len(b),):
+            raise ValueError("box_phi must have one angle per box")
         sp, cy = self.sp, self.cy
         if sp.ndim != 2 or sp.shape[1] != 4 or np.any(sp[:, 3] <= 0):
             raise ValueError("spheres must be (n, 4) = cx, cy, cz, R with R > 0")
@@ -225,6 +232,18 @@ class Target:
     def cy(self):
         """(cylinders, 7): ax, ay, az, bx, by, bz, r (local frame); (0, 7) without cylinders."""
         return np.zeros((0, 7)) if self.cylinders is None else np.asarray(self.cylinders, float)
+
+    @property
+    def bphi(self):
+        """(boxes,): rotation of each box about the local z axis [rad]; zeros without box_phi."""
+        return np.zeros(len(self.bx)) if self.box_phi is None else np.asarray(self.box_phi, float)
+
+    @staticmethod
+    def box_frame(v, phi):
+        """v (..., 3) in the frame of boxes turned by phi (broadcast against v[..., 0]): Rz(-phi) v."""
+        c, s = np.cos(phi), np.sin(phi)
+        x, y = v[..., 0], v[..., 1]
+        return np.stack(np.broadcast_arrays(c * x + s * y, c * y - s * x, v[..., 2] + 0 * c), -1)
 
     @property
     def n_box(self):
@@ -314,9 +333,9 @@ class Target:
         seg = np.full(len(z), -1)
         b = self.bx
         o_sp, o_cy = self.n_cone + len(b), self.n_cone + len(b) + self.n_sphere
+        xb = self.box_frame(xl[:, None, :], self.bphi[None, :])
         for off, inside in ((o_cy, self._in_cylinders(xl)), (o_sp, self._in_spheres(xl)),
-                            (self.n_cone, np.all((xl[:, None, :] >= b[None, :, 0::2]) & (xl[:, None, :] < b[None, :, 1::2]),
-                                                 axis=2))):
+                            (self.n_cone, np.all((xb >= b[None, :, 0::2]) & (xb < b[None, :, 1::2]), axis=2))):
             if inside.shape[1]:                              # later groups first, so earlier ones win; the first of a group
                 seg = np.where(inside.any(axis=1), off + np.argmax(inside, axis=1), seg)
         zr = self.zr
@@ -431,8 +450,9 @@ class Target:
                 t[m] = self._spans(xl[m], dl[m])[1][:, i - self.n_cone - len(b)]
                 continue
             if i >= self.n_cone:
-                bj = b[i - self.n_cone]
-                t[m] = self._box_slabs(xl[m], dl[m], bj[0::2][None], bj[1::2][None])[1]
+                bj, ph = b[i - self.n_cone], self.bphi[i - self.n_cone]
+                t[m] = self._box_slabs(self.box_frame(xl[m], ph), self.box_frame(dl[m], ph), bj[0::2][None],
+                                       bj[1::2][None])[1]
                 continue
             z0, z1 = self.zr[i]
             ti = np.minimum(self._plane_hits(xl[m], dl[m], z0), self._plane_hits(xl[m], dl[m], z1))
@@ -447,7 +467,9 @@ class Target:
         t = np.full(len(xl), np.inf)
         b = self.bx
         if len(b):
-            te, tx = self._box_slabs(xl[:, None, :], dl[:, None, :], b[None, :, 0::2], b[None, :, 1::2])
+            ph = self.bphi[None, :]
+            te, tx = self._box_slabs(self.box_frame(xl[:, None, :], ph), self.box_frame(dl[:, None, :], ph),
+                                     b[None, :, 0::2], b[None, :, 1::2])
             ok = (te > 1e-9) & (te <= tx)
             t = np.min(np.where(ok, te, np.inf), axis=1)
         if self.n_sphere + len(self.cy):
@@ -481,7 +503,17 @@ MEV_PER_G_TO_GY = 1.602176634e-13 / 1e-3  # MeV/g -> J/kg (1 MeV = 1.602e-13 J, 
 
 def slice_edges(target, width=EDEP_SLICE_MM, nmax=EDEP_SLICE_MAX):
     """(nmax + 1) slice edges along the local z from target.z_lo in steps of width, and the number of slices that
-    cover z_lo..z_hi (bins beyond carry no mass). Deposits outside the slices (e.g. spokes) are not sliced."""
+    cover z_lo..z_hi (bins beyond carry no mass). Deposits outside the slices (e.g. spokes) are not sliced. A target
+    with heat_edges uses those (padded past its last edge to nmax + 1 edges)."""
+    he = getattr(target, "heat_edges", None)
+    if he is not None:
+        he = np.asarray(he, float)
+        n = he.size - 1
+        if n < 1 or np.any(np.diff(he) <= 0):
+            raise ValueError("heat_edges must increase")
+        if n > nmax:
+            raise ValueError(f"{n} heat slices > {nmax}")
+        return np.concatenate([he, he[-1] + width * np.arange(1, nmax - n + 1)]), n
     n = int(np.ceil((target.z_hi - target.z_lo) / width - 1e-9))
     if n > nmax:
         raise ValueError(f"target length {target.z_hi - target.z_lo} mm needs {n} slices > {nmax}: widen the slices")

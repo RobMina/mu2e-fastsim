@@ -149,3 +149,102 @@ def ral_target(mat=0, tlength=160.0, tradius=3.15, hub_thick=1.0, hub_pre=8.0, h
     return D.Target(np.array([-zf, zf]), np.asarray(r_in, float), np.asarray(r_out, float), np.full(n, mat),
                     z_ranges=np.asarray(zr, float), spheres=np.asarray(balls, float), cylinders=np.asarray(rods, float),
                     beam_z=h, **placement)
+
+
+# ---------------------------------------------------------------------------------------- Offline Stickman v1.0
+
+_SC_LINE = re.compile(r"^\s*(int|double|bool|string|vector<double>|vector<int>|vector<string>)\s+([\w.]+)\s*=\s*(.*?)\s*;",
+                      re.S | re.M)
+
+
+def read_simpleconfig(path):
+    """Values of an Offline SimpleConfig geometry file (`type name = value;`, vectors in braces), comments removed.
+    #include lines are not followed: the caller passes the file that holds the target block (later lines win)."""
+    text = re.sub(r"//[^\n]*", "", open(path).read())
+    out = {}
+    for typ, name, val in _SC_LINE.findall(text):
+        if typ.startswith("vector"):
+            items = [v.strip() for v in val.strip().strip("{}").split(",") if v.strip()]
+            out[name] = [v.strip('"') for v in items] if typ == "vector<string>" else [float(v) for v in items]
+        elif typ == "string":
+            out[name] = val.strip().strip('"')
+        elif typ == "bool":
+            out[name] = val.strip() == "true"
+        else:
+            out[name] = float(val)
+    return out
+
+
+def stickman_profile(c, n):
+    """Lagrange quadratic through c = (c0, c1, c2) at u = 0, 0.5, 1, sampled at u = i / (n - 1): Mu2eBO's plate
+    profile (archived prodtarget/prodtarget6d modes; plate 0 is the Mu2e-upstream plate, where the protons leave)."""
+    u = np.linspace(0.0, 1.0, int(n))
+    c0, c1, c2 = (float(v) for v in c)
+    return c0 * (1 - 2 * u) * (1 - u) + c1 * 4 * u * (1 - u) + c2 * u * (2 * u - 1)
+
+
+def stickman_6d(r_ctrl, t_ctrl, n=35, lug_offset=0.75, clamp_ends=True):
+    """(rOut, plateThickness, plateLugThickness) of the 6D plate study (Mu2eBO prodtarget6d): quadratic profiles of
+    the core radius and the plate thickness over n plates, lug = thickness + lug_offset, and (since 2026-06-15) the
+    end plates' lugs clamped to their thickness."""
+    r, t = stickman_profile(r_ctrl, n), stickman_profile(t_ctrl, n)
+    lug = t + lug_offset
+    if clamp_ends:
+        lug[0], lug[-1] = t[0], t[-1]
+    return r, t, lug
+
+
+def stickman_target(cfg, mat=0, r_out=None, thickness=None, lug=None, **placement):
+    """The Offline Stickman production target (Mu2eG4 constructStickmanTarget, ProductionTarget_Stickman_v1_0.txt)
+    as a device Target in its local frame (z along the target axis; plate 0 at the -z end, the beam enters at +z):
+
+      * plate i: a core cylinder rOut[i] over plateThickness[i] starting at the plate's -z face, and nStickmanFins
+        radial fins (boxes from the axis to plateFinOuterRadius, plateFinWidth wide, the plate's thickness, at
+        plateFinAngles); the plate pitch is plateLugThickness[i]; the stack starts supportRingLength + 2
+        spacerHalfLength above -halfStickmanLength;
+      * per fin angle, one solid cylinder of plateLugOuterRadius at plateCenterToLugCenter over the full length:
+        the plates' lugs (contiguous: lug = pitch), the rod inside them, the spacers and the support rings' lugs
+        (the 0.025-0.05 mm gaps between rod, lug and spacer are filled);
+      * at each end, the support ring (annulus supportRingInnerRadius..OuterRadius over supportRingLength) and its
+        lug stems (boxes from the ring's inner radius to the lug centre, 2 plateLugOuterRadius wide).
+
+    Not included: the 1 mm fillets at fin-core and fin-lug joints, the support rings' cutouts, and the bicycle-wheel
+    support (Al wheel at r 178-197 mm, Inconel spokes): they do not depend on the plate design. halfStickmanLength is
+    recomputed from the plates (Mu2eBO's envelope identity). One material (mat) for every solid, as the file
+    (Inconel718). Heat slices: one per plate pitch, plus the two end regions (ring and spacer).
+    cfg: read_simpleconfig of the geometry file; r_out, thickness, lug override its per-plate vectors."""
+    g = lambda k: cfg[k]                                                                       # noqa: E731
+    r = np.asarray(g("targetPS_rOut") if r_out is None else r_out, float)
+    t = np.asarray(g("targetPS_plateThickness") if thickness is None else thickness, float)
+    lp = np.asarray(g("targetPS_plateLugThickness") if lug is None else lug, float)
+    n = int(r.size)
+    if not (t.size == lp.size == n) or (r_out is None and thickness is None and n != int(g("targetPS_numberOfPlates"))):
+        raise ValueError("rOut, plateThickness and plateLugThickness need one value per plate")
+    if np.any(lp < t - 1e-9) or np.any(r <= 0) or np.any(t <= 0):
+        raise ValueError("need rOut > 0, plateThickness > 0 and plateLugThickness >= plateThickness")
+    ring, sph = float(g("targetPS_supportRingLength")), float(g("targetPS_spacerHalfLength"))
+    half = ring + 2.0 * sph + 0.5 * float(lp.sum())
+    z = -half + ring + 2.0 * sph + np.concatenate([[0.0], np.cumsum(lp)])                    # plate pitch edges
+    angles = np.deg2rad(np.asarray(g("targetPS_plateFinAngles"), float))
+    if len(angles) != int(g("targetPS_nStickmanFins")):
+        raise ValueError("targetPS_plateFinAngles needs one angle per fin")
+    fin_r, fin_w = float(g("targetPS_plateFinOuterRadius")), float(g("targetPS_plateFinWidth"))
+    lug_c, lug_r = float(g("targetPS_plateCenterToLugCenter")), float(g("targetPS_plateLugOuterRadius"))
+    rr_in, rr_out = float(g("targetPS_supportRingInnerRadius")), float(g("targetPS_supportRingOuterRadius"))
+    zr = [[z[i], z[i] + t[i]] for i in range(n)] + [[-half, -half + ring], [half - ring, half]]
+    r_in = [[0.0, 0.0]] * n + [[rr_in, rr_in]] * 2
+    r_o = [[v, v] for v in r] + [[rr_out, rr_out]] * 2
+    boxes, phi = [], []
+    for i in range(n):
+        for a in angles:
+            boxes.append([0.0, fin_r, -0.5 * fin_w, 0.5 * fin_w, z[i], z[i] + t[i]]); phi.append(a)
+    for z0, z1 in ((-half, -half + ring), (half - ring, half)):
+        for a in angles:
+            boxes.append([rr_in, lug_c, -lug_r, lug_r, z0, z1]); phi.append(a)
+    cyl = [[lug_c * np.cos(a), lug_c * np.sin(a), -half, lug_c * np.cos(a), lug_c * np.sin(a), half, lug_r]
+           for a in angles]
+    heat = np.concatenate([[-half], z, [half]])
+    nsol = len(zr) + len(boxes) + len(cyl)
+    return D.Target(np.array([-half, half]), np.asarray(r_in, float), np.asarray(r_o, float), np.full(nsol, mat),
+                    z_ranges=np.asarray(zr, float), boxes=np.asarray(boxes, float), box_phi=np.asarray(phi, float),
+                    cylinders=np.asarray(cyl, float), heat_edges=heat, **placement)
